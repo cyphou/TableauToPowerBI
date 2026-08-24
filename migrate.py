@@ -1,0 +1,7273 @@
+"""
+Main script for Tableau to Power BI migration
+
+Pipeline:
+1. Extract datasources from the Tableau file (.twb/.twbx)
+1b. (Optional) Parse Tableau Prep flow (.tfl/.tflx) and merge transforms
+2. Generate the Power BI project (.pbip) with TMDL model
+3. Generate migration report with per-item fidelity tracking
+
+Supports:
+- Single workbook migration:  python migrate.py workbook.twbx
+- Batch migration:            python migrate.py --batch folder/
+- Custom output directory:    python migrate.py workbook.twbx --output-dir out/
+- Verbose logging:            python migrate.py workbook.twbx --verbose
+"""
+
+import os
+import sys
+import glob
+import json
+import logging
+import argparse
+import tempfile
+import zipfile
+import concurrent.futures
+from datetime import datetime
+from enum import IntEnum
+
+
+# ── Structured exit codes ────────────────────────────────────────────
+
+class ExitCode(IntEnum):
+    """Structured exit codes for CI/CD integration.
+
+    With --strict flag, the quality gate overrides exit codes:
+      0 = clean (no issues)
+      1 = warnings only (shipped anyway)
+      5 = validation errors (quarantined or rolled back)
+    """
+    SUCCESS = 0
+    GENERAL_ERROR = 1
+    FILE_NOT_FOUND = 2
+    EXTRACTION_FAILED = 3
+    GENERATION_FAILED = 4
+    VALIDATION_FAILED = 5
+    ASSESSMENT_FAILED = 6
+    BATCH_PARTIAL_FAIL = 7
+    KEYBOARD_INTERRUPT = 130
+
+# Ensure Unicode output on Windows consoles (✓, →, ❌, etc.)
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, OSError):
+        pass
+
+
+# ── Extraction directory resolution ──────────────────────────────────
+
+def _get_extract_dir():
+    """Return the directory for intermediate extraction JSON files.
+
+    Checks the ``TTPBI_EXTRACT_DIR`` environment variable first, falling
+    back to the ``tableau_export/`` subdirectory next to this script.
+    """
+    env = os.environ.get('TTPBI_EXTRACT_DIR')
+    if env:
+        return env
+    return os.path.join(os.path.dirname(__file__), 'tableau_export')
+
+
+# ── Structured logging setup ────────────────────────────────────────
+
+logger = logging.getLogger('tableau_to_powerbi')
+
+
+def setup_logging(verbose=False, log_file=None, quiet=False):
+    """Configure structured logging.
+
+    Args:
+        verbose: If True, set DEBUG level; otherwise INFO.
+        log_file: Optional path to a log file.
+        quiet: If True, suppress all output except ERROR level.
+    """
+    if quiet:
+        level = logging.ERROR
+    elif verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+    fmt = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    datefmt = '%Y-%m-%d %H:%M:%S'
+
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        os.makedirs(os.path.dirname(log_file) or '.', exist_ok=True)
+        handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
+
+    logging.basicConfig(level=level, format=fmt, datefmt=datefmt, handlers=handlers)
+    # Silence noisy sub-loggers unless verbose
+    if not verbose:
+        logging.getLogger('tableau_to_powerbi').setLevel(logging.INFO)
+
+
+# ── Migration statistics tracker ────────────────────────────────────
+
+class MigrationStats:
+    """Tracks statistics across all pipeline steps."""
+
+    def __init__(self):
+        # Extraction
+        self.app_name = ""
+        self.datasources = 0
+        self.worksheets = 0
+        self.dashboards = 0
+        self.calculations = 0
+        self.parameters = 0
+        self.filters = 0
+        self.stories = 0
+        self.actions = 0
+        self.sets = 0
+        self.groups = 0
+        self.bins = 0
+        self.hierarchies = 0
+        self.user_filters = 0
+        self.custom_sql = 0
+        # Generation
+        self.tmdl_tables = 0
+        self.tmdl_columns = 0
+        self.tmdl_measures = 0
+        self.tmdl_relationships = 0
+        self.tmdl_hierarchies = 0
+        self.tmdl_roles = 0
+        self.visuals_generated = 0
+        self.pages_generated = 0
+        self.theme_applied = False
+        self.pbip_path = ""
+        # Diagnostics
+        self.warnings = []
+        self.skipped = []
+
+    def to_dict(self):
+        return {k: v for k, v in self.__dict__.items()}
+
+
+_stats = MigrationStats()
+
+
+def print_header(text):
+    """Print a formatted header"""
+    print()
+    print("=" * 80)
+    print(text.center(80))
+    print("=" * 80)
+    print()
+
+
+def print_step(step_num, total_steps, text):
+    """Print a step indicator"""
+    print(f"\n[Step {step_num}/{total_steps}] {text}")
+    print("-" * 80)
+
+
+def run_extraction(tableau_file, hyper_max_rows=None):
+    """Run Tableau extraction with path validation."""
+    print_step(1, 2, "TABLEAU OBJECTS EXTRACTION")
+
+    # Security: validate file path
+    if not tableau_file:
+        logger.error("No Tableau file specified")
+        print("Error: No Tableau file specified")
+        return False
+
+    # Null byte check
+    if '\x00' in tableau_file:
+        logger.error("Invalid file path (contains null bytes)")
+        print("Error: Invalid file path")
+        return False
+
+    # Resolve and validate path
+    resolved = os.path.realpath(tableau_file)
+    ext = os.path.splitext(resolved)[1].lower()
+    if ext not in ('.twb', '.twbx', '.tds', '.tdsx', '.tfl', '.tflx'):
+        logger.error(f"Unsupported file extension: {ext}")
+        print(f"Error: Unsupported file type: {ext}. Use .twb, .twbx, .tds, .tdsx, .tfl, or .tflx")
+        return False
+
+    if not os.path.exists(resolved):
+        logger.error(f"Tableau file not found: {resolved}")
+        print(f"Error: Tableau file not found: {resolved}")
+        return False
+
+    # Phase 1 — Pre-flight rejection (Sprint 141 / v31.4.0).
+    # Refuse early when the workbook is doomed to fail. Skip for prep flows
+    # and standalone datasource files (they go through their own pipelines).
+    if ext in ('.twb', '.twbx'):
+        try:
+            from powerbi_import.preflight import run_preflight
+            preflight = run_preflight(tableau_file)
+            if preflight.warnings or preflight.advisories or preflight.blockers:
+                print(preflight.format_console())
+            if preflight.blockers and not os.environ.get('TTPBI_FORCE'):
+                logger.error("Pre-flight failed (%d blocker(s))",
+                             len(preflight.blockers))
+                print("\nMigration refused. Set TTPBI_FORCE=1 to override "
+                      "(at your own risk).")
+                return False
+        except Exception:
+            # Pre-flight is advisory only — never block on its own bugs
+            logger.debug("Pre-flight check raised", exc_info=True)
+
+    print(f"Source file: {tableau_file}")
+    _stats.app_name = os.path.splitext(os.path.basename(tableau_file))[0]
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    try:
+        from extract_tableau_data import TableauExtractor
+
+        extractor = TableauExtractor(tableau_file, hyper_max_rows=hyper_max_rows)
+        success = extractor.extract_all()
+
+        if success:
+            # Collect extraction counts from saved JSON files
+            json_dir = _get_extract_dir()
+            for attr, fname in [
+                ('datasources', 'datasources.json'),
+                ('worksheets', 'worksheets.json'),
+                ('dashboards', 'dashboards.json'),
+                ('calculations', 'calculations.json'),
+                ('parameters', 'parameters.json'),
+                ('filters', 'filters.json'),
+                ('stories', 'stories.json'),
+                ('actions', 'actions.json'),
+                ('sets', 'sets.json'),
+                ('groups', 'groups.json'),
+                ('bins', 'bins.json'),
+                ('hierarchies', 'hierarchies.json'),
+                ('user_filters', 'user_filters.json'),
+                ('custom_sql', 'custom_sql.json'),
+            ]:
+                fpath = os.path.join(json_dir, fname)
+                if os.path.exists(fpath):
+                    try:
+                        with open(fpath, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        setattr(_stats, attr, len(data) if isinstance(data, list) else 0)
+                    except (json.JSONDecodeError, OSError) as e:
+                        logger.debug("Could not load stats from %s: %s", fname, e)
+
+            print("\n✓ Extraction completed successfully")
+            return True
+        else:
+            print("\nError during extraction")
+            return False
+
+    except Exception as e:
+        logger.error(f"Extraction failed: {e}", exc_info=True)
+        print(f"\nError during extraction: {str(e)}")
+        return False
+
+
+def _run_fabric_generation(report_name=None, output_dir=None,
+                           calendar_start=None, calendar_end=None,
+                           culture=None, languages=None):
+    """Generate Fabric-native artifacts (Lakehouse + Dataflow Gen2 +
+    Notebook + DirectLake Semantic Model + Pipeline).
+
+    Returns True on success, False on failure.
+    """
+    try:
+        from powerbi_import.fabric_project_generator import FabricProjectGenerator
+        from powerbi_import.import_to_powerbi import PowerBIImporter
+
+        # Load extracted JSON files
+        loader = PowerBIImporter()
+        extracted = loader._load_converted_objects()
+
+        if not extracted.get('datasources'):
+            print("  [ERROR] No datasources found — run extraction first")
+            return False
+
+        # Determine report name
+        if not report_name:
+            dashboards = extracted.get('dashboards', [])
+            if dashboards:
+                report_name = dashboards[0].get('name', 'Report')
+            else:
+                report_name = 'Report'
+
+        base_dir = output_dir or os.path.join('artifacts', 'fabric_projects', 'migrated')
+
+        generator = FabricProjectGenerator(output_dir=base_dir)
+        results = generator.generate_project(
+            project_name=report_name,
+            extracted_data=extracted,
+            calendar_start=calendar_start,
+            calendar_end=calendar_end,
+            culture=culture,
+            languages=languages,
+        )
+
+        project_dir = results.get('project_path', '')
+        if project_dir and os.path.exists(project_dir):
+            _stats.pbip_path = project_dir
+            sm = results.get('artifacts', {}).get('semantic_model', {})
+            _stats.tmdl_tables = sm.get('tables', 0)
+            _stats.tmdl_columns = sm.get('columns', 0)
+            _stats.tmdl_measures = sm.get('measures', 0)
+            _stats.tmdl_relationships = sm.get('relationships', 0)
+
+        print("\n✓ Fabric project generated successfully")
+        return True
+
+    except Exception as e:
+        logger.error(f"Fabric generation failed: {e}", exc_info=True)
+        print(f"\nError during Fabric generation: {str(e)}")
+        return False
+
+
+def run_generation(report_name=None, output_dir=None, calendar_start=None,
+                   calendar_end=None, culture=None, model_mode='import',
+                   output_format='pbip', paginated=False, languages=None,
+                   composite_threshold=None, agg_tables='none',
+                   incremental_refresh=False, incremental_refresh_months=12,
+                   parameterize=True):
+    """Generate Power BI project (.pbip) from extracted data
+
+    Args:
+        report_name: Override report name (defaults to dashboard name or 'Report')
+        output_dir: Custom output directory for .pbip projects (default: artifacts/powerbi_projects/)
+        calendar_start: Start year for Calendar table (default: 2020)
+        calendar_end: End year for Calendar table (default: 2030)
+        culture: Override culture/locale for semantic model (e.g., fr-FR)
+        paginated: If True, generate paginated report layout alongside interactive report
+        languages: Comma-separated additional locales (e.g. 'fr-FR,de-DE')
+        incremental_refresh: If True, detect and configure incremental refresh policies
+        incremental_refresh_months: Rolling window in months (default: 12)
+        parameterize: If True, inject RangeStart/RangeEnd M parameters (default: True)
+    """
+    print_step(2, 2, "POWER BI PROJECT GENERATION")
+
+    # ── Fabric-native output format ──────────────────────────────
+    if output_format == 'fabric':
+        return _run_fabric_generation(
+            report_name=report_name, output_dir=output_dir,
+            calendar_start=calendar_start, calendar_end=calendar_end,
+            culture=culture, languages=languages,
+        )
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+    try:
+        from import_to_powerbi import PowerBIImporter
+
+        importer = PowerBIImporter()
+        importer.import_all(generate_pbip=True, report_name=report_name, output_dir=output_dir,
+                            calendar_start=calendar_start, calendar_end=calendar_end,
+                            culture=culture, model_mode=model_mode,
+                            output_format=output_format, languages=languages,
+                            composite_threshold=composite_threshold, agg_tables=agg_tables,
+                            incremental_refresh=incremental_refresh,
+                            incremental_refresh_months=incremental_refresh_months,
+                            parameterize=parameterize)
+
+        # Collect generation stats from the output
+        base_dir = output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        project_dir = os.path.join(base_dir, report_name or 'Report')
+        if os.path.exists(project_dir):
+            _stats.pbip_path = project_dir
+            # Count TMDL tables
+            tables_dir = None
+            for root, dirs, files in os.walk(project_dir):
+                if os.path.basename(root) == 'tables':
+                    tables_dir = root
+                    _stats.tmdl_tables = len([f for f in files if f.endswith('.tmdl')])
+                # Count pages: only ReportSection dirs that contain page.json
+                if os.path.basename(root) == 'pages':
+                    _stats.pages_generated = sum(
+                        1 for d in dirs if d.startswith('ReportSection')
+                        and os.path.isfile(os.path.join(root, d, 'page.json'))
+                    )
+                # Count visuals: only UUID dirs that contain visual.json
+                if os.path.basename(root) == 'visuals':
+                    _stats.visuals_generated += sum(
+                        1 for d in dirs
+                        if os.path.isfile(os.path.join(root, d, 'visual.json'))
+                    )
+                # Check for theme
+                if 'TableauMigrationTheme.json' in files:
+                    _stats.theme_applied = True
+
+            # Read TMDL stats from metadata if available
+            meta_path = os.path.join(project_dir, 'migration_metadata.json')
+            if os.path.exists(meta_path):
+                try:
+                    with open(meta_path, 'r', encoding='utf-8') as f:
+                        meta = json.load(f)
+                    tmdl = meta.get('tmdl_stats', {})
+                    _stats.tmdl_columns = tmdl.get('columns', 0)
+                    _stats.tmdl_measures = tmdl.get('measures', 0)
+                    _stats.tmdl_relationships = tmdl.get('relationships', 0)
+                    _stats.tmdl_hierarchies = tmdl.get('hierarchies', 0)
+                    _stats.tmdl_roles = tmdl.get('roles', 0)
+                except (json.JSONDecodeError, OSError, KeyError) as e:
+                    logger.debug("Could not load TMDL stats: %s", e)
+
+        print("\n✓ Power BI project generated successfully")
+        return True
+
+    except Exception as e:
+        logger.error(f"Generation failed: {e}", exc_info=True)
+        print(f"\nError during generation: {str(e)}")
+        return False
+
+
+def run_migration_report(report_name, output_dir=None):
+    """Generate a structured migration report with per-item fidelity tracking.
+
+    Reads the extracted JSON files and the generated TMDL files,
+    classifies each converted item, and produces a JSON report.
+
+    Args:
+        report_name: Name of the report
+        output_dir: Custom output directory (default: artifacts/migration_reports/)
+
+    Returns:
+        dict or None: Report summary dict, or None on failure
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+    try:
+        from migration_report import MigrationReport
+
+        report = MigrationReport(report_name)
+
+        # Load extracted JSON files
+        json_dir = _get_extract_dir()
+        _load = lambda fname: _load_json(os.path.join(json_dir, fname))
+
+        datasources = _load('datasources.json')
+        worksheets = _load('worksheets.json')
+        calculations = _load('calculations.json')
+        parameters = _load('parameters.json')
+        stories = _load('stories.json')
+        sets = _load('sets.json')
+        groups = _load('groups.json')
+        bins = _load('bins.json')
+        hierarchies = _load('hierarchies.json')
+        user_filters = _load('user_filters.json')
+
+        # Add datasources (also builds source→target table mapping)
+        if datasources:
+            report.add_datasources(datasources)
+
+        # Update table mapping with actual TMDL target table names
+        base_dir = output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        tables_dir = os.path.join(base_dir, report_name,
+                                  f'{report_name}.SemanticModel',
+                                  'definition', 'tables')
+        if os.path.isdir(tables_dir):
+            tmdl_tables = set()
+            for tmdl_file in os.listdir(tables_dir):
+                if tmdl_file.endswith('.tmdl'):
+                    # Table name = file name without .tmdl extension
+                    tmdl_tables.add(tmdl_file[:-5])
+            report.add_table_mapping_from_tmdl(tmdl_tables)
+
+        # Build calc_map from generated TMDL files to classify calculations
+        calc_map = _build_calc_map_from_tmdl(report_name, output_dir)
+
+        # Filter out calculations that are already tracked as groups/bins/sets
+        # to avoid double-counting (they appear in both calculations.json and
+        # their respective JSON files)
+        excluded_calc_names = set()
+        for g in (groups or []):
+            excluded_calc_names.add(g.get('name', ''))
+        for b in (bins or []):
+            excluded_calc_names.add(b.get('name', ''))
+        for s in (sets or []):
+            excluded_calc_names.add(s.get('name', ''))
+        filtered_calculations = [
+            c for c in (calculations or [])
+            if c.get('name', '') not in excluded_calc_names
+        ]
+
+        # Add calculations with classification
+        if filtered_calculations:
+            report.add_calculations(filtered_calculations, calc_map)
+
+        # Add visuals (worksheets)
+        if worksheets:
+            report.add_visuals(worksheets)
+
+        # Add parameters
+        if parameters:
+            report.add_parameters(parameters)
+
+        # Add hierarchies
+        if hierarchies:
+            report.add_hierarchies(hierarchies)
+
+        # Add sets, groups, bins
+        if sets:
+            report.add_sets(sets)
+        if groups:
+            report.add_groups(groups)
+        if bins:
+            report.add_bins(bins)
+
+        # Add stories → bookmarks
+        if stories:
+            report.add_stories(stories)
+
+        # Add RLS roles
+        if user_filters:
+            report.add_user_filters(user_filters)
+
+        # Save report
+        reports_dir = output_dir or os.path.join('artifacts', 'powerbi_projects', 'reports')
+        saved_path = report.save(reports_dir)
+        logger.info(f"Migration report saved: {saved_path}")
+
+        # Print summary
+        report.print_summary()
+
+        summary = report.get_summary()
+        # Include weighted completeness score — more accurate than flat average
+        completeness = report.get_completeness_score()
+        summary['overall_score'] = completeness['overall_score']
+        summary['grade'] = completeness['grade']
+        return summary
+
+    except Exception as e:
+        logger.warning(f"Migration report generation failed: {e}", exc_info=True)
+        return None
+
+
+def _load_json(filepath):
+    """Load a JSON file, returning empty list on failure."""
+    try:
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.debug("Could not load JSON %s: %s", filepath, e)
+    return []
+
+
+def run_html_dashboard(report_name, output_dir):
+    """Generate an HTML migration dashboard for a completed migration.
+
+    Args:
+        report_name: Name of the migrated report.
+        output_dir: Directory containing the .pbip project and report JSON.
+
+    Returns:
+        str or None: Path to the generated HTML file.
+    """
+    try:
+        from generate_report import generate_dashboard
+        html_path = generate_dashboard(report_name, output_dir)
+        if html_path:
+            print(f"\n📊 HTML dashboard: {html_path}")
+        return html_path
+    except (ImportError, OSError, ValueError) as e:
+        logger.warning(f"HTML dashboard generation failed: {e}")
+        return None
+
+
+def run_batch_html_dashboard(output_dir, workbook_results):
+    """Generate a consolidated HTML dashboard for a batch migration.
+
+    Args:
+        output_dir: Root output directory.
+        workbook_results: dict mapping workbook name → paths dict.
+
+    Returns:
+        str or None: Path to the generated HTML file.
+    """
+    try:
+        from generate_report import generate_batch_dashboard
+        html_path = generate_batch_dashboard(output_dir, workbook_results)
+        if html_path:
+            print(f"\n📊 Batch HTML dashboard: {html_path}")
+        return html_path
+    except (ImportError, OSError, ValueError) as e:
+        logger.warning(f"Batch HTML dashboard generation failed: {e}")
+        return None
+
+
+def run_consolidate_reports(directory):
+    """Scan a directory tree for existing migration reports and metadata,
+    then generate a single consolidated MIGRATION_DASHBOARD.html.
+
+    This allows producing a unified report after running multiple individual
+    migrations (e.g., one per subfolder) without re-running the migrations.
+
+    The function searches recursively for:
+    - ``migration_report_*.json`` files (per-workbook migration reports)
+    - ``migration_metadata.json`` files (per-workbook metadata)
+
+    Args:
+        directory: Root directory to scan for existing migration artifacts.
+
+    Returns:
+        int: 0 on success, 1 on failure.
+    """
+    directory = os.path.abspath(directory)
+    if not os.path.isdir(directory):
+        print(f"Error: Directory not found: {directory}")
+        return 1
+
+    print_header("CONSOLIDATE MIGRATION REPORTS")
+    print(f"  Scanning: {directory}")
+    print()
+
+    # Discover migration report JSON files
+    report_files = []
+    metadata_files = []
+    for root, _dirs, files in os.walk(directory):
+        for f in files:
+            full = os.path.join(root, f)
+            if f.startswith('migration_report_') and f.endswith('.json'):
+                report_files.append(full)
+            elif f == 'migration_metadata.json':
+                metadata_files.append(full)
+
+    if not report_files and not metadata_files:
+        print("  No migration reports or metadata found.")
+        print("  Run migrations first, then consolidate.")
+        return 1
+
+    # Build workbook_results dict: name → {migration_report_path, metadata_path}
+    # Group by workbook name, keeping the latest report per name
+    workbook_results = {}
+
+    for rp in sorted(report_files):
+        try:
+            with open(rp, encoding='utf-8') as fh:
+                data = json.load(fh)
+            name = data.get('report_name', '')
+            if not name:
+                continue
+            if name not in workbook_results:
+                workbook_results[name] = {}
+            # Keep the latest report (sorted → last wins)
+            workbook_results[name]['migration_report_path'] = rp
+        except (json.JSONDecodeError, OSError) as e:
+            logger.debug("Skipping unreadable report %s: %s", rp, e)
+            continue
+
+    for mp in metadata_files:
+        # metadata lives inside <output_dir>/<report_name>/migration_metadata.json
+        parent = os.path.basename(os.path.dirname(mp))
+        if parent not in workbook_results:
+            workbook_results[parent] = {}
+        workbook_results[parent]['metadata_path'] = mp
+
+    if not workbook_results:
+        print("  No valid migration data found.")
+        return 1
+
+    print(f"  Found {len(workbook_results)} workbook(s):")
+    for name in sorted(workbook_results):
+        has_report = 'migration_report_path' in workbook_results[name]
+        has_meta = 'metadata_path' in workbook_results[name]
+        flags = []
+        if has_report:
+            flags.append('report')
+        if has_meta:
+            flags.append('metadata')
+        print(f"    - {name} ({', '.join(flags)})")
+    print()
+
+    # Generate consolidated dashboard
+    html_path = run_batch_html_dashboard(directory, workbook_results)
+    if html_path:
+        print(f"\n  Consolidated report: {html_path}")
+        return 0
+    else:
+        print("  Failed to generate consolidated dashboard.")
+        return 1
+
+
+def _build_calc_map_from_tmdl(report_name, output_dir=None):
+    """Scan generated TMDL table files to build a calculation→DAX map.
+
+    Parses 'expression =' lines from .tmdl files in the tables directory.
+    Used to classify the fidelity of each DAX formula.
+
+    Returns:
+        dict: mapping calculation name → DAX expression
+    """
+    import re as _re
+
+    calc_map = {}
+    base_dir = output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    tables_dir = os.path.join(base_dir, report_name,
+                              f'{report_name}.SemanticModel',
+                              'definition', 'tables')
+
+    if not os.path.isdir(tables_dir):
+        return calc_map
+
+    # TMDL inline format: measure 'Name' = DAX  or  column 'Name' = DAX
+    inline_pattern = _re.compile(r'(?:measure|column)\s+(.+?)\s*=\s*(.*)')
+    # Multi-line format: measure 'Name' = ```
+    multiline_start = _re.compile(r'(?:measure|column)\s+(.+?)\s*=\s*```\s*$')
+    # Column declaration without expression (M-based calculated columns)
+    col_only_pattern = _re.compile(r'^\s+column\s+(.+?)\s*$')
+    # Table.AddColumn step in M partition
+    m_add_col_pattern = _re.compile(r'Table\.AddColumn\([^,]+,\s*"([^"]+)"')
+
+    def _strip_quotes(name):
+        """Remove surrounding TMDL single-quotes and unescape doubled quotes."""
+        name = name.strip()
+        if name.startswith("'") and name.endswith("'"):
+            name = name[1:-1]
+        # TMDL escapes apostrophes as '' — unescape to match extraction names
+        name = name.replace("''", "'")
+        return name
+
+    for tmdl_file in os.listdir(tables_dir):
+        if not tmdl_file.endswith('.tmdl'):
+            continue
+        filepath = os.path.join(tables_dir, tmdl_file)
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            # Collect M-based column names from Table.AddColumn steps in partitions
+            m_based_columns = set()
+            for line in lines:
+                m_add = m_add_col_pattern.search(line)
+                if m_add:
+                    m_based_columns.add(m_add.group(1))
+
+            i = 0
+            while i < len(lines):
+                stripped = lines[i].strip()
+
+                # Multi-line expression: measure 'Name' = ```
+                m = multiline_start.match(stripped)
+                if m:
+                    name = _strip_quotes(m.group(1))
+                    expr_lines = []
+                    i += 1
+                    while i < len(lines):
+                        l = lines[i].strip()
+                        if l == '```':
+                            break
+                        expr_lines.append(l)
+                        i += 1
+                    expression = ' '.join(expr_lines).strip()
+                    if expression and not expression.startswith('let'):
+                        calc_map[name] = expression
+                    i += 1
+                    continue
+
+                # Inline expression: measure 'Name' = DAX
+                m = inline_pattern.match(stripped)
+                if m:
+                    name = _strip_quotes(m.group(1))
+                    expression = m.group(2).strip()
+                    if expression and not expression.startswith('let'):
+                        calc_map[name] = expression
+                    i += 1
+                    continue
+
+                # M-based calculated column: column 'Name' (no = sign)
+                # These are generated as Table.AddColumn in the M partition
+                m = col_only_pattern.match(lines[i])
+                if m:
+                    name = _strip_quotes(m.group(1))
+                    if name not in calc_map and name in m_based_columns:
+                        calc_map[name] = '[M-based column]'
+
+                i += 1
+
+        except (OSError, UnicodeDecodeError) as e:
+            logger.debug("Could not read TMDL file: %s", e)
+            continue
+
+    return calc_map
+
+
+def run_prep_flow(prep_file, datasources_json=None):
+    """Parse Tableau Prep flow and merge transforms into extracted datasources.
+
+    Reads the Prep flow (.tfl/.tflx), converts all steps to Power Query M,
+    then merges the resulting M queries into the TWB datasources JSON.
+
+    Args:
+        prep_file: Path to .tfl or .tflx file
+        datasources_json: Path to the extracted datasources.json
+
+    Returns:
+        bool: True if successful
+    """
+    import json as _json
+
+    print_step("1b", 2, "TABLEAU PREP FLOW PARSING")
+
+    if not os.path.exists(prep_file):
+        print(f"Error: Prep flow file not found: {prep_file}")
+        return False
+
+    if datasources_json is None:
+        datasources_json = os.path.join(_get_extract_dir(), 'datasources.json')
+
+    print(f"Prep flow: {prep_file}")
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    try:
+        from prep_flow_parser import parse_prep_flow, merge_prep_with_workbook
+
+        # Parse the Prep flow
+        prep_datasources = parse_prep_flow(prep_file)
+        print(f"\n  [OK] {len(prep_datasources)} Prep output(s) parsed")
+
+        # Load existing TWB datasources
+        if os.path.exists(datasources_json):
+            with open(datasources_json, 'r', encoding='utf-8') as f:
+                twb_datasources = _json.load(f)
+            print(f"  [OK] {len(twb_datasources)} TWB datasource(s) loaded")
+        else:
+            twb_datasources = []
+            print("  [WARN] No TWB datasources found -- using Prep flow only")
+
+        # Merge Prep transforms into TWB datasources
+        merged = merge_prep_with_workbook(prep_datasources, twb_datasources)
+
+        # Save merged datasources back
+        with open(datasources_json, 'w', encoding='utf-8') as f:
+            _json.dump(merged, f, indent=2, ensure_ascii=False)
+        print(f"  [OK] {len(merged)} merged datasource(s) saved to {datasources_json}")
+
+        print("\n[OK] Prep flow parsing completed successfully")
+        return True
+
+    except (ImportError, OSError, json.JSONDecodeError) as e:
+        logger.error("Prep flow parsing failed: %s", e, exc_info=True)
+        print(f"\nError during Prep flow parsing: {str(e)}")
+        return False
+
+
+def run_standalone_prep(prep_file):
+    """Migrate a standalone Tableau Prep flow (.tfl/.tflx) without a workbook.
+
+    Parses the Prep flow, converts all steps to Power Query M, and writes
+    synthetic extraction JSON files so the standard generation pipeline
+    can produce a SemanticModel-only .pbip project.
+
+    Args:
+        prep_file: Path to .tfl or .tflx file
+
+    Returns:
+        bool: True if extraction-equivalent step succeeded
+    """
+    import json as _json
+
+    print_step("1", 2, "TABLEAU PREP FLOW (STANDALONE)")
+
+    if not os.path.exists(prep_file):
+        print(f"Error: Prep flow file not found: {prep_file}")
+        return False
+
+    print(f"Prep flow: {prep_file}")
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    try:
+        from prep_flow_parser import parse_prep_flow
+
+        # Parse the Prep flow → list of datasource dicts with M queries
+        prep_datasources = parse_prep_flow(prep_file)
+        print(f"  [OK] {len(prep_datasources)} Prep output(s) parsed")
+
+        # Write synthetic extraction JSON files
+        json_dir = _get_extract_dir()
+        os.makedirs(json_dir, exist_ok=True)
+
+        with open(os.path.join(json_dir, 'datasources.json'), 'w', encoding='utf-8') as f:
+            _json.dump(prep_datasources, f, indent=2, ensure_ascii=False)
+
+        # Write empty placeholder files for the other 16 extracted object types
+        empty_list_files = [
+            'worksheets.json', 'calculations.json', 'parameters.json',
+            'filters.json', 'stories.json', 'actions.json', 'sets.json',
+            'groups.json', 'bins.json', 'hierarchies.json', 'sort_orders.json',
+            'aliases.json', 'custom_sql.json', 'user_filters.json',
+            'hyper_files.json', 'dashboards.json',
+        ]
+        for fname in empty_list_files:
+            fpath = os.path.join(json_dir, fname)
+            if not os.path.exists(fpath):
+                with open(fpath, 'w', encoding='utf-8') as f:
+                    _json.dump([], f)
+
+        print(f"  [OK] Extraction JSON written to {json_dir}")
+        print("\n[OK] Prep flow standalone extraction completed")
+        return True
+
+    except (ImportError, OSError, json.JSONDecodeError) as e:
+        logger.error("Standalone Prep flow parsing failed: %s", e, exc_info=True)
+        print(f"\nError during Prep flow parsing: {str(e)}")
+        return False
+
+
+def _run_check_hyper(args):
+    """Analyse .hyper files in a workbook and print diagnostic report."""
+    import sys as _sys
+    sys_path = os.path.dirname(os.path.abspath(__file__))
+    if os.path.join(sys_path, 'tableau_export') not in _sys.path:
+        _sys.path.insert(0, os.path.join(sys_path, 'tableau_export'))
+    from hyper_reader import read_hyper, read_hyper_from_twbx, get_hyper_metadata, infer_hyper_relationships
+
+    tableau_file = getattr(args, 'tableau_file', None)
+    if not tableau_file:
+        print("Error: No workbook file specified. Provide a .twbx path.")
+        return ExitCode.GENERAL_ERROR
+
+    print_header("HYPER FILE DIAGNOSTIC REPORT")
+    ext = os.path.splitext(tableau_file)[1].lower()
+
+    all_tables = []
+    if ext in ('.twbx', '.tdsx'):
+        print(f"  Archive: {os.path.basename(tableau_file)}")
+        max_rows = getattr(args, 'hyper_rows', None) or 20
+        results = read_hyper_from_twbx(tableau_file, max_rows=max_rows)
+        if not results:
+            print("  No .hyper files found in archive.")
+            return ExitCode.SUCCESS
+
+        for r in results:
+            fname = r.get('original_filename', r.get('archive_path', '?'))
+            fmt = r.get('format', 'unknown')
+            tables = r.get('tables', [])
+            meta = r.get('metadata', {})
+            fsize = meta.get('file_size_bytes', 0)
+            print(f"\n  ── {fname} ──")
+            print(f"     Format: {fmt}    Size: {fsize:,} bytes")
+            print(f"     Tables: {len(tables)}")
+
+            for t in tables:
+                tname = t.get('table', '?')
+                rc = t.get('row_count', 0)
+                cc = t.get('column_count', len(t.get('columns', [])))
+                sr = t.get('sample_row_count', len(t.get('sample_rows', [])))
+                print(f"       • {tname}: {rc:,} rows, {cc} columns, {sr} sample rows")
+                cols = t.get('columns', [])
+                for col in cols[:10]:
+                    ht = col.get('hyper_type', 'unknown')
+                    print(f"           {col['name']:30s}  {ht}")
+                if len(cols) > 10:
+                    print(f"           ... and {len(cols) - 10} more columns")
+                # Column stats
+                stats = t.get('column_stats', {})
+                high_card = [(c, s) for c, s in stats.items()
+                             if s.get('distinct_count', 0) and s['distinct_count'] > 100000]
+                if high_card:
+                    print(f"       ⚠ High-cardinality columns:")
+                    for cname, st in high_card[:5]:
+                        print(f"           {cname}: {st['distinct_count']:,} distinct values")
+
+            all_tables.extend(tables)
+
+        # Relationship inference
+        rels = infer_hyper_relationships(all_tables)
+        if rels:
+            print(f"\n  ── Inferred Relationships ({len(rels)}) ──")
+            for rel in rels:
+                print(f"     {rel['from_table']}.{rel['from_column']} → "
+                      f"{rel['to_table']}.{rel['to_column']} ({rel['cardinality']})")
+
+        # Recommendations
+        total_rows = sum(t.get('row_count', 0) for t in all_tables)
+        print(f"\n  ── Summary ──")
+        print(f"     Total tables: {len(all_tables)}")
+        print(f"     Total rows:   {total_rows:,}")
+        if total_rows > 10_000_000:
+            print(f"     ⚠ Over 10M rows — consider DirectQuery instead of Import")
+        elif total_rows > 1_000_000:
+            print(f"     ℹ Over 1M rows — monitor refresh times in Import mode")
+
+        # Check tableauhyperapi availability
+        try:
+            import tableauhyperapi  # noqa: F401
+            print(f"     ✓ tableauhyperapi installed — full Hyper reading available")
+        except ImportError:
+            fmt_found = {r.get('format') for r in results}
+            if 'hyper_api' not in fmt_found and any(r.get('format') == 'unknown' or
+                                                     (r.get('format') == 'hyper' and not r.get('tables'))
+                                                     for r in results):
+                print(f"     ⚠ tableauhyperapi not installed — some .hyper files may have limited data")
+                print(f"       Install: pip install tableauhyperapi")
+    elif ext == '.hyper':
+        result = read_hyper(tableau_file, max_rows=getattr(args, 'hyper_rows', None) or 20)
+        meta_report = get_hyper_metadata(tableau_file, max_rows=getattr(args, 'hyper_rows', None) or 20)
+        print(f"  File: {os.path.basename(tableau_file)}")
+        print(f"  Format: {result.get('format', 'unknown')}")
+        print(f"  Total tables: {meta_report.get('total_tables', 0)}")
+        print(f"  Total rows: {meta_report.get('total_rows', 0):,}")
+        for t in meta_report.get('tables', []):
+            print(f"    • {t['name']}: {t.get('row_count', 0):,} rows, {t.get('column_count', 0)} columns")
+        for rec in meta_report.get('recommendations', []):
+            print(f"  ⚠ {rec}")
+    else:
+        print(f"  Unsupported file type: {ext} (expected .twbx, .tdsx, or .hyper)")
+        return ExitCode.GENERAL_ERROR
+
+    return ExitCode.SUCCESS
+
+
+def _run_artifact_diff(project_dir, diff_dir, output_base):
+    """Run artifact diff between current and previous migration output."""
+    from powerbi_import.artifact_diff import diff_projects, generate_diff_report
+
+    print_header("ARTIFACT DIFF")
+    report = diff_projects(diff_dir, project_dir)
+    print(report.summary())
+
+    # Save JSON report
+    json_path = os.path.join(output_base, 'artifact_diff.json')
+    report.save(json_path)
+    print(f"\n  JSON report: {json_path}")
+
+    # Generate HTML report
+    html_path = os.path.join(output_base, 'artifact_diff_report.html')
+    generate_diff_report(report, html_path)
+    print(f"  HTML report: {html_path}")
+
+    return report
+
+
+def _run_save_baseline(project_dir, baseline_dir):
+    """Save migration output as a baseline snapshot."""
+    from powerbi_import.artifact_diff import save_baseline
+
+    print_header("SAVE BASELINE")
+    save_baseline(project_dir, baseline_dir)
+    print(f"  Baseline saved to {baseline_dir}")
+
+
+def _run_check_baseline(project_dir, baseline_dir, output_base):
+    """Compare migration output against a stored baseline."""
+    from powerbi_import.artifact_diff import check_baseline, generate_diff_report
+
+    print_header("CHECK BASELINE")
+    passed, report = check_baseline(project_dir, baseline_dir)
+    print(report.summary())
+
+    if not passed and report.has_changes:
+        json_path = os.path.join(output_base, 'baseline_diff.json')
+        report.save(json_path)
+        html_path = os.path.join(output_base, 'baseline_diff_report.html')
+        generate_diff_report(report, html_path)
+        print(f"\n  JSON report: {json_path}")
+        print(f"  HTML report: {html_path}")
+
+    if passed:
+        print("\n  ✓ Baseline check PASSED — no changes detected.")
+    else:
+        print("\n  ✗ Baseline check FAILED — unexpected changes detected.")
+
+    return passed
+
+
+def _run_check_drift(args):
+    """Compare a Tableau source against a previous extraction snapshot."""
+    from powerbi_import.schema_drift import detect_schema_drift, load_snapshot, save_snapshot
+
+    tableau_file = getattr(args, 'tableau_file', None)
+    snapshot_dir = args.check_drift
+
+    if not tableau_file:
+        print("Error: No workbook file specified. Provide a .twb/.twbx/.tds/.tdsx path.")
+        return ExitCode.GENERAL_ERROR
+
+    # Run extraction on the current source
+    success = run_extraction(tableau_file, hyper_max_rows=getattr(args, 'hyper_rows', None))
+    if not success:
+        print("Error: Extraction failed — cannot detect drift.")
+        return ExitCode.EXTRACTION_FAILED
+
+    # Load current extracted data
+    json_dir = _get_extract_dir()
+    current = load_snapshot(json_dir)
+
+    # Load previous snapshot
+    if os.path.isdir(snapshot_dir):
+        previous = load_snapshot(snapshot_dir)
+    else:
+        previous = {}
+        print(f"  No previous snapshot found at {snapshot_dir} — creating baseline.")
+
+    # Detect drift
+    source_name = os.path.splitext(os.path.basename(tableau_file))[0]
+    report = detect_schema_drift(current, previous, source_name=source_name)
+
+    # Print results
+    print_header("SCHEMA DRIFT REPORT")
+    print(report.summary())
+
+    # Save current as new baseline
+    save_snapshot(current, snapshot_dir)
+    print(f"\n  Snapshot saved to {snapshot_dir}")
+
+    # Save JSON report alongside the snapshot
+    report_path = os.path.join(snapshot_dir, 'drift_report.json')
+    report.save(report_path)
+    print(f"  Report saved to {report_path}")
+
+    return ExitCode.SUCCESS
+
+
+def _run_batch_config(args):
+    """Run migrations using a JSON batch configuration file.
+
+    The config file is a JSON array of objects, each specifying a
+    workbook to migrate with optional per-workbook overrides::
+
+        [
+          {"file": "sales.twbx", "culture": "fr-FR", "paginated": true},
+          {"file": "finance.twb", "prep": "flow.tfl", "calendar_start": 2018}
+        ]
+
+    Supported keys per entry:
+        file (required), prep, output_dir, culture, calendar_start,
+        calendar_end, mode, paginated, skip_extraction
+    """
+    config_path = args.batch_config
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            entries = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Error: Cannot load batch config: {exc}")
+        return ExitCode.GENERAL_ERROR
+
+    if not isinstance(entries, list):
+        print("Error: Batch config must be a JSON array of objects")
+        return ExitCode.GENERAL_ERROR
+
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+
+    print_header("TABLEAU TO POWER BI BATCH-CONFIG MIGRATION")
+    print(f"  Config file:  {config_path}")
+    print(f"  Entries:      {len(entries)}")
+    print()
+
+    batch_start = datetime.now()
+    results = {}
+
+    global _stats
+    for i, entry in enumerate(entries, 1):
+        raw_file = entry.get('file', '')
+        if not raw_file:
+            print(f"  [{i}/{len(entries)}] SKIP — missing 'file' key")
+            continue
+
+        # Resolve relative paths against config file location
+        tableau_file = raw_file if os.path.isabs(raw_file) else os.path.join(config_dir, raw_file)
+        if not os.path.isfile(tableau_file):
+            print(f"  [{i}/{len(entries)}] SKIP — file not found: {raw_file}")
+            results[raw_file] = {'success': False, 'error': 'file_not_found'}
+            continue
+
+        basename = os.path.splitext(os.path.basename(tableau_file))[0]
+        print(f"\n{'=' * 80}")
+        print(f"  [{i}/{len(entries)}] Migrating: {basename}")
+        print(f"{'=' * 80}")
+
+        _stats = MigrationStats()
+
+        # Per-entry overrides (fall back to CLI args)
+        skip = entry.get('skip_extraction', args.skip_extraction)
+        prep = entry.get('prep', args.prep)
+        out_dir = entry.get('output_dir', args.output_dir)
+        cal_start = entry.get('calendar_start', args.calendar_start)
+        cal_end = entry.get('calendar_end', args.calendar_end)
+        culture = entry.get('culture', args.culture)
+        paginated = entry.get('paginated', getattr(args, 'paginated', False))
+
+        file_results = {}
+
+        # Extract
+        if not skip:
+            file_results['extraction'] = run_extraction(tableau_file)
+            if not file_results['extraction']:
+                results[basename] = {'success': False, 'error': 'extraction'}
+                continue
+        else:
+            file_results['extraction'] = True
+
+        # Prep flow
+        if prep:
+            ppath = prep if os.path.isabs(prep) else os.path.join(config_dir, prep)
+            file_results['prep'] = run_prep_flow(ppath)
+
+        # Generate
+        file_results['generation'] = run_generation(
+            report_name=basename,
+            output_dir=out_dir,
+            calendar_start=cal_start,
+            calendar_end=cal_end,
+            culture=culture,
+            paginated=paginated,
+        )
+
+        # Migration report
+        report_summary = None
+        if file_results.get('generation'):
+            report_summary = run_migration_report(report_name=basename, output_dir=out_dir)
+
+        if file_results.get('generation') and getattr(args, 'verify_open', True):
+            project_root = out_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            project_dir = os.path.join(project_root, basename)
+            file_results['openability'] = _run_openability_gate(project_dir)
+
+        all_ok = all(v for v in file_results.values() if v is not None)
+        dashboard_dir = out_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        results[basename] = {
+            'success': all_ok,
+            'stats': _stats.to_dict(),
+            'fidelity': report_summary.get('overall_score', report_summary.get('fidelity_score')) if report_summary else None,
+            'metadata_path': os.path.join(dashboard_dir, basename, 'migration_metadata.json'),
+        }
+
+    # Summary
+    batch_duration = datetime.now() - batch_start
+    succeeded = sum(1 for r in results.values() if r.get('success'))
+    failed = len(results) - succeeded
+
+    # Consolidated batch HTML dashboard
+    effective_output = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    wb_paths = {}
+    for name, res in results.items():
+        if res.get('success'):
+            wb_paths[name] = {
+                'metadata_path': res.get('metadata_path'),
+            }
+            pattern = os.path.join(effective_output, f'migration_report_{name}_*.json')
+            candidates = sorted(glob.glob(pattern))
+            if candidates:
+                wb_paths[name]['migration_report_path'] = candidates[-1]
+    if wb_paths:
+        run_batch_html_dashboard(effective_output, wb_paths)
+
+    print_header("BATCH-CONFIG MIGRATION SUMMARY")
+    print(f"  Total entries: {len(results)}")
+    print(f"  Succeeded:     {succeeded}")
+    print(f"  Failed:        {failed}")
+    print(f"  Duration:      {batch_duration}")
+    print()
+    for name, res in results.items():
+        status = "[OK]" if res.get('success') else "[FAIL]"
+        fid = res.get('fidelity')
+        fid_str = f"  (extracted: {fid}%)" if fid is not None else ""
+        print(f"  {status} {name}{fid_str}")
+
+    return ExitCode.SUCCESS if failed == 0 else ExitCode.BATCH_PARTIAL_FAIL
+
+
+def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, display_name):
+    """Migrate a standalone .tfl/.tflx — produces lineage, Power Query M, and source exports.
+
+    Instead of generating a full .pbip project (which would be empty for prep flows),
+    this runs flow analysis and exports:
+    - Power Query M files (one per output table)
+    - Source definition JSONs (connection metadata + column schema)
+    - Flow profile for cross-flow lineage (returned in result dict)
+
+    Returns:
+        dict: Result dict with success, report_name, output_dir, prep_profile, m_query_count, source_count
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+
+    try:
+        import prep_flow_analyzer as _pfa
+    except ImportError:
+        try:
+            from tableau_export import prep_flow_analyzer as _pfa
+        except ImportError:
+            logger.error("Cannot import prep_flow_analyzer for %s", display_name)
+            return {'success': False, 'error': 'import', 'report_name': basename,
+                    'output_dir': workbook_output_dir}
+
+    print_step("1", 2, "PREP FLOW ANALYSIS")
+    print(f"  Flow: {tableau_file}")
+
+    try:
+        profile = _pfa.analyze_flow(tableau_file, include_m_queries=True)
+    except (ValueError, OSError, KeyError) as exc:
+        logger.warning("Failed to analyze %s: %s", display_name, exc)
+        print(f"  ⚠ Analysis failed: {exc}")
+        return {'success': False, 'error': 'analysis', 'report_name': basename,
+                'output_dir': workbook_output_dir}
+
+    grade = profile.assessment.get('grade', '?')
+    print(f"  → {len(profile.inputs)} inputs, {len(profile.outputs)} outputs, "
+          f"{len(profile.transforms)} transforms, {len(profile.m_queries)} M queries [{grade}]")
+
+    # Output directory for this flow
+    flow_out = os.path.join(workbook_output_dir, basename)
+    os.makedirs(flow_out, exist_ok=True)
+
+    print_step("2", 2, "EXPORT POWER QUERY M & SOURCES")
+
+    # Export Power Query M files
+    pq_dir = os.path.join(flow_out, 'PowerQuery')
+    pq_count = 0
+    if profile.m_queries:
+        os.makedirs(pq_dir, exist_ok=True)
+        for tbl_name, m_code in profile.m_queries.items():
+            safe_name = tbl_name.replace('/', '_').replace('\\', '_')
+            pq_path = os.path.join(pq_dir, f'{safe_name}.pq')
+            with open(pq_path, 'w', encoding='utf-8') as f:
+                f.write(m_code)
+            pq_count += 1
+    if pq_count:
+        print(f"  Power Query M: {pq_count} file(s) in {pq_dir}")
+
+    # Export source definitions
+    src_dir = os.path.join(flow_out, 'Sources')
+    src_count = 0
+    if profile.inputs:
+        os.makedirs(src_dir, exist_ok=True)
+        for inp in profile.inputs:
+            safe_name = inp.name.replace('/', '_').replace('\\', '_')
+            src_path = os.path.join(src_dir, f'{safe_name}.json')
+            src_data = {
+                'name': inp.name,
+                'connection_type': inp.connection_type,
+                'server': inp.server,
+                'database': inp.database,
+                'schema': inp.schema,
+                'table_name': inp.table_name,
+                'filename': inp.filename,
+                'column_count': inp.column_count,
+                'columns': inp.column_names,
+                'fingerprint': inp.fingerprint,
+                'flow': profile.name,
+            }
+            with open(src_path, 'w', encoding='utf-8') as f:
+                json.dump(src_data, f, indent=2, ensure_ascii=False)
+            src_count += 1
+    if src_count:
+        print(f"  Sources: {src_count} file(s) in {src_dir}")
+
+    # Export flow assessment summary
+    assessment_path = os.path.join(flow_out, 'assessment.json')
+    with open(assessment_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            'flow_name': profile.name,
+            'grade': grade,
+            'inputs': len(profile.inputs),
+            'outputs': len(profile.outputs),
+            'transforms': len(profile.transforms),
+            'm_queries': pq_count,
+            'sources': src_count,
+            'assessment': profile.assessment,
+        }, f, indent=2, ensure_ascii=False)
+
+    print(f"\n  [OK] Prep flow export completed → {flow_out}")
+
+    return {
+        'success': True,
+        'report_name': basename,
+        'output_dir': workbook_output_dir,
+        'prep_profile': profile,
+        'prep_flow': True,
+        'm_query_count': pq_count,
+        'source_count': src_count,
+        'grade': grade,
+        'stats': {
+            'inputs': len(profile.inputs),
+            'outputs': len(profile.outputs),
+            'transforms': len(profile.transforms),
+            'm_queries': pq_count,
+        },
+    }
+
+
+def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, display_name,
+                             skip_extraction, wb_prep, wb_cal_start, wb_cal_end, wb_culture,
+                             verify_open=True):
+    """Migrate a single workbook — used by both sequential and parallel batch modes.
+
+    For .tfl/.tflx files, delegates to _migrate_single_prep_flow() which produces
+    lineage analysis, Power Query M exports, and source definitions instead of a
+    full .pbip project.
+
+    Returns:
+        dict: Result dict with success, stats, fidelity, report_name, output_dir, metadata_path
+    """
+    global _stats
+    _stats = MigrationStats()
+
+    # ── Standalone Prep flow: lineage + M + sources (no .pbip) ──
+    _is_prep_standalone = os.path.splitext(tableau_file)[1].lower() in ('.tfl', '.tflx')
+    if _is_prep_standalone:
+        return _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, display_name)
+
+    file_results = {}
+
+    # Step 1: Extract
+    if not skip_extraction:
+        file_results['extraction'] = run_extraction(tableau_file)
+        if not file_results['extraction']:
+            logger.warning("Extraction failed for %s, skipping", display_name)
+            return {'success': False, 'error': 'extraction', 'report_name': basename,
+                    'output_dir': workbook_output_dir,
+                    'metadata_path': os.path.join(workbook_output_dir, basename, 'migration_metadata.json')}
+    else:
+        file_results['extraction'] = True
+
+    # Step 1b: Prep flow (optional)
+    if wb_prep:
+        file_results['prep'] = run_prep_flow(wb_prep)
+
+    # Step 2: Generate
+    file_results['generation'] = run_generation(
+        report_name=basename,
+        output_dir=workbook_output_dir,
+        calendar_start=wb_cal_start,
+        calendar_end=wb_cal_end,
+        culture=wb_culture,
+    )
+
+    # Step 3: Migration report
+    report_summary = None
+    if file_results.get('generation'):
+        report_summary = run_migration_report(
+            report_name=basename,
+            output_dir=workbook_output_dir,
+        )
+
+    # Step 4: Extract embedded data files and Power Query M expressions from TWBX
+    if file_results.get('generation') and tableau_file.lower().endswith('.twbx'):
+        project_dir = os.path.join(workbook_output_dir, basename)
+        _process_twbx_post_generation(tableau_file, project_dir, basename)
+
+    # Step 4b: For TWB files, ensure DataFolder points to a local Data/ folder
+    if file_results.get('generation') and not tableau_file.lower().endswith('.twbx'):
+        project_dir = os.path.join(workbook_output_dir, basename)
+        _fix_twb_data_folder(project_dir, basename)
+
+    if file_results.get('generation') and verify_open:
+        project_dir = os.path.join(workbook_output_dir, basename)
+        file_results['openability'] = _run_openability_gate(project_dir)
+
+    all_ok = all(v for v in file_results.values() if v is not None)
+    return {
+        'success': all_ok,
+        'stats': _stats.to_dict(),
+        'fidelity': report_summary.get('overall_score', report_summary.get('fidelity_score')) if report_summary else None,
+        'report_name': basename,
+        'output_dir': workbook_output_dir,
+        'metadata_path': os.path.join(workbook_output_dir, basename, 'migration_metadata.json'),
+    }
+
+
+def _run_batch_prep_lineage(batch_results, migrated_root):
+    """Run cross-flow lineage analysis on all successful prep flow results.
+
+    Collects prep_profile objects from batch results, builds a lineage graph,
+    computes merge recommendations, and outputs HTML + JSON reports.
+    """
+    profiles = [
+        r['prep_profile']
+        for r in batch_results.values()
+        if r.get('prep_flow') and r.get('success') and r.get('prep_profile')
+    ]
+    if len(profiles) < 2:
+        return  # Need at least 2 flows for cross-flow lineage
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+
+    try:
+        from powerbi_import.prep_lineage import build_lineage_graph
+        from powerbi_import.prep_lineage_report import (
+            compute_merge_recommendations,
+            generate_prep_lineage_report,
+            save_lineage_json,
+            print_lineage_summary,
+        )
+    except ImportError:
+        try:
+            from prep_lineage import build_lineage_graph
+            from prep_lineage_report import (
+                compute_merge_recommendations,
+                generate_prep_lineage_report,
+                save_lineage_json,
+                print_lineage_summary,
+            )
+        except ImportError:
+            logger.warning("Cannot import prep_lineage modules for cross-flow analysis")
+            return
+
+    print_header("CROSS-FLOW LINEAGE ANALYSIS")
+    print(f"  Flows: {len(profiles)}")
+
+    graph = build_lineage_graph(profiles)
+    recommendations = compute_merge_recommendations(graph)
+    print_lineage_summary(graph, recommendations)
+
+    lineage_dir = os.path.join(migrated_root, 'prep_lineage')
+    os.makedirs(lineage_dir, exist_ok=True)
+
+    html_path = os.path.join(lineage_dir, 'prep_lineage_report.html')
+    generate_prep_lineage_report(graph, recommendations, html_path)
+    print(f"  HTML report: {html_path}")
+
+    json_path = os.path.join(lineage_dir, 'prep_lineage.json')
+    save_lineage_json(graph, recommendations, json_path)
+    print(f"  JSON report: {json_path}")
+
+
+def _print_batch_summary(batch_results, batch_duration, migrated_root):
+    """Print formatted batch summary and consolidated HTML dashboard.
+
+    Returns:
+        Tuple of (succeeded_count, failed_count).
+    """
+    succeeded = sum(1 for r in batch_results.values() if r['success'])
+    failed = len(batch_results) - succeeded
+
+    # Separate workbook results from prep flow results
+    wb_results = {k: v for k, v in batch_results.items() if not v.get('prep_flow')}
+    prep_results = {k: v for k, v in batch_results.items() if v.get('prep_flow')}
+
+    # Single consolidated HTML dashboard at root output level (workbooks only)
+    wb_paths = {}
+    for display_name, res in wb_results.items():
+        if res.get('success'):
+            name = res.get('report_name', display_name)
+            out = res.get('output_dir', migrated_root)
+            wb_paths[name] = {
+                'metadata_path': res.get('metadata_path'),
+            }
+            pattern = os.path.join(out, f'migration_report_{name}_*.json')
+            candidates = sorted(glob.glob(pattern))
+            if candidates:
+                wb_paths[name]['migration_report_path'] = candidates[-1]
+    if wb_paths:
+        run_batch_html_dashboard(migrated_root, wb_paths)
+
+    print_header("BATCH MIGRATION SUMMARY")
+    print(f"  Total items:     {len(batch_results)}")
+    if wb_results:
+        print(f"  Workbooks:       {len(wb_results)}")
+    if prep_results:
+        print(f"  Prep flows:      {len(prep_results)}")
+    print(f"  Succeeded:       {succeeded}")
+    print(f"  Failed:          {failed}")
+    print(f"  Duration:        {batch_duration}")
+    print()
+
+    # Workbook summary table
+    if wb_results:
+        name_width = max((len(n) for n in wb_results), default=20)
+        name_width = max(name_width, 20)
+        header = f"  {'Workbook':<{name_width}}  {'Status':>8}  {'Extracted':>9}  {'Tables':>7}  {'Visuals':>8}"
+        print(header)
+        print(f"  {'-' * name_width}  {'--------':>8}  {'---------':>9}  {'-------':>7}  {'--------':>8}")
+        for name, result in wb_results.items():
+            status = "OK" if result['success'] else "FAIL"
+            fidelity = result.get('fidelity')
+            fid_str = f"{fidelity}%" if fidelity is not None else "—"
+            stats = result.get('stats', {})
+            tables = stats.get('tmdl_tables', '—')
+            visuals = stats.get('visuals_generated', '—')
+            print(f"  {name:<{name_width}}  {status:>8}  {fid_str:>9}  {str(tables):>7}  {str(visuals):>8}")
+        print()
+
+    # Prep flow summary table
+    if prep_results:
+        name_width = max((len(n) for n in prep_results), default=20)
+        name_width = max(name_width, 20)
+        header = f"  {'Prep Flow':<{name_width}}  {'Status':>8}  {'Grade':>7}  {'M Queries':>10}  {'Sources':>8}"
+        print(header)
+        print(f"  {'-' * name_width}  {'--------':>8}  {'-------':>7}  {'----------':>10}  {'--------':>8}")
+        for name, result in prep_results.items():
+            status = "OK" if result['success'] else "FAIL"
+            grade = result.get('grade', '—')
+            stats = result.get('stats', {})
+            m_queries = stats.get('m_queries', result.get('m_query_count', '—'))
+            sources = result.get('source_count', stats.get('inputs', '—'))
+            print(f"  {name:<{name_width}}  {status:>8}  {grade:>7}  {str(m_queries):>10}  {str(sources):>8}")
+        print()
+
+    # Aggregate stats for workbooks
+    fidelities = [r['fidelity'] for r in wb_results.values() if r.get('fidelity') is not None]
+    if fidelities:
+        avg_fid = round(sum(fidelities) / len(fidelities), 1)
+        min_fid = min(fidelities)
+        max_fid = max(fidelities)
+        print(f"  Extracted: avg {avg_fid}% | min {min_fid}% | max {max_fid}%")
+
+    # Run cross-flow lineage if multiple prep flows succeeded
+    _run_batch_prep_lineage(batch_results, migrated_root)
+
+    return succeeded, failed
+
+
+def _run_full_lineage(batch_results, migrated_root):
+    """Run full lineage analysis: prep flows → reports.
+
+    Connects flow outputs to workbook datasource tables, detects redundancy,
+    and identifies orphan flows that don't feed any report.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+
+    # Collect prep flow profiles
+    profiles = [
+        r['prep_profile']
+        for r in batch_results.values()
+        if r.get('prep_flow') and r.get('success') and r.get('prep_profile')
+    ]
+
+    # Collect workbook datasources from extraction JSONs
+    wb_results = {k: v for k, v in batch_results.items() if not v.get('prep_flow') and v.get('success')}
+    if not profiles and not wb_results:
+        return
+
+    workbook_extractions: dict[str, list] = {}
+    for display_name, res in wb_results.items():
+        wb_name = res.get('report_name', display_name)
+        # Find the datasources.json from the extraction
+        out_dir = res.get('output_dir', migrated_root)
+        ds_path = None
+        # Check in extraction dir
+        for candidate in [
+            os.path.join(out_dir, 'datasources.json'),
+            os.path.join(_get_extract_dir(), 'datasources.json'),
+            os.path.join(out_dir, wb_name, 'datasources.json'),
+        ]:
+            if os.path.isfile(candidate):
+                ds_path = candidate
+                break
+        if ds_path:
+            try:
+                with open(ds_path, 'r', encoding='utf-8') as f:
+                    workbook_extractions[wb_name] = json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning(f"Could not load datasources for {wb_name}: {e}")
+
+    if not profiles or not workbook_extractions:
+        logger.info("Full lineage requires both prep flows and workbook extractions")
+        return
+
+    try:
+        from powerbi_import.full_lineage import build_full_lineage, print_full_lineage_summary
+    except ImportError:
+        try:
+            from full_lineage import build_full_lineage, print_full_lineage_summary
+        except ImportError:
+            logger.warning("Cannot import full_lineage module")
+            return
+
+    print_header("FULL LINEAGE: PREP FLOWS → REPORTS")
+
+    lineage = build_full_lineage(profiles, workbook_extractions)
+    print_full_lineage_summary(lineage)
+
+    # Save JSON report
+    lineage_dir = os.path.join(migrated_root, 'full_lineage')
+    os.makedirs(lineage_dir, exist_ok=True)
+    json_path = os.path.join(lineage_dir, 'full_lineage.json')
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(lineage.to_dict(), f, indent=2, ensure_ascii=False)
+    print(f"  JSON report: {json_path}")
+
+    return lineage
+
+
+def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extraction=False,
+                        calendar_start=None, calendar_end=None, culture=None,
+                        parallel=None, resume=False, jsonl_log=None, manifest=None,
+                        full_lineage=False, verify_open=True):
+    """Batch migrate all .twb/.twbx files in a directory (recursive).
+
+    Searches the directory tree recursively for Tableau workbooks and
+    preserves the relative subfolder structure in the output.  A single
+    consolidated HTML migration dashboard is generated at the root of
+    the output directory.
+
+    Args:
+        batch_dir: Root directory containing Tableau workbooks (searched recursively)
+        output_dir: Custom output directory for .pbip projects.
+            A ``migrated/`` subfolder is created inside it.
+            Defaults to ``<batch_dir>/migrated``.
+        prep_file: Optional Prep flow to merge into each workbook
+        skip_extraction: Skip extraction step
+        calendar_start: Start year for Calendar table
+        calendar_end: End year for Calendar table
+        culture: Override culture/locale
+        parallel: Number of parallel workers (None = sequential)
+        resume: Skip workbooks with existing .pbip output
+        jsonl_log: Path to write structured JSONL migration events
+        manifest: List of manifest entries [{file, culture, calendar_start, ...}] for per-workbook config
+
+    Returns:
+        int: 0 if all succeeded, 1 if any failed
+    """
+    if not os.path.isdir(batch_dir):
+        print(f"Error: Batch directory not found: {batch_dir}")
+        return 1
+
+    batch_dir = os.path.abspath(batch_dir)
+
+    # Find all Tableau workbooks recursively
+    tableau_files = []
+    for root, _dirs, files in os.walk(batch_dir):
+        for f in files:
+            if f.lower().endswith(('.twb', '.twbx', '.tds', '.tdsx', '.tfl', '.tflx')) and not f.startswith('~'):
+                tableau_files.append(os.path.join(root, f))
+
+    if not tableau_files:
+        print(f"Error: No .twb/.twbx/.tds/.tdsx/.tfl/.tflx files found in {batch_dir}")
+        return 1
+
+    tableau_files.sort()
+
+    # Output root: honour --output-dir or default to <batch_dir>/migrated
+    migrated_root = output_dir if output_dir else os.path.join(batch_dir, 'migrated')
+    os.makedirs(migrated_root, exist_ok=True)
+
+    print_header("TABLEAU TO POWER BI BATCH MIGRATION")
+    print(f"  Source:     {batch_dir}")
+    print(f"  Workbooks:  {len(tableau_files)}")
+    print(f"  Output:     {migrated_root}")
+    if parallel:
+        print(f"  Parallel:   {parallel} workers")
+    if resume:
+        print(f"  Resume:     enabled (skip completed)")
+    if jsonl_log:
+        print(f"  JSONL log:  {jsonl_log}")
+    print()
+
+    # ── JSONL structured logging ──────────────────────────────
+    jsonl_fh = None
+    if jsonl_log:
+        jsonl_fh = open(jsonl_log, 'a', encoding='utf-8')
+
+    def _write_jsonl(event_type, data):
+        """Append a structured event to the JSONL log file."""
+        if jsonl_fh is None:
+            return
+        import json as _json
+        record = {
+            'timestamp': datetime.now().isoformat(),
+            'event': event_type,
+            **data,
+        }
+        jsonl_fh.write(_json.dumps(record, default=str) + '\n')
+        jsonl_fh.flush()
+
+    _write_jsonl('batch_start', {
+        'source_dir': batch_dir,
+        'workbook_count': len(tableau_files),
+        'output_dir': migrated_root,
+        'parallel': parallel,
+        'resume': resume,
+    })
+
+    # ── Resume: filter out completed workbooks ────────────────
+    if resume:
+        original_count = len(tableau_files)
+        filtered = []
+        for twb in tableau_files:
+            bn = os.path.splitext(os.path.basename(twb))[0]
+            rel = os.path.relpath(os.path.dirname(twb), batch_dir)
+            out_base = os.path.join(migrated_root, rel) if rel != '.' else migrated_root
+            pbip_path = os.path.join(out_base, bn, f'{bn}.pbip')
+            if os.path.exists(pbip_path):
+                logger.info("Resume: skipping already-completed %s", bn)
+                _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': pbip_path})
+            else:
+                filtered.append(twb)
+        tableau_files = filtered
+        skipped = original_count - len(tableau_files)
+        if skipped:
+            print(f"  Resume: skipped {skipped} already-completed workbook(s)")
+        if not tableau_files:
+            print("  All workbooks already completed — nothing to do.")
+            if jsonl_fh:
+                _write_jsonl('batch_end', {'status': 'all_completed', 'skipped': skipped})
+                jsonl_fh.close()
+            return ExitCode.SUCCESS
+
+    batch_start = datetime.now()
+    batch_results = {}
+
+    # ── Manifest: per-workbook config overrides ───────────────
+    manifest_lookup = {}
+    if manifest:
+        for entry in manifest:
+            key = os.path.normpath(entry.get('file', ''))
+            manifest_lookup[key] = entry
+
+    # ── Pre-compute workbook tasks ──────────────────────────────
+    tasks = []
+    for i, tableau_file in enumerate(tableau_files, 1):
+        basename = os.path.splitext(os.path.basename(tableau_file))[0]
+        rel_dir = os.path.relpath(os.path.dirname(tableau_file), batch_dir)
+        workbook_output_dir = os.path.join(migrated_root, rel_dir) if rel_dir != '.' else migrated_root
+        os.makedirs(workbook_output_dir, exist_ok=True)
+        display_name = os.path.join(rel_dir, basename) if rel_dir != '.' else basename
+
+        # Per-workbook config from manifest (if provided)
+        wb_culture = culture
+        wb_cal_start = calendar_start
+        wb_cal_end = calendar_end
+        wb_prep = prep_file
+        if manifest_lookup:
+            rel_path = os.path.relpath(tableau_file, batch_dir)
+            m_entry = manifest_lookup.get(os.path.normpath(rel_path), {})
+            if not m_entry:
+                m_entry = manifest_lookup.get(os.path.normpath(os.path.basename(tableau_file)), {})
+            wb_culture = m_entry.get('culture', wb_culture)
+            wb_cal_start = m_entry.get('calendar_start', wb_cal_start)
+            wb_cal_end = m_entry.get('calendar_end', wb_cal_end)
+            wb_prep = m_entry.get('prep', wb_prep)
+
+        tasks.append({
+            'index': i,
+            'tableau_file': tableau_file,
+            'basename': basename,
+            'workbook_output_dir': workbook_output_dir,
+            'display_name': display_name,
+            'skip_extraction': skip_extraction,
+            'wb_prep': wb_prep,
+            'wb_cal_start': wb_cal_start,
+            'wb_cal_end': wb_cal_end,
+            'wb_culture': wb_culture,
+        })
+
+    def _run_task(task):
+        """Execute a single workbook migration task."""
+        print(f"\n{'=' * 80}")
+        print(f"  [{task['index']}/{len(tasks)}] Migrating: {task['display_name']}")
+        print(f"{'=' * 80}")
+
+        wb_start_time = datetime.now()
+        _write_jsonl('workbook_start', {
+            'workbook': task['display_name'],
+            'index': task['index'],
+            'total': len(tasks),
+        })
+
+        wb_result = _migrate_single_workbook(
+            tableau_file=task['tableau_file'],
+            basename=task['basename'],
+            workbook_output_dir=task['workbook_output_dir'],
+            display_name=task['display_name'],
+            skip_extraction=task['skip_extraction'],
+            wb_prep=task['wb_prep'],
+            wb_cal_start=task['wb_cal_start'],
+            wb_cal_end=task['wb_cal_end'],
+            wb_culture=task['wb_culture'],
+            verify_open=verify_open,
+        )
+
+        wb_duration = (datetime.now() - wb_start_time).total_seconds()
+        _write_jsonl('workbook_end', {
+            'workbook': task['display_name'],
+            'success': wb_result.get('success', False),
+            'duration_sec': wb_duration,
+            'fidelity': wb_result.get('fidelity'),
+            'stats': wb_result.get('stats', {}),
+        })
+        return task['display_name'], wb_result
+
+    # ── Execute tasks (sequential or parallel) ────────────────
+    if parallel and parallel > 1 and len(tasks) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
+            futures = {executor.submit(_run_task, t): t for t in tasks}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    display_name, wb_result = future.result()
+                    batch_results[display_name] = wb_result
+                except Exception:
+                    task = futures[future]
+                    batch_results[task['display_name']] = {'success': False, 'error': 'parallel_exception'}
+                    logger.exception("Parallel migration failed for %s", task['display_name'])
+    else:
+        for task in tasks:
+            display_name, wb_result = _run_task(task)
+            batch_results[display_name] = wb_result
+
+    batch_duration = datetime.now() - batch_start
+    succeeded, failed = _print_batch_summary(batch_results, batch_duration, migrated_root)
+
+    # ── Full lineage analysis (--full-lineage flag) ────────
+    if full_lineage:
+        _run_full_lineage(batch_results, migrated_root)
+
+    # ── Close JSONL log ────────────────────────────────────
+    fidelities = [r['fidelity'] for r in batch_results.values() if r.get('fidelity') is not None]
+    _write_jsonl('batch_end', {
+        'total': len(batch_results),
+        'succeeded': succeeded,
+        'failed': failed,
+        'duration_sec': batch_duration.total_seconds(),
+        'avg_fidelity': round(sum(fidelities) / len(fidelities), 1) if fidelities else None,
+    })
+    if jsonl_fh:
+        jsonl_fh.close()
+
+    return ExitCode.SUCCESS if failed == 0 else ExitCode.BATCH_PARTIAL_FAIL
+
+
+# ── Argument parser ──────────────────────────────────────────────────────────
+
+def _add_source_args(parser):
+    """Add source file and extraction arguments."""
+    parser.add_argument(
+        'tableau_file',
+        nargs='?',
+        default=None,
+        help='Path to the Tableau file (.twb or .twbx)'
+    )
+
+    parser.add_argument(
+        '--prep',
+        metavar='PREP_FILE',
+        help='Path to a Tableau Prep flow file (.tfl or .tflx) to merge transforms'
+    )
+
+    parser.add_argument(
+        '--skip-extraction',
+        action='store_true',
+        help='Skip extraction (use existing datasources.json)'
+    )
+
+    parser.add_argument(
+        '--wizard',
+        action='store_true',
+        default=False,
+        help='Launch the interactive migration wizard (guided step-by-step prompts)'
+    )
+
+    parser.add_argument(
+        '--skip-conversion',
+        action='store_true',
+        help='Skip DAX/M conversion step (use existing intermediate files)'
+    )
+
+
+def _add_output_args(parser):
+    """Add output directory and logging arguments."""
+    parser.add_argument(
+        '--output-dir',
+        metavar='DIR',
+        default=None,
+        help='Custom output directory for generated .pbip projects (default: artifacts/powerbi_projects/)'
+    )
+
+    parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Enable verbose (DEBUG) logging'
+    )
+
+    parser.add_argument(
+        '--quiet', '-q',
+        action='store_true',
+        help='Suppress all output except errors (useful for scripted/CI usage)'
+    )
+
+    parser.add_argument(
+        '--log-file',
+        metavar='FILE',
+        default=None,
+        help='Write logs to a file in addition to console'
+    )
+
+
+def _add_batch_args(parser):
+    """Add batch migration and consolidation arguments."""
+    parser.add_argument(
+        '--batch',
+        metavar='DIR',
+        default=None,
+        help='Batch migrate all .twb/.twbx files in the specified directory'
+    )
+
+    parser.add_argument(
+        '--consolidate',
+        metavar='DIR',
+        default=None,
+        help=(
+            'Scan a directory tree for existing migration reports and metadata, '
+            'then generate a single consolidated MIGRATION_DASHBOARD.html. '
+            'Use this after running multiple individual migrations to produce '
+            'one unified report covering all workbooks.'
+        )
+    )
+
+    parser.add_argument(
+        '--batch-config',
+        metavar='FILE',
+        default=None,
+        help=(
+            'Path to a JSON batch configuration file.  The file should '
+            'contain a list of objects, each with at least a "file" key '
+            'and optional per-workbook overrides (prep, culture, '
+            'calendar_start, calendar_end, mode, paginated, output_dir).  '
+            'Example: [{"file": "sales.twbx", "culture": "fr-FR"}]'
+        )
+    )
+
+
+def _add_migration_args(parser):
+    """Add migration options (calendar, culture, format, etc.)."""
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Preview migration without writing any files (extraction + analysis only)'
+    )
+
+    parser.add_argument(
+        '--calendar-start',
+        metavar='YEAR',
+        type=int,
+        default=None,
+        help='Start year for the auto-generated Calendar table (default: 2020)'
+    )
+
+    parser.add_argument(
+        '--calendar-end',
+        metavar='YEAR',
+        type=int,
+        default=None,
+        help='End year for the auto-generated Calendar table (default: 2030)'
+    )
+
+    parser.add_argument(
+        '--culture',
+        metavar='LOCALE',
+        default=None,
+        help='Override culture/locale for the semantic model (e.g., fr-FR, de-DE). Default: en-US'
+    )
+
+    parser.add_argument(
+        '--languages',
+        metavar='LOCALES',
+        default=None,
+        help='Comma-separated additional locales for multi-language TMDL cultures (e.g., fr-FR,de-DE,es-ES)'
+    )
+
+    parser.add_argument(
+        '--goals',
+        action='store_true',
+        default=False,
+        help='Generate PBI Goals/Scorecard JSON from Tableau Pulse metrics (requires Fabric workspace for deployment)'
+    )
+
+    parser.add_argument(
+        '--assess',
+        action='store_true',
+        help='Run pre-migration assessment and strategy analysis after extraction (no generation)'
+    )
+
+    parser.add_argument(
+        '--parity',
+        action='store_true',
+        help='Emit a Tableau→Power BI functionality-parity scorecard after extraction (no generation)'
+    )
+
+    parser.add_argument(
+        '--parity-strict',
+        action='store_true',
+        help='Like --parity, but exit non-zero if any in-use feature is unsupported'
+    )
+
+    parser.add_argument(
+        '--pdf',
+        action='store_true',
+        default=False,
+        help='Generate a print-optimized HTML (.pdf.html) alongside assessment reports'
+    )
+
+    parser.add_argument(
+        '--pptx',
+        action='store_true',
+        default=False,
+        help='Generate a PPTX executive summary alongside assessment reports'
+    )
+
+    parser.add_argument(
+        '--report-package',
+        action='store_true',
+        default=False,
+        help='Generate a ZIP package with HTML, print-ready PDF, PPTX, JSON, and CSV reports'
+    )
+
+    parser.add_argument(
+        '--hyper-rows',
+        metavar='N',
+        type=int,
+        default=None,
+        help='Max rows to inline from .hyper extract data (default: 20 for sample, up to 500 for inline #table). '
+             'Set higher to include more data; above 500 switches to Csv.Document() reference.'
+    )
+
+    parser.add_argument(
+        '--mode',
+        choices=['import', 'directquery', 'composite'],
+        default='import',
+        help='Semantic model mode: import (default), directquery, or composite'
+    )
+
+    parser.add_argument(
+        '--composite-threshold',
+        metavar='COLS',
+        type=int,
+        default=None,
+        help='Column count threshold for composite mode: tables with more columns → directQuery (default: 10)'
+    )
+
+    parser.add_argument(
+        '--agg-tables',
+        choices=['auto', 'none'],
+        default='none',
+        help='Generate Import-mode aggregation tables for directQuery fact tables (composite mode only)'
+    )
+
+    parser.add_argument(
+        '--rollback',
+        action='store_true',
+        help='Backup existing .pbip project before overwriting'
+    )
+
+    parser.add_argument(
+        '--strict',
+        action='store_true',
+        help='Enable strict quality gate with structured exit codes (0=clean, 1=warnings, 2=errors, 3=critical rollback)'
+    )
+
+    parser.add_argument(
+        '--output-format',
+        choices=['pbip', 'tmdl', 'pbir', 'fabric'],
+        default='pbip',
+        help='Output format: pbip (default, full project), tmdl (semantic model only), pbir (report only), fabric (Fabric-native: Lakehouse + Dataflow Gen2 + Notebook + DirectLake Semantic Model + Pipeline)'
+    )
+
+    parser.add_argument(
+        '--config',
+        metavar='FILE',
+        default=None,
+        help='Path to a JSON configuration file (CLI args override config file values)'
+    )
+
+    parser.add_argument(
+        '--incremental',
+        metavar='DIR',
+        default=None,
+        help='Path to an existing .pbip project — merge changes incrementally, preserving manual edits'
+    )
+
+    # ── Incremental Refresh (Sprint 120) ─────────────────────────────
+    parser.add_argument(
+        '--incremental-refresh',
+        action='store_true',
+        default=False,
+        help='Detect and configure incremental refresh policies on eligible tables '
+             '(tables with DateTime columns and query-foldable connectors). '
+             'Adds RangeStart/RangeEnd M parameters and refreshPolicy TMDL blocks.'
+    )
+    parser.add_argument(
+        '--incremental-refresh-months',
+        metavar='N',
+        type=int,
+        default=12,
+        help='Rolling window size in months for incremental refresh (default: 12)'
+    )
+    parser.add_argument(
+        '--no-parameterize',
+        action='store_false',
+        dest='parameterize',
+        help='Disable RangeStart/RangeEnd M parameter injection for incremental refresh '
+             '(still generates refreshPolicy blocks but without M expression wiring)'
+    )
+
+    parser.add_argument(
+        '--optimize-dax',
+        action='store_true',
+        default=True,
+        help='Run DAX optimizer on converted measures (nested IF→SWITCH, COALESCE, constant fold). Enabled by default; use --no-optimize-dax to disable.'
+    )
+    parser.add_argument(
+        '--no-optimize-dax',
+        action='store_false',
+        dest='optimize_dax',
+        help='Disable DAX optimization'
+    )
+
+    parser.add_argument(
+        '--time-intelligence',
+        choices=['auto', 'none'],
+        default='none',
+        help='Auto-inject Time Intelligence measures (YTD, PY, YoY%%) for date-based measures'
+    )
+
+    parser.add_argument(
+        '--validate-data',
+        action='store_true',
+        default=False,
+        help='Run post-migration data validation comparing expected vs actual measure values'
+    )
+
+
+def _add_report_args(parser):
+    """Add report, dashboard, and telemetry arguments."""
+    parser.add_argument(
+        '--qa',
+        action='store_true',
+        default=False,
+        help='Run unified QA suite after generation: validate artifacts, auto-fix DAX leaks, '
+             'generate comparison report, run governance checks (warn mode), and produce a '
+             'combined QA report. Equivalent to --compare --governance warn --auto-fix.'
+    )
+
+    parser.add_argument(
+        '--qa-strict',
+        action='store_true',
+        default=False,
+        help='Implies --qa. Exit non-zero when any error-severity real-world QA check fails '
+             '(stray sentinel glyphs, empty visuals). For CI gating.'
+    )
+
+    parser.add_argument(
+        '--verify-open',
+        action='store_true',
+        default=True,
+        help='Run the Power BI Desktop openability preflight on the generated .pbip '
+             '(enabled by default): '
+             'validate every Power Query (M) partition, DAX measure, JSON file, TMDL '
+             'presence, project structure and PBIR schema. Prints a GREEN/blocking '
+             'report and exits non-zero if the project would not open.'
+    )
+
+    parser.add_argument(
+        '--no-verify-open',
+        action='store_false',
+        dest='verify_open',
+        help='Disable the default static Power BI openability preflight.'
+    )
+
+    parser.add_argument(
+        '--desktop-probe',
+        action='store_true',
+        default=False,
+        help='Best-effort REAL open self-check: after generation, launch Power BI '
+             'Desktop against the generated .pbip and watch for an early crash / '
+             'FrownDump / error traces. Windows + Desktop install required; the '
+             'static --verify-open preflight remains the authoritative check.'
+    )
+
+    parser.add_argument(
+        '--compare',
+        action='store_true',
+        default=True,
+        help='Generate an HTML side-by-side comparison report (Tableau vs. Power BI). Enabled by default; use --no-compare to disable.'
+    )
+    parser.add_argument(
+        '--no-compare',
+        action='store_false',
+        dest='compare',
+        help='Disable comparison report generation'
+    )
+
+    parser.add_argument(
+        '--dashboard',
+        action='store_true',
+        default=False,
+        help='Generate an HTML telemetry dashboard (aggregated migration statistics)'
+    )
+
+    parser.add_argument(
+        '--fidelity',
+        action='store_true',
+        default=False,
+        help='Run automated fidelity comparison after migration: dashboards vs pages, '
+             'worksheets vs visuals, calculations vs DAX, filters, parameters, data model. '
+             'Outputs structured results to console and JSON.'
+    )
+
+    parser.add_argument(
+        '--autoplay',
+        action='store_true',
+        default=False,
+        help='Run post-migration autoplay: validate data sources, DAX, relationships, '
+             'fidelity comparison, and optionally open in PBI Desktop.'
+    )
+
+    parser.add_argument(
+        '--autoplay-open',
+        action='store_true',
+        default=False,
+        help='With --autoplay, also open the .pbip file in Power BI Desktop.'
+    )
+
+    parser.add_argument(
+        '--report-issue',
+        action='store_true',
+        default=False,
+        help='After migration, create a redacted issue package ZIP for regression tracking'
+    )
+
+    parser.add_argument(
+        '--telemetry',
+        action='store_true',
+        default=False,
+        help='Enable anonymous usage telemetry (opt-in, no PII collected)'
+    )
+
+    parser.add_argument(
+        '--paginated',
+        action='store_true',
+        default=False,
+        help='Generate a paginated report layout alongside the interactive report'
+    )
+
+    parser.add_argument(
+        '--diff',
+        metavar='PREVIOUS_DIR',
+        default=None,
+        help='Compare current migration output against a previous .pbip project directory '
+             'and generate a structured diff report (HTML + JSON)'
+    )
+
+    parser.add_argument(
+        '--save-baseline',
+        metavar='BASELINE_DIR',
+        default=None,
+        help='After migration, save the output as a baseline snapshot for future --check-baseline comparisons'
+    )
+
+    parser.add_argument(
+        '--check-baseline',
+        metavar='BASELINE_DIR',
+        default=None,
+        help='Compare migration output against a stored baseline and exit with non-zero if changes detected (for CI)'
+    )
+
+
+def _add_ai_args(parser):
+    """Add AI/LLM-assisted migration arguments."""
+    parser.add_argument(
+        '--llm-refine',
+        action='store_true',
+        default=False,
+        help='Use LLM to refine approximated DAX formulas (requires --llm-key or LLM_API_KEY env var)'
+    )
+
+    parser.add_argument(
+        '--llm-provider',
+        choices=['openai', 'anthropic', 'azure_openai'],
+        default='openai',
+        help='LLM provider for DAX refinement (default: openai)'
+    )
+
+    parser.add_argument(
+        '--llm-model',
+        metavar='MODEL',
+        default=None,
+        help='LLM model name override (default: provider default)'
+    )
+
+    parser.add_argument(
+        '--llm-key',
+        metavar='KEY',
+        default=None,
+        help='API key for LLM provider (or set LLM_API_KEY env var)'
+    )
+
+    parser.add_argument(
+        '--llm-max-calls',
+        type=int,
+        default=100,
+        metavar='N',
+        help='Maximum LLM API calls per migration (default: 100)'
+    )
+
+    parser.add_argument(
+        '--llm-dry-run',
+        action='store_true',
+        default=False,
+        help='Preview LLM prompts without calling the API (cost estimation)'
+    )
+
+    parser.add_argument(
+        '--llm-endpoint',
+        metavar='URL',
+        default=None,
+        help='Custom API endpoint (required for azure_openai provider)'
+    )
+
+    parser.add_argument(
+        '--autoheal',
+        action='store_true',
+        default=False,
+        help='After generation, run the closed-loop autohealer so the .pbip opens '
+             'cleanly in Power BI Desktop: collect load errors (DAX/M/visual) → '
+             'deterministic heal → optional LLM correction → re-validate → apply only '
+             'if it validates. Deterministic-only unless --llm-autofix is set.'
+    )
+
+    parser.add_argument(
+        '--autoheal-log',
+        metavar='PATH',
+        default=None,
+        help='Path to a Power BI Desktop error export / FrownDump to target real load '
+             'errors during --autoheal (otherwise static validators are used).'
+    )
+
+    parser.add_argument(
+        '--llm-autofix',
+        action='store_true',
+        default=False,
+        help='Allow --autoheal to use the LLM gateway for corrections that fail '
+             'deterministic healing (opt-in; offline-first, budget-capped, redacted).'
+    )
+
+    parser.add_argument(
+        '--llm-mode',
+        choices=['auto', 'online', 'offline'],
+        default=None,
+        help='LLM gateway routing mode for --llm-autofix (default: from LLM_MODE env, '
+             'else auto). offline=local only, online=cloud only, auto=local→cloud→none.'
+    )
+
+    parser.add_argument(
+        '--llm-local-url',
+        metavar='URL',
+        default=None,
+        help='Local OpenAI-compatible LLM endpoint (Ollama/LM Studio/vLLM) for offline '
+             'autofix (default: from LLM_LOCAL_URL env, else http://localhost:11434/v1).'
+    )
+
+    parser.add_argument(
+        '--web-ui',
+        action='store_true',
+        default=False,
+        help='Launch the browser-based migration wizard (requires optional streamlit package)'
+    )
+
+    parser.add_argument(
+        '--web-port',
+        type=int,
+        default=8501,
+        metavar='PORT',
+        help='Port for the web UI server (default: 8501)'
+    )
+
+    parser.add_argument(
+        '--prep-to-dataflow',
+        action='store_true',
+        default=False,
+        help='Convert Tableau Prep flow directly to Dataflow Gen2 (used with --prep and --output-format fabric)'
+    )
+
+    parser.add_argument(
+        '--paginated-report',
+        action='store_true',
+        default=False,
+        help='Generate standalone paginated (RDL-style) report with tables, charts, headers/footers'
+    )
+
+    parser.add_argument(
+        '--paginated-orientation',
+        choices=['landscape', 'portrait'],
+        default='landscape',
+        help='Paginated report page orientation (default: landscape)'
+    )
+
+    parser.add_argument(
+        '--paginated-page-size',
+        choices=['letter', 'a4'],
+        default='letter',
+        help='Paginated report page size (default: letter)'
+    )
+
+
+def _add_deploy_args(parser):
+    """Add deployment arguments (PBI Service, Fabric bundle)."""
+    parser.add_argument(
+        '--deploy',
+        metavar='WORKSPACE_ID',
+        default=None,
+        help=(
+            'Deploy the generated project to a Power BI or Fabric workspace. '
+            'Fabric output deploys all generated workload items in dependency order. '
+            'PBIP deployment uses PBI_TENANT_ID, PBI_CLIENT_ID, and '
+            'PBI_CLIENT_SECRET (or PBI_ACCESS_TOKEN); Fabric-native deployment '
+            'uses FABRIC_TENANT_ID, FABRIC_CLIENT_ID, and FABRIC_CLIENT_SECRET. '
+            'Pass the target workspace/group ID.'
+        )
+    )
+
+    parser.add_argument(
+        '--deploy-refresh',
+        action='store_true',
+        default=False,
+        help=(
+            'After --deploy, refresh the Power BI dataset or run the deployed '
+            'Fabric Data Pipeline and wait for completion.'
+        )
+    )
+
+    parser.add_argument(
+        '--deploy-bundle',
+        metavar='WORKSPACE_ID',
+        default=None,
+        help=(
+            'Deploy a shared semantic model project as a Fabric bundle '
+            '(SemanticModel + thin reports). Requires FABRIC_TENANT_ID, '
+            'FABRIC_CLIENT_ID, FABRIC_CLIENT_SECRET env vars. '
+            'Use with --shared-model or point --output-dir to an existing project.'
+        )
+    )
+
+    parser.add_argument(
+        '--bundle-refresh',
+        action='store_true',
+        default=False,
+        help='Trigger a dataset refresh after bundle deployment (requires --deploy-bundle)'
+    )
+
+    parser.add_argument(
+        '--multi-tenant',
+        metavar='CONFIG_FILE',
+        default=None,
+        help=(
+            'Deploy the shared model to multiple tenant workspaces using a JSON '
+            'config file with per-tenant connection overrides and RLS mappings. '
+            'Use with --deploy-bundle or --shared-model.'
+        )
+    )
+
+    parser.add_argument(
+        '--sync',
+        action='store_true',
+        default=False,
+        help=(
+            'Sync mode: detect changed workbooks, incrementally migrate only '
+            'modified artifacts, and deploy updates. Use with --deploy or --batch.'
+        )
+    )
+
+    # Sprint 100: Rolling deployment, endorsement, monitoring, SLA
+    parser.add_argument(
+        '--rolling',
+        action='store_true',
+        default=False,
+        help=(
+            'Rolling deployment: blue/green with canary validation and '
+            'automatic rollback on failure. Use with --deploy.'
+        )
+    )
+
+    parser.add_argument(
+        '--endorse',
+        choices=['none', 'promoted', 'certified'],
+        default=None,
+        help=(
+            'Set endorsement status on deployed datasets/reports. '
+            'Use with --deploy or --deploy-bundle.'
+        )
+    )
+
+    parser.add_argument(
+        '--monitor',
+        choices=['azure', 'prometheus', 'json', 'none'],
+        default=None,
+        help='Export migration metrics to a monitoring backend.'
+    )
+
+    parser.add_argument(
+        '--sla-config',
+        metavar='JSON_FILE',
+        default=None,
+        help='Path to SLA configuration JSON (max_migration_seconds, min_fidelity_score, etc.).'
+    )
+
+    parser.add_argument(
+        '--create-workspace',
+        metavar='NAME',
+        default=None,
+        help=(
+            'Create (or find) a Power BI workspace with the given name before '
+            'deploying. If a workspace with the same name exists, reuse it. '
+            'Use with --deploy to auto-create the target workspace.'
+        )
+    )
+
+    parser.add_argument(
+        '--gateway-bind',
+        metavar='GATEWAY_ID',
+        default=None,
+        help=(
+            'Bind the deployed semantic model to an on-premises data gateway. '
+            'After deployment, calls BindToGateway on the dataset so that '
+            'scheduled and on-demand refresh can reach the data source. '
+            'Use with --deploy.'
+        )
+    )
+
+
+def _add_server_args(parser):
+    """Add Tableau Server extraction arguments."""
+    parser.add_argument(
+        '--server',
+        metavar='URL',
+        default=None,
+        help='Tableau Server/Cloud URL (e.g., https://tableau.company.com)'
+    )
+
+    parser.add_argument(
+        '--site',
+        metavar='SITE_ID',
+        default='',
+        help='Tableau site content URL (empty for Default site)'
+    )
+
+    parser.add_argument(
+        '--workbook',
+        metavar='NAME_OR_ID',
+        default=None,
+        help='Workbook name or LUID to download from Tableau Server (requires --server)'
+    )
+
+    parser.add_argument(
+        '--token-name',
+        metavar='NAME',
+        default=None,
+        help='Personal Access Token name for Tableau Server auth'
+    )
+
+    parser.add_argument(
+        '--token-secret',
+        metavar='SECRET',
+        default=None,
+        help='Personal Access Token secret for Tableau Server auth. '
+             'Prefer TABLEAU_TOKEN_SECRET env var to avoid process list exposure.'
+    )
+
+    parser.add_argument(
+        '--server-batch',
+        metavar='PROJECT',
+        default=None,
+        help='Download and migrate all workbooks from a Tableau Server project (requires --server)'
+    )
+
+    parser.add_argument(
+        '--server-assets',
+        metavar='TYPE',
+        nargs='+',
+        choices=['workbooks', 'flows', 'datasources', 'all'],
+        default=None,
+        help='Asset types to download from server (default: workbooks flows). '
+             'Choices: workbooks, flows, datasources, all'
+    )
+
+    parser.add_argument(
+        '--server-preserve-folders',
+        action='store_true',
+        default=False,
+        help='Mirror Tableau Server project folder structure in the download directory'
+    )
+
+    parser.add_argument(
+        '--migrate-schedules',
+        action='store_true',
+        default=False,
+        help='Extract Tableau refresh schedules / subscriptions and generate PBI refresh config JSON'
+    )
+
+    # ── Sprint 167 — Enterprise Server Migration Flags ──
+
+    parser.add_argument(
+        '--server-discover',
+        action='store_true',
+        default=False,
+        help='Discover Tableau Server site topology, build dependency graph, '
+             'and generate topology report (requires --server)'
+    )
+
+    parser.add_argument(
+        '--plan-migration',
+        action='store_true',
+        default=False,
+        help='Generate a full migration plan with wave assignments, effort estimates, '
+             'workspace mapping, and timeline (requires --server or prior --server-discover output)'
+    )
+
+    parser.add_argument(
+        '--team-size',
+        metavar='N',
+        type=int,
+        default=1,
+        help='Number of migration engineers for timeline calculation (default: 1)'
+    )
+
+    parser.add_argument(
+        '--wave-max-size',
+        metavar='N',
+        type=int,
+        default=10,
+        help='Maximum workbooks per migration wave (default: 10)'
+    )
+
+    parser.add_argument(
+        '--workspace-mapping',
+        metavar='STRATEGY',
+        choices=['by_project', 'consolidated', 'flat'],
+        default='by_project',
+        help='Workspace mapping strategy: by_project (1:1), consolidated, or flat (default: by_project)'
+    )
+
+    parser.add_argument(
+        '--map-permissions',
+        action='store_true',
+        default=False,
+        help='Map Tableau site roles to PBI workspace roles and generate Azure AD scripts'
+    )
+
+    parser.add_argument(
+        '--migrate-subscriptions',
+        action='store_true',
+        default=False,
+        help='Migrate Tableau Server subscriptions and data alerts to PBI alert rules'
+    )
+
+    parser.add_argument(
+        '--resolve-published-ds',
+        action='store_true',
+        default=False,
+        help='Resolve published (sqlproxy) datasources by downloading from Tableau Server'
+    )
+
+    parser.add_argument(
+        '--ds-cache-dir',
+        metavar='DIR',
+        default=None,
+        help='Directory to cache downloaded published datasource definitions'
+    )
+
+    parser.add_argument(
+        '--no-ds-cache',
+        action='store_true',
+        default=False,
+        help='Skip reading from the datasource cache (still writes to it)'
+    )
+
+    parser.add_argument(
+        '--clear-cache',
+        action='store_true',
+        default=False,
+        help='Clear the published datasource cache and exit'
+    )
+
+    parser.add_argument(
+        '--cutover',
+        action='store_true',
+        default=False,
+        help='Execute cutover: snapshot Tableau state, deploy PBI artifacts, validate'
+    )
+
+    parser.add_argument(
+        '--cutover-plan-only',
+        action='store_true',
+        default=False,
+        help='Generate a cutover plan without executing it'
+    )
+
+    parser.add_argument(
+        '--cutover-rollback',
+        metavar='SNAPSHOT',
+        default=None,
+        help='Roll back to a previous cutover snapshot'
+    )
+
+    parser.add_argument(
+        '--parallel-run',
+        action='store_true',
+        default=False,
+        help='Run Tableau and PBI side-by-side and compare outputs for validation'
+    )
+
+
+def _add_enterprise_args(parser):
+    """Add enterprise and scale arguments (parallel, resume, manifest, etc.)."""
+    parser.add_argument(
+        '--parallel', '--workers',
+        metavar='N',
+        type=int,
+        default=None,
+        dest='parallel',
+        help='Number of parallel workers for batch migration (default: sequential)'
+    )
+
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        default=False,
+        help='Skip already-completed workbooks in batch mode (checks for existing .pbip in output dir)'
+    )
+
+    parser.add_argument(
+        '--manifest',
+        metavar='FILE',
+        default=None,
+        help=(
+            'Path to a JSON manifest file mapping source workbooks to target configs. '
+            'Format: [{"file": "path/to/workbook.twbx", "culture": "fr-FR", ...}]'
+        )
+    )
+
+    parser.add_argument(
+        '--jsonl-log',
+        metavar='FILE',
+        default=None,
+        help='Write structured migration events to a JSON Lines (.jsonl) file for machine parsing'
+    )
+
+    parser.add_argument(
+        '--check-schema',
+        action='store_true',
+        default=False,
+        help='Check PBIR schema versions for updates and exit'
+    )
+
+    parser.add_argument(
+        '--check-hyper',
+        action='store_true',
+        default=False,
+        help='Analyse .hyper files in the workbook and print diagnostic report, then exit'
+    )
+
+    parser.add_argument(
+        '--governance',
+        choices=['warn', 'enforce'],
+        default=None,
+        help='Run governance checks after generation: naming conventions, PII detection, audit trail. '
+             '"warn" reports issues; "enforce" auto-renames and blocks on violations.'
+    )
+
+    parser.add_argument(
+        '--governance-config',
+        metavar='JSON_FILE',
+        default=None,
+        help='Path to governance configuration JSON file (naming rules, PII patterns, sensitivity mapping). '
+             'Default rules apply when not specified.'
+    )
+
+    parser.add_argument(
+        '--check-drift',
+        metavar='SNAPSHOT_DIR',
+        default=None,
+        help='Compare current Tableau source against a previous extraction snapshot to detect schema drift '
+             '(added/removed columns, changed formulas, new worksheets). Outputs diff report and exits.'
+    )
+
+
+def _add_shared_model_args(parser):
+    """Add shared semantic model arguments."""
+    parser.add_argument(
+        '--shared-model',
+        nargs='*',
+        metavar='WORKBOOK',
+        default=None,
+        help=(
+            'Merge multiple workbooks into a shared semantic model with thin reports. '
+            'Provide workbook paths as positional args, or combine with --batch.'
+        )
+    )
+
+    parser.add_argument(
+        '--model-name',
+        metavar='NAME',
+        default=None,
+        help='Name for the shared semantic model (default: "SharedModel")'
+    )
+
+    parser.add_argument(
+        '--assess-merge',
+        action='store_true',
+        default=False,
+        help='Only assess merge feasibility for --shared-model, do not generate'
+    )
+
+    parser.add_argument(
+        '--force-merge',
+        action='store_true',
+        default=False,
+        help='Force merge even with low overlap score (use with --shared-model)'
+    )
+
+    parser.add_argument(
+        '--merge-config',
+        metavar='FILE',
+        default=None,
+        help='Load merge decisions from a JSON config file (reproducible migrations)'
+    )
+
+    parser.add_argument(
+        '--save-merge-config',
+        action='store_true',
+        default=False,
+        help='Save merge decisions to merge_config.json for later reuse'
+    )
+
+    parser.add_argument(
+        '--global-assess',
+        nargs='*',
+        metavar='WORKBOOK',
+        default=None,
+        help=(
+            'Run a global cross-workbook assessment to find merge candidates. '
+            'Provide workbook paths or combine with --batch DIR. '
+            'Generates an HTML report with merge clusters and pairwise scores.'
+        )
+    )
+
+    parser.add_argument(
+        '--merge-preview',
+        action='store_true',
+        default=False,
+        help=(
+            'Dry-run merge: show what would be merged, renamed, and conflicted '
+            'without writing any files (use with --shared-model)'
+        )
+    )
+
+    parser.add_argument(
+        '--strict-merge',
+        action='store_true',
+        default=False,
+        help=(
+            'Strict merge validation: block generation if post-merge safety '
+            'checks fail (cycles, unresolved DAX references, incompatible '
+            'column types). Without this flag, validation is advisory.'
+        )
+    )
+
+    parser.add_argument(
+        '--strict-thin-report',
+        action='store_true',
+        default=False,
+        help=(
+            'Strict thin-report validation: block shared-model generation if '
+            'orphaned thin-report field references exceed '
+            '--thin-report-max-orphans.'
+        )
+    )
+
+    parser.add_argument(
+        '--thin-report-max-orphans',
+        type=int,
+        default=0,
+        help=(
+            'Maximum allowed orphaned thin-report field references when '
+            '--strict-thin-report is enabled (default: 0).'
+        )
+    )
+
+    parser.add_argument(
+        '--add-to-model',
+        nargs=2,
+        metavar=('DIR', 'WORKBOOK'),
+        default=None,
+        help=(
+            'Add a new workbook to an existing shared model. '
+            'DIR is the shared model output directory, WORKBOOK is the .twb/.twbx to add.'
+        )
+    )
+
+    parser.add_argument(
+        '--remove-from-model',
+        nargs=2,
+        metavar=('DIR', 'WB_NAME'),
+        default=None,
+        help=(
+            'Remove a workbook from an existing shared model. '
+            'DIR is the shared model output directory, WB_NAME is the workbook name to remove. '
+            'Shared tables (used by other workbooks) are kept.'
+        )
+    )
+
+    parser.add_argument(
+        '--bulk-assess',
+        metavar='DIR',
+        default=None,
+        help=(
+            'Scan a folder of .twb/.twbx/.tfl/.tflx files and produce a full '
+            'portfolio assessment: per-workbook readiness (GREEN/YELLOW/RED), '
+            'cross-workbook merge/duplication analysis, prep flow lineage, '
+            'effort estimation, and migration wave planning — all without migrating'
+        )
+    )
+
+    parser.add_argument(
+        '--server-assess',
+        action='store_true',
+        default=False,
+        help=(
+            'Assess all workbooks on a Tableau Server site and produce a '
+            'portfolio readiness report (requires --server)'
+        )
+    )
+
+    parser.add_argument(
+        '--live-connection',
+        metavar='WORKSPACE_ID/MODEL_NAME',
+        default=None,
+        help=(
+            'Wire thin reports via byConnection (Fabric workspace reference) '
+            'instead of byPath. Format: WORKSPACE_ID/MODEL_NAME. '
+            'Use with --shared-model.'
+        )
+    )
+
+    parser.add_argument(
+        '--prep-lineage',
+        nargs='*',
+        metavar='PATH',
+        default=None,
+        help=(
+            'Analyze Tableau Prep flows (.tfl/.tflx) in bulk and produce a '
+            'cross-flow lineage report with merge recommendations. '
+            'Provide file paths or a directory. '
+            'Generates HTML report + JSON export.'
+        )
+    )
+
+    parser.add_argument(
+        '--full-lineage',
+        action='store_true',
+        default=False,
+        help=(
+            'Run full lineage analysis: prep flows → reports. '
+            'Connects flow outputs to workbook datasource tables, detects '
+            'redundant sources across flows and reports, and identifies orphan flows. '
+            'Use with --batch or --server-batch to analyze an entire portfolio.'
+        )
+    )
+
+
+def _build_argument_parser():
+    """Build and return the CLI argument parser."""
+    parser = argparse.ArgumentParser(
+        description='Migrate a Tableau workbook to a Power BI project (.pbip)'
+    )
+
+    _add_source_args(parser)
+    _add_output_args(parser)
+    _add_batch_args(parser)
+    _add_migration_args(parser)
+    _add_report_args(parser)
+    _add_ai_args(parser)
+    _add_deploy_args(parser)
+    _add_server_args(parser)
+    _add_enterprise_args(parser)
+    _add_shared_model_args(parser)
+
+    return parser
+
+
+_SIMPLE_COMMANDS = {
+    'migrate', 'assess', 'batch', 'server',
+    'merge', 'fabric', 'deploy', 'qa',
+}
+
+_SIMPLE_HELP = """\
+Tableau to Power BI - 8 simple commands
+
+Usage:
+  python migrate.py migrate WORKBOOK [options]
+  python migrate.py assess WORKBOOK [options]
+  python migrate.py batch FOLDER [options]
+  python migrate.py server URL WORKBOOK [options]
+  python migrate.py merge WORKBOOK... [options]
+  python migrate.py fabric WORKBOOK [options]
+  python migrate.py deploy WORKBOOK WORKSPACE_ID [options]
+  python migrate.py qa WORKBOOK [options]
+
+Commands:
+  migrate   Convert one Tableau workbook to a validated PBIP project
+  assess    Assess migration readiness without generating a project
+  batch     Migrate every workbook and Prep flow in a folder
+  server    Download and migrate one Tableau Server/Cloud workbook
+  merge     Build one shared semantic model from multiple workbooks
+  fabric    Generate Lakehouse, Dataflow, Notebook, model, report, pipeline
+  deploy    Generate Fabric artifacts, deploy them, and run the pipeline
+  qa        Migrate a workbook and generate the QA report card
+
+Common options:
+  --output-dir PATH   Choose the output folder
+  --verbose           Show detailed progress
+  --config FILE       Load advanced settings from JSON
+
+Compatibility:
+  Existing flag-based commands still work unchanged.
+  Use "python migrate.py --advanced-help" for every legacy option.
+  Power BI Desktop opens only when --desktop-probe is explicitly provided.
+"""
+
+
+def _expand_simple_command(argv):
+    """Translate one simple command into the backward-compatible CLI flags."""
+    args = list(argv)
+    if not args or args[0] not in _SIMPLE_COMMANDS:
+        return args
+
+    command = args[0]
+    values = args[1:]
+    if command in {'migrate', 'assess', 'fabric', 'qa'}:
+        if not values or values[0].startswith('-'):
+            raise ValueError(f"'{command}' requires a Tableau workbook path")
+        source, options = values[0], values[1:]
+        fixed = {
+            'migrate': [],
+            'assess': ['--assess'],
+            'fabric': ['--output-format', 'fabric'],
+            'qa': ['--qa'],
+        }[command]
+        return [source, *fixed, *options]
+
+    if command == 'batch':
+        if not values or values[0].startswith('-'):
+            raise ValueError("'batch' requires a folder path")
+        return ['--batch', values[0], *values[1:]]
+
+    if command == 'server':
+        if len(values) < 2 or any(value.startswith('-') for value in values[:2]):
+            raise ValueError("'server' requires URL and workbook name")
+        return [
+            '--server', values[0], '--workbook', values[1], *values[2:],
+        ]
+
+    if command == 'merge':
+        workbooks = []
+        option_index = len(values)
+        for index, value in enumerate(values):
+            if value.startswith('-'):
+                option_index = index
+                break
+            workbooks.append(value)
+        if len(workbooks) < 2:
+            raise ValueError("'merge' requires at least two workbook paths")
+        return [
+            '--shared-model', *workbooks, *values[option_index:],
+        ]
+
+    if command == 'deploy':
+        if len(values) < 2 or any(value.startswith('-') for value in values[:2]):
+            raise ValueError("'deploy' requires workbook path and workspace ID")
+        return [
+            values[0], '--output-format', 'fabric',
+            '--deploy', values[1], '--deploy-refresh', *values[2:],
+        ]
+
+    return args
+
+
+def _parse_cli_args(parser, argv=None):
+    """Parse the concise command facade or the legacy advanced CLI."""
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args in ([], ['-h'], ['--help']):
+        print(_SIMPLE_HELP)
+        raise SystemExit(0)
+    if (len(raw_args) == 2 and raw_args[0] in _SIMPLE_COMMANDS
+            and raw_args[1] in {'-h', '--help'}):
+        print(_SIMPLE_HELP)
+        raise SystemExit(0)
+    if raw_args == ['--advanced-help']:
+        parser.print_help()
+        raise SystemExit(0)
+    try:
+        return parser.parse_args(_expand_simple_command(raw_args))
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+# ── Config file loader ───────────────────────────────────────────────────────
+
+def _apply_config_file(args):
+    """Load a JSON configuration file and apply values where CLI args have defaults."""
+    if not args.config:
+        return
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+        from config.migration_config import load_config
+        config = load_config(filepath=args.config, args=args)
+        # Apply config values to args where args has defaults
+        if not args.tableau_file and config.tableau_file:
+            args.tableau_file = config.tableau_file
+            if not args.prep and config.prep_flow:
+                args.prep = config.prep_flow
+            if not args.output_dir and config.output_dir:
+                args.output_dir = config.output_dir
+            if args.mode == 'import' and config.model_mode != 'import':
+                args.mode = config.model_mode
+            if not args.culture and config.culture != 'en-US':
+                args.culture = config.culture
+            if args.calendar_start is None and config.calendar_start != 2020:
+                args.calendar_start = config.calendar_start
+            if args.calendar_end is None and config.calendar_end != 2030:
+                args.calendar_end = config.calendar_end
+            if args.output_format == 'pbip' and config.output_format != 'pbip':
+                args.output_format = config.output_format
+            if not args.rollback and config.rollback:
+                args.rollback = True
+            if not args.verbose and config.verbose:
+                args.verbose = True
+            if not args.log_file and config.log_file:
+                args.log_file = config.log_file
+            logger.info(f"Configuration loaded from: {args.config}")
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        print(f"Warning: Failed to load config file: {e}")
+
+
+# ── Sprint 167 — Enterprise Server Operations ──────────────────────────────
+
+def _handle_enterprise_server_ops(args):
+    """Handle enterprise server migration operations.
+
+    Returns ExitCode if an enterprise operation was handled (caller should exit),
+    or None if no enterprise operation was requested (caller should continue
+    to normal download flow).
+    """
+    is_enterprise = any(getattr(args, flag, False) for flag in (
+        'server_discover', 'plan_migration', 'map_permissions',
+        'migrate_subscriptions', 'cutover', 'cutover_plan_only',
+    ))
+    if not is_enterprise:
+        return None
+
+    import tempfile
+    from tableau_export.server_client import TableauServerClient
+
+    output_dir = getattr(args, 'output_dir', None) or 'artifacts/server_migration'
+    os.makedirs(output_dir, exist_ok=True)
+
+    ts_client = TableauServerClient(
+        server_url=args.server,
+        token_name=getattr(args, 'token_name', None),
+        token_secret=getattr(args, 'token_secret', None) or os.environ.get('TABLEAU_TOKEN_SECRET'),
+        site_id=getattr(args, 'site', ''),
+    )
+    ts_client.sign_in()
+
+    try:
+        # ── Server discovery ──────────────────────────────────
+        if getattr(args, 'server_discover', False) or getattr(args, 'plan_migration', False):
+            print_header("SITE TOPOLOGY DISCOVERY")
+            from powerbi_import.dependency_graph import (
+                build_site_topology, build_dependency_graph,
+                classify_usage, audit_certifications,
+                generate_topology_report, save_topology,
+            )
+
+            topology = build_site_topology(ts_client)
+            dep_graph = build_dependency_graph(topology)
+            usage = classify_usage(topology)
+            certification = audit_certifications(topology)
+
+            report_path = os.path.join(output_dir, 'topology_report.html')
+            report = generate_topology_report(
+                topology, dep_graph, usage, certification, report_path,
+            )
+
+            topo_path = os.path.join(output_dir, 'topology.json')
+            save_topology(topology, topo_path)
+            print(f"  Topology saved to {topo_path}")
+
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(report)
+            print(f"  Report:  {report_path}")
+
+        # ── Migration planning ────────────────────────────────
+        if getattr(args, 'plan_migration', False):
+            print_header("MIGRATION PLANNING")
+            from powerbi_import.migration_planner import (
+                generate_migration_plan_from_topology,
+                save_migration_plan,
+            )
+
+            plan = generate_migration_plan_from_topology(
+                topology,
+                dependency_graph=dep_graph.get('datasource_dependents'),
+                workspace_strategy=getattr(args, 'workspace_mapping', 'by_project'),
+                max_per_wave=getattr(args, 'wave_max_size', 10),
+                team_size=getattr(args, 'team_size', 1),
+            )
+            json_path, html_path = save_migration_plan(plan, output_dir)
+            print(f"  Plan:    {json_path}")
+            print(f"  Dashboard: {html_path}")
+
+            summary = plan.get('summary', {})
+            print(f"\n  Summary:")
+            print(f"    Workbooks: {summary.get('total_workbooks', 0)}")
+            print(f"    Waves:     {summary.get('total_waves', 0)}")
+            print(f"    Effort:    {summary.get('total_effort_hours', 0)}h")
+            if summary.get('start_date'):
+                print(f"    Timeline:  {summary['start_date']} → {summary['end_date']}")
+                print(f"    Team size: {summary.get('team_size', 1)}")
+
+        # ── Permission mapping ────────────────────────────────
+        if getattr(args, 'map_permissions', False):
+            print_header("PERMISSION MAPPING")
+            from powerbi_import.permission_mapper import (
+                map_site_roles, generate_azure_ad_scripts,
+                generate_permission_report,
+            )
+
+            users = ts_client.list_users_with_groups()
+            groups = ts_client.list_groups() or []
+            print(f"  Users:  {len(users)}")
+            print(f"  Groups: {len(groups)}")
+
+            role_assignments = map_site_roles(users)
+
+            ad_script_path = os.path.join(output_dir, 'provision_azure_ad_groups.ps1')
+            generate_azure_ad_scripts(groups, ad_script_path)
+            print(f"  Azure AD script: {ad_script_path}")
+
+            report_path = os.path.join(output_dir, 'permission_report.html')
+            generate_permission_report(role_assignments, output_path=report_path)
+            print(f"  Report: {report_path}")
+
+        # ── Subscription & alert migration ────────────────────
+        if getattr(args, 'migrate_subscriptions', False):
+            print_header("SUBSCRIPTION MIGRATION")
+            from powerbi_import.subscription_generator import (
+                extract_all_subscriptions, extract_data_alerts,
+                generate_pbi_subscriptions, generate_power_automate_flows,
+                detect_schedule_conflicts,
+                generate_subscription_report, save_subscriptions,
+            )
+
+            subscriptions = extract_all_subscriptions(ts_client)
+            alerts = extract_data_alerts(ts_client)
+            print(f"  Subscriptions: {len(subscriptions)}")
+            print(f"  Data alerts:   {len(alerts)}")
+
+            pbi_subs = generate_pbi_subscriptions(subscriptions)
+            flows = generate_power_automate_flows(subscriptions, alerts)
+            conflicts = detect_schedule_conflicts(pbi_subs)
+
+            save_subscriptions(pbi_subs, flows, output_dir)
+            report_path = os.path.join(output_dir, 'subscription_report.html')
+            report = generate_subscription_report(
+                subscriptions, alerts, pbi_subs, flows, conflicts, report_path,
+            )
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(report)
+            print(f"  Report: {report_path}")
+
+        # ── Cutover ───────────────────────────────────────────
+        if getattr(args, 'cutover', False) or getattr(args, 'cutover_plan_only', False):
+            print_header("CUTOVER MANAGEMENT")
+            from powerbi_import.cutover_manager import (
+                generate_cutover_plan, execute_cutover,
+                generate_cutover_dashboard, save_cutover_plan,
+            )
+
+            plan_only = getattr(args, 'cutover_plan_only', False)
+            cutover_plan = generate_cutover_plan(
+                migration_plan={},
+                waves_to_cut=None,
+                plan_only=plan_only,
+            )
+            plan_path = save_cutover_plan(cutover_plan, output_dir)
+            print(f"  Cutover plan: {plan_path}")
+
+            if not plan_only:
+                result = execute_cutover(
+                    cutover_plan,
+                    artifacts_dir=output_dir,
+                    snapshot_dir=os.path.join(output_dir, 'snapshots'),
+                )
+                dashboard = generate_cutover_dashboard(cutover_plan, result)
+                dash_path = os.path.join(output_dir, 'cutover_dashboard.html')
+                with open(dash_path, 'w', encoding='utf-8') as f:
+                    f.write(dashboard)
+                print(f"  Dashboard: {dash_path}")
+
+    finally:
+        ts_client.sign_out()
+
+    return ExitCode.SUCCESS
+
+
+# ── Tableau Server download ─────────────────────────────────────────────────
+
+def _download_from_server(args):
+    """Download workbooks from Tableau Server/Cloud.
+
+    Returns ExitCode on failure, None on success (caller should continue).
+    Mutates args.tableau_file or args.batch.
+    """
+    try:
+        from tableau_export.server_client import TableauServerClient
+        print_header("TABLEAU SERVER DOWNLOAD")
+        print(f"  Server: {args.server}")
+        print(f"  Site:   {args.site or '(Default)'}")
+
+        ts_client = TableauServerClient(
+            server_url=args.server,
+            token_name=getattr(args, 'token_name', None),
+            token_secret=getattr(args, 'token_secret', None) or os.environ.get('TABLEAU_TOKEN_SECRET'),
+            site_id=getattr(args, 'site', ''),
+        )
+        ts_client.sign_in()
+
+        download_dir = os.path.join(
+            tempfile.gettempdir(), 'tableau_server_downloads'
+        )
+
+        if getattr(args, 'server_batch', None):
+            # Batch: download assets from a project
+            project_filter = args.server_batch
+            print(f"  Project: {project_filter}")
+
+            # Determine which asset types to download
+            raw_assets = getattr(args, 'server_assets', None) or ['workbooks', 'flows']
+            if 'all' in raw_assets:
+                asset_types = {'workbooks', 'flows', 'datasources'}
+            else:
+                asset_types = set(raw_assets)
+            print(f"  Assets:  {', '.join(sorted(asset_types))}")
+
+            preserve_folders = getattr(args, 'server_preserve_folders', False)
+            if preserve_folders:
+                print(f"  Folders: preserving project structure")
+
+            import re as _re_srv
+            total_downloaded = 0
+
+            # ── Download workbooks ──
+            if 'workbooks' in asset_types:
+                dl_results = ts_client.download_all_workbooks(
+                    download_dir, project_name=project_filter,
+                )
+                # Re-organize by project folder if preserve_folders
+                if preserve_folders:
+                    workbooks_meta = ts_client.list_workbooks(project_name=project_filter)
+                    project_map = {
+                        wb.get('name', ''): wb.get('project', {}).get('name', '')
+                        for wb in workbooks_meta
+                    }
+                    for r in dl_results:
+                        if r['status'] == 'success' and os.path.isfile(r['path']):
+                            proj_name = project_map.get(r['name'], '')
+                            if proj_name:
+                                safe_proj = _re_srv.sub(r'[^\w\-. ]', '_', proj_name)
+                                dest_dir = os.path.join(download_dir, safe_proj)
+                                os.makedirs(dest_dir, exist_ok=True)
+                                dest = os.path.join(dest_dir, os.path.basename(r['path']))
+                                if r['path'] != dest:
+                                    os.replace(r['path'], dest)
+                                    r['path'] = dest
+
+                succeeded_wb = [r for r in dl_results if r['status'] == 'success']
+                print(f"  Workbooks: {len(succeeded_wb)}/{len(dl_results)} downloaded")
+                total_downloaded += len(succeeded_wb)
+
+            # ── Download prep flows ──
+            if 'flows' in asset_types:
+                try:
+                    flows = ts_client.list_prep_flows()
+                    # Filter by project if specified (not 'all')
+                    if project_filter.lower() != 'all':
+                        from tableau_export.server_client import _normalize_name as _nn
+                        _norm_pf = _nn(project_filter)
+                        flows = [
+                            fl for fl in flows
+                            if fl.get('project', {}).get('name', '') == project_filter
+                               or _nn(fl.get('project', {}).get('name', '')) == _norm_pf
+                        ]
+                    flow_count = 0
+                    for fl in flows:
+                        fl_name = fl.get('name', 'flow')
+                        safe = _re_srv.sub(r'[^\w\-.]', '_', fl_name)
+
+                        if preserve_folders:
+                            proj_name = fl.get('project', {}).get('name', '')
+                            safe_proj = _re_srv.sub(r'[^\w\-. ]', '_', proj_name) if proj_name else ''
+                            fl_dir = os.path.join(download_dir, safe_proj) if safe_proj else download_dir
+                        else:
+                            fl_dir = download_dir
+
+                        os.makedirs(fl_dir, exist_ok=True)
+                        fl_path = os.path.join(fl_dir, f'{safe}.tflx')
+                        try:
+                            ts_client.download_prep_flow(fl['id'], fl_path)
+                            flow_count += 1
+                        except Exception as fe:
+                            logger.warning(f"Failed to download flow {fl_name}: {fe}")
+                    print(f"  Flows: {flow_count}/{len(flows)} downloaded")
+                    total_downloaded += flow_count
+                except Exception as fe:
+                    logger.warning(f"Could not list prep flows: {fe}")
+
+            # ── Download published datasources ──
+            if 'datasources' in asset_types:
+                try:
+                    datasources = ts_client.list_datasources()
+                    # Filter by project if specified
+                    if project_filter.lower() != 'all':
+                        from tableau_export.server_client import _normalize_name as _nn
+                        _norm_pf2 = _nn(project_filter)
+                        datasources = [
+                            ds for ds in datasources
+                            if ds.get('project', {}).get('name', '') == project_filter
+                               or _nn(ds.get('project', {}).get('name', '')) == _norm_pf2
+                        ]
+                    ds_count = 0
+                    for ds in datasources:
+                        ds_name = ds.get('name', 'datasource')
+                        safe = _re_srv.sub(r'[^\w\-.]', '_', ds_name)
+
+                        if preserve_folders:
+                            proj_name = ds.get('project', {}).get('name', '')
+                            safe_proj = _re_srv.sub(r'[^\w\-. ]', '_', proj_name) if proj_name else ''
+                            ds_dir = os.path.join(download_dir, safe_proj) if safe_proj else download_dir
+                        else:
+                            ds_dir = download_dir
+
+                        os.makedirs(ds_dir, exist_ok=True)
+                        ds_path = os.path.join(ds_dir, f'{safe}.tdsx')
+                        try:
+                            ts_client.download_datasource(ds['id'], ds_path)
+                            ds_count += 1
+                        except Exception as fe:
+                            logger.warning(f"Failed to download datasource {ds_name}: {fe}")
+                    print(f"  Datasources: {ds_count}/{len(datasources)} downloaded")
+                    total_downloaded += ds_count
+                except Exception as fe:
+                    logger.warning(f"Could not list datasources: {fe}")
+
+            ts_client.sign_out()
+            if total_downloaded == 0:
+                print("  No assets downloaded — aborting")
+                return ExitCode.EXTRACTION_FAILED
+            # Switch to batch mode
+            args.batch = download_dir
+        elif getattr(args, 'workbook', None):
+            # Single workbook download
+            print(f"  Workbook: {args.workbook}")
+            workbooks = ts_client.list_workbooks()
+            match = None
+            # 1. Exact ID or name match
+            for wb in workbooks:
+                if wb.get('id') == args.workbook or wb.get('name') == args.workbook:
+                    match = wb
+                    break
+            # 2. contentUrl match (Tableau strips accents in contentUrl)
+            if not match:
+                for wb in workbooks:
+                    if wb.get('contentUrl', '') == args.workbook:
+                        match = wb
+                        break
+            # 3. Accent-insensitive match (handles é→e, etc.)
+            if not match:
+                from tableau_export.server_client import _normalize_name
+                norm_input = _normalize_name(args.workbook)
+                for wb in workbooks:
+                    if _normalize_name(wb.get('name', '')) == norm_input:
+                        match = wb
+                        break
+                # 3b. Accent-insensitive contentUrl
+                if not match:
+                    for wb in workbooks:
+                        if _normalize_name(wb.get('contentUrl', '')) == norm_input:
+                            match = wb
+                            break
+            # 4. Regex / fuzzy search (multi-tier in search_workbooks)
+            if not match:
+                matches = ts_client.search_workbooks(args.workbook)
+                if matches:
+                    match = matches[0]
+
+            if not match:
+                ts_client.sign_out()
+                print(f"  Workbook '{args.workbook}' not found on server")
+                # List available workbooks to help user find the right name
+                if workbooks:
+                    print(f"  Available workbooks ({len(workbooks)}):")
+                    for wb in workbooks[:20]:
+                        print(f"    - {wb.get('name', '?')} (id={wb.get('id', '?')[:8]}...)")
+                    if len(workbooks) > 20:
+                        print(f"    ... and {len(workbooks) - 20} more")
+                return ExitCode.EXTRACTION_FAILED
+
+            import re as _re
+            safe_name = _re.sub(r'[^\w\-.]', '_', match.get('name', 'workbook'))
+            twbx_path = os.path.join(download_dir, f'{safe_name}.twbx')
+            os.makedirs(download_dir, exist_ok=True)
+            ts_client.download_workbook(match['id'], twbx_path)
+            ts_client.sign_out()
+            print(f"  Downloaded: {twbx_path}")
+            args.tableau_file = twbx_path
+        else:
+            ts_client.sign_out()
+            print("  Specify --workbook NAME or --server-batch PROJECT")
+            return ExitCode.GENERAL_ERROR
+    except Exception as exc:
+        print(f"  Server download failed: {exc}")
+        logger.error(f"Tableau Server error: {exc}", exc_info=True)
+        return ExitCode.EXTRACTION_FAILED
+    return None
+
+
+# ── Migration summary printer ────────────────────────────────────────────────
+
+def _print_migration_summary(results, report_summary, start_time):
+    """Print the final migration summary and return whether all steps succeeded."""
+    duration = datetime.now() - start_time
+    print_header("MIGRATION SUMMARY")
+
+    # Step results
+    print("  Step Results:")
+    for step_name, success in [
+        ("Tableau Extraction", results.get('extraction', False)),
+        ("Prep Flow Parsing", results.get('prep', None)),
+        ("Power BI Generation", results.get('generation', False)),
+        ("Migration Report", report_summary is not None if results.get('generation') else None),
+        ("Fabric Deployment", results.get('deployment', None)),
+    ]:
+        if success is None:
+            continue
+        status = "✓ Success" if success else "✗ Failed"
+        print(f"    {step_name:<30} {status}")
+
+    # Extraction summary
+    if results.get('extraction'):
+        print(f"\n  Extraction Summary ({_stats.app_name}):")
+        extraction_items = [
+            ("Datasources", _stats.datasources),
+            ("Worksheets", _stats.worksheets),
+            ("Dashboards", _stats.dashboards),
+            ("Calculations", _stats.calculations),
+            ("Parameters", _stats.parameters),
+            ("Filters", _stats.filters),
+            ("Stories", _stats.stories),
+            ("Actions", _stats.actions),
+            ("Sets", _stats.sets),
+            ("Groups", _stats.groups),
+            ("Bins", _stats.bins),
+            ("Hierarchies", _stats.hierarchies),
+            ("User Filters / RLS", _stats.user_filters),
+            ("Custom SQL", _stats.custom_sql),
+        ]
+        for label, count in extraction_items:
+            if count > 0:
+                print(f"    {label:<30} {count}")
+
+    # Generation summary
+    if results.get('generation'):
+        print(f"\n  Generation Summary:")
+        gen_items = [
+            ("TMDL Tables", _stats.tmdl_tables),
+            ("TMDL Columns", _stats.tmdl_columns),
+            ("DAX Measures", _stats.tmdl_measures),
+            ("Relationships", _stats.tmdl_relationships),
+            ("Hierarchies", _stats.tmdl_hierarchies),
+            ("RLS Roles", _stats.tmdl_roles),
+            ("Report Pages", _stats.pages_generated),
+            ("Visuals", _stats.visuals_generated),
+        ]
+        for label, count in gen_items:
+            if count > 0:
+                print(f"    {label:<30} {count}")
+        if _stats.theme_applied:
+            print(f"    {'Custom Theme':<30} ✓ Applied")
+
+    # Fidelity score from migration report
+    if report_summary:
+        fidelity = report_summary.get('fidelity_score', 0)
+        total = report_summary.get('total_items', 0)
+        exact = report_summary.get('exact', 0)
+        approx = report_summary.get('approximate', 0)
+        unsup = report_summary.get('unsupported', 0)
+        print(f"\n  Migration Fidelity:")
+        print(f"    {'Fidelity Score':<30} {fidelity}%")
+        print(f"    {'Exact Conversions':<30} {exact}/{total}")
+        if approx:
+            print(f"    {'Approximate':<30} {approx}")
+        if unsup:
+            print(f"    {'Unsupported':<30} {unsup}")
+
+    # Warnings
+    if _stats.warnings:
+        print(f"\n  Warnings ({len(_stats.warnings)}):")
+        for w in _stats.warnings[:10]:
+            print(f"    ⚠ {w}")
+        if len(_stats.warnings) > 10:
+            print(f"    ... and {len(_stats.warnings) - 10} more")
+
+    # Skipped items
+    if _stats.skipped:
+        print(f"\n  Skipped ({len(_stats.skipped)}):")
+        for s in _stats.skipped[:5]:
+            print(f"    ⊘ {s}")
+
+    print(f"\n  Duration: {duration}")
+
+    all_success = all(v for v in results.values() if v is not None)
+
+    # ── Automatic PBI Desktop validation ──────────────────────────
+    pbi_validation_passed = True
+    if all_success and _stats.pbip_path:
+        try:
+            from powerbi_import.validator import ArtifactValidator
+            pbi_result = ArtifactValidator.run_pbi_validation(_stats.pbip_path)
+            pbi_errors = pbi_result.get('errors', [])
+            pbi_warnings = pbi_result.get('warnings', [])
+            pbi_validation_passed = pbi_result.get('passed', True)
+
+            if pbi_errors or pbi_warnings:
+                print(f"\n  PBI Desktop Validation:")
+                if pbi_errors:
+                    print(f"    ✗ {len(pbi_errors)} error(s) — these will cause errors in PBI Desktop:")
+                    for e in pbi_errors[:20]:
+                        print(f"      ERROR: {e}")
+                    if len(pbi_errors) > 20:
+                        print(f"      ... and {len(pbi_errors) - 20} more")
+                if pbi_warnings:
+                    print(f"    ⚠ {len(pbi_warnings)} warning(s):")
+                    for w in pbi_warnings[:10]:
+                        print(f"      WARN: {w}")
+                    if len(pbi_warnings) > 10:
+                        print(f"      ... and {len(pbi_warnings) - 10} more")
+            else:
+                print(f"\n  PBI Desktop Validation: ✓ No issues detected")
+        except Exception as exc:
+            logger.debug("PBI validation skipped: %s", exc)
+
+    if all_success:
+        print("\n✓ Migration completed successfully!")
+        if _stats.pbip_path:
+            print(f"\n  Output: {_stats.pbip_path}")
+        if pbi_validation_passed:
+            print("\n  Next steps:")
+            print("    1. Open the .pbip file in Power BI Desktop (Developer Mode)")
+            print("    2. Configure data sources in Power Query Editor")
+            print("    3. Verify DAX measures and calculated columns")
+            print("    4. Check relationships in the Model view")
+            print("    5. Compare visuals with the original Tableau workbook")
+        else:
+            print("\n  ⚠ PBI Desktop may report errors — review the validation output above")
+            print("    Fix the reported issues before opening in PBI Desktop")
+    else:
+        print("\n✗ Migration completed with errors")
+
+    return all_success
+
+
+# ── Bundle deployment helper ────────────────────────────────────────────────
+
+def _run_bundle_deploy(project_dir, workspace_id, refresh=False):
+    """Deploy a shared model project as a Fabric bundle.
+
+    Args:
+        project_dir: Root project directory with .SemanticModel + .Report dirs.
+        workspace_id: Target Fabric workspace ID.
+        refresh: Trigger dataset refresh after deployment.
+
+    Returns:
+        ExitCode
+    """
+    try:
+        from powerbi_import.deploy.bundle_deployer import deploy_bundle_from_cli
+
+        print_header("FABRIC BUNDLE DEPLOYMENT")
+        print(f"  Workspace: {workspace_id}")
+        print(f"  Project:   {project_dir}")
+
+        result = deploy_bundle_from_cli(
+            project_dir=project_dir,
+            workspace_id=workspace_id,
+            refresh=refresh,
+        )
+
+        if result.success:
+            return ExitCode.SUCCESS
+        else:
+            return ExitCode.GENERAL_ERROR
+
+    except Exception as exc:
+        logger.error("Bundle deployment failed: %s", exc, exc_info=True)
+        print(f"\n  ✗ Bundle deployment error: {exc}")
+        return ExitCode.GENERAL_ERROR
+
+
+# ── Prep Lineage mode ──────────────────────────────────────────────────────
+
+def run_prep_lineage_mode(args):
+    """Bulk-analyze Tableau Prep flows and produce cross-flow lineage report.
+
+    Discovers .tfl/.tflx files from --prep-lineage paths (files or directories),
+    builds a cross-flow lineage graph, computes merge recommendations,
+    and outputs HTML + JSON reports.
+
+    Returns:
+        ExitCode
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+
+    try:
+        from prep_flow_analyzer import analyze_flow, analyze_flows_bulk
+        from powerbi_import.prep_lineage import build_lineage_graph
+        from powerbi_import.prep_lineage_report import (
+            compute_merge_recommendations,
+            generate_prep_lineage_report,
+            save_lineage_json,
+            print_lineage_summary,
+        )
+    except ImportError:
+        from prep_flow_analyzer import analyze_flow, analyze_flows_bulk
+        from prep_lineage import build_lineage_graph
+        from prep_lineage_report import (
+            compute_merge_recommendations,
+            generate_prep_lineage_report,
+            save_lineage_json,
+            print_lineage_summary,
+        )
+
+    # Collect .tfl/.tflx paths
+    paths = list(args.prep_lineage or [])
+
+    # If --batch is also given and no explicit paths, scan batch dir
+    if not paths and getattr(args, 'batch', None):
+        paths = [args.batch]
+
+    if not paths:
+        print('Error: --prep-lineage requires file paths or a directory')
+        return ExitCode.GENERAL_ERROR
+
+    # Expand directories and collect files
+    flow_files = []
+    for p in paths:
+        if os.path.isdir(p):
+            for root, _dirs, files in os.walk(p):
+                for fname in sorted(files):
+                    if fname.lower().endswith(('.tfl', '.tflx')):
+                        flow_files.append(os.path.join(root, fname))
+        elif os.path.isfile(p) and p.lower().endswith(('.tfl', '.tflx')):
+            flow_files.append(p)
+        else:
+            print(f'Warning: Skipping non-TFL path: {p}')
+
+    if not flow_files:
+        print('Error: No .tfl/.tflx files found')
+        return ExitCode.GENERAL_ERROR
+
+    print_header('PREP FLOW LINEAGE ANALYSIS')
+    print(f'  Found {len(flow_files)} Tableau Prep flow(s)')
+    print()
+
+    # Phase 1: Analyze each flow
+    profiles = []
+    for i, fpath in enumerate(flow_files, 1):
+        basename = os.path.basename(fpath)
+        print(f'  [{i}/{len(flow_files)}] Analyzing: {basename}')
+        try:
+            profile = analyze_flow(fpath, include_m_queries=True)
+            profiles.append(profile)
+            mq_count = len(profile.m_queries)
+            grade = profile.assessment.get('grade', '?')
+            print(f'    → {len(profile.inputs)} inputs, {len(profile.outputs)} outputs, '
+                  f'{len(profile.transforms)} transforms, {mq_count} M queries [{grade}]')
+        except (ValueError, OSError, KeyError) as exc:
+            print(f'    ⚠ Failed: {exc}')
+            logger.warning('Failed to analyze %s: %s', fpath, exc)
+
+    if not profiles:
+        print('\nError: No flows could be analyzed')
+        return ExitCode.GENERAL_ERROR
+
+    # Phase 2: Build cross-flow lineage
+    print(f'\n  Building cross-flow lineage graph...')
+    graph = build_lineage_graph(profiles)
+
+    # Phase 3: Merge recommendations
+    recommendations = compute_merge_recommendations(graph)
+
+    # Console summary
+    print_lineage_summary(graph, recommendations)
+
+    # Save outputs
+    out = getattr(args, 'output_dir', None) or os.path.join(
+        'artifacts', 'powerbi_projects', 'prep_lineage'
+    )
+    os.makedirs(out, exist_ok=True)
+
+    html_path = os.path.join(out, 'prep_lineage_report.html')
+    generate_prep_lineage_report(graph, recommendations, html_path)
+    print(f'  HTML report: {html_path}')
+
+    json_path = os.path.join(out, 'prep_lineage.json')
+    save_lineage_json(graph, recommendations, json_path)
+    print(f'  JSON report: {json_path}')
+
+    # Export source definitions (connection metadata + column schema)
+    src_dir = os.path.join(out, 'Sources')
+    src_count = 0
+    for profile in profiles:
+        if not profile.inputs:
+            continue
+        flow_src_dir = os.path.join(src_dir, profile.name)
+        os.makedirs(flow_src_dir, exist_ok=True)
+        for inp in profile.inputs:
+            safe_name = inp.name.replace('/', '_').replace('\\', '_')
+            src_path = os.path.join(flow_src_dir, f'{safe_name}.json')
+            src_data = {
+                'name': inp.name,
+                'connection_type': inp.connection_type,
+                'server': inp.server,
+                'database': inp.database,
+                'schema': inp.schema,
+                'table_name': inp.table_name,
+                'filename': inp.filename,
+                'column_count': inp.column_count,
+                'columns': inp.column_names,
+                'fingerprint': inp.fingerprint,
+                'flow': profile.name,
+            }
+            with open(src_path, 'w', encoding='utf-8') as f:
+                json.dump(src_data, f, indent=2, ensure_ascii=False)
+            src_count += 1
+    if src_count:
+        print(f'  Sources: {src_count} file(s) in {src_dir}')
+
+    # Export Power Query M files
+    pq_dir = os.path.join(out, 'PowerQuery')
+    pq_count = 0
+    for profile in profiles:
+        if profile.m_queries:
+            flow_pq_dir = os.path.join(pq_dir, profile.name)
+            os.makedirs(flow_pq_dir, exist_ok=True)
+            for tbl_name, m_code in profile.m_queries.items():
+                pq_path = os.path.join(flow_pq_dir, f'{tbl_name}.pq')
+                with open(pq_path, 'w', encoding='utf-8') as f:
+                    f.write(m_code)
+                pq_count += 1
+    if pq_count:
+        print(f'  Power Query M: {pq_count} file(s) in {pq_dir}')
+
+    return ExitCode.SUCCESS
+
+
+# ── Bulk Assessment mode ────────────────────────────────────────────────────
+
+def run_bulk_assessment_mode(args):
+    """Run full portfolio assessment on a local folder of workbooks and prep flows.
+
+    Combines:
+    1. Portfolio readiness (per-workbook GREEN/YELLOW/RED, effort, waves)
+    2. Cross-workbook merge/duplication analysis (pairwise scores, clusters)
+    3. Prep flow analysis (per-flow profiling + cross-flow lineage)
+
+    Produces an HTML dashboard and JSON report without migrating anything.
+
+    Returns:
+        ExitCode
+    """
+    import tempfile
+    import shutil
+
+    batch_dir = args.bulk_assess
+    if not os.path.isdir(batch_dir):
+        print(f"Error: Directory not found: {batch_dir}")
+        return ExitCode.GENERAL_ERROR
+
+    batch_dir = os.path.abspath(batch_dir)
+
+    # Discover workbooks and prep flows
+    workbook_files = []
+    prep_flow_files = []
+    for root, _dirs, files in os.walk(batch_dir):
+        for f in files:
+            lower = f.lower()
+            if f.startswith('~'):
+                continue
+            if lower.endswith(('.twb', '.twbx')):
+                workbook_files.append(os.path.join(root, f))
+            elif lower.endswith(('.tfl', '.tflx')):
+                prep_flow_files.append(os.path.join(root, f))
+    workbook_files.sort()
+    prep_flow_files.sort()
+
+    if not workbook_files and not prep_flow_files:
+        print(f"Error: No .twb/.twbx/.tfl/.tflx files found in {batch_dir}")
+        return ExitCode.GENERAL_ERROR
+
+    print_header("PORTFOLIO ASSESSMENT (LOCAL)")
+    print(f"  Source:       {batch_dir}")
+    print(f"  Workbooks:    {len(workbook_files)}")
+    print(f"  Prep flows:   {len(prep_flow_files)}")
+    print()
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+
+    all_converted = []
+    workbook_names = []
+    temp_dirs = []
+    prep_profiles = []
+
+    try:
+        from extract_tableau_data import TableauExtractor
+        from import_to_powerbi import PowerBIImporter
+        from powerbi_import.server_assessment import (
+            run_server_assessment,
+            print_server_summary,
+            generate_server_html_report,
+            save_server_assessment_json,
+        )
+
+        # ── Step 1: Extract each workbook ──────────────────────
+        if workbook_files:
+            total_wb = len(workbook_files)
+            print_step("1", 3 if prep_flow_files else 2, "EXTRACTING WORKBOOKS")
+            for i, wb_path in enumerate(workbook_files, 1):
+                basename = os.path.splitext(os.path.basename(wb_path))[0]
+                workbook_names.append(basename)
+                print(f"  [{i}/{total_wb}] {basename}...")
+
+                temp_dir = tempfile.mkdtemp(prefix=f'tableau_{basename}_')
+                temp_dirs.append(temp_dir)
+
+                try:
+                    extractor = TableauExtractor(wb_path, output_dir=temp_dir)
+                    success = extractor.extract_all()
+                except Exception as exc:
+                    logger.warning("Extraction failed for %s: %s", basename, exc)
+                    success = False
+
+                if not success:
+                    print(f"    ⚠ Extraction failed, skipping")
+                    all_converted.append(_empty_converted_objects())
+                    continue
+
+                importer = PowerBIImporter(source_dir=temp_dir)
+                converted = importer._load_converted_objects()
+                all_converted.append(converted)
+
+        # ── Step 2: Analyze prep flows ─────────────────────────
+        if prep_flow_files:
+            step_num = "2" if workbook_files else "1"
+            total_steps = 3 if workbook_files else 2
+            print_step(step_num, total_steps, "ANALYZING PREP FLOWS")
+            try:
+                from prep_flow_analyzer import analyze_flow
+            except ImportError:
+                try:
+                    from tableau_export.prep_flow_analyzer import analyze_flow
+                except ImportError:
+                    logger.warning("Cannot import prep_flow_analyzer")
+                    analyze_flow = None
+
+            if analyze_flow:
+                for i, flow_path in enumerate(prep_flow_files, 1):
+                    flow_name = os.path.splitext(os.path.basename(flow_path))[0]
+                    print(f"  [{i}/{len(prep_flow_files)}] {flow_name}...")
+                    try:
+                        profile = analyze_flow(flow_path, include_m_queries=True)
+                        prep_profiles.append(profile)
+                        grade = profile.assessment.get('grade', '?')
+                        print(f"    → {len(profile.inputs)} inputs, "
+                              f"{len(profile.outputs)} outputs, "
+                              f"{len(profile.transforms)} transforms [{grade}]")
+                    except (ValueError, OSError, KeyError) as exc:
+                        logger.warning("Failed to analyze %s: %s", flow_name, exc)
+                        print(f"    ⚠ Analysis failed: {exc}")
+
+        # ── Step 3: Run assessments ────────────────────────────
+        last_step = "3" if workbook_files and prep_flow_files else "2"
+        total_steps = 3 if workbook_files and prep_flow_files else 2
+        print_step(last_step, total_steps, "RUNNING ASSESSMENTS")
+
+        out = args.output_dir or os.path.join(
+            'artifacts', 'powerbi_projects', 'assessments'
+        )
+        os.makedirs(out, exist_ok=True)
+
+        # ── 3a: Portfolio readiness (per-workbook) ─────────────
+        server_result = None
+        if workbook_files and any(c.get('datasources') for c in all_converted):
+            print("\n  ▸ Portfolio readiness assessment...")
+            server_result = run_server_assessment(all_converted, workbook_names)
+            print_server_summary(server_result)
+
+            html_path = os.path.join(out, 'portfolio_assessment.html')
+            generate_server_html_report(server_result, output_path=html_path)
+            print(f"  HTML report: {html_path}")
+
+            json_path = os.path.join(out, 'portfolio_assessment.json')
+            save_server_assessment_json(server_result, output_path=json_path)
+            print(f"  JSON report: {json_path}")
+
+        # ── 3b: Cross-workbook merge/duplication analysis ──────
+        global_result = None
+        extracted_with_data = [c for c in all_converted if c.get('datasources')]
+        if len(extracted_with_data) >= 2:
+            print("\n  ▸ Cross-workbook merge & duplication analysis...")
+            try:
+                from powerbi_import.global_assessment import (
+                    run_global_assessment,
+                    print_global_summary,
+                    generate_global_html_report,
+                    save_global_assessment_json,
+                )
+                global_result = run_global_assessment(all_converted, workbook_names)
+                print_global_summary(global_result)
+
+                html_path = os.path.join(out, 'global_assessment.html')
+                generate_global_html_report(global_result, output_path=html_path)
+                print(f"  HTML report: {html_path}")
+
+                json_path = os.path.join(out, 'global_assessment.json')
+                save_global_assessment_json(global_result, output_path=json_path)
+                print(f"  JSON report: {json_path}")
+            except Exception as exc:
+                logger.warning("Global assessment failed: %s", exc, exc_info=True)
+                print(f"  ⚠ Merge analysis failed: {exc}")
+
+        # ── 3c: Prep flow lineage ──────────────────────────────
+        if len(prep_profiles) >= 2:
+            print("\n  ▸ Cross-flow lineage analysis...")
+            try:
+                try:
+                    from powerbi_import.prep_lineage import build_lineage_graph
+                    from powerbi_import.prep_lineage_report import (
+                        compute_merge_recommendations,
+                        generate_prep_lineage_report,
+                        save_lineage_json,
+                    )
+                except ImportError:
+                    from prep_lineage import build_lineage_graph
+                    from prep_lineage_report import (
+                        compute_merge_recommendations,
+                        generate_prep_lineage_report,
+                        save_lineage_json,
+                    )
+
+                graph = build_lineage_graph(prep_profiles)
+                recommendations = compute_merge_recommendations(graph, prep_profiles)
+
+                lineage_dir = os.path.join(out, 'prep_lineage')
+                os.makedirs(lineage_dir, exist_ok=True)
+
+                html_path = os.path.join(lineage_dir, 'prep_lineage_report.html')
+                generate_prep_lineage_report(graph, recommendations, html_path)
+                print(f"  HTML report: {html_path}")
+
+                json_path = os.path.join(lineage_dir, 'prep_lineage.json')
+                save_lineage_json(graph, recommendations, json_path)
+                print(f"  JSON report: {json_path}")
+            except Exception as exc:
+                logger.warning("Prep lineage analysis failed: %s", exc, exc_info=True)
+                print(f"  ⚠ Prep lineage analysis failed: {exc}")
+
+        # ── Summary ────────────────────────────────────────────
+        print_header("BULK ASSESSMENT COMPLETE")
+        if server_result:
+            print(f"  Workbooks:     {server_result.total_workbooks}")
+            print(f"  GREEN:         {server_result.green_count}")
+            print(f"  YELLOW:        {server_result.yellow_count}")
+            print(f"  RED:           {server_result.red_count}")
+            print(f"  Readiness:     {server_result.readiness_pct}%")
+            print(f"  Est. effort:   {server_result.total_effort_hours:.1f} hours")
+        if prep_profiles:
+            print(f"  Prep flows:    {len(prep_profiles)} analyzed")
+        if global_result:
+            print(f"  Merge clusters: {len(global_result.merge_clusters)}")
+        print(f"  Output:        {out}")
+
+        return ExitCode.SUCCESS
+
+    except Exception as e:
+        logger.error("Bulk assessment failed: %s", e, exc_info=True)
+        print(f"\nError: {e}")
+        return ExitCode.GENERAL_ERROR
+
+    finally:
+        for td in temp_dirs:
+            try:
+                shutil.rmtree(td, ignore_errors=True)
+            except OSError as exc:
+                logger.debug('Temp dir cleanup failed: %s', exc)
+
+
+# ── Global Assessment mode ──────────────────────────────────────────────────
+
+def run_global_assessment_mode(args):
+    """Run cross-workbook global assessment and generate HTML report.
+
+    Discovers workbooks from --global-assess paths or --batch directory,
+    extracts each, runs pairwise merge analysis, and outputs HTML + JSON.
+
+    Returns:
+        ExitCode
+    """
+    import tempfile
+    import shutil
+
+    workbook_paths = list(args.global_assess or [])
+
+    # If --batch is also given, discover workbooks from directory
+    if args.batch and not workbook_paths:
+        import glob
+        for ext in ('*.twb', '*.twbx'):
+            workbook_paths.extend(
+                glob.glob(os.path.join(args.batch, '**', ext), recursive=True)
+            )
+        workbook_paths.sort()
+
+    if len(workbook_paths) < 2:
+        print("Error: --global-assess requires at least 2 workbooks "
+              "(or use --batch DIR)")
+        return ExitCode.GENERAL_ERROR
+
+    # Validate all files exist
+    for wb_path in workbook_paths:
+        if not os.path.exists(wb_path):
+            print(f"Error: Workbook not found: {wb_path}")
+            return ExitCode.GENERAL_ERROR
+
+    print_header("GLOBAL CROSS-WORKBOOK ASSESSMENT")
+    print(f"  Workbooks:  {len(workbook_paths)}")
+    for wp in workbook_paths:
+        print(f"    - {os.path.basename(wp)}")
+    print()
+
+    all_converted = []
+    workbook_names = []
+    temp_dirs = []
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+
+    try:
+        from extract_tableau_data import TableauExtractor
+        from import_to_powerbi import PowerBIImporter
+        from powerbi_import.global_assessment import (
+            run_global_assessment,
+            print_global_summary,
+            generate_global_html_report,
+            save_global_assessment_json,
+        )
+
+        # Extract each workbook
+        for wb_path in workbook_paths:
+            basename = os.path.splitext(os.path.basename(wb_path))[0]
+            workbook_names.append(basename)
+
+            print(f"  Extracting: {basename}...")
+            temp_dir = tempfile.mkdtemp(prefix=f'tableau_{basename}_')
+            temp_dirs.append(temp_dir)
+
+            extractor = TableauExtractor(wb_path, output_dir=temp_dir)
+            success = extractor.extract_all()
+
+            if not success:
+                print(f"  Warning: Extraction failed for {basename}, skipping")
+                all_converted.append(_empty_converted_objects())
+                continue
+
+            importer = PowerBIImporter(source_dir=temp_dir)
+            converted = importer._load_converted_objects()
+            all_converted.append(converted)
+
+        if sum(1 for c in all_converted if c.get('datasources')) < 2:
+            print("\nError: Need at least 2 workbooks with datasources")
+            return ExitCode.EXTRACTION_FAILED
+
+        # Run global assessment
+        print("\n  Analyzing pairwise merge scores...")
+        result = run_global_assessment(all_converted, workbook_names)
+
+        # Print console summary
+        print_global_summary(result)
+
+        # Save outputs
+        out = args.output_dir or os.path.join(
+            'artifacts', 'powerbi_projects', 'assessments'
+        )
+        os.makedirs(out, exist_ok=True)
+
+        html_path = os.path.join(out, 'global_assessment.html')
+        generate_global_html_report(result, output_path=html_path)
+        print(f"  HTML report: {html_path}")
+
+        json_path = os.path.join(out, 'global_assessment.json')
+        save_global_assessment_json(result, output_path=json_path)
+        print(f"  JSON report: {json_path}")
+
+        # Generate KPI summary CSVs aligned with dashboard conventions.
+        try:
+            from generate_report import _build_report_summary_rows, _write_summary_csv
+
+            def _norm_name(value):
+                text = str(value or '').strip()
+                return text.strip('[]').strip().lower()
+
+            def _estimate_table_count(ds_list):
+                total = 0
+                for ds in ds_list:
+                    tables = ds.get('tables', []) or []
+                    if tables:
+                        total += len(tables)
+                    else:
+                        total += 1
+                return total
+
+            migration_metadata = {}
+            for wb_name, converted in zip(workbook_names, all_converted):
+                datasources = converted.get('datasources', []) or []
+                worksheets = converted.get('worksheets', []) or []
+                dashboards = converted.get('dashboards', []) or []
+                calculations = converted.get('calculations', []) or []
+
+                calc_names = {
+                    _norm_name(c.get('name', ''))
+                    for c in calculations
+                    if _norm_name(c.get('name', ''))
+                }
+                calc_caption_names = {
+                    _norm_name(c.get('caption', ''))
+                    for c in calculations
+                    if _norm_name(c.get('caption', ''))
+                }
+
+                datasource_measure_names = set()
+                for ds in datasources:
+                    for table in ds.get('tables', []) or []:
+                        for col in table.get('columns', []) or []:
+                            if str(col.get('role', '')).strip().lower() == 'measure':
+                                col_name = _norm_name(col.get('name', ''))
+                                if col_name:
+                                    datasource_measure_names.add(col_name)
+
+                visual_details = []
+                for ws in worksheets:
+                    fields = ws.get('fields', []) or []
+                    measures = set()
+                    dax_measures = set()
+                    for fld in fields:
+                        name = _norm_name(fld.get('name', ''))
+                        if not name:
+                            continue
+                        is_measure_like = (
+                            bool(fld.get('aggregation'))
+                            or fld.get('shelf') == 'measure_value'
+                            or name in datasource_measure_names
+                            or name in calc_names
+                            or name in calc_caption_names
+                        )
+                        if is_measure_like:
+                            measures.add(str(fld.get('name', '')).strip())
+                        if name in calc_names or name in calc_caption_names:
+                            dax_measures.add(str(fld.get('name', '')).strip())
+
+                    visual_details.append({
+                        'pbi_visual': ws.get('chart_type') or ws.get('original_mark_class') or 'table',
+                        'measures': sorted(measures),
+                        'dax_measures': sorted(dax_measures),
+                    })
+
+                migration_metadata[wb_name] = {
+                    'objects_converted': {
+                        'datasources': len(datasources),
+                    },
+                    'tmdl_stats': {
+                        'tables': _estimate_table_count(datasources),
+                        'measures': len(calc_names),
+                    },
+                    'generated_output': {
+                        'pages': len(dashboards) or len(worksheets),
+                        'visuals': len(visual_details),
+                    },
+                    'dax_measure_names': sorted(calc_names),
+                    'visual_details': visual_details,
+                }
+
+            summary_rows = _build_report_summary_rows({}, migration_metadata)
+
+            summary_paths = [
+                os.path.join(out, 'global_assessment_summary.csv'),
+                os.path.join(out, 'MIGRATION_DASHBOARD_summary.csv'),
+            ]
+            for summary_path in summary_paths:
+                _write_summary_csv(summary_path, summary_rows)
+                print(f"📊 Assessment summary CSV: {summary_path}")
+        except Exception as csv_exc:
+            logger.warning("Global assessment summary CSV generation failed: %s", csv_exc)
+
+        return ExitCode.SUCCESS
+
+    except Exception as e:
+        logger.error("Global assessment failed: %s", e, exc_info=True)
+        print(f"\nError: {e}")
+        return ExitCode.GENERAL_ERROR
+
+    finally:
+        for td in temp_dirs:
+            try:
+                shutil.rmtree(td, ignore_errors=True)
+            except OSError as e:
+                logger.debug('Temp dir cleanup failed: %s', e)
+
+
+# ── Shared Semantic Model migration ─────────────────────────────────────────
+
+def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
+                               assess_only=False, force_merge=False,
+                               calendar_start=None, calendar_end=None,
+                               culture=None, model_mode='import',
+                               languages=None, merge_config_path=None,
+                               save_config=False, strict_merge=False,
+                               output_format='pbip', verify_open=True,
+                               strict_thin_report=False,
+                               thin_report_max_orphans=0):
+    """Orchestrate shared semantic model migration for multiple workbooks.
+
+    Steps:
+        1. Extract each workbook to an isolated temp directory
+        2. Load all converted_objects into memory
+        3. Delegate to PowerBIImporter.import_shared_model()
+
+    Returns:
+        ExitCode
+    """
+    import tempfile
+    import shutil
+
+    if not workbook_paths:
+        print("Error: No workbooks specified for --shared-model")
+        return ExitCode.GENERAL_ERROR
+
+    # Validate all files exist
+    for wb_path in workbook_paths:
+        if not os.path.exists(wb_path):
+            print(f"Error: Workbook not found: {wb_path}")
+            return ExitCode.GENERAL_ERROR
+
+    model_name = model_name or 'SharedModel'
+    print_header("SHARED SEMANTIC MODEL MIGRATION")
+    print(f"  Workbooks:    {len(workbook_paths)}")
+    print(f"  Model name:   {model_name}")
+    if assess_only:
+        print(f"  Mode:         Assessment only")
+    print()
+
+    # Step 1: Extract each workbook to an isolated temp directory
+    all_converted = []
+    workbook_names = []
+    temp_dirs = []
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+
+    try:
+        from extract_tableau_data import TableauExtractor
+        from import_to_powerbi import PowerBIImporter
+
+        for wb_path in workbook_paths:
+            basename = os.path.splitext(os.path.basename(wb_path))[0]
+            workbook_names.append(basename)
+
+            print(f"  Extracting: {basename}...")
+            temp_dir = tempfile.mkdtemp(prefix=f'tableau_{basename}_')
+            temp_dirs.append(temp_dir)
+
+            extractor = TableauExtractor(wb_path, output_dir=temp_dir)
+            success = extractor.extract_all()
+
+            if not success:
+                print(f"  Warning: Extraction failed for {basename}, skipping")
+                all_converted.append(_empty_converted_objects())
+                continue
+
+            # Load the extracted data
+            importer = PowerBIImporter(source_dir=temp_dir)
+            converted = importer._load_converted_objects()
+            all_converted.append(converted)
+
+        if not any(c.get('datasources') for c in all_converted):
+            print("\nError: No datasources extracted from any workbook")
+            return ExitCode.EXTRACTION_FAILED
+
+        # Step 2: Assess or full migration
+        if assess_only:
+            from powerbi_import.shared_model import assess_merge
+            from powerbi_import.merge_assessment import print_merge_summary, generate_merge_report
+
+            assessment = assess_merge(all_converted, workbook_names)
+            print_merge_summary(assessment)
+
+            # Save assessment JSON
+            out = output_dir or os.path.join('artifacts', 'powerbi_projects', 'assessments')
+            os.makedirs(out, exist_ok=True)
+            assess_path = os.path.join(out, f'merge_assessment_{model_name}.json')
+            generate_merge_report(assessment, output_path=assess_path)
+            print(f"  Assessment saved: {assess_path}")
+
+            return ExitCode.SUCCESS
+        else:
+            importer = PowerBIImporter()
+            result = importer.import_shared_model(
+                model_name=model_name,
+                all_converted_objects=all_converted,
+                workbook_names=workbook_names,
+                output_dir=output_dir,
+                calendar_start=calendar_start,
+                calendar_end=calendar_end,
+                culture=culture,
+                model_mode=model_mode,
+                languages=languages,
+                force_merge=force_merge,
+                merge_config_path=merge_config_path,
+                save_config=save_config,
+                strict_merge=strict_merge,
+                workbook_paths=workbook_paths,
+                output_format=output_format,
+                strict_thin_report=strict_thin_report,
+                thin_report_max_orphans=thin_report_max_orphans,
+            )
+
+            if result.get('model_path'):
+                if output_format == 'pbip' and verify_open:
+                    project_dir = os.path.dirname(result['model_path'])
+                    if not _run_openability_gate(project_dir):
+                        return ExitCode.VALIDATION_FAILED
+                return ExitCode.SUCCESS
+            else:
+                return ExitCode.GENERAL_ERROR
+
+    except Exception as e:
+        logger.error("Shared model migration failed: %s", e, exc_info=True)
+        print(f"\nError: {e}")
+        return ExitCode.GENERAL_ERROR
+
+    finally:
+        # Clean up temp directories
+        for td in temp_dirs:
+            try:
+                shutil.rmtree(td, ignore_errors=True)
+            except OSError as e:
+                logger.debug('Temp dir cleanup failed: %s', e)
+
+
+def _empty_converted_objects():
+    """Return an empty converted_objects dict."""
+    return {
+        'datasources': [], 'worksheets': [], 'dashboards': [],
+        'calculations': [], 'parameters': [], 'filters': [],
+        'stories': [], 'actions': [], 'sets': [], 'groups': [],
+        'bins': [], 'hierarchies': [], 'sort_orders': [],
+        'aliases': {}, 'custom_sql': [], 'user_filters': [],
+    }
+
+
+def _run_add_to_model(args):
+    """Handle --add-to-model DIR WORKBOOK."""
+    import tempfile
+    import shutil
+
+    model_dir, workbook_path = args.add_to_model
+    if not os.path.isdir(model_dir):
+        print(f"Error: Model directory not found: {model_dir}")
+        return ExitCode.GENERAL_ERROR
+    if not os.path.exists(workbook_path):
+        print(f"Error: Workbook not found: {workbook_path}")
+        return ExitCode.GENERAL_ERROR
+
+    basename = os.path.splitext(os.path.basename(workbook_path))[0]
+    print_header("ADD WORKBOOK TO SHARED MODEL")
+    print(f"  Model dir:  {model_dir}")
+    print(f"  Workbook:   {basename}")
+    print()
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+
+    temp_dir = None
+    try:
+        from extract_tableau_data import TableauExtractor
+        from powerbi_import.shared_model import add_to_model
+        from import_to_powerbi import PowerBIImporter
+
+        # Extract new workbook
+        temp_dir = tempfile.mkdtemp(prefix=f'tableau_{basename}_')
+        extractor = TableauExtractor(workbook_path, output_dir=temp_dir)
+        success = extractor.extract_all()
+        if not success:
+            print(f"Error: Extraction failed for {basename}")
+            return ExitCode.EXTRACTION_FAILED
+
+        importer = PowerBIImporter(source_dir=temp_dir)
+        new_extracted = importer._load_converted_objects()
+
+        # Run incremental add
+        result = add_to_model(
+            model_dir=model_dir,
+            new_extracted=new_extracted,
+            new_workbook_name=basename,
+            new_workbook_path=workbook_path,
+            force=getattr(args, 'force_merge', False),
+        )
+
+        status = result.get('status', 'unknown')
+        if status == 'rejected':
+            print(f"  Add rejected: {result.get('reason', '')}")
+            return ExitCode.GENERAL_ERROR
+
+        if status == 'added':
+            manifest = result['manifest']
+            manifest.save(model_dir)
+
+            # Regenerate TMDL from merged model
+            merged = result['merged']
+            from pbip_generator import PowerBIProjectGenerator
+            gen = PowerBIProjectGenerator()
+            project_dir = model_dir
+            sm_dir = None
+            for entry in os.listdir(model_dir):
+                if entry.endswith('.SemanticModel'):
+                    sm_dir = os.path.join(model_dir, entry)
+                    break
+
+            if sm_dir:
+                gen.create_semantic_model_structure(
+                    project_dir, manifest.model_name, merged
+                )
+
+            # Generate thin report for new workbook
+            from powerbi_import.thin_report_generator import ThinReportGenerator
+            from powerbi_import.shared_model import build_field_mapping, assess_merge
+
+            assessment = result['assessment']
+            field_mapping = build_field_mapping(assessment, basename)
+            thin_gen = ThinReportGenerator(manifest.model_name, model_dir)
+            thin_gen.generate_thin_report(basename, new_extracted, field_mapping=field_mapping)
+
+            val = result.get('validation', {})
+            score = val.get('score', 0) if val else 0
+            print(f"  [OK] Workbook '{basename}' added to model")
+            print(f"  Tables: {manifest.artifact_counts.get('tables', 0)}")
+            print(f"  Validation: {score}/100")
+            return ExitCode.SUCCESS
+
+        print(f"  Unexpected status: {status}")
+        return ExitCode.GENERAL_ERROR
+
+    except Exception as e:
+        logger.error("Add-to-model failed: %s", e, exc_info=True)
+        print(f"\nError: {e}")
+        return ExitCode.GENERAL_ERROR
+    finally:
+        if temp_dir:
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except OSError:
+                pass
+
+
+def _run_remove_from_model(args):
+    """Handle --remove-from-model DIR WB_NAME."""
+    model_dir, wb_name = args.remove_from_model
+    if not os.path.isdir(model_dir):
+        print(f"Error: Model directory not found: {model_dir}")
+        return ExitCode.GENERAL_ERROR
+
+    print_header("REMOVE WORKBOOK FROM SHARED MODEL")
+    print(f"  Model dir:  {model_dir}")
+    print(f"  Workbook:   {wb_name}")
+    print()
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+
+    try:
+        from powerbi_import.shared_model import remove_from_model
+
+        result = remove_from_model(model_dir=model_dir, workbook_name=wb_name)
+
+        status = result.get('status', 'unknown')
+        if status == 'not_found':
+            print(f"  Workbook '{wb_name}' not found in manifest.")
+            return ExitCode.GENERAL_ERROR
+
+        if status == 'removed':
+            manifest = result['manifest']
+            manifest.save(model_dir)
+
+            removed_t = result.get('removed_tables', [])
+            removed_m = result.get('removed_measures', [])
+            kept = result.get('shared_tables_kept', [])
+
+            print(f"  [OK] Workbook '{wb_name}' removed from model")
+            if removed_t:
+                print(f"  Removed tables: {', '.join(removed_t)}")
+            if removed_m:
+                print(f"  Removed measures: {', '.join(removed_m)}")
+            if kept:
+                print(f"  Shared tables kept: {', '.join(kept)}")
+            print(f"  Remaining workbooks: {len(manifest.workbooks)}")
+
+            # Regenerate TMDL from updated model
+            merged = result.get('merged')
+            if merged:
+                from pbip_generator import PowerBIProjectGenerator
+                gen = PowerBIProjectGenerator()
+                sm_dir = None
+                for entry in os.listdir(model_dir):
+                    if entry.endswith('.SemanticModel'):
+                        sm_dir = os.path.join(model_dir, entry)
+                        break
+                if sm_dir:
+                    gen.create_semantic_model_structure(
+                        model_dir, manifest.model_name, merged
+                    )
+
+            # Remove the thin report directory
+            for entry in os.listdir(model_dir):
+                if entry.startswith(wb_name) and entry.endswith('.Report'):
+                    report_dir = os.path.join(model_dir, entry)
+                    if os.path.isdir(report_dir):
+                        import shutil
+                        shutil.rmtree(report_dir, ignore_errors=True)
+                        print(f"  Removed thin report: {entry}")
+
+            return ExitCode.SUCCESS
+
+        print(f"  Unexpected status: {status}")
+        return ExitCode.GENERAL_ERROR
+
+    except Exception as e:
+        logger.error("Remove-from-model failed: %s", e, exc_info=True)
+        print(f"\nError: {e}")
+        return ExitCode.GENERAL_ERROR
+
+
+# ── Functionality parity mode ────────────────────────────────────────────────
+
+def _run_parity_mode(args):
+    """Emit a functionality-parity scorecard (JSON + HTML). Returns ExitCode.
+
+    ``--parity`` always returns SUCCESS; ``--parity-strict`` returns
+    ASSESSMENT_FAILED when any in-use feature is unsupported.
+    """
+    try:
+        from powerbi_import.parity_registry import scan_workbook
+
+        # Load the extraction — include blending/hyper for accurate coverage.
+        extracted = {}
+        json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
+                      'parameters', 'filters', 'stories', 'actions', 'sets',
+                      'groups', 'bins', 'hierarchies', 'custom_sql', 'user_filters',
+                      'sort_orders', 'aliases', 'data_blending', 'hyper_files']
+        for jf in json_files:
+            fpath = os.path.join(_get_extract_dir(), f'{jf}.json')
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        extracted[jf] = json.load(f)
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                    extracted[jf] = []
+
+        source_basename = os.path.splitext(os.path.basename(args.tableau_file))[0]
+        scan = scan_workbook(extracted, workbook=source_basename)
+
+        print_header("FUNCTIONALITY PARITY")
+        print(f"  Parity score : {scan.parity_score}%  ({scan.grade})")
+        counts = scan.status_counts
+        print(f"  exact {counts['exact']} · healed {counts['healed']} · "
+              f"approximated {counts['approximated']} · unsupported {counts['unsupported']}")
+        for u in scan.gaps:
+            print(f"    - [{u.status}] {u.label} ×{u.count} → {u.target}")
+
+        out_dir = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'assessments')
+        os.makedirs(out_dir, exist_ok=True)
+        json_path = os.path.join(out_dir, f'parity_scorecard_{source_basename}.json')
+        html_path = os.path.join(out_dir, f'parity_scorecard_{source_basename}.html')
+        scan.save_json(json_path)
+        scan.to_html(html_path)
+        print(f"\n  Parity scorecard saved to: {json_path}")
+        print(f"  Parity scorecard (HTML)  : {html_path}")
+
+        if getattr(args, 'parity_strict', False) and scan.unsupported_in_use:
+            print(f"\n  [PARITY-STRICT] {len(scan.unsupported_in_use)} unsupported "
+                  f"feature(s) in use — failing.")
+            return ExitCode.ASSESSMENT_FAILED
+        return ExitCode.SUCCESS
+
+    except Exception as e:
+        logger.error("Parity scan failed: %s", e, exc_info=True)
+        print(f"\nError: {e}")
+        return ExitCode.GENERAL_ERROR
+
+
+# ── Assessment mode ──────────────────────────────────────────────────────────
+
+def _run_assessment_mode(args, results):
+    """Run pre-migration assessment and strategy analysis. Returns ExitCode."""
+    try:
+        from powerbi_import.assessment import run_assessment, print_assessment_report, save_assessment_report
+        from powerbi_import.strategy_advisor import recommend_strategy, print_recommendation
+
+        # Load extracted data
+        extracted = {}
+        json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
+                      'parameters', 'filters', 'stories', 'actions', 'sets',
+                      'groups', 'bins', 'hierarchies', 'custom_sql', 'user_filters',
+                      'sort_orders', 'aliases']
+        for jf in json_files:
+            fpath = os.path.join(_get_extract_dir(), f'{jf}.json')
+            if os.path.exists(fpath):
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    extracted[jf] = json.load(f)
+
+        # Run assessment
+        report = run_assessment(extracted)
+        print_assessment_report(report)
+
+        # Save assessment report
+        out_dir = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'assessments')
+        os.makedirs(out_dir, exist_ok=True)
+        source_basename = os.path.splitext(os.path.basename(args.tableau_file))[0]
+        assess_path = os.path.join(out_dir, f'assessment_{source_basename}.json')
+        save_assessment_report(report, assess_path)
+        print(f"\n  Assessment saved to: {assess_path}")
+
+        # ── Report export formats (Sprint 175) ────────────────────
+        do_pdf = getattr(args, 'pdf', False)
+        do_pptx = getattr(args, 'pptx', False)
+        do_package = getattr(args, 'report_package', False)
+
+        html_content = None
+        if do_pdf or do_package:
+            # Generate interactive HTML for PDF rendering / packaging
+            try:
+                from powerbi_import.server_assessment import generate_single_assessment_html
+                html_content = generate_single_assessment_html(report)
+            except (ImportError, AttributeError):
+                # Fallback: build minimal HTML from report data
+                from powerbi_import.html_template import html_open, html_close, stat_grid, stat_card, section_open, section_close, data_table, badge
+                html_content = html_open(f"Assessment — {report.workbook_name}", subtitle="Pre-Migration Readiness")
+                cards = [
+                    stat_card(report.total_checks, "Total Checks"),
+                    stat_card(report.total_pass, "Passed", accent="success"),
+                    stat_card(report.total_warn, "Warnings", accent="warn"),
+                    stat_card(report.total_fail, "Failures", accent="fail"),
+                ]
+                html_content += stat_grid(cards)
+                for cat in report.categories:
+                    html_content += section_open(cat.name.replace(' ', '_'), cat.name, icon="📋")
+                    rows = []
+                    for ck in cat.checks:
+                        rows.append([badge(ck.severity), ck.name, ck.detail, ck.recommendation])
+                    html_content += data_table(["Status", "Check", "Detail", "Recommendation"], rows)
+                    html_content += section_close()
+                html_content += html_close()
+
+        if do_pdf:
+            from powerbi_import.pdf_renderer import render_print_html, save_print_html
+            if html_content:
+                pdf_path = os.path.join(out_dir, f'assessment_{source_basename}.pdf.html')
+                print_html = render_print_html(html_content, title=f"{report.workbook_name} Assessment")
+                save_print_html(print_html, pdf_path)
+                print(f"  Print-ready PDF: {pdf_path}")
+
+        if do_pptx:
+            from powerbi_import.pptx_report import generate_pptx_report
+            pptx_path = os.path.join(out_dir, f'assessment_{source_basename}.pptx')
+            generate_pptx_report(report.to_dict(), pptx_path)
+            print(f"  PPTX summary:    {pptx_path}")
+
+        if do_package:
+            from powerbi_import.report_packager import generate_report_package
+            if html_content:
+                pkg_path = os.path.join(out_dir, f'assessment_{source_basename}_package.zip')
+                generate_report_package(report, html_content, pkg_path)
+                print(f"  Report package:  {pkg_path}")
+
+        # Strategy recommendation
+        has_prep = bool(args.prep and results.get('prep'))
+        rec = recommend_strategy(extracted, prep_flow=has_prep)
+        print_recommendation(rec)
+
+        # Generate migration-compatible summary CSV for UI KPI parity.
+        try:
+            from generate_report import _build_report_summary_rows, _write_summary_csv
+
+            worksheets = extracted.get('worksheets', []) or []
+            dashboards = extracted.get('dashboards', []) or []
+            calculations = extracted.get('calculations', []) or []
+            datasources = extracted.get('datasources', []) or []
+            def _norm_name(value):
+                text = str(value or '').strip()
+                return text.strip('[]').strip().lower()
+
+            calc_names = {
+                _norm_name(c.get('name', ''))
+                for c in calculations
+                if _norm_name(c.get('name', ''))
+            }
+            calc_caption_names = {
+                _norm_name(c.get('caption', ''))
+                for c in calculations
+                if _norm_name(c.get('caption', ''))
+            }
+            datasource_measure_names = set()
+            for ds in datasources:
+                for table in ds.get('tables', []) or []:
+                    for col in table.get('columns', []) or []:
+                        if str(col.get('role', '')).strip().lower() == 'measure':
+                            col_name = _norm_name(col.get('name', ''))
+                            if col_name:
+                                datasource_measure_names.add(col_name)
+
+            def _estimate_table_count(ds_list):
+                total = 0
+                for ds in ds_list:
+                    tables = ds.get('tables', []) or []
+                    if tables:
+                        total += len(tables)
+                    else:
+                        total += 1
+                return total
+
+            visual_details = []
+            for ws in worksheets:
+                fields = ws.get('fields', []) or []
+                measures = set()
+                dax_measures = set()
+                for fld in fields:
+                    name = _norm_name(fld.get('name', ''))
+                    if not name:
+                        continue
+                    is_measure_like = (
+                        bool(fld.get('aggregation'))
+                        or fld.get('shelf') == 'measure_value'
+                        or name in datasource_measure_names
+                        or name in calc_names
+                        or name in calc_caption_names
+                    )
+                    if is_measure_like:
+                        measures.add(str(fld.get('name', '')).strip())
+                    if name in calc_names or name in calc_caption_names:
+                        dax_measures.add(str(fld.get('name', '')).strip())
+
+                visual_details.append({
+                    'pbi_visual': ws.get('chart_type') or ws.get('original_mark_class') or 'table',
+                    'measures': sorted(measures),
+                    'dax_measures': sorted(dax_measures),
+                })
+
+            synthetic_meta = {
+                source_basename: {
+                    'objects_converted': {
+                        'datasources': len(datasources),
+                    },
+                    'tmdl_stats': {
+                        'tables': _estimate_table_count(datasources),
+                        'measures': len(calc_names),
+                    },
+                    'generated_output': {
+                        'pages': len(dashboards) or len(worksheets),
+                        'visuals': len(visual_details),
+                    },
+                    'dax_measure_names': sorted(calc_names),
+                    'visual_details': visual_details,
+                }
+            }
+
+            summary_rows = _build_report_summary_rows({}, synthetic_meta)
+            summary_csv_path = os.path.join(out_dir, f'MIGRATION_DASHBOARD_{source_basename}_summary.csv')
+            _write_summary_csv(summary_csv_path, summary_rows)
+            print(f"\n📊 Assessment summary CSV: {summary_csv_path}")
+
+            # Also emit the legacy dashboard summary name so it sits beside
+            # MIGRATION_DASHBOARD.html in the same folder when users expect it.
+            legacy_summary_csv_path = os.path.join(out_dir, 'MIGRATION_DASHBOARD_summary.csv')
+            _write_summary_csv(legacy_summary_csv_path, summary_rows)
+            print(f"📊 Assessment summary CSV (dashboard name): {legacy_summary_csv_path}")
+
+            global_assessment_summary_csv_path = os.path.join(out_dir, 'global_assessment_summary.csv')
+            _write_summary_csv(global_assessment_summary_csv_path, summary_rows)
+            print(
+                "📊 Assessment summary CSV (global assessment name): "
+                f"{global_assessment_summary_csv_path}"
+            )
+
+            # Also place a copy next to the saved assessment report bundle folder.
+            if os.path.isdir(assess_path):
+                nested_summary_csv_path = os.path.join(
+                    assess_path,
+                    f'MIGRATION_DASHBOARD_{source_basename}_summary.csv',
+                )
+                _write_summary_csv(nested_summary_csv_path, summary_rows)
+                print(f"📊 Assessment summary CSV (assessment folder): {nested_summary_csv_path}")
+
+                nested_legacy_summary_csv_path = os.path.join(
+                    assess_path,
+                    'MIGRATION_DASHBOARD_summary.csv',
+                )
+                _write_summary_csv(nested_legacy_summary_csv_path, summary_rows)
+                print(
+                    "📊 Assessment summary CSV (assessment folder, dashboard name): "
+                    f"{nested_legacy_summary_csv_path}"
+                )
+
+                nested_global_assessment_summary_csv_path = os.path.join(
+                    assess_path,
+                    'global_assessment_summary.csv',
+                )
+                _write_summary_csv(nested_global_assessment_summary_csv_path, summary_rows)
+                print(
+                    "📊 Assessment summary CSV (assessment folder, global assessment name): "
+                    f"{nested_global_assessment_summary_csv_path}"
+                )
+        except Exception as csv_exc:
+            logger.warning("Assessment summary CSV generation failed: %s", csv_exc)
+
+        print("\n✓ Assessment complete (no generation performed)")
+        return ExitCode.SUCCESS
+    except Exception as e:
+        logger.error(f"Assessment failed: {e}")
+        print(f"\n✗ Assessment failed: {e}")
+        return ExitCode.ASSESSMENT_FAILED
+
+
+# ── Main entry point ─────────────────────────────────────────────────────────
+
+def main():
+    """Main entry point — orchestrates the full migration pipeline."""
+    parser = _build_argument_parser()
+    args = _parse_cli_args(parser)
+
+    # --qa-strict implies --qa
+    if getattr(args, 'qa_strict', False):
+        args.qa = True
+
+    # Load configuration file if specified
+    _apply_config_file(args)
+
+    # ── Interactive wizard mode ───────────────────────────────
+    if getattr(args, 'wizard', False):
+        from powerbi_import.wizard import run_wizard, wizard_to_args
+        config = run_wizard()
+        if config is None:
+            return ExitCode.SUCCESS
+        args = wizard_to_args(config)
+
+    # ── Web UI mode ───────────────────────────────────────────
+    if getattr(args, 'web_ui', False):
+        from web.app import launch_web_ui
+        launch_web_ui(port=getattr(args, 'web_port', 8501))
+        return ExitCode.SUCCESS
+
+    # Setup structured logging
+    setup_logging(verbose=args.verbose, log_file=args.log_file,
+                  quiet=getattr(args, 'quiet', False))
+
+    # ── Batch-config migration mode ───────────────────────────
+    if args.batch_config:
+        return _run_batch_config(args)
+
+    # ── Tableau Server download ───────────────────────────────
+    if getattr(args, 'server', None):
+        # ── Sprint 167 — Enterprise server operations ─────────
+        enterprise_result = _handle_enterprise_server_ops(args)
+        if enterprise_result is not None:
+            return enterprise_result
+
+        server_result = _download_from_server(args)
+        if server_result is not None:
+            return server_result
+
+    # ── Clear datasource cache mode ──────────────────────────
+    if getattr(args, 'clear_cache', False):
+        cache_dir = getattr(args, 'ds_cache_dir', None) or os.path.join(
+            tempfile.gettempdir(), 'tableau_ds_cache')
+        from tableau_export.datasource_extractor import clear_ds_cache
+        count = clear_ds_cache(cache_dir)
+        print(f"Cleared {count} cached datasource(s) from {cache_dir}")
+        return ExitCode.SUCCESS
+
+    # ── Rollback mode ─────────────────────────────────────────
+    if getattr(args, 'cutover_rollback', None):
+        from powerbi_import.cutover_manager import rollback
+        print_header("ROLLBACK")
+        target_dir = getattr(args, 'output_dir', None) or 'artifacts'
+        ok = rollback(args.cutover_rollback, target_dir)
+        return ExitCode.SUCCESS if ok else ExitCode.GENERAL_ERROR
+
+    # ── PBIR schema version check mode ────────────────────────
+    if getattr(args, 'check_schema', False):
+        from powerbi_import.validator import ArtifactValidator
+        print_header("PBIR SCHEMA VERSION CHECK")
+        info = ArtifactValidator.check_pbir_schema_version(fetch=True)
+        for schema_type, details in info.items():
+            status = "UPDATE AVAILABLE" if details.get('update_available') else "up to date"
+            latest = details.get('latest', details['current'])
+            print(f"  {schema_type:20s}  current={details['current']}  latest={latest}  [{status}]")
+        return ExitCode.SUCCESS
+
+    # ── Hyper diagnostic mode ─────────────────────────────────
+    if getattr(args, 'check_hyper', False):
+        return _run_check_hyper(args)
+
+    # ── Schema drift detection mode ────────────────────────────
+    if getattr(args, 'check_drift', None):
+        return _run_check_drift(args)
+
+    # ── Consolidate existing reports mode ─────────────────────
+    if getattr(args, 'consolidate', None):
+        result = run_consolidate_reports(args.consolidate)
+        return ExitCode.SUCCESS if result == 0 else ExitCode.GENERAL_ERROR
+
+    # ── Prep Lineage mode ──────────────────────────────────────
+    if getattr(args, 'prep_lineage', None) is not None:
+        return run_prep_lineage_mode(args)
+
+    # ── Bulk Assessment mode (local folder) ────────────────────
+    if getattr(args, 'bulk_assess', None):
+        return run_bulk_assessment_mode(args)
+
+    # ── Global Assessment mode ─────────────────────────────────
+    if getattr(args, 'global_assess', None) is not None:
+        return run_global_assessment_mode(args)
+
+    # ── Add-to-model mode ───────────────────────────────────
+    if getattr(args, 'add_to_model', None):
+        return _run_add_to_model(args)
+
+    # ── Remove-from-model mode ────────────────────────────────
+    if getattr(args, 'remove_from_model', None):
+        return _run_remove_from_model(args)
+
+    # ── Shared Semantic Model mode ────────────────────────────
+    if getattr(args, 'shared_model', None) is not None:
+        workbook_paths = list(args.shared_model or [])
+
+        # If --batch is also given, discover workbooks from directory
+        if args.batch and not workbook_paths:
+            import glob
+            for ext in ('*.twb', '*.twbx'):
+                workbook_paths.extend(
+                    glob.glob(os.path.join(args.batch, '**', ext), recursive=True)
+                )
+            workbook_paths.sort()
+
+        exit_code = run_shared_model_migration(
+            workbook_paths=workbook_paths,
+            model_name=getattr(args, 'model_name', None),
+            output_dir=args.output_dir,
+            assess_only=getattr(args, 'assess_merge', False),
+            force_merge=getattr(args, 'force_merge', False),
+            calendar_start=args.calendar_start,
+            calendar_end=args.calendar_end,
+            culture=args.culture,
+            model_mode=getattr(args, 'mode', 'import'),
+            languages=getattr(args, 'languages', None),
+            merge_config_path=getattr(args, 'merge_config', None),
+            save_config=getattr(args, 'save_merge_config', False),
+            strict_merge=getattr(args, 'strict_merge', False),
+            output_format=getattr(args, 'output_format', 'pbip'),
+            verify_open=getattr(args, 'verify_open', True),
+            strict_thin_report=getattr(args, 'strict_thin_report', False),
+            thin_report_max_orphans=getattr(args, 'thin_report_max_orphans', 0),
+        )
+
+        # Auto-deploy bundle if --deploy-bundle is given alongside --shared-model
+        if exit_code == ExitCode.SUCCESS and getattr(args, 'deploy_bundle', None):
+            model_name = getattr(args, 'model_name', None) or 'SharedModel'
+            project_dir = os.path.join(
+                args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'shared'),
+                model_name,
+            )
+            exit_code = _run_bundle_deploy(
+                project_dir, args.deploy_bundle,
+                refresh=getattr(args, 'bundle_refresh', False),
+            )
+
+        return exit_code
+
+    # ── Standalone bundle deployment mode ─────────────────────
+    if getattr(args, 'deploy_bundle', None) and not getattr(args, 'shared_model', None):
+        project_dir = args.output_dir
+        if not project_dir:
+            print("Error: --deploy-bundle requires --output-dir pointing to a project directory")
+            return ExitCode.GENERAL_ERROR
+        if not os.path.isdir(project_dir):
+            print(f"Error: project directory not found: {project_dir}")
+            return ExitCode.GENERAL_ERROR
+        return _run_bundle_deploy(
+            project_dir, args.deploy_bundle,
+            refresh=getattr(args, 'bundle_refresh', False),
+        )
+
+    # ── Manifest-based batch migration ─────────────────────────
+    manifest_data = None
+    if getattr(args, 'manifest', None):
+        try:
+            with open(args.manifest, 'r', encoding='utf-8') as mf:
+                manifest_data = json.loads(mf.read())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Error: Cannot load manifest {args.manifest}: {exc}")
+            return ExitCode.GENERAL_ERROR
+
+        # If no --batch dir given, derive from manifest file location
+        if not args.batch:
+            args.batch = os.path.dirname(os.path.abspath(args.manifest)) or '.'
+
+    # ── Batch migration mode ──────────────────────────────────
+    if args.batch:
+        return run_batch_migration(
+            batch_dir=args.batch,
+            output_dir=args.output_dir,
+            prep_file=args.prep,
+            skip_extraction=args.skip_extraction,
+            calendar_start=args.calendar_start,
+            calendar_end=args.calendar_end,
+            culture=args.culture,
+            parallel=getattr(args, 'parallel', None),
+            resume=getattr(args, 'resume', False),
+            jsonl_log=getattr(args, 'jsonl_log', None),
+            manifest=manifest_data,
+            full_lineage=getattr(args, 'full_lineage', False),
+            verify_open=getattr(args, 'verify_open', True),
+        )
+
+    # ── Single file migration ─────────────────────────────────
+    if not args.tableau_file:
+        parser.error('tableau_file is required (or use --batch DIR)')
+
+    return _run_single_migration(args)
+
+
+def _print_single_migration_header(args):
+    """Print the header with migration options for a single file."""
+    print_header("TABLEAU TO POWER BI MIGRATION")
+    print(f"Source file: {args.tableau_file}")
+    if args.prep:
+        print(f"Prep flow:   {args.prep}")
+    if args.output_dir:
+        print(f"Output dir:  {args.output_dir}")
+    if args.dry_run:
+        print(f"Mode:        DRY RUN (no files will be written)")
+    if args.calendar_start or args.calendar_end:
+        cal_start = args.calendar_start or 2020
+        cal_end = args.calendar_end or 2030
+        print(f"Calendar:    {cal_start}–{cal_end}")
+    if args.culture:
+        print(f"Culture:     {args.culture}")
+    if args.mode and args.mode != 'import':
+        print(f"Mode:        {args.mode}")
+    if args.output_format and args.output_format != 'pbip':
+        print(f"Format:      {args.output_format}")
+    if args.rollback:
+        print(f"Rollback:    enabled")
+    if getattr(args, 'telemetry', False):
+        print(f"Telemetry:   enabled")
+    print()
+
+
+def _init_telemetry(args):
+    """Initialize telemetry collector if opt-in. Returns collector or None."""
+    if not getattr(args, 'telemetry', False):
+        return None
+    try:
+        from powerbi_import.telemetry import TelemetryCollector
+        telemetry = TelemetryCollector(enabled=True)
+        telemetry.start()
+        return telemetry
+    except (ImportError, OSError, ValueError) as e:
+        logger.debug('Telemetry init failed: %s', e)
+        return None
+
+
+def _finalize_telemetry(telemetry, all_success, results):
+    """Finalize and send telemetry data."""
+    if not telemetry:
+        return
+    try:
+        telemetry.record_stats(
+            success=all_success,
+            extraction=bool(results.get('extraction')),
+            generation=bool(results.get('generation')),
+        )
+        telemetry.finish()
+        telemetry.save()
+        telemetry.send()
+    except (OSError, ValueError) as e:
+        logger.debug('Telemetry finalization failed: %s', e)
+
+
+def _run_incremental_merge(args, source_basename):
+    """Run optional incremental merge step."""
+    try:
+        from powerbi_import.incremental import IncrementalMerger
+        out_dir = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        generated_dir = os.path.join(out_dir, source_basename)
+        existing_dir = args.incremental
+        if os.path.isdir(existing_dir) and os.path.isdir(generated_dir):
+            print_header("INCREMENTAL MERGE")
+            merge_stats = IncrementalMerger.merge(
+                existing_dir=existing_dir,
+                incoming_dir=generated_dir,
+                output_dir=generated_dir,
+            )
+            print(f"  Added: {merge_stats['added']}")
+            print(f"  Merged: {merge_stats['merged']}")
+            print(f"  Removed: {merge_stats['removed']}")
+            print(f"  Preserved: {merge_stats['preserved']}")
+            if merge_stats['conflicts']:
+                print(f"  Conflicts: {len(merge_stats['conflicts'])}")
+                for c in merge_stats['conflicts']:
+                    print(f"    ⚠ {c}")
+        else:
+            print(f"  ⚠ Incremental merge skipped: directory not found")
+    except (ImportError, OSError, ValueError) as exc:
+        print(f"  ⚠ Incremental merge failed: {exc}")
+
+
+def _run_goals_generation(args, source_basename):
+    """Run optional Pulse → Goals/Scorecard generation."""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+        from pulse_extractor import extract_pulse_metrics, has_pulse_metrics
+        from goals_generator import generate_goals_json, write_goals_artifact
+        import xml.etree.ElementTree as _ET
+
+        twb_path = args.tableau_file
+        pulse_root = None
+        if twb_path and os.path.isfile(twb_path):
+            if twb_path.endswith('.twbx'):
+                import zipfile
+                with zipfile.ZipFile(twb_path, 'r') as z:
+                    for name in z.namelist():
+                        if name.endswith('.twb'):
+                            with z.open(name) as f:
+                                pulse_root = _ET.parse(f).getroot()
+                            break
+            else:
+                pulse_root = _ET.parse(twb_path).getroot()
+
+        if pulse_root is not None and has_pulse_metrics(pulse_root):
+            metrics = extract_pulse_metrics(pulse_root)
+            if metrics:
+                scorecard = generate_goals_json(metrics, report_name=source_basename)
+                out_dir = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+                project_dir = os.path.join(out_dir, source_basename)
+                filepath = write_goals_artifact(scorecard, project_dir)
+                print(f"  ✓ Goals scorecard: {filepath} ({len(metrics)} goals)")
+            else:
+                print("  ⚠ No Pulse metrics found in workbook")
+        else:
+            print("  ⚠ No Pulse metrics found in workbook")
+    except (ImportError, OSError, ValueError) as exc:
+        print(f"  ⚠ Goals generation failed: {exc}")
+
+
+def _run_governance_checks(args, source_basename):
+    """Run governance checks on the generated TMDL artifacts.
+
+    Reads extracted data and runs naming convention enforcement,
+    PII detection, and audit trail recording.
+    """
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+        from governance import GovernanceEngine, AuditTrail, run_governance
+
+        # Load governance config
+        gov_config = {"mode": args.governance}
+        if getattr(args, 'governance_config', None):
+            config_path = args.governance_config
+            if os.path.isfile(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    user_cfg = json.load(f)
+                if isinstance(user_cfg, dict):
+                    gov_config.update(user_cfg)
+
+        # Load extracted data to build table list for checks
+        source_dir = _get_extract_dir()
+        tmdl_tables = []
+        ds_path = os.path.join(source_dir, 'datasources.json')
+        if os.path.isfile(ds_path):
+            with open(ds_path, 'r', encoding='utf-8') as f:
+                datasources = json.load(f)
+            for ds in datasources:
+                for table in ds.get('tables', []):
+                    tmdl_tables.append({
+                        'name': table.get('name', ''),
+                        'columns': table.get('columns', []),
+                        'measures': [],
+                    })
+        calc_path = os.path.join(source_dir, 'calculations.json')
+        if os.path.isfile(calc_path):
+            with open(calc_path, 'r', encoding='utf-8') as f:
+                calcs = json.load(f)
+            # Add measures to the first table (main table)
+            if tmdl_tables:
+                tmdl_tables[0]['measures'] = [
+                    {'name': c.get('caption', c.get('name', '')).replace('[', '').replace(']', '')}
+                    for c in calcs if c.get('role', 'measure') == 'measure'
+                ]
+
+        # Run checks
+        report = run_governance(tmdl_tables, config=gov_config)
+
+        # Print results
+        print(f"\n  Governance ({args.governance} mode): "
+              f"{report.issue_count} issues ({report.warn_count} warn, {report.fail_count} fail)")
+        if report.classifications:
+            print(f"  PII classifications: {len(report.classifications)} columns flagged")
+        for issue in report.issues[:10]:
+            severity_icon = "⚠" if issue.severity == "warn" else "✗" if issue.severity == "fail" else "ℹ"
+            print(f"    {severity_icon} [{issue.category}] {issue.message}")
+        if len(report.issues) > 10:
+            print(f"    ... and {len(report.issues) - 10} more issues")
+
+        # Save governance report JSON alongside the project
+        out_dir = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        project_dir = os.path.join(out_dir, source_basename)
+        if os.path.isdir(project_dir):
+            gov_path = os.path.join(project_dir, 'governance_report.json')
+            with open(gov_path, 'w', encoding='utf-8') as f:
+                json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
+            print(f"  ✓ Governance report: {gov_path}")
+
+        # Audit trail
+        if gov_config.get('audit_trail', True):
+            audit_log_path = gov_config.get('audit_log_path', 'migration_audit.jsonl')
+            # If relative, place alongside the project
+            if not os.path.isabs(audit_log_path) and os.path.isdir(project_dir):
+                audit_log_path = os.path.join(project_dir, audit_log_path)
+            audit = AuditTrail(log_path=audit_log_path)
+            source_hash = AuditTrail.compute_file_hash(getattr(args, 'tableau_file', ''))
+            output_hash = AuditTrail.compute_dir_hash(project_dir) if os.path.isdir(project_dir) else ""
+            audit.record(
+                source_file=getattr(args, 'tableau_file', ''),
+                output_dir=project_dir,
+                workbook_name=source_basename,
+                source_hash=source_hash,
+                output_hash=output_hash,
+                governance_summary={
+                    'mode': args.governance,
+                    'issues': report.issue_count,
+                    'warns': report.warn_count,
+                    'fails': report.fail_count,
+                    'pii_columns': len(report.classifications),
+                },
+            )
+            saved = audit.save()
+            if saved:
+                print(f"  ✓ Audit trail: {audit_log_path} ({saved} entries)")
+
+    except (ImportError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"  ⚠ Governance checks failed: {exc}")
+
+
+def _run_rollback_gate(args, source_basename):
+    """Phase 9: Auto-rollback quality gate.
+
+    Runs after generation (and optionally after QA suite).  Evaluates
+    validation results, schema checks, and cross-artifact issues to decide
+    whether to ship, quarantine, or rollback the .pbip project.
+
+    Returns:
+        dict with 'action' ('ship'/'quarantine'/'rollback'), 'triage_path',
+        'exit_code', and 'verdict' — or None if engine import fails.
+    """
+    try:
+        from powerbi_import.rollback_engine import RollbackEngine
+    except ImportError:
+        return None
+
+    out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    project_dir = os.path.join(out_base, source_basename)
+    if not os.path.isdir(project_dir):
+        return None
+
+    extract_dir = _get_extract_dir()
+    engine = RollbackEngine(project_dir, source_basename, extract_dir=extract_dir)
+
+    # Ingest QA report if available
+    qa_path = os.path.join(project_dir, 'qa_report.json')
+    engine.ingest_qa_report(qa_path)
+
+    # Ingest schema validation if available
+    try:
+        from powerbi_import.schema_validator import validate_report_dir
+        report_def_dir = None
+        for entry in os.listdir(project_dir):
+            candidate = os.path.join(project_dir, entry, 'definition')
+            if entry.endswith('.Report') and os.path.isdir(candidate):
+                report_def_dir = candidate
+                break
+        if report_def_dir:
+            schema_results = validate_report_dir(report_def_dir)
+            engine.ingest_schema_result(schema_results)
+    except (ImportError, OSError):
+        pass
+
+    # Ingest cross-artifact validation if available
+    try:
+        from powerbi_import.cross_validator import cross_validate
+        model_bim = os.path.join(project_dir, 'model.bim')
+        if os.path.isfile(model_bim):
+            with open(model_bim, 'r', encoding='utf-8') as f:
+                model = json.load(f)
+            # Build report state from definition dir
+            report_state = {}
+            if report_def_dir:
+                report_state['definition_dir'] = report_def_dir
+            cross_result = cross_validate(model, report_state)
+            engine.ingest_cross_result(cross_result)
+    except (ImportError, OSError, json.JSONDecodeError):
+        pass
+
+    # Ingest recovery report if available
+    try:
+        recovery_json = os.path.join(project_dir, f'{source_basename}_recovery.json')
+        if os.path.isfile(recovery_json):
+            with open(recovery_json, 'r', encoding='utf-8') as f:
+                recovery_data = json.load(f)
+            engine.ingest_repairs(recovery_data)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    # Evaluate
+    verdict = engine.evaluate()
+
+    # Determine backup dir for potential rollback
+    backup_dir = None
+    if args.rollback:
+        for entry in os.listdir(out_base):
+            if entry.startswith(source_basename + '.backup_'):
+                backup_dir = os.path.join(out_base, entry)
+
+    # Execute
+    strict = getattr(args, 'strict', False)
+    source_file = getattr(args, 'tableau_file', None)
+    result = engine.execute(verdict, backup_dir=backup_dir, strict=strict,
+                            source_file=source_file)
+
+    # Print summary
+    action = result.get('action', 'ship')
+    if action == 'ship':
+        sev = verdict.severity
+        if sev == 'warning':
+            print(f"\n  Quality gate: PASSED with warnings ({len(verdict.issues)} issues)")
+        else:
+            print(f"\n  Quality gate: PASSED ({len(verdict.issues)} issues)")
+    elif action == 'quarantine':
+        print(f"\n  ⚠ Quality gate: QUARANTINED — {len(verdict.issues)} issues")
+        print(f"    Triage report: {result.get('triage_path', 'N/A')}")
+    elif action == 'rollback':
+        print(f"\n  ✗ Quality gate: ROLLED BACK — {len(verdict.issues)} critical issues")
+        print(f"    Triage package: {result.get('triage_path', 'N/A')}")
+
+    return result
+
+
+def _run_issue_report(args, source_basename, rollback_result=None):
+    """Phase 10: Create a redacted issue package for regression tracking."""
+    try:
+        from powerbi_import.feedback_loop import IssueCollector
+    except ImportError:
+        return
+
+    out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    project_dir = os.path.join(out_base, source_basename)
+    extract_dir = _get_extract_dir()
+    source_file = getattr(args, 'tableau_file', None)
+
+    verdict = None
+    if rollback_result and 'verdict' in rollback_result:
+        verdict = rollback_result['verdict']
+
+    collector = IssueCollector(project_dir, source_basename, extract_dir=extract_dir)
+    package_path = collector.collect(verdict=verdict, source_file=source_file,
+                                     output_dir=out_base)
+    if package_path:
+        print(f"\n  Issue package: {package_path}")
+
+
+def _record_zero_touch(args, source_basename, *, success, failure_mode='',
+                       rollback_result=None):
+    """Phase 10: Record migration outcome for Zero-Touch Open Rate tracking."""
+    try:
+        from powerbi_import.feedback_loop import ZeroTouchTracker
+    except ImportError:
+        return
+
+    out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    history_path = os.path.join(out_base, 'zero_touch_history.json')
+
+    verdict_sev = ''
+    issues_count = 0
+    if rollback_result and 'verdict' in rollback_result:
+        v = rollback_result['verdict']
+        verdict_sev = v.get('severity', '') if isinstance(v, dict) else ''
+        issues_count = v.get('issue_count', 0) if isinstance(v, dict) else 0
+
+    tracker = ZeroTouchTracker(history_path=history_path)
+    tracker.record(source_basename, success=success, failure_mode=failure_mode,
+                   verdict_severity=verdict_sev, issues_count=issues_count)
+    tracker.save()
+
+    # Update dashboard if it exists or if enough records
+    dashboard_path = os.path.join(
+        os.path.dirname(__file__), 'docs', 'zero_error_dashboard.html'
+    )
+    if tracker.total_count >= 3 or os.path.isfile(dashboard_path):
+        tracker.save_dashboard(dashboard_path)
+
+
+def _run_autoheal(args, source_basename):
+    """Closed-loop autoheal so the generated .pbip opens cleanly in PBI Desktop."""
+    out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    project_dir = os.path.join(out_base, source_basename)
+    if not os.path.isdir(project_dir):
+        print(f"  ⚠ Autoheal skipped: project directory not found")
+        return
+    try:
+        from autoheal import AutoHealer, LogFileSource
+    except ImportError:
+        from powerbi_import.autoheal import AutoHealer, LogFileSource
+
+    autofix = bool(getattr(args, 'llm_autofix', False))
+    gateway = None
+    if autofix:
+        try:
+            from llm_gateway import LLMGateway
+        except ImportError:
+            from powerbi_import.llm_gateway import LLMGateway
+        gw_kwargs = {}
+        if getattr(args, 'llm_mode', None):
+            gw_kwargs['mode'] = args.llm_mode
+        if getattr(args, 'llm_local_url', None):
+            gw_kwargs['local_url'] = args.llm_local_url
+        try:
+            gateway = LLMGateway(**gw_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠ Autoheal: LLM gateway unavailable ({exc}); deterministic-only")
+            gateway = None
+
+    log_path = getattr(args, 'autoheal_log', None)
+    source = None
+    if log_path and os.path.isfile(log_path):
+        source = LogFileSource(log_path)
+
+    healer = AutoHealer(gateway=gateway, autofix=autofix, error_source=source)
+    report = healer.heal_project(project_dir)
+    status = '✓' if report.clean else '⚠'
+    print(f"\n  Autoheal: {status} {len(report.actions)} fix(es) applied, "
+          f"{len(report.remaining_errors)} remaining"
+          + (" (LLM used)" if report.llm_used else ""))
+    for act in report.actions[:10]:
+        print(f"      • [{act.artifact}] {act.location}: {act.source} ({act.confidence})")
+    for err in report.remaining_errors[:10]:
+        print(f"      ✗ [{err.artifact}] {err.location}: {err.message}")
+    try:
+        with open(os.path.join(project_dir, 'autoheal_report.json'), 'w',
+                  encoding='utf-8') as f:
+            json.dump(report.to_dict(), f, indent=2)
+    except OSError:
+        pass
+
+
+def _run_desktop_probe(args, source_basename):
+    """Best-effort real Power BI Desktop open self-check on the generated .pbip."""
+    out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    project_dir = os.path.join(out_base, source_basename)
+    if not os.path.isdir(project_dir):
+        print(f"  ⚠ Desktop probe skipped: project directory not found")
+        return
+    import glob as _glob
+    pbips = _glob.glob(os.path.join(project_dir, '*.pbip'))
+    if not pbips:
+        print(f"  ⚠ Desktop probe skipped: no .pbip found in {project_dir}")
+        return
+    try:
+        from desktop_probe import probe_desktop_open
+    except ImportError:
+        from powerbi_import.desktop_probe import probe_desktop_open
+    report = probe_desktop_open(pbips[0])
+    icon = {'opened': '✓', 'unavailable': '•', 'crashed': '✗',
+            'timed_out': '⚠', 'error': '✗'}.get(report.status, '•')
+    print(f"\n  Desktop probe: {icon} {report.status}"
+          + (f" — {report.note}" if report.note else ""))
+    for sig in report.signals[:10]:
+        print(f"      • {sig}")
+    try:
+        with open(os.path.join(project_dir, 'desktop_probe_report.json'), 'w',
+                  encoding='utf-8') as f:
+            json.dump(report.to_dict(), f, indent=2)
+    except OSError:
+        pass
+
+
+def _run_openability_gate(project_dir):
+    """Run and persist the static Power BI openability gate for a project directory."""
+    if not os.path.isdir(project_dir):
+        print(f"  ⚠ Openability preflight skipped: project directory not found")
+        return True
+    try:
+        from openability import check_openability
+    except ImportError:
+        from powerbi_import.openability import check_openability
+    report = check_openability(project_dir)
+    if report.openable:
+        pq = next((c for c in report.checks if c.name == 'power_query'), None)
+        pq_note = f", {len(pq.issues)} Power Query issues" if pq and pq.issues else ""
+        warn = f" ({len(report.warnings)} warnings)" if report.warnings else ""
+        print(f"\n  Openability: ✓ project will open in PBI Desktop{pq_note}{warn}")
+    else:
+        print(f"\n  Openability: ✗ {len(report.blocking_issues)} blocking issue(s):")
+        for issue in report.blocking_issues[:20]:
+            print(f"      • {issue}")
+    try:
+        report_path = os.path.join(project_dir, 'openability_report.json')
+        with open(report_path, 'w', encoding='utf-8') as f:
+            json.dump(report.to_dict(), f, indent=2)
+    except OSError:
+        pass
+    return report.openable
+
+
+def _run_verify_open(args, source_basename):
+    """Run the static openability gate for a single generated migration."""
+    out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    project_dir = os.path.join(out_base, source_basename)
+    return _run_openability_gate(project_dir)
+
+
+def _run_qa_suite(args, source_basename):
+    """Unified QA suite: validate → auto-fix → governance (warn) → comparison → QA report JSON."""
+    out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    project_dir = os.path.join(out_base, source_basename)
+
+    if not os.path.isdir(project_dir):
+        print(f"  ⚠ QA suite skipped: project directory not found")
+        return
+
+    qa_results = {
+        'workbook': source_basename,
+        'timestamp': datetime.now().isoformat(),
+        'validation': None,
+        'auto_fix': None,
+        'governance': None,
+        'comparison': None,
+    }
+
+    # 1. Validate artifacts
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
+        from validator import ArtifactValidator
+
+        val_result = ArtifactValidator.validate_project(project_dir)
+        qa_results['validation'] = {
+            'valid': val_result['valid'],
+            'errors': len(val_result['errors']),
+            'warnings': len(val_result['warnings']),
+            'files_checked': val_result['files_checked'],
+            'error_details': val_result['errors'][:20],
+            'warning_details': val_result['warnings'][:20],
+        }
+        status = '✓' if val_result['valid'] else '✗'
+        print(f"\n  QA Validation: {status} ({val_result['files_checked']} files, "
+              f"{len(val_result['errors'])} errors, {len(val_result['warnings'])} warnings)")
+    except (ImportError, OSError) as exc:
+        logger.warning("QA validation failed: %s", exc)
+
+    # 2. Auto-fix DAX leaks
+    try:
+        from validator import ArtifactValidator
+        fix_result = ArtifactValidator.auto_fix_project(project_dir)
+        qa_results['auto_fix'] = fix_result
+        if fix_result['total_repairs']:
+            print(f"  QA Auto-fix: ✓ {fix_result['total_repairs']} DAX leaks repaired "
+                  f"in {len(fix_result['file_repairs'])} files")
+        else:
+            print(f"  QA Auto-fix: ✓ No DAX leaks found")
+    except (ImportError, OSError) as exc:
+        logger.warning("QA auto-fix failed: %s", exc)
+
+    # 3. Governance (warn mode) — skip if already run with --governance
+    if not getattr(args, 'governance', None):
+        try:
+            from governance import run_governance
+            source_dir = _get_extract_dir()
+            tmdl_tables = []
+            ds_path = os.path.join(source_dir, 'datasources.json')
+            if os.path.isfile(ds_path):
+                with open(ds_path, 'r', encoding='utf-8') as f:
+                    datasources = json.load(f)
+                for ds in datasources:
+                    for table in ds.get('tables', []):
+                        tmdl_tables.append({
+                            'name': table.get('name', ''),
+                            'columns': table.get('columns', []),
+                            'measures': [],
+                        })
+            report = run_governance(tmdl_tables, config={"mode": "warn"})
+            qa_results['governance'] = {
+                'issues': report.issue_count,
+                'warns': report.warn_count,
+                'fails': report.fail_count,
+                'pii_columns': len(report.classifications),
+            }
+            print(f"  QA Governance: {report.issue_count} issues "
+                  f"({report.warn_count} warn, {report.fail_count} fail), "
+                  f"{len(report.classifications)} PII columns")
+        except (ImportError, OSError) as exc:
+            logger.warning("QA governance failed: %s", exc)
+
+    # 4. Comparison report
+    try:
+        from powerbi_import.comparison_report import generate_comparison_report
+        extract_dir = _get_extract_dir()
+        cmp_path = os.path.join(out_base, f'comparison_{source_basename}.html')
+        html_path = generate_comparison_report(extract_dir, project_dir, output_path=cmp_path)
+        if html_path:
+            qa_results['comparison'] = html_path
+            print(f"  QA Comparison: ✓ {html_path}")
+    except (ImportError, OSError) as exc:
+        logger.warning("QA comparison failed: %s", exc)
+
+    # 5. Write QA report JSON
+    qa_path = os.path.join(project_dir, 'qa_report.json')
+    try:
+        with open(qa_path, 'w', encoding='utf-8') as f:
+            json.dump(qa_results, f, indent=2, ensure_ascii=False, default=str)
+        print(f"  QA Report: ✓ {qa_path}")
+    except OSError as exc:
+        logger.warning("QA report write failed: %s", exc)
+
+    # 6. Real-world output QA suite (Sprint 207): stray sentinels, empty visuals,
+    #    format coverage, zone matching, orphan filters → qa_report.html
+    try:
+        from powerbi_import.qa_suite import run_qa_suite, generate_qa_html
+        extract_dir = _get_extract_dir()
+        rw_report = run_qa_suite(
+            project_dir,
+            extraction_dir=extract_dir if os.path.isdir(extract_dir) else None,
+            workbook=source_basename,
+        )
+        html_path = os.path.join(project_dir, 'qa_report.html')
+        generate_qa_html(rw_report, html_path)
+        status = '✓' if rw_report.passed else '✗'
+        print(f"  QA Report Card: {status} {rw_report.pass_count}/{rw_report.total} "
+              f"checks passed → {html_path}")
+        for chk in rw_report.checks:
+            if not chk.passed and not chk.skipped:
+                print(f"      ✗ {chk.name}: {chk.summary}")
+        if getattr(args, 'qa_strict', False) and rw_report.has_error_failure:
+            args._qa_strict_failed = True
+    except (ImportError, OSError) as exc:
+        logger.warning("QA report card failed: %s", exc)
+
+
+def _export_power_query_files(project_dir, source_basename):
+    """Extract Power Query M expressions from TMDL table files into standalone ``.pq`` files.
+
+    Walks ``{project}.SemanticModel/definition/tables/*.tmdl``, parses each
+    ``partition ... = m`` block, and writes the M expression into
+    ``{project}/PowerQuery/{table_name}.pq``.
+    Also exports ``expressions.tmdl`` shared expressions (e.g. DataFolder).
+    """
+    import glob as _glob
+
+    tables_dir = os.path.join(
+        project_dir,
+        f'{source_basename}.SemanticModel',
+        'definition',
+        'tables',
+    )
+    if not os.path.isdir(tables_dir):
+        return
+
+    pq_dir = os.path.join(project_dir, 'PowerQuery')
+    exported = 0
+
+    for tmdl_path in _glob.glob(os.path.join(tables_dir, '*.tmdl')):
+        table_name = os.path.splitext(os.path.basename(tmdl_path))[0]
+        m_expr = _extract_m_from_tmdl(tmdl_path)
+        if m_expr:
+            os.makedirs(pq_dir, exist_ok=True)
+            pq_path = os.path.join(pq_dir, f'{table_name}.pq')
+            with open(pq_path, 'w', encoding='utf-8') as f:
+                f.write(m_expr)
+            exported += 1
+
+    # Also export shared expressions (DataFolder parameter, etc.)
+    expr_path = os.path.join(
+        project_dir,
+        f'{source_basename}.SemanticModel',
+        'definition',
+        'expressions.tmdl',
+    )
+    if os.path.isfile(expr_path):
+        try:
+            with open(expr_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+            if content:
+                os.makedirs(pq_dir, exist_ok=True)
+                with open(os.path.join(pq_dir, '_expressions.pq'), 'w', encoding='utf-8') as f:
+                    f.write(content)
+                exported += 1
+        except OSError:
+            pass
+
+    if exported:
+        print(f"  📂 PowerQuery/ folder: {exported} M expression file(s) exported")
+
+
+def _extract_m_from_tmdl(tmdl_path):
+    """Parse a TMDL table file and return the M partition expression, or ``None``."""
+    import re as _re
+
+    try:
+        with open(tmdl_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+
+    # Find the partition block: "	partition '...' = m"
+    in_partition = False
+    in_source = False
+    m_lines = []
+    indent_base = None
+
+    for line in lines:
+        stripped = line.rstrip('\n\r')
+
+        # Detect start of M partition
+        if not in_partition and _re.match(r'^\tpartition\s+.*=\s*m\s*$', stripped):
+            in_partition = True
+            continue
+
+        if in_partition and not in_source:
+            # Look for "source =" which starts the M expression
+            if _re.match(r'^\t\tsource\s*=\s*$', stripped):
+                in_source = True
+                continue
+
+        if in_source:
+            # End of M block: a line with less indentation than the expression body
+            # The M expression lines are indented with tabs (typically 4 tabs)
+            if indent_base is None and stripped.strip():
+                indent_base = len(stripped) - len(stripped.lstrip('\t'))
+            if stripped.strip() == '' and m_lines:
+                # Blank line might be part of the expression or end of block
+                m_lines.append('')
+                continue
+            if stripped.strip() and indent_base is not None:
+                current_indent = len(stripped) - len(stripped.lstrip('\t'))
+                if current_indent < indent_base:
+                    # We've exited the M expression block
+                    break
+            m_lines.append(stripped)
+
+    if not m_lines:
+        return None
+
+    # Strip trailing blank lines
+    while m_lines and not m_lines[-1].strip():
+        m_lines.pop()
+
+    if not m_lines:
+        return None
+
+    # Remove common leading indentation
+    non_empty = [l for l in m_lines if l.strip()]
+    if non_empty:
+        min_tabs = min(len(l) - len(l.lstrip('\t')) for l in non_empty)
+        m_lines = [l[min_tabs:] if len(l) > min_tabs else l.lstrip('\t') for l in m_lines]
+
+    return '\n'.join(m_lines)
+
+
+def _export_dax_files(project_dir, source_basename):
+    """Extract DAX measure definitions from TMDL table files into standalone ``.dax`` files.
+
+    Walks ``{project}.SemanticModel/definition/tables/*.tmdl``, parses each
+    ``measure`` block, and writes one ``.dax`` file per table into
+    ``{project}/DAX/{table_name}.dax``.
+    """
+    import glob as _glob
+    import re as _re
+
+    tables_dir = os.path.join(
+        project_dir,
+        f'{source_basename}.SemanticModel',
+        'definition',
+        'tables',
+    )
+    if not os.path.isdir(tables_dir):
+        return
+
+    dax_dir = os.path.join(project_dir, 'DAX')
+    exported = 0
+
+    for tmdl_path in _glob.glob(os.path.join(tables_dir, '*.tmdl')):
+        table_name = os.path.splitext(os.path.basename(tmdl_path))[0]
+        measures = _extract_dax_from_tmdl(tmdl_path)
+        if measures:
+            os.makedirs(dax_dir, exist_ok=True)
+            dax_path = os.path.join(dax_dir, f'{table_name}.dax')
+            with open(dax_path, 'w', encoding='utf-8') as f:
+                f.write(f'// DAX measures for table: {table_name}\n')
+                f.write(f'// Auto-generated by Tableau → Power BI migration\n\n')
+                for mname, mexpr in measures:
+                    f.write(f'{mname} =\n{mexpr}\n\n')
+            exported += 1
+
+    if exported:
+        print(f"  📂 DAX/ folder: {exported} DAX measure file(s) exported")
+
+
+def _extract_dax_from_tmdl(tmdl_path):
+    """Parse a TMDL table file and return a list of (name, expression) tuples for all measures."""
+    import re as _re
+
+    try:
+        with open(tmdl_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except OSError:
+        return []
+
+    measures = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip('\n\r')
+        # Detect measure line: "\tmeasure 'Name' = <expression>" or multi-line
+        m = _re.match(r'^\tmeasure\s+(.+?)\s*=\s*(.*)$', line)
+        if m:
+            raw_name = m.group(1).strip().strip("'")
+            first_part = m.group(2).strip()
+            expr_lines = [first_part] if first_part else []
+
+            # Collect continuation lines (indented deeper than the measure keyword)
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j].rstrip('\n\r')
+                # Stop at next measure, column, partition, annotation, hierarchy, or blank+outdent
+                if next_line.strip() == '':
+                    j += 1
+                    continue
+                indent = len(next_line) - len(next_line.lstrip('\t'))
+                if indent < 2:
+                    break
+                # Skip TMDL metadata lines inside the measure block
+                stripped = next_line.strip()
+                if stripped.startswith('lineageTag:') or stripped.startswith('displayFolder:') \
+                        or stripped.startswith('formatString:') or stripped.startswith('description:') \
+                        or stripped.startswith('annotation '):
+                    j += 1
+                    continue
+                if not first_part and not expr_lines:
+                    # Multi-line expression starts here
+                    expr_lines.append(stripped)
+                else:
+                    expr_lines.append(stripped)
+                j += 1
+
+            if expr_lines:
+                expr = '\n'.join(expr_lines)
+                # Clean up: remove trailing blank lines
+                expr = expr.rstrip()
+                measures.append((raw_name, expr))
+            i = j
+        else:
+            i += 1
+
+    return measures
+
+
+def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
+    """Convert .hyper files in *data_dir* to CSV and patch TMDL M expressions.
+
+    When a TWBX contains only Hyper extracts (no Excel files), the generated M
+    queries use inline ``#table()`` data or ``Excel.Workbook(...)`` references
+    for files that don't exist.  This
+    function converts the Hyper data to flat CSV files and rewrites the TMDL
+    partition expressions to use ``Csv.Document(...)`` so Power BI can load the
+    data directly.
+    """
+    import csv as _csv
+    import glob as _glob
+
+    hyper_files = []
+    for root, _dirs, files in os.walk(data_dir):
+        for fname in files:
+            if fname.lower().endswith('.hyper'):
+                hyper_files.append(os.path.join(root, fname))
+    if not hyper_files:
+        return
+
+    # Check if real data files (xlsx/xls) already exist — if so, no conversion needed
+    has_xlsx = False
+    for root, _dirs, files in os.walk(data_dir):
+        for fname in files:
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in {'.xlsx', '.xls'}:
+                has_xlsx = True
+                break
+        if has_xlsx:
+            break
+    if has_xlsx:
+        return
+
+    # Check if CSV files already exist (from a previous hyper conversion)
+    existing_csvs = {}
+    for root, _dirs, files in os.walk(data_dir):
+        for fname in files:
+            if fname.lower().endswith('.csv'):
+                name = os.path.splitext(fname)[0]
+                existing_csvs[name] = fname
+
+    # Convert Hyper → CSV using 3-tier strategy (skip if CSVs already present)
+    csv_map = {}  # table_name → csv_filename
+    if not existing_csvs:
+        for hyper_path in hyper_files:
+            converted = _hyper_to_csv_files(hyper_path, data_dir, source_basename, _csv)
+            csv_map.update(converted)
+        if csv_map:
+            print(f"  📊 Converted Hyper → {len(csv_map)} CSV file(s)")
+    else:
+        csv_map = existing_csvs
+
+    if not csv_map:
+        return
+
+    # Patch TMDL table files: replace Excel.Workbook M expressions with Csv.Document
+    tables_dir = os.path.join(
+        project_dir,
+        f'{source_basename}.SemanticModel',
+        'definition',
+        'tables',
+    )
+    if not os.path.isdir(tables_dir):
+        return
+
+    import re as _re
+
+    # Build TMDL table name → CSV filename mapping using source_table
+    # from extraction metadata (datasources.json).
+    # e.g. "Opportunities" → source_table="Opportunity" → "Opportunity.csv"
+    tmdl_to_csv = {}  # tmdl_table_name → csv_filename
+    # Also build per-table physical→display column name mapping from
+    # the cols_physical_map field stored during extraction (<cols><map> entries).
+    tmdl_col_remote = {}  # tmdl_table_name → {physical_name: display_name}
+    _ds_json_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'tableau_export', 'datasources.json'
+    )
+    try:
+        with open(_ds_json_path, 'r', encoding='utf-8') as f:
+            _ds_data = json.load(f)
+        for ds in _ds_data:
+            for tbl in ds.get('tables', []):
+                tbl_name = tbl.get('name', '')
+                src_table = tbl.get('source_table', '')
+                if tbl_name and src_table:
+                    # Match source_table to a CSV filename (case-insensitive)
+                    for csv_table_name, csv_fname in csv_map.items():
+                        if csv_table_name.lower() == src_table.lower():
+                            tmdl_to_csv[tbl_name] = csv_fname
+                            break
+                # Use cols_physical_map for complete mapping
+                pm = tbl.get('cols_physical_map')
+                if pm and tbl_name:
+                    tmdl_col_remote[tbl_name] = pm
+    except (OSError, ValueError):
+        pass
+
+    for tmdl_path in _glob.glob(os.path.join(tables_dir, '*.tmdl')):
+        try:
+            with open(tmdl_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError:
+            continue
+
+        # Match Excel.Workbook(File.Contents(DataFolder & "\name.xlsx"), null, true)
+        # followed by _nav = _src{[Item="SheetName",Kind="Sheet"]}[Data]
+        original = content
+        for table_name, csv_filename in csv_map.items():
+            # Replace the try/otherwise Excel block with Csv.Document
+            pattern = (
+                r'Source\s*=\s*try\s+'
+                r'let\s+'
+                r'_src\s*=\s*Excel\.Workbook\(File\.Contents\(DataFolder\s*&\s*"\\[^"]*"\),\s*null,\s*true\),\s*'
+                r'_nav\s*=\s*_src\{[^\}]*\}\[Data\]\s*'
+                r'in\s+_nav\s+'
+                r'otherwise\s+'
+                r'#table\(\{[^}]*\},\s*\{\}\)'
+            )
+            replacement = (
+                f'Source = Csv.Document(File.Contents(DataFolder & "\\\\{csv_filename}"), '
+                f'[Delimiter=",", Encoding=65001, QuoteStyle=QuoteStyle.Csv])'
+            )
+            content = _re.sub(pattern, replacement, content, flags=_re.DOTALL)
+
+        # Also replace #table() inline/fallback partitions with Csv.Document
+        # when a matching CSV exists (matched via source_table metadata).
+        if '#table(' in content and tmdl_to_csv:
+            # Derive TMDL table name from filename
+            tmdl_table_name = os.path.splitext(os.path.basename(tmdl_path))[0]
+            matched_csv = tmdl_to_csv.get(tmdl_table_name)
+            if matched_csv:
+                # Replace only the Source assignment (try/otherwise block).
+                htable_pattern = (
+                    r'Source\s*=\s*try\s+'
+                    r'#table\(\s*\{[^}]*\}\s*,\s*\{'
+                    r'.*?'  # row data or empty (lazy)
+                    r'\}\s*\)\s+'
+                    r'otherwise\s+'
+                    r'#table\(\s*\{[^}]*\}\s*,\s*\{\s*\}\s*\)'
+                    r'(?:\s*//[^\n]*)?'  # optional trailing comment
+                )
+                # Extract ALL column names from the #table() — these are
+                # the Tableau caption names the M steps expect.
+                col_pattern = r'#table\(\s*\{([^}]*)\}'
+                col_match = _re.search(col_pattern, content)
+                tmdl_cols = []
+                if col_match:
+                    raw = col_match.group(1)
+                    tmdl_cols = [
+                        c.strip().strip('"')
+                        for c in raw.split(',')
+                        if c.strip().strip('"')
+                    ]
+
+                # Read original CSV (raw Hyper column names)
+                csv_path = os.path.join(data_dir, matched_csv)
+                csv_headers = []
+                csv_rows = []
+                try:
+                    with open(csv_path, 'r', newline='', encoding='utf-8') as cf:
+                        reader = _csv.reader(cf)
+                        csv_headers = next(reader, [])
+                        csv_rows = list(reader)
+                except OSError:
+                    pass
+
+                if csv_headers and tmdl_cols:
+                    # Build mapping: raw CSV header → TMDL caption name.
+                    # Priority order:
+                    # 1. remote_name mapping from <cols><map> entries
+                    #    (e.g. CloseDate → Close Date, AccountId → Account ID)
+                    # 2. Exact match (column name unchanged)
+                    # 3. Suffix match for aliased tables
+                    #    (e.g. FirstName → FirstName (Created By))
+                    tmdl_set = set(tmdl_cols)
+                    suffix = f' ({tmdl_table_name})'
+                    remote_map = tmdl_col_remote.get(tmdl_table_name, {})
+                    csv_to_tmdl = {}  # raw_csv_header → tmdl_col_name
+                    for csv_h in csv_headers:
+                        if csv_h in remote_map and remote_map[csv_h] in tmdl_set:
+                            csv_to_tmdl[csv_h] = remote_map[csv_h]
+                        elif csv_h in tmdl_set:
+                            csv_to_tmdl[csv_h] = csv_h
+                        elif csv_h + suffix in tmdl_set:
+                            csv_to_tmdl[csv_h] = csv_h + suffix
+
+                    # Rewrite CSV with ALL TMDL columns: physical data
+                    # for matched columns, empty string for the rest.
+                    # Write to a table-specific CSV so multiple TMDL tables
+                    # sharing the same Hyper table get their own file.
+                    table_csv_name = f'{tmdl_table_name}.csv'
+                    table_csv_path = os.path.join(data_dir, table_csv_name)
+                    # Build column index: tmdl_col → csv_col_idx (or None)
+                    col_idx = {}
+                    for i, csv_h in enumerate(csv_headers):
+                        mapped = csv_to_tmdl.get(csv_h)
+                        if mapped:
+                            col_idx[mapped] = i
+
+                    try:
+                        with open(table_csv_path, 'w', newline='',
+                                  encoding='utf-8') as wf:
+                            writer = _csv.writer(wf)
+                            writer.writerow(tmdl_cols)
+                            for row in csv_rows:
+                                new_row = []
+                                for tc in tmdl_cols:
+                                    idx = col_idx.get(tc)
+                                    if idx is not None and idx < len(row):
+                                        new_row.append(row[idx])
+                                    else:
+                                        new_row.append('')
+                                writer.writerow(new_row)
+                    except OSError:
+                        pass
+
+                    # Simple M expression — CSV already has correct headers
+                    csv_replacement = (
+                        f'Source = Table.PromoteHeaders('
+                        f'Csv.Document('
+                        f'File.Contents(DataFolder & '
+                        f'"\\\\{table_csv_name}"), '
+                        f'[Delimiter=",", Encoding=65001, '
+                        f'QuoteStyle=QuoteStyle.Csv]),'
+                        f' [PromoteAllScalars=true])'
+                    )
+                    new_content = _re.sub(
+                        htable_pattern,
+                        csv_replacement,
+                        content,
+                        flags=_re.DOTALL,
+                    )
+                    if new_content != content:
+                        content = new_content
+
+        if content != original:
+            try:
+                with open(tmdl_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+            except OSError:
+                pass
+
+
+def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
+    """Convert a single Hyper file to CSV(s). Returns {table_name: csv_filename}."""
+    results = {}
+
+    # Tier 1: tableauhyperapi
+    try:
+        from tableauhyperapi import HyperProcess, Telemetry, Connection
+        hyper_proc = HyperProcess(Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU)
+        try:
+            conn = Connection(hyper_proc.endpoint, hyper_path)
+            try:
+                for schema in conn.catalog.get_schema_names():
+                    for table in conn.catalog.get_table_names(schema):
+                        cols = conn.catalog.get_table_definition(table).columns
+                        col_names = [c.name.unescaped for c in cols]
+                        rows = conn.execute_list_query(f"SELECT * FROM {table}")
+                        csv_name = f"{table.name.unescaped}.csv"
+                        csv_path = os.path.join(out_dir, csv_name)
+                        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                            writer = _csv.writer(f)
+                            writer.writerow(col_names)
+                            writer.writerows(rows)
+                        results[table.name.unescaped] = csv_name
+            finally:
+                conn.close()
+        finally:
+            hyper_proc.close()
+        return results
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.debug("tableauhyperapi failed for %s: %s", hyper_path, exc)
+        try:
+            hyper_proc.close()
+        except Exception:
+            pass
+
+    # Tier 2: sqlite3
+    try:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(hyper_path)
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cur.fetchall()]
+        for tname in tables:
+            cur.execute(f'PRAGMA table_info("{tname}")')
+            col_names = [c[1] for c in cur.fetchall()]
+            cur.execute(f'SELECT * FROM "{tname}"')
+            rows = cur.fetchall()
+            if rows:
+                csv_name = f"{tname}.csv"
+                csv_path = os.path.join(out_dir, csv_name)
+                with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                    writer = _csv.writer(f)
+                    writer.writerow(col_names)
+                    writer.writerows(rows)
+                results[tname] = csv_name
+        conn.close()
+        return results
+    except Exception:
+        pass
+
+    # Tier 3: project hyper_reader
+    try:
+        from tableau_export.hyper_reader import read_hyper, export_hyper_to_csv
+        result = read_hyper(hyper_path, max_rows=100000)
+        tbls = result.get('tables', []) if isinstance(result, dict) else []
+        for tbl in tbls:
+            if tbl.get('sample_rows'):
+                name = tbl.get('table', 'data')
+                csv_name = f"{name}.csv"
+                csv_path = export_hyper_to_csv(tbl, out_dir, csv_filename=csv_name)
+                if csv_path:
+                    results[name] = csv_name
+    except Exception:
+        pass
+
+    return results
+
+
+def _fix_twb_data_folder(project_dir, source_basename):
+    """For TWB (non-TWBX) files, ensure DataFolder points to a local Data/ folder.
+
+    When a .twb references local files (Excel, CSV), the DataFolder defaults to
+    the original Tableau author's path which likely doesn't exist on this machine.
+    Create a local Data/ folder and update DataFolder to point there.
+    """
+    import re as _re
+
+    expr_path = os.path.join(
+        project_dir,
+        f'{source_basename}.SemanticModel',
+        'definition',
+        'expressions.tmdl',
+    )
+    if not os.path.isfile(expr_path):
+        return
+
+    try:
+        with open(expr_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except OSError:
+        return
+
+    match = _re.search(r'expression\s+DataFolder\s*=\s*"([^"]*)"', content)
+    if not match:
+        return
+    current_folder = match.group(1)
+
+    # If the current DataFolder already exists on disk, keep it
+    if os.path.isdir(current_folder):
+        return
+
+    # Create a local Data/ folder and point DataFolder there
+    data_dir = os.path.join(project_dir, 'Data')
+    os.makedirs(data_dir, exist_ok=True)
+    abs_data = os.path.abspath(data_dir).replace('\\', '\\\\')
+    new_content = _re.sub(
+        r'(expression\s+DataFolder\s*=\s*)"[^"]*"',
+        lambda m: m.group(1) + '"' + abs_data + '"',
+        content,
+    )
+    if new_content != content:
+        with open(expr_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+        print(f"  📂 DataFolder updated → {abs_data}")
+        print(f"  ℹ️  Place your data files in: {abs_data}")
+
+    # Also export Power Query M files and DAX measures
+    _export_power_query_files(project_dir, source_basename)
+    _export_dax_files(project_dir, source_basename)
+
+
+def _process_twbx_post_generation(source_path, project_dir, source_basename):
+    """Post-generation processing for TWBX files.
+
+    Extracts embedded data files into ``Data/``, updates the ``DataFolder``
+    M parameter in ``expressions.tmdl``, exports Power Query M files into
+    ``PowerQuery/``, and resolves embedded image references.
+
+    Called from both single-file and batch migration paths.
+    """
+    if not source_path or not source_path.lower().endswith('.twbx'):
+        return
+    if not zipfile.is_zipfile(source_path):
+        return
+
+    data_dir = os.path.join(project_dir, 'Data')
+
+    # ── 1. Extract embedded files from TWBX into project dir ───────
+    _SKIP_EXT = {'.twb', '.tds', '.twbr'}
+    extracted_files = []
+
+    try:
+        with zipfile.ZipFile(source_path, 'r') as zf:
+            for entry in zf.namelist():
+                ext = os.path.splitext(entry)[1].lower()
+                if ext in _SKIP_EXT or entry.endswith('/'):
+                    continue
+                dest = os.path.join(project_dir, entry)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with zf.open(entry) as src, open(dest, 'wb') as dst:
+                    dst.write(src.read())
+                extracted_files.append(entry)
+    except (zipfile.BadZipFile, OSError) as exc:
+        logger.warning("Could not extract TWBX data files: %s", exc)
+        return
+
+    if not extracted_files:
+        return
+
+    print(f"  📁 Extracted {len(extracted_files)} data file(s) from TWBX into {data_dir}")
+
+    # ── 1b. Convert Hyper files to CSV so M queries can load data ────
+    _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir)
+
+    # ── 1c. Canonicalise file tables for Fabric Notebook ingestion ──
+    if os.path.isdir(os.path.join(project_dir, f'{source_basename}.Notebook')):
+        try:
+            from powerbi_import.fabric_file_staging import (
+                stage_fabric_file_sources,
+            )
+            datasources_path = os.path.join(
+                _get_extract_dir(), 'datasources.json')
+            with open(datasources_path, encoding='utf-8') as stream:
+                datasources = json.load(stream)
+            staged = stage_fabric_file_sources(project_dir, datasources)
+            if staged:
+                print(f"  [OK] Staged {len(staged)} Fabric file source(s)")
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            raise RuntimeError(
+                f'Could not stage Fabric file sources: {exc}') from exc
+
+    # ── 2. Update DataFolder parameter in expressions.tmdl ──────────
+    #   M queries reference only the file basename (e.g. "nba_players.xlsx").
+    #   DataFolder must point to the actual directory containing those files.
+    #   Scan actual filesystem (not ZIP entries) to include generated CSVs.
+    import re as _re
+
+    _DATA_EXT = {'.xlsx', '.xls', '.csv', '.tsv', '.json', '.xml', '.pdf',
+                 '.geojson', '.topojson', '.parquet', '.hyper', '.tde'}
+    data_parents = set()
+    for root, _dirs, files in os.walk(data_dir):
+        for fname in files:
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in _DATA_EXT:
+                parent = os.path.relpath(root, project_dir).replace('\\', '/')
+                data_parents.add(parent)
+
+    if data_parents:
+        parents_list = sorted(data_parents)
+        if len(parents_list) == 1:
+            resolved = parents_list[0]
+        else:
+            resolved = os.path.commonprefix(parents_list)
+            if resolved and not resolved.endswith('/'):
+                resolved = resolved[:resolved.rfind('/') + 1] if '/' in resolved else ''
+            resolved = resolved.rstrip('/')
+        actual_data_dir = os.path.join(project_dir, resolved) if resolved else data_dir
+    else:
+        actual_data_dir = data_dir
+
+    expr_path = os.path.join(
+        project_dir,
+        f'{source_basename}.SemanticModel',
+        'definition',
+        'expressions.tmdl',
+    )
+    if os.path.isfile(expr_path):
+        try:
+            with open(expr_path, 'r', encoding='utf-8') as f:
+                expr_content = f.read()
+            abs_data_dir = os.path.abspath(actual_data_dir).replace('\\', '\\\\')
+            new_content = _re.sub(
+                r'(expression\s+DataFolder\s*=\s*)"[^"]*"',
+                lambda m: m.group(1) + '"' + abs_data_dir + '"',
+                expr_content,
+            )
+            if new_content != expr_content:
+                with open(expr_path, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
+                print(f"  📂 DataFolder updated → {os.path.abspath(actual_data_dir)}")
+        except OSError as exc:
+            logger.warning("Could not update DataFolder: %s", exc)
+
+    # ── 3. Export standalone Power Query M files and DAX measures ────
+    _export_power_query_files(project_dir, source_basename)
+    _export_dax_files(project_dir, source_basename)
+
+    # ── 4. Resolve embedded image references to base64 data URIs ────
+    import base64 as _b64
+    import glob as _glob
+    _MIME_MAP = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                 '.gif': 'image/gif', '.svg': 'image/svg+xml', '.bmp': 'image/bmp'}
+    report_dir = os.path.join(project_dir, f'{source_basename}.Report', 'definition')
+    for vj_path in _glob.glob(os.path.join(report_dir, 'pages', '*', 'visuals', '*', 'visual.json')):
+        try:
+            with open(vj_path, 'r', encoding='utf-8') as f:
+                vj = json.load(f)
+            gen_props = (vj.get('visual', {}).get('objects', {}).get('general', [{}])[0]
+                         .get('properties', {}))
+            url_obj = gen_props.get('imageUrl', {})
+            url_val = url_obj.get('expr', {}).get('Literal', {}).get('Value', '')
+            img_ref = url_val.strip("'\"")
+            if not img_ref or img_ref.startswith(('http://', 'https://', 'data:')):
+                continue
+            img_file = os.path.join(data_dir, img_ref)
+            if not os.path.isfile(img_file):
+                img_file = os.path.join(project_dir, img_ref)
+            if os.path.isfile(img_file):
+                ext = os.path.splitext(img_ref)[1].lower()
+                mime = _MIME_MAP.get(ext, 'application/octet-stream')
+                with open(img_file, 'rb') as f:
+                    b64 = _b64.b64encode(f.read()).decode('ascii')
+                data_uri = f'data:{mime};base64,{b64}'
+                gen_props['imageUrl'] = {"expr": {"Literal": {"Value": f"'{data_uri}'"}}}
+                with open(vj_path, 'w', encoding='utf-8') as f:
+                    json.dump(vj, f, indent=2, ensure_ascii=False)
+        except (OSError, KeyError, IndexError, json.JSONDecodeError):
+            continue
+
+
+def _extract_twbx_data_files(args, source_basename):
+    """Single-migration wrapper for TWBX post-generation processing."""
+    source = getattr(args, 'tableau_file', '')
+    if not source or not source.lower().endswith('.twbx'):
+        return
+    default_root = (
+        os.path.join('artifacts', 'fabric_projects', 'migrated')
+        if getattr(args, 'output_format', 'pbip') == 'fabric'
+        else os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    )
+    out_base = args.output_dir or default_root
+    project_dir = os.path.join(out_base, source_basename)
+    _process_twbx_post_generation(source, project_dir, source_basename)
+
+
+def _run_post_generation_reports(args, source_basename, results):
+    """Run comparison report and telemetry dashboard if requested."""
+    if getattr(args, 'compare', False) and results.get('generation') and not args.dry_run:
+        try:
+            from powerbi_import.comparison_report import generate_comparison_report
+            extract_dir = _get_extract_dir()
+            out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            pbip_dir = os.path.join(out_base, source_basename)
+            cmp_path = os.path.join(out_base, f'comparison_{source_basename}.html')
+            html_path = generate_comparison_report(extract_dir, pbip_dir, output_path=cmp_path)
+            if html_path:
+                print(f"\n📋 Comparison report: {html_path}")
+        except (ImportError, OSError, ValueError) as exc:
+            logger.warning(f"Comparison report generation failed: {exc}")
+
+    if getattr(args, 'dashboard', False) and results.get('generation') and not args.dry_run:
+        try:
+            from powerbi_import.telemetry_dashboard import generate_dashboard as gen_telem_dashboard
+            out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            dash_path = gen_telem_dashboard(out_base)
+            if dash_path:
+                print(f"\n📊 Telemetry dashboard: {dash_path}")
+        except (ImportError, OSError, ValueError) as exc:
+            logger.warning(f"Telemetry dashboard generation failed: {exc}")
+
+    if getattr(args, 'fidelity', False) and results.get('generation') and not args.dry_run:
+        try:
+            from scripts.compare_migration import run_comparison, print_results as print_fidelity
+            extract_dir = _get_extract_dir()
+            out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            pbip_dir = os.path.join(out_base, source_basename)
+            fidelity = run_comparison(pbip_dir, extract_dir)
+            print_fidelity(fidelity, verbose=getattr(args, 'verbose', False))
+            # Save JSON report
+            fidelity_path = os.path.join(out_base, f'fidelity_{source_basename}.json')
+            import json as _json
+            with open(fidelity_path, 'w', encoding='utf-8') as _f:
+                _json.dump(fidelity, _f, indent=2, ensure_ascii=False)
+            print(f"  Fidelity JSON: {fidelity_path}")
+        except (ImportError, OSError, ValueError) as exc:
+            logger.warning(f"Fidelity comparison failed: {exc}")
+
+    if getattr(args, 'autoplay', False) and results.get('generation') and not args.dry_run:
+        try:
+            from scripts.autoplay import run_autoplay, print_autoplay
+            extract_dir = _get_extract_dir()
+            out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            pbip_dir = os.path.join(out_base, source_basename)
+            autoplay_results = run_autoplay(
+                pbip_dir,
+                extract_dir=extract_dir,
+                open_pbi=getattr(args, 'autoplay_open', False),
+                verbose=getattr(args, 'verbose', False),
+            )
+            print_autoplay(autoplay_results, verbose=getattr(args, 'verbose', False))
+            # Save JSON report
+            autoplay_path = os.path.join(out_base, f'autoplay_{source_basename}.json')
+            import json as _json2
+            with open(autoplay_path, 'w', encoding='utf-8') as _f2:
+                _json2.dump(autoplay_results, _f2, indent=2, ensure_ascii=False)
+            print(f"  Autoplay JSON: {autoplay_path}")
+        except (ImportError, OSError, ValueError) as exc:
+            logger.warning(f"Autoplay validation failed: {exc}")
+
+    # ── Artifact Diff (--diff flag) ────────────────────────
+    if getattr(args, 'diff', None) and results.get('generation') and not args.dry_run:
+        try:
+            out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            pbip_dir = os.path.join(out_base, source_basename)
+            _run_artifact_diff(pbip_dir, args.diff, out_base)
+        except (ImportError, OSError, ValueError) as exc:
+            logger.warning(f"Artifact diff failed: {exc}")
+
+    # ── Save Baseline (--save-baseline flag) ───────────────
+    if getattr(args, 'save_baseline', None) and results.get('generation') and not args.dry_run:
+        try:
+            out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            pbip_dir = os.path.join(out_base, source_basename)
+            _run_save_baseline(pbip_dir, args.save_baseline)
+        except (ImportError, OSError, ValueError) as exc:
+            logger.warning(f"Save baseline failed: {exc}")
+
+    # ── Check Baseline (--check-baseline flag) ─────────────
+    if getattr(args, 'check_baseline', None) and results.get('generation') and not args.dry_run:
+        try:
+            out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            pbip_dir = os.path.join(out_base, source_basename)
+            passed = _run_check_baseline(pbip_dir, args.check_baseline, out_base)
+            if not passed:
+                results['baseline_failed'] = True
+        except (ImportError, OSError, ValueError) as exc:
+            logger.warning(f"Check baseline failed: {exc}")
+
+
+def _run_deploy_to_pbi_service(args, source_basename):
+    """Deploy generated project to Power BI Service."""
+    try:
+        from powerbi_import.deploy.pbi_deployer import PBIWorkspaceDeployer
+        print_header("DEPLOYING TO POWER BI SERVICE")
+
+        workspace_id = args.deploy
+        workspace_name = getattr(args, 'create_workspace', None)
+
+        # Create / find workspace if --create-workspace is provided
+        if workspace_name:
+            deployer = PBIWorkspaceDeployer(workspace_id=workspace_id or '')
+            ws = deployer.ensure_workspace(workspace_name)
+            workspace_id = ws['id']
+            if ws['created']:
+                print(f"  ✓ Created workspace '{ws['name']}' (id={workspace_id})")
+            else:
+                print(f"  ✓ Using existing workspace '{ws['name']}' (id={workspace_id})")
+            deployer.workspace_id = workspace_id
+        else:
+            deployer = PBIWorkspaceDeployer(workspace_id=workspace_id)
+
+        out_dir = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        project_dir = os.path.join(out_dir, source_basename)
+        print(f"  Workspace: {workspace_id}")
+        print(f"  Project:   {project_dir}")
+
+        gateway_id = getattr(args, 'gateway_bind', None)
+
+        # Rolling deployment (--rolling flag)
+        if getattr(args, 'rolling', False):
+            print("  Mode:      Rolling (blue/green)")
+            roll_result = deployer.deploy_rolling(
+                project_dir, dataset_name=source_basename,
+            )
+            if roll_result['status'] == 'succeeded':
+                print(f"  ✓ Rolling deploy succeeded — production={roll_result['production_id']}")
+                dataset_id = roll_result['production_id']
+                report_id = None
+            elif roll_result['status'] == 'rolled_back':
+                print(f"  ⚠ Rolled back: {roll_result['error']}")
+                dataset_id = None
+                report_id = None
+            else:
+                print(f"  ✗ Rolling deploy failed: {roll_result['error']}")
+                dataset_id = None
+                report_id = None
+        elif gateway_id:
+            # Deploy + bind to gateway in one pipeline
+            print(f"  Gateway:   {gateway_id}")
+            pipeline = deployer.deploy_and_bind(
+                project_dir,
+                gateway_id=gateway_id,
+                dataset_name=source_basename,
+                refresh=getattr(args, 'deploy_refresh', False),
+            )
+            deploy_info = pipeline.get('deploy', {})
+            if deploy_info.get('status') == 'succeeded':
+                print(f"  ✓ Deployed — dataset={deploy_info.get('dataset_id')}")
+                dataset_id = deploy_info.get('dataset_id')
+                report_id = deploy_info.get('report_id')
+            else:
+                print(f"  ✗ Deploy failed: {deploy_info.get('error')}")
+                dataset_id = None
+                report_id = None
+
+            bind_info = pipeline.get('gateway_bind')
+            if bind_info and bind_info.get('status') == 'succeeded':
+                print(f"  ✓ Bound to gateway {gateway_id}")
+                if bind_info.get('datasources'):
+                    for ds in bind_info['datasources']:
+                        print(f"    - {ds.get('datasourceType', '?')}: "
+                              f"{ds.get('server', '?')}/{ds.get('database', '?')}")
+            elif bind_info:
+                print(f"  ⚠ Gateway binding failed: {bind_info.get('error')}")
+
+            refresh_info = pipeline.get('refresh')
+            if refresh_info and refresh_info.get('status') == 'triggered':
+                print(f"  ✓ Refresh triggered for dataset {dataset_id}")
+            elif refresh_info and refresh_info.get('status') == 'failed':
+                print(f"  ⚠ Post-bind refresh failed: {refresh_info.get('error')}")
+        else:
+            deploy_result = deployer.deploy_project(
+                project_dir,
+                dataset_name=source_basename,
+                refresh=getattr(args, 'deploy_refresh', False),
+            )
+            if deploy_result.status == 'succeeded':
+                print(f"  ✓ Deployed — dataset={deploy_result.dataset_id}")
+                if deploy_result.report_id:
+                    print(f"  ✓ Report  — id={deploy_result.report_id}")
+                dataset_id = deploy_result.dataset_id
+                report_id = deploy_result.report_id
+            else:
+                print(f"  ✗ Deploy failed: {deploy_result.error}")
+                dataset_id = None
+                report_id = None
+
+        # Endorsement (--endorse flag)
+        if getattr(args, 'endorse', None) and dataset_id:
+            try:
+                from powerbi_import.deploy.deployer import FabricDeployer
+                fab = FabricDeployer()
+                e_result = fab.endorse_item(args.deploy, dataset_id, args.endorse)
+                if e_result.get('status') == 'succeeded':
+                    print(f"  ✓ Endorsed as '{args.endorse}'")
+                else:
+                    print(f"  ⚠ Endorsement failed: {e_result.get('error')}")
+            except Exception as e:
+                print(f"  ⚠ Endorsement error: {e}")
+
+    except Exception as exc:
+        print(f"  ✗ Deployment error: {exc}")
+        logger.error("Deployment failed: %s", exc, exc_info=True)
+
+
+def _run_deploy_to_fabric(args, source_basename):
+    """Deploy a generated Fabric-native project to a Fabric workspace."""
+    try:
+        from powerbi_import.deploy.deployer import FabricDeployer
+
+        print_header("DEPLOYING FABRIC PROJECT")
+        workspace_id = args.deploy
+        out_dir = args.output_dir or os.path.join(
+            'artifacts', 'fabric_projects', 'migrated')
+        project_dir = os.path.join(out_dir, source_basename)
+        print(f"  Workspace: {workspace_id}")
+        print(f"  Project:   {project_dir}")
+
+        deployer = FabricDeployer()
+        result = deployer.deploy_fabric_project(
+            workspace_id=workspace_id,
+            project_dir=project_dir,
+            project_name=source_basename,
+        )
+        preflight = result.get('preflight', {})
+        if preflight:
+            workspace_name = preflight.get('workspace_name') or workspace_id
+            print(f"  ✓ Preflight: {workspace_name} "
+                  f"({preflight.get('accessible_items', 0)} visible items)")
+        for artifact in result.get('artifacts', []):
+            print(f"  ✓ {artifact['type']}: {artifact['status']} "
+                  f"(id={artifact['item_id']})")
+        if getattr(args, 'deploy_refresh', False):
+            pipeline_id = result.get('item_ids', {}).get('DataPipeline')
+            job = deployer.run_fabric_pipeline(workspace_id, pipeline_id)
+            print(f"  ✓ Data Pipeline completed (job={job.get('id', '?')})")
+            result['pipeline_job'] = job
+        return result
+    except Exception as exc:
+        print(f"  ✗ Fabric deployment error: {exc}")
+        logger.error("Fabric deployment failed: %s", exc, exc_info=True)
+        return None
+
+
+def _run_generated_project_deployment(args, source_basename):
+    """Select the deployment backend for the generated output format."""
+    if getattr(args, 'output_format', 'pbip') == 'fabric':
+        return _run_deploy_to_fabric(args, source_basename)
+    return _run_deploy_to_pbi_service(args, source_basename)
+
+
+def _run_schedule_migration(args, source_basename):
+    """Extract Tableau refresh schedules and generate PBI refresh config."""
+    try:
+        from powerbi_import.refresh_generator import generate_refresh_json
+        print_header("REFRESH SCHEDULE MIGRATION")
+        out_dir = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        project_dir = os.path.join(out_dir, source_basename)
+
+        extract_tasks = []
+        subscriptions = []
+        schedules = []
+
+        # Try to fetch from server if connected
+        if getattr(args, 'server', None) and getattr(args, '_server_workbook_id', None):
+            try:
+                from tableau_export.server_client import TableauServerClient
+                ts_client = TableauServerClient(
+                    server_url=args.server,
+                    token_name=getattr(args, 'token_name', None),
+                    token_secret=getattr(args, 'token_secret', None) or os.environ.get('TABLEAU_TOKEN_SECRET'),
+                    site_id=getattr(args, 'site', ''),
+                )
+                ts_client.sign_in()
+                wb_id = args._server_workbook_id
+                extract_tasks = ts_client.get_workbook_extract_tasks(wb_id)
+                subscriptions = ts_client.get_workbook_subscriptions(wb_id)
+                schedules = ts_client.list_schedules()
+                ts_client.sign_out()
+                print(f"  Extract tasks: {len(extract_tasks)}")
+                print(f"  Subscriptions: {len(subscriptions)}")
+            except Exception as exc:
+                print(f"  ⚠ Could not fetch schedules from server: {exc}")
+                logger.warning("Schedule fetch failed: %s", exc)
+
+        config = generate_refresh_json(extract_tasks, subscriptions, schedules)
+
+        # Write to project dir
+        config_path = os.path.join(project_dir, 'refresh_config.json')
+        os.makedirs(project_dir, exist_ok=True)
+        import json as _json
+        with open(config_path, 'w', encoding='utf-8') as f:
+            _json.dump(config, f, indent=2)
+        print(f"  ✓ Refresh config: {config_path}")
+
+        for note in config.get('migration_notes', []):
+            print(f"  ℹ {note}")
+        for note in config.get('refresh', {}).get('notes', []):
+            print(f"  ⚠ {note}")
+
+    except Exception as exc:
+        print(f"  ✗ Schedule migration error: {exc}")
+        logger.error("Schedule migration failed: %s", exc, exc_info=True)
+
+
+def _run_single_migration(args):
+    """Execute the full single-file migration pipeline.
+
+    Handles extraction, generation, incremental merge, goals, reports,
+    and optional deployment for a single Tableau workbook.
+    """
+    _print_single_migration_header(args)
+
+    start_time = datetime.now()
+    results = {}
+
+    # Initialize progress tracker
+    from powerbi_import.progress import MigrationProgress, NullProgress
+    show_progress = not getattr(args, 'quiet', False)
+    total_steps = 4  # extraction, generation, report, dashboard
+    if args.prep:
+        total_steps += 1
+    if getattr(args, 'deploy', None):
+        total_steps += 1
+    if getattr(args, 'compare', False):
+        total_steps += 1
+    progress = MigrationProgress(total_steps=total_steps, show_bar=show_progress) if show_progress else NullProgress()
+
+    telemetry = _init_telemetry(args)
+
+    # Step 1: Extraction
+    progress.start("Extracting Tableau data")
+    _is_prep_standalone = os.path.splitext(args.tableau_file)[1].lower() in ('.tfl', '.tflx')
+    if not args.skip_extraction:
+        if _is_prep_standalone:
+            results['extraction'] = run_standalone_prep(args.tableau_file)
+        else:
+            results['extraction'] = run_extraction(
+                args.tableau_file,
+                hyper_max_rows=getattr(args, 'hyper_rows', None),
+            )
+        if not results['extraction']:
+            progress.fail("Extraction failed")
+            print("\nMigration aborted due to extraction failure")
+            return ExitCode.EXTRACTION_FAILED
+        progress.complete(f"Extracted from {os.path.basename(args.tableau_file)}")
+    else:
+        progress.complete("Skipped (using existing data)")
+        results['extraction'] = True
+
+    # Step 1b: Prep flow (optional — skip if already standalone .tfl)
+    if args.prep and not _is_prep_standalone:
+        progress.start("Parsing Prep flow")
+        results['prep'] = run_prep_flow(args.prep)
+        if not results['prep']:
+            progress.fail("Prep flow parsing failed")
+            print("\n⚠ Prep flow parsing failed — continuing with TWB data only")
+        else:
+            progress.complete("Prep flow merged")
+
+    # Step 1c: Assessment (optional)
+    if args.assess and results.get('extraction'):
+        return _run_assessment_mode(args, results)
+
+    # Step 1d: Functionality parity scorecard (optional)
+    if (getattr(args, 'parity', False) or getattr(args, 'parity_strict', False)) \
+            and results.get('extraction'):
+        return _run_parity_mode(args)
+
+    # Step 2: Generate .pbip project
+    source_basename = os.path.splitext(os.path.basename(args.tableau_file))[0]
+
+    # Rollback: backup existing output if requested
+    if args.rollback and not args.dry_run:
+        out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        existing_dir = os.path.join(out_base, source_basename)
+        if os.path.exists(existing_dir):
+            import shutil
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_dir = existing_dir + f'.backup_{ts}'
+            shutil.copytree(existing_dir, backup_dir)
+            logger.info(f"Rollback backup created: {backup_dir}")
+            print(f"  Rollback backup: {backup_dir}")
+
+    if args.dry_run:
+        print("\n[DRY RUN] Skipping generation — would produce:")
+        print(f"  Report:  {source_basename}")
+        out_dir = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        print(f"  Output:  {os.path.join(out_dir, source_basename)}")
+        results['generation'] = True
+        progress.start("Generating Power BI project")
+        progress.complete("Dry run — skipped")
+    else:
+        progress.start("Generating Power BI project")
+        results['generation'] = run_generation(
+            report_name=source_basename,
+            output_dir=args.output_dir,
+            calendar_start=args.calendar_start,
+            calendar_end=args.calendar_end,
+            culture=args.culture,
+            model_mode=args.mode,
+            output_format=args.output_format,
+            paginated=getattr(args, 'paginated', False),
+            languages=getattr(args, 'languages', None),
+            incremental_refresh=getattr(args, 'incremental_refresh', False),
+            incremental_refresh_months=getattr(args, 'incremental_refresh_months', 12),
+            parameterize=getattr(args, 'parameterize', True),
+        )
+        if results['generation']:
+            progress.complete(f"Generated {source_basename}")
+            # Extract embedded data files from TWBX into PBI output
+            _extract_twbx_data_files(args, source_basename)
+        else:
+            progress.fail("Generation failed")
+
+    # Step 3: Incremental merge (optional)
+    if getattr(args, 'incremental', None) and results.get('generation'):
+        _run_incremental_merge(args, source_basename)
+
+    # Step 3b: Goals/Scorecard generation (optional, --goals flag)
+    if getattr(args, 'goals', False) and results.get('generation'):
+        _run_goals_generation(args, source_basename)
+
+    # Step 3c: LLM-assisted DAX refinement (optional, --llm-refine flag)
+    if getattr(args, 'llm_refine', False) and results.get('generation'):
+        try:
+            from powerbi_import.llm_client import LLMClient, refine_approximated_measures, generate_llm_report
+            print("\n  🤖 LLM-assisted DAX refinement...")
+            client = LLMClient(
+                provider=getattr(args, 'llm_provider', 'openai'),
+                api_key=getattr(args, 'llm_key', None),
+                model=getattr(args, 'llm_model', None),
+                endpoint=getattr(args, 'llm_endpoint', None),
+                max_calls=getattr(args, 'llm_max_calls', 100),
+                dry_run=getattr(args, 'llm_dry_run', False),
+            )
+            # Load measures from migration metadata
+            out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            meta_path = os.path.join(out_base, source_basename, 'migration_metadata.json')
+            measures = []
+            if os.path.exists(meta_path):
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                measures = meta.get('measures', [])
+            if measures:
+                llm_results = refine_approximated_measures(client, measures)
+                refined_count = sum(1 for r in llm_results if r['status'] == 'refined')
+                print(f"  ✓ LLM refined {refined_count}/{len(llm_results)} measures (cost: ${client.total_cost:.4f})")
+                report = generate_llm_report(client, llm_results, os.path.join(out_base, source_basename))
+            else:
+                print("  ℹ No approximated measures found for LLM refinement")
+        except Exception as exc:
+            print(f"  ⚠ LLM refinement error: {exc}")
+            logger.warning("LLM refinement failed: %s", exc)
+
+    # Step 3d: Standalone paginated report (optional, --paginated-report flag)
+    if getattr(args, 'paginated_report', False) and results.get('generation'):
+        try:
+            from powerbi_import.paginated_generator import PaginatedReportGenerator
+            out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            project_dir = os.path.join(out_base, source_basename)
+            print("\n  📄 Generating standalone paginated report...")
+            pag_gen = PaginatedReportGenerator(project_dir, source_basename)
+            json_dir = _get_extract_dir()
+            ws_path = os.path.join(json_dir, 'worksheets.json')
+            ds_path = os.path.join(json_dir, 'datasources.json')
+            worksheets = []
+            datasources = []
+            if os.path.exists(ws_path):
+                with open(ws_path, 'r', encoding='utf-8') as f:
+                    worksheets = json.load(f)
+            if os.path.exists(ds_path):
+                with open(ds_path, 'r', encoding='utf-8') as f:
+                    datasources = json.load(f)
+            pag_stats = pag_gen.generate(
+                worksheets, datasources,
+                page_size=getattr(args, 'paginated_page_size', 'letter'),
+                orientation=getattr(args, 'paginated_orientation', 'landscape'),
+            )
+            print(f"  ✓ Paginated report: {pag_stats['pages']} pages, "
+                  f"{pag_stats['tablixes']} tables, {pag_stats['charts']} charts")
+        except Exception as exc:
+            print(f"  ⚠ Paginated report error: {exc}")
+            logger.warning("Paginated report failed: %s", exc)
+
+    # Step 3e: Governance checks (optional, --governance flag)
+    if getattr(args, 'governance', None) and results.get('generation'):
+        _run_governance_checks(args, source_basename)
+
+    # Step 3f: Unified QA suite (--qa flag)
+    if getattr(args, 'qa', False) and results.get('generation') and not args.dry_run:
+        _run_qa_suite(args, source_basename)
+        if getattr(args, 'qa_strict', False) and getattr(args, '_qa_strict_failed', False):
+            progress.fail("QA strict: real-world QA checks failed")
+            return ExitCode.VALIDATION_FAILED
+
+    # Step 3f2: Closed-loop autoheal (--autoheal flag)
+    if getattr(args, 'autoheal', False) and results.get('generation') and not args.dry_run:
+        _run_autoheal(args, source_basename)
+
+    # Step 3f3: Static openability gate (enabled by default; --no-verify-open to skip)
+    if (getattr(args, 'verify_open', True)
+            and getattr(args, 'output_format', 'pbip') == 'pbip'
+            and results.get('generation') and not args.dry_run):
+        if not _run_verify_open(args, source_basename):
+            progress.fail("Openability preflight: project would NOT open in PBI Desktop")
+            return ExitCode.VALIDATION_FAILED
+
+    # Step 3f4: Best-effort real Desktop open self-check (explicit --desktop-probe only)
+    if getattr(args, 'desktop_probe', False) and results.get('generation') and not args.dry_run:
+        _run_desktop_probe(args, source_basename)
+
+    # Step 3g: Auto-rollback quality gate (Phase 9)
+    rollback_result = None
+    if results.get('generation') and not args.dry_run:
+        rollback_result = _run_rollback_gate(args, source_basename)
+        if rollback_result and rollback_result.get('action') == 'rollback':
+            progress.fail("Quality gate: CRITICAL — rolled back")
+            _record_zero_touch(args, source_basename, success=False,
+                               failure_mode='critical_rollback', rollback_result=rollback_result)
+            return ExitCode.VALIDATION_FAILED
+        if rollback_result and rollback_result.get('action') == 'quarantine':
+            progress.fail("Quality gate: ERROR — quarantined to _FAILED/")
+            _record_zero_touch(args, source_basename, success=False,
+                               failure_mode='quarantined', rollback_result=rollback_result)
+            if getattr(args, 'strict', False):
+                return ExitCode.VALIDATION_FAILED
+
+    # Step 3h: Issue reporting (Phase 10, --report-issue flag)
+    if getattr(args, 'report_issue', False) and results.get('generation') and not args.dry_run:
+        _run_issue_report(args, source_basename, rollback_result)
+
+    # Step 4: Migration report
+    progress.start("Generating migration report")
+    report_summary = None
+    if results.get('generation'):
+        report_summary = run_migration_report(
+            report_name=source_basename,
+            output_dir=args.output_dir,
+        )
+    fid = report_summary.get('fidelity_score', '?') if report_summary else '?'
+    progress.complete(f"Fidelity: {fid}%")
+
+    # Step 4b: HTML migration dashboard
+    if results.get('generation') and not args.dry_run:
+        dashboard_dir = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        run_html_dashboard(source_basename, dashboard_dir)
+
+    # Step 4c–4d: Comparison report and telemetry dashboard (optional)
+    _run_post_generation_reports(args, source_basename, results)
+
+    # Step 5: Deploy to Power BI Service or Fabric (optional)
+    if getattr(args, 'deploy', None) and results.get('generation') and not args.dry_run:
+        deployment_result = _run_generated_project_deployment(
+            args, source_basename)
+        if getattr(args, 'output_format', 'pbip') == 'fabric':
+            results['deployment'] = bool(
+                deployment_result and deployment_result.get('success'))
+
+    # Step 5b: Migrate refresh schedules (optional, requires --server + --migrate-schedules)
+    if getattr(args, 'migrate_schedules', False) and results.get('generation'):
+        _run_schedule_migration(args, source_basename)
+
+    # Step 5c: SLA tracking (optional, --sla-config flag)
+    sla_result = None
+    if getattr(args, 'sla_config', None) and results.get('generation'):
+        try:
+            from powerbi_import.sla_tracker import SLATracker
+            sla_cfg_path = args.sla_config
+            with open(sla_cfg_path, 'r', encoding='utf-8') as f:
+                sla_cfg = json.load(f)
+            tracker = SLATracker(config=sla_cfg)
+            elapsed = (datetime.now() - start_time).total_seconds()
+            fid_val = float(report_summary.get('fidelity_score', 0)) if report_summary else 0.0
+            val_pass = results.get('generation', False)
+            tracker.start(source_basename)
+            # Backdate the timer so record_result computes the right duration
+            import time as _time
+            tracker._timers[source_basename] = _time.monotonic() - elapsed
+            sla_result = tracker.record_result(source_basename, fidelity=fid_val, validation_passed=val_pass)
+            if sla_result.compliant:
+                print(f"\n  ✓ SLA compliant ({elapsed:.1f}s, {fid_val:.1f}%)")
+            else:
+                for breach in sla_result.breaches:
+                    print(f"\n  ⚠ SLA BREACH: {breach}")
+            # Save SLA report
+            sla_report = tracker.get_report()
+            out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+            sla_path = os.path.join(out_base, source_basename, 'sla_report.json')
+            sla_report.save(sla_path)
+        except Exception as exc:
+            logger.warning("SLA tracking error: %s", exc)
+
+    # Step 5d: Monitoring (optional, --monitor flag)
+    if getattr(args, 'monitor', None) and results.get('generation'):
+        try:
+            from powerbi_import.monitoring import MigrationMonitor
+            monitor = MigrationMonitor(backend=args.monitor)
+            elapsed = (datetime.now() - start_time).total_seconds()
+            fid_val = float(report_summary.get('fidelity_score', 0)) if report_summary else 0.0
+            tables_count = results.get('stats', {}).get('tables', 0) if isinstance(results.get('stats'), dict) else 0
+            monitor.record_migration(
+                workbook=source_basename,
+                duration_seconds=round(elapsed, 2),
+                fidelity=fid_val,
+                tables=tables_count,
+            )
+            monitor.flush()
+        except Exception as exc:
+            logger.warning("Monitoring error: %s", exc)
+
+    # Final report
+    all_success = _print_migration_summary(results, report_summary, start_time)
+
+    # Record Zero-Touch Open Rate (Phase 10)
+    _record_zero_touch(args, source_basename, success=all_success,
+                       rollback_result=rollback_result)
+
+    _finalize_telemetry(telemetry, all_success, results)
+
+    return ExitCode.SUCCESS if all_success else ExitCode.GENERAL_ERROR
+
+
+if __name__ == '__main__':
+    try:
+        exit_code = main()
+        sys.exit(exit_code)
+    except KeyboardInterrupt:
+        print("\n\nMigration interrupted by user")
+        sys.exit(ExitCode.KEYBOARD_INTERRUPT)
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}", exc_info=True)
+        print(f"\n\nFatal error: {str(e)}")
+        sys.exit(ExitCode.GENERAL_ERROR)

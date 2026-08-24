@@ -1,0 +1,57 @@
+{
+ "visual_count": 4,
+ "visuals": [
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 198,
+   "page": "Financial Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredBarChart",
+   "width": 800,
+   "x": 0,
+   "y": 522,
+   "z": 2000
+  },
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 198,
+   "page": "Financial Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredBarChart",
+   "width": 480,
+   "x": 800,
+   "y": 522,
+   "z": 3000
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 378,
+   "page": "Financial Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "lineClusteredColumnComboChart",
+   "width": 1040,
+   "x": 0,
+   "y": 144,
+   "z": 0
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 378,
+   "page": "Financial Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "scatterChart",
+   "width": 240,
+   "x": 1040,
+   "y": 144,
+   "z": 1000
+  }
+ ]
+}

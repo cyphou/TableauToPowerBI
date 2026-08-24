@@ -1,0 +1,59 @@
+{
+  "filters": 0,
+  "measures": {
+    "[Avg_Duration]": {
+      "formula_hash": "6c74c8fb8c77c179"
+    },
+    "[Channel_Category]": {
+      "formula_hash": "e1ee6407c7f56d9e"
+    },
+    "[Conversion_Rate]": {
+      "formula_hash": "16fc08de31416668"
+    },
+    "[Days_Since_Signup]": {
+      "formula_hash": "af0dc81b61f6ce58"
+    },
+    "[Engagement_Level]": {
+      "formula_hash": "a1aaca2dcf208bef"
+    },
+    "[Rev_Per_Session]": {
+      "formula_hash": "f0c5119e54731c02"
+    },
+    "[Revenue_By_Channel]": {
+      "formula_hash": "397227ffd6864496"
+    },
+    "[Total_Revenue]": {
+      "formula_hash": "13e6ce6e15a4389a"
+    },
+    "[Total_Sessions]": {
+      "formula_hash": "9ecc583ee6bac570"
+    },
+    "[Unique_Visitors]": {
+      "formula_hash": "02b0165cb00ebb45"
+    }
+  },
+  "pages": {
+    "Conversion by Device": {
+      "field_count": 2
+    },
+    "Revenue Trend": {
+      "field_count": 2
+    },
+    "Sessions by Channel": {
+      "field_count": 3
+    },
+    "User Engagement": {
+      "field_count": 3
+    }
+  },
+  "relationships": 1,
+  "tables": {
+    "sessions": {
+      "column_count": 10
+    },
+    "users": {
+      "column_count": 6
+    }
+  },
+  "version": "1.0"
+}

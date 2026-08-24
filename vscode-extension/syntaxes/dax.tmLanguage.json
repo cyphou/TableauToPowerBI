@@ -1,0 +1,66 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "DAX",
+  "scopeName": "source.dax",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#functions" },
+    { "include": "#keywords" },
+    { "include": "#operators" },
+    { "include": "#column-reference" },
+    { "include": "#table-reference" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.dax",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.double-dash.dax",
+          "match": "--.*$"
+        },
+        {
+          "name": "comment.block.dax",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.dax",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.dax", "match": "\"\"" }
+      ]
+    },
+    "numbers": {
+      "name": "constant.numeric.dax",
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+    },
+    "functions": {
+      "name": "support.function.dax",
+      "match": "(?i)\\b(CALCULATE|CALCULATETABLE|FILTER|ALL|ALLEXCEPT|ALLSELECTED|REMOVEFILTERS|VALUES|DISTINCT|DISTINCTCOUNT|SUM|SUMX|AVERAGE|AVERAGEX|MIN|MINX|MAX|MAXX|COUNT|COUNTX|COUNTROWS|COUNTA|DIVIDE|RELATED|RELATEDTABLE|LOOKUPVALUE|RANKX|TOPN|EARLIER|EARLIEST|VAR|RETURN|IF|SWITCH|TRUE|FALSE|BLANK|ISBLANK|COALESCE|AND|OR|NOT|CONCATENATE|CONCATENATEX|FORMAT|UPPER|LOWER|TRIM|LEFT|RIGHT|MID|LEN|SUBSTITUTE|FIND|SEARCH|CONTAINSSTRING|UNICODE|DATE|DATEDIFF|DATEADD|TODAY|NOW|YEAR|MONTH|DAY|HOUR|MINUTE|SECOND|WEEKDAY|WEEKNUM|STARTOFYEAR|STARTOFMONTH|STARTOFQUARTER|ENDOFYEAR|TOTALYTD|TOTALMTD|TOTALQTD|SAMEPERIODLASTYEAR|DATESYTD|PARALLELPERIOD|PREVIOUSYEAR|NEXTYEAR|GENERATESERIES|DATATABLE|SELECTEDVALUE|SELECTEDMEASURE|NAMEOF|HASONEVALUE|ISFILTERED|ISCROSSFILTERED|USERPRINCIPALNAME|USERNAME|MEDIAN|PERCENTILE\\.INC|PERCENTILE\\.EXC|STDEV\\.S|STDEV\\.P|VAR\\.S|VAR\\.P|CORREL|ROUND|FLOOR|CEILING|ABS|POWER|SQRT|LOG|LN|EXP|INT|CONVERT|MOD)\\b"
+    },
+    "keywords": {
+      "name": "keyword.other.dax",
+      "match": "(?i)\\b(VAR|RETURN|IN|NOT|AND|OR|TRUE|FALSE)\\b"
+    },
+    "operators": {
+      "name": "keyword.operator.dax",
+      "match": "(\\+|\\-|\\*|/|&&|\\|\\||&|=|<>|<=|>=|<|>|\\^)"
+    },
+    "column-reference": {
+      "name": "variable.other.column.dax",
+      "match": "\\[[^\\]]+\\]"
+    },
+    "table-reference": {
+      "name": "entity.name.type.table.dax",
+      "match": "'[^']+'"
+    }
+  }
+}

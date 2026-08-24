@@ -1,0 +1,76 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Tableau Calculation",
+  "scopeName": "source.tableau",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#lod" },
+    { "include": "#table-calc" },
+    { "include": "#functions" },
+    { "include": "#keywords" },
+    { "include": "#operators" },
+    { "include": "#field-reference" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.tableau", "match": "//.*$" },
+        { "name": "comment.block.tableau", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.tableau",
+          "begin": "\"",
+          "end": "\""
+        },
+        {
+          "name": "string.quoted.single.tableau",
+          "begin": "'",
+          "end": "'"
+        }
+      ]
+    },
+    "numbers": {
+      "name": "constant.numeric.tableau",
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+    },
+    "lod": {
+      "name": "meta.lod.tableau",
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "name": "keyword.control.lod.tableau",
+          "match": "(?i)\\b(FIXED|INCLUDE|EXCLUDE)\\b"
+        },
+        { "include": "#functions" },
+        { "include": "#field-reference" },
+        { "include": "#operators" }
+      ]
+    },
+    "table-calc": {
+      "name": "support.function.tablecalc.tableau",
+      "match": "(?i)\\b(RUNNING_SUM|RUNNING_AVG|RUNNING_COUNT|RUNNING_MAX|RUNNING_MIN|WINDOW_SUM|WINDOW_AVG|WINDOW_MAX|WINDOW_MIN|WINDOW_COUNT|WINDOW_MEDIAN|WINDOW_STDEV|WINDOW_VAR|RANK|RANK_DENSE|RANK_UNIQUE|RANK_MODIFIED|RANK_PERCENTILE|INDEX|SIZE|FIRST|LAST|LOOKUP|PREVIOUS_VALUE|TOTAL)\\b"
+    },
+    "functions": {
+      "name": "support.function.tableau",
+      "match": "(?i)\\b(IF|THEN|ELSE|ELSEIF|END|CASE|WHEN|ISNULL|IFNULL|ZN|IIF|SUM|AVG|MIN|MAX|COUNT|COUNTD|MEDIAN|STDEV|STDEVP|VAR|VARP|PERCENTILE|ATTR|CONTAINS|STARTSWITH|ENDSWITH|LEN|LEFT|RIGHT|MID|UPPER|LOWER|TRIM|LTRIM|RTRIM|REPLACE|SPLIT|FIND|FINDNTH|REGEXP_MATCH|REGEXP_EXTRACT|REGEXP_REPLACE|ASCII|CHAR|SPACE|ABS|CEILING|FLOOR|ROUND|POWER|SQRT|SQUARE|LOG|LN|EXP|SIN|COS|TAN|PI|SIGN|INT|FLOAT|STR|DATE|DATETIME|DATEPART|DATETRUNC|DATEDIFF|DATEADD|DATENAME|TODAY|NOW|YEAR|MONTH|DAY|HOUR|MINUTE|SECOND|WEEK|QUARTER|MAKEDATE|MAKETIME|MAKEPOINT|MAKELINE|DISTANCE|AREA|CORR|COVAR|COVARP|USERNAME|FULLNAME|USERDOMAIN|ISMEMBEROF|MODEL_PERCENTILE|MODEL_QUANTILE|SCRIPT_BOOL|SCRIPT_INT|SCRIPT_REAL|SCRIPT_STR)\\b"
+    },
+    "keywords": {
+      "name": "keyword.control.tableau",
+      "match": "(?i)\\b(IF|THEN|ELSE|ELSEIF|END|CASE|WHEN|AND|OR|NOT|IN|TRUE|FALSE|NULL)\\b"
+    },
+    "operators": {
+      "name": "keyword.operator.tableau",
+      "match": "(\\+|\\-|\\*|/|%|==|=|!=|<>|<=|>=|<|>|\\^)"
+    },
+    "field-reference": {
+      "name": "variable.other.field.tableau",
+      "match": "\\[[^\\]]+\\]"
+    }
+  }
+}

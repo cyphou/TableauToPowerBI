@@ -1,0 +1,2713 @@
+# Changelog
+
+## v44.0.0 — Agentic & Copilot-Native Migration
+
+### Highlights
+- **GitHub Copilot skill (Sprint 215)**: a repo-scoped skill at `.github/skills/tableau-to-powerbi/SKILL.md` (plus a `references/` bundle) that teaches any Copilot / agent-mode session how to run the pipeline safely — canonical commands, output layout, a "fix-at-the-source" ownership map, a troubleshooting playbook, and secret-handling rules. A new `scripts/validate_skills.py` linter validates frontmatter, relative links, referenced CLI flags, and embedded-secret detection.
+- **MCP server (Sprint 216)**: `powerbi_import/mcp_server.py` exposes the engine as Model Context Protocol tools over stdlib JSON-RPC (stdio) — `assess`, `migrate`, `qa`, `parity_scan`, `shared_model`, `diff`, and a guarded `deploy`. Assessment/QA/parity reports are exposed as MCP resources. Zero external dependencies.
+- **Natural-language remediation (Sprint 217)**: `powerbi_import/remediation.py` turns assessment/healing findings into plain-language explanations and source-targeted fix suggestions, each with an owning file/agent and a confidence score. Offline-first (deterministic templates); optional LLM refinement via `refine_with_llm`.
+- **Conversational assessment (Sprint 218)**: `powerbi_import/conversational.py` answers grounded questions ("what won't migrate cleanly?", "which datasources need a gateway?", "give me a plan") from the assessment payload — every answer carries evidence rows, no guessing.
+- **Agent-surface guardrails (Sprint 219)**: snapshot-guarded MCP tool contracts and a safety suite (deploy gating, secret-argument refusal, LLM opt-in, no secrets in skill docs).
+
+### Safety
+- The MCP `deploy` tool is **dry-run by default**, refuses arguments whose names look like secrets, and reads credentials from the environment only.
+- The LLM remediation path is opt-in; the full offline path requires no network access.
+
+### Affected Areas
+- `.github/skills/tableau-to-powerbi/` (new skill + references), `scripts/validate_skills.py` (new).
+- `powerbi_import/mcp_server.py`, `powerbi_import/remediation.py`, `powerbi_import/conversational.py` (new).
+- `docs/AGENT_SURFACE.md` (new), `docs/ROADMAP.md` (v44 marked shipped).
+- Tests: `tests/test_skill_docs.py`, `test_mcp_server.py`, `test_remediation.py`, `test_conversational_assess.py`, `test_agent_contracts.py`, `test_agent_safety.py` (100 new tests).
+
+## v40.0.0 — VS Code Extension & Interactive Tooling
+
+### Highlights
+- **VS Code Extension (Sprints 185–186)**: a new `vscode-extension/` front-end over the Python engine. Workbook **tree view** (datasources → tables → columns, worksheets, dashboards, parameters), **assessment webview** with severity badges, **one-click migrate** with progress + output-folder link, a **status bar** showing migration state and last fidelity, and a **side-by-side DAX preview** with editable overrides saved to `config.json`. TextMate **syntax grammars** for DAX (`source.dax`) and Tableau calculations (`source.tableau`, incl. LOD and table-calc scopes).
+- **Interactive Notebook API v2 (Sprint 187)**: `MigrationSession` gains `assess_interactive` (radar SVG), `explore_dax` (filterable explorer), `show_relationships` (Mermaid ER diagram), and step-by-step `step_extract`/`step_convert`/`step_generate`/`step_validate` helpers for Jupyter-driven migrations.
+- **Plugin SDK v2 (Sprint 188)**: new `powerbi_import/plugin_sdk.py` — a versioned `MigrationPlugin` base class with formal hooks (`on_extract`, `on_convert_dax`, `on_generate_visual`, `on_validate`), manifest schema validation, error-isolated dispatch, a `PluginTestRunner` (`assert_dax_valid`/`assert_m_valid`/`assert_visual_schema`), and a bridge to the legacy `plugins.py` auto-discovery. Backward compatible with v1 hooks.
+- **Marketplace v2 (Sprint 188)**: `marketplace.py` adds pattern dependency tracking (`resolve_dependencies`), remote catalogue sync (`sync_remote`), and curated industry packs (Healthcare/Finance/Retail) under `examples/marketplace/packs/`.
+
+### Affected Areas
+- `vscode-extension/` (new): TypeScript extension, grammars, 38 unit tests.
+- `powerbi_import/notebook_api.py` (interactive v2 methods).
+- `powerbi_import/plugin_sdk.py` (new), `powerbi_import/marketplace.py` (deps + sync), `examples/marketplace/packs/` (new).
+
+### Validation
+- New suites: `tests/test_plugin_sdk.py` (49), `tests/test_notebook_api_v2.py` (35); extension `npm test` (38 unit tests).
+- Full Python regression suite green.
+
+### Docs
+- New: `docs/VS_CODE_EXTENSION.md`, `docs/PLUGIN_SDK.md`, `vscode-extension/README.md`.
+
+## v39.0.0 — Data Blending & Advanced Connectivity
+
+### Highlights
+- **Data Blending Engine (Sprint 180)**: cross-datasource Tableau blends are now reconstructed as Power Query merge queries (`generate_blend_merge_query`), preserving primary/secondary linking fields and aggregation context.
+- **Enterprise Connector Expansion (Sprint 181)**: 8 new deep connectors with schema navigation and custom-SQL passthrough — Dremio, ClickHouse, SingleStore/MemSQL, Firebolt, Starburst/Trino, IBM Db2 (deep), Teradata (deep), Azure Synapse (deep). 20 new `_M_GENERATORS` aliases plus auto-detection entries in `datasource_extractor.py`.
+- **Custom SQL & Native Query Depth (Sprint 182)**: new stdlib-only `sql_analyzer.py` — dialect detection (T-SQL/Postgres/MySQL/Oracle/Snowflake/BigQuery/ANSI), parameter extraction (`<Parameters.X>`, `[Parameters].[X]`, `@name`, `:name`, `${name}`), SELECT-list/JOIN parsing, subquery detection, complexity grading, and parameterised `Value.NativeQuery` M emission. Wired into assessment as a "Custom SQL Depth" check.
+- **OAuth & Authentication Flow Migration (Sprint 183)**: `gateway_config.py` gains 6 new OAuth connectors (Dynamics 365, Dataverse, ServiceNow, Azure Blob, Azure Data Lake, Fabric Lakehouse), a Tableau→PBI auth-mode map, credential template v2, Azure AD service-principal config, and a PowerShell connection-test script generator.
+
+### Affected Areas
+- `tableau_export/m_query_builder.py` (8 connectors + blend merge)
+- `tableau_export/datasource_extractor.py` (connector auto-detection)
+- `powerbi_import/sql_analyzer.py` (new), `powerbi_import/assessment.py` (depth check)
+- `powerbi_import/gateway_config.py` (OAuth/auth flow)
+
+### Validation
+- New suites: `tests/test_data_blending.py`, `tests/test_enterprise_connectors.py` (54), `tests/test_sql_analyzer.py` (50), `tests/test_gateway_v2.py` (32).
+- Full regression suite green; the 11 pre-existing DAX `INDEX→ROWNUMBER` / `_quote_name` failures are now resolved.
+
+## v38.5.0 — Floating-Overlay Fidelity & Real-World QA
+
+### Highlights
+- **Floating zone overlay fidelity (Sprint 204)**: the report-side self-healing overlap pass is now deterministic. `_heal_visual_overlap_full` iterates visuals sorted by z-order (`_overlap_sort_key`: `z`, `tabOrder`, `name`) so the lowest-z backdrop stays anchored and higher-z foreground zones are staggered by +32 px. Previously the iteration order came from `sorted(os.listdir())` over random `uuid4` directory names, making which overlapping visual moved non-deterministic across `PYTHONHASHSEED` values.
+- **Pixel-perfect golden fixtures (Sprint 205)**: per-workbook visual golden fixtures with a CI drift gate (`scripts/generate_pixel_fixtures.py --check`). Now 7 deterministic workbooks including the previously-excluded `Enterprise_Sales`.
+- **Mixed-alignment & vertical-anchor text runs (Sprint 206)**: per-paragraph horizontal alignment (`fontalignment` 1→left/2→center/3→right/4→justify) plus zone-level text-align and vertical anchor are preserved into PBIR textbox payloads.
+- **Real-world QA suite (Sprint 207)**: `--qa` / `--qa-strict` produce a 6-check migration QA report card (zero sentinel glyphs, zero empty visuals, full format coverage, all zones matched, no orphan filters, fidelity ≥97) with an HTML report and CI-strict exit code. Autoplay QA step added (Sprint 207.4).
+
+### Affected Areas
+- `powerbi_import/self_healing_report.py` (deterministic overlap stagger)
+- `powerbi_import/pbip_generator.py`, `tableau_export/extract_tableau_data.py` (text alignment)
+- `scripts/generate_pixel_fixtures.py`, `tests/golden/` (golden fixtures)
+- `tests/test_pixel_perfect_fidelity.py`, `tests/test_qa_suite.py`
+
+### Validation
+- Floating-overlap determinism verified across 7 `PYTHONHASHSEED` values (textbox at 0,108; staggered worksheet at 32,140).
+- Full regression suite: **8,875 passed, 66 skipped, 1 xfailed** (11 pre-existing DAX `INDEX→ROWNUMBER` / `_quote_name` failures tracked separately).
+- `TestFloatingOverlap` (10 tests) and `--check` golden drift gate green.
+
+## v38.4.0 — Pixel-Perfect Text & Visual Fidelity
+
+### Highlights
+- **Annotation/textbox font fidelity**: run-level font attributes are now preserved more consistently from Tableau rich text into PBIR textbox payloads.
+- **Per-visual chrome fidelity**: visual-level Tableau format zones (background + border) are now applied in generated visual configuration.
+- **Line-break sentinel cleanup**: Tableau soft line-break sentinel runs (`Ae`/NBSP artifacts from Tableau XML runs) are cleaned during extraction to avoid stray glyphs in Power BI output.
+
+### Affected Areas
+- `tableau_export/extract_tableau_data.py`
+- `powerbi_import/pbip_generator.py`
+- `powerbi_import/visual_generator.py`
+- `tests/test_pixel_perfect_fidelity.py`
+
+### Validation
+- Pixel-fidelity regression suite added/expanded (including sentinel handling).
+- Real-world UC80 re-migration verified: no empty visuals regression, no stray sentinel glyphs.
+
+## v38.3.0 — Empty Visual Fix — Marks-Only Worksheets & Shape Encoding
+
+### Problem
+Real-world workbook UC80 (12 pages, 142 data visuals) was reporting 100% fidelity but contained **82 empty visuals** (65 `tableEx` + 17 `scatterChart`). Worksheets that had fields in Tableau (on Marks card, Detail shelf, Shape encoding) were producing visuals with no fields in PBIR — Power BI Desktop opened them as blank containers.
+
+### Root Causes (3 GAPs)
+1. **GAP 1 — Shape encoding missing**: `extract_worksheet_fields()` iterated `['color', 'size', 'detail', 'tooltip', 'label', 'text']` but **omitted `'shape'`**. Worksheets with `mark='Shape'` (e.g. `Assistance_sollen`) extracted 0 fields.
+2. **GAP 2 — Marks-only worksheets ignored**: Worksheets with empty `<rows>`/`<cols>` but fields on the Detail/Marks shelf placed them inside `<slices>/<column>` elements. `D_10 - Ps en cours` had **12 slices** (only 1 field extracted), `D_2 - Obs prog v2 (2)` had **11 slices** (only 2 extracted). The extractor never read this XML location.
+3. **GAP 3 — BIM symbol mismatch** (already fixed in prior commit on `pbip_generator.py`): `_field_map` placed measures on `measures_table` (the main table) but TMDL placed them on the source-column table. Phase 4c reconciles via caption-based `bim_by_prop` lookup, dropping field references that don't exist in the final BIM model.
+
+### Fixes
+- **`tableau_export/extract_tableau_data.py`** — `extract_worksheet_fields()`:
+  1. Added `'shape'` to the encoding iteration list.
+  2. Added a post-encoding block that walks `worksheet.findall('.//slices/column')`, parses `[ds].[field]` references, strips aggregation/derivation/suffix prefixes, deduplicates against fields already collected, and appends them as `shelf='detail'` entries.
+- **`powerbi_import/pbip_generator.py`** (prior commit) — Phase 4c BIM reconciliation: drops field map entries whose `(symbol, table)` pair is not present in `_actual_bim_symbols` and re-resolves them via caption-based lookup against the actually-emitted TMDL.
+
+### Validation
+- UC80 re-migration: **82 empty visuals → 0** (`_diag_empty.py` reports `TOTAL EMPTY: 0`)
+- 100% fidelity preserved, 41s end-to-end
+- Full regression suite: **8,746 passed, 66 skipped, 1 xfailed, 0 failures** (528.58s)
+
+## v38.2.0 — Sprint 178 — Migration Diff & Comparison Tooling
+
+### Artifact Diff Engine
+- **powerbi_import/artifact_diff.py**: New module — structured diff between two .pbip project directories
+  - TMDL parsing: tables, columns (dataType/dataCategory/isHidden), measures (expression hash), partitions (content hash), relationships (signature-based), RLS roles
+  - PBIR parsing: pages (displayName, pageType), visuals (visualType, title, field count), report-level filters
+  - `diff_projects(old_dir, new_dir)` — full cross-layer comparison returning `DiffReport`
+  - `DiffReport` / `DiffEntry` data classes with `summary()`, `to_dict()`, `save()`, `by_category()`
+  - Baseline management: `save_baseline()` (copytree + manifest), `check_baseline()` (pass/fail + report)
+  - Interactive HTML report: `generate_diff_report()` with stat grid, donut chart, per-category tables, before/after panels for modified measures
+  - Standalone CLI: `python -m powerbi_import.artifact_diff old_dir new_dir`
+
+### CLI — New Diff Flags
+- **migrate.py**: 3 new flags
+  - `--diff PREVIOUS_DIR` — compare current migration output against a previous .pbip project
+  - `--save-baseline BASELINE_DIR` — snapshot output as a baseline for future comparison
+  - `--check-baseline BASELINE_DIR` — compare output against stored baseline (non-zero exit if changes detected, for CI)
+  - Integrated into `_run_post_generation_reports()` — runs after comparison report and autoplay
+
+### Tests
+- **tests/test_artifact_diff.py**: 70 tests across 14 test classes
+  - DiffEntry/DiffReport data structures (creation, serialization, summary formatting)
+  - TMDL parsing (tables, columns, measures, partitions, relationships, roles, edge cases)
+  - PBIR parsing (pages, visuals, filters, JSON loading, empty/missing dirs)
+  - Diff engine (added/removed/modified for all 9 categories, no-change detection)
+  - Full project diff (identical projects, table/column/measure/relationship/page/visual changes)
+  - Baseline management (save, check pass/fail, missing baseline, overwrite)
+  - HTML report generation (no-changes, with changes, donut chart, file output)
+  - CLI entry point (end-to-end with JSON and HTML output)
+
+## v38.1.0 — Sprint 177 — Workspace Creation & Gateway Binding
+
+### PBI Service Client — Workspace & Gateway APIs
+- **powerbi_import/deploy/pbi_client.py**: 7 new REST API methods
+  - `create_workspace(name)` — POST /groups to create a new Power BI workspace
+  - `list_gateways()` — GET /gateways to discover on-premises data gateways
+  - `get_gateway(gateway_id)` — GET /gateways/{id} for gateway details
+  - `get_dataset_datasources(workspace_id, dataset_id)` — list datasources on a deployed dataset
+  - `get_gateway_datasources(gateway_id)` — list datasources registered on a gateway
+  - `bind_dataset_to_gateway(workspace_id, dataset_id, gateway_id, datasource_ids)` — POST Default.BindToGateway
+  - `take_over_dataset(workspace_id, dataset_id)` — POST Default.TakeOver for ownership transfer
+  - `update_dataset_datasources(workspace_id, dataset_id, update_details)` — POST Default.UpdateDatasources for connection string changes
+
+### PBI Workspace Deployer — Orchestration
+- **powerbi_import/deploy/pbi_deployer.py**: 4 new orchestration methods
+  - `create_workspace(name)` — create workspace and update deployer target
+  - `ensure_workspace(name)` — find existing workspace by name (case-insensitive) or create new
+  - `bind_to_gateway(dataset_id, gateway_id, ...)` — take ownership → discover datasources → bind to gateway
+  - `deploy_and_bind(project_dir, gateway_id, ...)` — full pipeline: deploy .pbip → bind to gateway → refresh
+
+### CLI — New Deployment Flags
+- **migrate.py**: 2 new deployment flags
+  - `--create-workspace NAME` — create (or find) a PBI workspace before deploying
+  - `--gateway-bind GATEWAY_ID` — bind deployed semantic model to an on-premises data gateway
+
+### Tests
+- **tests/test_pbi_service.py**: 24 new tests covering workspace creation, gateway listing, bind-to-gateway, take-over, deploy-and-bind pipeline, ensure-workspace deduplication
+
+## v38.0.0 — Sprints 175–176 — Report Packaging & REST API v2
+
+### Sprint 175 — PDF/PPTX Report Export
+- **powerbi_import/pdf_renderer.py**: Print-optimized HTML renderer
+  - `render_print_html()` — transforms interactive HTML reports into print-ready versions (CSS injection, section expansion, tab visibility, print banner with "Save as PDF" button)
+  - `save_print_html()` — saves print-optimized HTML to `.pdf.html` file
+  - Handles both template-structured and bare HTML (fallback injection paths)
+- **powerbi_import/pptx_report.py**: Executive summary PPTX generator (pure stdlib — xml.etree + zipfile)
+  - `generate_pptx_report()` — produces 5-slide PPTX: Title, Scope, Readiness table, Top risks, Recommendations
+  - Office Open XML generation with PBI theme colors, score-based conditional formatting
+- **powerbi_import/report_packager.py**: Migration report ZIP packager
+  - `generate_report_package()` — bundles assessment_report.html, assessment_report.pdf.html, executive_summary.pptx, assessment_data.json, fidelity_checks.csv, README.txt
+- **powerbi_import/html_template.py**: Enhanced `@media print` CSS block (A4 page setup, color-adjust, expanded sections, page breaks, hidden interactive elements)
+- **migrate.py**: 3 new CLI flags: `--pdf`, `--pptx`, `--report-package` (wired into assessment mode)
+
+### Sprint 176 — REST API v2
+- **powerbi_import/api_server.py**: API v2 enhancements
+  - `GET /openapi.json` — OpenAPI 3.0.3 specification with all endpoints documented
+  - `--api-key` flag — Bearer token authentication (`Authorization: Bearer <key>`), public endpoints exempted
+  - `GET /jobs` — pagination (`page`, `per_page`) and status filtering (`status=completed|failed|running`)
+  - `POST /migrate` — `webhook_url` query parameter for completion callbacks with HMAC-SHA256 signature
+  - `POST /migrate/batch` — ZIP upload of multiple workbooks, creates batch with individual jobs
+  - `GET /batch/{id}` — batch progress tracking with per-job status details
+- **tests/test_report_packaging.py**: 34 tests — PDF renderer, PPTX report, report packager, CSV builder, README builder
+- **tests/test_api_v2.py**: 27 tests — OpenAPI spec, API key auth, pagination/filtering, webhook delivery, batch jobs
+
+## v37.1.0 — Bulk Assessment Implementation
+
+### `--bulk-assess` — Standalone Portfolio Assessment
+- **migrate.py**: `run_bulk_assessment_mode()` — full implementation of the `--bulk-assess DIR` CLI flag
+  - Recursively discovers `.twb`/`.twbx` workbooks and `.tfl`/`.tflx` prep flows in a directory
+  - Extracts each workbook via `TableauExtractor` and analyzes prep flows via `prep_flow_analyzer`
+  - Runs portfolio readiness scoring via `server_assessment.run_server_assessment()` (GREEN/YELLOW/RED, effort, waves)
+  - Runs cross-workbook merge analysis via `global_assessment.run_global_assessment()` (pairwise heatmap, clusters)
+  - Runs prep flow lineage via `prep_lineage.build_lineage_graph()` when ≥2 flows are found
+  - Generates HTML dashboards + JSON reports to output directory (default: `artifacts/bulk_assess/`)
+  - No Tableau Server connection required — works entirely on local files
+- **tests/test_bulk_assessment.py**: 6 new tests (nonexistent dir, empty dir, multi-workbook portfolio, single workbook, default output dir, recursive discovery)
+- **Documentation**: Updated ENTERPRISE_GUIDE, FAQ, MIGRATION_CHECKLIST, ARCHITECTURE
+
+## v37.0.0 — Sprints 120–124 — Migration Completeness & Analytics Parity
+
+### Sprint 120 — Incremental Refresh & M Parameter Wiring
+- **tmdl_generator.py**: Incremental refresh detection and configuration
+  - `_detect_incremental_refresh_tables()` — scans tables for DateTime columns suitable as refresh boundaries
+  - `_generate_refresh_policy_tmdl()` — generates TMDL refreshPolicy block (configurable window, default 12 months)
+  - `_inject_range_filter_m()` — wraps M partitions with `Table.SelectRows` for RangeStart/RangeEnd filtering
+  - `_generate_m_parameters_tmdl()` — generates RangeStart/RangeEnd M parameter definitions
+  - `_parameterize_m_connections()` — replaces literal server/database strings with M parameter references
+  - `_generate_connection_parameters_tmdl()` — generates ServerName/DatabaseName M parameters
+- **migrate.py**: 3 CLI flags: `--incremental-refresh`, `--incremental-refresh-months N`, `--no-parameterize`
+- **import_to_powerbi.py**: Threads incremental refresh options through the pipeline
+- **pbip_generator.py**: Forwards incremental refresh params and displays stats
+
+### Sprint 121 — Annotation & Map Migration
+- **extract_tableau_data.py**: Annotation extraction depth
+  - Extracts `<point-annotation>` and `<area-annotation>` elements: text, position (x/y), font formatting
+  - Extracts `<map-options>`: zoom level, center lat/lon, base map style
+- **pbip_generator.py**: Annotation → textbox overlay conversion
+  - Generates PBI textbox visuals positioned near the target chart area
+  - MigrationNote: "Converted from Tableau annotation"
+- **visual_generator.py**: Map visual configuration
+  - `build_map_config()` — zoom, center, base map style (normal/dark/light/satellite → PBI map themes)
+  - `build_map_layer_config()` — bubble size range, color saturation, polygon fill, heat map density
+
+### Sprint 122 — Set Actions & Interactive Parity
+- **extract_tableau_data.py**: Deepened action extraction
+  - Set actions: target set name, source field, assign behavior, clearing behavior, activation
+  - Navigate actions: target sheet name, field mappings
+  - Parameter actions: target parameter name, source field
+- **pbip_generator.py**: Interactive action migration
+  - `_generate_set_action_artifacts()` — hidden slicer + bookmark states + action button toggle
+  - `_generate_navigation_buttons()` — PBI PageNavigation buttons with drill-through filters
+  - `_generate_parameter_action_slicers()` — What-If parameter slicers for parameter change actions
+
+### Sprint 123 — Analytics Pane & Trend Lines
+- **extract_tableau_data.py**: Analytics object extraction
+  - Trend lines: type (linear/logarithmic/exponential/polynomial/power), degree, equation/R² display
+  - Distribution bands: percentile ranges, standard deviation bands, confidence intervals
+  - Forecast config: periods, confidence, seasonality model
+  - Clustering config: number of clusters, fields
+- **visual_generator.py**: Analytics pane migration
+  - `build_trend_line_config()` — all 5 regression types with equation/R² display
+  - `build_distribution_config()` — percentile lines, std dev bands, IQR
+  - `build_forecast_config()` — forecast length, confidence band, seasonality
+  - `build_clustering_note()` — MigrationNote for R/Python visual recommendation
+
+### Sprint 124 — Dynamic Formatting & Data Quality
+- **tmdl_generator.py**: Dynamic format strings
+  - `_inject_dynamic_format_measures()` — currency ($, €), percentage, K/M/B abbreviation FORMAT() wrappers
+- **governance.py**: Data quality & sensitivity
+  - `classify_endorsement()` — GREEN/YELLOW/RED → certified/promoted/none recommendation
+  - `infer_sensitivity_labels()` — PII (email, SSN, phone) → Confidential, financial → Internal
+  - `export_sensitivity_csv()` — CSV output for sensitivity label recommendations
+- **dax_query_generator.py**: DAX validation queries
+  - `generate_summary_query()` — ROW-based all-measures validation query
+  - `save_validation_queries()` — exports .dax files for DAX Studio verification
+
+### Tests
+- 154+ new tests across 4 test files (54 + 45 + 32 + 30 + 48 = 209 total new)
+- Total: **8,511+ tests** (8,511 passed, 66 skipped, 1 xfailed)
+
+---
+
+## v36.0.0 — Sprints 139–145 — Stream H: Tableau Server Enterprise Migration
+
+### Sprint 139 — Site Topology Discovery
+- **dependency_graph.py** (NEW): Site-wide topology discovery and dependency graph
+  - `build_site_topology(client)` — comprehensive site inventory (workbooks, datasources, users, groups)
+  - `build_dependency_graph(topology)` — workbook↔datasource dependency mapping with topological sort
+  - `classify_usage()` — active/stale/orphan classification by view count and last-accessed date
+  - `audit_certifications()` — certified vs uncertified datasource audit
+  - `enrich_with_lineage()` — upstream/downstream lineage enrichment
+  - `generate_topology_report()` — HTML dashboard using html_template.py
+  - `save_topology()` / `load_topology()` — JSON persistence
+
+### Sprint 140 — Migration Planning Engine Extensions
+- **migration_planner.py**: Topology-aware planning with timeline generation
+  - `generate_timeline(waves, team_size, start_date, hours_per_day, buffer_days)` — dated wave timeline with effort-based duration
+  - `generate_migration_plan_from_topology(topology, dependency_graph, ...)` — bridges site discovery to planning engine
+  - 15 new CLI flags: `--server-discover`, `--plan-migration`, `--team-size`, `--wave-max-size`, `--workspace-mapping`, `--map-permissions`, `--migrate-subscriptions`, `--resolve-published-ds`, `--ds-cache-dir`, `--no-ds-cache`, `--clear-cache`, `--cutover`, `--cutover-plan-only`, `--cutover-rollback`, `--parallel-run`
+
+### Sprint 141 — Permission & Security Mapping
+- **permission_mapper.py**: Enterprise permission migration
+  - `map_site_roles(users, workspace_mapping)` — Tableau site roles → PBI workspace roles (Creator→Admin, Explorer→Member, Viewer→Viewer)
+  - `reconcile_rls_principals(roles, users, groups)` — match Tableau RLS members to Azure AD UPNs
+  - `generate_azure_ad_scripts(groups, output_path)` — PowerShell scripts for Azure AD security group creation
+  - `generate_permission_report(...)` — HTML permission audit dashboard
+
+### Sprint 142 — Subscription & Alert Migration
+- **subscription_generator.py** (NEW): Subscription lifecycle migration
+  - `extract_all_subscriptions(client, topology)` — site-wide subscription extraction
+  - `extract_data_alerts(client)` — Tableau Server data-driven alert extraction
+  - `generate_pbi_subscriptions(subscriptions)` — Tableau → PBI subscription conversion
+  - `generate_power_automate_flows(subscriptions, alerts)` — Power Automate flow templates for complex alerts
+  - `detect_schedule_conflicts(pbi_subscriptions, license_type)` — Pro/PPU refresh limit validation
+  - `generate_subscription_report(...)` — HTML subscription migration report
+- **alerts_generator.py**: `map_server_alerts()` — Tableau Server data-driven alerts → PBI alert rules
+
+### Sprint 143 — Published Datasource Resolution
+- **datasource_extractor.py**: Cached published datasource resolution
+  - `cache_published_datasource(datasource, cache_dir)` — persist resolved datasource to local cache
+  - `load_cached_datasource(ds_name, cache_dir)` — cache-first lookup
+  - `clear_ds_cache(cache_dir)` — purge cache directory
+  - `resolve_published_datasource_cached(datasource, server_client, cache_dir, no_cache)` — cache-aware resolution with server fallback
+  - `resolve_all_published(datasources, server_client, cache_dir)` — bulk resolution with per-datasource status tracking
+- **server_client.py**: 6 new enterprise methods
+  - `list_users_with_groups()`, `build_permission_matrix()`, `get_all_subscriptions()`, `list_data_alerts()`, `download_datasource_by_name()`, `get_site_topology()`
+
+### Sprint 144 — Cutover Orchestration & Rollback
+- **cutover_manager.py** (NEW): Migration cutover lifecycle
+  - `generate_cutover_plan(migration_plan, waves_to_cut, cutover_date)` — cutover plan with wave selection and scheduling
+  - `execute_cutover(cutover_plan, artifacts_dir, snapshot_dir, dry_run)` — cutover execution with pre-flight snapshot
+  - `rollback(snapshot_path, target_dir)` — snapshot-based rollback
+  - `list_snapshots(artifacts_dir)` — available rollback snapshots
+  - `parallel_run_check(tableau_data, pbi_data, tolerance)` — numeric value reconciliation
+  - `generate_cutover_dashboard(...)` — HTML cutover status dashboard
+
+### Sprint 145 — Documentation & Testing
+- **docs/SERVER_MIGRATION_GUIDE.md** (NEW): End-to-end enterprise migration guide (6 phases)
+- **migrate.py**: `_handle_enterprise_server_ops(args)` dispatcher for all new CLI flags
+- 6 test files: test_site_discovery, test_migration_planner (extended), test_permission_mapping, test_subscription_migration, test_published_ds_resolution, test_cutover_manager, test_server_e2e
+
+## v35.0.0 — Sprints 171–174 — Stream G: Advanced Visual Fidelity
+
+### Sprint 171 — Sparkline Variants
+- **visual_generator.py**: Area, bar/column, and win/loss sparkline subtypes
+  - 9 new `VISUAL_TYPE_MAP` entries for sparkline variants
+  - `detect_sparkline_subtype()` — normalizes mark class to sparkline type
+  - `_build_sparkline_config()` expanded: area (fillColor, fillOpacity), win/loss (negativeColor, winLossMode), conditional color rules, axis range propagation
+  - Constants: `SPARKLINE_LINE`, `SPARKLINE_COLUMN`, `SPARKLINE_AREA`, `SPARKLINE_WINLOSS`
+
+### Sprint 172 — Motion Chart Workaround
+- **visual_generator.py**: Motion chart bookmark sequence and action button
+  - `_build_motion_chart_bookmarks()` — per-frame bookmarks with categorical filters
+  - `_build_motion_chart_action_button()` — play button with bookmark cycling
+  - `has_motion_chart()` — detect pages shelf with field
+- **pbip_generator.py**: Motion chart bookmark integration into report generation
+  - `_create_motion_chart_bookmarks()` — generates placeholder frames when no values
+  - Bookmarks wired into both report generation paths
+- **assessment.py**: Pages Shelf check updated to "Motion Chart" with bookmark/action button recommendation
+
+### Sprint 173 — Nested Container Solver
+- **visual_generator.py**: Recursive layout constraint solver for deeply nested containers
+  - `solve_nested_layout()` — handles 4+ level nesting with overflow detection
+  - `_solve_zone()` — recursive solver with padding inheritance and z-order tracking
+  - `_layout_tiled_children()` — horizontal/vertical/proportional child layout with margin gaps
+  - `_fix_overflow()` — auto-resize visuals exceeding page boundaries
+  - `get_nesting_depth()` — calculate max nesting depth of zone hierarchy
+  - Constants: `DEFAULT_CONTAINER_PADDING`, `MIN_VISUAL_DIM`
+
+### Sprint 174 — Rich Tooltip Preservation
+- **visual_generator.py**: Rich tooltip field extraction and formatting
+  - `build_rich_tooltip_config()` — extract field refs from tooltip runs with formatting
+  - `build_tooltip_data_roles()` — generate PBI Tooltips data role bindings
+  - `build_tooltip_formatting()` — preserve bold, color, font_size per run
+  - `estimate_tooltip_size()` — auto-size tooltip pages based on content
+  - Constants: `TOOLTIP_PAGE_WIDTH`, `TOOLTIP_PAGE_HEIGHT`, `TOOLTIP_MIN_HEIGHT`, `TOOLTIP_MAX_HEIGHT`
+
+### Tests
+- 134 new tests across 4 test files (46 + 29 + 32 + 27)
+- Total: **8,222 tests** (8,222 passed, 66 skipped, 1 xfailed)
+
+---
+
+## v34.0.0 — Sprints 151–170 — Zero Error Roadmap (Full Implementation)
+
+**Major release** covering the complete Zero Error Roadmap (20 sprints). Highlights:
+
+### Sprint 151–154 — Visual Fidelity & Formatting
+- **visual_generator.py**: 10 new PBIR config builder functions
+  - `_build_gauge_ranges()` — 3-band and custom gauge range config
+  - `_build_histogram_config()` — bin count, size, frequency type
+  - `_build_box_whisker_config()` — outliers, mean, whisker type
+  - `_build_map_config()` — map style, zoom, clustering, heatmap
+  - `_build_filled_map_config()` — sequential/diverging/categorical projection
+  - `_build_animation_bookmark_config()` — visual carousel bookmarks
+  - `_build_dynamic_zone_bookmark()` — zone visibility toggling
+  - `_build_table_formatting()` — column widths, banding, totals, URL icons
+  - `_build_conditional_icons()` — traffic light icon rule engine
+  - `_build_matrix_config()` — row/column subtotals, stepped layout
+
+### Sprint 155 — Cloud & SaaS Connectors
+- **m_query_builder.py**: 8 new connector generators registered
+  - ServiceNow (OData), Databricks Unity Catalog, Denodo (ODBC)
+  - Oracle Essbase (XMLA/ODBC), Splunk (REST API)
+  - SAP HANA Deep (schema nav + custom SQL), Redshift Deep (Spectrum)
+
+### Sprint 156 — Connection String Intelligence
+- **NEW: connection_rewriter.py** — Connection string rewriting engine
+  - Rule-based server/database replacement, regex patterns
+  - Environment-based config (dev/staging/prod), audit trail
+
+### Sprint 157 — Hyper & Extract Completeness
+- **hyper_reader.py** extended:
+  - `detect_tde_format()` — TDE vs Hyper format detection (magic bytes)
+  - `discover_multi_table_hyper()` — multi-schema/table discovery (2020.2+)
+  - `read_hyper_streaming()` — batch-mode streaming for large extracts (>1M rows)
+  - `extract_hyper_filters()` — TWB extract filters → M filter steps
+  - `_EXTENDED_TYPE_MAP` — 14 additional Hyper column types
+
+### Sprint 158 — Spatial & Regex Gap Closure
+- **dax_converter.py** extended:
+  - `_REGEXP_PATTERNS` library (email, phone, URL, ZIP)
+  - `convert_regexp_match()`, `convert_regexp_replace()`, `convert_regexp_extract()`
+  - `convert_spatial_to_python_visual()` — MAKEPOINT/MAKELINE → geopandas script
+
+### Sprint 159 — Table Calculation Depth
+- **dax_converter.py** extended:
+  - `convert_window_percentile()` → PERCENTILEX.INC
+  - `convert_running_with_partition()` — partitioned RUNNING_SUM → CALCULATE+FILTER+EARLIER
+  - `convert_lookup_offset()` — LOOKUP → OFFSET (DAX 2023+)
+
+### Sprint 160 — LOD & Security Depth
+- **dax_converter.py** extended:
+  - `convert_nested_lod()` — LOD-in-LOD → nested CALCULATE
+  - `convert_multi_dim_exclude()` — multi-dimension EXCLUDE → REMOVEFILTERS
+  - `convert_ismemberof_to_rls()` — group membership → RLS role annotations
+
+### Sprint 161 — Server Discovery & Metadata
+- **server_client.py** extended:
+  - `get_workbook_dependencies()` — dependency graph with downstream workbooks
+  - `get_published_datasource_details()` — full datasource metadata
+  - `get_usage_stats()` — view count, last accessed aggregation
+  - `get_permissions()` — granteeCapabilities parsing
+  - `get_quality_warnings()` — data quality certification retrieval
+  - `get_server_summary()` — comprehensive inventory (all entity counts)
+
+### Sprint 162 — Tableau Cloud & OAuth/JWT
+- **server_client.py** extended:
+  - `detect_cloud_vs_server()` — 6 known Cloud domains
+  - `sign_in_jwt()` — Connected App / EAS JWT authentication
+  - `get_metadata_graphql()` — Metadata API (GraphQL) query execution
+  - `get_lineage_upstream()` — upstream lineage via Metadata API
+
+### Sprint 163 — Schedule & Subscription Migration
+- **NEW: subscription_migrator.py** (~250 lines)
+  - `convert_schedule_to_pbi()` — frequency/timezone mapping
+  - `convert_subscriptions()` — user UPN mapping, data-driven alerts
+  - `detect_schedule_conflicts()` — time slot histogram, max_concurrent check
+  - `generate_subscription_report()` — HTML dashboard with stats/badges
+
+### Sprint 164–166 — Test Coverage
+- **NEW test files:**
+  - `test_subscription_migrator.py` — 14 tests
+  - `test_migration_planner.py` — 14 tests
+  - `test_server_discovery.py` — 14 tests (mocked REST API)
+  - `test_hyper_reader_sprint157.py` — 10 tests
+  - `test_incremental_sprint168.py` — 10 tests
+  - `test_connector_dax_sprints.py` — 18 tests
+
+### Sprint 167 — Enterprise Migration Planning
+- **NEW: migration_planner.py** (~320 lines)
+  - `estimate_effort()` — weighted scoring (visuals/measures/connectors/RLS)
+  - `assign_waves()` — dependency-cluster grouping, max_per_wave
+  - `generate_workspace_mapping()` — 3 strategies (by_project/consolidated/flat)
+  - `generate_permission_mapping()` — Creator→Admin, Explorer→Member, Viewer→Viewer
+  - `generate_migration_plan()` — unified plan combining waves + workspace + permissions
+  - `generate_plan_html()` — full interactive HTML dashboard
+
+### Sprint 168 — Incremental & Live Sync Depth
+- **incremental.py** extended:
+  - `FileWatcher` class — mtime-based .twb/.twbx/.tfl/.tflx change detection
+  - `LiveSyncEngine` class — orchestrates watcher + incremental diff + sync log
+  - State persistence across runs via JSON file
+
+### Sprint 169 — Documentation
+- CHANGELOG updated with full Sprint 151–170 details
+- Version bumped to v34.0.0
+
+### Sprint 170 — Release
+- pyproject.toml version: 34.0.0
+
+### Stats
+- **~80 new tests** across 6 test files
+- **4 new modules** created (connection_rewriter, subscription_migrator, migration_planner + tests)
+- **4 existing modules** significantly extended (server_client, hyper_reader, dax_converter, incremental)
+- **1 module** enhanced (visual_generator, m_query_builder)
+
+---
+
+## v30.0.0 — Sprints 128–134 — Performance, Security & Multi-Tenant Hardening
+
+**Major version release** covering Sprints 128–134. Highlights:
+- **DAX correctness corpus** (Sprint 128): 500+ before/after fixtures
+- **M validation gate** (Sprint 129): 100% of generated `.pbip` projects pass M parse
+- **Self-healing v3.5/v3.6** (Sprint 130): 50+ model-side auto-healers
+- **Decision telemetry** (Sprint 131): Every conversion branch logs a decision
+- **Performance benchmarks** (Sprint 132): 500-measure workbook in <60s, <2GB RAM
+- **Multi-tenant credential vault** (Sprint 133): 3 backends, pre-deploy validation, connection drift
+- **8,008 tests passing**, 0 failures, 96%+ coverage
+
+### Sprint 133 — Multi-Tenant & Connection Hardening
+
+### New Files
+- **`powerbi_import/deploy/credential_vault.py`** — Pluggable credential vault:
+  - 3 backends: env vars (`TENANT_{name}_{key}`), Azure Key Vault, plain JSON (dev-only, blocked in production)
+  - `CredentialVault.from_config()` factory, `resolve_overrides()`, `validate_all_tenants()`
+  - Input validation: null bytes, control chars, max length, name/key format enforcement
+- **`tests/test_credential_vault.py`** — 71 tests: validation, 3 backends, pre-deploy gate,
+  override security, connection drift detection, config I/O
+
+### Changed
+- **`powerbi_import/deploy/multi_tenant.py`**:
+  - `deploy_multi_tenant()` now accepts `credential_vault` and `dry_run` parameters
+  - New `_pre_deploy_validate()` gate: checks model dir, placeholders, null bytes,
+    control chars, nested unresolved placeholders, vault availability
+  - Failed validation prevents deployment (fail-fast)
+- **`powerbi_import/schema_drift.py`**:
+  - New `detect_connection_drift()` + `_extract_connections()` — compares server/database/port/schema/type
+  - Supports deployed-vs-source drift detection for deployed datasets
+  - Summary now includes `connection` category
+
+### Stats
+- **8,008 tests passing** (up from 7,937), 66 skipped, 0 failed
+
+## v31.6.0-dev — Sprint 132 — Performance & Large-Workbook Stress
+
+Benchmarks and hardens the pipeline for enterprise-scale workbooks.
+
+### New Files
+- **`tests/large_workbook_generator.py`** — Synthetic TWB generator (seeded, reproducible):
+  configurable measures (500), worksheets (100), datasources (50), dashboards,
+  parameters, sets, groups, bins, hierarchies
+- **`tests/test_perf_benchmark.py`** — 7 benchmarks:
+  - Extraction <60s, generation <120s, full pipeline <180s
+  - Peak memory <2GB per operation
+  - Memory ceiling <500MB for extraction, generation, DAX converter, M query builder
+- **`tests/test_sprint132.py`** — 12 unit tests: streaming JSON writer, generator reproducibility
+- **`scripts/profile_migration.py`** — cProfile wrapper + flamegraph SVG + tracemalloc,
+  configurable fixture parameters, console + file output
+
+### Changed
+- **`tableau_export/extract_tableau_data.py`** — `save_extractions()` now uses streaming
+  JSON writes for arrays estimated >50MB. New methods: `_estimate_json_size()`,
+  `_stream_json_array()`. Prevents OOM when writing very large extraction results.
+
+### Stats
+- **7,937 tests passing** (up from 7,925), 66 skipped, 0 failed
+- Verified: 500-measure synthetic workbook completes full pipeline in ~59s
+
+## v31.5.0-dev — Sprint 142–150 — Phases 2–10 (Extraction guards + Conversion guards + Self-Healing v3.5/v3.6 + Cross-artifact + Schema + Equivalence CI + Auto-Rollback + Feedback Loop)
+
+Continues the Zero-Error roadmap with extraction hardening, conversion
+guards active in the pipeline, and 10 new model-side self-healers.
+
+### Phase 4 — Self-Healing v3.5: 10 new model-side healers
+
+Added 10 healers in `self_healing_v3.py` (v3 total: 35 → 50 healers):
+
+| Healer | Catches |
+|--------|---------|
+| `dax_unbalanced_brackets` | `[Col]` / `]` count mismatch → appends/strips |
+| `dax_unknown_function` | `MAKEPOINT`, `SCRIPT_*` calls → `BLANK()` + TODO |
+| `dax_circular_dependency` | measure A ↔ B mutual references → breaks cycle |
+| `relationship_orphan_table` | relationship referencing non-existent table → removed |
+| `relationship_self_loop` | `fromTable==toTable` AND `fromColumn==toColumn` → removed |
+| `column_duplicate_name_case` | `Date` / `date` collide in PBI → renamed |
+| `column_invalid_datatype` | truly unknown datatype (not just casing) → `string` |
+| `partition_empty_m` | empty/null M partition → minimal `#table()` stub |
+| `parameter_default_out_of_domain` | default not in allowable values → corrected |
+| `rls_missing_table_permission` | RLS role with no permissions → `TRUE()` placeholder |
+
+- Added `tests/test_self_healing_v3_phase4.py` (34 tests).
+- Updated `test_relationship_updated_after_rename` to account for
+  self-loop removal on `fromCol==toCol` after duplicate-table rename.
+- Full suite: 7,739 passed, 0 failed.
+
+### Phase 5 — Self-Healing v3.6: 10 new report-side healers
+
+Added 10 healers in `self_healing_report.py` (report total: 11 → 21 healers):
+
+| Healer | Catches |
+|--------|--------|
+| `visual_overlap_full` | 100% overlapping visuals → stagger by 32px |
+| `visual_filter_unknown_field` | report filter referencing non-existent column → removed |
+| `visual_query_unknown_measure` | suspicious Tableau field ref in query → tagged |
+| `slicer_targets_missing_field` | slicer with no target field → tagged |
+| `bookmark_targets_missing_visual` | bookmark visual states for deleted visuals → removed |
+| `theme_dataColors_empty` | empty theme palette → injected 8-color default |
+| `page_no_visuals` | empty page → tagged with MigrationNote |
+| `pagesmeta_duplicate_pageorder` | duplicate page entries → deduplicated |
+| `tooltip_page_oversized` | tooltip > 480×320 → clamped |
+| `mobile_layout_orphan_visual` | mobile layout orphan visual refs → removed |
+
+- Added `tests/test_self_healing_report_phase5.py` (31 tests).
+- Full suite: 7,770 passed, 0 failed.
+
+### Phase 6 — Cross-artifact validator
+
+New `powerbi_import/cross_validator.py` bridging TMDL model ↔ PBIR report:
+
+| Check | Category | Severity |
+|-------|----------|----------|
+| Visual references non-existent table | visual | error |
+| Visual references non-existent column/measure | visual | error |
+| Relationship references missing table/column | relationship | error |
+| RLS role references missing table | rls | error |
+| Measure never used in any visual | orphan | warning |
+
+- `cross_validate(model, report_state)` → `CrossValidationResult`
+- `CrossIssue` dataclass with category/severity/message/location
+- Added `tests/test_cross_validator.py` (27 tests).
+- Full suite: 7,797 passed, 0 failed.
+
+### Phase 10 — Continuous Feedback Loop
+
+New `powerbi_import/feedback_loop.py` — turns failures into regression fixtures:
+
+- **`--report-issue` CLI flag**: creates a redacted issue package ZIP after migration
+- **`IssueCollector`**: gathers verdict, extraction JSONs, QA report, fixture hint; redacts all credentials
+- **`RegressionFixtureGenerator`**: derives minimal regression fixture from issue package → `tests/fixtures/regressions/`
+- **`ZeroTouchTracker`**: records per-workbook success/failure, computes Zero-Touch Open Rate, persists to JSON
+- **Zero-Touch Dashboard**: HTML dashboard with rate %, top failure modes, recent migrations table
+- **Credential redaction**: 4-pattern redactor (passwords, server names, usernames, JSON secrets)
+- **XSS protection**: all dashboard HTML outputs are properly escaped
+- Integrated into `migrate.py`: records outcome after every migration, auto-updates dashboard when ≥3 records
+- New `.github/workflows/regression_triage.yml` — weekly Monday scan for new regression fixtures
+- Added `tests/test_feedback_loop.py` (30 tests).
+- Full suite: 7,925 passed, 0 failed.
+
+### Phase 9 — Auto-Rollback + Recovery Engine
+
+New `powerbi_import/rollback_engine.py` — severity-based quality gate:
+
+- **Severity ladder**: INFO → WARNING → ERROR → CRITICAL
+- **Actions**: ship (INFO/WARNING), quarantine to `_FAILED/` (ERROR), rollback + triage ZIP (CRITICAL)
+- **Triage package**: `triage_package.zip` with verdict JSON, extraction JSONs, partial output, triage HTML
+- **Triage HTML**: styled report with severity badges, issue table, XSS-escaped
+- **`--strict` flag**: structured exit codes (0=clean, 1=warnings, 2=errors, 3=critical)
+- **Escalation**: >20 error-level issues auto-escalate to CRITICAL
+- `RollbackEngine.ingest_*()` methods: validation, schema, cross-validator, QA report, repairs
+- `Verdict` class with `.should_ship`, `.should_quarantine`, `.should_rollback`, `.to_dict()`
+- Integrated into `migrate.py` after QA suite, before migration report
+- Added `tests/test_rollback_engine.py` (35 tests).
+- Full suite: 7,895 passed, 0 failed.
+
+### Phase 8 — Equivalence Testing in CI
+
+New `tests/test_equivalence_ci.py` — dynamic E2E equivalence gate:
+
+- Migrates all 11 sample `.twb` workbooks end-to-end (extract → generate)
+- Per workbook 5 checks: project structure, validator, schema validator, cross-validator, regression snapshot
+- Dynamic test class factory: `_make_equivalence_class()` creates per-workbook `TestEquivalence_*` classes
+- Baseline management: auto-generates `tests/baselines/{name}.snapshot.json` on first run, compares on subsequent runs
+- Standalone mode: `python tests/test_equivalence_ci.py --generate-baselines`
+- New `.github/workflows/equivalence.yml` — nightly CI (03:00 UTC), Python 3.12/3.13 matrix, JUnit XML artifact upload
+- 44 passed, 11 skipped (cross-validator skip expected for TMDL-only output)
+- Full suite: 7,894 passed, 0 failed.
+
+### Phase 7 — PBI Desktop Schema Validator
+
+New `powerbi_import/schema_validator.py` for deep structural validation of PBIR v4.0 artifacts:
+
+- Validates `$schema` URL version correctness against what we actually emit
+- Type checking: position fields must be numbers (auto-coerces strings)
+- Value constraints: width/height > 0, non-negative dimensions
+- Visual type membership check (118+ known types)
+- Nested structure validation: themeCollection, position, query, explorationState
+- Bookmark, pages-metadata, definition.pbir deep checks
+- `validate_artifact()` and `validate_report_dir()` public APIs
+- `SchemaResult` with `.ok`, `.errors`, `.warnings`, `.repairs`, `.to_dict()`
+- Fixed `validator.py` schema version mismatch (page 2.0.0→2.1.0, visual 2.5.0→2.7.0)
+- Added `tests/test_schema_validator.py` (53 tests).
+- Full suite: 7,850 passed, 0 failed.
+
+### New module: `tableau_export/safe_xml.py`
+
+- Added `safe_get_attr`, `safe_find`, `safe_findall`, and `safe_findtext`
+  wrappers to avoid non-fatal `AttributeError`/lookup failures when XML nodes
+  are missing or malformed.
+- Added `ExtractionWarningCode` and `ExtractionWarning` primitives to
+  standardize warning payloads emitted by guardrails.
+
+### Extractor integration
+
+- `tableau_export/extract_tableau_data.py` now uses safe wrappers in key
+  extraction loops (`worksheets`, `dashboards`, `datasources`, and
+  worksheet-level calculation dependency traversal).
+- Added `self.extraction_warnings` and `_warn_extraction()` on
+  `TableauExtractor`.
+- Archive traversal defenses now persist structured warnings when skipping
+  unsafe ZIP entries (path traversal and absolute path members).
+
+### Tests
+
+- Added `tests/test_safe_xml.py` with 11 tests covering helper behavior,
+  warning serialization, and extractor warning capture on unsafe `.twbx`
+  members.
+- Extended Pulse extractor resilience and tests:
+  - `tableau_export/pulse_extractor.py` now uses shared `safe_xml` helpers
+    for all XML reads (`safe_get_attr`, `safe_find`, `safe_findall`,
+    `safe_findtext`) to avoid hard failures on malformed structures.
+  - `tests/test_pulse_extractor.py` now covers malformed root/metric objects
+    and verifies graceful fallback behavior.
+- Extended datasource extractor resilience and tests:
+  - `tableau_export/datasource_extractor.py` now uses shared `safe_xml`
+    accessors in metadata map extraction and datasource naming paths.
+  - `extract_datasource(None)` now returns a safe empty datasource shape
+    instead of raising.
+  - `tests/test_datasource_extractor.py` now covers None/malformed datasource
+    and metadata-map helper fallback behavior.
+- Extended Tableau Prep flow parser resilience and tests:
+  - `tableau_export/prep_flow_parser.py` now normalizes malformed flow,
+    node, and edge payloads in graph traversal and datasource collection.
+  - `tests/test_prep_flow_parser.py` now covers malformed graph structures,
+    `None` nodes, and malformed `.tfl` flow dictionaries.
+- Extended Hyper reader resilience and tests:
+  - `tableau_export/hyper_reader.py` now normalizes malformed table metadata
+    in M-generation, relationship inference, and summary/report helpers.
+  - `tests/test_hyper_reader.py` now covers `None` table info, `None`
+    relationship input, and metadata fallback behavior.
+- Extraction regression suite remains green.
+
+### Phase 3 wiring — Conversion guards active in generation pipeline
+
+- **tmdl_generator.py** — main calc processing loop now passes
+  `validate_output=True, fallback_on_invalid=True` to the DAX converter.
+  Invalid DAX output is replaced with a safe `/* TODO */ BLANK()` stub
+  and logged as a warning instead of silently emitting malformed formulas.
+- **tmdl_generator.py** — RLS role generation now uses the same guarded
+  converter mode for security filter expressions.
+- **tmdl_generator.py** — post-processing sweep validates all measure
+  expressions after SUM-of-measure unwrap and cross-table wrapping passes;
+  any that fail validation are replaced with a TODO/BLANK() stub.
+- **tmdl_generator.py** — `_inject_m_steps_into_partition` now runs the
+  M validator on the resulting expression after step injection and logs
+  any structural issues.
+- **dax_validator.py** — expanded Tableau function leak regex to match full
+  compound function names (`WINDOW_SUM`, `RUNNING_AVG`, `RANK_DENSE`, etc.)
+  instead of bare prefixes that missed word boundaries.
+- Extended `tests/test_dax_validator_phase3.py` from 8 → 20 tests:
+  - Added `None` expression handling, block comment edge cases, escaped
+    quotes, complex valid DAX, 12 Tableau leak tokens, M injection
+    validation, post-processing sweep, clean formula passthrough.
+- Full regression: 7,705 passed, 0 failed.
+
+### Phase 3 foundation started (Conversion guards)
+
+- Added `powerbi_import/dax_validator.py` with lightweight DAX validation
+  checks for:
+  - balanced delimiters (`()`, `[]`, `{}`)
+  - unterminated quoted literals/identifiers
+  - leaked Tableau function tokens in generated DAX output
+  - invalid literals (`None`, `undefined`) and unterminated block comments
+- Added optional guarded converter mode in
+  `tableau_export/dax_converter.py`:
+  - `validate_output=True` enables output validation
+  - `fallback_on_invalid=True` returns a safe TODO/`BLANK()` expression
+    instead of emitting malformed DAX
+  - default behavior is unchanged (both flags default to `False`)
+- Added `tests/test_dax_validator_phase3.py` (8 tests) covering validator
+  checks and guarded converter behavior.
+- DAX/M validator regression suites remain green.
+
+## v31.4.0 — Sprint 141 — Phase 1 of Zero-Error Roadmap (Pre-flight Rejection)
+
+Kicks off the **10-phase Zero-Error Roadmap** documented in
+[`docs/ZERO_ERROR_ROADMAP.md`](docs/ZERO_ERROR_ROADMAP.md). Goal: reach
+≥ 99 % Zero-Touch Open Rate (workbooks that open in PBI Desktop with
+0 errors / 0 warnings / 0 missing visuals on the first try).
+
+### New module: `powerbi_import/preflight.py`
+
+Refuses migration **before** extraction when the workbook is doomed to
+fail. Pure stdlib, < 200 ms, never mutates the input. Three severity
+levels: `BLOCKER` (hard exit), `WARNING` (proceed but flag), `ADVISORY`
+(informational).
+
+| Check | Severity | Catches |
+|-------|----------|---------|
+| `empty_path` / `null_byte_path` / `missing_file` / `unsupported_extension` | BLOCKER | bad input paths |
+| `corrupt_archive` | BLOCKER | not a valid ZIP |
+| `zip_traversal` | BLOCKER | ZIP-slip / absolute paths inside archive (security) |
+| `encrypted_workbook` | BLOCKER | password-protected ZIP entries |
+| `corrupt_xml` / `empty_xml` / `missing_twb` | BLOCKER | malformed/empty/missing `.twb` payload |
+| `unsupported_connector` | BLOCKER | Essbase, Splunk legacy, Hive 0.x, MSOLAP cube, Alibaba MaxCompute |
+| `newer_tableau_version` | WARNING | source-build > 2024.3 |
+| `missing_extract` | WARNING | `<extract>` references absent `.hyper` |
+| `large_workbook` | ADVISORY | > 500 MB |
+| `many_worksheets` | ADVISORY | > 1,000 worksheets |
+
+### Wired into `migrate.py`
+
+`run_extraction()` now calls `run_preflight()` for every `.twb`/`.twbx`
+input. Blockers print a formatted summary and abort with exit code 1.
+Set the `TTPBI_FORCE=1` env var to override (escape hatch for power users).
+Pre-flight failures of its own never block migration — defensive.
+
+### Tests
+
+30 new unit tests in [`tests/test_preflight.py`](tests/test_preflight.py)
+cover every check, the `PreflightResult` dataclass surface (severity
+buckets, `as_dict`, `format_console`), happy paths for `.twb` and `.twbx`,
+ZIP-slip / encryption / corruption blockers, and the missing-extract
+warning path. Includes a custom encrypted-ZIP forger (stdlib `zipfile`
+can't write encryption flags itself).
+
+### Aggregate
+
+- **+30 tests** (7,628 → **7,658 passing**, 0 regressions)
+- **New module** `preflight.py` (~340 lines, ships at high coverage)
+- **Phase 1 of 10** complete; 9 phases remain (Sprints 142–150)
+
+## v31.3.0 — Sprint 140 — Self-Healing v3.4 (PBIR / report-side) + Coverage uplift
+
+Two-pronged release:
+
+1. **New module `powerbi_import/self_healing_report.py`** — 11 PBIR-side
+   healers that run **after** `report.json`, page, and visual JSON files have
+   been written. Loads the on-disk `<Name>.Report/` tree into a state dict,
+   patches issues in place, and re-dumps only the files actually mutated.
+   Wired into `pbip_generator.create_report_structure()` (logged via
+   `logger.info` when any repair is applied; never blocks migration).
+
+| # | Healer | Failure mode caught |
+|---|--------|----------------------|
+| 1 | `visual_missing_position` | visual.json with no `position` block (PBI defaults to 0,0,0,0 → invisible) |
+| 2 | `visual_zero_size` | width/height ≤ 0 → reset to 480 × 280 |
+| 3 | `visual_off_canvas` | x/y/w/h pushes visual outside canvas → clamped (default canvas 1280 × 720) |
+| 4 | `visual_zindex_collision` | duplicate `z` on same page → reassigned sequentially |
+| 5 | `visual_missing_visualtype` | empty `visual.visualType` → defaulted to `tableEx` |
+| 6 | `visual_negative_zindex` | negative `z` → clamped to 0 |
+| 7 | `filter_dangling_field` | filter without `field`/`Expression` at any level → dropped |
+| 8 | `bookmark_dangling_page` | bookmark `targetPage`/`activeSection` references non-existent page → dropped |
+| 9 | `pagesmeta_orphan_pageorder` | `pages.json/pageOrder` lists ghosts / misses real pages → resynced |
+| 10 | `pagesmeta_missing_active` | empty/invalid `activePageName` → first valid page in pageOrder |
+| 11 | `visual_query_no_select` | empty `queryState` → tagged with `MigrationNote` annotation for follow-up |
+
+   - 43 unit tests in `tests/test_self_healing_report.py` cover every healer,
+     the loader/writer, RecoveryReport integration, and an end-to-end
+     load → heal → write → reload round-trip with idempotency check.
+   - Module ships at **92.5 %** line coverage on first release.
+
+2. **Sprint 140 coverage uplift** — 43 new tests in
+   `tests/test_coverage_sprint140.py` targeting the three lowest-coverage
+   modules identified by the Sprint 137 audit:
+
+   | Module | Before | After | Δ |
+   |--------|--------|-------|---|
+   | `api_server.py` | 58.8 % | **66.8 %** | +8.0 pts |
+   | `monitoring.py` | 74.1 % | **87.1 %** | +13.0 pts |
+   | `notebook_api.py` | 71.0 % | 71.0 % | _gated on full workbook load_ |
+
+   Coverage areas added: rate limiter, stale-job purge, `_run_migration`
+   failure path, multipart filename sanitisation, all 4 monitoring backends
+   (`_NoneBackend`, `_JsonBackend`, `_AzureMonitorBackend`,
+   `_PrometheusBackend`), `record_migration` 7-entry shape,
+   `_sanitize_metric_name`, `_escape_label_value`, OpenMetrics rendering,
+   `MigrationSession` config/override lifecycle and guard exceptions.
+
+### Aggregate
+
+- **+86 tests** (7,542 → **7,628 passing**, 0 regressions)
+- **Overall coverage**: 93.83 % → **94.0 %**
+- **Healer count**: 40 → **51** (40 model-side via v3 + 11 report-side via v3.4)
+
+## v31.2.0 — Sprints 138 + 139 — Self-Healing v3.2 + v3.3 (Schema/Datatype + Power Query/M)
+
+Adds **20 new healers** in two tiers, bringing the v3 self-healing engine to
+**40 healers** total. Both tiers wired into `_V3_HEALERS` and run via
+`run_v3_healers()` from `tmdl_generator._self_heal_model()`.
+
+### v3.2 — Schema & datatype hygiene (10 healers)
+
+| # | Healer | Failure mode caught |
+|---|--------|----------------------|
+| 35 | `column_without_datatype` | Missing `dataType` → "cannot determine data type" at refresh. Defaults to `string`. |
+| 36 | `measure_without_datatype` | Measure shown as variant in PBI. Inferred from aggregation in expression (SUM→decimal, COUNT→int64). |
+| 37 | `boolean_with_string_default` | `defaultValue="true"` on bool column → strict-type refresh failure. Normalized to bool literal. |
+| 38 | `numeric_format_string_mismatch` | `int64` with fractional `formatString` → fractional part lost. Promotes to `double`. |
+| 39 | `datetime_without_format` | Date columns rendered as raw numbers. Adds `formatString="General Date"`. |
+| 40 | `lineage_tag_collision` | Duplicate `lineageTag` GUID → "duplicate lineage tag" load error. Regenerates uuid4 for the second occurrence. |
+| 41 | `missing_lineage_tag` | Missing `lineageTag` → reports lose lineage on rebind. Injects deterministic uuid5 from `table.name`. |
+| 42 | `source_column_missing` | Case-mismatched `sourceColumn` → refresh failure. Aligns to canonical column name. |
+| 43 | `key_column_nullable` | `isKey=true` + nullable → load error. Forces `isNullable=false`. |
+| 44 | `int_column_with_decimal_default` | Float `defaultValue` on int64 column → coerce error. Rounds to nearest int. |
+
+### v3.3 — Power Query / M-partition hygiene (10 healers)
+
+| # | Healer | Failure mode caught |
+|---|--------|----------------------|
+| 45 | `m_unbalanced_let_in` | `let` block missing `in` → parse error. Appends `in <last step>`. |
+| 46 | `m_unbalanced_parens` | Unbalanced `()` `[]` `{}` (string-literal-aware). Appends closing brackets. |
+| 47 | `m_step_name_collision` | Two steps with the same name in one `let` → parse error. Renames second occurrence. |
+| 48 | `m_invalid_identifier_unquoted` | Step identifier with spaces/specials but no `#"…"` → parse error. Auto-wraps. |
+| 49 | `m_trailing_comma_in_record` | `[a=1, b=2,]` or `{1,2,}` → parse error. Strips trailing comma. |
+| 50 | `m_double_comma` | `Table.SelectRows(t,, …)` → parse error. Collapses to single comma. |
+| 51 | `m_missing_source_step` | Body references `Source` with no `Source =` definition. Injects `#table()` placeholder. |
+| 52 | `m_credential_in_expression` | Hardcoded `Password=`, `User=`, `api_key=` literals. Replaces with `#"<placeholder>"` (severity=error). |
+| 53 | `m_partition_mode_mismatch` | Import partition with DirectQuery-style source (`Sql.Database`, `Oracle.Database`, `Snowflake.Databases`) and no `Table.Buffer`. Flagged for review (skips defensive `try…otherwise` patterns). |
+| 54 | `m_dataflow_ref_dangling` | `PowerPlatform.Dataflows` reference. Flagged for tenant-side validation. |
+
+**Test coverage:** +51 tests in `tests/test_self_healing_v3.py` (and 3 fixture
+updates in `tests/test_self_healing.py`). Full grand-suite total: **7,542
+passing**, 55 skipped, 1 xfailed (zero regressions).
+
+**Roadmap deferral:** Sprint 140 (PBIR/visual-side healers) deferred — those
+require a separate healing engine on the report dict, since `self_healing_v3`
+operates exclusively on the TMDL model dict.
+
+---
+
+## v31.0.0 — Sprint 136 — Self-Healing v3 (PBI Desktop load/refresh resilience)
+
+Major upgrade to the self-healing engine adding **11 new healers** that catch
+the most common reasons a generated `.pbip` refuses to open in Power BI
+Desktop or fails to refresh data. Brings total healer count to **24**.
+
+New module: `powerbi_import/self_healing_v3.py`. Wired into
+`tmdl_generator._self_heal_model()` after the existing 13 healers; defensive
+try/except per healer ensures self-healing never blocks migration.
+
+**11 new healers:**
+
+| # | Healer | Failure mode caught |
+|---|--------|----------------------|
+| 14 | `global_measure_dupes` | Same measure name on two tables → "Cannot create measure" load error. Renames to `<name>_<table>` with `MigrationNote`. |
+| 15 | `self_referencing_measures` | `[A] = [A] + 1` → infinite recursion. Sets to `BLANK()` and hides. |
+| 16/17 | `sort_by_column` | `sortByColumn` self-reference or pointing to missing column → cleared. |
+| 18 | `hierarchies` | Hierarchy levels referencing missing columns → drops level; drops hierarchy if empty. Supports both `column` and `sourceColumn` aliases. |
+| 19 | `display_folders` | Whitespace-only segments, leading/trailing space, double-backslash → normalized; empty folders removed. |
+| 20 | `relationship_type_mismatch` | String↔Int64 join → "data type mismatch" at refresh. Removes incompatible relationships. |
+| 21 | `invalid_identifiers` | Control chars (NUL/TAB/LF/CR) in table/column/measure names → stripped; relationships rewired after table renames. |
+| 22 | `int64_decimal_format` | Int64 column with `0.00` formatString → fractional part lost. Promotes to Double. |
+| 23 | `datatype_casing` | `INT64`, `Datetime`, `integer` → normalized to canonical (`int64`, `dateTime`). Both TitleCase (`Int64`) and lowercase (`int64`) accepted. |
+| 24 | `duplicate_relationships` | Identical fromTable/fromColumn/toTable/toColumn → keep first active, deactivate rest (avoids "ambiguous join path"). |
+| 25 | `hidden_key` | Hidden+isKey column on Calendar/date table → un-hidden so PBI Desktop can use it for date intelligence. |
+
+**Implementation:**
+- All healers are pure `(model, recovery=None) -> int` functions — never raise.
+- `run_v3_healers()` orchestrates with per-healer try/except + recovery logging.
+- Each repair is recorded in `RecoveryReport` with category `tmdl` or `relationship`, severity `info`/`warning`/`error`.
+- 64 new tests in `tests/test_self_healing_v3.py` covering all healers + integration + wiring + defensive error handling.
+- **7,455 tests passing** (+64 from v28.5.8). Zero regressions.
+
+## v28.5.8 — Code Optimization & Documentation Update
+
+- **Performance: early-exit in `_ensure_comparison_spacing()`**: Skip the regex split entirely when the formula contains no `<` or `>` characters — saves ~0.5ms per measure for the majority of formulas that have no comparison operators.
+- **Performance: single-pass column set construction in `_build_table()`**: Merged two separate comprehensions (`_this_table_columns` and `_bool_table_columns`) into one loop over `columns`, reducing iteration overhead for large tables.
+- **Performance: remove redundant `list()` wrappers in `pbip_generator.py`**: `converted_objects.get('filters', [])` already returns a list — eliminated unnecessary `list()` conversions at two filter aggregation sites.
+- **Documentation**: Updated README badges (version 28.5.8, 7,099 tests). Updated KNOWN_LIMITATIONS.md to v28.5.8 with notes on v28.5.x fixes (metadata-record type resolution, DATEADD scalar conversion, comparison operator spacing, bare calc reference inlining).
+- 7,099 tests passing across 141+ test files.
+
+## v28.5.7 — Comparison Operator Spacing in DAX
+
+- **Fix `]>EDATE` and `]<0` spacing in calc columns**: Comparison operators (`>`, `<`, `>=`, `<=`, `<>`) immediately adjacent to bracket-delimited identifiers were not spaced, causing some DAX parsers to misparse expressions like `[Days to Close]>-1*INT("90")`.
+- **`_ensure_comparison_spacing(dax)`**: New Phase 6 post-processing step that splits on delimited tokens (strings, brackets, quoted names) and adds spaces around comparison operators in non-delimited segments only.
+- **Preserves delimited content**: String literals (`"a>b"`), bracket identifiers (`[Col>Name]`), and quoted table names (`'Table>1'`) are not modified.
+- 6 new tests in `TestComparisonOperatorSpacing`.
+- 7,099 tests passing (+6 from v28.5.6).
+
+## v28.5.6 — Bracket Protection for Bare Calc Reference Inlining
+
+- **Fix bracket-wrapped references during inline substitution**: When `_resolve_references()` inlined a bare calculation reference like `[My Calc]` with its DAX expression, the regex replacement could corrupt nearby bracket-delimited identifiers. Now protects all `[...]` tokens before substitution and restores them after.
+- 1 new test in `TestBareCalcReferenceInlining`.
+- 7,093 tests passing.
+
+## v28.5.5 — Bare Calculation Reference Inlining
+
+- **Fix unresolved `[Calculation_xxx]` references in DAX measures**: When a calculation referenced another calculation by its raw name (e.g. `[Calculation_123]`) and that calculation had a known caption and formula, the reference was left unresolved. Now `_resolve_references()` inlines the formula for bare calculation references that match known `calc_map` entries.
+- 3 new tests in `TestBareCalcReferenceInlining`.
+- 7,092 tests passing.
+
+## v28.5.4 — Metadata-Record Type Resolution for Physical Columns
+
+- **Fix column type inference from metadata-records**: Physical columns that have no `<column>` element at the datasource level (common with Salesforce, ServiceNow, and similar cloud connectors) were defaulting to `dataType: string`. Now uses `<metadata-record class="column">` `local-type` as the authoritative type source.
+- **Phase 2 metadata fallback**: When `<cols>/<map>` references a column that exists in `<metadata-record>` but not in `<column>` elements, the column is now added with the correct type from the metadata-record (e.g. `Probability (%)` → `real` → `Double`).
+- **`_extract_col_type_map()`**: New function builds column-name → datatype mapping from metadata-records for use by `_ensure_calc_referenced_columns()`.
+- **`_ensure_calc_referenced_columns()`**: Uses `col_type_map` to assign correct types (instead of hardcoded `'string'`) when adding missing columns referenced by calculations.
+- Resolves `SUM cannot work with values of type String` error for `Probability (%)` in Salesforce migration — column was `dataType: string` in TMDL but should be `double`.
+
+## v28.5.3 — DATEADD Scalar Conversion (EDATE)
+
+- **Fix Tableau DATEADD → DAX EDATE**: Tableau `DATEADD('month', -36, date)` is a scalar function. DAX `DATEADD` is a Time Intelligence TABLE function (requires a date column from a date table). Generated `DATEADD(__MyToday, -36, MONTH)` failed in calculated columns because `__MyToday` is a scalar measure, not a date column.
+- **Conversion map**: MONTH/YEAR/QUARTER → `EDATE()`, DAY/WEEK → `date + n`, HOUR/MINUTE/SECOND → `date + n/divisor`.
+- Resolves `'Created By'[Is Last N months filter - Closed Date?]` error in Salesforce migration.
+
+## v28.5.2 — Universal manyToMany Calc Column Fix (SELECTEDVALUE)
+
+- **Fix manyToMany calc columns for all data types**: Calculated columns referencing other tables via manyToMany relationships now use `CALCULATE(SELECTEDVALUE(...))` instead of `CALCULATE(MIN(...))`. MIN/MAX fail on Boolean columns (e.g. `Opportunities[Closed]`, `Opportunities[Won]`). SELECTEDVALUE works for **all** types (Boolean, String, Date, Numeric) — returns the value when filter context yields one distinct value, BLANK() otherwise.
+- **Previous fix chain**: RELATED → LOOKUPVALUE (failed on non-unique keys) → CALCULATE(MIN) (failed on Boolean) → CALCULATE(SELECTEDVALUE) (works universally).
+- Measures inside iterators (SUMX, AVERAGEX, etc.) continue to use LOOKUPVALUE — the iterator provides row context where the search column is unique.
+
+## v28.5.0 — Comprehensive Bug Fix & Security Hardening
+
+### MAXX Boolean Wrapping Fix
+
+- **Fix `MAX cannot work with values of type Boolean` PBI error**: All 4 boolean column wrapping sites changed from `MAX(IF(col, 1, 0))` to `MAXX('Table', IF(col, 1, 0))`. DAX's `MAX()` with a single argument requires a column reference — `IF(col, 1, 0)` is an expression, not a column reference. `MAXX` is an iterator function that correctly evaluates the IF expression per row.
+- **4 wrapping sites fixed**:
+  - `dax_converter.py` `_wrap_bare_column_refs_in_measure()` — primary wrapping during DAX conversion
+  - `tmdl_generator.py` self-heal loop — fallback wrapping for bare column refs
+  - `tmdl_generator.py` bare-ref type-aware wrapping — calc column → measure promotion
+  - `tmdl_generator.py` cross-table SUM wrapping — same-table boolean columns
+
+### DAX Conversion Fixes (7 bugs)
+
+- **Bug 1 — DATEADD argument reorder**: Tableau's `DATEADD('month', 3, [Date])` was passing through unchanged. DAX expects `DATEADD([Date], 3, MONTH)` — dedicated `_convert_dateadd()` now reorders arguments correctly.
+- **Bug 2 — Type-aware bare column ref wrapping**: `SUM()` was applied blindly to all bare column refs. Now uses `MAX(IF(col, 1, 0))` for boolean, `MAX(col)` for string/datetime, `SUM(col)` only for numeric.
+- **Bug 3 — String/datetime column wrapping**: Cross-table SUM wrapping now detects same-table string and datetime columns and uses `MAX()` instead of invalid `SUM()`.
+- **Bug 4 — DATEPARSE return type**: `DATEPARSE("fmt", [Col])` was returning `FORMAT(DATEVALUE(x), fmt)` (a string). Format arg is a parsing hint — now correctly returns `DATEVALUE(x)` (a date).
+- **Bug 5 — PROPER migration comment**: PROPER only capitalizes the first character, not all words. Added migration comment warning users to review multi-word capitalization.
+- **Bug 7 — ATTR nested parentheses**: `ATTR(UPPER([Name]))` broke on nested parens. Now uses balanced-paren `_transform_func_call` instead of `re.sub`.
+
+### TMDL Semantic Model Fixes
+
+- **LOOKUPVALUE table name escaping**: Table names with apostrophes (e.g., `O'Reilly`) are now properly escaped in LOOKUPVALUE replacements.
+- **M type mapping gaps**: Added missing types to `_DAX_TO_M_TYPE` — `Decimal`, `Date`, `Time`, `datetime` now correctly map to M types instead of defaulting to `type text`.
+- **Greedy regex fix**: M step deduplication regex `#"Added (.+)"` changed to non-greedy `(.+?)` to prevent matching past closing quote.
+
+### Security Hardening
+
+- **ODBC connection string injection**: All 5 ODBC connector generators (Vertica, Impala, Hadoop Hive, Presto, Athena) now sanitize server/database/schema values via `_odbc_escape()`, stripping semicolons to prevent DSN parameter injection.
+- **Athena custom SQL escaping**: Custom SQL in Athena queries now escaped with `_m_escape_string()`.
+
+### Null Safety Fixes
+
+- **assessment.py**: `chart_type`, `formula`, and action `type` fields now handle `None` values safely (use `or ""` pattern instead of `.get("key", "")` which still fails on explicit `None`).
+- **calc_column_utils.py**: `tableau_formula_to_m()` now returns empty string for `None` input instead of raising `AttributeError`.
+- **validator.py**: `_parse_rel_column_ref()` now guards against `None` regex groups.
+
+### Tests
+
+- 12 new tests covering all 7 DAX bug fixes (DATEADD reorder, type-aware wrapping, DATEPARSE, PROPER comment, ATTR nesting).
+- 7,067 tests total (+12 from v28.4.2).
+
+## v28.4.2 — MAX on Boolean Type Fix
+
+### Changes
+
+- **Fix `MAX cannot work with values of type Boolean` PBI error**: When a measure references a Boolean calculated column (e.g. `Is Won Opportunity?`), the bare-column-ref wrapping now uses `MAX(IF(col, 1, 0))` instead of `MAX(col)`. DAX's `MAX()` and `SUM()` functions do not support Boolean type — the `IF(col, 1, 0)` pattern converts TRUE/FALSE to 1/0 before aggregation.
+- **3 wrapping sites fixed**:
+  - `dax_converter.py` `_wrap_bare_column_refs_in_measure()` — primary wrapping during DAX conversion (new `bool_columns` parameter)
+  - `tmdl_generator.py` self-heal loop — fallback wrapping for calc columns not caught during conversion
+  - `tmdl_generator.py` cross-table SUM wrapping — same-table Boolean columns wrapped with `MAX(IF(col, 1, 0))` instead of `SUM(col)`
+- **Boolean column tracking**: `_build_table()` now tracks `_bool_table_columns` alongside `_this_table_columns` and passes it through to the DAX converter.
+- 7,076 tests (+3).
+
+
+## v28.4.1 — SecondaryGroupsWithoutPrimary Fix
+
+### Changes
+
+- **Fix `SecondaryGroupsWithoutPrimary` PBI Desktop error**: Fields classified as dimensions during Tableau extraction but reclassified as measures by the TMDL generator (e.g. `Deal Size Bucket` — string-split field that transitively references `SUM()`) were placed in Category/Group roles with `Measure` wrappers, causing PBI error "DataShape has secondary groups but no primary".
+- **`_is_measure_field()` now checks `_bim_measure_names`**: Ensures TMDL-time measure classification is visible to shelf-aware field classification, preventing measures from being placed in dimension roles.
+- **Expanded chart fallback to `tableEx`**: When a chart type requiring a Category dimension (bar, column, line, area, pie, etc.) has only measures and no dimensions, it now degrades to `tableEx` (preserving all data columns) instead of `card`/`multiRowCard`. Covers 18 chart types.
+- 7,073 tests (+1).
+
+
+## v28.4.0 — Aggregation-Aware SUM Wrapping & 12-Agent Architecture
+
+### Aggregation-Aware Cross-Table Column Ref Wrapping (`tmdl_generator.py`) ✅
+- **Root cause fix**: Cross-table column refs like `'Opportunities'[Amount]` inside scalar
+  functions (IF, CONVERT, NOT, SWITCH) were NOT being wrapped in `SUM()` because the previous
+  parenthesis-depth approach treated ALL `(...)` as "iterator context". Scalar functions do NOT
+  provide row context or aggregation — only aggregation functions (SUM, MAX, DISTINCTCOUNT) and
+  iterator functions (SUMX, FILTER, ADDCOLUMNS) do.
+- **New approach**: Replaced raw parenthesis depth with **aggregation/iterator-aware depth** that
+  only counts parens belonging to 40+ known column-context functions (`_COLUMN_CONTEXT_FUNCS`).
+  Refs inside scalar functions (IF, CONVERT, NOT) are now correctly wrapped in `SUM()`.
+- **Preserves iterator correctness**: Column refs inside SUMX, FILTER, DISTINCTCOUNT, MAX, etc.
+  are still correctly left as bare row-level references.
+- **String-safe**: DAX string literals (`"..."`) with parens are skipped during depth tracking.
+- Fixes cascading errors: `_Total Sales (Expression)`, `_Avg Deal Size (won) (Expression)`,
+  `_Total Closed Opportunities Amount (Expression)` → all downstream measures now valid.
+
+### 12-Agent Specialization Model ✅
+- **4 new specialist agents**: Split @converter → @dax + @wiring, split @generator → @semantic + @visual.
+- **@dax** (`dax.agent.md`): DAX formula correctness, 180+ conversions, aggregation context,
+  cross-table semantics, optimization (IF→SWITCH, ISBLANK→COALESCE).
+- **@wiring** (`wiring.agent.md`): DAX↔M bridge, calc column vs measure classification,
+  Power Query M generation (33 connectors + 43 transforms), M step injection.
+- **@semantic** (`semantic.agent.md`): TMDL semantic model, relationships, Calendar table,
+  RLS roles, hierarchies, parameters, sets/groups/bins, self-healing.
+- **@visual** (`visual.agent.md`): PBIR v4.0 report, 118+ visual types, slicers, filters,
+  bookmarks, themes, drill-through/tooltip pages, layout.
+- **@converter and @generator** demoted to coordination layers that delegate to specialists.
+- Updated `docs/AGENTS.md` with new architecture diagram and data flow.
+- Updated `copilot-instructions.md` agent table (8→12 agents).
+
+### Stats
+- 7,072 tests passing across 141+ test files.
+
+---
+
+## v28.3.0 — Slicer Dual-Label Fix, Post-Migration Autoplay & Fidelity Improvements
+
+### Slicer Dual-Label Fix (`pbip_generator.py`) ✅
+- **Fixed duplicate slicer labels**: Slicers previously showed both the visual title (container header) and the slicer's built-in header, both displaying the field name. Now `objects.header.show` is set to `false` — the visual container title alone provides the label.
+- Affects all slicer creation: filter controls, parameter controls, and pages shelf slicers.
+
+### Post-Migration Autoplay (`scripts/autoplay.py`, `migrate.py`) ✅
+- **New `--autoplay` CLI flag**: Runs 5 automated post-migration validation steps after generation:
+  1. Open `.pbip` in Power BI Desktop (or print path)
+  2. Scan M partitions for placeholder connection strings
+  3. Validate DAX measures (syntax, LOOKUPVALUE ambiguity, measure context)
+  4. Check relationships (circular, orphan, missing columns)
+  5. Fidelity comparison (Tableau vs PBI field coverage)
+- **New `--autoplay-open` flag**: Auto-opens the `.pbip` file in PBI Desktop.
+- **JSON output**: `autoplay_{workbook}.json` with structured pass/warn/fail results.
+
+### Fidelity Score Improvements (`scripts/compare_migration.py`) ✅
+- **Non-functional exclusion**: Descriptions and literal-only calculations no longer penalize the fidelity score.
+- **All-columns matching**: Regular PBI columns from M transforms now count toward fidelity.
+- **TMDL regex fix**: Parses both quoted (`'Table Name'`) and unquoted identifiers for measures, columns, and calculated columns.
+
+### SUM-of-Measure DAX Fix (`tmdl_generator.py`) ✅
+- **Post-processing in `_build_table()`**: Detects `SUM([MeasureName])` (and AVG/COUNT/MIN/MAX) patterns where the argument is another measure, and unwraps to `[MeasureName]` — fixing "SUM function only accepts a column reference" errors in PBI Desktop.
+
+### Stats
+- 7,072 tests passing across 141+ test files.
+
+---
+
+## v28.2.0 — Standalone Prep Flow Pipeline & Documentation
+
+### Standalone Prep Flow Pipeline (`migrate.py`) ✅
+- **New `_migrate_single_prep_flow()`**: Standalone `.tfl`/`.tflx` files in `--batch` mode now produce **Power Query M exports**, **source definitions**, and **cross-flow lineage** instead of empty `.pbip` projects.
+- **Per-flow output**: `PowerQuery/*.pq` (M expressions), `Sources/*.json` (connection metadata + column schema), `assessment.json` (grade, inputs, outputs, transforms).
+- **New `_run_batch_prep_lineage()`**: Automatic cross-flow lineage analysis when ≥2 prep flows succeed in a batch — builds lineage graph, computes merge recommendations, generates HTML + JSON reports.
+- **Updated `_print_batch_summary()`**: Separate summary tables for workbooks (Fidelity/Tables/Visuals) and prep flows (Grade/M Queries/Sources). Mixed directories handled correctly.
+- **Updated routing**: `.tfl`/`.tflx` files now short-circuit to `_migrate_single_prep_flow()` instead of `run_standalone_prep()` → `run_generation()`.
+
+### Documentation ✅
+- **README.md**: Dedicated "Tableau Prep Flow Migration" section with Mermaid pipeline diagram, output structure, batch summary example, and lineage screenshot.
+- **ARCHITECTURE.md**: New "Standalone Prep Flow Pipeline" section with ASCII flow diagram, module table updates (`prep_flow_analyzer.py`, `prep_lineage.py`, `prep_lineage_report.py`).
+- **copilot-instructions.md**: New "Standalone Prep Flow Batch Mode" section documenting the 3-output format and key functions.
+- **FAQ.md**: New FAQ entry explaining standalone prep flow handling vs workbook-paired mode.
+- **ENTERPRISE_GUIDE.md**: New "Tableau Prep Flow Migration" subsection in Phase 5 (Batch Migration).
+- **MIGRATION_CHECKLIST.md**: New Section 12 checklist for standalone prep flow validation.
+- **Lineage diagram screenshot**: `docs/images/prep_lineage_diagram.png` added.
+
+### Stats
+- 6,988 tests passing across 141+ test files.
+- 16 standalone prep tests (5 new for `_migrate_single_prep_flow()`).
+
+---
+
+## v28.1.1 — M Identifier Quoting & Bracket Stripping Hot-fix
+
+### M Identifier Quoting (`tmdl_generator.py`, `calc_column_utils.py`) ✅
+- **`_M_SPECIAL_CHARS` fix**: Added hyphen (`-`) to the special character set so column names like `Sub-Category` and `Order-ID` are auto-quoted as `[#"Sub-Category"]` in Power Query M expressions.
+- `_quote_m_identifiers()` now correctly quotes all M column references containing `/()'"+@#$%^&*!~\`<>?;:{}|\\,-`.
+- Added `_quote_m_ids()` in `calc_column_utils.py` so the Fabric Dataflow Gen2 path (`make_m_add_column_step`) also quotes special-character columns.
+- Affects: set, group, bin, SharePoint filter M expressions, and all `_dax_to_m_expression()` outputs.
+
+### Bracket Stripping in Bin/Group Calculations (`tmdl_generator.py`, `pbip_generator.py`) ✅
+- Tableau bin calculations (`class='bin'`) have names like `[Discount (bin)]` with literal square brackets and empty captions. These brackets are now stripped.
+- `tmdl_generator.py`: caption fallback `(calc.get('caption', '') or fallback).replace('[', '').replace(']', '')` applied to calc column M names and `calc_map_lookup` group source resolution.
+- `pbip_generator.py`: `_field_map` construction uses same pattern so visual query Property references resolve correctly.
+- Fixes "Invalid identifier" errors in Power Query M for bin-derived columns.
+
+### Data Source & Image Fixes ✅
+- **DataFolder double-backslash**: M (Power Query) treats `\` as literal — `expressions.tmdl` now uses single backslashes in `DataFolder` paths.
+- **TWBX filesystem scanning**: After hyper→CSV conversion, DataFolder is set from actual filesystem contents instead of ZIP entry paths.
+- **Image embedding**: Images from `.twbx` archives are embedded as base64 data URIs instead of relative file paths.
+- **TWB local Data folder**: `.twb` files with remote DataFolder paths now have a local `Data/` folder created with corrected references.
+
+### Stats
+- 27/27 batch at 100% fidelity.
+- 6,831 tests passing across 141 test files.
+
+---
+
+## v28.1.0 — Post-Migration Automation & Lineage Visualization
+
+### Lineage Map HTML Dashboard ✅
+- **Lineage visualization** in `generate_report.py`: New "Lineage Map" section in the HTML migration dashboard with flow diagram (Tableau Sources → Calculations → PBI Model → Report Pages), stat cards, and 4 tabbed detail views (Tables, Calculations, Relationships, Worksheets) — all searchable and sortable.
+- **`load_lineage()`** function reads `lineage_map.json` from project directories.
+- Lineage data auto-loaded in `generate_dashboard()` (single), `generate_batch_dashboard()` (batch), and `main()`.
+- **12 tests** for lineage HTML rendering.
+
+### Sprint 119 — Post-Migration Automation ✅
+- **Validator auto-fix** (`validator.py`): `auto_fix_dax_leaks()` with 17 Tableau→DAX patterns (ISNULL→ISBLANK, ZN→IF(ISBLANK), ELSEIF→nested IF, `==`→`=`, `or`→`||`, `and`→`&&`, etc.). `auto_fix_tmdl_file()` and `auto_fix_project()` class methods.
+- **Lineage map** (`tmdl_generator.py`): `_build_lineage_map()` tracks Tableau source → PBI target for every table, calculation, relationship, and worksheet. Written as `lineage_map.json` by `pbip_generator.py`.
+- **Unified `--qa` flag** (`migrate.py`): `_run_qa_suite()` runs validation → auto-fix → governance → comparison → `qa_report.json` in one command.
+- **Default-ON flags**: `--optimize-dax` and `--compare` now default to True with `--no-optimize-dax` / `--no-compare` overrides.
+- **RLS PowerShell script** (`permission_mapper.py`): `generate_rls_powershell()` generates `.ps1` scripts for Azure AD RLS role assignment via Power BI REST API.
+- **Credential template** (`permission_mapper.py`): `generate_credential_template()` creates JSON credential placeholders per datasource connection.
+- **Governance column renames** (`governance.py`): `apply_renames()` enhanced for column-level renaming.
+- **52 tests** in `test_automation.py`.
+
+### Sprint 118 — Semantic Descriptions & Linguistic Schema ✅
+- **Auto-generated descriptions** for every table, column, and measure in the TMDL semantic model (Copilot/Q&A readiness).
+- **Copilot annotations**: `Copilot_DateTable`, `Copilot_Hidden`, `Copilot_TableDescription`.
+- **Linguistic schema depth**: CamelCase splitting, underscore humanization, Tableau captions/aliases/descriptions as Q&A synonyms.
+- **6 tests** in `test_semantic_descriptions.py`.
+
+---
+
+## v28.0.0 Phase 1 — Core Extensibility (Sprints 108–111)
+
+### Sprint 111 — Incremental Schema Drift Detection ✅
+- **Schema drift detection** (`schema_drift.py`): New module — `detect_schema_drift()` compares extraction snapshots across 7 categories (tables, columns, calculations, worksheets, relationships, parameters, filters). `SchemaDriftReport` with `summary()`, `to_json()`, `save()`. `load_snapshot()` / `save_snapshot()` for baseline persistence.
+- **CLI flag**: `--check-drift SNAPSHOT_DIR` — compares current extraction against a saved snapshot directory, prints summary, saves updated baseline.
+- **25 tests** in `test_sprint111_schema_drift.py`.
+
+### Sprint 110 — REST API Endpoint ✅
+- **API server** (`api_server.py`): New module — stdlib `http.server` migration API. Endpoints: `POST /migrate` (multipart upload), `GET /status/{id}`, `GET /download/{id}` (ZIP), `GET /health`, `GET /jobs`. Thread-safe job store, background migration workers, 500MB max upload.
+- **Dockerfile**: Production-ready container image (`python:3.12-slim`, port 8000).
+- **21 tests** in `test_sprint110_api_server.py`.
+
+### Sprint 109 — TDSX Hyper Data Inlining ✅
+- **Hyper data inlining**: `hyper_files.json` is now the 17th extracted JSON file (was 16). `tmdl_generator.py` calls `generate_m_from_hyper()` to inline Hyper row data into M `#table()`/`Csv.Document()` partition expressions for `hyper`/`extract`/`dataengine` connection types.
+- **Pipeline wiring**: `import_to_powerbi.py` loads `hyper_files.json`, `pbip_generator.py` passes to TMDL generator.
+- **15 tests** in `test_sprint109_hyper_inlining.py`.
+
+### Sprint 108 — TDS/TDSX Standalone Datasource Migration ✅
+- **Standalone datasource migration**: `.tds`/`.tdsx` files migrate to SemanticModel-only `.pbip` projects (no Report folder). Batch scanner includes `.tds`/`.tdsx` extensions.
+
+---
+
+## v27.1.0 — Unified HTML Report Template
+
+### Sprint 107 — HTML Report Template Unification ✅
+- **Shared HTML template** (`html_template.py`): New module — centralized CSS/JS template for all 9 HTML report generators. Fluent/PBI design system with CSS custom properties (`:root` vars), gradient headers, stat cards, collapsible sections, sortable/searchable tables, badges, fidelity bars, donut/bar charts, tabs, heatmaps, flow diagrams, command boxes. Print and responsive media queries. Legacy tag class aliases for backward compatibility.
+- **Upgraded all 9 HTML report generators** to use shared template:
+  - `generate_report.py` (batch migration dashboard)
+  - `server_assessment.py` (server portfolio assessment)
+  - `global_assessment.py` (global cross-workbook + governance report)
+  - `merge_report_html.py` (shared model merge report)
+  - `telemetry_dashboard.py` (observability dashboard)
+  - `visual_diff.py` (visual diff report)
+  - `comparison_report.py` (migration comparison report)
+  - `merge_assessment.py` (merge assessment report)
+- **Consistent design language**: gradient header, stat-grid cards, collapsible sections with toggle arrows, sortable/searchable tables, modern badge/tag styling across all reports.
+- **Reusable components**: `html_open()`, `html_close()`, `stat_grid()`, `stat_card()`, `section_open()`, `section_close()`, `badge()`, `fidelity_bar()`, `donut_chart()`, `bar_chart()`, `data_table()`, `tab_bar()`, `tab_content()`, `heatmap_table()`, `flow_diagram()`, `cmd_box()`, `card()`, `esc()`.
+- **Net reduction**: ~1,230 lines of duplicated inline CSS/JS removed, replaced by ~640-line shared module.
+
+## v27.0.0 — Advanced Intelligence & Marketplace
+
+### Sprint 106 — Shapefile/GeoJSON Passthrough ✅
+- **Geo passthrough** (`geo_passthrough.py`): New module — `GeoExtractor` extracts .geojson/.topojson/.shp/.shx/.dbf/.prj files from .twbx archives with ZIP slip protection. Format classification for 8 file types. `build_shape_map_config()` generates PBI shapeMap visual configuration with key property binding from GeoJSON feature properties. `copy_to_registered_resources()` deploys geo files into .pbip project. `geojson_to_shape_map_resource()` for standalone GeoJSON files.
+- **13 tests**: format classification, ZIP extraction, shape map config, registered resources, property extraction.
+
+### Sprint 105 — Industry Model Templates ✅
+- **Model templates** (`model_templates.py`): New module — pre-built semantic model skeletons for Healthcare (Encounters/Patients/Providers/Facilities star schema), Finance (Financials/Accounts/CostCenters/AR), and Retail (Sales/Products/Stores/Customers). Each template includes tables, columns (with dataCategory), relationships, measures, and hierarchies. `apply_template()` merges template into migrated tables — enriches existing tables with missing columns, adds skeleton tables, suggests relationships where both endpoints exist.
+- **13 tests**: list/get templates, apply with enrichment, relationships, deep copy safety.
+
+### Sprint 104 — DAX Recipe Overrides ✅
+- **DAX recipes** (`dax_recipes.py`): New module — industry-specific KPI measure templates: Healthcare (6 KPIs: ALOS, readmission rate, bed occupancy, satisfaction, mortality, ED wait time), Finance (8 KPIs: net revenue, gross margin, OpEx ratio, YTD, prior year, budget variance, DSO), Retail (7 KPIs: revenue/transaction, items/basket, conversion rate, inventory turnover, sell-through, comp sales growth, CLV). `apply_recipes()` supports inject, replace, and overwrite modes. `recipes_to_marketplace_format()` bridges to PatternRegistry.
+- **12 tests**: industry listing, recipe retrieval, apply modes, marketplace format conversion.
+
+### Sprint 103 — Migration Marketplace ✅
+- **Marketplace** (`marketplace.py`): New module — versioned pattern registry (`PatternRegistry`) for community DAX recipes, visual mappings, and M query templates. JSON-file catalogue with `PatternMetadata` (name, version, author, tags, category). Semver version pinning with `_parse_version()`. Search by tags, category, name regex. `apply_dax_recipes()` inject/replace. `apply_visual_overrides()` for visual type mapping. `export()` to single catalogue JSON.
+- **3 built-in patterns** in `examples/marketplace/`: revenue_ytd, yoy_growth_percent, custom_map_override.
+- **12 tests**: metadata matching, registry CRUD, version pinning, search, apply recipes/visuals, export.
+
+### Sprint 102 — Window Function Depth ✅
+- **Window clause builder** (`dax_converter.py`): New `_build_window_clauses()` helper — unified ORDERBY/PARTITIONBY/MATCHBY clause generation for DAX window functions. `partition_fields` dict supports `order_by` (list of (col, direction) tuples for multi-column ordering), `partition_by` (explicit column list), `match_by` (grain disambiguation). All WINDOW_* functions now use the centralized clause builder.
+- **10 tests**: basic, frame boundaries, explicit partition_by, multi-column orderby, matchby, combined.
+
+### Sprint 101 — Recursive LOD Parser ✅
+- **Recursive descent LOD parser** (`dax_converter.py`): Replaced iterative 50-iteration loop with true recursive `_parse_lod_recursive()`. Handles arbitrary nesting depth (tested to 5+). Left-to-right scan finds `{FIXED|INCLUDE|EXCLUDE` tokens, recursively resolves nested LODs in the aggregate body before converting the current node. 200-depth safety limit. Sibling LODs at the same level are handled naturally.
+- **12 tests**: basic FIXED/INCLUDE/EXCLUDE, nested depth 2-5, siblings, complex aggregates, multi-table dims.
+
+## v26.0.0 — Autonomous Migration & Production Hardening
+
+### Sprint 100 — Production Hardening & v26.0.0 Release ✅
+- **Rolling deployment** (`deploy/pbi_deployer.py`): New `deploy_rolling()` method — blue/green deployment with canary validation and automatic rollback. Phases: canary deploy → refresh → validate → promote (or rollback). Uses `_wait_for_refresh()` and `_cleanup_dataset()` helpers.
+- **SLA tracker** (`sla_tracker.py`): New module — per-workbook SLA compliance: max migration time, min fidelity score, required validation pass. `SLATracker` class with `start()`/`record_result()`/`get_report()`. `SLAReport` with compliance rate, breach details, JSON export.
+- **Monitoring integration** (`monitoring.py`): New module — export migration metrics to Azure Monitor, Prometheus push gateway, or structured JSON. Backend system: `_JsonBackend`, `_AzureMonitorBackend`, `_PrometheusBackend`, `_NoneBackend`. `MigrationMonitor` unified API with `record_metric()`/`record_event()`/`record_migration()`/`flush()`.
+- **Endorsement & certification** (`deploy/deployer.py`): New `endorse_item()` method on `FabricDeployer` — set 'none'/'promoted'/'certified' endorsement on deployed Fabric items via PATCH API.
+- **CLI flags**: `--rolling` (blue/green deployment), `--endorse none|promoted|certified`, `--monitor azure|prometheus|json|none`, `--sla-config FILE`.
+- **1000-workbook stress test** (`test_production_scale.py`): 1000 synthetic workbooks × 3 tables × 5 measures. Validates: 5000 DAX conversions <30s, 1000 TMDL generations <120s, SLA tracking at scale, monitoring at scale.
+
+### Sprint 99 — Governance & Advanced Formulas ✅
+- **Governance framework** (`governance.py`): New module — `GovernanceEngine` with naming convention enforcement (snake_case/camelCase/PascalCase for tables/columns, measure prefix rules), PII detection (10 patterns: email, SSN, phone, name, address, DOB, credit card, IP, passport, national ID), sensitivity label mapping (Tableau permissions → PBI labels), auto-rename in enforce mode. `AuditTrail` class for append-only JSONL audit log with SHA-256 hashing.
+- **LOOKUP/PREVIOUS_VALUE with PARTITIONBY** (`dax_converter.py`): Enhanced `_convert_previous_value()` and `_convert_lookup()` — when `compute_using` has 2+ dimensions, first dim → ORDERBY, remaining → PARTITIONBY clause.
+- **Window function PARTITIONBY** (`dax_converter.py`, `tmdl_generator.py`): WINDOW functions now emit PARTITIONBY clause for multi-dim `compute_using`. `compute_using_map` built from worksheet table_calcs and wired through TMDL generator to DAX converter.
+- **Azure Maps visual** (`visual_generator.py`, `pbip_generator.py`): `makepoint`/`spatial` → `azureMap` visual with Latitude/Longitude data roles, config template, fallback cascade. Spatial detection: lat/lon fields trigger azureMap override.
+- **CLI flags**: `--governance warn|enforce`, `--governance-config FILE`.
+- **85 tests** across `test_governance.py` (55) and `test_advanced_formulas.py` (30).
+
+### Sprint 98 — Merged Lakehouse / Fabric Output ✅
+- **Shared model → Fabric-native output** (`import_to_powerbi.py`): `import_shared_model()` now accepts `output_format='fabric'` parameter. When set, the merged semantic model is routed through `FabricProjectGenerator` instead of the standard PBIP generator — producing a complete Fabric project (Lakehouse + Dataflow Gen2 + Notebook + DirectLake SemanticModel + Pipeline) from the merged workbook data.
+- **CLI wiring** (`migrate.py`): `run_shared_model_migration()` forwards `output_format` from CLI args. Use `--shared-model wb1.twbx wb2.twbx --output-format fabric` to produce merged Fabric artifacts.
+- **Thin reports in Fabric mode**: Thin reports are placed inside the Fabric project directory with `byPath` references to the DirectLake SemanticModel. No model-explorer `.pbip` is created for Fabric output.
+- **12 tests** in `test_shared_model_fabric.py` — Fabric artifact creation (5), thin reports (3), merged content validation (2), parameter acceptance (2)
+
+### Sprint 97 — Security Hardening ✅
+- **Security validator module** (`security_validator.py`): New centralized security utilities — path validation (null byte, traversal, extension whitelist), ZIP archive safe extraction (ZIP slip defense), XML parsing with XXE protection (DOCTYPE+ENTITY detection), credential detection and redaction (10 patterns: password, secret, token, access key, bearer, basic auth, client secret, API key), M query credential scrubbing, template substitution sanitization (context-aware escaping for JSON/M/TMDL), migration artifact scanning for embedded credentials.
+- **ZIP slip protection** (`extract_tableau_data.py`): `read_tableau_file()` now validates all ZIP entry names — rejects path traversal (`..` components), absolute paths, and oversized entries. Uses `safe_zip_extract_member()` from security_validator.
+- **XXE defense** (`extract_tableau_data.py`): XML parsing now uses `safe_parse_xml()` which detects and blocks DOCTYPE with ENTITY declarations (XML External Entity attacks, OWASP Top 10). Rejects entity expansion payloads before parsing.
+- **Input validation** (`migrate.py`): `run_extraction()` validates file paths — null byte check, extension whitelist (.twb/.twbx/.tds/.tdsx), resolved path existence. `--token-secret` now supports `TABLEAU_TOKEN_SECRET` env var fallback to avoid process list credential exposure.
+- **Multi-tenant injection defense** (`deploy/multi_tenant.py`): `_apply_connection_overrides()` validates placeholder names (must match `${UPPER_NAME}` pattern), blocks null bytes and control characters in values, applies context-aware escaping (JSON: `\"`, M: `""`, TMDL: `''`). `MultiTenantConfig.load()` adds schema validation (type checks, size limit, required keys) and path resolution.
+- **Wizard input hardening** (`wizard.py`): `_input()` gains `sensitive` parameter using `getpass` for password masking. New `_validate_file_path()` validates null bytes, extensions, and path integrity. File selection validates extension whitelist before proceeding.
+- **64 tests** in `test_security.py` — path validation (11), ZIP slip (7), XML/XXE (6), credential redaction (14), template sanitization (6), multi-tenant (7), wizard (4), artifact scanning (4), integration (5)
+
+### Sprint 96 — Self-Healing Migration Pipeline ✅
+- **Recovery report** (`recovery_report.py`): New module — records every self-repair action with category, severity, description, action, and follow-up recommendations. JSON export, console summary, and `merge_into()` integration with MigrationReport.
+- **TMDL self-repair** (`tmdl_generator.py`): Post-generation validation phase — auto-fixes duplicate table names (suffix _2, _3), broken column references in measures (hidden + MigrationNote), orphan measures on unnamed tables (reassigned), empty-name tables (removed). Recovery actions tracked in RecoveryReport.
+- **Visual fallback cascade** (`visual_generator.py`): When a visual lacks required data roles, degrades through a cascade: complex → simpler → table → card. 35+ visual type fallback mappings, validation function for data role requirements, combined migration notes for approximation + degradation.
+- **M query self-repair** (`tmdl_generator.py`): Self-heal phase ensures all M partitions without try/otherwise wrapping get wrapped automatically. Catches partitions from dynamic parameters, Calendar tables, and other generated sources.
+- **50 tests** in `test_self_healing.py` (RecoveryReport, TMDL self-heal, visual fallback cascade, M query repair, integration scenarios)
+
+## v25.0.0 — Semantic Intelligence & Cross-Platform Parity
+
+### Sprint 91 — Fabric-Native Artifact Generation ✅
+- **Fabric constants & naming** (`fabric_constants.py`, `fabric_naming.py`): Spark/PySpark type maps (14 types each), aggregation pattern regex, 6 sanitisation functions for Lakehouse tables, Spark columns, Dataflow queries, Pipeline names, Python variables, filesystem names.
+- **Calculation column utilities** (`calc_column_utils.py`): 3-factor classification (calc columns vs measures), Tableau→M formula conversion (IF/THEN, string functions), Tableau→PySpark conversion (F.when, F.col), M Table.AddColumn step builder.
+- **Lakehouse generator** (`lakehouse_generator.py`): Delta table schemas, Spark SQL DDL scripts, table metadata JSON with column types and calc column injection.
+- **Dataflow Gen2 generator** (`dataflow_generator.py`): Power Query M ingestion queries per datasource, mashup document, Lakehouse destination config (tableName, updateMethod, schemaMapping), calculated column injection as M Table.AddColumn steps.
+- **PySpark Notebook generator** (`notebook_generator.py`): ETL pipeline notebook (9 connector templates: SQL Server, PostgreSQL, Oracle, MySQL, Snowflake, BigQuery, CSV, Excel, Custom SQL) + transformations notebook (withColumn materialisation), Synapse PySpark kernel.
+- **Data Pipeline generator** (`pipeline_generator.py`): 3-stage orchestration — Stage 1: RefreshDataflow (one per datasource), Stage 2: TridentNotebook (depends on all dataflows), Stage 3: TridentDatasetRefresh (depends on notebook). Placeholder activity IDs for workspace binding.
+- **DirectLake Semantic Model generator** (`fabric_semantic_model_generator.py`): Delegates to tmdl_generator for TMDL output, wraps in .SemanticModel item with .platform manifest and DirectLake metadata.
+- **Fabric project orchestrator** (`fabric_project_generator.py`): Coordinates all 5 generators (Lakehouse + Dataflow + Notebook + SemanticModel + Pipeline), writes fabric_project_metadata.json with generation stats.
+- **CLI integration** (`migrate.py`): `--output-format fabric` routes to FabricProjectGenerator. Early return in `run_generation()` for Fabric path.
+- **91 tests** in `test_fabric_native.py` (10 test classes)
+
+### Sprint 92 — Deep Extraction: Tableau 2024+ Features ✅
+- **Dynamic zone visibility** (`extract_tableau_data.py`): Parses `<dynamic-zone-visibility>` with calculation conditions on zone elements. Extracts show/hide field refs and threshold logic. Maps to PBI bookmark visibility toggles.
+- **Table extensions** (`datasource_extractor.py`): Tableau 2024.2+ table extensions (Einstein Discovery, external API). Extracts extension config, API endpoint, schema. Generates M `Web.Contents()` query or placeholder with migration note.
+- **Multi-connection blending** (`m_query_builder.py`): Single worksheets referencing 2+ datasources → separate M partitions per connection + merge-append M step combining them. Tracks blend relationships.
+- **Linguistic schema** (`extract_tableau_data.py`): Extracts field captions as Q&A synonyms. Generates `linguisticSchema.xml` for PBI Q&A natural language support.
+- **30 tests** in `test_tableau_2024.py`
+
+### Sprint 93 — Semantic DAX Optimization ✅
+- **DAX optimizer engine** (`dax_optimizer.py`): AST-based rewriter — nested IF→SWITCH, redundant CALCULATE collapse, constant folding, IF(ISBLANK)→COALESCE, VAR/RETURN extraction, SUMX simplification.
+- **Time Intelligence auto-injection** (`tmdl_generator.py`): Auto-detects date-based measures → injects YTD, PY, YoY% measures using TOTALYTD, SAMEPERIODLASTYEAR, DIVIDE. Configurable via `--time-intelligence auto|none`.
+- **Measure dependency DAG** (`dax_optimizer.py`): Directed acyclic graph of measure-to-measure references. Circular ref detection, unused measure identification, dependency-cluster folder recommendations.
+- **Optimization report** (`dax_optimizer.py`): Per-measure before/after JSON report with simplification type and rule applied.
+- **35 tests** in `test_dax_optimizer.py`
+
+### Sprint 94 — Cross-Platform Validation & Regression ✅
+- **Query equivalence framework** (`equivalence_tester.py`): Compares Tableau vs PBI measure values with configurable tolerance. Generates pass/fail per-measure validation report.
+- **Visual comparison** (`equivalence_tester.py`): SSIM-based screenshot comparison framework (Tableau Server image API vs PBI export API) with configurable threshold.
+- **Regression suite generator** (`regression_suite.py`): Auto-generates regression test JSON capturing visual values, filter states, row counts. Re-run detection for quality drift.
+- **Validation CLI** (`migrate.py`): `--validate-data` flag for post-migration data validation.
+- **28 tests** in `test_equivalence.py`
+
+### Sprint 95 — v25.0.0 Integration & Release ✅
+- **Version bump**: 24.0.0 → 25.0.0
+- **New modules**: 12 (fabric_constants, fabric_naming, calc_column_utils, lakehouse_generator, dataflow_generator, notebook_generator, pipeline_generator, fabric_semantic_model_generator, fabric_project_generator, dax_optimizer, equivalence_tester, regression_suite)
+- **New test files**: 5 (test_fabric_native.py, test_tableau_2024.py, test_dax_optimizer.py, test_equivalence.py, test_v25_integration.py)
+
+---
+
+## v24.0.0 — Composite Models, Live Sync & Enterprise Scale
+
+### Sprint 86 — Composite Model Depth ✅
+- **Per-table StorageMode** (`tmdl_generator.py`): `--composite-threshold COLS` classifies tables — tables with fewer columns than threshold → Import mode, others → DirectQuery. TMDL `mode` property on partitions.
+- **Aggregation table generation** (`tmdl_generator.py`): `--agg-tables auto` auto-generates Import-mode `Agg_{tablename}` tables for DirectQuery fact tables with `alternateOf` column annotations linking to detail columns.
+- **Hybrid relationship constraints** (`tmdl_generator.py`): Cross-storage-mode relationships auto-set to `crossFilteringBehavior: oneDirection`. Warns on bi-directional cross-mode relationships.
+- **Composite CLI flags** (`migrate.py`): `--composite-threshold COLS` and `--agg-tables auto|none` flags.
+- **32 tests** in `test_composite_model.py`
+
+### Sprint 87 — Extraction & Conversion Hardening ✅
+- **Published datasource resolution** (`datasource_extractor.py`): For sqlproxy connections, calls Tableau Server API to fetch full datasource definition. Merges remote tables/columns/connection into extraction pipeline.
+- **Nested LOD regression tests** (`dax_converter.py`): Confirmed nested LOD (LOD within LOD) already works via iterative inside-out conversion (50 iterations). Added regression tests.
+- **Complex join graph detection** (`tmdl_generator.py`): Multi-hop chain (A→B→C) and diamond join (A→B→D, A→C→D) detection via adjacency graph analysis. Returns deduped warning list.
+- **Multi-connection M queries** (`m_query_builder.py`): Workbooks connecting to multiple databases → separate Power Query parameters per connection (`ServerName`/`DatabaseName` for first, `Conn2ServerName`/`Conn2DatabaseName` for subsequent).
+- **Data type coercion detection** (`datasource_extractor.py`): Detects Tableau auto-coercion patterns (string→date, string→number) for explicit M `Table.TransformColumnTypes` step generation.
+- **30 tests** in `test_edge_cases.py`
+
+### Sprint 88 — Enterprise Portfolio Intelligence ✅
+- **Data lineage graph** (`global_assessment.py`): Cross-workbook data lineage: datasource → tables → calculations → visuals as directed graph with nodes and edges.
+- **Consolidation recommender** (`global_assessment.py`): Per-cluster recommendations: score≥70 → shared_model, ≥45 → partial_merge, else → review; isolated workbooks → standalone.
+- **Resource allocation planner** (`global_assessment.py`): Per-wave team size, skill mix (DAX expert, M expert, visual designer), estimated weeks based on complexity scores.
+- **Governance report** (`global_assessment.py`): Executive HTML report with metrics, risk matrix (GREEN/YELLOW/RED), migration waves table, model consolidation clusters.
+- **22 tests** in `test_portfolio_intelligence.py`
+
+### Sprint 89 — Live Sync & Incremental Refresh ✅
+- **Source change detection** (`incremental.py`): `SourceChangeDetector` class — manifest-based change detection comparing `updatedAt` + content hash against last migration.
+- **Incremental diff generation** (`incremental.py`): `IncrementalDiffGenerator` — targeted incremental updates with added/modified/removed/unchanged artifact tracking.
+- **Auto-deploy sync** (`deploy/pbi_deployer.py`): `deploy_sync()` method — detects changes via incremental diff, skips deployment if no changes, otherwise calls `deploy_project()`.
+- **Change notification** (`telemetry.py`): `ChangeNotifier` class — structured change events with optional webhook notification (Teams/Slack compatible JSON).
+- **19 tests** in `test_live_sync.py`
+
+### Sprint 90 — Enterprise Scale & v24.0.0 Release ✅
+- **Parallel batch processing** (`migrate.py`): `--workers N` alias for `--parallel N` for enterprise batch migrations.
+- **Sync deployment flag** (`migrate.py`): `--sync` flag for auto-deploy after change detection.
+- **Enterprise deployment guide** (`docs/ENTERPRISE_GUIDE.md`): 8-phase step-by-step guide (Discovery → Assessment → Wave Planning → Pilot → Batch Migration → Validation → Deployment → Live Sync).
+- **Enterprise scale validation**: Synthetic 50-table / 10-workbook batch benchmarks under 5 seconds.
+- **12 tests** in `test_enterprise_scale.py`
+
+### Version Summary
+- **Version bump**: 23.0.0 → 24.0.0
+- **New test files**: 5 (test_composite_model.py, test_edge_cases.py, test_portfolio_intelligence.py, test_live_sync.py, test_enterprise_scale.py)
+- **New tests**: 115 (32 + 30 + 22 + 19 + 12)
+- **New docs**: `docs/ENTERPRISE_GUIDE.md`
+
+---
+
+## v23.0.0 — Conversion Accuracy & Fidelity Perfection
+
+### Sprint 84 — Conversion Accuracy Depth ✅
+- **Prep VAR/VARP** (`m_query_builder.py`): Fixed variance aggregation — `"var"` → `List.Variance` (sample), `"varp"` → population variance formula via `List.Average` of squared deviations. Previously approximated with standard deviation.
+- **Prep notInner → leftanti** (`m_query_builder.py`): Regression guard — `notInner` join kind already maps to `JoinKind.LeftAnti` (not FullOuter). Added comprehensive tests.
+- **Bump chart RANKX auto-injection** (`visual_generator.py`): Bump chart mark type → lineChart with auto-injected `_bump_rank_{measure}` RANKX measure. Configures rank on Y-axis for proper bump chart rendering.
+- **PDF connector depth** (`m_query_builder.py`): Page range (`StartPage`/`EndPage`) and table index selection. Multi-table PDF extraction with `[Table=N]` navigation.
+- **Salesforce SOQL depth** (`m_query_builder.py`): API version specification, SOQL passthrough via `Value.NativeQuery()`, relationship traversal with `[RelationshipColumns]`.
+- **REGEX → M fallback** (`m_query_builder.py`): When DAX `REGEX` conversion is approximated, generates Power Query M alternative steps using `Text.RegexMatch`, `Text.RegexExtract`, `Text.RegexReplace`.
+- **55+ new tests** in `test_conversion_accuracy.py`
+
+### Gap Optimization ✅
+- **LTRIM/RTRIM** (`dax_converter.py`): Proper left-trim (`MID`-based) and right-trim (`LEFT`-based) that preserve opposite-side spaces. Previously both mapped to `TRIM()` which strips both sides.
+- **INDEX → ROWNUMBER** (`dax_converter.py`): Upgraded from hardcoded `RANKX` approximation to `ROWNUMBER()` (DAX 2024+) for accurate row numbering.
+- **REGEXP_MATCH exact match** (`dax_converter.py`): `^literal$` patterns → `EXACT()` DAX function. `.+`/`.*` always-true patterns → `TRUE()`. Improved conversion accuracy for common regex patterns.
+- **29 new tests** in `test_gap_optimization.py`
+
+### Fidelity Scoring Fix ✅
+- **Exclude skipped items from fidelity denominator** (`migration_report.py`): Fidelity formula now uses `scored = total - skipped` preventing skipped items from penalizing the score.
+- **ISMEMBEROF RLS → EXACT** (`migration_report.py`): RLS roles generated from `ISMEMBEROF("group")` are now classified as `exact` (not `approximate`) since a functional RLS role is generated; Azure AD group assignment is an operational step.
+- **Weighted overall_score as primary metric** (`migrate.py`): Batch migration display now shows the weighted `overall_score` (calculation=30%, visual=25%, datasource=15%...) instead of flat fidelity percentage.
+- **Result**: All 10 sample workbooks migrated at **100.0% fidelity** (up from 99.3% average).
+
+### Documentation & Roadmap ✅
+- Gap analysis docs refreshed (GAP_ANALYSIS.md, KNOWN_LIMITATIONS.md)
+- Roadmap extended through v26.0.0 (Sprints 91–100)
+- README updated with accurate counts (5,756 tests, 115 files, 118+ visuals, 42 connectors, 180+ DAX)
+
+### Sprint 85 — v23.0.0 Integration & Release ✅
+- **Version bump**: 22.0.0 → 23.0.0
+- **Cross-feature integration tests**: Validate Sprint 84 + gap optimization + fidelity fixes work together end-to-end
+- **Overall: 5,782+ tests** across 116 test files, 0 failures
+
+---
+
+## v22.0.0 — Real-World Fidelity & Layout Intelligence
+
+### Sprint 76 — Dashboard Layout Engine ✅
+- **Zone hierarchy extraction** (`extract_tableau_data.py`): Recursive `<zone>` tree parser — builds parent→child hierarchy with container orientation, `is-fixed`/`is-floating` flags, padding/margin from zone-style, zone type classification (layout-basic, layout-flow, worksheet, text, bitmap, filter, paramctrl)
+- **Grid-snapping layout algorithm** (`pbip_generator.py`): `_build_zone_layout_map()` + `_layout_zone()` — recursively subdivides PBI pixel space per container orientation (horz/vert) or proportional coordinate mapping for 2-D grids; replaces proportional `scale_x/scale_y` fallback
+- **Floating vs tiled distinction**: Floating zones → absolute-scaled PBI positions; tiled zones → grid-based allocation within parent container
+- **Responsive breakpoints**: `<device-layout>` phone zones → PBI `mobileState` with scaled mobile visuals (320×568 viewport)
+- **Dashboard padding propagation**: Zone padding/margin → PBI visual `padding` properties via `_apply_padding_to_visual()`
+- **Proportional coordinate fix**: Layout engine no longer defaults to vertical stacking for containers without explicit orientation — uses 2-D proportional mapping to preserve side-by-side layouts
+- **42 tests** in `test_layout_engine.py`
+
+### Sprint 77 — Advanced Slicer & Filter Intelligence ✅
+- **Filter type classification** (`extract_tableau_data.py`): Classifies filters as categorical, range, relative-date, wildcard, top-n, or context based on XML attributes; adds `filter_mode`, `exclude`, `min`/`max`, `period`/`period_type`, `match`/`match_type`, `top_n_count`/`top_n_field`, `is_context`
+- **Dropdown vs list slicer** (`pbip_generator.py`): Selection mode per slicer with search toggle
+- **Range slicer with bounds**: Numeric/date range filters → PBI between slicer
+- **Relative date slicer**: Last N days/weeks/months/years → PBI relative date configuration
+- **Wildcard filter**: Contains/starts-with → PBI slicer with search mode
+- **Context filter → report-level filter**: Context filters promoted to report-level
+
+### Sprint 78 — Visual Fidelity Depth ✅
+- **Stacked bar orientation detection** (`visual_generator.py`): `stackedBarChart` ↔ `stackedColumnChart` and `hundredPercentStackedBarChart` ↔ `hundredPercentStackedColumnChart` based on shelf axis analysis
+- **Dual-axis → combo chart**: `dual_axis: true` → `lineClusteredColumnComboChart` with primary/secondary axis split
+- **Reference band shading**: Tableau reference bands → PBI constant line pairs with shade area
+- **Data label formatting propagation**: Label font size, color, orientation → PBI labels properties
+- **Mark size encoding → bubble size**: Size encoding → PBI Size data role on scatter/bubble charts
+- **Trend line preservation**: Linear/logarithmic/exponential/polynomial/power → PBI analytics pane trendLine
+
+### Sprint 79 — Conditional Formatting & Theme Depth ✅
+- **Diverging color scale**: Min→center→max 3-stop gradient → PBI conditional formatting rules
+- **Stepped color (bins)**: N discrete color bins → PBI rules-based threshold conditional formatting
+- **Categorical color assignment**: Explicit dimension→color assignments → PBI dataPoint fill rules
+- **Theme background & border**: Dashboard background, visual border color/width → PBI theme and visualContainerObjects
+- **Font style migration**: Tableau font family/size/bold/italic → PBI textClasses in theme JSON
+
+### Sprint 80 — Integration Testing & v22.0.0 Release ✅
+- **Real-world E2E test suite** (`test_real_world_e2e.py`): Extract→generate→validate for all 26 workbooks (16 real-world + 10 samples); 13 assertions per workbook (structure, content, JSON validity, TMDL, visual references, page order)
+- **Layout regression tests** (`test_layout_regression.py`): Golden-file position comparison for Superstore, Complex_Enterprise, Enterprise_Sales; layout invariants for all 9 sample workbooks; no-overlap detection; proportional mapping algebra
+- **Performance regression tests** (`test_performance_regression.py`): Single workbook <5s, batch 10 <45s, extraction <2s, generation <3s; covers samples + real-world
+- **26-bug hardening pass**: Fixes across extraction (top-N int parse), DAX converter (STR→FORMAT, RUNNING_SUM table ref, MID 0-based, SUBSTITUTE args), M query builder (wrap source + nav in try/otherwise), TMDL generator (culture pop order, displayFolder, _datasources ref), deploy layer (multi-tenant paths, PBI client retry)
+- **Version bump**: 21.0.0 → 22.0.0
+- **Overall: 5,680+ tests** across 109 test files, 0 failures
+
+### Bug Fixes (post-Sprint 79)
+- **try/otherwise navigation fix** (`m_query_builder.py`): When Source step uses key-based navigation (e.g. `Source{[Item="Sheet1",Kind="Sheet"]}[Data]`), both steps are absorbed into a single `try` block to prevent "key didn't match" errors on fallback data
+- **Layout engine coordinate mapping** (`pbip_generator.py`): Fixed Sprint 76 regression where containers without explicit orientation defaulted to vertical stacking instead of preserving 2-D grid positions
+
+### Sprint 72 — Notebook-Based Interactive Migration ✅
+- **MigrationSession API** (`notebook_api.py`): New interactive migration API — `load()`, `assess()`, `preview_dax()`, `list_approximated()`, `edit_dax()`, `clear_dax_override()`, `preview_m()`, `preview_visuals()`, `override_visual_type()`, `configure()`, `generate()`, `validate()`, `deploy()`
+- **DAX override persistence**: Edit/clear overrides reflected in previews, applied at generation time
+- **Visual type override**: Override any worksheet's PBI visual mapping before generation
+- **Jupyter notebook generation**: `generate_notebook()` creates 8-step .ipynb (load→assess→DAX preview→M preview→visual preview→generate→validate→deploy)
+- **35 new tests** in `test_notebook_api.py`
+
+### Sprint 73 — Scheduled Refresh & Subscription Migration ✅
+- **Refresh generator** (`refresh_generator.py`): Converts Tableau Server extract-refresh schedules to PBI refresh config JSON — frequency mapping (Hourly→Daily with Pro/Premium warnings), time deduplication, max 8 time slots for Pro, weekly day mapping
+- **Subscription config**: Tableau email subscriptions → PBI subscription JSON with recipient, frequency, licensing notes
+- **Server client extensions** (`server_client.py`): `get_workbook_extract_tasks(workbook_id)` and `get_workbook_subscriptions(workbook_id)` — per-workbook schedule/subscription extraction via REST API
+- **PBI deployer extension** (`pbi_deployer.py`): `deploy_refresh_schedule(dataset_id, refresh_config)` — configures scheduled refresh via PBI REST API PATCH
+- **`--migrate-schedules` CLI flag**: Extract Tableau refresh schedules and generate `refresh_config.json` in the output project directory
+- **38 new tests** in `test_refresh_generator.py`
+
+### Sprint 74 — Migration Observability Dashboard ✅
+- **Telemetry v2** (`telemetry.py`): `TELEMETRY_VERSION=2`, new `record_event(event_type, **data)` method for per-workbook, per-visual, and per-measure granular event logging; backward-compatible with v1 stats/errors
+- **Interactive observability dashboard** (`telemetry_dashboard.py`): Complete rewrite — 4-tab layout (Overview, Portfolio, Bottlenecks, Telemetry), JavaScript interactivity (column sort, text search, date filter), JSONL telemetry integration, portfolio progress tracker with completion bar, bottleneck analyzer
+- **JSONL telemetry loading**: `_load_telemetry_events()` reads `~/.ttpbi_telemetry.json` for session-level drill-down
+- **Bottleneck analysis**: `_analyze_bottlenecks()` identifies partial/failed items and error categories sorted by impact
+- **Portfolio progress**: `_compute_portfolio_progress()` classifies workbooks as completed (≥80% fidelity), partial, or pending
+- **28 new tests** in `test_observability.py`
+
+### Sprint 75 — Test Depth, Legacy Cleanup & v21.0.0 Release ✅
+- **DAX test expansion**: 86→176 tests covering trig functions, expanded text (ASCII→UNICODE, MID, REPLACE→SUBSTITUTE, SPACE→REPT, CHAR→UNICHAR), expanded date (DATETRUNC quarter/month, DATEPART all units, MAKEDATE), stats (STDEVP, VARP, PERCENTILE, CORR, COVAR), converter functions (ATTR, ENDSWITH, STARTSWITH, PROPER, SPLIT, FIND, ISDATE, DATEPARSE), table calcs (RUNNING_COUNT/MAX/MIN, RANK_DENSE, WINDOW_AVG/MAX/MIN, INDEX, FIRST, LAST, SIZE, TOTAL), spatial, REGEXP, SCRIPT_, security, AGG(IF), output quality
+- **M connector test expansion**: 114→148 tests covering 32 additional connectors (Oracle, Snowflake, Teradata, SAP HANA, Redshift, Databricks, Spark, Azure SQL, Synapse, Google Sheets, SharePoint, JSON, XML, PDF, Salesforce, Web, OData, Azure Blob, Vertica, Impala, Presto/Trino, Fabric Lakehouse, Dataverse, MongoDB, Cosmos DB, Athena, DB2, Hyper, Hive/HDInsight, Google Analytics, SAP BW, GeoJSON)
+- **Version bump**: 19.0.0 → 21.0.0 (pyproject.toml + `__init__.py`)
+- **Overall: 5,024+ tests**, 0 failures
+
+## v19.0.0 — Lineage, Multi-Tenant Deployment & Performance
+
+### Sprint 65 — Lineage, Multi-Tenant, Performance & v19.0.0 Release ✅
+- **Lineage metadata injection** (`shared_model.py`): Every merged artifact (tables, calculations, parameters, hierarchies, relationships, calc groups, field parameters, perspectives, cultures, goals) now tagged with `_source_workbooks: List[str]` and `_merge_action: str` (`deduplicated`/`namespaced`/`unique`/`unioned`/`first-wins`); `extract_lineage(merged)` function returns structured lineage records for all artifact types
+- **TMDL lineage annotations** (`tmdl_generator.py`): `annotation MigrationSource = ["WB1", "WB2"]` and `annotation MergeAction = deduplicated` written on tables and measures; lineage metadata propagated through `_build_table()` and measure creation pipeline
+- **Lineage HTML report** (`merge_report_html.py`): New "Lineage" section with Sankey-style flow diagram (workbooks → merge actions → artifact types) and sortable detail table; `_build_lineage_section()` with `_ACTION_STYLE` color-coding for merge actions
+- **Custom SQL fingerprinting** (`shared_model.py`): `build_table_fingerprints()` extended to handle custom SQL tables — tables with `custom_sql` or `query` field fingerprinted as `_custom_sql` schema with normalized SQL hash; identical queries across workbooks become merge candidates
+- **Multi-tenant deployment** (`deploy/multi_tenant.py`): New module with `TenantConfig`, `MultiTenantConfig` (validate/load/save JSON), `_apply_connection_overrides()` (template substitution: `${TENANT_SERVER}`, `${TENANT_DATABASE}` in .tmdl/.m/.json/.pbir files), `deploy_multi_tenant()` orchestrator with per-tenant results; `--multi-tenant CONFIG_FILE` CLI flag
+- **Live connection byConnection** (`thin_report_generator.py`): `--live-connection WORKSPACE_ID/MODEL_NAME` CLI flag; thin reports wired via `byConnection` reference with `powerbi://api.powerbi.com/v1.0/myorg/{workspace_id}` connection string instead of `byPath`
+- **Fingerprint hash cache** (`global_assessment.py`): Pre-computes fingerprints in `_fingerprint_cache` dict before pairwise loop; `_find_shared_table_names_cached()` operates on pre-computed dicts; O(n) fingerprinting instead of O(n²)
+- **E2E integration tests** (`test_merge_integration.py`): 15 tests using 3 real sample workbooks (Superstore_Sales, Financial_Report, Marketing_Campaign) — extraction validation, assessment scoring, merge pipeline, lineage metadata, TMDL generation, thin reports, validation report, merge manifest
+- **Benchmark test suite** (`test_merge_performance.py`): 10 synthetic benchmarks (10/25/50/100 workbooks × 3-10 tables), assessment scaling, fingerprint cache speedup comparison, lineage at scale, merge manifest at scale; gated by `RUN_BENCHMARKS=1` env var
+- **100 new tests** across 5 test files: `test_merge_lineage.py` (22), `test_multi_tenant.py` (31), `test_sql_fingerprint.py` (22), `test_merge_integration.py` (15), `test_merge_performance.py` (10)
+- **Overall: 4,923 tests** (4,913 + 10 benchmark), 0 failures
+
+## v18.0.0 — Advanced Merge Intelligence & Enterprise Merge Workflows
+
+### Sprint 64 — Incremental Merge & Add-to-Model Workflow ✅
+- **MergeManifest** (`shared_model.py`): `MergeManifest` dataclass with `save()`/`load()`/`from_dict()`/`to_dict()` — tracks workbook sources (name, path, SHA-256 hash), per-table fingerprints, artifact counts (tables, measures, relationships, RLS roles, parameters), validation score, merge score, timestamp; `build_merge_manifest()` populates from merge results with exclusive table detection
+- **TMDL reverse-engineering** (`shared_model.py`): `load_existing_model(model_dir)` — parses `.tmdl` files into `converted_objects`-compatible dict; handles `table`, `column` (physical + calculated), `measure` (single + multi-line), `hierarchy` (with levels), `partition`, `relationship`, `role` (with tablePermissions); `_find_definition_dir()` resolves from project dir, SemanticModel dir, or definition dir
+- **`--add-to-model`** (`migrate.py`, `shared_model.py`): `add_to_model(model_dir, new_extracted, wb_name)` — loads existing model via manifest + TMDL, performs incremental merge, updates manifest with new workbook entry, regenerates TMDL + thin report; duplicate detection with `force=True` override; `_run_add_to_model()` CLI handler with extraction + merge + generation pipeline
+- **`--remove-from-model`** (`migrate.py`, `shared_model.py`): `remove_from_model(model_dir, wb_name)` — identifies exclusive tables (not shared with other workbooks), removes them from model, cleans up relationships involving removed tables, removes measures owned by workbook; shared tables preserved; `_run_remove_from_model()` CLI handler with TMDL regeneration + thin report cleanup
+- **Manifest diff** (`merge_assessment.py`): `diff_manifests(old, new)` — compares two manifests returning added/removed tables, measures, workbooks, relationship count changes, config changes; accepts both dict and `MergeManifest` objects
+- **Manifest auto-save** (`import_to_powerbi.py`): `import_shared_model()` now writes `merge_manifest.json` after merge completion; `workbook_paths` parameter threaded through pipeline for file hash tracking
+- **46 new tests** in `test_incremental_merge.py` across 10 test classes: MergeManifest (6), build_merge_manifest (2), TMDL parsing (10), load_existing_model (7), add_to_model (4), remove_from_model (4), diff_manifests (5), find_definition_dir (4), idempotent re-add (1), file_hash (2), manifest save (1), TMDL duplicate column fix (5 in test_tmdl_generator.py from prior commit)
+- **Overall: 4,813 tests**, 0 failures
+
+### Sprint 63 — Deploy Hardening & Fabric Reliability ✅
+- **Workspace permission pre-flight** (`bundle_deployer.py`): `check_workspace_permissions()` — verifies workspace exists and principal has Contributor+ role before deployment; blocks on Viewer-only or network errors
+- **Name conflict detection** (`bundle_deployer.py`): `detect_conflicts(model_name, report_names)` — queries workspace items for collisions; `overwrite=True` parameter to proceed despite conflicts
+- **Rollback on failure** (`bundle_deployer.py`): `rollback(result)` — deletes deployed semantic model and reports when `enable_rollback=True` and any report deployment fails; per-artifact rollback status tracking
+- **Post-deployment validation** (`bundle_deployer.py`): `validate_deployment(result)` — checks model deployment status and report binding state; appends validation results to `BundleDeploymentResult`
+- **Refresh polling** (`bundle_deployer.py`): `poll_refresh(model_id, result)` — polls dataset refresh status until completion/failure/timeout; replaces fire-and-forget refresh pattern
+- **Deployment manifest** (`deploy/utils.py`): `DeploymentManifest` class — tracks workspace_id, model/report IDs, source_hash, principal, version; save/load JSON for audit trail
+- **BundleDeploymentResult extended**: Added `rollback_actions`, `validation`, `conflicts` fields with `to_dict()` serialization
+- **28 new tests** in `test_deploy_hardening.py`: permissions (6), conflicts (5), rollback (4), validation (4), polling (3), manifest (2), integration (2), result fields (2)
+- **Existing test fix** (`test_bundle_deployer.py`): `test_deploy_with_refresh` updated to mock `poll_refresh` — was causing 30-minute hang
+- **Overall: 4,762 tests** (21 Hyper + 28 deploy + fix), 0 failures
+
+### Hyper File Improvements ✅
+- **Option A — tableauhyperapi integration** (`hyper_reader.py`): `_read_hyper_api()` — tries optional `tableauhyperapi` package first for full .hyper format support (v2+); graceful fallback to SQLite reader when package not installed
+- **Option B — Multi-schema support** (`hyper_reader.py`): Enhanced `_read_hyper_sqlite()` with `_HYPER_SCHEMAS` loop — discovers tables across `Extract`, `public`, and `stg` schemas; proper quoted name handling for schema-qualified queries
+- **Option C — Configurable row limit** (`hyper_reader.py`, `migrate.py`): `--hyper-rows N` CLI flag controls sample data extraction; `row_limit` parameter on `generate_m_for_hyper_table()` overrides default thresholds; wired through full pipeline: migrate.py → extract_tableau_data.py → hyper_reader.py
+- **Option D — Metadata enrichment** (`hyper_reader.py`): `_compute_column_stats_sqlite()` with distinct_count/min/max per column; `get_hyper_metadata()` summary function with recommendations (DirectQuery for >10M rows, cardinality warnings); file metadata (size, modified date) included in output
+- **3-tier reader chain**: tableauhyperapi → SQLite → header scan (documented in module docstring)
+- **21 new tests** in `test_hyper_improvements.py`: API reader (3), multi-schema (3), configurable rows (6), metadata (7), format detection (2)
+
+### Backward Compatibility Fix — PBI Desktop April 2025 (v2.142.928.0) ✅
+- **Report schema downgrade** (`pbip_generator.py`): Downgraded report.json `$schema` from `3.1.0` to `2.0.0` — PBI Desktop April 2025 cannot resolve report schema 3.x
+- **ThemeVersion format fix** (`pbip_generator.py`): Changed `reportVersionAtImport` from object `{visual, report, page}` (schema 3.x) to string `"5.55"` (schema 2.x) per Microsoft PBIR documentation
+- **Custom theme type fix** (`pbip_generator.py`): Changed `themeCollection.customTheme.type` from `"CustomTheme"` to `"RegisteredResources"` to match schema 2.0.0 `ThemeResourcePackageType` enum
+- **Validator updated** (`validator.py`): `VALID_REPORT_SCHEMAS` now expects `report/2.0.0/schema.json`
+- **All code paths fixed**: `pbip_generator.py` (2 sites), `import_to_powerbi.py`, `validator.py`, `test_backlog.py`
+
+### Sprint 55 — Post-Merge Safety: Cycle Detection, Column Type Validation & DAX Integrity ✅
+- **Relationship cycle detection** (`shared_model.py`): `detect_merge_cycles()` — iterative DFS on merged relationship graph; detects 2-node, 3-node, self-loop, and multi-component cycles; supports both `from_table/to_table` and `left/right` relationship formats
+- **Column type compatibility matrix** (`shared_model.py`): `check_type_compatibility()` — explicit matrix for all type pairs (`ok`/`warn`/`error`); `_TYPE_COMPAT` covers boolean, integer, int64, real, double, decimal, currency, datetime, string; safe promotions (int→real), warnings (custom types), errors (datetime↔boolean)
+- **Column type history tracking** (`shared_model.py`): `_merge_columns_into()` now populates `_column_type_history` dict on tables during merge; `detect_type_conflicts()` scans history for incompatible promotions
+- **DAX reference validator** (`shared_model.py`): `validate_merged_dax_references()` — scans all measures/calc columns for `'Table'[Column]` patterns; verifies every referenced table and column exists in merged model; provides closest-match suggestions via `_find_closest()` (Levenshtein-like)
+- **RELATED/LOOKUPVALUE cardinality audit** (`shared_model.py`): `validate_dax_relationship_functions()` — verifies `RELATED()` calls have manyToOne relationships; `LOOKUPVALUE()` used for manyToMany; flags mismatches (no relationship, wrong cardinality)
+- **Validation summary report** (`shared_model.py`): `generate_merge_validation_report()` — aggregates all checks into structured JSON: cycles, type warnings, DAX errors, cardinality mismatches, score (0–100), passed flag; integrated into `import_shared_model()` pipeline
+- **`--strict-merge` CLI flag** (`migrate.py`): When set, any validation failure (cycles, type errors) blocks PBIP generation with exit code 1; without flag, validation is advisory (warnings printed, generation proceeds)
+- **Pipeline integration** (`import_to_powerbi.py`): Post-merge validation runs automatically after `merge_semantic_models()` in Step 2a; prints per-check status with ✓/⚠/✗ icons; validation result included in return dict
+- **57 new tests** in `test_merge_validation.py` across 8 test classes: cycle detection (9), type compatibility (8), type conflicts (5), DAX refs (9), cardinality audit (6), validation report (9), find_closest (5), edge cases (4), type history (3)
+- **Overall: 4,331 tests**, 0 failures
+
+### Sprint 54 — Artifact-Level Merge: Calculation Groups, Field Parameters, Perspectives & Cultures ✅
+- **Hierarchy level-aware deduplication** (`shared_model.py`): Replaces shallow `_merge_list_by_name` for hierarchies — same name + same levels → deduplicate; same name + different levels → keep longest path; three-workbook scenarios correctly resolved
+- **Calculation group merge** (`shared_model.py`): `_merge_calculation_groups()` — signature-based deduplication of calc-group-like parameters across workbooks; same items → deduplicate; different items → namespace as `CalcGroup (Workbook)`; `_calc_group_signature()` for item-level comparison
+- **Field parameter merge** (`shared_model.py`): `_merge_field_parameters()` — same values → deduplicate; different values → union all column references (order-preserved, wb1 first); `_merged_from` tracking for multi-workbook provenance
+- **Perspective merge** (`shared_model.py`): `_merge_perspectives()` — same name → union table references (sorted); different names → keep all; empty perspectives handled
+- **Culture merge** (`shared_model.py`): `_merge_cultures()` — same locale → merge translations (first-seen wins per key); different locales → keep all; collects from `_cultures`, `culture` field, and `_languages` field; en-US default skipped
+- **Goals/scorecard merge** (`shared_model.py`): `_merge_goals()` — same metric name + same measure → deduplicate; different measures → namespace as `Goal (Workbook)`; supports `metric_name`/`measure_name` fallback keys
+- **`merge_semantic_models()` updated**: Now produces 6 new artifact keys: `_calculation_groups`, `_field_parameters`, `_perspectives`, `_cultures`, `_goals`, and enhanced `hierarchies`
+- **55 new tests** in `test_merge_artifacts.py` across 10 test classes
+- **Overall: 4,274 tests**, 0 failures
+
+## v17.0.0 — Server Assessment & Merge Intelligence
+
+### Sprint 53 — Documentation & Release ✅
+- **CHANGELOG.md**: Full v17.0.0 release notes across 5 sprints (49–53)
+- **Version bump**: 16.0.0 → 17.0.0 in `pyproject.toml` and `powerbi_import/__init__.py`
+- **GAP_ANALYSIS.md updated**: v17.0.0 counts — 4,219 tests, 77 test files
+- **KNOWN_LIMITATIONS.md updated**: v17.0.0 — VAR/VARP M approximation documented
+- **copilot-instructions.md updated**: New modules (server_assessment, server_client v2), CLI flags, merge extensions
+- **Overall: 4,219 tests**, 0 failures
+
+### Sprint 52 — Extraction & DAX Gap Closure ✅
+- **VAR/VARP in M query builder**: Added `var` and `varp` entries to `_M_AGG_MAP` (approximated via `List.StandardDeviation`)
+- **Verified existing mappings**: INDEX→RANKX comment, LTRIM→TRIM, RTRIM→TRIM already implemented; nested LOD with `_find_lod_braces()` already handles innermost-first; `notInner→leftanti` in prep flow parser
+- **8 new tests** in `test_extraction_gaps.py` validating M aggregation map, DAX conversions, and prep flow mappings
+- **Overall: 4,219 tests**, 0 failures
+
+### Sprint 51 — Semantic Model Merge Extensions ✅
+- **Custom SQL fingerprinting** (`shared_model.py`): `_normalize_sql()`, `_hash_sql()`, `build_custom_sql_fingerprints()` — SHA-256 fingerprint-based deduplication of custom SQL tables across workbooks
+- **Fuzzy table matching** (`shared_model.py`): `_normalize_table_name_fuzzy()`, `fuzzy_table_match()` — schema-strip, separator-fold, bigram Jaccard similarity scoring (0.0–1.0)
+- **RLS conflict detection** (`shared_model.py`): `detect_rls_conflicts()` — finds overlapping RLS roles with divergent filter expressions across workbooks
+- **Cross-workbook relationship suggestions** (`shared_model.py`): `suggest_cross_workbook_relationships()` — scans `_id`/`_key`/`_code` columns for matches, skips existing relationships, returns high/medium confidence
+- **Merge preview** (`shared_model.py`): `merge_preview()` — dry-run merge returning assessment + RLS conflicts + relationship suggestions + action plan
+- **HTML merge report** (`merge_assessment.py`): `generate_merge_html_report()` — full HTML dashboard with candidate table, measure conflict table, RLS conflict table, relationship suggestions
+- **Enhanced field remapping** (`thin_report_generator.py`): `_remap_fields()` now handles list-type mark encodings, sort field remapping, action target field remapping
+- **CLI flags** (`migrate.py`): `--merge-preview`, `--bulk-assess DIR`, `--server-assess`
+- **40 new tests** in `test_merge_extensions.py` across 11 test classes
+- **Overall: 4,219 tests**, 0 failures
+
+### Sprint 50 — Server-Level Assessment Pipeline ✅
+- **Server assessment module** (`server_assessment.py`, new): Enterprise portfolio assessment for Tableau Server or local workbook folders
+- **Data classes**: `WorkbookReadiness` (GREEN/YELLOW/RED + complexity + effort), `MigrationWave` (wave_number, label, workbooks, total_effort), `ServerAssessment` (aggregated results + readiness_pct)
+- **Complexity computation** (`_compute_complexity()`): 8-axis analysis — visuals, dashboards, calculations, tables, LOD expressions, table calcs, filters, actions
+- **Effort estimation** (`_estimate_effort()`): Weighted hours — base 1.0h + 0.15h/visual + 0.2h/calc + 0.5h/LOD + 0.4h/table_calc + 0.3h/datasource + 0.1h/table
+- **Migration wave planning** (`_build_migration_waves()`): Automatic grouping into Easy/Medium/Complex waves based on complexity score
+- **HTML dashboard** (`generate_server_html_report()`): Executive report with pie chart, connector census, wave table, workbook detail grid
+- **21 new tests** in `test_server_assessment.py` across 9 test classes
+- **Overall: 4,219 tests**, 0 failures
+
+### Sprint 49 — Tableau Server Client Enhancement ✅
+- **Pagination** (`server_client.py`): `_paginated_get()` helper auto-handles Tableau REST API pagination metadata (`totalAvailable`, `pageNumber`, `pageSize`)
+- **Existing methods upgraded**: `list_workbooks()`, `list_datasources()`, `list_projects()` now use paginated fetching
+- **9 new endpoints**: `list_users()`, `list_groups()`, `list_views()`, `get_workbook_connections(workbook_id)`, `list_schedules()`, `get_site_info()`, `list_prep_flows()`, `download_prep_flow(flow_id, output_path)`, `get_server_summary()`
+- **`get_server_summary()`**: Aggregates all counts (workbooks, datasources, users, groups, views, projects, prep flows) + site info in a single call
+- **19 new tests** in `test_server_client_v2.py` across 13 test classes
+- **Overall: 4,219 tests**, 0 failures
+
+## v16.0.0 — Code Quality & Maintainability
+
+### Sprint 48 — Documentation, API Docs & Release ✅
+- **Auto-generated API docs** (`docs/generate_api_docs.py`): MODULES list expanded from 15 to 42 modules covering all source files (8 tableau + 26 powerbi + 8 deploy), with deploy section separator in index.html
+- **GAP_ANALYSIS.md updated**: v16.0.0 counts — 4,131 tests, 73 test files, 118 visual map entries, 33 connectors, 43 M transforms, 9-category assessment, Windows/macOS/Linux CI matrix
+- **KNOWN_LIMITATIONS.md updated**: v16.0.0 — OneDrive lock retry now documented, Windows paths limitation resolved
+- **README.md updated**: Badges → v16.0.0, 4,131 tests, 180+ DAX, 33 connectors, 20 object types, 118 visuals; new v16 features section
+- **copilot-instructions.md updated**: Test count, new modules (alerts_generator, visual_diff, comparison_report), 43 M transform generators
+- **Version bump**: 15.0.0 → 16.0.0 in `pyproject.toml` and `powerbi_import/__init__.py`
+- **Overall: 4,131 tests**, 0 failures
+
+### Sprint 47 — Windows CI, Cross-Platform Hardening & Performance ✅
+- **OneDrive lock retry** (`pbip_generator.py`): New `_rmtree_with_retry(path, attempts=3, delay=0.5)` helper with exponential backoff for stale directory cleanup — replaces bare `except (PermissionError, OSError): pass` blocks
+- **Stale TMDL retry** (`tmdl_generator.py`): Stale `.tmdl` file removal now retries 3 times with 0.3s×2^n backoff on PermissionError, with `logger.debug`/`logger.warning` messages
+- **Memory optimization** (`tmdl_generator.py`): After writing table TMDL files, column/measure/partition data is released from table dicts (only names and lightweight `_n_columns`/`_n_measures` counts preserved) — reduces peak memory for large workbooks (50+ tables)
+- **Pre-computed stats** (`tmdl_generator.py`): `generate_tmdl()` now collects BIM symbols and stat counts *before* writing (and memory release), ensuring accurate stats despite post-write cleanup
+- **Performance benchmarks** (`test_performance.py`): 2 new benchmark tests — `TestTmdl100MeasuresPerformance` (5 tables × 100 measures, threshold 10s) and `TestImportPipelinePerformance` (full 16-JSON pipeline, threshold 15s)
+- **18 new tests** in `test_sprint47.py` across 7 test classes: retry logic (success, PermissionError, give-up), stale TMDL cleanup, path handling (os.path.join verification), Unicode filenames (French, Japanese), long paths, memory optimization, CI compatibility (no external deps, UTF-8, cross-platform paths)
+- **Overall: 4,111 → 4,131 tests**, 0 failures
+
+### Sprint 46 — New Features: Data Alerts, Visual Diff & Semantic Validation ✅
+- **Data-driven alerts** (`alerts_generator.py`, new): Extracts alert conditions from Tableau parameters (threshold/alert/target keywords), calculations with IF/threshold patterns, and reference lines with target labels → generates PBI alert rules JSON with operator, threshold, frequency, measure
+- **Visual diff report** (`visual_diff.py`, new): Side-by-side HTML report comparing Tableau visuals to PBI visuals — visual type mapping status (exact/approximate/unmapped), per-field coverage tracking, encoding gap detection (color, size, tooltip, label, detail, path), summary table with coverage percentages
+- **Enhanced semantic validation** (`validator.py`): 3 new validation methods: `detect_circular_relationships()` (DFS cycle detection in relationship graph), `detect_orphan_tables()` (tables with no relationships and no DAX references, excluding Calendar/Date), `detect_unused_parameters()` (parameter tables whose measures are never referenced) — all integrated into `validate_project()`
+- **Migration completeness scoring** (`migration_report.py`): `get_completeness_score()` method with per-category fidelity breakdown (weighted: calculation 30%, visual 25%, datasource 15%, relationship 10%, etc.), overall weighted score 0–100, letter grade (A/B/C/D/F), included in `to_dict()` and `print_summary()`
+- **Connection string audit** (`assessment.py`): New `_check_connection_strings()` assessment category detecting sensitive credentials (passwords, tokens, API keys, bearer auth, basic auth) in datasource connection properties — 6 regex patterns, integrated as 9th category in `run_assessment()`
+- **51 new tests** in `test_sprint46.py` across 12 test classes
+- **Overall: 4,060 → 4,111 tests**, 0 failures
+
+### Sprint 45 — CLI Refactoring & Function Decomposition ✅
+- **`_build_argument_parser()`** decomposed into 9 focused helpers (`_add_source_args`, `_add_output_args`, `_add_batch_args`, `_add_migration_args`, `_add_report_args`, `_add_deploy_args`, `_add_server_args`, `_add_enterprise_args`, `_add_shared_model_args`) + 12-line dispatcher
+- **`main()`** decomposed: single-file pipeline extracted into `_run_single_migration(args)` + 7 helper functions (`_print_single_migration_header`, `_init_telemetry`, `_finalize_telemetry`, `_run_incremental_merge`, `_run_goals_generation`, `_run_post_generation_reports`, `_run_deploy_to_pbi_service`)
+- **`run_batch_migration()`**: batch summary printing extracted into `_print_batch_summary()`
+- **`import_shared_model()`**: model-explorer report creation extracted into `_create_model_explorer_report()`, artifact saving extracted into `_save_shared_model_artifacts()`
+- **`_build_visual_query()`**: shelf field classification extracted into `_classify_shelf_fields()`
+- **31 new regression tests** in `test_cli_refactor.py` covering all extracted helpers
+- **Overall: 4,029 → 4,060 tests**, 0 failures
+
+### Sprint 44 — Silent Error Cleanup Phase 2 ✅
+- Eliminated all 5 `except Exception: pass` blocks across migrate.py and deploy/
+- Narrowed broad `except Exception` catches to specific types
+- Added logging to bare-pass exception handlers
+- Added `logger` to `m_query_builder.py`
+- **33 new error-path tests** validating narrowed exception handling
+- **Overall: 3,996 → 4,029 tests**, 0 failures
+
+## v15.0.0 — Global Assessment & Fabric Bundle Deployment
+
+### Sprint 43 — Fabric Bundle Deployment ✅
+- **Bundle deployer** (`deploy/bundle_deployer.py`): New module for deploying shared semantic model projects as a Fabric bundle — discovers `.SemanticModel` + `.Report` artifacts, deploys model first, then each report with error isolation, rebinds reports to model, optional dataset refresh
+- **`BundleDeploymentResult`**: Rich result object with per-artifact status, timing, JSON export, and console summary
+- **`BundleDeployer`**: Orchestrator class — `discover_artifacts()`, `deploy_bundle()`, `_rebind_report()`, `_trigger_refresh()`, report filtering
+- **`deploy_bundle_from_cli()`**: CLI entry point with auto-save of `deployment_report.json`
+- **CLI flags**: `--deploy-bundle WORKSPACE_ID`, `--bundle-refresh`
+- **Pipeline integration**: Auto-deploys after `--shared-model` migration; standalone mode with `--output-dir`
+- **30 new tests** in `test_bundle_deployer.py` across 8 test classes
+- **Overall: 3,958 → 3,988 tests**, 0 failures
+
+### Sprint 42 — Global Assessment & Table Isolation ✅
+- **Global assessment** (`global_assessment.py`): Cross-workbook merge analysis with pairwise scoring, BFS cluster detection, and interactive HTML report — executive summary, workbook inventory, N×N heatmap matrix, merge cluster cards with CLI commands, isolated workbooks section
+- **CLI flag**: `--global-assess` with `--batch` directory support
+- **Intelligent table isolation**: `_classify_unique_tables()` in `shared_model.py` — classifies unique tables as linked or isolated by checking relationships and key-column overlaps; isolated tables excluded from shared model
+- **SemanticModel .pbip generation**: Model-explorer report pattern so shared models can be opened in PBI Desktop
+- **25 + 8 new tests** in `test_global_assessment.py` and `test_shared_model_v2.py`
+- **Documentation**: README.md updated with `--global-assess` examples and screenshot; `SHARED_SEMANTIC_MODEL_PLAN.md` Section 10 added
+- **Overall: 3,925 → 3,958 tests**, 0 failures
+
+---
+
+## v14.0.0 — Shared Semantic Model v2 (Advanced Merge Features)
+
+### Sprint 41 — Shared Semantic Model Enhancements ✅
+- **Merge config save/load** (`merge_config.py`): Export/import merge decisions to JSON for reproducible migrations — `save_merge_config()`, `load_merge_config()`, `apply_merge_config()`, force-merge override, table/measure/parameter-level decisions
+- **Visual field validation**: `validate_thin_report_fields()` detects orphaned columns, filters, and mark encodings in thin reports before generation — prevents broken visuals referencing missing fields
+- **Column lineage annotations**: `build_column_lineage()` + `generate_lineage_annotations()` track which workbooks contributed each table and column — TMDL-ready annotation strings for provenance tracking
+- **Measure expression risk analyzer**: `analyze_measure_risk()` with `MeasureRiskAssessment` dataclass — parses DAX to classify conflicts as low/medium/high risk based on aggregation type and column references
+- **RLS role consolidation**: `consolidate_rls_roles()` + `merge_rls_roles()` with `RLSConsolidation` dataclass — deduplicates identical roles, merges different filters with OR logic, keeps unique roles
+- **Cross-report navigation**: `build_cross_report_navigation()` auto-generates navigation button configs between thin reports within a shared model
+- **Plugin merge hooks**: 3 new hooks on `PluginBase` — `on_merge_conflict()`, `on_merge_complete()`, `transform_merged_dax()` for extensible conflict resolution
+- **Fabric deployment orchestration**: `deploy_shared_model()` on `FabricDeployer` — deploys SemanticModel first, then each thin report, with per-report error isolation
+- **CLI flags**: `--merge-config FILE`, `--save-merge-config`
+- **Pipeline integration**: All features wired into `import_shared_model()` — risk analysis, RLS consolidation, lineage tracking, field validation, navigation, config save/load
+- **54 new tests** in `test_shared_model_v2.py` across 9 test classes
+- **Overall: 3,871 → 3,925 tests**, 0 failures
+
+---
+
+## v13.0.0 — Shared Semantic Model (Multi-Workbook Merge)
+
+### Sprint 40 — Shared Semantic Model Extension ✅
+- **Shared semantic model**: Merge multiple Tableau workbooks into one shared Power BI semantic model with N thin reports
+- **New modules**: `shared_model.py` (merge engine), `merge_assessment.py` (assessment reporter), `thin_report_generator.py` (thin report generator)
+- **Merge engine**: Fingerprint-based table matching (SHA-256 hash of connection_type|server|database|schema|table), Jaccard similarity for column overlap, 4-dimension merge scoring (0–100)
+- **Conflict resolution**: Measures — identical formula = deduplicate, different formula = namespace as `Measure (Workbook)`; Columns — union with wider type wins; Relationships — deduplicated by (from,to) key; Parameters — same logic as measures
+- **Thin reports**: PBIR `definition.pbir` with `byPath` reference to `../SharedModel.SemanticModel`; each report gets its own pages/visuals from the original workbook
+- **Merge assessment**: JSON + console report with table overlap analysis, measure/column/parameter conflicts, merge score with thresholds (≥60 = merge, 30–59 = partial, <30 = separate)
+- **CLI flags**: `--shared-model WB [WB ...]`, `--model-name NAME`, `--assess-merge`, `--force-merge`
+- **Batch support**: `--batch DIR --shared-model` auto-discovers and merges all .twb/.twbx in a directory
+- **Modified modules**: `pbip_generator.py` (added `_generate_report_definition_content()`), `import_to_powerbi.py` (added `import_shared_model()`), `migrate.py` (CLI wiring + `run_shared_model_migration()`)
+- **81 new tests** in `test_shared_model.py` across 19 test classes
+- **Overall: 3,729 → 3,847 tests**, coverage maintained at **96.2%**
+
+---
+
+## v12.0.0 — Hardening, Coverage Push to 96%+
+
+### Sprint 39 — Coverage Push dax_converter.py ✅
+- **dax_converter.py**: 73.7% → **96.7%** (302 → 38 missed lines)
+- **183 new tests** in `test_dax_converter_coverage_push.py` across 32 test classes
+- Coverage areas: `_reverse_tableau_bracket_escape` body, federated prefix strip, CASE/WHEN→SWITCH parsing, `_extract_balanced_call`, REGEXP_MATCH (12 branches), REGEXP_EXTRACT (5 branches), REGEXP_EXTRACT_NTH (6 branches), REGEXP_REPLACE (6 branches), LOD expressions (FIXED/INCLUDE/EXCLUDE, no-dims, nested, AGG cleanup), window functions with frame bounds, WINDOW_CORR/COVAR/COVARP, RANK_DENSE/MODIFIED/PERCENTILE, RUNNING_COUNT/MAX/MIN, TOTAL, column resolution internals, AGG(IF/SWITCH)→AGGX, STDEV→STDEVX, `generate_combined_field_dax`, `detect_script_functions`, `_detect_script_language`, `has_script_functions`
+- **Overall: 3,546 → 3,729 tests**, coverage 95.9% → **96.2%**
+
+### Sprint 38 — Coverage Push tmdl_generator.py ✅
+- **tmdl_generator.py**: 94.7% → **97.6%** (103 → 47 missed lines)
+- **87 new tests** in `test_tmdl_coverage_push.py` across 25 test classes
+- Coverage areas: `_extract_function_body`, `_dax_to_m_expression` (SWITCH/FLOOR/IN), `resolve_table_for_formula`, `_collect_semantic_context` (Unknown table, Parameters DS, date params, multi-table DS), `_create_and_validate_relationships`, calc classification (security funcs, inline literals, geo, descriptions), `_infer_cross_table_relationships`, type mismatch fixing, sets/groups/bins, date hierarchy skip, parameter tables, field parameters, RLS roles, format conversion, ambiguous path deactivation, quick table calc measures, TMDL file writing, culture translations, multi-language support
+- **Overall: 3,459 → 3,546 tests**, coverage 95.4% → **95.9%**
+
+### Sprint 37 — Silent Error Cleanup ✅
+- **11 bare `pass` statements** in `except` blocks replaced with proper `logger.debug()`/`logger.warning()` across 5 files
+- **1 exception type narrowed**: `except Exception` → `except (OSError, IndexError, ValueError)` in `telemetry.py`
+- Files modified: `incremental.py`, `pbip_generator.py`, `telemetry.py`, `telemetry_dashboard.py`, `validator.py`
+- All 3,459 tests pass after changes — zero regressions
+
+---
+
+## v11.0.0 — Coverage Push to 95% & README Overhaul
+
+### Sprint 36 — README Overhaul & Release ✅
+- **36.1: README badges**: Added CI, coverage (95.4%), tests (3,459), Python, license, and version badges.
+- **36.2: README stats update**: Updated all stats from v9/v10 to v11 (3,459 tests, 62 test files, 95.4% coverage).
+- **36.3: Test table refresh**: Added `test_extract_coverage.py` (75 tests) and `test_pbip_coverage_push.py` (42 tests), "+24 more" rollup row for remaining files.
+- **36.4: Known limitations refresh**: Updated hyper data (now loaded), dynamic zone visibility (now bookmark-based), dynamic parameters (now M-based).
+- **36.5: Version bump**: `pyproject.toml` and `powerbi_import/__init__.py` bumped from 10.0.0 → 11.0.0.
+
+### Sprint 35 — Coverage Push (93.08% → 95.4%) ✅
+- **35.1: test_extract_coverage.py** (75 tests): Coverage-push tests for `extract_tableau_data.py` — stories, actions, sets, groups, bins, hierarchies, sort orders, aliases, custom SQL, user filters, datasource filters, hyper files, published datasources, custom geocoding, data blending. Coverage 85.2% → **95.2%**.
+- **35.2: test_pbip_coverage_push.py** (42 tests): Coverage-push tests for `pbip_generator.py` — OneDrive retry logic, theme references, report-level filters, swap bookmarks, custom visual GUIDs, context filters, action buttons, pages shelf slicers, tooltip pages, custom shapes copy, field entity resolution, padding/border, sort definitions, rich text formatting, reference lines, number formats, dual axis sync, axes label rotation, continuous/discrete axis, DS column inheritance, migration metadata, stale visual cleanup, script visual detection, page navigator. Coverage 90.3% → **96.8%**.
+- **Overall: 3,342 → 3,459 tests** (+117), coverage **93.08% → 95.4%**, 2 new test files, 62 total test files.
+
+---
+
+## v10.0.0 — Test Coverage Push & Quality
+
+### Sprint 34 — Documentation, Version Bump & Release ✅
+- **34.1: DEVELOPMENT_PLAN.md refresh**: Updated version header, test counts (3,342 across 60 files), coverage (93.08%).
+- **34.2: CHANGELOG.md finalized**: Added v10.0.0 entry with Sprint 33-34 details.
+- **34.3: copilot-instructions.md update**: Updated test count and coverage figures.
+- **34.4: Version bump**: `pyproject.toml` and `powerbi_import/__init__.py` bumped from 9.0.0 → 10.0.0.
+- **34.5: Final validation**: Full test suite pass (3,342 tests, 93.08% coverage).
+
+### Sprint 33 — Dedicated Test Files for Uncovered Modules ✅
+- **33.1: test_telemetry.py** (41 tests): Comprehensive tests for `telemetry.py` — `IsTelemetryEnabled` (7), `TelemetryCollectorInit` (6), `StartFinish` (3), `Recording` (5), `Save` (4), `Send` (4), `GetToolVersion` (3), `ReadLog` (4), `Summary` (3), `GetData` (2). Coverage 80.4% → **97.9%**.
+- **33.2: test_comparison_report.py** (20 tests): Tests for `comparison_report.py` — `LoadJson` (3), `LoadExtracted` (2), `LoadPbip` (3), `CompareWorksheets` (3), `CompareCalculations` (2), `CompareDatasources` (3), `GenerateComparisonReport` (3), `Main` (1). Coverage 87.9% → **91.1%**.
+- **33.3: test_telemetry_dashboard.py** (18 tests): Tests for `telemetry_dashboard.py` — `Esc` (5), `LoadReports` (5), `GenerateDashboard` (6), `Main` (2). Module now fully covered.
+- **33.4: test_goals_generator.py** (24 tests): Tests for `goals_generator.py` — `CadenceRefresh` (2), `BuildGoal` (10), `GenerateGoalsJson` (8), `WriteGoalsArtifact` (4). Coverage → **100%**.
+- **33.5: test_wizard.py** (24 tests): Tests for `wizard.py` — `InputHelper` (6), `YesNo` (8), `Choose` (5), `WizardToArgs` (3), `RunWizard` (2).
+- **33.6: test_import_to_powerbi.py** (19 tests): Tests for `import_to_powerbi.py` — `Init` (2), `LoadConvertedObjects` (6), `ImportAll` (5), `GeneratePowerBIProject` (4), `Main` (2). Coverage 79.4% → **100%**.
+- **Overall: 3,196 → 3,342 tests** (+146), coverage **92.76% → 93.08%**, 6 new test files, 60 total test files.
+
+---
+
+## v9.0.0 — Coverage, Hyper Data, Modern Tableau & Polish
+
+### Sprint 32 — Documentation, Polish & Release ✅
+- **32.1: GAP_ANALYSIS.md refresh**: Updated test count (3,196 across 54 files), sprint range (13-32), ASCII art box, closed settings gap (fractional timeouts), added Sprint 30-31 CI/CD closures (plugin system, PBIR schema check, PyPI workflow).
+- **32.2: KNOWN_LIMITATIONS.md refresh**: Updated sprint header, removed int-only timeout limitation (fixed Sprint 31), added Plugin System Limitations and Schema Compatibility sections, added `--check-schema` workaround.
+- **32.3: CHANGELOG.md finalized**: Removed "(in progress)" from v9.0.0 header, added Sprint 32 entry.
+- **32.4: copilot-instructions.md update**: Updated test count (3,196+ across 54 files), added `plugins.py` module, `examples/plugins/` directory, `--check-schema` CLI flag, PyPI publish workflow reference.
+- **32.5: Version bump**: `pyproject.toml` and `powerbi_import/__init__.py` bumped from 8.0.0 → 9.0.0.
+- **32.6: Final validation**: Full test suite pass (3,196 tests, 92.76% coverage).
+
+### Sprint 31 — Plugins, Packaging & Automation ✅
+- **31.1: Plugin examples**: 3 example plugins in `examples/plugins/` — `custom_visual_mapper.py` (visual type overrides), `dax_post_processor.py` (regex-based DAX transforms + IFERROR wrapping), `naming_convention.py` (snake/pascal/camel case enforcement). Each with `Plugin` alias, docstrings, and README.
+- **31.2: PyPI auto-publish workflow**: `.github/workflows/publish.yml` — tag-triggered (`v*.*.*`) GitHub Actions workflow: build wheel → `twine check` → publish via OIDC trusted publisher.
+- **31.3: PBIR schema forward-compat**: `ArtifactValidator.check_pbir_schema_version()` probes Microsoft schema URLs for newer versions (patch +1..+4, minor +1..+2). `--check-schema` CLI flag for on-demand version check.
+- **31.4: Fractional timeouts**: `deployment_timeout` and `retry_delay` changed from `int` to `float` in Pydantic settings — supports sub-second delays.
+- **42 new tests** in `test_sprint31.py` — 3,196 total, 92.76% coverage
+
+### Sprint 30 — Coverage Push: Generation Layer ✅
+- **29.1: Dynamic parameters (2024.3+)**: Database-query-driven parameter extraction (old + new XML format), generate M partition with `Value.NativeQuery()` source and `refreshPolicy` for automatic refresh. Fixed Python 3.14 Element `or` pattern compatibility.
+- **29.2: Tableau Pulse → PBI Goals**: New `pulse_extractor.py` parses `<metric>`, `<pulse-metric>`, and `<metrics/metric>` elements. New `goals_generator.py` generates Fabric Scorecard API JSON. `--goals` CLI flag for optional scorecard generation.
+- **29.3: Multi-language report labels**: `_write_multi_language_cultures()` generates separate `cultures/{locale}.tmdl` files from comma-separated locales. `--languages` CLI flag threaded through full pipeline (`migrate.py` → `import_to_powerbi.py` → `pbip_generator.py` → `tmdl_generator.py`).
+- **29.4: Translated display folders**: `_DISPLAY_FOLDER_TRANSLATIONS` for 9 locales (fr-FR, de-DE, es-ES, pt-BR, ja-JP, zh-CN, ko-KR, it-IT, nl-NL) with 11 display folder names. `translatedDisplayFolder` entries in culture TMDL files. Language-prefix fallback (e.g., fr-CA → fr-FR).
+- **50 new tests** in `test_sprint29.py` — 2,666 total, 88.1% coverage
+
+### Sprint 28 — Hyper Data Loading & SCRIPT_* Visuals ✅
+- **28.1: Hyper file data reader**: New `hyper_reader.py` (513 lines) — reads `.hyper` files via stdlib `sqlite3`, extracts table schema + first N rows, generates `#table()` M expressions with inline data.
+- **28.2: Pipeline wiring**: Hyper reader integrated into `extract_tableau_data.py` and `m_query_builder.py` — populates M queries with actual data instead of empty `#table()`.
+- **28.3: Prep flow Hyper source**: Hyper reader integrated into `prep_flow_parser.py` for `.hyper` file references in Prep flows.
+- **28.4: SCRIPT_* → Python/R visual**: `SCRIPT_BOOL/INT/REAL/STR` detection generates PBI Python/R visual containers (`scriptVisual`) with original code preserved as comments.
+- **28.5: SCRIPT_* assessment**: Assessment flags SCRIPT_* calcs as "requires Python/R runtime setup" (severity downgraded from `fail` to `warn`).
+- **74 new tests** in `test_sprint28.py` — 2,616 total, 88.0% coverage
+
+### Sprint 27 — Coverage Push: Extraction Layer ✅
+- **Overall coverage: 81.9% → 88.3%** (+6.4 percentage points)
+- **267 new tests** (2,275 → 2,542), 0 failures, 15 skipped
+- **5 files brought to 85%+ coverage:**
+  - `config/migration_config.py`: 63.2% → **100%** (28 new tests in `test_migration_config.py`)
+  - `prep_flow_parser.py`: 65.4% → **99.1%** (34 new tests added to `test_prep_flow_parser.py`)
+  - `datasource_extractor.py`: 65.4% → **92.5%** (54 new tests in `test_datasource_extractor.py`)
+  - `server_client.py`: 62.5% → **87.5%** (12 new tests added to `test_server_client.py`)
+  - `extract_tableau_data.py`: 65.7% → **86.2%** (125 new tests in `test_extract_tableau_data.py`)
+- 3 new test files, 2 extended test files
+
+---
+
+## v8.0.0 — Code Quality, Enterprise Readiness
+
+### Sprint 21 — Refactor Large Functions ✅
+- **5 major function splits**: All functions exceeding 200 lines refactored into composable sub-functions
+  - `_build_visual_objects()` (569 lines) → 5 focused helpers: axis, legend, label, formatting, analytics
+  - `create_report_structure()` (513 lines) → 4 helpers: pages, report filters, metadata, bookmarks
+  - `_build_semantic_model()` (444 lines) → 4 helpers: tables, relationships, security, parameters
+  - `parse_prep_flow()` (361 lines) → 3 helpers: DAG traversal, M generation, datasource emission
+  - `create_visual_container()` (342 lines) → 3 helpers: visual config, query, layout
+- Committed as `642d18a`, pushed to main
+
+### Sprint 21b — Consolidated Migration Dashboard ✅
+- **`--consolidate DIR` CLI flag**: Scans directory tree for existing migration reports, generates unified `MIGRATION_DASHBOARD.html`
+- **`run_consolidate_reports()`**: Recursive discovery of `migration_report_*.json` and `migration_metadata.json`, groups by workbook (latest report wins)
+- 9 new tests in `test_cli_wiring.py` (TestConsolidateReports class)
+
+### Sprint 22 — Error Handling & Logging Hardening ✅
+- **33 exception handlers narrowed** across 7 files: `except Exception` → specific types (`json.JSONDecodeError`, `OSError`, `KeyError`, `ValueError`, `ET.ParseError`, `urllib.error.URLError`, etc.)
+- All catch blocks now log warnings with context instead of silently swallowing
+- 16 new error recovery tests in `test_error_paths.py`
+
+### Sprint 23 — DAX Conversion Accuracy Boost ✅
+- **REGEX character class expansion**: `[a-zA-Z]` → `CODE()`-based checks using `||`/`&&` operators
+- **REGEX extract improvements**: suffix capture, prefix+suffix, digit extraction patterns
+- **WINDOW frame precision**: Proper DAX `WINDOW` function generation instead of comment placeholders
+- **FIRST()/LAST()**: Changed from `0` to `RANKX`-based offsets for accurate first/last row detection
+- 35+ new tests in `test_dax_coverage.py`
+
+### Sprint 24 — Enterprise & Scale Features ✅
+- **`--parallel N`**: Thread-based parallel batch migration via `ThreadPoolExecutor`
+- **`--resume`**: Skip already-completed workbooks (checks output dir for existing `.pbip`)
+- **`--manifest FILE`**: JSON manifest with per-workbook config overrides
+- **`--jsonl-log FILE`**: Structured JSON Lines logging (batch_start/end, workbook_start/end, resume_skip)
+- Extracted `_migrate_single_workbook()` helper for cleaner batch orchestration
+- 21 new tests in `test_enterprise_features.py`
+
+### Sprint 25 — Visual Fidelity & Formatting Depth ✅
+- **Grid-based layout**: MIN_VISUAL_WIDTH=60, MIN_VISUAL_HEIGHT=40, MIN_GAP=4, page bounds clamping
+- **Dashboard tab strip → page navigator**: `_create_page_navigator()` for multi-dashboard projects
+- **Sheet-swap containers → bookmarks**: `_create_swap_bookmarks()` for dynamic zone visibility
+- **Motion chart annotation**: Pages shelf detection + dynamic zone visibility checks in assessment
+- **Custom shape migration**: Extracts shape files from `.twbx` → `RegisteredResources/`
+- 20 new tests in `test_visual_fidelity.py`
+
+### Sprint 26 — Test Quality & Coverage ✅
+- **Coverage-driven gap filling**: 123 new tests covering M connectors (28 types), M transforms (33 edge cases), DAX round-trip (18), DAX edge cases (25), assessment (4), type mapping (2), additional connectors (8)
+- **Coverage reached 81.9%** (up from 79.8%), passing the 80% threshold
+- Version bumped to 8.0.0
+
+### Stats
+- **2,275 tests** across 45 test files, 0 failures, 15 skipped
+- **81.9% line coverage** (10,083 statements, 1,830 missing)
+- 209 new tests added across sprints 21b-26
+
+---
+
+## v7.0.0 — CLI UX, DAX & M Hardening, Visual Refinements
+
+### Sprint 17 — CLI Wiring & UX
+- **`--compare` flag**: Wired `comparison_report.generate_comparison_report()` into CLI — generates side-by-side HTML comparison of Tableau vs Power BI structures
+- **`--dashboard` flag**: Wired `telemetry_dashboard.generate_dashboard()` into CLI — generates interactive HTML telemetry dashboard
+- **`MigrationProgress` wiring**: Progress tracking with dynamic step counting integrated across extraction → prep flow → generation → report steps
+- **Batch summary table**: Formatted console table with Workbook, Status, Fidelity, Tables, Visuals columns plus aggregate stats (avg/min/max fidelity)
+- 14 new tests in `test_cli_wiring.py`
+
+### Sprint 18 — DAX & M Hardening
+- **Custom SQL parameter binding**: `_gen_m_custom_sql()` now generates `Value.NativeQuery()` with parameter record `[Param1="val1", ...]` and `[EnableFolding=true]` when `params` dict is present
+- **RANK_MODIFIED**: Changed to `RANKX({table}, {expr},, ASC, SKIP)` — uses SKIP parameter for correct modified competition ranking
+- **SIZE()**: Simplified to `COUNTROWS(ALLSELECTED())` — direct partition-aware row count without redundant `CALCULATE()` wrapper
+- **Query folding hints**: New `m_transform_buffer()` function; `m_transform_join()` gained `buffer_right` parameter to wrap right table in `Table.Buffer()` for query folding boundaries
+- 10 new tests (3 in `test_m_query_builder.py`, 2 in `test_dax_coverage.py` updated, 5 buffer/folding tests)
+
+### Sprint 19 — Visual & Layout Refinements
+- **Violin plot**: Mapped to `boxAndWhisker` + custom visual GUID `ViolinPlot1.0.0` — entries in `VISUAL_TYPE_MAP`, `CUSTOM_VISUAL_GUIDS`, `APPROXIMATION_MAP`
+- **Parallel coordinates**: Mapped to `lineChart` + custom visual GUID `ParallelCoordinates1.0.0`
+- **Calendar heat map**: Auto-enables conditional formatting properties (`backColorConditionalFormatting`, `fontColorConditionalFormatting`) on matrix visuals + migration note
+- **Packed bubble size**: `mark_encoding.size.field` auto-injected as 3rd measure into scatter chart Size data role
+- **Butterfly chart**: Improved approximation note — suggests negating one measure to simulate symmetry
+- 14 new tests in `test_generation_coverage.py`
+
+### Sprint 20 — Documentation & Release
+- Updated `GAP_ANALYSIS.md`: 10 gaps closed (violin, parallel coords, butterfly, calendar heat map, packed bubble, RANK_MODIFIED, SIZE, custom SQL params, query folding, comparison report)
+- Updated `KNOWN_LIMITATIONS.md`: v7.0.0 closures reflected
+- Updated `DEVELOPMENT_PLAN.md`: v7.0.0 sprint details
+- Updated `CHANGELOG.md` and `.github/copilot-instructions.md`
+
+### Stats
+- **38 new tests** (14 CLI + 10 DAX/M + 14 visual)
+- 8 source files modified, 1 new test file created
+- All phases non-breaking (additive changes only)
+
+---
+
+## v6.1.0 — Gap Closure & Batch Validation
+
+### Prep Flow Parser
+- **ZIP auto-detection**: `.tfl` files that are actually ZIP archives (PK header) are now auto-detected via `zipfile.is_zipfile()`. The `flow` entry (Prep 2020.3+ format) is also supported alongside `*.tfl` entries inside ZIP archives.
+- 3 new tests in `test_prep_flow_parser.py` (61 total, up from 58)
+
+### M Query Error Handling
+- **`try...otherwise` wired**: `wrap_source_with_try_otherwise()` now called in `tmdl_generator.generate_table_bim()` after `inject_m_steps` — wraps Source step with `try...otherwise` error handling using column names
+
+### Report-Level Filter Promotion
+- **Global + datasource filter promotion**: `_create_visual_filters()` now generates report-level `filterConfig` from `converted_objects['filters']` and `converted_objects['datasource_filters']` in `report.json`
+
+### Custom Visual GUID Wiring
+- **`resolve_custom_visual_type()` integrated**: `_create_visual_worksheet()` now checks `original_mark_class` against `CUSTOM_VISUAL_GUIDS` registry (9 entries: sankey, chord, network, wordcloud, ganttbar, histogram, boxplot, radial, bullet)
+- **`customVisualsRepository`** added to `report.json` when custom visuals are used
+- Original Tableau mark class now extracted as `original_mark_class` field on worksheets
+
+### Batch Validation
+- 14/14 real-world workbooks pass at **100% fidelity**
+- **1,983 tests passing**, 15 skipped
+
+---
+
+## v6.0.0 — Sprints 13-16: Conversion Depth, PBI Service Deploy, Tableau Server, Polish
+
+### Sprint 13 — Conversion Depth (Phase N)
+
+- **N.1: Custom Visual Mapping** — Updated `VISUAL_TYPE_MAP` to use AppSource custom visual class names (`sankeyDiagram`, `chordChart`, `networkNavigator`, `ganttChart`) instead of fallback standard types. Added `get_custom_visual_guid_for_approx()` function.
+- **N.2: Stepped Color Scales** — Enhanced stepped color threshold handling with sorted thresholds, `LessThanOrEqual`/`GreaterThan` operators, and `conditionalFormatting` array in PBIR output.
+- **N.3: Dynamic Reference Lines** — Integrated `_build_dynamic_reference_line()` for average, median, percentile, min, max computation types alongside constant reference lines.
+- **N.4: Multi-DS Formula Routing** — Added `resolve_table_for_formula()` in `tmdl_generator.py` for formula-based table routing by column reference density.
+- **N.5: sortByColumn Validation** — Implemented cross-validation in `validator.py` — collects sort targets and validates they exist as defined columns.
+- **N.6: Nested LOD Cleanup** — Added `AGG(CALCULATE(...))` redundancy cleanup in `dax_converter.py` for LOD-inside-aggregation patterns.
+
+### Sprint 14 — Power BI Service Deployment (Phase O)
+
+- **O.1: `deploy/pbi_client.py`** (NEW) — `PBIServiceClient` with Azure AD auth (Service Principal / Managed Identity / env token), REST API for import, refresh, list, delete operations.
+- **O.2: `deploy/pbix_packager.py`** (NEW) — `PBIXPackager`: packages `.pbip` project directories into `.pbix` ZIP files with OPC content types.
+- **O.3: `deploy/pbi_deployer.py`** (NEW) — `PBIWorkspaceDeployer`: orchestrates package → upload → poll → refresh → validate end-to-end deployment.
+- **O.4: `--deploy` CLI flag** — Added `--deploy WORKSPACE_ID` and `--deploy-refresh` arguments to `migrate.py`.
+- **O.5: Post-deploy validation** — `validate_deployment()` checks dataset existence and refresh history after import.
+- **Updated `deploy/__init__.py`** — Exports `PBIServiceClient`, `PBIXPackager`, `PBIWorkspaceDeployer`, `DeploymentResult`.
+
+### Sprint 15 — Tableau Server Extraction (Phase P)
+
+- **P.1: `tableau_export/server_client.py`** (NEW) — `TableauServerClient` with PAT or username/password auth, REST API for workbooks, datasources, projects. Includes batch download, regex search, context manager.
+- **P.2: CLI flags** — Added `--server`, `--site`, `--workbook`, `--token-name`, `--token-secret`, `--server-batch` arguments to `migrate.py`.
+- **P.3: Server download flow** — Integrated server download before extraction: single workbook by name/ID or batch by project.
+
+### Sprint 16 — Polish & Release
+
+- **Version consistency** — Aligned `pyproject.toml` and `powerbi_import/__init__.py` to `6.0.0`.
+- **Updated CHANGELOG, copilot-instructions, docs**.
+
+### Stats
+- **1,889 tests passing** (53 Sprint 13 + 33 Sprint 14 + 26 Sprint 15 new tests)
+- 3 new source files, 3 new test files
+- All phases non-breaking (additive changes only)
+
+---
+
+## v5.5.0 — Phases I-M: Multi-DS Routing, Windows CI, Inference, DAX Coverage, Metadata
+
+### Phase I — Multi-Datasource Calculation Routing
+
+- **`datasource_extractor.py`**: Tagged each extracted calculation with `datasource_name` so calcs carry their source datasource identity.
+- **`tmdl_generator.py`**: Built `ds_main_table` map (datasource → its largest table). Replaced global boolean gate with datasource-aware routing: each datasource's main table receives only its own calculations, while untagged (legacy) calcs fall back to the global main table.
+
+### Phase J — Windows CI + Batch Validation
+
+- **`ci.yml`**: Added `--batch` mode test step to CI validate job (copies `.twb` samples to temp dir, runs batch migration).
+- **`ci.yml`**: Added Windows PowerShell validate step (`pwsh` shell) that loops over `.twb` samples and runs `migrate.py` with `--output-dir` on Windows runners.
+
+### Phase K — Relationship Inference Improvement
+
+- **`tmdl_generator.py`**: Added proactive key-column matching pass in `_infer_cross_table_relationships()`:
+  - Scans all unconnected table pairs for columns with matching names ending in key-like suffixes (`id`, `key`, `code`, `number`, `pk`, `fk`, etc.).
+  - Scoring: exact match=100, both key-suffix=80, substring=50, common prefix ≥3 chars=25. Threshold: score ≥ 50.
+  - Creates `inferred_key_` prefixed relationships (manyToOne).
+
+### Phase L — DAX Conversion Coverage Hardening
+
+- **`tests/test_phase_l_dax_coverage.py`** (NEW): 55 tests across 10 classes covering edge cases:
+  - Table calc compounds (INDEX/SIZE/FIRST/LAST in IF)
+  - Table calc edge cases (RANK_MODIFIED, RANK_PERCENTILE, RUNNING_SUM with compute_using, TOTAL COUNTD, LOOKUP offset 0)
+  - Window statistical functions (WINDOW_STDEVP, WINDOW_VARP, WINDOW_CORR, WINDOW_COVAR, WINDOW_COVARP)
+  - Date converter edge cases (DATEDIFF second/quarter, DATENAME hour, DATEPARSE US)
+  - String converter edge cases (STR expr, FLOAT nested, ENDSWITH/STARTSWITH, FIND 3-arg)
+  - LOD combos (ratio, EXCLUDE, INCLUDE MEDIAN, date literal)
+  - Operators & case insensitivity (lowercase functions, mixed case, all operators, deep nested IF)
+  - Spatial placeholders (BUFFER, AREA, INTERSECTION)
+  - Regexp smart patterns (REGEXP_MATCH, REGEXP_EXTRACT_NTH, REGEXP_REPLACE char class)
+  - Multiple functions in formula (SUM+COUNTD, AGG(IF)→AGGX, percent-of-total)
+
+### Phase M — Migration Metadata Enrichment
+
+- **`pbip_generator.py`**: Enriched `migration_metadata.json` with:
+  - `tmdl_stats.measures` — count of measures in generated TMDL files
+  - `tmdl_stats.columns` — count of columns in generated TMDL files
+  - `tmdl_stats.relationships` — count of relationships from `relationships.tmdl`
+  - `visual_type_mappings` — dict mapping worksheet name → Tableau mark type
+  - `approximations` — list of visuals using approximated type mappings with migration notes
+  - `generated_output.theme_detail` — applied/skipped status with reason
+
+### Stats
+- **1,777 tests passing** (55 new in Phase L)
+- All phases non-breaking (additive changes only)
+
+---
+
+## v5.4.0 — Phases D-H: Visual Fidelity, Coverage, CI/CD, Config & Docs
+
+### Phase D — Visual Fidelity
+
+#### New Config Templates (`visual_generator.py`)
+- Added PBIR config templates for 4 visual types that previously fell back to empty configs:
+  - `hundredPercentStackedAreaChart` (categoryAxis + valueAxis + legend)
+  - `sunburst` (group + legend)
+  - `decompositionTree` (tree)
+  - `shapeMap` (legend + dataPoint)
+
+#### Approximation Migration Notes (`visual_generator.py`)
+- **New**: `APPROXIMATION_MAP` dict (12 entries) mapping Tableau types to `(pbi_type, migration_note)` tuples
+- **New**: `get_approximation_note()` function returns human-readable migration notes for approximated visuals
+- Approximation-mapped visuals now have `annotations: [{"name": "MigrationNote", "value": "..."}]` in their PBIR JSON
+- Covers: mekko, sankey, chord, network, ganttbar, bumpchart, slopechart, timeline, butterfly, waffle, pareto, dualaxis
+
+#### Fallback Partition Fix (`tmdl_generator.py`)
+- Changed fallback M partition from `Source = null` (invalid M) to `Source = #table(type table [], {})` (valid empty table)
+
+### Phase E — Test Coverage
+
+#### New Test Suite (`tests/test_phase_d_e_coverage.py`)
+- 46 new tests across 15 test classes covering previously untested functions:
+  - `TestVisualConfigTemplates` (6): all 4 new templates + all-have-templates + existing unchanged
+  - `TestApproximationMap` (6): known entries, tuples, note lookup, exact match, None, case insensitive
+  - `TestMigrationNoteOnVisuals` (3): annotation presence/absence for approximated vs standard visuals
+  - `TestFallbackPartition` (2): valid #table expression, TODO comment
+  - `TestDeactivateAmbiguousPaths` (6): no rels, no cycle, cycle deactivates one, Calendar priority
+  - `TestDetectManyToMany` (4): full→M2M, left/inner→M2O, default join type
+  - `TestReplaceRelatedWithLookupvalue` (4): M2M replacement, non-M2M keep, multiple calls, empty
+  - `TestFixRelatedForManyToMany` (2): replaces in measures, no M2M no change
+  - `TestInferCrossTableRelationships` (2): infers from cross-ref, no inference when exists
+  - `TestCreateReportFilters` (4): parameter-based filters, edge cases
+  - `TestCreateVisualTextbox` (1), `TestCreateVisualImage` (1), `TestCreatePaginatedReport` (1)
+  - `TestVisualTypeNonRegression` (4): bar, line, None, unknown
+
+### Phase F — CI/CD Hardening
+
+#### Lint & Type Checking (`.github/workflows/ci.yml`)
+- **Removed `--exit-zero`** from ruff — lint violations now fail the build
+- **Added pyright** type checking step after ruff (warnings-only initially)
+
+#### Python Version Matrix
+- **Dropped Python 3.8** (EOL October 2024)
+- Matrix now covers Python 3.9, 3.10, 3.11, 3.12, 3.13, 3.14
+
+#### Performance Check Fix
+- Fixed function name: `convert_tableau_to_dax` → `convert_tableau_formula_to_dax` (correct public API)
+
+### Phase G — Config & UX
+
+#### Quiet Mode (`migrate.py`)
+- **New**: `--quiet` / `-q` CLI flag suppresses all output except errors
+- Useful for scripted/CI usage where only failures should be visible
+
+#### Config Example File
+- **New**: `config.example.json` — annotated template documenting the `--config` JSON schema
+- Documents all keys: `tableau_file`, `prep_flow`, `output_dir`, `model_mode`, `culture`, `calendar_start`, `calendar_end`, `output_format`, `rollback`, `verbose`, `log_file`
+
+### Phase H — Documentation
+
+#### GAP_ANALYSIS.md Updates
+- Updated version header to v5.4.0
+- Updated test count: 1,725+ tests across 33 test files
+- Marked WINDOW_CORR/COVAR/COVARP as ✅ IMPLEMENTED (v5.3.0 VAR/SUMX patterns)
+- Marked config file support, output format selection, dry-run mode as ✅ IMPLEMENTED
+- Updated CLI arguments list with `--quiet`, `--config`, `--dry-run`
+
+#### KNOWN_LIMITATIONS.md Updates
+- Updated version to v5.4.0
+- Added REGEXP_EXTRACT_NTH approximation entry (v5.3.0)
+
+#### Copilot Instructions Updates
+- Updated test count from 887 to 1,725 across 33 test files
+
+### Test Summary
+- **1,722 tests** (1,722 passed, 3 skipped, 0 failures)
+
+## v5.3.0 — Phase C: DAX & M Conversion Hardening
+
+### DAX Conversion Improvements
+
+#### WINDOW_CORR/COVAR/COVARP — Proper VAR/SUMX Pattern (`dax_converter.py`)
+- **Previous**: Naive prefix swap to `CALCULATE(CORREL(` / `CALCULATE(COVARIANCE.S(` / `CALCULATE(COVARIANCE.P(` — **these are not real DAX functions** and would fail in PBI Desktop
+- **New**: Dedicated converter inside `_convert_window_functions()` producing full `VAR _MeanX / _MeanY / SUMX / DIVIDE` iterator pattern wrapped in `CALCULATE(..., ALL/ALLEXCEPT)` for windowing context
+- Reuses `_build_corr_covar_dax()` (Pearson correlation / sample covariance / population covariance)
+- Supports `compute_using` dimensions for ALLEXCEPT partitioning
+
+#### CORR/COVAR/COVARP — Table Name Parameter (`dax_converter.py`)
+- **Previous**: Hardcoded `ALL('Table')` in all VAR/SUMX patterns
+- **New**: `_build_corr_covar_dax()` accepts `table_name` parameter, properly escaping apostrophes
+- `_convert_corr_covar()` now passes `table_name` through the conversion pipeline
+
+#### REGEXP_EXTRACT_NTH — Dedicated Converter (`dax_converter.py`)
+- **Previous**: Broken prefix swap `/* REGEXP_EXTRACT_NTH: ... */ MID(` — wrong semantics, no argument parsing
+- **New**: `_convert_regexp_extract_nth()` using `_transform_func_call` with balanced-paren extraction:
+  - Delimiter-based patterns `([^-]*)` → `PATHITEM(SUBSTITUTE(field, "-", "|"), index)`
+  - Fixed-prefix capture `prefix(.*)` → `MID(field, SEARCH("prefix", field) + len, LEN(field))`
+  - Alternation capture `(cat|dog|fish)` → IF chain with CONTAINSSTRING
+  - Complex patterns → `BLANK()` with migration comment
+  - 2-arg form defaults to index 1
+
+#### Nested LOD — Parenthesis Depth Tracking (`dax_converter.py`)
+- **Previous**: Colon-split in LOD parsing tracked brace depth only — colons inside function calls like `FORMAT(date, "HH:mm")` could be mis-split
+- **New**: Added `paren_depth` tracking alongside `colon_depth` in `_find_lod_braces()` colon-split loop
+
+### M Query Error Handling (`m_query_builder.py`)
+- **New functions** for robust M queries:
+  - `m_transform_remove_errors(columns)` — `Table.RemoveRowsWithErrors`
+  - `m_transform_replace_errors(columns, replacement)` — `Table.ReplaceErrorValues`
+  - `m_transform_try_otherwise(step_name, expr, fallback)` — `try ... otherwise` wrapper
+  - `wrap_source_with_try_otherwise(m_query, columns)` — wraps Source step with fallback to empty table
+
+### New Test Suite (`tests/test_phase_c_dax_m_hardening.py`)
+- 47 new tests across 8 test classes:
+  - `TestWindowCorrelationCovariance` (7 tests): VAR pattern output, compute_using, case-insensitivity, fallback, no infinite loop
+  - `TestCorrCovarTableName` (4 tests): table_name parameter, apostrophe escaping
+  - `TestRegexpExtractNth` (8 tests): delimiter, prefix, alternation, fallback, 2-arg, 1-arg
+  - `TestNestedLODEdgeCases` (6 tests): paren depth, nested FIXED/INCLUDE, no-dim, EXCLUDE
+  - `TestMQueryErrorHandling` (10 tests): remove/replace errors, try/otherwise, inject steps, wrap source
+  - `TestWindowFunctionsNonRegression` (5 tests): WINDOW_SUM/AVG/MAX/MIN/COUNT
+  - `TestRegexpNonRegression` (6 tests): REGEXP_MATCH/EXTRACT/REPLACE
+  - `TestSplitNonRegression` (2 tests): SPLIT 2-arg and 3-arg
+
+### Test Summary
+- **1,676 tests** (1,676 passed, 3 skipped, 0 failures)
+
+## v5.2.0 — PBI Desktop Validation & Bug Fixes
+
+### Critical Bug Fixes (PBI Desktop Load Failures)
+
+#### Empty Measure Expressions (Bug #1)
+- **Root cause**: `categorical-bin` group calculations have no formula in Tableau XML → empty string propagated through classification → became measures with `expression: ""` → TMDL output `measure 'X' = ` with no body → **PBI Desktop refuses to load the entire model**
+- **Fix (3 layers)**:
+  - `datasource_extractor.py`: Skip `categorical-bin` calculations and empty formulas during extraction
+  - `tmdl_generator.py`: Guard in calc loop — `if not formula: continue`
+  - `tmdl_generator.py`: Defensive fallback in `_write_measure` — `measure.get('expression') or '0'`
+
+#### Tableau Ephemeral Field References (Bug #2)
+- **Root cause**: Tableau derivation names like `[yr:Order Date:ok]`, `[tyr:Date:qk]` leaked into DAX/M expressions — group extraction only cleaned `none:` prefix, not `yr:`, `mn:`, `tyr:`, etc.
+- **Fix (3 layers)**:
+  - `extract_tableau_data.py`: Promoted `_clean_field_ref()` to module-level function, applied during all group extraction (combined fields + value groups)
+  - `extract_tableau_data.py`: Extended `_RE_DERIVATION_PREFIX` regex with truncated date prefixes (`tyr`, `tqr`, `tmn`, `tdy`, `twk`)
+  - `tmdl_generator.py`: Added secondary defense `_clean_tableau_field_ref()` in `_process_sets_groups_bins` to catch any leaks
+
+### Validator Enhancements (`powerbi_import/validator.py`)
+- **Empty expression detection**: Catches `measure 'X' = ` and `expression =` with no body
+- **Tableau derivation reference detection**: Flags `[yr:Field:ok]` patterns in DAX and M expressions
+- **Inline measure DAX validation**: Now validates single-line `measure 'X' = <dax>` patterns (previously only checked `expression =` lines)
+- **lineageTag uniqueness check**: Detects duplicate lineageTags within a TMDL file
+- **Multi-line expression derivation check**: Scans ``` delimited blocks for Tableau field references
+
+### New Test Suite (`tests/test_pbi_desktop_validation.py`)
+- 34 new tests covering:
+  - Empty measure prevention (extraction filter, TMDL guard, `_write_measure` fallback)
+  - Ephemeral field reference cleaning (12 prefix variants)
+  - Validator empty expression detection
+  - Validator derivation reference detection
+  - Validator lineageTag uniqueness
+  - Validator inline measure DAX validation
+  - E2E migration output integrity (no empty measures, no derivation refs, no empty expressions)
+
+### Test Summary
+- **1,629 tests** (1,629 passed, 3 skipped, 0 failures)
+- All 22 sample workbooks migrate successfully (8 tableau_samples + 14 real_world)
+- All projects pass enhanced validation
+
+## v5.1.0 — Sprints 9-12: DAX Accuracy, Generation Quality & Assessment
+
+### Sprint 9 — DAX Conversion Accuracy
+
+#### Improved DAX Conversions (`tableau_export/dax_converter.py`)
+- **SPLIT()**: Now generates `PATHITEM(SUBSTITUTE(s, delim, "|"), token)` instead of `BLANK()` placeholder
+- **INDEX()**: Improved to `RANKX(ALLSELECTED(), [Value], , ASC, DENSE)` with partition context
+- **SIZE()**: Improved to `CALCULATE(COUNTROWS(), ALLSELECTED())` with partition context
+- **WINDOW_CORR**: Now generates `CALCULATE(CORREL(` instead of `0` placeholder
+- **WINDOW_COVAR**: Now generates `CALCULATE(COVARIANCE.S(` instead of `0` placeholder
+- **WINDOW_COVARP**: Now generates `CALCULATE(COVARIANCE.P(` instead of `0` placeholder
+- **DATEPARSE()**: Now preserves format string — `FORMAT(DATEVALUE(expr), "fmt")` instead of discarding format
+- **ATAN2()**: Proper quadrant-aware implementation using `VAR`/`IF`/`PI()` (5 quadrant cases)
+- **REGEXP_EXTRACT_NTH**: Changed from `CONTAINSSTRING(` to `MID(` with improved approximation comment
+
+### Sprint 10 — Generation Quality
+
+#### Prep Flow Fixes (`tableau_export/prep_flow_parser.py`)
+- **VAR/VARP aggregation**: Fixed from incorrect `sum` mapping to correct `var`/`varp`
+- **notInner join**: Fixed from incorrect `full` mapping to correct `leftanti`
+
+#### Visual Generator (`powerbi_import/visual_generator.py`)
+- **`create_filters_config()`**: Added `table_name` parameter — uses actual table name instead of hardcoded `"Table1"`
+
+#### M Query Builder (`tableau_export/m_query_builder.py`)
+- **Fallback queries**: Now use `try...otherwise` error handling pattern with empty-table fallback
+- **Connector type**: Included in TODO comment for better debugging
+
+#### Observability (`powerbi_import/pbip_generator.py`)
+- Added `logging` module import and logger instance
+- Replaced 4 silent `pass` exception handlers with `logger.debug()` calls (font size, label fontSize, axis rotation, map washout)
+
+### Sprint 11 — Assessment & Intelligence
+
+#### Assessment Enhancements (`powerbi_import/assessment.py`)
+- **Tableau 2024.3+ feature detection**: Dynamic Zone Visibility, Dynamic Parameters (DB query), Combined/Synchronized Axes, RAWSQL functions
+- **Partial functions cleanup**: Removed INDEX, WINDOW_CORR, WINDOW_COVAR, WINDOW_COVARP from partial functions list (now fully converted)
+
+### Sprint 12 — Tests & Documentation
+
+#### Test Suite
+- Added **52 new tests** in `tests/test_v51_features.py` covering all Sprint 9-11 features
+- Updated `test_split_returns_blank` → `test_split_returns_pathitem` in `test_dax_coverage.py`
+- **Total: 1,595 tests** (1,595 passed, 3 skipped)
+
+#### Developer Workflow
+- Added **2-agent role model** to `.github/copilot-instructions.md` (Planner/Reviewer + Developer/Tester)
+- Documented learned rules: function naming, regex safety, API signatures
+
+---
+
+## v5.0.0 — Sprints 5-8: Docs, Conversion Accuracy, Enterprise & Observability
+
+### Sprint 5 — Documentation Refresh & Migration Fidelity
+
+#### Documentation Overhaul
+- **`docs/KNOWN_LIMITATIONS.md`**: Rewritten with current limitation categories, severity levels, and workarounds
+- **`docs/GAP_ANALYSIS.md`**: Refreshed gap analysis with v5.0 coverage metrics and remaining items
+- **`CHANGELOG.md`**: Comprehensive v5.0.0 section documenting all 20 features across 4 sprints
+
+#### Gateway Configuration (`powerbi_import/gateway_config.py`) — NEW MODULE
+- **`GatewayConfigGenerator`**: Generates `ConnectionConfig/` directory with gateway connection metadata
+- **`OAUTH_CONNECTORS`**: 9 cloud connectors (BigQuery, Snowflake, Salesforce, Google Sheets/Analytics, Azure SQL/Synapse, SharePoint, Databricks) with OAuth config
+- **`GATEWAY_CONNECTORS`**: 11 on-prem connectors (SQL Server, PostgreSQL, MySQL, Oracle, SAP HANA/BW, Teradata, DB2, Informix, ODBC, OLEDB) requiring gateway
+- **Methods**: `generate_gateway_config(datasources)`, `write_config(project_dir, config)`, `generate_and_write(project_dir, datasources)`
+
+#### Incremental Refresh Policy (`powerbi_import/tmdl_generator.py`)
+- **`_write_incremental_refresh_policy()`**: Detects date columns and generates TMDL `refreshPolicy` with `rollingWindowPeriod` and `incrementalWindow` for large datasets
+
+#### Paginated Report Support (`powerbi_import/pbip_generator.py`)
+- **Paginated report layout mode**: Worksheets flagged for paginated output generate `.rdl`-compatible page structure with fixed page dimensions
+
+### Sprint 6 — Conversion Accuracy
+
+#### Window Function Frame Boundaries (`tableau_export/dax_converter.py`)
+- **`_convert_window_functions()`**: WINDOW_SUM, WINDOW_AVG, WINDOW_MAX, WINDOW_MIN, WINDOW_COUNT with explicit frame boundaries (start, end offsets) converted to `CALCULATE()` with `ALL()` context
+- **Bug fix**: Fixed infinite loop where replacement comment text `WINDOW_AVG(...)` re-matched the search regex; comment tag now uses `WINDOW.AVG` format
+
+#### REGEXP_REPLACE Depth Conversion (`tableau_export/dax_converter.py`)
+- **`_convert_regexp_replace()`**: Enhanced to handle nested REGEXP_REPLACE calls with depth tracking and balanced-parenthesis parsing
+
+#### Sparkline Config (`powerbi_import/visual_generator.py`)
+- **`_build_sparkline_config()`**: Generates PBIR sparkline visual configuration for inline trend visualization in table/matrix cells
+
+#### Custom Visual GUIDs (`powerbi_import/visual_generator.py`)
+- **`CUSTOM_VISUAL_GUIDS`**: 9 custom visual entries (Word Cloud, Sankey, Chiclet Slicer, Bullet Chart, Tornado, Histogram, Sunburst, Radar, Infographic)
+- **`resolve_custom_visual_type(tableau_mark, use_custom_visuals=True)`**: Returns `(visual_type, guid_info)` tuple; falls back to built-in mappings when `use_custom_visuals=False`
+
+#### Hyper Sample Row Extraction (`tableau_export/extract_tableau_data.py`)
+- **`_extract_hyper_sample_rows()`**: Reads `.hyper` file binary data and extracts sample row values for data preview without requiring Tableau Hyper API
+
+### Sprint 7 — Enterprise Packaging
+
+#### Modern Python Packaging (`pyproject.toml`) — NEW FILE
+- **PEP 621 compliant**: `[project]` metadata (name, version=5.0.0, description, license, classifiers)
+- **Console script entry point**: `tableau-to-pbi = migrate:main`
+- **Optional dependencies**: `[deploy]` group for `azure-identity` and `requests`
+
+#### GitHub Pages Documentation (`.github/workflows/gh-pages.yml`, `.github/scripts/build_docs.py`) — NEW FILES
+- **Static site generator**: Converts all `docs/*.md` files to styled HTML with navigation sidebar
+- **Automated deployment**: GitHub Actions workflow builds and deploys docs to `gh-pages` branch on push to main
+
+#### Comparison Report (`powerbi_import/comparison_report.py`) — NEW MODULE
+- **`generate_comparison_report()`**: Generates side-by-side HTML comparison of Tableau extraction vs Power BI generation
+- **Visual diff**: Highlights mapping decisions, missing/added elements, and conversion notes
+
+#### Batch Config File (`migrate.py`)
+- **`--batch-config FILE`**: YAML/JSON configuration file for batch migrations with per-workbook overrides
+- **`_run_batch_config()`**: Reads config and orchestrates multiple migrations with shared settings
+
+#### Fabric Integration Tests (`tests/test_fabric_integration.py`) — NEW FILE
+- **27 tests**: Mocked integration tests for FabricClient, FabricDeployer, DeploymentReport, ArtifactCache, FabricConfig, GatewayConfig, ComparisonReport
+- **No Azure credentials required**: All API calls stubbed with `unittest.mock`
+
+### Sprint 8 — UX & Observability
+
+#### Interactive CLI Wizard (`powerbi_import/wizard.py`) — NEW MODULE
+- **7-step wizard**: Source file selection → output directory → model mode → culture → calendar range → assessment → confirmation
+- **`--wizard` CLI flag**: Launches interactive mode in `migrate.py`
+
+#### Progress Tracking (`powerbi_import/progress.py`) — NEW MODULE
+- **`MigrationProgress`**: Real-time progress reporting with step counts, elapsed time, and status messages
+- **`NullProgress`**: No-op implementation for non-interactive/batch mode
+
+#### Telemetry Dashboard (`powerbi_import/telemetry_dashboard.py`) — NEW MODULE
+- **`generate_telemetry_dashboard()`**: Generates interactive HTML dashboard from migration report JSON files
+- **Metrics visualization**: conversion rates, error categories, performance trends, per-workbook fidelity scores
+
+#### Coverage Enforcement (`.coveragerc`, `.github/workflows/ci.yml`)
+- **`fail_under = 80`**: CI fails if code coverage drops below 80%
+- **HTML coverage reports**: Generated and available as CI artifacts
+
+#### Performance Regression CI (`.github/workflows/ci.yml`)
+- **Performance gate**: CI runs benchmark tests and fails on significant regression
+- **Fabric integration test stage**: Separate CI stage for deploy pipeline tests
+
+### Bug Fixes
+- **Infinite loop in `_convert_window_functions`**: Replacement comment `/* WINDOW_AVG(expr, ...) */` contained the pattern `WINDOW_AVG(` which re-matched the search regex, causing an infinite loop. Fixed by using `WINDOW.AVG` format in comments
+- **Duplicate `resolve_visual_type` function**: New v5.0 tuple-returning function at line 261 shadowed the existing single-string-returning function at line 594. Renamed to `resolve_custom_visual_type()`
+
+### Testing
+- **v5 feature tests** (`tests/test_v5_features.py`): 72 tests covering all Sprint 5-8 features — window frame boundaries, REGEXP_REPLACE depth, sparkline config, custom visual GUIDs, Hyper sample rows, gateway config, comparison report, pyproject.toml, progress tracker, telemetry dashboard, wizard helpers, batch config, coverage config, build docs script, incremental refresh, paginated report
+- **Fabric integration tests** (`tests/test_fabric_integration.py`): 27 mocked integration tests for deploy pipeline
+- **Test count**: 1444 → **1543** (99 new tests, all passing)
+
+---
+
+## v4.1.0 — Backlog: All 10 Deferred Items Implemented
+
+### Multi-Datasource Context (`powerbi_import/tmdl_generator.py`)
+- **`ds_column_table_map`**: Per-datasource column→table mapping built during semantic model generation (Phase 2c)
+- **`datasource_table_map`**: Table→datasource reverse mapping for scoped resolution
+- **`resolve_table_for_column()`**: New utility function with datasource-scoped lookup + global `column_table_map` fallback
+
+### Hyper Metadata Depth (`tableau_export/extract_tableau_data.py`)
+- **Enhanced `extract_hyper_metadata()`**: Reads `.hyper` file headers — format detection (HyPe/SQLite signatures), CREATE TABLE pattern scanning in first 64KB, column type extraction via `_hyper_type_map`
+
+### Incremental Migration (`powerbi_import/incremental.py`) — NEW MODULE
+- **`DiffEntry`**: Tracks file-level changes (ADDED / REMOVED / MODIFIED / UNCHANGED) with detail messages
+- **`IncrementalMerger.diff_projects()`**: Compares two .pbip project trees, returns list of `DiffEntry` objects
+- **`IncrementalMerger.merge()`**: Three-way merge preserving user-editable JSON keys (displayName, title, description, background, etc.); user-owned directories (staticResources/) preserved
+- **`IncrementalMerger.generate_diff_report()`**: Human-readable diff report for PR comments
+- **`--incremental DIR`**: New CLI flag in `migrate.py`; writes `.migration_merge_report.json`
+
+### PBIR Schema Validation (`powerbi_import/validator.py`)
+- **`validate_pbir_structure()`**: Lightweight structural schema checker for report/page/visual JSON — checks required/optional keys, validates `$schema` URLs
+- **PBIR schema definitions**: `PBIR_REPORT_REQUIRED_KEYS`, `PBIR_PAGE_REQUIRED_KEYS`, `PBIR_VISUAL_REQUIRED_KEYS` + optional key sets
+- **Integrated into `validate_project()`**: PBIR validation now runs automatically on report.json, page.json, and visual.json files
+
+### Property-Based Testing (`tests/test_property_based.py`) — NEW TEST FILE
+- **Built-in formula fuzzer**: `_random_formula()` / `_random_expr()` generates Tableau-like formulas using 45 function names, 14 operators, 8 column references
+- **10 built-in fuzz tests** (200 iterations each): returns string, no exception, balanced parens, no empty result, edge cases (empty, deeply nested, special chars, very long, unicode)
+- **3 hypothesis tests** (conditional on `hypothesis` install): never crashes, returns nonempty, arbitrary text
+
+### Mutation Testing Config (`setup.cfg`, `tests/test_mutation.py`) — NEW FILES
+- **`setup.cfg`**: `[mutmut]` section targeting `dax_converter.py`, `m_query_builder.py`, `tmdl_generator.py`, `validator.py`
+- **12 smoke tests**: Validate critical assertions exist (SUM≠AVG, COUNTD→DISTINCTCOUNT, IF structure, operator mapping, paren checking)
+
+### Cross-Platform Test Matrix (`.github/workflows/ci.yml`)
+- **Expanded matrix**: 3 OS (ubuntu-latest, windows-latest, macos-latest) × 7 Python versions (3.8, 3.9, 3.10, 3.11, 3.12, 3.13, 3.14)
+- **`fail-fast: false`**: All combinations run even if one fails
+- **`allow-prereleases: true`** for Python 3.14; `exclude` macos + 3.8 (unavailable)
+
+### API Documentation (`docs/generate_api_docs.py`) — NEW FILE
+- **Auto-doc generator**: Supports `pdoc` (preferred) and builtin `pydoc` fallback
+- **15 modules documented**: All tableau_export/ and powerbi_import/ public modules
+- **Styled HTML output**: `index.html` linking all module documentation pages
+
+### PR Preview/Diff Report (`.github/workflows/pr-diff.yml`) — NEW WORKFLOW
+- **Triggered on PRs**: Checks out base and PR branches, migrates sample workbooks with each
+- **Diff generation**: Uses `IncrementalMerger.diff_projects()` to compare outputs
+- **PR commenting**: Creates or updates a migration diff comment on the PR
+
+### Telemetry/Metrics (`powerbi_import/telemetry.py`) — NEW MODULE
+- **`TelemetryCollector`**: Records duration, object counts, error counts, Python version, platform, tool version
+- **Opt-in only**: Disabled by default; enabled via `--telemetry` flag or `TTPBI_TELEMETRY=1` env var
+- **JSONL local log**: `~/.ttpbi_telemetry.json`; optional HTTP endpoint for centralized collection
+- **No PII**: Only anonymous usage statistics collected
+
+### Testing
+- **Backlog integration tests** (`tests/test_backlog.py`): 36 tests covering all backlog features — multi-datasource context, incremental migration, PBIR validation, telemetry, API docs, mutation config
+- **Property-based tests** (`tests/test_property_based.py`): 13 tests with built-in fuzzer + conditional hypothesis
+- **Mutation smoke tests** (`tests/test_mutation.py`): 12 tests validating critical assertions
+- **Test count**: 1387 → **1444** (57 new tests, all passing)
+
+---
+
+## v4.0.0 — Sprints 2-4: Advanced Features, Quality & Infrastructure
+
+### DAX Converter Enhancements (`tableau_export/dax_converter.py`)
+- **REGEXP_MATCH / REGEXP_EXTRACT**: New converters approximate regex patterns using DAX string functions (LEFT, RIGHT, CONTAINSSTRING, MID+SEARCH)
+- **Nested LOD parser**: Balanced-brace `_find_lod_braces()` parser replaces fragile regex, correctly handles `{FIXED … {FIXED …}}` nesting
+- **String concatenation `+`**: Tableau `+` between string fields converted to `&` at all expression depths (Phase 5d)
+
+### Visual Generator Enhancements (`powerbi_import/visual_generator.py`)
+- **Small Multiples**: `_build_small_multiples_config()` generates PBIR small multiples for bar, line, area, scatter, column charts; auto-detects suitable fields
+- **Proportional layout**: `_calculate_proportional_layout()` scales Tableau dashboard zone positions to PBI page coordinates with overlap detection; grid fallback for missing positions
+- **Dynamic reference lines**: `_build_dynamic_reference_line()` generates average, median, percentile, min, max, and trend lines via PBIR analytics pane config
+- **Data bars**: `_build_data_bar_config()` generates conditional formatting data bars for table/matrix visuals with positive/negative colors
+
+### PBIP Generator Enhancements (`powerbi_import/pbip_generator.py`)
+- **Rich text textboxes**: `_parse_rich_text_runs()` converts Tableau formatted text (bold, italic, color, font_size, URL) to PBI paragraph textStyle format; handles `#AARRGGBB` → `#RRGGBB` conversion, newline paragraph splitting, hyperlinks
+- **Output format control**: `--output-format` flag (pbip/tmdl/pbir) controls which artifacts are generated — tmdl-only skips report, pbir-only skips semantic model
+
+### TMDL Generator Enhancements (`powerbi_import/tmdl_generator.py`)
+- **Composite model mode**: `model_mode='composite'` enables DirectQuery + Import hybrid; heuristic assigns >10-column tables to directQuery, ≤10 to import
+- **Parameterized sources**: `_write_expressions_tmdl()` detects server/database from M queries and generates `ServerName`/`DatabaseName` M parameters for environment portability
+
+### M Query Builder Enhancements (`tableau_export/m_query_builder.py`)
+- **Microsoft Fabric Lakehouse connector**: `_gen_m_fabric_lakehouse()` — `Lakehouse.Contents(null, workspace_id, lakehouse_id)`
+- **Microsoft Dataverse connector**: `_gen_m_dataverse()` — `CommonDataService.Database(org_url)`
+- **Connection templating**: `apply_connection_template()` replaces `${ENV.*}` placeholders in M queries; `templatize_m_query()` reverse-generates templates from hardcoded values
+
+### CLI & Pipeline (`migrate.py`)
+- **`--mode`**: Select model mode (import / directquery / composite)
+- **`--output-format`**: Select output artifacts (pbip / tmdl / pbir)
+- **`--rollback`**: Auto-backup previous output before regeneration (timestamped `shutil.copytree`)
+- **`--config`**: Load migration settings from JSON config file with CLI override precedence
+
+### Configuration & Plugin Architecture
+- **`powerbi_import/config/migration_config.py`**: `MigrationConfig` class with JSON file support, section accessors (source, output, model, connections, plugins), `from_file()`, `from_args()`, `save()`
+- **`powerbi_import/plugins.py`**: `PluginBase` with 7 hook methods (pre/post extraction/generation, transform_dax, transform_m_query, custom_visual_mapping); `PluginManager` with register/load/call/apply
+
+### Testing
+- **Sprint feature tests** (`tests/test_sprint_features.py`): 78 tests covering REGEXP, nested LOD, string+, Small Multiples, proportional layout, dynamic ref lines, data bars, rich text, composite model, new connectors, templating, config, plugins, CLI args
+- **Performance benchmarks** (`tests/test_performance.py`): 9 tests with thresholds for DAX conversion, M query generation, TMDL generation, visual container batch creation
+- **Snapshot tests** (`tests/test_snapshot.py`): Golden file tests for M queries (5 connectors), DAX formulas (5 patterns), TMDL files (2 artifacts)
+- **Integration tests** (`tests/test_integration.py`): End-to-end pipeline tests — full generation, semantic model structure, report structure, output format branching, culture passthrough, mode passthrough, validation, migration report, batch mode
+- **Test count**: 1278 → **1387** (109 new tests, all passing)
+
+### CI/CD
+- **Updated CI pipeline** (`.github/workflows/ci.yml`): Switched from `unittest discover` to `pytest`; added performance, snapshot, and integration test stages
+
+---
+
+## v3.6.0 — Sprint 1: Testing & Infrastructure Hardening
+
+### Testing Framework
+
+- **Test factories** (`tests/factories.py`): Builder-pattern factories for Datasource, Worksheet, Dashboard, Calculation, Parameter, and full Model fixtures. Quick builders: `make_simple_model()`, `make_multi_table_model()`, `make_complex_model()`
+- **DAX coverage tests** (`tests/test_dax_coverage.py`): 150+ tests covering under-tested DAX converter paths — string, date, math, stats, LOD, table calc, RUNNING/TOTAL, special functions, R/Python script mappings, `_split_args`, `_extract_function_body`, `_dax_to_m_expression`
+- **Generation coverage tests** (`tests/test_generation_coverage.py`): 40+ tests for visual type resolution, data roles, config templates, `build_query_state`, validator DAX formula checks, migration report classification/scoring, TMDL generation integration, visual container creation
+- **Error path tests** (`tests/test_error_paths.py`): Negative and edge-case tests for malformed/empty/None inputs, validator error handling, Tableau function leak detection, factory edge cases
+- **Test count**: 887 → **1278** (391 new tests, all passing)
+
+### Infrastructure & DevOps
+
+- **Coverage config** (`.coveragerc`): Targets `tableau_export/` and `powerbi_import/`; 80% minimum threshold; HTML report to `htmlcov/`
+- **Version bump script** (`scripts/version_bump.py`): Automated `major`/`minor`/`patch` versioning with `--dry-run`; updates `migrate.py`, `CHANGELOG.md`, and `pyproject.toml`
+- **Structured exit codes** (`migrate.py`): `ExitCode` IntEnum — SUCCESS(0), FILE_NOT_FOUND(2), EXTRACTION_FAILED(3), GENERATION_FAILED(4), VALIDATION_FAILED(5), ASSESSMENT_FAILED(6), BATCH_PARTIAL_FAIL(7), KEYBOARD_INTERRUPT(130)
+- **Error logging**: `logger.error()` with `exc_info=True` on extraction and generation failures
+
+## v3.5.0 — March 2026
+
+### Full Gap Implementation Sprint — DAX, Extraction, Generation, Docs, CI/CD (Phase 13)
+
+Comprehensive implementation of all items identified in the gap analysis (sessions 8-9).
+
+#### DAX Converter Fixes (`tableau_export/dax_converter.py`)
+- **CORR / COVAR / COVARP**: Statistical functions now fully converted (not just passed through)
+- **LOD balanced braces**: `{FIXED ...}` expressions with nested braces now parsed correctly
+- **ATTR → SELECTEDVALUE**: `ATTR([col])` converted to `SELECTEDVALUE('Table'[col])` instead of leaving as-is
+- **DATEPARSE → FORMAT**: `DATEPARSE(fmt, expr)` now mapped to `FORMAT(expr, fmt)`
+- **MAKEDATE / MAKEDATETIME / MAKETIME**: Proper DAX equivalents (`DATE()`, `DATE()+TIME()`, `TIME()`)
+
+#### Extraction Enhancements (`tableau_export/extract_tableau_data.py`)
+- **Datasource filters**: Extract-level filters baked into connections now extracted and emitted as report-level filters
+- **Reference bands**: Reference band detection from worksheet XML (in addition to existing reference lines)
+- **Number format patterns**: Tableau custom number formats extracted and converted to PBI `formatString`
+
+#### Generation Enhancements
+- **Semantic TMDL validation** (`powerbi_import/validator.py`): DAX syntax checks (balanced parentheses/quotes, known functions) on measures and calculated columns
+- **Slicer type variety** (`powerbi_import/pbip_generator.py`): Dropdown, list, between (range), and relative date slicer modes based on filter control type
+- **Drill-through pages** (`powerbi_import/pbip_generator.py`): Worksheets with drill-through filters generate `pageType: "Drillthrough"` pages with target filter fields
+- **Calendar customization**: `--calendar-start YEAR` and `--calendar-end YEAR` CLI flags for date table range
+- **Culture/locale config**: `--culture LOCALE` CLI flag generates locale-specific `cultures/{locale}.tmdl`
+
+#### Configuration & Infrastructure
+- **Settings validation** (`powerbi_import/config/settings.py`): `validate()` method checks required fields, UUID format, URL format
+- **`.env.example`**: Template for all environment variables with descriptions
+- **`--dry-run`**: Preview migration stats without writing files
+- **5-stage CI/CD pipeline**: lint+ruff → test → strict validate+twbx → staging deploy → production deploy
+
+#### Documentation (6 new files)
+- **`docs/ARCHITECTURE.md`**: Pipeline overview with ASCII + Mermaid diagrams, module tables, TMDL phases
+- **`docs/KNOWN_LIMITATIONS.md`**: Categorized list of current limitations with workarounds
+- **`docs/MIGRATION_CHECKLIST.md`**: Step-by-step pre/during/post migration checklist
+- **`docs/DEPLOYMENT_GUIDE.md`**: Fabric deployment setup (Service Principal, env config, CI/CD)
+- **`docs/TABLEAU_VERSION_COMPATIBILITY.md`**: Version-specific feature support matrix
+- **`CONTRIBUTING.md`**: Development setup, coding standards, PR workflow
+
+#### Tests
+- **`tests/test_feature_gaps.py`**: 44 tests for feature gap coverage (LOD, parameters, RLS, etc.)
+- **`tests/test_gap_implementations.py`**: 50 tests for all gap implementations (DAX fixes, validation, config)
+- **Total: 717 tests, 0 failures, 2 skipped** (up from 500 in v3.4.0)
+
+---
+
+## v3.4.0 — February 2026
+
+### QlikToPowerBI Feature Parity — Infrastructure & Visual Generator (Phase 12)
+
+Ported remaining infrastructure and visual generator features from QlikToPowerBI to reach full feature parity.
+
+#### CLI Enhancements (`migrate.py`)
+- **`--output-dir DIR`**: Specify custom output directory for generated .pbip projects
+- **`--verbose` / `-v`**: Enable verbose console logging (DEBUG level)
+- **`--log-file FILE`**: Write logs to a file
+- **`--batch DIR`**: Batch-migrate all .twb/.twbx files in a directory
+- **`--skip-conversion`**: Skip extraction and run generation only (re-use existing JSONs)
+- **Structured logging**: `setup_logging()` function with configurable log levels and handlers
+
+#### Visual Generator Enhancements (`powerbi_import/visual_generator.py`)
+- **60+ visual type mappings**: Comprehensive `VISUAL_TYPE_MAP` covering all Tableau mark types
+- **VISUAL_DATA_ROLES**: Per-visual-type data role definitions (dimension/measure role names)
+- **PBIR-native config templates**: 30+ visual types with proper PBIR expression objects (not plain booleans)
+- **`build_query_state()`**: Role-based query projections using data roles, aggregation functions, and measure lookup
+- **Slicer sync groups**: `syncGroup` property on slicer containers for cross-page slicer synchronization
+- **Cross-filtering disable**: `filterConfig.disabled` for visuals that should not participate in cross-filtering
+- **Action button navigation**: PageNavigation and WebUrl action types for button visuals
+- **TopN visual filters**: Visual-level TopN and categorical filter construction
+- **Sort state migration**: `sortDefinition` with ascending/descending direction in query state
+- **Reference lines**: Tableau reference lines → constant line objects on value axis
+- **Conditional formatting**: Color-by-measure and color-by-dimension modes → dataPoint objects
+
+#### Artifact Validation (`powerbi_import/validator.py`)
+- **`ArtifactValidator`** class with static validation methods
+- **`validate_project()`**: Full .pbip project validation — checks .pbip file, Report dir (report.json, definition.pbir, page/visual JSONs), SemanticModel dir (model.tmdl, table TMDLs)
+- **`validate_directory()`**: Batch-validate all projects in a directory
+- **`validate_tmdl_file()`**: TMDL structure validation (model.tmdl starts with "model Model")
+
+#### Fabric Deployment Layer (new modules)
+- **`powerbi_import/auth.py`**: Azure AD authentication — Service Principal (ClientSecretCredential) and Managed Identity (DefaultAzureCredential) via optional `azure-identity`
+- **`powerbi_import/client.py`**: Fabric REST API client — auto-detects `requests` library with retry strategy (429/5xx backoff), falls back to `urllib` (stdlib)
+- **`powerbi_import/deployer.py`**: Deployment orchestrator — deploy datasets, reports, and batch directories; overwrite support; item search
+- **`powerbi_import/utils.py`**: `DeploymentReport` (pass/fail tracking, JSON export) and `ArtifactCache` (metadata cache for incremental deployment)
+- **`powerbi_import/config/settings.py`**: Centralized config via env vars (FABRIC_WORKSPACE_ID, FABRIC_TENANT_ID, etc.) with optional pydantic-settings support
+- **`powerbi_import/config/environments.py`**: Per-environment configs (development/staging/production) with log levels, timeouts, retries, approval gates
+
+#### CI/CD Pipeline
+- **`.github/workflows/ci.yml`**: 4-stage GitHub Actions pipeline (lint → test → validate → deploy)
+- Multi-Python matrix testing (3.9–3.12)
+- Sample migration validation with artifact checker
+- Production deployment to Fabric workspace via secrets
+
+#### Tests
+- **`tests/test_visual_generator.py`**: 67 tests covering visual type mapping, data roles, config templates, container creation, slicer sync, cross-filtering, action buttons, TopN filters, sort state, reference lines, query state builder
+- **`tests/test_infrastructure.py`**: 34 tests covering validator, utils, config, auth, client, deployer, CLI extensions
+- **Total: 500 tests, 0 failures, 2 skipped**
+
+---
+
+## v3.3.0 — February 2026
+
+### Feature Parity with QlikToPowerBI (Phase 11)
+
+Ported missing features from the QlikToPowerBI v3.0.0 project to reach feature parity.
+
+#### Semantic Model Enhancements
+- **sortByColumn on Calendar**: MonthName sorted by Month, DayName sorted by DayOfWeek — prevents alphabetical month ordering in visuals
+- **sortByColumn and isKey** property support in `_write_column()` for all column types (physical and calculated)
+- **Perspectives**: auto-generated "Full Model" perspective referencing all tables (`perspectives.tmdl`, `ref perspective` in model.tmdl)
+- **Cultures/translations**: culture TMDL file with linguistic metadata for non-en-US locales (`cultures/{locale}.tmdl`, `ref culture` in model.tmdl)
+- **diagramLayout.json**: empty diagram layout file — Power BI Desktop auto-fills on first open
+
+#### Report Enhancements
+- **Custom theme generation**: extracts dashboard background/text colors from Tableau and generates a PBI theme JSON (`RegisteredResources/TableauMigrationTheme.json`) with dataColors, textClasses (callout/title/header/label), and visualStyles
+- **Conditional formatting**: quantitative color encoding on marks → PBI dataPoint gradient (min/max color rules)
+- **Reference lines**: Tableau reference lines → PBI constant lines on valueAxis (dashed style, labeled)
+- **Tooltip pages**: worksheets with `viz_in_tooltip` flag → PBI Tooltip pages (480×320, `pageType: Tooltip`)
+
+#### Migration Report
+- **MigrationStats class** (`migrate.py`): tracks 30+ metrics across extraction, generation, and warnings
+- **Enhanced extraction summary**: counts for all 14 object types (worksheets, dashboards, datasources, calculations, parameters, filters, stories, actions, sets, groups, bins, hierarchies, sort_orders, aliases)
+- **Enhanced generation summary**: tables, relationships, measures, pages, visuals, theme applied, RLS roles
+- **Improved migration metadata**: `migration_metadata.json` now includes full object counts and generated output stats
+
+## v3.2.0 — February 2026
+
+### Tableau Prep Flow Parser (.tfl/.tflx) — Phase 10
+
+- **Tableau Prep flow parser** (`tableau_export/prep_flow_parser.py`, ~900 lines):
+  - Reads `.tfl` (JSON) and `.tflx` (ZIP→JSON) Tableau Prep flow files
+  - DAG traversal via topological sort (Kahn's algorithm) for correct step ordering
+  - Converts all step types to Power Query M expressions using existing transform generators
+- **Supported Prep step types**:
+  - **Input**: LoadCsv, LoadExcel, LoadSql, LoadJson, LoadHyper (16 connector types mapped)
+  - **Clean (SuperTransform)**: RenameColumn (batched), RemoveColumn, DuplicateColumn, ChangeColumnType, FilterOperation, FilterValues, FilterRange, ReplaceValues, ReplaceNulls, SplitColumn, MergeColumns, AddColumn, CleanOperation (trim/upper/lower/proper), FillValues, GroupReplace, ConditionalColumn
+  - **Aggregate**: GROUP BY with SUM/AVG/COUNT/COUNTD/MIN/MAX/MEDIAN/STDEV
+  - **Join**: inner/left/right/full/leftOnly/rightOnly with auto-expand of right-table fields
+  - **Union**: multi-input table combine
+  - **Pivot**: columnsToRows (unpivot), rowsToColumns (pivot)
+  - **Output**: PublishExtract, SaveToFile, SaveToDatabase
+- **Prep expression converter**: Tableau Prep calc syntax → Power Query M (IF/THEN/ELSE, AND/OR/NOT, string functions, NULL handling, operators)
+- **`--prep` CLI flag** on `migrate.py`: `python migrate.py workbook.twb --prep flow.tfl`
+  - Step 1b merges Prep flow M queries into TWB datasources before generation
+  - Matching by table name: Prep outputs replace TWB source queries with transformation-enriched M
+  - Unmatched Prep outputs added as standalone tables in the semantic model
+- **`inject_m_steps` improved**: now handles repeated calls correctly (strips previous Result terminators)
+- **Sample flow**: `examples/tableau_samples/Sales_Prep_Flow.tfl` — Input→Clean→Join→Aggregate→Output pipeline
+
+### Bug Fix
+- Fixed `!=` operator not converting to `<>` in DAX expressions (Enterprise_Sales)
+
+## v3.1.0 — February 2026
+
+### Tableau Prep Transformations → Power Query M (Phase 9)
+
+- **165 Tableau Prep operation mappings**: complete reference doc (`docs/TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md`)
+  - 18 categories: Input Steps, Clean-Columns, Clean-Values, Filter, Calculated Fields, Aggregate, Pivot, Join, Union, Reshape, String/Date/Numeric/Logic/Conversion Functions, Script, Output, TWB Embedded
+  - 4 complete M query patterns (Clean & Filter, Join & Aggregate, Pivot, Wildcard Union)
+- **40+ Power Query M transformation generators** in `m_query_builder.py`:
+  - Column ops: rename, remove, select, duplicate, reorder, split, merge
+  - Value ops: replace, replace nulls, trim, clean, upper/lower/proper, fill down/up
+  - Filter ops: filter values, exclude, range, nulls, contains, distinct, top N
+  - Aggregate: group by with sum/avg/count/countd/min/max/median/stdev
+  - Pivot: unpivot, unpivot other columns, pivot
+  - Join: inner/left/right/full/leftanti/rightanti with auto-expand
+  - Union: append tables, wildcard union (folder source)
+  - Reshape: sort, transpose, add index, skip/remove rows, promote/demote headers
+  - Calculated: add custom column, conditional column
+- **Chainable step injection**: `inject_m_steps()` inserts transform steps into any M query with `{prev}` placeholder pattern
+- **TWB-embedded transforms auto-detected**: column renames from Tableau captions are now injected as `Table.RenameColumns` M steps in generated queries (visible in Enterprise_Sales output)
+
+## v3.0.0 — February 2026
+
+### Visual & Relationship Expansion (Phase 8)
+
+- **60+ Tableau visual type mappings**: expanded mark→visual mapping from 14 to 60+ types
+  - Covers all Tableau mark types: bar, line, area, pie, donut, scatter, treemap, map, filled map, gauge, KPI, box plot, waterfall, funnel, word cloud, combo charts, matrix, decomposition tree, and more
+  - Visual config templates expanded from 7 to 30+ in `visual_generator.py`
+  - Query state building expanded to handle gauge, KPI, card, pie/donut/funnel, combo, waterfall, box plot role assignments
+- **Relationship extraction fix**: `datasource_extractor.py` now handles bare `[Column]` references in join clauses
+  - Tableau nested joins often use `[column]` without table prefix on the left side
+  - New logic infers table from child `<relation>` elements (including nested joins)
+  - Manufacturing_IoT now correctly extracts 3 relationships (was only 1 Calendar auto-generated)
+- **8 sample workbooks**: all migrate successfully (Superstore_Sales, HR_Analytics, Financial_Report, BigQuery_Analytics, Manufacturing_IoT, Enterprise_Sales, Marketing_Campaign, Security_Test)
+
+### Reference Documentation (Phase 7)
+
+- **172 DAX function mappings**: complete Tableau→DAX conversion reference (`docs/TABLEAU_TO_DAX_REFERENCE.md`)
+- **108 Power Query property mappings**: Tableau connection→M query reference (`docs/TABLEAU_TO_POWERQUERY_REFERENCE.md`)
+- **26 connector types** in `m_query_builder.py`: Excel, CSV, SQL Server, PostgreSQL, BigQuery, Oracle, MySQL, Snowflake, GeoJSON, Teradata, SAP HANA, SAP BW, Redshift, Databricks, Spark, Azure SQL/Synapse, Google Sheets, SharePoint, JSON, XML, PDF, Salesforce, Web, and more
+
+## v2.0.0 — February 2026
+
+### Complete pipeline overhaul
+
+- **PBIR v4.0 format**: `.pbip` projects compliant with Power BI Desktop December 2025 format
+  - Schemas: `report/3.1.0`, `page/2.0.0`, `visualContainer/2.5.0`
+  - SemanticModel in TMDL format (Tabular Model Definition Language)
+- **TMDL model**: `database.tmdl`, `model.tmdl`, `relationships.tmdl`, `tables/*.tmdl`
+- **Enhanced extractor** (`enhanced_datasource_extractor.py`):
+  - Per-table connections (Excel, CSV, GeoJSON, SQL Server, PostgreSQL)
+  - Table deduplication (eliminates duplicates and false union tables)
+  - Empty datasource filtering
+- **Contextual DAX conversion**:
+  - Resolution of `[Calculation_xxx]` to readable captions
+  - Resolution of `[Parameters].[Parameter X]` to parameter names
+  - `ISNULL` → `ISBLANK`, `CONTAINS` → `CONTAINSSTRING`, `ASCII` → `UNICODE`
+  - `IF/THEN/ELSEIF/ELSE/END` → nested `IF()`
+  - `==` → `=`, `or`/`and` → `||`/`&&`, `+` strings → `&`
+- **Calculated columns**: calculations with `role=dimension` become calculated columns (row-level)
+  - Automatic `RELATED()` for columns from related tables
+  - Parameter values inlined in calculated columns
+- **Column names preserved**: double spaces, special characters (`§`, `€`, `)`) kept intact
+- **`MAKEPOINT()`**: ignored (no DAX equivalent, lat/lon used directly)
+
+### Cleanup
+
+- Removed obsolete migration reports/logs/test results
+- Removed resolved historical documentation
+- Documentation reorganization
+- `requirements.txt`: no more external dependencies
+
+## v1.0.0 — February 2026
+
+### Initial version
+
+- Extraction of Tableau objects (worksheets, dashboards, datasources, calculations, parameters, filters, stories)
+- Per-object-type converters (`conversion/`)
+- Basic `.pbip` project generation
+- Main script `migrate.py` with 4 steps
+- Documentation and examples

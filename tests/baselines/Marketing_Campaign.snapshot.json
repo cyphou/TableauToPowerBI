@@ -1,0 +1,107 @@
+{
+  "filters": 0,
+  "measures": {
+    "[Calc_AvgDealByChannel]": {
+      "formula_hash": "3bffe4bb9add18d4"
+    },
+    "[Calc_BudgetBand]": {
+      "formula_hash": "4499f055cdc8d32e"
+    },
+    "[Calc_CPL]": {
+      "formula_hash": "3c2dd65458f5d084"
+    },
+    "[Calc_CampaignCode]": {
+      "formula_hash": "7ce08866b34f32ee"
+    },
+    "[Calc_CampaignDays]": {
+      "formula_hash": "4668e0134234e3e5"
+    },
+    "[Calc_CampaignYear]": {
+      "formula_hash": "56fc903a298f62eb"
+    },
+    "[Calc_CleanPhone]": {
+      "formula_hash": "8591adbfdda99955"
+    },
+    "[Calc_CleanURL]": {
+      "formula_hash": "89e0ef25d5e395bc"
+    },
+    "[Calc_ConvRate]": {
+      "formula_hash": "1f20d85cb7b58512"
+    },
+    "[Calc_Correlation]": {
+      "formula_hash": "26e57b85095b4775"
+    },
+    "[Calc_Covariance]": {
+      "formula_hash": "3f15d44c4ebecfa1"
+    },
+    "[Calc_CumLeads]": {
+      "formula_hash": "1bf3964682ed809b"
+    },
+    "[Calc_EmailDomain]": {
+      "formula_hash": "badc2b21accd3732"
+    },
+    "[Calc_FirstName]": {
+      "formula_hash": "880f2f91593d8078"
+    },
+    "[Calc_HasValidUTM]": {
+      "formula_hash": "8a4a9c79e3620b24"
+    },
+    "[Calc_IsEnterprise]": {
+      "formula_hash": "627ffc03fd52ac86"
+    },
+    "[Calc_LastName]": {
+      "formula_hash": "36b80f179610c4d0"
+    },
+    "[Calc_MonthName]": {
+      "formula_hash": "af7fad48f7331026"
+    },
+    "[Calc_NameLen]": {
+      "formula_hash": "762dd246d27c06df"
+    },
+    "[Calc_NonBlankLeads]": {
+      "formula_hash": "4db4476a13042960"
+    },
+    "[Calc_PhoneLast4]": {
+      "formula_hash": "d2802d53efb0fbae"
+    },
+    "[Calc_ROI]": {
+      "formula_hash": "20105288f89cd6d0"
+    },
+    "[Calc_StartMonth]": {
+      "formula_hash": "5f82a7116d7a07c9"
+    },
+    "[Calc_WinBestROI]": {
+      "formula_hash": "9897c492974721c9"
+    },
+    "[Calc_WinWorstROI]": {
+      "formula_hash": "244c581cec393bb7"
+    }
+  },
+  "pages": {
+    "Budget Analysis": {
+      "field_count": 4
+    },
+    "Campaign Performance": {
+      "field_count": 4
+    },
+    "Conversion Trend": {
+      "field_count": 2
+    },
+    "Lead Details": {
+      "field_count": 2
+    },
+    "Lead Funnel": {
+      "field_count": 3
+    }
+  },
+  "relationships": 1,
+  "tables": {
+    "Campaigns": {
+      "column_count": 14
+    },
+    "Leads": {
+      "column_count": 12
+    }
+  },
+  "version": "1.0"
+}

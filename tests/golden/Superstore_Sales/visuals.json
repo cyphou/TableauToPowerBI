@@ -1,0 +1,44 @@
+{
+ "visual_count": 3,
+ "visuals": [
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 280,
+   "page": "Sales Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredBarChart",
+   "width": 600,
+   "x": 0,
+   "y": 240,
+   "z": 0
+  },
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 280,
+   "page": "Sales Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredBarChart",
+   "width": 600,
+   "x": 600,
+   "y": 240,
+   "z": 1000
+  },
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 200,
+   "page": "Sales Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "lineChart",
+   "width": 1200,
+   "x": 0,
+   "y": 520,
+   "z": 2000
+  }
+ ]
+}

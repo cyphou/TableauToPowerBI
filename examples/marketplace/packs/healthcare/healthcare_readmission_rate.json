@@ -1,0 +1,18 @@
+{
+  "metadata": {
+    "name": "healthcare_readmission_rate",
+    "version": "1.0.0",
+    "author": "Migration Marketplace",
+    "description": "30-day readmission rate KPI for healthcare encounters.",
+    "tags": ["healthcare", "kpi", "industry-pack"],
+    "category": "dax_recipe",
+    "dependencies": ["healthcare_core_model>=1.0.0"],
+    "created": "2026-04-01"
+  },
+  "payload": {
+    "inject": {
+      "name": "Readmission Rate 30d",
+      "dax": "DIVIDE(CALCULATE(DISTINCTCOUNT('Encounters'[EncounterID]), 'Encounters'[IsReadmission30d] = TRUE()), DISTINCTCOUNT('Encounters'[EncounterID]))"
+    }
+  }
+}

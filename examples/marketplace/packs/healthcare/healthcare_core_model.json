@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "name": "healthcare_core_model",
+    "version": "1.0.0",
+    "author": "Migration Marketplace",
+    "description": "Healthcare base semantic model template: Encounters, Patients, Providers, Facilities.",
+    "tags": ["healthcare", "model", "industry-pack"],
+    "category": "model_template",
+    "created": "2026-04-01"
+  },
+  "payload": {
+    "tables": ["Encounters", "Patients", "Providers", "Facilities"],
+    "fact": "Encounters",
+    "date_table": "Calendar"
+  }
+}

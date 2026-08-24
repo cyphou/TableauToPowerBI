@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260" width="1200" height="260">
+  <defs>
+    <linearGradient id="c-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0A0E27"/>
+      <stop offset="100%" stop-color="#141E40"/>
+    </linearGradient>
+    <linearGradient id="c-card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.07)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0.015)"/>
+    </linearGradient>
+    <linearGradient id="c-border" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.14)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0.03)"/>
+    </linearGradient>
+    <linearGradient id="c-arrow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E97627"/>
+      <stop offset="100%" stop-color="#F2C811"/>
+    </linearGradient>
+    <filter id="c-glow"><feGaussianBlur in="SourceGraphic" stdDeviation="4"/></filter>
+    <filter id="c-soft"><feGaussianBlur in="SourceGraphic" stdDeviation="1.5"/></filter>
+  </defs>
+
+  <rect width="1200" height="260" rx="12" fill="url(#c-bg)"/>
+  <!-- Subtle particles -->
+  <circle cx="100" cy="30" r="1" fill="rgba(255,255,255,0.12)"/>
+  <circle cx="300" cy="55" r="0.8" fill="rgba(255,255,255,0.08)"/>
+  <circle cx="500" cy="20" r="1.2" fill="rgba(255,255,255,0.1)"/>
+  <circle cx="700" cy="45" r="0.7" fill="rgba(255,255,255,0.06)"/>
+  <circle cx="900" cy="35" r="1" fill="rgba(255,255,255,0.09)"/>
+  <circle cx="1100" cy="50" r="0.9" fill="rgba(255,255,255,0.07)"/>
+
+  <text x="600" y="30" font-family="Segoe UI, sans-serif" font-size="14" font-weight="600" fill="#F2C811" text-anchor="middle" letter-spacing="3">DAX CONVERSION EXAMPLES</text>
+
+  <!-- Row 1: LOD Fixed -->
+  <g transform="translate(30, 46)">
+    <rect width="540" height="90" rx="8" fill="url(#c-card)" stroke="url(#c-border)" stroke-width="0.8"/>
+    <rect x="8" y="8" width="56" height="20" rx="5" fill="#E97627" opacity="0.15"/>
+    <text x="36" y="22" font-family="Segoe UI, sans-serif" font-size="9" font-weight="bold" fill="#E97627" text-anchor="middle">LOD</text>
+    <text x="74" y="22" font-family="Segoe UI Semibold, sans-serif" font-size="11" fill="rgba(255,255,255,0.6)">FIXED Expression</text>
+    <text x="20" y="52" font-family="Consolas, monospace" font-size="11" fill="#E97627">{FIXED [Region] : SUM([Sales])}</text>
+    <text x="20" y="74" font-family="Consolas, monospace" font-size="9" fill="rgba(255,255,255,0.35)">▸ Level of Detail → per-region aggregation</text>
+  </g>
+  <text x="590" y="96" font-family="Segoe UI, sans-serif" font-size="18" fill="url(#c-arrow)" font-weight="900">→</text>
+  <g transform="translate(630, 46)">
+    <rect width="540" height="90" rx="8" fill="url(#c-card)" stroke="url(#c-border)" stroke-width="0.8"/>
+    <rect x="8" y="8" width="56" height="20" rx="5" fill="#F2C811" opacity="0.15"/>
+    <text x="36" y="22" font-family="Segoe UI, sans-serif" font-size="9" font-weight="bold" fill="#F2C811" text-anchor="middle">DAX</text>
+    <text x="74" y="22" font-family="Segoe UI Semibold, sans-serif" font-size="11" fill="rgba(255,255,255,0.6)">CALCULATE + ALLEXCEPT</text>
+    <text x="20" y="52" font-family="Consolas, monospace" font-size="11" fill="#F2C811">CALCULATE(SUM('Table'[Sales]),</text>
+    <text x="30" y="68" font-family="Consolas, monospace" font-size="11" fill="#F2C811">ALLEXCEPT('Table', 'Table'[Region]))</text>
+    <text x="20" y="84" font-family="Consolas, monospace" font-size="9" fill="rgba(255,255,255,0.35)">▸ Preserves Region filter context only</text>
+  </g>
+
+  <!-- Row 2: Table Calc -->
+  <g transform="translate(30, 148)">
+    <rect width="540" height="90" rx="8" fill="url(#c-card)" stroke="url(#c-border)" stroke-width="0.8"/>
+    <rect x="8" y="8" width="80" height="20" rx="5" fill="#E97627" opacity="0.15"/>
+    <text x="48" y="22" font-family="Segoe UI, sans-serif" font-size="9" font-weight="bold" fill="#E97627" text-anchor="middle">TABLE CALC</text>
+    <text x="96" y="22" font-family="Segoe UI Semibold, sans-serif" font-size="11" fill="rgba(255,255,255,0.6)">Running Sum</text>
+    <text x="20" y="52" font-family="Consolas, monospace" font-size="11" fill="#E97627">RUNNING_SUM(SUM([Profit]))</text>
+    <text x="20" y="74" font-family="Consolas, monospace" font-size="9" fill="rgba(255,255,255,0.35)">▸ Cumulative sum over partition</text>
+  </g>
+  <text x="590" y="198" font-family="Segoe UI, sans-serif" font-size="18" fill="url(#c-arrow)" font-weight="900">→</text>
+  <g transform="translate(630, 148)">
+    <rect width="540" height="90" rx="8" fill="url(#c-card)" stroke="url(#c-border)" stroke-width="0.8"/>
+    <rect x="8" y="8" width="56" height="20" rx="5" fill="#F2C811" opacity="0.15"/>
+    <text x="36" y="22" font-family="Segoe UI, sans-serif" font-size="9" font-weight="bold" fill="#F2C811" text-anchor="middle">DAX</text>
+    <text x="74" y="22" font-family="Segoe UI Semibold, sans-serif" font-size="11" fill="rgba(255,255,255,0.6)">CALCULATE with FILTER</text>
+    <text x="20" y="52" font-family="Consolas, monospace" font-size="11" fill="#F2C811">CALCULATE(SUM('Table'[Profit]),</text>
+    <text x="30" y="68" font-family="Consolas, monospace" font-size="11" fill="#F2C811">FILTER(ALL('Table'), ...))</text>
+    <text x="20" y="84" font-family="Consolas, monospace" font-size="9" fill="rgba(255,255,255,0.35)">▸ Running total via expanded filter context</text>
+  </g>
+</svg>

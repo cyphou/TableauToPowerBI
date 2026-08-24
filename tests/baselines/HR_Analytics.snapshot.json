@@ -1,0 +1,38 @@
+{
+  "filters": 0,
+  "measures": {
+    "[AVG_Salary]": {
+      "formula_hash": "cde18fc4421df3c5"
+    },
+    "[Employee_Count]": {
+      "formula_hash": "f99dc26a1ef0b3ce"
+    },
+    "[Tenure_Category]": {
+      "formula_hash": "03a2783b9904248f"
+    },
+    "[Total_Comp]": {
+      "formula_hash": "404a1e9b90ac1db0"
+    }
+  },
+  "pages": {
+    "Headcount by Department": {
+      "field_count": 3
+    },
+    "Hiring Trend": {
+      "field_count": 2
+    },
+    "Performance Matrix": {
+      "field_count": 4
+    },
+    "Salary Analysis": {
+      "field_count": 3
+    }
+  },
+  "relationships": 0,
+  "tables": {
+    "Employees": {
+      "column_count": 11
+    }
+  },
+  "version": "1.0"
+}

@@ -1,0 +1,57 @@
+{
+ "visual_count": 4,
+ "visuals": [
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 450,
+   "page": "Web Analytics Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredBarChart",
+   "width": 700,
+   "x": 0,
+   "y": 0,
+   "z": 0
+  },
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 270,
+   "page": "Web Analytics Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredBarChart",
+   "width": 700,
+   "x": 0,
+   "y": 450,
+   "z": 2000
+  },
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 270,
+   "page": "Web Analytics Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredBarChart",
+   "width": 580,
+   "x": 700,
+   "y": 450,
+   "z": 3000
+  },
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 450,
+   "page": "Web Analytics Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "lineChart",
+   "width": 580,
+   "x": 700,
+   "y": 0,
+   "z": 1000
+  }
+ ]
+}

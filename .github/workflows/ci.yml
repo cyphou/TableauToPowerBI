@@ -1,0 +1,485 @@
+name: CI – TableauToPowerBI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+jobs:
+  # ───────────────────── Stage 1: Lint ─────────────────────
+  lint:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-lint-
+
+      - name: Install linters
+        run: pip install flake8 ruff
+
+      - name: Run flake8 (errors only)
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run ruff (additional checks)
+        run: ruff check --select=E,F,W,I --ignore=E501,E402 .
+
+      - name: Run pyright (type checking)
+        run: |
+          pip install pyright
+          pyright --warnings tableau_export/ powerbi_import/
+
+  # ───────────────────── Stage 2: Test ─────────────────────
+  test:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: ${{ matrix.python-version == '3.14' }}
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-test-${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-test-${{ matrix.python-version }}-
+
+      - name: Install coverage
+        run: pip install coverage pytest
+
+      - name: Run unit tests with coverage
+        run: |
+          coverage run -m pytest tests/ -v --tb=short
+          coverage report --fail-under=80
+          coverage xml -o coverage.xml
+          coverage html
+
+      - name: Run performance tests
+        run: python -m pytest tests/test_performance.py -v --tb=short
+
+      - name: Run snapshot tests
+        run: python -m pytest tests/test_snapshot.py -v --tb=short
+
+      - name: Run pixel-perfect golden tests
+        run: python -m pytest tests/test_pixel_golden.py tests/test_qa_suite.py -v --tb=short
+
+      - name: Verify golden fixtures are in sync
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: python scripts/generate_pixel_fixtures.py --check
+
+      - name: Run integration tests
+        run: python -m pytest tests/test_integration.py -v --tb=short
+
+      - name: Run Fabric integration tests
+        run: python -m pytest tests/test_fabric_integration.py -v --tb=short
+
+      - name: Run Desktop openability suite (reference job)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        env:
+          RUN_OPENABILITY_SUITE: "1"
+        run: python -m pytest tests/test_desktop_openability_suite.py -v --tb=short
+
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+
+      - name: Performance regression check
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        continue-on-error: true
+        run: |
+          python -c "
+          import time, sys
+          sys.path.insert(0, '.')
+          from tableau_export.dax_converter import convert_tableau_formula_to_dax
+
+          formulas = [
+              'SUM([Sales])', 'IF [Profit] > 0 THEN "Yes" ELSE "No" END',
+              'DATETRUNC("month", [Order Date])',
+              '{FIXED [Region] : SUM([Sales])}',
+              'RUNNING_SUM(SUM([Sales]))', 'RANK(SUM([Profit]))',
+              'CONTAINS("hello world", "hello")',
+              'REGEXP_REPLACE([Name], "[abc]", "X")',
+              'WINDOW_SUM(SUM([Sales]), -2, 0)',
+              'ZN([Discount])',
+          ]
+
+          start = time.time()
+          iterations = 500
+          for _ in range(iterations):
+              for f in formulas:
+                  convert_tableau_formula_to_dax(f)
+          elapsed = time.time() - start
+
+          per_op = (elapsed / (iterations * len(formulas))) * 1000
+          print(f'Performance: {per_op:.3f} ms/conversion ({iterations * len(formulas)} ops in {elapsed:.2f}s)')
+
+          # Fail if conversions take more than 5ms each on average
+          threshold = 5.0
+          if per_op > threshold:
+              print(f'FAIL: {per_op:.3f} ms/op exceeds {threshold} ms threshold')
+              sys.exit(1)
+          print(f'PASS: {per_op:.3f} ms/op within {threshold} ms threshold')
+          "
+
+  # ───────────── Scheduled/manual performance baseline ─────────────
+  performance-baseline:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      TTPBI_TELEMETRY: "0"
+      TTPBI_TELEMETRY_ENDPOINT: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run PBIP reference baselines
+        run: |
+          mkdir -p performance-results
+          python scripts/run_perf_baseline.py examples/tableau_samples/Enterprise_Sales.twb --runs 3 --warmup 1 --output performance-results/enterprise-pbip.json
+          python scripts/run_perf_baseline.py examples/tableau_samples/Complex_Enterprise.twb --runs 3 --warmup 1 --output performance-results/complex-pbip.json
+
+      - name: Run Fabric reference baseline
+        run: |
+          python scripts/run_perf_baseline.py examples/tableau_samples/Complex_Enterprise.twb --format fabric --runs 3 --warmup 1 --output performance-results/complex-fabric.json
+
+      - name: Download previous baseline artifact (best effort)
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ci.yml
+          branch: main
+          name: performance-baseline-*
+          path: previous-performance
+          if_no_artifact_found: warn
+
+      - name: Build performance trend diff
+        run: |
+          mkdir -p performance-trend
+          PREVIOUS_DIR=""
+          if [ -d previous-performance ]; then
+            CANDIDATE=$(find previous-performance -type f -name "*.json" -printf "%h\n" | sort -u | head -n 1)
+            if [ -n "$CANDIDATE" ]; then
+              PREVIOUS_DIR="$CANDIDATE"
+            fi
+          fi
+
+          if [ -n "$PREVIOUS_DIR" ]; then
+            python scripts/compare_perf_baselines.py \
+              --current-dir performance-results \
+              --previous-dir "$PREVIOUS_DIR" \
+              --threshold-percent 10 \
+              --output-json performance-trend/trend_diff.json \
+              --output-md performance-trend/trend_diff.md
+          else
+            python scripts/compare_perf_baselines.py \
+              --current-dir performance-results \
+              --threshold-percent 10 \
+              --output-json performance-trend/trend_diff.json \
+              --output-md performance-trend/trend_diff.md
+          fi
+
+      - name: Upload performance baselines
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-baseline-${{ github.run_id }}
+          path: performance-results/*.json
+          retention-days: 30
+
+      - name: Upload performance trend report
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-trend-${{ github.run_id }}
+          path: performance-trend/*
+          retention-days: 30
+
+  # ───────────────────── Stage 3: Validate ─────────────────
+  validate:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-validate-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-validate-
+
+      - name: Validate sample migrations (.twb)
+        run: |
+          FAILED=0
+          TOTAL=0
+          for twb in examples/tableau_samples/*.twb; do
+            TOTAL=$((TOTAL + 1))
+            echo "=== Migrating $(basename $twb) ==="
+            if ! python migrate.py "$twb" --output-dir /tmp/pbi_validate; then
+              echo "FAIL: Migration failed for $(basename $twb)"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          echo "Migration (.twb): $((TOTAL - FAILED))/$TOTAL succeeded"
+          if [ "$FAILED" -gt 0 ]; then
+            echo "ERROR: $FAILED migration(s) failed"
+            exit 1
+          fi
+
+      - name: Validate sample migrations (.twbx)
+        run: |
+          FAILED=0
+          TOTAL=0
+          for twbx in examples/tableau_samples/*.twbx; do
+            [ -f "$twbx" ] || continue
+            TOTAL=$((TOTAL + 1))
+            echo "=== Migrating $(basename $twbx) ==="
+            if ! python migrate.py "$twbx" --output-dir /tmp/pbi_validate; then
+              echo "WARN: Migration failed for $(basename $twbx)"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          if [ "$TOTAL" -gt 0 ]; then
+            echo "Migration (.twbx): $((TOTAL - FAILED))/$TOTAL succeeded"
+          else
+            echo "No .twbx samples found — skipping"
+          fi
+
+      - name: Validate generated artifacts
+        run: |
+          python -c "
+          import sys
+          from powerbi_import.validator import ArtifactValidator
+          results = ArtifactValidator.validate_directory('/tmp/pbi_validate')
+          passed = sum(1 for r in results.values() if r.get('valid'))
+          total = len(results)
+          print(f'Validation: {passed}/{total} projects valid')
+          for name, r in results.items():
+              status = 'OK' if r.get('valid') else 'FAIL'
+              print(f'  [{status}] {name}')
+              for e in r.get('errors', []):
+                  print(f'    ERROR: {e}')
+          if total > 0 and passed < total * 0.75:
+              print(f'ERROR: Only {passed}/{total} projects valid (threshold: 75%)')
+              sys.exit(1)
+          "
+
+      - name: Validate batch mode
+        run: |
+          python migrate.py --batch examples/tableau_samples/ --output-dir /tmp/pbi_batch --quiet
+          BATCH_COUNT=$(find /tmp/pbi_batch -name "*.pbip" | wc -l)
+          echo "Batch mode produced $BATCH_COUNT .pbip projects"
+          if [ "$BATCH_COUNT" -lt 1 ]; then
+            echo "ERROR: Batch mode produced no output"
+            exit 1
+          fi
+
+      - name: Upload validated projects
+        uses: actions/upload-artifact@v4
+        with:
+          name: validated-pbip-projects
+          path: /tmp/pbi_validate/
+
+  # ──────────── Stage 3.5: Preceptor Review Gate ─────────────
+  # Automated "preceptor" — runs security, governance, and
+  # regression checks on migrated artifacts before deploy.
+  preceptor-review:
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download validated projects
+        uses: actions/download-artifact@v4
+        with:
+          name: validated-pbip-projects
+          path: /tmp/pbi_review/
+
+      - name: Re-migrate samples for review context
+        run: |
+          python migrate.py --batch examples/tableau_samples/ --output-dir /tmp/pbi_review --quiet 2>/dev/null || true
+
+      - name: Security scan — credential & path traversal check
+        run: |
+          python -c "
+          import sys, os
+          sys.path.insert(0, '.')
+          from powerbi_import.security_validator import validate_migration_artifacts
+
+          review_dir = '/tmp/pbi_review'
+          projects = [
+              os.path.join(review_dir, d)
+              for d in os.listdir(review_dir)
+              if os.path.isdir(os.path.join(review_dir, d))
+          ]
+
+          total = len(projects)
+          failed = 0
+          for proj in projects:
+              result = validate_migration_artifacts(proj)
+              issues = result.get('issues', [])
+              if issues:
+                  failed += 1
+                  print(f'SECURITY FAIL: {os.path.basename(proj)}')
+                  for issue in issues:
+                      print(f'  - {issue}')
+
+          print(f'Security scan: {total - failed}/{total} projects clean')
+          if failed > 0:
+              print(f'ERROR: {failed} project(s) have security issues')
+              sys.exit(1)
+          print('PASS: No credentials or path traversal issues detected')
+          "
+
+      - name: Governance check — naming & PII detection
+        run: |
+          python -c "
+          import sys, os, json
+          sys.path.insert(0, '.')
+          from powerbi_import.governance import run_governance
+
+          review_dir = '/tmp/pbi_review'
+          total_issues = 0
+          enforced_failures = 0
+
+          for proj_name in sorted(os.listdir(review_dir)):
+              proj_dir = os.path.join(review_dir, proj_name)
+              if not os.path.isdir(proj_dir):
+                  continue
+
+              # Load extracted tables from datasources.json if available
+              ds_path = os.path.join(proj_dir, 'datasources.json')
+              tmdl_tables = []
+              if os.path.isfile(ds_path):
+                  with open(ds_path) as f:
+                      ds = json.load(f)
+                  for src in ds:
+                      tmdl_tables.extend(src.get('tables', []))
+
+              if not tmdl_tables:
+                  continue
+
+              report = run_governance(tmdl_tables, config={'mode': 'warn'})
+              issues = report.issues if hasattr(report, 'issues') else []
+              if issues:
+                  total_issues += len(issues)
+                  print(f'GOVERNANCE [{proj_name}]: {len(issues)} issue(s)')
+                  for issue in issues[:5]:
+                      sev = issue.severity if hasattr(issue, 'severity') else 'info'
+                      msg = issue.message if hasattr(issue, 'message') else str(issue)
+                      print(f'  [{sev}] {msg}')
+                  if len(issues) > 5:
+                      print(f'  ... and {len(issues) - 5} more')
+
+          if total_issues > 0:
+              print(f'Governance: {total_issues} total issue(s) found (warn mode — not blocking)')
+          else:
+              print('PASS: No governance issues detected')
+          "
+
+      - name: Regression snapshot — baseline drift check
+        run: |
+          python -c "
+          import sys, os, json
+          sys.path.insert(0, '.')
+          from powerbi_import.regression_suite import generate_regression_snapshot
+
+          review_dir = '/tmp/pbi_review'
+          snapshot_dir = '/tmp/pbi_snapshots'
+          os.makedirs(snapshot_dir, exist_ok=True)
+
+          projects = sorted([
+              d for d in os.listdir(review_dir)
+              if os.path.isdir(os.path.join(review_dir, d))
+          ])
+
+          snapshots = {}
+          for proj_name in projects:
+              proj_dir = os.path.join(review_dir, proj_name)
+              # Collect converted objects from JSON extraction files
+              converted = {}
+              for jf in ['worksheets.json', 'datasources.json', 'calculations.json',
+                          'filters.json', 'parameters.json']:
+                  jp = os.path.join(proj_dir, jf)
+                  if os.path.isfile(jp):
+                      with open(jp) as f:
+                          converted[jf.replace('.json', '')] = json.load(f)
+              if converted:
+                  snap = generate_regression_snapshot(converted)
+                  snapshots[proj_name] = snap
+
+          # Save as CI baseline artifact
+          out_path = os.path.join(snapshot_dir, 'ci_snapshot.json')
+          with open(out_path, 'w') as f:
+              json.dump(snapshots, f, indent=2, default=str)
+
+          print(f'Regression snapshots: {len(snapshots)} projects captured')
+          print(f'Snapshot saved to {out_path}')
+          "
+
+      - name: Upload review artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: preceptor-review-report
+          path: /tmp/pbi_snapshots/
+
+      - name: Preceptor summary
+        run: |
+          echo "╔══════════════════════════════════════════════════════╗"
+          echo "║          Preceptor Review Gate — PASSED             ║"
+          echo "║                                                      ║"
+          echo "║  ✓ Security scan        (credentials, path safety)  ║"
+          echo "║  ✓ Governance check     (naming, PII detection)     ║"
+          echo "║  ✓ Regression snapshot  (baseline captured)         ║"
+          echo "╚══════════════════════════════════════════════════════╝"
+
+  # ───────────────────── Stage 4 & 5: Deploy ────────────────
+  # Deploy jobs are disabled until GitHub Environments and Secrets are configured.
+  # To enable, create 'staging' and 'production' environments in GitHub Settings,
+  # add FABRIC_WORKSPACE_ID, FABRIC_TENANT_ID, FABRIC_CLIENT_ID, FABRIC_CLIENT_SECRET
+  # as repository secrets, then uncomment the deploy jobs in this file.
+  # See docs/DEPLOYMENT_GUIDE.md for full setup instructions.

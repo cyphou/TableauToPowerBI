@@ -1,0 +1,83 @@
+{
+ "visual_count": 6,
+ "visuals": [
+  {
+   "fields": 0,
+   "has_format": true,
+   "height": 40,
+   "page": "Enterprise Sales Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "actionButton",
+   "width": 200,
+   "x": 10,
+   "y": 10,
+   "z": 5000
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 540,
+   "page": "Enterprise Sales Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredColumnChart",
+   "width": 320,
+   "x": 960,
+   "y": 108,
+   "z": 2000
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 72,
+   "page": "Enterprise Sales Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "lineClusteredColumnComboChart",
+   "width": 1152,
+   "x": 0,
+   "y": 648,
+   "z": 3000
+  },
+  {
+   "fields": 4,
+   "has_format": true,
+   "height": 72,
+   "page": "Enterprise Sales Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "scatterChart",
+   "width": 128,
+   "x": 1152,
+   "y": 648,
+   "z": 4000
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 540,
+   "page": "Enterprise Sales Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "tableEx",
+   "width": 960,
+   "x": 32,
+   "y": 140,
+   "z": 1000
+  },
+  {
+   "fields": 0,
+   "has_format": true,
+   "height": 540,
+   "page": "Enterprise Sales Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "textbox",
+   "width": 960,
+   "x": 0,
+   "y": 108,
+   "z": 0
+  }
+ ]
+}

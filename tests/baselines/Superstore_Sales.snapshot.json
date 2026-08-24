@@ -1,0 +1,41 @@
+{
+  "filters": 0,
+  "measures": {
+    "[Calculation_1]": {
+      "formula_hash": "03100e278c0d6350"
+    },
+    "[Calculation_2]": {
+      "formula_hash": "98c79e5066482d72"
+    },
+    "[Calculation_3]": {
+      "formula_hash": "ba9f8b2ad1246a43"
+    },
+    "[Calculation_4]": {
+      "formula_hash": "c0e2509547c65da8"
+    }
+  },
+  "pages": {
+    "Profit by Category": {
+      "field_count": 4
+    },
+    "Sales Trend": {
+      "field_count": 2
+    },
+    "Sales by Region": {
+      "field_count": 4
+    }
+  },
+  "relationships": 2,
+  "tables": {
+    "Orders": {
+      "column_count": 21
+    },
+    "People": {
+      "column_count": 2
+    },
+    "Returns": {
+      "column_count": 2
+    }
+  },
+  "version": "1.0"
+}

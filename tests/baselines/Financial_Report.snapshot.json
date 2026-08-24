@@ -1,0 +1,44 @@
+{
+  "filters": 4,
+  "measures": {
+    "[Budget_Variance]": {
+      "formula_hash": "8ee3e82c77c4f082"
+    },
+    "[Expenses]": {
+      "formula_hash": "02d965dbafa6cad6"
+    },
+    "[Net_Income]": {
+      "formula_hash": "81b551e905d50399"
+    },
+    "[Profit_Margin]": {
+      "formula_hash": "b52f0817ebec913c"
+    },
+    "[Revenue]": {
+      "formula_hash": "b2d05d3b456bd827"
+    },
+    "[YTD_Revenue]": {
+      "formula_hash": "041543a117e125cb"
+    }
+  },
+  "pages": {
+    "Business Unit Performance": {
+      "field_count": 5
+    },
+    "Category Breakdown": {
+      "field_count": 3
+    },
+    "Revenue vs Expenses": {
+      "field_count": 5
+    },
+    "Top 10 Accounts": {
+      "field_count": 3
+    }
+  },
+  "relationships": 0,
+  "tables": {
+    "transactions": {
+      "column_count": 8
+    }
+  },
+  "version": "1.0"
+}
