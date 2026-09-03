@@ -267,6 +267,38 @@ def _check_semantic_validation(project_dir) -> CheckResult:
     return CheckResult("semantic_validation", not issues, "error", issues)
 
 
+def _check_executable_tmdl_dax(project_dir) -> CheckResult:
+    """Validate DAX beyond measures, including columns and RLS definitions."""
+    try:
+        from powerbi_import.validator import ArtifactValidator
+    except Exception as exc:  # noqa: BLE001 - preflight must return a check result
+        return CheckResult("executable_dax", False, "error", [str(exc)])
+    issues = []
+    paths = glob.glob(os.path.join(
+        project_dir, "*.SemanticModel", "definition", "tables", "*.tmdl"))
+    paths.extend(glob.glob(os.path.join(
+        project_dir, "*.SemanticModel", "definition", "roles.tmdl")))
+    for path in paths:
+        for issue in ArtifactValidator.validate_tmdl_dax(path):
+            issues.append(f"{os.path.relpath(path, project_dir)}: {issue}")
+        try:
+            lines = _read(path).splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            inline = re.match(r"^\s*column\s+(.+?)\s*=\s*(.+?)\s*$", line)
+            if inline:
+                for issue in ArtifactValidator.validate_dax_formula(
+                        inline.group(2), f"column {inline.group(1)}"):
+                    issues.append(f"{os.path.relpath(path, project_dir)}: {issue}")
+            role_expr = re.match(r"^\s*filterExpression\s*=\s*(.+?)\s*$", line)
+            if role_expr:
+                for issue in ArtifactValidator.validate_dax_formula(
+                        role_expr.group(1), "RLS filterExpression"):
+                    issues.append(f"{os.path.relpath(path, project_dir)}: {issue}")
+    return CheckResult("executable_dax", not issues, "error", issues)
+
+
 def _check_visual_bindings(project_dir) -> CheckResult:
     """Block PBIR visuals that reference missing model fields."""
     try:
@@ -455,6 +487,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_power_query(project_dir),
         _check_dax(project_dir),
         _check_semantic_validation(project_dir),
+        _check_executable_tmdl_dax(project_dir),
         _check_visual_bindings(project_dir),
         _check_references(project_dir),
         _check_report_structure(project_dir),
