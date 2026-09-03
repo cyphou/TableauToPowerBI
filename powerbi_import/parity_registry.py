@@ -21,6 +21,8 @@ Public API (matches the MCP ``parity_scan`` tool contract):
 from __future__ import annotations
 
 import json
+import glob
+import os
 import re
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Dict, List, Optional
@@ -235,6 +237,7 @@ class FeatureUsage:
     count: int
     target: str
     remediation: str
+    evidence: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -308,8 +311,17 @@ class ParityScan:
 
 
 def scan_workbook(converted: Dict, workbook: str = "Workbook") -> ParityScan:
-    """Resolve the parity status of every feature in use in ``converted``."""
+    """Resolve the parity status of every feature in use in ``converted``.
+
+    ``converted`` remains the source inventory used by the original parity
+    contract. Optional ``_parity_evidence`` entries can now attach generated
+    target artifact paths or validation results to a feature without changing
+    detector behavior or the source-only scoring contract.
+    """
     converted = converted or {}
+    evidence_map = converted.get("_parity_evidence", {})
+    if not isinstance(evidence_map, dict):
+        evidence_map = {}
     usages: List[FeatureUsage] = []
     for feat in _FEATURES:
         detector = _DETECTORS.get(feat.key)
@@ -325,8 +337,87 @@ def scan_workbook(converted: Dict, workbook: str = "Workbook") -> ParityScan:
             key=feat.key, label=feat.label, category=feat.category,
             status=feat.status, count=count, target=feat.target,
             remediation=feat.remediation,
+            evidence=(evidence_map.get(feat.key, [])
+                      if isinstance(evidence_map.get(feat.key, []), list)
+                      else [str(evidence_map[feat.key])]
+                      if feat.key in evidence_map else []),
         ))
     return ParityScan(workbook=workbook, usages=usages)
+
+
+def _load_json_file(path: str) -> Dict:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            value = json.load(fh)
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _load_tmdl_text(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, List[str]]:
+    """Collect artifact references for features found in a generated project.
+
+    This intentionally reports *evidence*, not a second coverage decision:
+    the registry remains the source of status and score policy. Paths are
+    relative to ``project_dir`` so reports remain portable when the output
+    directory is moved or packaged.
+    """
+    evidence: Dict[str, List[str]] = {}
+    report_dir = os.path.join(project_dir, f"{report_name}.Report")
+    semantic_dir = os.path.join(project_dir, f"{report_name}.SemanticModel")
+
+    def add(key: str, path: str) -> None:
+        if os.path.isfile(path):
+            relative = os.path.relpath(path, project_dir).replace(os.sep, "/")
+            evidence.setdefault(key, []).append(relative)
+
+    report_json = os.path.join(report_dir, "definition", "report.json")
+    report_data = {}
+    try:
+        with open(report_json, "r", encoding="utf-8") as fh:
+            report_data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        pass
+    if (report_data.get("filterConfig") or {}).get("filters"):
+        add("filters", report_json)
+
+    visual_paths = glob.glob(os.path.join(
+        report_dir, "definition", "pages", "*", "visuals", "*", "visual.json"))
+    for path in sorted(visual_paths):
+        data = _load_json_file(path)
+        visual = data.get("visual") or {}
+        if (data.get("filterConfig") or {}).get("filters"):
+            add("filters", path)
+        if visual.get("visualType") == "slicer":
+            add("filters", path)
+        if visual.get("visualType") == "actionButton":
+            add("action_url", path)
+            add("action_nav", path)
+
+    tables_glob = os.path.join(semantic_dir, "definition", "tables", "*.tmdl")
+    for path in sorted(glob.glob(tables_glob)):
+        data = _load_tmdl_text(path)
+        lowered = data.lower()
+        if "measure '" in lowered or "measure " in lowered:
+            add("parameters", path)
+
+    add("rls", os.path.join(semantic_dir, "definition", "roles.tmdl"))
+    return evidence
+
+
+def scan_project(converted: Dict, project_dir: str, report_name: str) -> ParityScan:
+    """Scan source features and attach evidence from a generated project."""
+    source = dict(converted or {})
+    source["_parity_evidence"] = collect_target_evidence(project_dir, report_name)
+    return scan_workbook(source, workbook=report_name)
 
 
 # ════════════════════════════════════════════════════════════════════

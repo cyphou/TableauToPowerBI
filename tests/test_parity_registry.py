@@ -13,6 +13,7 @@ from powerbi_import import parity_registry as pr  # noqa: E402
 from powerbi_import.parity_registry import (  # noqa: E402
     scan_workbook, features_by_category, ParityScan,
     EXACT, HEALED, APPROXIMATED, UNSUPPORTED, _FEATURES, _DETECTORS,
+    collect_target_evidence, scan_project,
 )
 
 
@@ -40,6 +41,18 @@ class TestRegistryStructure(unittest.TestCase):
     def test_registry_version(self):
         scan = scan_workbook({}, "x")
         self.assertEqual(scan.registry_version, pr.REGISTRY_VERSION)
+
+    def test_feature_evidence_is_preserved(self):
+        conv = {
+            "filters": [1],
+            "_parity_evidence": {
+                "filters": ["Report/definition/report.json#filterConfig"]
+            },
+        }
+        usage = scan_workbook(conv).usages[0]
+        self.assertEqual(usage.evidence, ["Report/definition/report.json#filterConfig"])
+        self.assertEqual(scan_workbook(conv).to_dict()["usages"][0]["evidence"],
+                         ["Report/definition/report.json#filterConfig"])
 
 
 class TestCalculationClassification(unittest.TestCase):
@@ -186,6 +199,35 @@ class TestSerialization(unittest.TestCase):
         html = self.scan.to_html()
         self.assertIn("Functionality parity", html)
         self.assertIn("<table", html)
+
+
+class TestTargetEvidence(unittest.TestCase):
+    def test_collects_pbir_and_tmdl_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = os.path.join(tmp, "Demo.Report", "definition")
+            model = os.path.join(tmp, "Demo.SemanticModel", "definition", "tables")
+            os.makedirs(report, exist_ok=True)
+            os.makedirs(model, exist_ok=True)
+            with open(os.path.join(report, "report.json"), "w", encoding="utf-8") as fh:
+                json.dump({"filterConfig": {"filters": [{"name": "f1"}]}}, fh)
+            with open(os.path.join(model, "Orders.tmdl"), "w", encoding="utf-8") as fh:
+                fh.write("table Orders\n\tmeasure 'Top N' = 10\n")
+            evidence = collect_target_evidence(tmp, "Demo")
+
+        self.assertEqual(evidence["filters"], ["Demo.Report/definition/report.json"])
+        self.assertEqual(evidence["parameters"],
+                         ["Demo.SemanticModel/definition/tables/Orders.tmdl"])
+
+    def test_scan_project_attaches_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = os.path.join(tmp, "Demo.Report", "definition")
+            os.makedirs(report, exist_ok=True)
+            with open(os.path.join(report, "report.json"), "w", encoding="utf-8") as fh:
+                json.dump({"filterConfig": {"filters": [{"name": "f1"}]}}, fh)
+            scan = scan_project({"filters": [1]}, tmp, "Demo")
+
+        self.assertEqual(scan.usages[0].evidence,
+                         ["Demo.Report/definition/report.json"])
 
 
 class TestMCPIntegration(unittest.TestCase):
