@@ -5917,8 +5917,8 @@ def _run_desktop_probe(args, source_basename):
 def _run_openability_gate(project_dir):
     """Run and persist the static Power BI openability gate for a project directory."""
     if not os.path.isdir(project_dir):
-        print(f"  ⚠ Openability preflight skipped: project directory not found")
-        return True
+        print(f"  ✗ Openability preflight failed: project directory not found")
+        return False
     try:
         from openability import check_openability
     except ImportError:

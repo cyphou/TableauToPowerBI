@@ -421,6 +421,7 @@ class TestMigrateSingleWorkbook(unittest.TestCase):
                     wb_cal_start=2020,
                     wb_cal_end=2030,
                     wb_culture='en-US',
+                    verify_open=False,
                 )
                 mock_extract.assert_not_called()
                 self.assertTrue(result['success'])
@@ -442,6 +443,7 @@ class TestMigrateSingleWorkbook(unittest.TestCase):
                     wb_cal_start=None,
                     wb_cal_end=None,
                     wb_culture=None,
+                    verify_open=False,
                 )
                 self.assertTrue(result['success'])
                 self.assertEqual(result['fidelity'], 95)
