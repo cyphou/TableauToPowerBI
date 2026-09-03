@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-03
 **Baseline:** 2026-09-03 — 9,583 tests passed, 81 skipped, 1 expected failure; 8 known unrelated failures remain (7 pixel-golden fixture drifts and 1 regex-anchor check). 38 extension unit tests.
-**Current state:** v44.0.0 is the declared release baseline. The migration engine has now verified the complete local path across 27 example migration reports, 26 openable PBIP projects, and 26 valid Fabric-native six-artifact bundles. The concise CLI has 14 commands, including unified `quality`, `parity`, `portfolio`, `plan`, `lineage`, and `package` workflows. Unified JSON/HTML quality reporting and optional grounded AI summaries are available. **v45/v46 remain release-hardening work; v47.0.0 is now in progress and turns feature parity and the full migration path into an evidence-backed product contract.**
+**Current state:** v44.0.0 is the declared release baseline. The migration engine has now verified the complete local path across 27 example migration reports, 26 openable PBIP projects, and 26 valid Fabric-native six-artifact bundles. The latest post-release hardening confirms the PBIP manifest contract for datasource-only outputs and strengthens the static openability gate against malformed project shells or missing report/model references. The concise CLI has 14 commands, including unified `quality`, `parity`, `portfolio`, `plan`, `lineage`, and `package` workflows. Unified JSON/HTML quality reporting and optional grounded AI summaries are available. **v45/v46 remain release-hardening work; v47.0.0 is now in progress and turns feature parity and the full migration path into an evidence-backed product contract.**
 
 ---
 

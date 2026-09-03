@@ -1,6 +1,6 @@
 # Documentation
 
-Current release baseline: **v44.0.0** (see `../CHANGELOG.md` and `ROADMAP.md`).
+Current release baseline: **v44.0.0** with the verified PBIP manifest-coherence and static-openability hardening from 2026-09-03 (see `../CHANGELOG.md` and `ROADMAP.md`).
 
 ## Guides
 

@@ -21,6 +21,14 @@
 - **Plugin SDK v2**: a versioned `MigrationPlugin` base class with formal hooks, manifest validation, error-isolated dispatch, and a `PluginTestRunner`. Backward compatible with the legacy hook-based plugins. See `docs/PLUGIN_SDK.md`.
 - **Marketplace v2**: pattern dependency resolution, remote catalogue sync, and curated Healthcare/Finance/Retail industry packs.
 
+### Latest verified hardening (post-v44 baseline)
+
+- **Datasource-only projects now emit a valid SemanticModel contract** rather than a malformed report shell, which closes the gap that previously broke the PBIP manifest contract for model-only outputs.
+- **Openability checks fail closed** when the project lacks the required structure, report references, model references, or JSON/TMDL coherence.
+- **Quality evidence stays deterministic**: static validation is recorded with blocking checks, optional AI summaries only consume verified findings, and live Desktop/Fabric deployment remains explicit and environment-gated.
+
+These checks are part of the current verified baseline and are intended to raise confidence in local migration quality without overstating live Desktop or Fabric deployment readiness.
+
 ### What was new in v39.0.0
 
 - **Data Blending Engine**: cross-datasource Tableau blends are reconstructed as Power Query merge queries with primary/secondary linking fields preserved.

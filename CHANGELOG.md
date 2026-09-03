@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — Verified PBIP Manifest Hardening
+
+### Highlights
+- **Datasource-only PBIP contract corrected**: `.pbip` projects with no report visuals now emit the correct `SemanticModel` contract instead of a malformed report shell, and the generated project passes the static openability gate.
+- **Manifest coherence and static openability hardened**: the canonical validator now checks PBIP shell structure, JSON/PBIR/TMDL consistency, report/model references, visual binding, and source archive/XML safety before a project is treated as openable.
+- **Repair workflow tightened**: page-local visual sizing, bare-measure reference rewrites after renames, and TMDL parsing for inline calculated columns are now validated in the same quality loop that produces migration evidence.
+- **Evidence-backed baseline**: the local generation contract is now validated with focused manifest checks, real-world migration runs, and Fabric bundle validation. These checks improve confidence without claiming live Power BI Desktop or Fabric deployment success.
+
+### Validation
+- Manifest-focused validation: 106 passed, 0 failed.
+- Real-world + openability validation: 403 passed, 30 skipped.
+- Broader regression: 586 passed, 2 skipped.
+
+### Notes
+- This hardening is treated as a verified local-contract improvement rather than a production deployment claim.
+- Live Desktop/Fabric success remains environment-gated and must be reported as `not_run` unless explicit proof exists.
+
 ## v44.0.0 — Agentic & Copilot-Native Migration
 
 ### Highlights

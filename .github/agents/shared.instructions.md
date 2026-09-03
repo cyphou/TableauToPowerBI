@@ -17,7 +17,7 @@ All agents MUST follow these rules. They apply to every file in the project.
 - **Target**: `powerbi_import/` — TMDL generator + PBIR report + visual generator + Fabric generators
 - **Tests**: `tests/` — 9,500+ tests across the current test suites
 - **Docs**: `docs/` — architecture, known limitations, deployment, agent surface, references, roadmap
-- **Current release**: v44.0.0. Next gates are v45 Fabric contract/performance and v46 Desktop reliability/release discipline; `docs/ROADMAP.md` is authoritative.
+- **Current release**: v44.0.0 plus the verified 2026-09-03 static-openability and manifest-coherence hardening. Next gates are v45 Fabric contract/performance and v46 Desktop reliability/release discipline; `docs/ROADMAP.md` is authoritative.
 
 ## Hard Constraints
 
