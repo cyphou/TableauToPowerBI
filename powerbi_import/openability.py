@@ -249,6 +249,24 @@ def _check_dax(project_dir) -> CheckResult:
     return CheckResult("dax", not issues, "error", issues)
 
 
+def _check_semantic_validation(project_dir) -> CheckResult:
+    """Block unresolved model references that syntax-only DAX checks miss."""
+    try:
+        from powerbi_import.validator import ArtifactValidator
+    except Exception as exc:  # noqa: BLE001 - preflight must return a check result
+        return CheckResult("semantic_validation", False, "error", [str(exc)])
+    issues = []
+    model_dirs = glob.glob(os.path.join(project_dir, "*.SemanticModel"))
+    for model_dir in model_dirs:
+        for issue in ArtifactValidator.validate_semantic_references(model_dir):
+            if "Unknown column/measure" in issue:
+                issues.append(issue)
+        for issue in ArtifactValidator.validate_relationship_columns(model_dir):
+            if "not found in table" in issue:
+                issues.append(issue)
+    return CheckResult("semantic_validation", not issues, "error", issues)
+
+
 def _check_schema(project_dir) -> CheckResult:
     issues = []
     for fp in glob.glob(os.path.join(project_dir, "**", "visual.json"), recursive=True):
@@ -404,6 +422,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_tmdl_partitions(project_dir),
         _check_power_query(project_dir),
         _check_dax(project_dir),
+        _check_semantic_validation(project_dir),
         _check_references(project_dir),
         _check_report_structure(project_dir),
         _check_schema(project_dir),

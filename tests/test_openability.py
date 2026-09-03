@@ -182,7 +182,7 @@ class TestOpenability(unittest.TestCase):
             for key in ("project_dir", "openable", "blocking_count",
                         "warning_count", "blocking_issues", "warnings", "checks"):
                 self.assertIn(key, data)
-            self.assertEqual(len(data["checks"]), 10)
+            self.assertEqual(len(data["checks"]), 11)
 
     def test_check_names_present(self):
         with tempfile.TemporaryDirectory() as d:
@@ -190,8 +190,20 @@ class TestOpenability(unittest.TestCase):
             names = {c.name for c in check_openability(d).checks}
             self.assertEqual(names, {"structure", "json_parse", "tmdl_present",
                                      "tmdl_partitions", "power_query", "dax",
-                                     "references", "report_structure", "schema",
+                                     "semantic_validation", "references", "report_structure", "schema",
                                      "pbip_contract"})
+
+    def test_unknown_semantic_reference_blocks_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmdl = ("table 'Sales'\n"
+                    "\tcolumn Amount\n"
+                    "\t\tdataType: decimal\n"
+                    "\tmeasure 'Total' = SUM('Sales'[Missing])\n"
+                    + _tmdl_with_m(["let x=1 in x"]))
+            _write_project(d, tmdl)
+            r = check_openability(d)
+            self.assertFalse(r.openable)
+            self.assertTrue(any("Missing" in issue for issue in r.blocking_issues))
 
     def test_no_tmdl_blocks(self):
         with tempfile.TemporaryDirectory() as d:
