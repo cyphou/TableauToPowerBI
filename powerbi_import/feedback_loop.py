@@ -11,6 +11,11 @@ Components:
       triage package for ``tests/fixtures/regressions/``
     - ``ZeroTouchTracker``: computes and persists Zero-Touch Open Rate
 
+Issue packages may also include ``issue/quality_report.json`` when a unified
+quality report is supplied. This preserves redacted assessment, parity,
+openability, Fabric, and remediation-priority evidence alongside the legacy
+rollback verdict.
+
 Usage:
     from powerbi_import.feedback_loop import (
         IssueCollector, RegressionFixtureGenerator, ZeroTouchTracker,
@@ -81,13 +86,16 @@ class IssueCollector:
             'tableau_export'
         )
 
-    def collect(self, verdict=None, source_file=None, output_dir=None):
+    def collect(self, verdict=None, source_file=None, output_dir=None, quality=None):
         """Create a redacted issue package ZIP.
 
         Args:
             verdict: Verdict object or dict from rollback engine
             source_file: path to original .twbx (not included, only metadata)
             output_dir: where to write the ZIP (default: project_dir parent)
+            quality: optional quality evidence object or dict. Objects with
+                ``to_dict()`` are serialized and redacted; the payload may
+                contain preflight, openability, quality, and recovery reports.
 
         Returns:
             str: path to the created ZIP file, or None on failure
@@ -115,8 +123,16 @@ class IssueCollector:
                         content = redact_text(f.read())
                     zf.writestr('issue/qa_report.json', content)
 
-                # 4. Fixture hint
-                hint = self._build_fixture_hint(verdict)
+                # 4. Unified quality evidence (preflight/openability/quality/
+                # recovery). Keep it separate from the legacy verdict schema.
+                if quality:
+                    payload = quality.to_dict() if hasattr(quality, 'to_dict') else quality
+                    content = redact_text(json.dumps(payload, indent=2,
+                                                     ensure_ascii=False, default=str))
+                    zf.writestr('issue/quality_report.json', content)
+
+                # 5. Fixture hint
+                hint = self._build_fixture_hint(verdict, quality)
                 zf.writestr('issue/fixture_hint.json',
                             json.dumps(hint, indent=2, ensure_ascii=False))
 
@@ -159,19 +175,28 @@ class IssueCollector:
             except (OSError, UnicodeDecodeError):
                 pass
 
-    def _build_fixture_hint(self, verdict):
+    def _build_fixture_hint(self, verdict, quality=None):
         """Build a hint for regression fixture generation."""
         hint = {
             'source_basename': self.source_basename,
             'failure_modes': [],
             'affected_areas': [],
         }
+        sources = []
         if verdict:
+            sources.append(verdict)
+        if quality:
+            sources.append(quality)
+        for source in sources:
             issues = []
-            if hasattr(verdict, 'issues'):
-                issues = verdict.issues
-            elif isinstance(verdict, dict):
-                issues = verdict.get('issues', [])
+            if hasattr(source, 'issues'):
+                issues = source.issues
+            elif isinstance(source, dict):
+                issues = source.get('issues', [])
+                for key in ('blockers', 'warnings'):
+                    issues.extend({'severity': 'error' if key == 'blockers' else 'warning',
+                                   'source': 'quality', 'message': item}
+                                  for item in source.get(key, []) if isinstance(item, str))
 
             for item in issues:
                 if isinstance(item, (list, tuple)) and len(item) >= 3:

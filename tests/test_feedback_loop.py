@@ -147,6 +147,24 @@ class TestIssueCollector(unittest.TestCase):
         with zipfile.ZipFile(path, 'r') as zf:
             self.assertIn('issue/qa_report.json', zf.namelist())
 
+    def test_collect_includes_quality_evidence_and_hint(self):
+        quality = {
+            'status': 'FAIL',
+            'blockers': ['Missing datasource password=secret-value'],
+            'warnings': ['Review account mapping'],
+            'openability': {'openable': False},
+        }
+        collector = IssueCollector(self.project_dir, 'TestProject',
+                                   extract_dir=self.extract_dir)
+        path = collector.collect(quality=quality, output_dir=self.tmp)
+        with zipfile.ZipFile(path, 'r') as zf:
+            self.assertIn('issue/quality_report.json', zf.namelist())
+            content = zf.read('issue/quality_report.json').decode('utf-8')
+            self.assertNotIn('secret-value', content)
+            hint = json.loads(zf.read('issue/fixture_hint.json'))
+            self.assertIn('Missing datasource password=secret-value',
+                          hint['failure_modes'])
+
 
 class TestRegressionFixtureGenerator(unittest.TestCase):
     """Regression fixture generation from issue packages."""

@@ -5776,7 +5776,7 @@ def _run_rollback_gate(args, source_basename):
     return result
 
 
-def _run_issue_report(args, source_basename, rollback_result=None):
+def _run_issue_report(args, source_basename, rollback_result=None, quality_report=None):
     """Phase 10: Create a redacted issue package for regression tracking."""
     try:
         from powerbi_import.feedback_loop import IssueCollector
@@ -5794,7 +5794,7 @@ def _run_issue_report(args, source_basename, rollback_result=None):
 
     collector = IssueCollector(project_dir, source_basename, extract_dir=extract_dir)
     package_path = collector.collect(verdict=verdict, source_file=source_file,
-                                     output_dir=out_base)
+                                     output_dir=out_base, quality=quality_report)
     if package_path:
         print(f"\n  Issue package: {package_path}")
 
@@ -7378,7 +7378,8 @@ def _run_single_migration(args):
 
     # Step 3h: Issue reporting (Phase 10, --report-issue flag)
     if getattr(args, 'report_issue', False) and results.get('generation') and not args.dry_run:
-        _run_issue_report(args, source_basename, rollback_result)
+        _run_issue_report(args, source_basename, rollback_result,
+                          quality_report if 'quality_report' in locals() else None)
 
     # Step 4: Migration report
     progress.start("Generating migration report")
