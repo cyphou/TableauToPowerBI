@@ -239,6 +239,38 @@ class TestOpenability(unittest.TestCase):
             self.assertTrue(any("Unmatched opening parenthesis" in issue
                                 for issue in r.blocking_issues))
 
+    def test_invalid_calculated_partition_dax_blocks_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(d, _tmdl_with_m(["let x=1 in x"]))
+            target = os.path.join(d, "P.SemanticModel", "definition", "tables",
+                                  "Parameter.tmdl")
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write("table 'Parameter'\n"
+                         "\tcolumn 'Value'\n"
+                         "\t\tdataType: int64\n"
+                         "\tpartition 'Parameter' = calculated\n"
+                         "\t\tmode: import\n"
+                         "\t\tsource = DATATABLE(\"Value\", INTEGER, {{1}, {2}}\n")
+            r = check_openability(d)
+            self.assertFalse(r.openable)
+            self.assertTrue(any("calculated partition" in issue
+                                for issue in r.blocking_issues))
+
+    def test_valid_field_parameter_partition_remains_openable(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(d, _tmdl_with_m(["let x=1 in x"]))
+            target = os.path.join(d, "P.SemanticModel", "definition", "tables",
+                                  "FieldParam.tmdl")
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write("table 'FieldParam'\n"
+                         "\tcolumn 'Fields'\n"
+                         "\t\tdataType: string\n"
+                         "\tpartition 'FieldParam' = calculated\n"
+                         "\t\tmode: import\n"
+                         "\t\tsource = { (\"Sales\", 0, \"Sales\") }\n")
+            r = check_openability(d)
+            self.assertTrue(r.openable, r.blocking_issues)
+
     def test_no_tmdl_blocks(self):
         with tempfile.TemporaryDirectory() as d:
             # report present but semantic model has no .tmdl

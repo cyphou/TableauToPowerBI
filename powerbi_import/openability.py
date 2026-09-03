@@ -296,6 +296,29 @@ def _check_executable_tmdl_dax(project_dir) -> CheckResult:
                 for issue in ArtifactValidator.validate_dax_formula(
                         role_expr.group(1), "RLS filterExpression"):
                     issues.append(f"{os.path.relpath(path, project_dir)}: {issue}")
+        partition_name = ""
+        calculated_partition = False
+        for index, line in enumerate(lines):
+            partition = _PARTITION_RE.match(line)
+            if partition:
+                partition_name = partition.group(1).strip().strip("'")
+                calculated_partition = partition.group(2) == "calculated"
+                continue
+            if not calculated_partition or not re.match(r"^\t\tsource\s*=", line):
+                continue
+            expression = line.split("=", 1)[1].strip()
+            if expression == "```":
+                body = []
+                for body_line in lines[index + 1:]:
+                    if body_line.strip() == "```":
+                        break
+                    body.append(body_line.strip())
+                expression = "\n".join(body)
+            if expression and not expression.startswith("let"):
+                for issue in ArtifactValidator.validate_dax_formula(
+                        expression, f"calculated partition {partition_name}"):
+                    issues.append(f"{os.path.relpath(path, project_dir)}: {issue}")
+            calculated_partition = False
     return CheckResult("executable_dax", not issues, "error", issues)
 
 
