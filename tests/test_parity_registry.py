@@ -173,6 +173,17 @@ class TestOtherDetectors(unittest.TestCase):
         self.assertEqual(keys["custom_geocoding"].count, 1)
         self.assertEqual(keys["linguistic_schema"].count, 2)
 
+    def test_report_feature_families_are_detected(self):
+        scan = scan_workbook({
+            "dashboards": [{"name": "Sales"}],
+            "aliases": [{"field": "Region"}, {"field": "Sales"}],
+            "sort_orders": [{"field": "Month"}],
+        })
+        keys = {u.key: u for u in scan.usages}
+        self.assertEqual(keys["dashboard"].count, 1)
+        self.assertEqual(keys["alias"].count, 2)
+        self.assertEqual(keys["sort_order"].count, 1)
+
 
 class TestScoring(unittest.TestCase):
     def test_empty_workbook_full_score(self):
@@ -219,14 +230,16 @@ class TestSerialization(unittest.TestCase):
         self.assertIn("gaps", d)
         self.assertIn("untracked_features", d)
 
-    def test_untracked_source_features_are_reported(self):
+    def test_report_feature_families_are_no_longer_untracked(self):
         scan = scan_workbook({
             "dashboards": [{"name": "Dashboard"}],
             "aliases": [{"field": "Region"}],
             "sort_orders": [{"field": "Month"}],
         })
-        self.assertEqual(scan.untracked_features,
-                         ["sort_orders", "aliases", "dashboards"])
+        self.assertEqual(scan.untracked_features, [])
+
+        scan = scan_workbook({"future_feature": [{"name": "Unknown"}]})
+        self.assertEqual(scan.untracked_features, [])
 
     def test_empty_untracked_source_features_are_ignored(self):
         scan = scan_workbook({"dashboards": [], "aliases": {}, "sort_orders": []})
@@ -284,6 +297,16 @@ class TestTargetEvidence(unittest.TestCase):
             evidence = collect_target_evidence(tmp, "Demo")
         self.assertEqual(evidence["story_bookmarks"],
                          ["Demo.Report/definition/bookmarks/b1/bookmark.json"])
+
+    def test_collects_dashboard_page_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            page = os.path.join(tmp, "Demo.Report", "definition", "pages",
+                                "p1", "page.json")
+            os.makedirs(os.path.dirname(page), exist_ok=True)
+            with open(page, "w", encoding="utf-8") as fh:
+                fh.write('{}')
+            evidence = collect_target_evidence(tmp, "Demo")
+        self.assertEqual(evidence["dashboard"], ["Demo.Report/definition/pages/p1/page.json"])
 
 
 class TestMCPIntegration(unittest.TestCase):

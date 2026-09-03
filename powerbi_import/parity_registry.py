@@ -104,6 +104,12 @@ _FEATURES: List[Feature] = [
         Feature("linguistic_schema", "Semantic Model", "Linguistic schema", HEALED,
             "TMDL Copilot/Q&A synonyms",
             "Review generated synonyms and validate them in the target semantic model."),
+            Feature("dashboard", "Report", "Dashboard", HEALED,
+                "PBIR report page", "Review page composition and dashboard-level interactions."),
+            Feature("alias", "Semantic Model", "Field alias", APPROXIMATED,
+                "Column caption or synonym", "Verify aliases remain available as target captions or synonyms."),
+            Feature("sort_order", "Semantic Model", "Sort order", HEALED,
+                "Sort-by-column or visual sort state", "Verify custom sort direction and sort-by-column behavior."),
     Feature("trend_line", "Analytics", "Trend line", APPROXIMATED,
             "Analytics-pane trend line", "Regression type may differ."),
     Feature("reference_line", "Analytics", "Reference line", EXACT,
@@ -266,6 +272,9 @@ _DETECTORS: Dict[str, Callable[[Dict], int]] = {
     "published_datasource": _len("published_datasources"),
     "custom_geocoding": _len("custom_geocoding"),
     "linguistic_schema": _count_linguistic_schema,
+    "dashboard": _len("dashboards"),
+    "alias": _len("aliases"),
+    "sort_order": _len("sort_orders"),
     "trend_line": _count_worksheet_list("trend_lines"),
     "reference_line": _count_worksheet_list("reference_lines"),
     "forecast": _count_worksheet_list("forecasting"),
@@ -399,8 +408,14 @@ def scan_workbook(converted: Dict, workbook: str = "Workbook") -> ParityScan:
     for source_key in dict.fromkeys(_SOURCE_FEATURE_KEYS):
         value = converted.get(source_key)
         in_use = bool(value) if not isinstance(value, dict) else bool(value)
+        singular_key = {
+            "aliases": "alias",
+            "dashboards": "dashboard",
+            "sort_orders": "sort_order",
+        }.get(source_key, source_key[:-1] if source_key.endswith("s") else source_key)
         detector_present = any(
-            feature_key == source_key or feature_key.startswith(f"{source_key}_")
+            feature_key in (source_key, singular_key)
+            or feature_key.startswith(f"{source_key}_")
             for feature_key in detector_keys
         )
         if in_use and not detector_present:
@@ -456,6 +471,9 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
 
     visual_paths = glob.glob(os.path.join(
         report_dir, "definition", "pages", "*", "visuals", "*", "visual.json"))
+    for path in glob.glob(os.path.join(
+            report_dir, "definition", "pages", "*", "page.json")):
+        add("dashboard", path)
     for path in sorted(visual_paths):
         data = _load_json_file(path)
         visual = data.get("visual") or {}
