@@ -40,6 +40,47 @@ Corpus-level parity measurements must use the extraction snapshot belonging to
 each workbook; the extractor writes a shared intermediate directory and a
 last-run snapshot must never be treated as evidence for every workbook.
 
+### Power BI Desktop Openability Confidence Indicator
+
+Every migration quality report should expose a separate openability confidence
+indicator. This is an evidence label, not a claim that Power BI Desktop has
+successfully opened the project.
+
+| Level | Meaning | Required evidence |
+|---|---|---|
+| **UNVERIFIED** | No usable target project exists or validation was not run. | Missing/invalid report evidence. |
+| **STATIC_PASS** | The generated PBIP passes the canonical local contract. | PBIP shell, JSON/PBIR, TMDL, M, executable DAX, semantic references, visual bindings, and report/model references all pass. |
+| **DESKTOP_SMOKE_PASS** | Power BI Desktop launched and remained healthy through the smoke window. | Windows Desktop probe result with pinned Desktop version, no crash/FrownDump, and no load-blocking trace. |
+| **DESKTOP_REOPEN_PASS** | The project opened, was saved/reopened, and remained valid. | Desktop smoke evidence plus post-save static validation and reopen evidence. |
+| **PRODUCTION_CONFIRMED** | Desktop, data refresh, and target deployment checks passed for the authorized environment. | `DESKTOP_REOPEN_PASS`, semantic execution, refresh, deployment, and post-deployment validation. |
+
+The indicator must be accompanied by machine-readable evidence:
+
+```json
+{
+  "openability_confidence": "STATIC_PASS",
+  "static_checks": {"passed": 12, "failed": 0},
+  "desktop": {"status": "not_run", "version": null},
+  "semantic_execution": "not_run",
+  "refresh": "not_run",
+  "deployment": "not_run"
+}
+```
+
+Rules:
+
+- A static pass must never be promoted to a Desktop or production level
+  automatically.
+- `DESKTOP_SMOKE_PASS` is not semantic or refresh validation; it only proves
+  that Desktop loaded without an observed crash or blocking trace.
+- `PRODUCTION_CONFIRMED` requires an explicitly authorized target environment;
+  credentials, workspace IDs, and customer data never belong in fixtures or
+  reports.
+- An unavailable Desktop or Fabric environment is reported as `not_run`, not
+  as a pass or failure.
+- Any blocking static check, semantic execution failure, or post-deployment
+  failure downgrades the indicator and creates a P0 remediation priority.
+
 | Version | Theme | Sprints | Status |
 |---------|-------|---------|--------|
 | **v22.0.0** | Real-World Fidelity & Layout Intelligence | 76–80 | ✅ Shipped |
