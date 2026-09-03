@@ -1,8 +1,8 @@
 # Development Roadmap — v22.0.0 → v46.0.0
 
-**Date:** 2026-08-26
+**Date:** 2026-09-03
 **Baseline:** v44.0.0 — 9,500+ tests (Python) + 38 extension unit tests, 0 collection errors
-**Current state:** v44.0.0 shipped. The current Fabric-native path generates and statically validates a six-artifact bundle with Direct Lake semantic-model partitions, item manifests, Dataflow-to-Lakehouse destinations, pipeline dependencies, and a single-workbook report binding. **Near-term focus (v45.0.0): measured migration performance, CI regression enforcement, and contract hardening. Next roadmap (v46.0.0): Desktop openability hardening, shared-model quality gates, documentation parity, and release discipline.**
+**Current state:** v44.0.0 shipped. The current Fabric-native path generates and statically validates a six-artifact bundle with Direct Lake semantic-model partitions, item manifests, Dataflow-to-Lakehouse destinations, pipeline dependencies, and a single-workbook report binding. The migration engine now has visual-size, table/column, and interface comparison tooling across the demo corpus. **Near-term focus (v45.0.0): measured migration performance, CI regression enforcement, and contract hardening. Next roadmap (v46.0.0): Desktop openability hardening, shared-model quality gates, documentation parity, and release discipline. v47.0.0 then turns feature parity and the full migration path into an evidence-backed product contract.**
 
 ---
 
@@ -41,6 +41,7 @@ The migration engine has broad PBIP, batch, shared-model, Tableau Server, self-h
 | **v44.0.0** | Agentic & Copilot-Native Migration | 215–220 | ✅ Shipped |
 | **v45.0.0** | Performance & Fabric Contract Completion | 222–226 | Planned |
 | **v46.0.0** | Desktop Reliability & Release Discipline | 227–231 | Planned |
+| **v47.0.0** | Feature Parity & End-to-End Migration Path | 232–237 | Planned |
 
 ---
 
@@ -172,6 +173,152 @@ Release criteria:
 - shared-model strict-thin-report tests green,
 - README/CLI/docs parity check complete,
 - no unresolved blocking risks in changelog release note.
+
+## v47.0.0 — Feature Parity & End-to-End Migration Path (Sprints 232–237)
+
+v47 makes migration fidelity a product contract rather than a collection of
+independent converters. It connects the full journey — assess, plan, extract,
+convert, generate, compare, self-heal, validate, package, and deploy — and
+requires every in-scope Tableau feature to have an observable Power BI target,
+an evidence record, or an explicit remediation path.
+
+### Outcomes
+
+- **No silent feature loss:** every used Tableau feature is classified as
+  `exact`, `equivalent`, `healed`, `approximated`, or `unsupported` with a
+  target mechanism and remediation note.
+- **Evidence over estimates:** parity is measured from generated PBIR, TMDL,
+  M, and deployment artifacts, not only from extraction counts.
+- **One migration path:** the same manifest and quality gates work for a
+  single workbook, batch migration, shared model, Tableau Server download,
+  and Fabric-native output.
+- **Recoverable execution:** each stage emits checkpoints, diagnostics, and a
+  rollback boundary so a failed migration can resume without starting over.
+- **Explicit production boundary:** local validation, Desktop validation, and
+  authorized Fabric deployment are reported as separate states.
+
+### Migration Path Contract
+
+```text
+Assess → Plan → Extract → Convert → Generate → Compare → Self-heal
+   → Verify openability → Package → Deploy → Post-deploy validate
+```
+
+Every stage must consume and update a versioned migration manifest containing:
+source identity, extracted feature inventory, strategy decisions, generated
+artifact paths, parity results, healing actions, validation results, and
+deployment state. A stage may stop the path only with a structured error and a
+resumable checkpoint.
+
+### Sprint 232 — Parity Contract v2 (@assessor, @reviewer)
+
+**Goal:** Upgrade the parity registry from feature recognition to source-to-target evidence.
+
+| # | Item | Owner | File(s) | Est. | Details |
+|---|------|-------|---------|------|---------|
+| 232.1 | Feature inventory schema | @assessor | `powerbi_import/parity_registry.py`, `powerbi_import/assessment.py` | High | Version feature records with source location, target artifact, status, confidence, evidence path, and remediation. |
+| 232.2 | Coverage matrix | @assessor | `powerbi_import/parity_registry.py`, `docs/MAPPING_REFERENCE.md` | Medium | Cover calculations, LODs, table calculations, filters, actions, parameters, RLS, marks, analytics, formatting, connections, extracts, Prep, and stories. |
+| 232.3 | Strict policy profiles | @reviewer | `powerbi_import/assessment.py`, `migrate.py` | Medium | Support `report`, `enterprise`, and `production` thresholds; distinguish allowed approximations from blocking unsupported features. |
+| 232.4 | Evidence report | @reviewer | `powerbi_import/comparison_report.py`, `powerbi_import/html_template.py` | Medium | Render source feature, generated target, validation result, and remediation in one report. |
+
+**Exit gate:** every in-use feature has a registry record and a machine-readable
+status; unsupported features cannot disappear from the report.
+
+### Sprint 233 — Semantic Calculation Parity (@dax, @wiring, @semantic)
+
+**Goal:** Improve correctness of calculations across DAX measures, calculated
+columns, Power Query M, LOD expressions, table calculations, parameters, and
+time intelligence.
+
+| # | Item | Owner | File(s) | Est. | Details |
+|---|------|-------|---------|------|---------|
+| 233.1 | Calculation dependency graph | @dax | `powerbi_import/dependency_graph.py`, `tableau_export/dax_converter.py` | High | Track source formula → DAX/M/TMDL target dependencies and identify unresolved references before report generation. |
+| 233.2 | Context-aware parity tests | @dax | `powerbi_import/equivalence_tester.py`, `powerbi_import/dax_query_generator.py` | High | Compare representative values for row context, filter context, totals, blanks, dates, LOD grain, and table-calculation partitions. |
+| 233.3 | M pushdown verification | @wiring | `powerbi_import/m_query_builder.py`, `powerbi_import/m_validator.py` | Medium | Prove calculated-column classification and validate injected M steps, quoting, ordering, and connector-specific behavior. |
+| 233.4 | Semantic model contract | @semantic | `powerbi_import/tmdl_generator.py`, `powerbi_import/cross_validator.py` | Medium | Validate relationships, cardinality, measures, calculated columns, parameters, Calendar, hierarchies, RLS, and field references together. |
+
+**Exit gate:** no unresolved calculation dependency in a report marked
+production-ready; each approximation includes a value-level or structural
+comparison result.
+
+### Sprint 234 — Visual & Interaction Parity (@visual, @extractor)
+
+**Goal:** Move from aggregate interface counts to meaningful PBIR behavior and
+layout evidence.
+
+| # | Item | Owner | File(s) | Est. | Details |
+|---|------|-------|---------|------|---------|
+| 234.1 | Visual binding comparison | @visual | `powerbi_import/visual_diff.py`, `powerbi_import/visual_size_diff.py` | High | Compare visual type, dimensions, placement, projections, field roles, titles, legends, axes, labels, and analytics configuration. |
+| 234.2 | Filter/action semantics | @visual | `powerbi_import/interface_diff.py`, `powerbi_import/pbip_generator.py` | High | Distinguish native PBI interactions, slicers, report/page/visual filters, parameter-driven logic, and intentional Tableau placeholders. |
+| 234.3 | Screenshot and interaction evidence | @visual | `powerbi_import/equivalence_tester.py`, `tests/` | High | Add deterministic visual snapshots where available and focused checks for slicer state, drill-through, bookmarks, navigation, and cross-filter behavior. |
+| 234.4 | Unsupported visual remediation | @visual | `powerbi_import/visual_generator.py`, `docs/KNOWN_LIMITATIONS.md` | Medium | Emit replacement guidance and preserve source metadata when no native PBI visual exists. |
+
+**Exit gate:** every generated visual has a traceable source worksheet and
+field-binding result; visual gaps are either accepted with evidence or block a
+strict profile.
+
+### Sprint 235 — Source-to-Target Migration Paths (@extractor, @tableau, @wiring, @generator)
+
+**Goal:** Make the migration strategy explicit and repeatable across source
+types instead of treating workbook conversion as the only primary path.
+
+| # | Item | Owner | File(s) | Est. | Details |
+|---|------|-------|---------|------|---------|
+| 235.1 | Strategy decision manifest | @orchestrator | `powerbi_import/strategy_advisor.py`, `powerbi_import/migration_planner.py` | Medium | Record Import, DirectQuery, Composite, Direct Lake, Dataflow, Notebook, and shared-model decisions with reasons and prerequisites. |
+| 235.2 | Source readiness matrix | @extractor | `powerbi_import/preflight.py`, `docs/TABLEAU_VERSION_COMPATIBILITY.md` | Medium | Assess TWB/TWBX, Hyper, Prep, published datasource, custom SQL, server/cloud, connector, credential, and extract dependencies before conversion. |
+| 235.3 | Path-specific generation | @generator | `powerbi_import/fabric_project_generator.py`, `powerbi_import/report_packager.py` | High | Produce a manifest-backed PBIP, Fabric-native, standalone Prep, shared-model, and server-download path with consistent outputs. |
+| 235.4 | Connection and credential handoff | @tableau, @deployer | `powerbi_import/connection_rewriter.py`, `powerbi_import/permission_mapper.py` | High | Separate sanitized templates from environment binding; report unresolved gateways, identities, permissions, and credentials as explicit prerequisites. |
+
+**Exit gate:** a migration plan can be generated before conversion and names
+the selected target path, required inputs, expected artifacts, risks, and
+post-migration owner.
+
+### Sprint 236 — Closed-Loop Validation & Self-Healing (@reviewer, @tester, @dax, @wiring, @visual)
+
+**Goal:** Join comparison, openability, self-healing, and QA into one
+deterministic quality loop.
+
+| # | Item | Owner | File(s) | Est. | Details |
+|---|------|-------|---------|------|---------|
+| 236.1 | Unified validation runner | @tester | `scripts/compare_full_fidelity.py`, `powerbi_import/qa_suite.py` | Medium | Run visual, data, semantic, interface, openability, and packaging checks from one manifest. |
+| 236.2 | Healing evidence loop | @reviewer | `powerbi_import/healing.py`, `powerbi_import/recovery_report.py` | Medium | Record each repair, re-run the affected comparison, and reject a repair that reduces parity or openability. |
+| 236.3 | Portfolio regression baseline | @tester | `tests/`, `scripts/` | High | Maintain sanitized fixture baselines by feature category and detect drift across single, batch, shared-model, and Fabric paths. |
+| 236.4 | Quality policy enforcement | @orchestrator | `migrate.py`, `powerbi_import/rollback_engine.py` | Medium | Make strict parity, openability, and unresolved-prerequisite policies compose without silently downgrading failures to warnings. |
+
+**Exit gate:** one command produces a reproducible report showing what was
+converted, what was healed, what was compared, what remains, and whether the
+selected policy allows delivery.
+
+### Sprint 237 — Migration Operations & Release (@orchestrator, @deployer, @reviewer)
+
+**Goal:** Turn a validated migration into a controlled handoff and make the
+path usable by teams at portfolio scale.
+
+| # | Item | Owner | File(s) | Est. | Details |
+|---|------|-------|---------|------|---------|
+| 237.1 | Checkpointed execution | @orchestrator | `migrate.py`, `powerbi_import/incremental.py` | High | Resume after extraction, generation, validation, or deployment failure without repeating completed stages. |
+| 237.2 | Migration package contract | @assessor | `powerbi_import/report_packager.py`, `docs/MIGRATION_CHECKLIST.md` | Medium | Package source inventory, plan, parity report, healing ledger, validation results, credentials template, and rollback instructions. |
+| 237.3 | Deployment handoff | @deployer | `powerbi_import/deploy/`, `docs/DEPLOYMENT_GUIDE.md` | High | Keep dry-run, preflight, authorized deployment, refresh, gateway binding, and post-deploy validation as distinct auditable states. |
+| 237.4 | Portfolio dashboard | @assessor | `powerbi_import/server_assessment.py`, `powerbi_import/telemetry_insights.py` | Medium | Track migration status, parity, blockers, effort, remediation, and production readiness across a portfolio. |
+
+**Exit gate:** a production handoff contains sufficient evidence for another
+operator to understand the source, target, known differences, required
+configuration, rollback point, and validation status.
+
+### v47 Release Gates
+
+- 100% of in-use source features are classified and included in the parity
+  report; no silent drops.
+- Strict production profiles have no unresolved unsupported feature, broken
+  dependency, invalid M/DAX expression, dangling PBIR reference, or missing
+  required connection prerequisite.
+- Full-fidelity comparison passes for the sanitized demo corpus across visual
+  geometry, table/column coverage, semantic bindings, and interface behavior.
+- Self-healing actions are auditable, idempotent, and revalidated after repair.
+- Every migration path emits the same versioned manifest and can resume from a
+  checkpoint.
+- Deployment is never represented as complete until the authorized target has
+  passed post-deploy validation; local generation alone remains a local result.
 
 ---
 
