@@ -12,9 +12,9 @@
       "connectionId": "conn-pg-crm",
       "connectionAttributes": {
         "class": "postgres",
-        "server": "crm-db.corp.local",
+        "server": "db.example.com",
         "port": "5432",
-        "dbname": "crm_production",
+        "dbname": "sample_crm",
         "schema": "public",
         "table": "customers"
       },
@@ -114,9 +114,9 @@
     "conn-pg-crm": {
       "connectionAttributes": {
         "class": "postgres",
-        "server": "crm-db.corp.local",
+        "server": "db.example.com",
         "port": "5432",
-        "dbname": "crm_production",
+        "dbname": "sample_crm",
         "schema": "public",
         "table": "customers"
       }

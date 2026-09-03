@@ -31,6 +31,12 @@ def _find_free_port():
         return s.getsockname()[1]
 
 
+class TestServerBindingSecurity(unittest.TestCase):
+    def test_non_loopback_requires_api_key(self):
+        with self.assertRaisesRegex(ValueError, 'api_key is required'):
+            run_server(host='0.0.0.0', port=0)
+
+
 class _ServerTestBase(unittest.TestCase):
     """Base class that starts a test server on a random port."""
 

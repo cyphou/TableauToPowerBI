@@ -4,6 +4,14 @@ Use this checklist after running the migration tool to validate the generated Po
 
 ---
 
+## 0. Openability Preflight (before opening Desktop)
+
+- [ ] Confirm the migration reported `openable=true` (the static gate runs by default)
+- [ ] If `openable=false`, read `openability_report.json` blocking issues and fix at the source generator
+- [ ] Optionally run `--autoheal` (add `--llm-autofix` for opt-in LLM correction) to recover automatically
+- [ ] For shared models, resolve `--strict-thin-report` orphan violations before opening
+- [ ] Use `--desktop-probe` only as a best-effort real-Desktop smoke test; `--verify-open` stays authoritative
+
 ## 1. Open & Load
 
 - [ ] Open the `.pbip` file in Power BI Desktop (March 2025+)

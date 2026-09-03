@@ -97,6 +97,27 @@ class TestComparePerfBaselines(unittest.TestCase):
             self.assertIn('fixtures', saved)
             self.assertIn('# Performance Trend Diff', md)
 
+    def test_main_can_fail_on_regression(self):
+        with tempfile.TemporaryDirectory() as root:
+            current_dir = os.path.join(root, 'current')
+            previous_dir = os.path.join(root, 'previous')
+            os.makedirs(current_dir)
+            os.makedirs(previous_dir)
+            with open(os.path.join(current_dir, 'fixture.json'), 'w', encoding='utf-8') as handle:
+                json.dump(_baseline('fixture.twb', total=2.0), handle)
+            with open(os.path.join(previous_dir, 'fixture.json'), 'w', encoding='utf-8') as handle:
+                json.dump(_baseline('fixture.twb', total=1.0), handle)
+
+            exit_code = compare_perf_baselines.main([
+                '--current-dir', current_dir,
+                '--previous-dir', previous_dir,
+                '--output-json', os.path.join(root, 'trend.json'),
+                '--output-md', os.path.join(root, 'trend.md'),
+                '--fail-on-regression',
+            ])
+
+            self.assertEqual(exit_code, 1)
+
 
 if __name__ == '__main__':
     unittest.main()

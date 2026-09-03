@@ -26,6 +26,8 @@ import concurrent.futures
 from datetime import datetime
 from enum import IntEnum
 
+from powerbi_import.security_validator import safe_zip_extract_member, SecurityError
+
 
 # ── Structured exit codes ────────────────────────────────────────────
 
@@ -1381,7 +1383,7 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
 
 def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, display_name,
                              skip_extraction, wb_prep, wb_cal_start, wb_cal_end, wb_culture,
-                             verify_open=True):
+                             verify_open=True, output_format='pbip'):
     """Migrate a single workbook — used by both sequential and parallel batch modes.
 
     For .tfl/.tflx files, delegates to _migrate_single_prep_flow() which produces
@@ -1423,6 +1425,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         calendar_start=wb_cal_start,
         calendar_end=wb_cal_end,
         culture=wb_culture,
+        output_format=output_format,
     )
 
     # Step 3: Migration report
@@ -1677,7 +1680,7 @@ def _run_full_lineage(batch_results, migrated_root):
 def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extraction=False,
                         calendar_start=None, calendar_end=None, culture=None,
                         parallel=None, resume=False, jsonl_log=None, manifest=None,
-                        full_lineage=False, verify_open=True):
+                        full_lineage=False, verify_open=True, output_format='pbip'):
     """Batch migrate all .twb/.twbx files in a directory (recursive).
 
     Searches the directory tree recursively for Tableau workbooks and
@@ -1699,6 +1702,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         resume: Skip workbooks with existing .pbip output
         jsonl_log: Path to write structured JSONL migration events
         manifest: List of manifest entries [{file, culture, calendar_start, ...}] for per-workbook config
+        output_format: ``pbip`` or ``fabric`` generation target
 
     Returns:
         int: 0 if all succeeded, 1 if any failed
@@ -1773,7 +1777,9 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             rel = os.path.relpath(os.path.dirname(twb), batch_dir)
             out_base = os.path.join(migrated_root, rel) if rel != '.' else migrated_root
             pbip_path = os.path.join(out_base, bn, f'{bn}.pbip')
-            if os.path.exists(pbip_path):
+            fabric_model = os.path.join(out_base, bn, f'{bn}.SemanticModel')
+            completed_path = fabric_model if output_format == 'fabric' else pbip_path
+            if os.path.exists(completed_path):
                 logger.info("Resume: skipping already-completed %s", bn)
                 _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': pbip_path})
             else:
@@ -1834,6 +1840,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'wb_cal_start': wb_cal_start,
             'wb_cal_end': wb_cal_end,
             'wb_culture': wb_culture,
+            'output_format': output_format,
         })
 
     def _run_task(task):
@@ -1859,6 +1866,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             wb_cal_start=task['wb_cal_start'],
             wb_cal_end=task['wb_cal_end'],
             wb_culture=task['wb_culture'],
+            output_format=task['output_format'],
             verify_open=verify_open,
         )
 
@@ -2616,7 +2624,7 @@ def _add_server_args(parser):
         '--server',
         metavar='URL',
         default=None,
-        help='Tableau Server/Cloud URL (e.g., https://tableau.company.com)'
+        help='Tableau Server/Cloud URL (e.g., https://tableau.example.com)'
     )
 
     parser.add_argument(
@@ -5239,6 +5247,7 @@ def main():
             manifest=manifest_data,
             full_lineage=getattr(args, 'full_lineage', False),
             verify_open=getattr(args, 'verify_open', True),
+            output_format=getattr(args, 'output_format', 'pbip'),
         )
 
     # ── Single file migration ─────────────────────────────────
@@ -6495,11 +6504,13 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename):
                 if ext in _SKIP_EXT or entry.endswith('/'):
                     continue
                 dest = os.path.join(project_dir, entry)
+                content = safe_zip_extract_member(
+                    zf, entry, target_dir=project_dir)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with zf.open(entry) as src, open(dest, 'wb') as dst:
-                    dst.write(src.read())
+                with open(dest, 'wb') as dst:
+                    dst.write(content)
                 extracted_files.append(entry)
-    except (zipfile.BadZipFile, OSError) as exc:
+    except (zipfile.BadZipFile, OSError, SecurityError, ValueError) as exc:
         logger.warning("Could not extract TWBX data files: %s", exc)
         return
 

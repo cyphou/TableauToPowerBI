@@ -1809,7 +1809,7 @@ class TestExtractPublishedDatasources(unittest.TestCase):
         root = ET.fromstring('''
         <workbook>
             <datasource name="ProxiedDS" caption="Proxied">
-                <connection class="sqlproxy" server="tableau.company.com" dbname="/shared/ds"/>
+                <connection class="sqlproxy" server="tableau.example.com" dbname="/shared/ds"/>
             </datasource>
         </workbook>''')
         self.ext.extract_published_datasources(root)

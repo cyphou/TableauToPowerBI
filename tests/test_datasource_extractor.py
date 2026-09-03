@@ -777,7 +777,7 @@ class TestRenameSqlproxyTables(unittest.TestCase):
         # table named after the caption rather than 'sqlproxy'.
         xml = '''
         <datasource name="sqlproxy.abc" caption="My Published DS">
-          <connection class="sqlproxy" server="tableau.company.com" dbname="ds-id" />
+          <connection class="sqlproxy" server="tableau.example.com" dbname="ds-id" />
           <relation type="table" name="sqlproxy">
             <columns>
               <column name="Id" datatype="integer" ordinal="0" />

@@ -12,7 +12,7 @@
       "connectionId": "conn-sales-summary",
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Sales_Summary"
       },
@@ -36,7 +36,7 @@
       "connectionId": "conn-returns-analysis",
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Returns_Analysis"
       },
@@ -104,7 +104,7 @@
       "nextNodes": [],
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Executive_KPIs"
       },
@@ -129,7 +129,7 @@
     "conn-sales-summary": {
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Sales_Summary"
       }
@@ -137,7 +137,7 @@
     "conn-returns-analysis": {
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Returns_Analysis"
       }

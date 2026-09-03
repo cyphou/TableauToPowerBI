@@ -156,7 +156,7 @@ Tableau has multiple security mechanisms, all converted to Power BI RLS roles:
    ```tmdl
    role 'Region Access'
        tablePermission Orders
-           filterExpression = (USERPRINCIPALNAME() = "alice@co.com" && [Region] IN {"East", "West"}) || ...
+           filterExpression = (USERPRINCIPALNAME() = "alice@example.com" && [Region] IN {"East", "West"}) || ...
    ```
 
 2. **USERNAME() / FULLNAME() calculations**:
@@ -278,6 +278,28 @@ Tableau relationships (joins) are converted to Power BI relationships:
 - Join columns become the relationship keys
 
 ## Validation & Deployment
+
+### Why does my project fail the openability gate?
+
+Every PBIP migration runs a static openability preflight by default. It checks project
+structure, JSON parsing, TMDL presence, TMDL partitions, Power Query (M) validity, DAX,
+report/model references, report structure, and PBIR schema — without launching Power BI
+Desktop. If it reports `openable=false`, read the listed blocking issues; the most common
+cause is an invalid generated M partition. Fix the source generator, not the emitted
+`.tmdl`. Re-run with `--no-verify-open` only to bypass the gate deliberately for diagnosis.
+
+To attempt automatic recovery before opening, run `--autoheal` (deterministic DAX/M/visual
+healing). Add `--llm-autofix` to allow opt-in LLM correction, which is applied only when the
+result re-validates cleanly. For a best-effort real Desktop smoke test, use the explicit
+`--desktop-probe`; the static `--verify-open` result stays authoritative.
+
+### Why did strict thin-report validation block my shared model?
+
+`--strict-thin-report` fails shared-model generation when orphaned thin-report field
+references exceed `--thin-report-max-orphans` (default `0`). Orphaned fields are report
+fields that do not resolve to a column or measure in the merged semantic model. Either map
+them via the field mapping, raise the threshold, or remove `--strict-thin-report` to proceed
+with warnings instead of a hard failure.
 
 ### How do I validate generated projects?
 

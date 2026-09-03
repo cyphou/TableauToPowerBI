@@ -9,7 +9,7 @@
       <connection class='federated'>
         <named-connections>
           <named-connection caption='MarketingMySQL' name='mysql.mktg'>
-            <connection class='mysql' server='analytics-mysql.corp.local' port='3306' dbname='marketing_db' />
+            <connection class='mysql' server='mysql.example.com' port='3306' dbname='marketing_db' />
           </named-connection>
         </named-connections>
         <!-- Two-table join: Campaigns + Leads (left join → manyToOne) -->

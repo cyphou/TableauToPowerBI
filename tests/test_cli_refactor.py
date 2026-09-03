@@ -366,6 +366,29 @@ class TestSingleMigrationHelpers(unittest.TestCase):
         self.assertTrue(result['success'])
         gate.assert_not_called()
 
+    def test_batch_workbook_forwards_fabric_output_format(self):
+        import migrate
+        with tempfile.TemporaryDirectory() as output_dir, \
+                patch('migrate.run_extraction', return_value=True), \
+                patch('migrate.run_generation', return_value=True) as generation, \
+                patch('migrate.run_migration_report', return_value={}), \
+                patch('migrate._run_openability_gate', return_value=True):
+            result = migrate._migrate_single_workbook(
+                tableau_file='test.twb',
+                basename='test',
+                workbook_output_dir=output_dir,
+                display_name='test',
+                skip_extraction=False,
+                wb_prep=None,
+                wb_cal_start=None,
+                wb_cal_end=None,
+                wb_culture=None,
+                output_format='fabric',
+            )
+
+        self.assertTrue(result['success'])
+        self.assertEqual(generation.call_args.kwargs['output_format'], 'fabric')
+
     def test_print_single_migration_header(self):
         import migrate
         args = argparse.Namespace(

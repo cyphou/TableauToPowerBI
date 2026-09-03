@@ -33,6 +33,22 @@ useful flags by intent.
 | `--assess-merge` | Score whether workbooks should merge |
 | `--global-assess --batch DIR` | Pairwise merge scoring across a portfolio |
 
+## Performance baselines
+
+The standalone scripts in `scripts/` keep performance measurement separate from
+the migration CLI:
+
+```bash
+python scripts/run_perf_baseline.py --help
+python scripts/compare_perf_baselines.py --current-dir current --previous-dir previous \
+	--output-json reports/trend.json --output-md reports/trend.md
+python scripts/compare_perf_baselines.py --current-dir current --previous-dir previous \
+	--output-json reports/trend.json --output-md reports/trend.md --fail-on-regression
+```
+
+`--fail-on-regression` is opt-in and exits with status 1 when a lower-is-better
+metric exceeds the configured threshold; report generation still occurs first.
+
 ## Tableau Server / Cloud
 
 | Flag | Purpose |

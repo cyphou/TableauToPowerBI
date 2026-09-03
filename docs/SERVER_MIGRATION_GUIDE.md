@@ -34,7 +34,7 @@ Discover all workbooks, datasources, users, groups, and their dependencies:
 
 ```bash
 python migrate.py \
-  --server https://tableau.company.com \
+  --server https://tableau.example.com \
   --token-name my-pat \
   --server-discover \
   --output-dir artifacts/enterprise_migration
@@ -57,7 +57,7 @@ Generate a dependency-aware migration plan with wave assignments and effort esti
 
 ```bash
 python migrate.py \
-  --server https://tableau.company.com \
+  --server https://tableau.example.com \
   --token-name my-pat \
   --plan-migration \
   --team-size 3 \
@@ -88,7 +88,7 @@ Download and migrate all workbooks from a project:
 
 ```bash
 python migrate.py \
-  --server https://tableau.company.com \
+  --server https://tableau.example.com \
   --token-name my-pat \
   --server-batch Marketing \
   --server-assets all \
@@ -104,7 +104,7 @@ When workbooks reference published datasources (sqlproxy connections), use
 
 ```bash
 python migrate.py \
-  --server https://tableau.company.com \
+  --server https://tableau.example.com \
   --token-name my-pat \
   --server-batch Sales \
   --resolve-published-ds \
@@ -127,7 +127,7 @@ Map Tableau site roles to PBI workspace roles and generate Azure AD provisioning
 
 ```bash
 python migrate.py \
-  --server https://tableau.company.com \
+  --server https://tableau.example.com \
   --token-name my-pat \
   --map-permissions \
   --output-dir artifacts/enterprise_migration
@@ -153,7 +153,7 @@ Migrate Tableau Server subscriptions and data-driven alerts to PBI equivalents:
 
 ```bash
 python migrate.py \
-  --server https://tableau.company.com \
+  --server https://tableau.example.com \
   --token-name my-pat \
   --migrate-subscriptions \
   --output-dir artifacts/enterprise_migration
@@ -177,14 +177,14 @@ Execute a controlled cutover from Tableau to Power BI:
 ```bash
 # Generate cutover plan only (review before executing)
 python migrate.py \
-  --server https://tableau.company.com \
+  --server https://tableau.example.com \
   --token-name my-pat \
   --cutover-plan-only \
   --output-dir artifacts/enterprise_migration
 
 # Execute cutover
 python migrate.py \
-  --server https://tableau.company.com \
+  --server https://tableau.example.com \
   --token-name my-pat \
   --cutover \
   --output-dir artifacts/enterprise_migration
@@ -203,7 +203,7 @@ python migrate.py --cutover-rollback artifacts/enterprise_migration/snapshots/20
 
 ```bash
 python migrate.py \
-  --server https://tableau.company.com \
+  --server https://tableau.example.com \
   --token-name my-pat \
   --parallel-run \
   --output-dir artifacts/enterprise_migration
@@ -215,7 +215,7 @@ Complete enterprise migration in one script:
 
 ```bash
 #!/bin/bash
-SERVER="https://tableau.company.com"
+SERVER="https://tableau.example.com"
 TOKEN="my-pat"
 OUT="artifacts/enterprise"
 

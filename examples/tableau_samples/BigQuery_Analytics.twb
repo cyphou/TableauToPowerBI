@@ -8,7 +8,7 @@
       <connection class='federated'>
         <named-connections>
           <named-connection caption='BigQuery Analytics' name='bigquery'>
-            <connection class='bigquery' project='my-analytics-project' dataset='web_data' service-account-email='analytics@my-project.iam.gserviceaccount.com' />
+            <connection class='bigquery' project='example-analytics-project' dataset='web_data' service-account-email='analytics@example.com' />
           </named-connection>
         </named-connections>
         <relation connection='bigquery' name='sessions' table='web_data.sessions' type='table'>

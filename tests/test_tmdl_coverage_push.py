@@ -1563,8 +1563,8 @@ class TestIntegrationRlsRoles(unittest.TestCase):
             'name': 'RegionFilter',
             'column': 'Region',
             'user_mappings': [
-                {'user': 'alice@co.com', 'value': 'East'},
-                {'user': 'alice@co.com', 'value': 'West'},
+                {'user': 'alice@example.com', 'value': 'East'},
+                {'user': 'alice@example.com', 'value': 'West'},
                 {'user': 'bob@co.com', 'value': 'North'},
             ],
         }]

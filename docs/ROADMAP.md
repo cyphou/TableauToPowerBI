@@ -1,14 +1,14 @@
 # Development Roadmap — v22.0.0 → v46.0.0
 
-**Date:** 2026-07-16
-**Baseline:** v40.0.0 — 9,156 tests (Python) + 38 extension unit tests, 0 collection errors
-**Current state:** v44.0.0 shipped. A 2026-07-15 executable audit confirmed that the Fabric-native path generates a useful five-artifact scaffold, but is not yet an operational end-to-end Direct Lake solution: semantic-model partitions are Import/M, Dataflow and pipeline bindings are unresolved, three item manifests are missing, and single-workbook Fabric output has no Power BI report. **Near-term focus (v45.0.0): measured migration performance and completion of the Fabric contract. Next roadmap (v46.0.0): Desktop openability hardening, shared-model quality gates, and release discipline.**
+**Date:** 2026-08-26
+**Baseline:** v44.0.0 — 9,500+ tests (Python) + 38 extension unit tests, 0 collection errors
+**Current state:** v44.0.0 shipped. The current Fabric-native path generates and statically validates a six-artifact bundle with Direct Lake semantic-model partitions, item manifests, Dataflow-to-Lakehouse destinations, pipeline dependencies, and a single-workbook report binding. **Near-term focus (v45.0.0): measured migration performance, CI regression enforcement, and contract hardening. Next roadmap (v46.0.0): Desktop openability hardening, shared-model quality gates, documentation parity, and release discipline.**
 
 ---
 
 ## Executive Summary
 
-The migration engine has broad PBIP, batch, shared-model, Tableau Server, self-healing, and developer-tooling coverage. Fabric-native generation currently provides a **preview scaffold**, not a production-ready end-to-end chain. v45 closes that gap and establishes reproducible time and memory budgets before further optimization claims are made.
+The migration engine has broad PBIP, batch, shared-model, Tableau Server, self-healing, and developer-tooling coverage. Fabric-native generation now provides a **validated six-artifact scaffold**; environment-specific identities, connections, live deployment, and operational Fabric smoke tests remain outside the local deterministic contract. v45 establishes reproducible time and memory budgets and hardens that contract before production claims are made.
 
 | Version | Theme | Sprints | Status |
 |---------|-------|---------|--------|
@@ -20,7 +20,7 @@ The migration engine has broad PBIP, batch, shared-model, Tableau Server, self-h
 | **v27.0.0** | Advanced Intelligence & Marketplace | 101–107 | ✅ Shipped |
 | **v28.0.0** | Extensibility & Core Infrastructure | 108–111, 118–119 | ✅ Shipped |
 | **v28.2.0** | Standalone Prep Flow Pipeline | — | ✅ Shipped |
-| **v28.4.0** | 14-Agent Model & Cross-Table SUM Fix | — | ✅ Shipped |
+| **v28.4.0** | 15-Agent Model & Cross-Table SUM Fix | — | ✅ Shipped |
 | **v28.5.x** | DAX/M Correctness Hardening | Patch series | ✅ Shipped |
 | **v30.0.0** | Correctness, Observability & Self-Healing | 128–134 | ✅ Shipped |
 | **v31.0.0–v31.6.0** | Self-Healing v3 & Zero-Error Phases 1–10 | 136–150 | ✅ Shipped |
@@ -37,7 +37,7 @@ The migration engine has broad PBIP, batch, shared-model, Tableau Server, self-h
 | **v40.0.0** | VS Code Extension & Interactive Tooling | 185–189 | ✅ Shipped |
 | **v41.0.0** | Real-Time, Streaming & Paginated Reports | 190–194 | Planned |
 | **v42.0.0** | Ecosystem Maturity & GA Polish | 195–199 | Planned |
-| **v43.0.0** | Self-Healing Maturity & Functionality Parity | 209–214 | 🎯 Next |
+| **v43.0.0** | Self-Healing Maturity & Functionality Parity | 209–214 | ✅ Shipped |
 | **v44.0.0** | Agentic & Copilot-Native Migration | 215–220 | ✅ Shipped |
 | **v45.0.0** | Performance & Fabric Contract Completion | 222–226 | Planned |
 | **v46.0.0** | Desktop Reliability & Release Discipline | 227–231 | Planned |
@@ -47,8 +47,7 @@ The migration engine has broad PBIP, batch, shared-model, Tableau Server, self-h
 ## v45.0.0 — Performance & Fabric Contract Completion (Sprints 222–226)
 
 The implementation-grade plan, measured baselines, owners, acceptance criteria, and
-release gates are maintained in
-[PERFORMANCE_FABRIC_V45_PLAN.md](PERFORMANCE_FABRIC_V45_PLAN.md).
+release gates are maintained in this roadmap and the linked source/test artifacts.
 
 Verified audit baseline:
 
@@ -56,22 +55,60 @@ Verified audit baseline:
 - Fabric and CLI focused suites: 173 passed.
 - Performance suites: 28 passed, 2 failed; `Enterprise_Sales` took 6.10 s and
   `Complex_Enterprise` took 14.38 s against the current 5.00 s budget.
-- Current Fabric output has six unresolved pipeline placeholders, only two item
-  manifests, Import/M semantic-model partitions, and no single-workbook report.
+- Current Fabric output is locally validated as a six-artifact bundle. Remaining
+  v45 work is environment-aware binding verification, performance regression
+  enforcement, and opt-in live Fabric smoke testing.
 
 v45 sequencing:
 
 | Sprint | Theme | Primary exit gate |
 |--------|-------|-------------------|
-| **222** | Performance baseline and observability | Phase timings, peak memory, stable benchmark runner, CI trend artifact |
-| **223** | Profile-led hot-path optimization | Current performance regressions resolved without fidelity loss |
+| **222** | Performance baseline and observability | Phase timings, peak memory, stable benchmark runner, CI trend artifact; `compare_perf_baselines.py --fail-on-regression` now provides the opt-in CI exit gate |
+| **223** | Profile-led hot-path optimization | Current performance regressions resolved without fidelity loss (started: relationship-inference `.lower()` caching removes ~24% of warm generation function calls) |
 | **224** | True Direct Lake and artifact contract | Entity/Direct Lake partitions, complete manifests, concrete Lakehouse/Dataflow mapping |
 | **225** | Pipeline, Power BI report, and native deployment | Six-artifact chain deploys in dependency order with resolvable IDs |
 | **226** | Contract/performance gates and release | Static cross-validation plus opt-in live Fabric smoke test pass |
 
 Until the Sprint 226 gates pass, documentation and CLI output must describe
-`--output-format fabric` as **Fabric scaffold / preview**, not as a complete
-production-ready Direct Lake migration.
+`--output-format fabric` as a **validated local scaffold**, not as a complete
+production-ready Fabric deployment. Local Direct Lake structure and report
+bindings are validated; live identity, connection, and deployment behavior
+still require an explicitly authorized environment.
+
+## Next-Release Execution Matrix (All Agents)
+
+This is the working assignment for v45/v46. Each agent owns the listed
+deliverables and must add focused tests or documentation evidence before the
+release gate is marked complete.
+
+| Agent | v45/v46 responsibility | Release evidence |
+|-------|------------------------|------------------|
+| **@orchestrator** | Coordinate CLI flags, pipeline ordering, documentation parity, and release gates | CLI/docs parity report and green gate summary |
+| **@extractor** | Validate public `.twb`, `.twbx`, `.tfl`, and `.tds` fixture coverage and extraction stability | Fixture matrix and extraction regression tests |
+| **@tableau** | Verify Tableau Server/Cloud and Prep-flow boundaries without embedding private endpoints | Server/Prep compatibility notes and sanitized fixtures |
+| **@dax** | Harden DAX validation/healing and preserve conversion fidelity | DAX validator/healer regression suite |
+| **@wiring** | Validate M partition generation, calculated-column pushdown, and connector wiring | M validation report and connector tests |
+| **@semantic** | Complete Direct Lake model contract, relationships, RLS, and non-empty shared models | TMDL/schema cross-validation and shared-model tests |
+| **@visual** | Preserve PBIR layout, visual bindings, filters, and report references | PBIR schema/openability and visual regression evidence |
+| **@converter** | Coordinate cross-cutting DAX/M conversion risks and compatibility notes | Conversion issue triage and targeted regression coverage |
+| **@generator** | Complete Fabric manifests, artifact bindings, and pipeline placeholders | Validated five/six-artifact bundle with resolvable references |
+| **@assessor** | Maintain readiness, parity, QA, performance, and migration-plan scoring | Assessment/parity/QA report consistency checks |
+| **@merger** | Enforce non-empty shared semantic models and thin-report orphan thresholds | Strict merge/thin-report test results |
+| **@deployer** | Validate guarded deployment, identity configuration, and release/branch checks | Dry-run, preflight, and deployment contract tests |
+| **@reviewer** | Run the preceptorship loop and review release documentation for unsupported claims | Review scorecard with no unresolved blocking findings |
+| **@web-designer** | Keep the light UI and agent-facing workflows aligned with current CLI/report states | UI smoke checks and updated workflow documentation |
+| **@tester** | Own cross-cutting regression, fixture hygiene, and opt-in live-environment tests | Full suite, focused gates, and sanitized-fixture audit |
+
+### Public Fixture Policy
+
+The repository already includes public or synthetic coverage for Tableau XML,
+packaged workbooks, Prep flows, data sources, Hyper extracts, dashboards,
+calculations, parameters, RLS, blending, and multiple connector families. New
+downloads are warranted only when they close a documented format or behavior
+gap. Every addition must have a public source URL, license/provenance entry in
+`examples/real_world/SOURCES.md`, no embedded credentials or private endpoints,
+and a focused regression test. Do not add customer workbooks, server exports,
+tenant metadata, or unverified files merely to increase fixture count.
 
 ---
 
@@ -120,7 +157,7 @@ v46 converts recent quality hardening into a repeatable, release-grade contract:
 
 | # | Item | Owner | File(s) | Est. | Details |
 |---|------|-------|---------|------|---------|
-| 230.1 | Safe push helper | @orchestrator | `scripts/`, `docs/DEVELOPMENT_PLAN.md` | Medium | Add documented non-interactive push guidance (`gc.auto=0`, `maintenance.auto=false`) for noisy Windows environments. |
+| 230.1 | Safe push helper | @orchestrator | `scripts/` | Medium | Add documented non-interactive push guidance (`gc.auto=0`, `maintenance.auto=false`) for noisy Windows environments. |
 | 230.2 | Commit scope guardrails | @tester | `tests/` + CI checks | Low | Validate docs-only commits do not accidentally include perf probes or unrelated artifacts. |
 | 230.3 | Branch protection compatibility checks | @deployer | `.github/workflows/` | Low | Ensure required checks and PR flow remain compatible with release cadence. |
 
@@ -1229,7 +1266,7 @@ Standalone `.tfl`/`.tflx` Tableau Prep flow files in `--batch` mode were incorre
 ## v29.0.0 — Migration Completeness & Enterprise Operations (Sprints 112–117, 120–127) ✅ Shipped
 
 > v29.0.0 combines the remaining v28 Phase 2–3 items (Sprints 112–117) with the original v29 Phase 2–4 items (Sprints 120–127).
-> See [GAP_ANALYSIS.md §13](GAP_ANALYSIS.md) for the gap priority matrix driving this sprint order.
+> The roadmap's gap and priority tables drive this sprint order.
 > **Status:** Shipped across v29.0.0–v37.0.0. Sprint 115 (PDF Export) deferred to v38.2.0.
 
 ### Phase 1 — Intelligence & UX (Sprints 112–114)
@@ -1503,7 +1540,7 @@ These were originally v28.0.0 Phase 2–3 but deferred to v29.0.0 to ship v28.x 
 | Dynamic format strings | Conditional FORMAT() DAX measures | Sprint 124 |
 | Permission mapping | Tableau users/groups → Azure AD mapping report | Sprint 125 |
 | Power Automate flows | Subscriptions/alerts → flow definition JSON | Sprint 126 |
-| **Migration Confidence Score** | **≥95.5 (Grade A+)** | See [GAP_ANALYSIS.md §12](GAP_ANALYSIS.md) |
+| **Migration Confidence Score** | **≥95.5 (Grade A+)** | See the migration assessment and limitations tables |
 | Tests | **7,200+** | Sprint 127 |
 
 ### v29.0.0 Agent Ownership Matrix
@@ -1640,7 +1677,7 @@ These were originally v28.0.0 Phase 2–3 but deferred to v29.0.0 to ship v28.x 
 |---|------|-------|---------|------|---------|
 | 134.1 | **Version bump** | @orchestrator | `pyproject.toml`, `CHANGELOG.md` | Low | ✅ Done — `28.5.8` → `30.0.0`, CHANGELOG documents Sprints 128–134 |
 | 134.2 | **Real-world re-validation** | @tester | `tests/test_real_world_e2e.py` | Medium | ✅ Done — 8,008 tests pass, 0 new failures |
-| 134.3 | **Migration Confidence Score recompute** | @assessor | `docs/GAP_ANALYSIS.md` | Low | ✅ Target met — zero regressions in full suite |
+| 134.3 | **Migration Confidence Score recompute** | @assessor | `docs/KNOWN_LIMITATIONS.md` | Low | ✅ Target met — zero regressions in full suite |
 | 134.4 | **Docs refresh** | @orchestrator | `docs/*.md`, `README.md` | Medium | ✅ Done — ROADMAP updated for all sprints 128–134 |
 | 134.5 | **PyPI publish** | @deployer | `.github/workflows/publish.yml` | Low | Ready — tag `v30.0.0` to publish |
 | 134.6 | **Test baseline** | @tester | — | — | ✅ **8,008 tests** (target was 7,400+) |
@@ -1759,7 +1796,7 @@ The pattern: every silent failure mode caught in v28.5.x becomes a class of test
 | 138.1 | **Version bump** | @orchestrator | `pyproject.toml`, `CHANGELOG.md` | Low | `30.x` → `31.0.0`. Document Sprints 135–138. |
 | 138.2 | **Preceptor CI integration** | @reviewer | `preceptor.py`, `.github/workflows/ci.yml` | Medium | Run preceptor review on all generated test artifacts in CI. Fail build if any dimension scores <3★. Wire `--qa` flag to `migrate.py`. |
 | 138.3 | **Visual screenshot baseline** | @tester | `tests/fixtures/screenshots/` (new) | High | Capture baseline Tableau screenshots for the 27+ real-world workbooks. Store in `screenshots/source/`. Generate PBI screenshots via headless PBI Desktop (or manual capture). |
-| 138.4 | **Approximation map audit** | @assessor | `docs/GAP_ANALYSIS.md`, `docs/KNOWN_LIMITATIONS.md` | Low | Update gap analysis with remaining approximations. Target: ≤5 entries in `APPROXIMATION_MAP`. |
+| 138.4 | **Approximation map audit** | @assessor | `docs/KNOWN_LIMITATIONS.md` | Low | Update the limitations table with remaining approximations. Target: ≤5 entries in `APPROXIMATION_MAP`. |
 | 138.5 | **Real-world re-validation** | @tester | `tests/test_real_world_e2e.py` | Medium | Re-run all 27+ workbooks. Assert all visual dimensions ≥4★ in preceptor. |
 | 138.6 | **PBIR visual schema upgrade** | @visual | `visual_generator.py`, `pbip_generator.py` | Low | Bump to latest PBIR visual container schema if Microsoft releases a newer version. |
 | 138.7 | **Docs refresh** | @orchestrator | `docs/*.md` | Medium | Update MAPPING_REFERENCE, KNOWN_LIMITATIONS, GAP_ANALYSIS with v31 improvements. |
@@ -2956,7 +2993,7 @@ No new CLI flags. No schema changes. This patch is fully backward-compatible wit
 | Metric | Target | Owner |
 |--------|--------|-------|
 | GitHub Copilot skill | Repo-scoped skill drives migrate/assess/troubleshoot with zero prior context | @orchestrator |
-| MCP server | 7 tools (migrate/assess/parity/qa/shared_model/diff/deploy), contract-tested | @orchestrator |
+| MCP server | 10 tools (migrate/assess/parity/qa/shared_model/diff/deploy/llm_status/autoheal/verify_open), contract-tested | @orchestrator |
 | NL remediation | Every parity gap + low-confidence heal has explanation + suggested fix | @reviewer |
 | Conversational assess | Grounded Q&A + ordered migration plan from structured findings | @assessor |
 | Safety | Secrets never transit model/args; deploy gated; LLM opt-in; offline path works | @reviewer |

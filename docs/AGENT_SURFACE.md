@@ -1,6 +1,9 @@
 # Agent Surface (v44.0.0)
 
 The **agent surface** turns the migration engine into a tool-callable, AI-assisted
+# Agent Surface (v44.0.0)
+
+The **agent surface** turns the migration engine into a tool-callable, AI-assisted
 assistant. It has three layers, all stdlib-first and grounded in the same
 generators and reports the CLI uses.
 
@@ -73,8 +76,8 @@ a fix ONLY when it re-validates clean (never degrading).
 
 The `verify_open` tool (`powerbi_import/openability.py`) is a **read-only preflight**
 that answers "will Power BI Desktop open this project?" without launching Desktop.
-It runs six checks — `structure`, `json_parse`, `tmdl_present`, `power_query`,
-`dax`, `schema` — and returns `openable` plus blocking issues and warnings. The
+It runs seven checks — `structure`, `json_parse`, `tmdl_present`, `power_query`,
+`dax`, `schema`, and `references` — and returns `openable` plus blocking issues and warnings. The
 **`power_query` check is the focus**: it extracts every M partition embedded in the
 TMDL (`extract_m_partitions`) and validates each with the M validator, catching the
 Power Query generation errors that are a top cause of silent load failures. The same

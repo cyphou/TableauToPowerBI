@@ -34,7 +34,7 @@ class TestGenerateRlsPowershell(unittest.TestCase):
     def test_generates_ps1(self):
         roles = [
             {'name': 'EastRole', 'filter': "'Region'[Region] = \"East\"",
-             'members': ['alice@co.com']},
+             'members': ['alice@example.com']},
         ]
         path = os.path.join(self.tmpdir, 'rls.ps1')
         result = generate_rls_powershell(roles, path, 'SalesModel')
@@ -55,7 +55,7 @@ class TestGenerateRlsPowershell(unittest.TestCase):
 class TestMapSiteRoles(unittest.TestCase):
 
     def test_maps_creator_to_admin(self):
-        users = [{'name': 'alice', 'siteRole': 'Creator', 'email': 'alice@co.com'}]
+        users = [{'name': 'alice', 'siteRole': 'Creator', 'email': 'alice@example.com'}]
         assignments = map_site_roles(users)
         self.assertEqual(len(assignments), 1)
         self.assertEqual(assignments[0]['pbi_role'], 'Admin')
@@ -98,7 +98,7 @@ class TestReconcileRlsPrincipals(unittest.TestCase):
 
     def test_flags_unresolved(self):
         roles = [{'name': 'EastRole', 'members': ['unknown_user']}]
-        users = [{'name': 'alice', 'email': 'alice@co.com'}]
+        users = [{'name': 'alice', 'email': 'alice@example.com'}]
         result = reconcile_rls_principals(roles, users)
         self.assertEqual(len(result['unresolved']), 1)
 
@@ -119,7 +119,7 @@ class TestGenerateAzureAdScripts(unittest.TestCase):
     def test_generates_script(self):
         groups = [
             {'name': 'Analysts', 'users': [
-                {'name': 'alice@co.com'}, {'name': 'bob@co.com'}
+                {'name': 'alice@example.com'}, {'name': 'bob@example.com'}
             ]},
         ]
         path = os.path.join(self.tmpdir, 'ad_groups.ps1')
@@ -145,7 +145,7 @@ class TestGeneratePermissionReport(unittest.TestCase):
 
     def test_generates_html(self):
         assignments = [
-            {'identity': 'alice@co.com', 'source_role': 'Creator',
+                {'identity': 'alice@example.com', 'source_role': 'Creator',
              'pbi_role': 'Admin', 'groups': []},
         ]
         path = os.path.join(self.tmpdir, 'report.html')
@@ -153,16 +153,16 @@ class TestGeneratePermissionReport(unittest.TestCase):
         self.assertIsNotNone(result)
         with open(result, encoding='utf-8') as f:
             content = f.read()
-        self.assertIn('alice@co.com', content)
+        self.assertIn('alice@example.com', content)
 
     def test_with_rls_reconciliation(self):
         assignments = [
-            {'identity': 'alice@co.com', 'source_role': 'Creator',
+                {'identity': 'alice@example.com', 'source_role': 'Creator',
              'pbi_role': 'Admin', 'groups': []},
         ]
         rls = {
             'assignments': [{'role': 'R1', 'tableau_name': 'alice',
-                             'azure_ad_upn': 'alice@co.com', 'principal_type': 'user'}],
+                             'azure_ad_upn': 'alice@example.com', 'principal_type': 'user'}],
             'unresolved': [{'role': 'R2', 'tableau_name': 'ghost',
                            'reason': 'No email'}],
         }

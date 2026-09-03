@@ -108,6 +108,9 @@ class TestFacade(unittest.TestCase):
                         "\t\tsource =\n\t\t\t\tlet x = 1 in x\n")
             rep = os.path.join(d, "P.Report", "definition")
             os.makedirs(rep, exist_ok=True)
+            with open(os.path.join(rep, "report.json"), "w",
+                      encoding="utf-8") as f:
+                f.write('{"$schema": "https://schemas.powerbi.com/report/v2"}')
             with open(os.path.join(d, "P.Report", "definition.pbir"), "w",
                       encoding="utf-8") as f:
                 f.write('{"version": "4.0", "datasetReference": '

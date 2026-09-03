@@ -248,6 +248,8 @@ class TableauExtractor:
 
     def _findall_root_cached(self, root, xpath):
         """Return cached ``safe_findall`` results for repeated root-level queries."""
+        if not hasattr(self, '_xml_node_cache'):
+            self._xml_node_cache = {}
         root_cache = self._xml_node_cache.setdefault(id(root), {})
         if xpath not in root_cache:
             root_cache[xpath] = safe_findall(root, xpath)

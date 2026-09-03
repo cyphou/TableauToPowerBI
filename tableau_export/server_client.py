@@ -8,7 +8,7 @@ Tableau Cloud for migration. Handles authentication via:
 
 Usage:
     client = TableauServerClient(
-        server_url='https://tableau.company.com',
+        server_url='https://tableau.example.com',
         token_name='my-pat',
         token_secret='secret...',
         site_id='my-site',

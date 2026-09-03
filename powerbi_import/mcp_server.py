@@ -8,7 +8,7 @@ Tools:
     assess         Pre-migration readiness assessment (no artifacts written)
     migrate        Full extract → generate pipeline, returns output dir
     qa             Real-world QA report card on a generated .pbip project
-    parity_scan    Functionality-parity scan (graceful if registry absent)
+    parity_scan    Functionality-parity scan using the shipped parity registry
     shared_model   Build a shared semantic model from several workbooks
     diff           Compare source extraction vs generated output
     deploy         Deploy to Fabric / Power BI Service (guarded, dry-run default)

@@ -59,7 +59,8 @@ it correctly. **Prefer running the CLI over hand-editing generated artifacts.**
 ```
 
 Run `.venv\Scripts\python.exe migrate.py --help` for the concise list. Existing
-flag-based automation remains compatible; `--advanced-help` exposes legacy options.
+flag-based automation remains compatible; `--advanced-help` exposes legacy options
+including `--assess`, `--batch`, and `--qa`. Prefer the subcommands for new workflows.
 Never put credentials in chat or command arguments; use environment variables.
 
 ## What you get (output layout)

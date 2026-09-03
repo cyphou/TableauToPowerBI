@@ -13,7 +13,7 @@ Produces enterprise-grade readiness reports including:
 Usage (CLI)::
 
     python migrate.py --bulk-assess folder_of_twbx/
-    python migrate.py --server https://tableau.company.com --server-assess
+    python migrate.py --server https://tableau.example.com --server-assess
 
 Usage (programmatic)::
 

@@ -173,14 +173,13 @@ class TestDeployGuard(unittest.TestCase):
 
 
 class TestParityScanGraceful(unittest.TestCase):
-    def test_parity_scan_unavailable_is_ok(self):
-        # parity_registry is not shipped yet (Sprint 209 pending) → graceful.
+    def test_parity_scan_returns_report(self):
+        # The shipped parity registry should return a real report.
         tools = MigrationTools()
         if not os.path.isfile(_SAMPLE):
             self.skipTest("sample workbook not present")
         res = tools.parity_scan({"file": _SAMPLE})
         self.assertTrue(res["ok"])
-        # Either a real scan or the documented 'unavailable' status.
         self.assertIn("report", res)
 
 

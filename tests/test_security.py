@@ -596,6 +596,23 @@ class TestExtractZipSlipIntegration:
         content = extractor.read_tableau_file()
         assert content is None
 
+    def test_post_generation_twbx_rejects_traversal(self, tmp_path):
+        """Post-generation extraction must not write outside the project."""
+        twbx_path = str(tmp_path / "malicious.twbx")
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        outside = tmp_path / "escape.txt"
+        with zipfile.ZipFile(twbx_path, 'w') as zf:
+            zf.writestr("Data/valid.csv", "id,value\n1,ok\n")
+            zf.writestr("../escape.txt", "escaped")
+
+        import migrate
+        migrate._process_twbx_post_generation(
+            twbx_path, str(project_dir), "malicious")
+
+        assert (project_dir / "Data" / "valid.csv").is_file()
+        assert not outside.exists()
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  10. XXE integration test

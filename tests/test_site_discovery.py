@@ -61,7 +61,7 @@ class _MockClient:
 
     def list_users(self):
         return [
-            {'id': 'u1', 'name': 'alice', 'siteRole': 'Creator', 'email': 'alice@co.com'},
+            {'id': 'u1', 'name': 'alice', 'siteRole': 'Creator', 'email': 'alice@example.com'},
             {'id': 'u2', 'name': 'bob', 'siteRole': 'Viewer', 'email': 'bob@co.com'},
         ]
 

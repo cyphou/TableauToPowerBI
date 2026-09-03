@@ -1,6 +1,6 @@
 # Documentation
 
-Current release baseline: **v40.0.0** (see `../CHANGELOG.md` and `ROADMAP.md`).
+Current release baseline: **v44.0.0** (see `../CHANGELOG.md` and `ROADMAP.md`).
 
 ## Guides
 
@@ -36,6 +36,6 @@ automation remains compatible through `python migrate.py --advanced-help`.
 | `migrate.py` | CLI entry point, batch support, logging |
 | `tableau_export/` | Tableau XML parsing, DAX conversion, Power Query M generation |
 | `powerbi_import/` | .pbip generation, TMDL, visuals, validation, deployment |
-| `tests/` | 9,150+ tests in latest full run |
+| `tests/` | 9,500+ tests in latest full run |
 | `artifacts/` | Generated .pbip projects |
 | `.github/workflows/` | CI/CD pipeline (lint, test, validate, deploy) |

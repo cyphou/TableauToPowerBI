@@ -120,7 +120,7 @@ class TestCloudDetection(unittest.TestCase):
     def test_detect_server(self):
         """On-premise URL detected as server."""
         client = TableauServerClient(
-            server_url='https://tableau.internal.company.com',
+            server_url='https://tableau.example.com',
             token_name='t', token_secret='s', site_id='site',
         )
         self.assertEqual(client.detect_cloud_vs_server(), 'server')

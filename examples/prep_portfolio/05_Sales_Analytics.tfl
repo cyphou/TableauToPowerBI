@@ -12,7 +12,7 @@
       "connectionId": "conn-orders-clean",
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Orders_Clean"
       },
@@ -40,7 +40,7 @@
       "connectionId": "conn-products-master",
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Products_Master"
       },
@@ -65,7 +65,7 @@
       "connectionId": "conn-customer-360",
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Customer_360"
       },
@@ -135,7 +135,7 @@
       "nextNodes": [],
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Sales_Summary"
       },
@@ -160,7 +160,7 @@
     "conn-orders-clean": {
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Orders_Clean"
       }
@@ -168,7 +168,7 @@
     "conn-products-master": {
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Products_Master"
       }
@@ -176,7 +176,7 @@
     "conn-customer-360": {
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Customer_360"
       }

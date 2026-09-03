@@ -9,7 +9,7 @@
       <connection class='federated'>
         <named-connections>
           <named-connection caption='OracleDB' name='oracle.mfg'>
-            <connection class='oracle' server='mfg-oracle.corp.local' service='MFGDB' port='1521' />
+            <connection class='oracle' server='oracle.example.com' service='MFGDB' port='1521' />
           </named-connection>
         </named-connections>
         <!-- Full outer join: Sensors ←→ Maintenance (manyToMany) -->

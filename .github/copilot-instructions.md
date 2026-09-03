@@ -123,8 +123,8 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
     - `credential_vault.py`: Credential vault — secure credential storage and retrieval for deployment authentication
   - `config/`: Configuration subpackage
     - `migration_config.py`: Migration configuration — typed config objects for migration settings and feature flags
-- **tests/**: Unit and integration tests (8,875 tests in latest full run)
-- **docs/**: FAQ, PBI project guide, mapping reference, **ROADMAP.md** (v22–v28 development roadmap per agent)
+  - **tests/**: Unit and integration tests (9,500+ tests in latest full run)
+- **docs/**: FAQ, PBI project guide, mapping reference, **ROADMAP.md** (v45/v46 release roadmap and agent assignments)
 - **.github/workflows/ci.yml**: CI/CD pipeline (lint → test → validate → deploy)
 - **.github/workflows/publish.yml**: PyPI auto-publish workflow (tag-triggered, OIDC trusted publisher)
 - **Dockerfile**: Production-ready container image for the REST API migration server
@@ -157,10 +157,10 @@ python migrate.py path/to/workbook.twbx --deploy WORKSPACE_ID --deploy-refresh
 python migrate.py path/to/workbook.twbx --deploy WORKSPACE_ID --gateway-bind GATEWAY_ID --deploy-refresh
 python migrate.py path/to/workbook.twbx --create-workspace "Sales Reports" --deploy _ --deploy-refresh
 python migrate.py path/to/workbook.twbx --create-workspace "Sales Reports" --deploy _ --gateway-bind GATEWAY_ID
-python migrate.py --server https://tableau.company.com --workbook "Sales Dashboard" --token-name my-pat --token-secret secret
-python migrate.py --server https://tableau.company.com --server-batch Marketing --output-dir /tmp/batch
-python migrate.py --server https://tableau.company.com --server-batch Marketing --server-assets all --server-preserve-folders --token-name pat --token-secret secret
-python migrate.py --server https://tableau.company.com --server-batch Sales --server-assets workbooks datasources --token-name pat --token-secret secret
+python migrate.py --server https://tableau.example.com --workbook "Sales Dashboard" --token-name my-pat --token-secret secret
+python migrate.py --server https://tableau.example.com --server-batch Marketing --output-dir /tmp/batch
+python migrate.py --server https://tableau.example.com --server-batch Marketing --server-assets all --server-preserve-folders --token-name pat --token-secret secret
+python migrate.py --server https://tableau.example.com --server-batch Sales --server-assets workbooks datasources --token-name pat --token-secret secret
 python migrate.py path/to/workbook.twbx --languages fr-FR,de-DE,ja-JP
 python migrate.py path/to/workbook.twbx --goals
 python migrate.py path/to/workbook.twbx --check-schema
@@ -174,7 +174,7 @@ python migrate.py --shared-model wb1.twbx wb2.twbx --deploy-bundle WORKSPACE_ID 
 python migrate.py --deploy-bundle WORKSPACE_ID --output-dir artifacts/shared/MyModel
 python migrate.py --shared-model wb1.twbx wb2.twbx --multi-tenant tenants.json
 python migrate.py --shared-model wb1.twbx wb2.twbx --live-connection WORKSPACE_ID/ModelName
-python migrate.py --server https://tableau.company.com --workbook "Sales" --token-name pat --token-secret secret --migrate-schedules
+python migrate.py --server https://tableau.example.com --workbook "Sales" --token-name pat --token-secret secret --migrate-schedules
 python migrate.py --shared-model wb1.twbx wb2.twbx --output-format fabric
 python migrate.py --shared-model wb1.twbx wb2.twbx --output-format fabric --output-dir /tmp/fabric_shared
 python migrate.py path/to/workbook.twbx --output-format fabric
@@ -200,8 +200,8 @@ python migrate.py path/to/workbook.twbx --sla-config sla.json
 python migrate.py path/to/workbook.twbx --parallel --workers 4
 python migrate.py path/to/workbook.twbx --full-lineage
 python migrate.py path/to/workbook.twbx --web-ui --web-port 8080
-python migrate.py --server https://tableau.company.com --server-discover --token-name pat --token-secret secret
-python migrate.py --server https://tableau.company.com --server-assess Marketing --token-name pat --token-secret secret
+python migrate.py --server https://tableau.example.com --server-discover --token-name pat --token-secret secret
+python migrate.py --server https://tableau.example.com --server-assess Marketing --token-name pat --token-secret secret
 python migrate.py --plan-migration examples/tableau_samples/ --team-size 3
 python migrate.py path/to/workbook.twbx --map-permissions
 python migrate.py path/to/workbook.twbx --cutover
@@ -490,7 +490,7 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 | **@deployer** | Fabric/PBI deployment, auth, gateway | `deploy/*.py`, `gateway_config.py`, `telemetry.py` |
 | **@reviewer** | Artifact quality review, preceptorship loop, coaching feedback | `preceptor.py` |
 | **@web-designer** | End-user UI/UX, Tkinter light UI, layout/presentation | `web/light_ui.py` |
-| **@tester** | Tests (8,874 latest collection), coverage, regression | `tests/*.py` |
+| **@tester** | Tests (9,500+ latest collection), coverage, public fixtures, regression | `tests/*.py` |
 
 ### Rules
 
@@ -498,11 +498,12 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 - **Read access is universal** — any agent can read any file for context
 - **Co-owned functions** — `tmdl_generator.py` has shared ownership: @semantic (structural), @dax (DAX post-processing), @wiring (M functions)
 - **Tester is cross-cutting** — reads all source, writes only to `tests/`
+- **Public fixtures only** — examples and test fixtures must use public sources or reserved placeholders; never add customer, tenant, account, or private-environment data.
 - **Default agent** handles multi-domain tasks, docs, git, sprint planning
-- **Roadmap**: See `docs/ROADMAP.md` for v22–v28 per-agent sprint assignments (Sprints 76–117)
+- **Roadmap**: See `docs/ROADMAP.md` for v45/v46 per-agent release assignments and gates
 
 ### Agent Definitions
 
 All agent files live in `.github/agents/`:
 - `shared.instructions.md` — base rules all agents inherit
-- `{name}.agent.md` — per-agent specialization (14 files: orchestrator, extractor, tableau, dax, wiring, semantic, visual, converter, generator, assessor, merger, deployer, reviewer, tester)
+- `{name}.agent.md` — per-agent specialization (15 files: orchestrator, extractor, tableau, dax, wiring, semantic, visual, converter, generator, assessor, merger, deployer, reviewer, web-designer, tester)

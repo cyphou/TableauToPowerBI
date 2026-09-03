@@ -123,13 +123,21 @@ class RelationshipInferenceEngine:
         best_from_col = ""
         best_to_col = ""
 
+        # Cache lowercased names once per column (hot path: avoids re-lowering
+        # every name for every candidate pair).
+        from_lower = {name: name.lower() for name in from_cols}
+        to_lower = {name: name.lower() for name in to_cols}
+
         for from_col_name, from_col_meta in from_cols.items():
+            fl = from_lower[from_col_name]
             for to_col_name, to_col_meta in to_cols.items():
                 score = self._score_column_pair(
                     from_col_name,
                     to_col_name,
                     from_col_meta,
                     to_col_meta,
+                    fl,
+                    to_lower[to_col_name],
                 )
                 if score > best_score:
                     best_score = score
@@ -152,15 +160,20 @@ class RelationshipInferenceEngine:
         to_col: str,
         from_meta: Dict,
         to_meta: Dict,
+        from_col_lower: str = None,
+        to_col_lower: str = None,
     ) -> float:
         score = 0.0
 
+        fl = from_col_lower if from_col_lower is not None else from_col.lower()
+        tl = to_col_lower if to_col_lower is not None else to_col.lower()
+
         # 1) Name similarity (40%)
-        if from_col.lower() == to_col.lower():
+        if fl == tl:
             score += 0.40
-        elif self._is_substring_match(from_col, to_col):
+        elif self._is_substring_match(fl, tl):
             score += 0.30
-        elif self._is_semantic_match(from_col, to_col):
+        elif self._is_semantic_match(fl, tl):
             score += 0.20
 
         # 2) Type compatibility (20%)
@@ -171,8 +184,8 @@ class RelationshipInferenceEngine:
 
         # 3) Key markers (30%)
         fk_markers = ("id", "key", "pk", "fk", "code", "num", "number")
-        from_key = any(marker in from_col.lower() for marker in fk_markers)
-        to_key = any(marker in to_col.lower() for marker in fk_markers)
+        from_key = any(marker in fl for marker in fk_markers)
+        to_key = any(marker in tl for marker in fk_markers)
         if from_key and to_key:
             score += 0.30
         elif from_key or to_key:
@@ -196,19 +209,20 @@ class RelationshipInferenceEngine:
     @staticmethod
     def _is_semantic_match(col1: str, col2: str) -> bool:
         suffixes = ("_id", "_key", "_pk", "_fk", "_ref")
+        n1 = col1.lower()
+        n2 = col2.lower()
 
-        def normalize(name: str) -> str:
-            n = name.lower()
+        def strip_suffix(name: str) -> str:
             for suffix in suffixes:
-                if n.endswith(suffix):
-                    return n[: -len(suffix)]
-            return n
+                if name.endswith(suffix):
+                    return name[: -len(suffix)]
+            return name
 
-        n1 = normalize(col1)
-        n2 = normalize(col2)
-        if n1 == n2:
+        s1 = strip_suffix(n1)
+        s2 = strip_suffix(n2)
+        if s1 == s2:
             return True
-        if n1 and n2 and (f"{n1}_id" == col2.lower() or f"{n2}_id" == col1.lower()):
+        if s1 and s2 and (f"{s1}_id" == n2 or f"{s2}_id" == n1):
             return True
         return False
 

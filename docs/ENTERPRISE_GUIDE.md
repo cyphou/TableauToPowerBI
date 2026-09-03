@@ -17,13 +17,13 @@ Discovery → Assessment → Wave Planning → Pilot → Batch Migration → Val
 1. **Inventory**: Use Tableau Server REST API to list all workbooks
    ```bash
    # Download all asset types (workbooks + flows + datasources), preserving folder structure
-   python migrate.py --server https://tableau.company.com \
+   python migrate.py --server https://tableau.example.com \
      --token-name pat --token-secret <secret> \
      --server-batch ALL --server-assets all --server-preserve-folders \
      --output-dir /tmp/inventory
 
    # Or download only workbooks (default behavior)
-   python migrate.py --server https://tableau.company.com \
+   python migrate.py --server https://tableau.example.com \
      --token-name pat --token-secret <secret> \
      --server-batch ALL --output-dir /tmp/inventory
    ```

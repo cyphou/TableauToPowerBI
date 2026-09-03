@@ -102,6 +102,26 @@ class TestDeterministicHeal(unittest.TestCase):
             self.assertFalse(report.changed)
             self.assertTrue(report.clean)
 
+    def test_heals_m_partition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmdl = os.path.join(tmp, "Model.SemanticModel", "definition", "tables", "T.tmdl")
+            os.makedirs(os.path.dirname(tmdl), exist_ok=True)
+            with open(tmdl, "w", encoding="utf-8") as fh:
+                fh.write("table T\n")
+                fh.write("\tpartition 'T-g' = m\n")
+                fh.write("\t\tmode: import\n\t\tsource =\n")
+                fh.write("\t\t\t\tlet\n")
+                fh.write("\t\t\t\t    Source = [Order/Date]\n")
+                fh.write("\t\t\t\t in\n")
+                fh.write("\t\t\t\t    Source\n")
+
+            report = AutoHealer().heal_project(tmp)
+            self.assertTrue(report.changed)
+            self.assertTrue(report.clean, report.to_dict())
+            content = open(tmdl, encoding="utf-8").read()
+            self.assertIn('[#"Order/Date"]', content)
+            self.assertTrue(any(action.artifact == "m" for action in report.actions))
+
     def test_missing_dir(self):
         report = AutoHealer().heal_project("/no/such/dir")
         self.assertFalse(report.clean)
@@ -171,6 +191,15 @@ class TestErrorSources(unittest.TestCase):
                 fh.write("DAX syntax error in measure [Bad]\n")
             errs = PbiDesktopSource(log_path=log).collect(tmp)
             self.assertTrue(errs and errs[0].artifact == "dax")
+
+    def test_pbi_desktop_source_keeps_static_errors_with_clean_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_project(tmp, bad_visual=False)
+            log = os.path.join(tmp, "clean.txt")
+            with open(log, "w", encoding="utf-8") as fh:
+                fh.write("Desktop opened successfully\n")
+            errs = PbiDesktopSource(log_path=log).collect(tmp)
+            self.assertTrue(any(err.artifact == "dax" for err in errs))
 
     def test_pbi_installed_returns_bool(self):
         self.assertIsInstance(PbiDesktopSource.pbi_desktop_installed(), bool)

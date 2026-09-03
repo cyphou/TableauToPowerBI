@@ -219,6 +219,10 @@ def _build_parser():
         '--output-md', required=True,
         help='Path to write the Markdown summary report.',
     )
+    parser.add_argument(
+        '--fail-on-regression', action='store_true',
+        help='Exit with status 1 when any metric exceeds the threshold.',
+    )
     return parser
 
 
@@ -249,6 +253,8 @@ def main(argv=None):
     )
     print(f'JSON report written to: {output_json}')
     print(f'Markdown report written to: {output_md}')
+    if args.fail_on_regression and report['summary']['regressions']:
+        return 1
     return 0
 
 

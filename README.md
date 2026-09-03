@@ -4,15 +4,18 @@
 
 | | |
 |---|---|
-| 🏷️ **Version** | 40.0.0 |
-| ✅ **Tests** | 9,150+ passed (Python) · 38 extension unit tests |
+| 🏷️ **Version** | 44.0.0 |
+| ✅ **Tests** | 9,500+ passed (Python) · 38 extension unit tests |
 | 🐍 **Python** | 3.12+ · zero external dependencies |
 | 📜 **License** | MIT |
 
 | 🎯 **Capabilities** | 133+ DAX conversions · 190 visual types · 87 connectors · 23 object types |
 
-### What is new in v40.0.0
+### What is new in v44.0.0
 
+- **Copilot and MCP agent surface**: the repository-scoped skill, stdio MCP server, grounded conversational assessment, remediation routing, parity scanning, and guarded deployment tools are documented in `docs/AGENT_SURFACE.md`.
+- **Openability verification and auto-healing**: PBIP output is checked by default for structure, JSON, TMDL, Power Query M, DAX, schemas, and report/model references. Deterministic DAX/M/visual healing and optional offline-first LLM correction are available through the CLI and MCP surface.
+- **Safety-first automation**: deployment is dry-run by default, credentials stay in environment variables, LLM refinement is opt-in, and fixes are applied only after re-validation.
 - **VS Code Extension**: assess, preview DAX, and migrate workbooks without leaving the editor — workbook tree view, assessment webview, one-click migrate, status bar, and a side-by-side DAX preview with editable overrides. Includes TextMate syntax highlighting for DAX and Tableau calculations. See `docs/VS_CODE_EXTENSION.md`.
 - **Interactive Notebook API v2**: `MigrationSession` gains interactive assessment (radar SVG), a filterable DAX explorer, a Mermaid relationship diagram, and step-by-step extract/convert/generate/validate helpers for Jupyter.
 - **Plugin SDK v2**: a versioned `MigrationPlugin` base class with formal hooks, manifest validation, error-isolated dispatch, and a `PluginTestRunner`. Backward compatible with the legacy hook-based plugins. See `docs/PLUGIN_SDK.md`.
@@ -147,7 +150,7 @@ One-command deploy to **Power BI Service** or **Microsoft Fabric** with Azure AD
 <td>
 
 ### 🏭 Fabric-Native Output
-Generate **Lakehouse + Dataflow Gen2 + PySpark Notebook + DirectLake Semantic Model + Data Pipeline** with `--output-format fabric`. Full Fabric project from a single Tableau workbook.
+Generate **Lakehouse + Dataflow Gen2 + PySpark Notebook + DirectLake Semantic Model + Data Pipeline** with `--output-format fabric`. This is currently a validated scaffold; operational bindings and production deployment still require environment-specific configuration and verification.
 
 </td>
 <td>
@@ -633,7 +636,7 @@ TableauToPowerBI/
 │   ├── schema_drift.py                        #   Schema drift detection (v28)
 │   └── deploy/                                #   Deploy to PBI Service / Fabric
 ├── Dockerfile                                 # Docker image for API server
-├── tests/                                     # 9,150+ tests in latest full run
+├── tests/                                     # 9,500+ tests in latest full run
 ├── docs/                                      # 18 documentation files
 └── examples/                                  # Sample Tableau workbooks
 ```
@@ -833,7 +836,7 @@ python -m pytest tests/test_openability.py -v         # Static PBIP openability 
 
 ```mermaid
 flowchart LR
-    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\n8,875 tests\nPy 3.9–3.14"]
+    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\n9,500+ tests\nPy 3.12–3.14"]
     T --> V["✅ Validate\nStrict .twbx\nmigrations"]
     V --> S["📦 Staging\nFabric deploy"]
     S --> P["🚀 Production\nManual approval"]

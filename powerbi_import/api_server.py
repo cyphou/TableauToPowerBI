@@ -866,6 +866,9 @@ def _get_version():
 def run_server(host='127.0.0.1', port=8000, api_key=None):
     """Start the migration API server."""
     global _API_KEY, _WEBHOOK_SECRET
+    if not api_key and host not in ('localhost', '127.0.0.1', '::1'):
+        raise ValueError(
+            'api_key is required when binding the migration API beyond loopback')
     if api_key:
         _API_KEY = api_key
         _WEBHOOK_SECRET = hashlib.sha256(api_key.encode()).hexdigest()[:32]

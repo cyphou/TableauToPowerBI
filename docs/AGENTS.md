@@ -2,6 +2,12 @@
 
 This project uses a **15-agent specialization model**. Each agent has scoped domain knowledge, file ownership, and clear boundaries. Four specialist agents (@dax, @wiring, @semantic, @visual) provide deep expertise, @converter and @generator remain as coordination layers, **@tableau** handles Tableau Server/Cloud interaction, **@reviewer** enforces a preceptorship quality loop on all generated artifacts, and **@web-designer** owns the end-user UI surfaces.
 
+The current release is **v44.0.0**. All agents should use [ROADMAP.md](ROADMAP.md)
+as the source of truth for the next work: v45 completes the Fabric artifact
+contract and performance gates; v46 hardens Desktop openability, shared-model
+quality, documentation parity, and release discipline. Do not describe the
+Fabric-native output as production-ready until the v45/v46 release criteria pass.
+
 ## Quick Reference
 
 | Agent | Invoke When | Owns |

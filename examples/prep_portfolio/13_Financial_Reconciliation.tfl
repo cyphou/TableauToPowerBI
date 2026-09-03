@@ -39,7 +39,7 @@
       "connectionId": "conn-bank-db",
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "fin-db.corp.local",
+        "server": "finance.example.com",
         "dbname": "Banking",
         "schema": "dbo",
         "table": "BankStatements"
@@ -240,7 +240,7 @@
     "conn-bank-db": {
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "fin-db.corp.local",
+        "server": "finance.example.com",
         "dbname": "Banking"
       }
     },

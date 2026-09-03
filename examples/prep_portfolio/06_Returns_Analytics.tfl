@@ -12,7 +12,7 @@
       "connectionId": "conn-returns-processed",
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Returns_Processed"
       },
@@ -37,7 +37,7 @@
       "connectionId": "conn-orders-clean",
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Orders_Clean"
       },
@@ -98,7 +98,7 @@
       "nextNodes": [],
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Returns_Analysis"
       },
@@ -123,7 +123,7 @@
     "conn-returns-processed": {
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Returns_Processed"
       }
@@ -131,7 +131,7 @@
     "conn-orders-clean": {
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Orders_Clean"
       }

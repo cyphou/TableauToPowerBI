@@ -9,7 +9,7 @@ You are the **Tester** agent for the Tableau to Power BI migration project. You 
 
 ## Your Files (You Own These)
 
-- `tests/*.py` — All test files (140+ files, 6,714+ tests)
+- `tests/*.py` — All test files and regression fixtures (current full suite: 9,500+ tests)
 - `tests/conftest.py` — Shared pytest fixtures
 
 ## Read-Only Access

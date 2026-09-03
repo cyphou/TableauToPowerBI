@@ -12,9 +12,9 @@
       "connectionId": "conn-pg-crm",
       "connectionAttributes": {
         "class": "postgres",
-        "server": "crm-db.corp.local",
+        "server": "db.example.com",
         "port": "5432",
-        "dbname": "crm_production",
+        "dbname": "sample_crm",
         "schema": "public",
         "table": "customers"
       },
@@ -93,7 +93,7 @@
       "nextNodes": [],
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Customer_360"
       },
@@ -122,9 +122,9 @@
     "conn-pg-crm": {
       "connectionAttributes": {
         "class": "postgres",
-        "server": "crm-db.corp.local",
+        "server": "db.example.com",
         "port": "5432",
-        "dbname": "crm_production",
+        "dbname": "sample_crm",
         "schema": "public",
         "table": "customers"
       }

@@ -769,8 +769,7 @@ New `powerbi_import/schema_validator.py` for deep structural validation of PBIR 
 
 ## v31.4.0 — Sprint 141 — Phase 1 of Zero-Error Roadmap (Pre-flight Rejection)
 
-Kicks off the **10-phase Zero-Error Roadmap** documented in
-[`docs/ZERO_ERROR_ROADMAP.md`](docs/ZERO_ERROR_ROADMAP.md). Goal: reach
+Kicks off the **10-phase Zero-Error Roadmap** documented in the project roadmap. Goal: reach
 ≥ 99 % Zero-Touch Open Rate (workbooks that open in PBI Desktop with
 0 errors / 0 warnings / 0 missing visuals on the first try).
 

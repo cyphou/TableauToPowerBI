@@ -36,7 +36,7 @@
       "connectionId": "conn-hr-db",
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "hr-db.corp.local",
+        "server": "hr.example.com",
         "dbname": "HumanResources",
         "schema": "dbo",
         "table": "Employees"
@@ -236,7 +236,7 @@
     "conn-hr-db": {
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "hr-db.corp.local",
+        "server": "hr.example.com",
         "dbname": "HumanResources"
       }
     },

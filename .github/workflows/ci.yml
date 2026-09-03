@@ -156,7 +156,6 @@ jobs:
   performance-baseline:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       TTPBI_TELEMETRY: "0"
       TTPBI_TELEMETRY_ENDPOINT: ""
@@ -205,16 +204,19 @@ jobs:
               --previous-dir "$PREVIOUS_DIR" \
               --threshold-percent 10 \
               --output-json performance-trend/trend_diff.json \
-              --output-md performance-trend/trend_diff.md
+              --output-md performance-trend/trend_diff.md \
+              --fail-on-regression
           else
             python scripts/compare_perf_baselines.py \
               --current-dir performance-results \
               --threshold-percent 10 \
               --output-json performance-trend/trend_diff.json \
-              --output-md performance-trend/trend_diff.md
+              --output-md performance-trend/trend_diff.md \
+              --fail-on-regression
           fi
 
       - name: Upload performance baselines
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: performance-baseline-${{ github.run_id }}
@@ -222,6 +224,7 @@ jobs:
           retention-days: 30
 
       - name: Upload performance trend report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: performance-trend-${{ github.run_id }}

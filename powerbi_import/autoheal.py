@@ -233,7 +233,9 @@ class PbiDesktopSource(ErrorSource):
 
     def collect(self, project_dir: str) -> List[ErrorRecord]:
         if self.log_path and os.path.isfile(self.log_path):
-            return LogFileSource(self.log_path).collect(project_dir)
+            static_errors = StaticValidatorSource().collect(project_dir)
+            logged_errors = LogFileSource(self.log_path).collect(project_dir)
+            return static_errors + logged_errors
         return [ErrorRecord(
             "info", project_dir, "pbi_desktop",
             "Open the .pbip in Power BI Desktop; if an error appears, use "
@@ -313,6 +315,38 @@ class AutoHealer:
                         "deterministic", "high", True))
                 else:
                     out_lines.append(line)
+            m_text = "\n".join(out_lines)
+            m_lines = m_text.splitlines()
+            m_changed = False
+            index = 0
+            while index < len(m_lines):
+                if not m_lines[index].startswith("\tpartition ") or "= m" not in m_lines[index]:
+                    index += 1
+                    continue
+                source_index = index + 1
+                while source_index < len(m_lines) and not m_lines[source_index].startswith("\t\tsource ="):
+                    source_index += 1
+                if source_index >= len(m_lines):
+                    index += 1
+                    continue
+                body_start = source_index + 1
+                body_end = body_start
+                while body_end < len(m_lines) and m_lines[body_end].startswith("\t\t\t\t"):
+                    body_end += 1
+                m_expr = "\n".join(line[4:] for line in m_lines[body_start:body_end])
+                healed_m = heal_m(m_expr)
+                if healed_m.changed and validate_m_query(healed_m.healed) == []:
+                    healed_lines = healed_m.healed.splitlines()
+                    m_lines[body_start:body_end] = ["\t\t\t\t" + line for line in healed_lines]
+                    m_changed = True
+                    report.actions.append(RepairAttempt(
+                        tmdl, "m", m_lines[index], m_expr, healed_m.healed,
+                        "deterministic", "high", True))
+                    body_end = body_start + len(healed_lines)
+                index = body_end
+            if m_changed:
+                out_lines = m_lines
+                file_changed = True
             if file_changed:
                 _write(tmdl, "\n".join(out_lines) + ("\n" if original.endswith("\n") else ""))
                 changed_any = True

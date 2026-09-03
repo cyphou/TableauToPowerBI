@@ -39,7 +39,7 @@ class _MockClient:
                                      {'hours': '8', 'minutes': '00'}
                                  ]}}},
                     'content': {'type': 'Workbook', 'id': 'wb1'},
-                    'user': {'id': 'u1', 'name': 'alice@co.com'},
+                    'user': {'id': 'u1', 'name': 'alice@example.com'},
                 },
                 {
                     'id': 'sub2',
@@ -66,7 +66,7 @@ class _MockClient:
                             'condition': 'above',
                             'threshold': '100000',
                             'frequency': 'once',
-                            'owner': {'name': 'alice@co.com'},
+                            'owner': {'name': 'alice@example.com'},
                             'view': {'id': 'v1', 'name': 'Revenue View',
                                      'workbook': {'id': 'wb1'}},
                             'recipients': {'recipient': []},
@@ -86,7 +86,7 @@ def _normalized_subs():
             'id': 'sub1', 'subject': 'Daily Sales Report',
             'content_type': 'Workbook', 'content_id': 'wb1',
             'content_name': 'wb1',
-            'recipient_email': 'alice@co.com', 'recipient_id': 'u1',
+            'recipient_email': 'alice@example.com', 'recipient_id': 'u1',
             'schedule_name': 'DailyAM', 'frequency': 'Daily',
             'run_times': ['8:00'], 'run_days': [],
             'send_if_no_data': False, 'attach_pdf': False,
@@ -165,8 +165,8 @@ class TestGeneratePowerAutomateFlows(unittest.TestCase):
 
     def test_generates_digest_flow(self):
         subs = [
-            {'id': 's1', 'recipient_email': 'alice@co.com', 'content_name': 'R1'},
-            {'id': 's2', 'recipient_email': 'alice@co.com', 'content_name': 'R2'},
+            {'id': 's1', 'recipient_email': 'alice@example.com', 'content_name': 'R1'},
+            {'id': 's2', 'recipient_email': 'alice@example.com', 'content_name': 'R2'},
         ]
         flows = generate_power_automate_flows(subs, [])
         self.assertEqual(len(flows), 1)

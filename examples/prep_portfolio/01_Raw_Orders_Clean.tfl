@@ -62,7 +62,7 @@
       "nextNodes": [],
       "connectionAttributes": {
         "class": "sqlserver",
-        "server": "tableau-prod.corp.local",
+        "server": "tableau.example.com",
         "dbname": "PrepOutputs",
         "table": "Orders_Clean"
       },

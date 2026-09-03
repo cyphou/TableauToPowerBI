@@ -15,8 +15,9 @@ All agents MUST follow these rules. They apply to every file in the project.
 
 - **Source**: `tableau_export/` — extraction + DAX converter + M query builder
 - **Target**: `powerbi_import/` — TMDL generator + PBIR report + visual generator + Fabric generators
-- **Tests**: `tests/` — 6,714+ tests across 140+ files
-- **Docs**: `docs/` — architecture, dev plan, gap analysis, known limitations, roadmap
+- **Tests**: `tests/` — 9,500+ tests across the current test suites
+- **Docs**: `docs/` — architecture, known limitations, deployment, agent surface, references, roadmap
+- **Current release**: v44.0.0. Next gates are v45 Fabric contract/performance and v46 Desktop reliability/release discipline; `docs/ROADMAP.md` is authoritative.
 
 ## Hard Constraints
 
@@ -92,6 +93,7 @@ When your task requires work outside your domain:
 - Roadmap: `docs/ROADMAP.md`
 - Deployment guide: `docs/DEPLOYMENT_GUIDE.md`
 - Agent architecture: `docs/AGENTS.md`
+- Public fixtures only: examples and test fixtures must use public sources or reserved placeholders; never add customer, tenant, account, or private-environment data.
 
 ## Cross-Cutting Utilities
 
