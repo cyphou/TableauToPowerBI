@@ -123,6 +123,21 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertIn('Validation details', html)
         self.assertIn('No AI summary was requested', html)
 
+    def test_priorities_rank_blockers_before_gaps_and_warnings(self):
+        report = self._build(
+            parity={'gaps': [{'key': 'forecast', 'label': 'Forecast',
+                              'status': 'unsupported', 'evidence': ['forecast.json']}]},
+            interface={'filters': {'covered': False}, 'parameters': {'covered': True}},
+        )
+        self.assertEqual([item['priority'] for item in report.priorities], ['P0', 'P1', 'P2'])
+        self.assertEqual(report.priorities[1]['owner'], 'Assessor / domain owner')
+        self.assertEqual(report.priorities[1]['evidence'], ['forecast.json'])
+
+    def test_blocker_priority_is_p0(self):
+        report = self._build(data={'summary': {'source_tables': 2, 'tables_found': 1}})
+        self.assertEqual(report.status, 'FAIL')
+        self.assertEqual(report.priorities[0]['priority'], 'P0')
+
     def test_ai_prompt_contains_verified_facts_and_guardrails(self):
         report = self._build()
         prompt = build_quality_prompt(report)

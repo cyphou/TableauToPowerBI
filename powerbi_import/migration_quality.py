@@ -42,6 +42,7 @@ class MigrationQualityReport:
     status: str
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    priorities: list[Dict[str, Any]] = field(default_factory=list)
     ai_summary: str = ""
     ai_source: str = "none"
 
@@ -51,6 +52,7 @@ class MigrationQualityReport:
             "status": self.status,
             "blockers": list(self.blockers),
             "warnings": list(self.warnings),
+            "priorities": list(self.priorities),
             "ai_summary": self.ai_summary,
             "ai_source": self.ai_source,
             "assessment": self.assessment,
@@ -88,6 +90,17 @@ class MigrationQualityReport:
         html += section_open("quality-warnings", "Warnings", "!")
         html += self._html_list(self.warnings, "No warnings.")
         html += section_close()
+        html += section_open("quality-priorities", "Remediation priorities", "->")
+        if self.priorities:
+            html += "<ol>" + "".join(
+                f"<li><strong>{esc(item['priority'])}</strong> "
+                f"{esc(item['action'])} "
+                f"<em>(owner: {esc(item['owner'])})</em></li>"
+                for item in self.priorities
+            ) + "</ol>"
+        else:
+            html += "<p>No remediation priorities.</p>"
+        html += section_close()
         html += section_open("quality-ai", "AI summary", "AI")
         html += (f"<p>{esc(self.ai_summary)}</p>"
                  if self.ai_summary else "<p>No AI summary was requested or available.</p>")
@@ -124,6 +137,43 @@ def _openability_dict(report: Any) -> Dict[str, Any]:
     return dict(report) if isinstance(report, dict) else {}
 
 
+def _build_priorities(parity: Dict[str, Any], blockers: list[str],
+                      warnings: list[str]) -> list[Dict[str, Any]]:
+    """Create a stable, deterministic remediation queue from verified findings."""
+    priorities = []
+    for blocker in blockers:
+        owner = "Orchestrator"
+        if "DAX" in blocker or "feature" in blocker:
+            owner = "DAX / Semantic"
+        elif "table" in blocker or "model" in blocker:
+            owner = "Semantic / Wiring"
+        elif "open" in blocker.lower() or "reference" in blocker.lower():
+            owner = "Visual / Orchestrator"
+        priorities.append({
+            "priority": "P0",
+            "owner": owner,
+            "action": blocker,
+            "evidence": [],
+        })
+    for gap in parity.get("gaps", []):
+        if gap.get("status") != "unsupported":
+            continue
+        priorities.append({
+            "priority": "P1",
+            "owner": "Assessor / domain owner",
+            "action": f"Resolve unsupported feature: {gap.get('label', gap.get('key', 'unknown'))}",
+            "evidence": list(gap.get("evidence", [])),
+        })
+    for warning in warnings:
+        priorities.append({
+            "priority": "P2",
+            "owner": "Assessor",
+            "action": warning,
+            "evidence": [],
+        })
+    return priorities
+
+
 def build_quality_report(extracted: Dict, project_dir: str,
                          report_name: str) -> MigrationQualityReport:
     """Run all local quality checks and aggregate their verified results."""
@@ -152,6 +202,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         warnings.append("Pre-migration assessment contains warnings.")
 
     status = "FAIL" if blockers else "WARN" if warnings else "PASS"
+    priorities = _build_priorities(parity, blockers, warnings)
     return MigrationQualityReport(
         report_name=report_name,
         assessment=_assessment_dict(assessment),
@@ -162,6 +213,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         status=status,
         blockers=blockers,
         warnings=warnings,
+        priorities=priorities,
     )
 
 
@@ -172,6 +224,7 @@ def build_quality_prompt(report: MigrationQualityReport) -> str:
         "status": report.status,
         "blockers": report.blockers,
         "warnings": report.warnings,
+        "priorities": report.priorities,
         "parity": report.parity,
         "data": report.data,
         "interface": report.interface,
