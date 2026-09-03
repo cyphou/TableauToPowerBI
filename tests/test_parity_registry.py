@@ -239,6 +239,17 @@ class TestSerialization(unittest.TestCase):
         self.assertIn("usages", d)
         self.assertIn("gaps", d)
         self.assertIn("untracked_features", d)
+        self.assertIn("evidence_coverage", d)
+
+    def test_evidence_coverage_is_explicit(self):
+        scan = scan_workbook({
+            "filters": [1],
+            "parameters": [1],
+            "_parity_evidence": {"filters": ["report.json"]},
+        })
+        self.assertEqual(scan.evidence_coverage["tracked_features"], 2)
+        self.assertEqual(scan.evidence_coverage["evidenced_features"], 1)
+        self.assertEqual(scan.evidence_coverage["coverage_percent"], 50.0)
 
     def test_report_feature_families_are_no_longer_untracked(self):
         scan = scan_workbook({

@@ -350,6 +350,18 @@ class ParityScan:
         return [u for u in self.usages if u.status == UNSUPPORTED]
 
     @property
+    def evidence_coverage(self) -> Dict[str, float]:
+        """Summarize how many in-use feature families have target evidence."""
+        tracked = len(self.usages)
+        evidenced = sum(1 for usage in self.usages if usage.evidence)
+        return {
+            "tracked_features": tracked,
+            "evidenced_features": evidenced,
+            "coverage_percent": round(evidenced / tracked * 100.0, 1)
+            if tracked else 100.0,
+        }
+
+    @property
     def grade(self) -> str:
         s = self.parity_score
         if self.unsupported_in_use:
@@ -370,6 +382,7 @@ class ParityScan:
             "usages": [u.to_dict() for u in self.usages],
             "gaps": [u.to_dict() for u in self.gaps],
             "untracked_features": list(self.untracked_features),
+            "evidence_coverage": self.evidence_coverage,
         }
 
     def save_json(self, path: str) -> str:
@@ -566,7 +579,10 @@ def _render_html(scan: ParityScan) -> str:
 </style></head><body>
 <h1>Functionality parity — {_esc(scan.workbook)}</h1>
 <p class="score">{scan.parity_score}% <span style="font-size:14px">({_esc(scan.grade)})</span></p>
-<p>exact {counts[EXACT]} · healed {counts[HEALED]} ·
+<p>evidence {scan.evidence_coverage['evidenced_features']}/
+    {scan.evidence_coverage['tracked_features']} feature families
+    ({scan.evidence_coverage['coverage_percent']}%) ·
+    exact {counts[EXACT]} · healed {counts[HEALED]} ·
    approximated {counts[APPROXIMATED]} · unsupported {counts[UNSUPPORTED]}
    · registry v{_esc(scan.registry_version)}</p>
 <table><thead><tr>
