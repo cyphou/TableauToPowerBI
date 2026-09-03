@@ -31,6 +31,14 @@ class _Openability:
         return {"openable": self.openable}
 
 
+class _FabricValidator:
+    result = {"valid": True, "errors": [], "warnings": [], "artifacts_checked": 6}
+
+    @classmethod
+    def validate(cls, project_dir, project_name, include_report=True):
+        return cls.result
+
+
 class _LLMResult:
     text = "Outcome: PASS\nHighest priority actions: none\nResidual risks: none"
     source = "llm"
@@ -47,7 +55,7 @@ class _Gateway:
 
 class TestMigrationQuality(unittest.TestCase):
     def _build(self, *, parity=None, data=None, interface=None, openability=None,
-               assessment=None):
+               assessment=None, project_dir='project'):
         with patch('powerbi_import.migration_quality.run_assessment',
                    return_value=assessment or _Assessment()), \
              patch('powerbi_import.migration_quality.scan_project') as scan, \
@@ -63,11 +71,12 @@ class TestMigrationQuality(unittest.TestCase):
              patch('powerbi_import.migration_quality.check_openability',
                    return_value=openability or _Openability()):
             scan.return_value.to_dict.return_value = parity or {'gaps': []}
-            return build_quality_report({}, 'project', 'Demo')
+            return build_quality_report({}, project_dir, 'Demo')
 
     def test_pass_when_all_checks_are_clean(self):
         report = self._build()
         self.assertEqual(report.status, 'PASS')
+        self.assertFalse(report.fabric['present'])
         self.assertEqual(report.blockers, [])
         self.assertEqual(report.warnings, [])
 
@@ -85,6 +94,32 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.status, 'FAIL')
         self.assertIn('One or more extracted source tables are missing from the target model.',
                       report.blockers)
+
+    def test_valid_fabric_bundle_is_reported_without_blocker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, 'Demo.Lakehouse'))
+            with patch('powerbi_import.fabric_validator.FabricProjectValidator',
+                       _FabricValidator):
+                report = self._build(project_dir=tmp)
+        self.assertTrue(report.fabric['present'])
+        self.assertTrue(report.fabric['valid'])
+        self.assertEqual(report.status, 'PASS')
+
+    def test_invalid_fabric_bundle_is_blocker(self):
+        invalid = type('InvalidFabricValidator', (), {
+            'validate': classmethod(lambda cls, project_dir, project_name,
+                                    include_report=True: {
+                                        'valid': False,
+                                        'errors': ['Missing Pipeline'],
+                                        'warnings': [],
+                                    })
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, 'Demo.Lakehouse'))
+            with patch('powerbi_import.fabric_validator.FabricProjectValidator', invalid):
+                report = self._build(project_dir=tmp)
+        self.assertEqual(report.status, 'FAIL')
+        self.assertIn('Fabric-native artifact bundle failed validation.', report.blockers)
 
     def test_openability_failure_is_blocker(self):
         failed = _Openability()

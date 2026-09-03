@@ -42,6 +42,7 @@ class MigrationQualityReport:
     status: str
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    fabric: Dict[str, Any] = field(default_factory=dict)
     priorities: list[Dict[str, Any]] = field(default_factory=list)
     ai_summary: str = ""
     ai_source: str = "none"
@@ -60,6 +61,7 @@ class MigrationQualityReport:
             "data": self.data,
             "interface": self.interface,
             "openability": self.openability,
+            "fabric": self.fabric,
         }
 
     def save_json(self, path: str) -> str:
@@ -111,6 +113,7 @@ class MigrationQualityReport:
             "data": self.data,
             "interface": self.interface,
             "openability": self.openability,
+            "fabric": self.fabric,
         }, indent=2, ensure_ascii=False, default=str)) + "</pre>"
         html += section_close()
         html += html_close()
@@ -135,6 +138,20 @@ def _openability_dict(report: Any) -> Dict[str, Any]:
     if hasattr(report, "to_dict"):
         return report.to_dict()
     return dict(report) if isinstance(report, dict) else {}
+
+
+def _fabric_validation(project_dir: str, report_name: str) -> Dict[str, Any]:
+    """Validate a Fabric bundle when the generated project contains one."""
+    lakehouse_dir = os.path.join(project_dir, f"{report_name}.Lakehouse")
+    if not os.path.isdir(lakehouse_dir):
+        return {"present": False, "valid": True, "errors": [], "warnings": []}
+    try:
+        from powerbi_import.fabric_validator import FabricProjectValidator
+        result = FabricProjectValidator.validate(project_dir, report_name,
+                                                  include_report=True)
+        return {"present": True, **result}
+    except Exception as exc:  # noqa: BLE001 - quality reporting must not crash migration
+        return {"present": True, "valid": False, "errors": [str(exc)], "warnings": []}
 
 
 def _build_priorities(parity: Dict[str, Any], blockers: list[str],
@@ -182,11 +199,14 @@ def build_quality_report(extracted: Dict, project_dir: str,
     data = compare_report_tables(extracted or {}, project_dir, report_name)
     interface = compare_report_interface(extracted or {}, project_dir, report_name)
     openability = check_openability(project_dir)
+    fabric = _fabric_validation(project_dir, report_name)
 
     blockers = []
     warnings = []
     if not openability.openable:
         blockers.extend(openability.blocking_issues)
+    if fabric.get("present") and not fabric.get("valid", False):
+        blockers.append("Fabric-native artifact bundle failed validation.")
     if assessment.overall_score == "RED":
         blockers.append("Pre-migration assessment contains blocking failures.")
     if any(gap.get("status") == "unsupported"
@@ -210,6 +230,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         data=data,
         interface=interface,
         openability=_openability_dict(openability),
+        fabric=fabric,
         status=status,
         blockers=blockers,
         warnings=warnings,
