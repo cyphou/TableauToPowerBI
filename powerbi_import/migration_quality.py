@@ -42,6 +42,7 @@ class MigrationQualityReport:
     status: str
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    openability_confidence: Dict[str, Any] = field(default_factory=dict)
     fabric: Dict[str, Any] = field(default_factory=dict)
     priorities: list[Dict[str, Any]] = field(default_factory=list)
     ai_summary: str = ""
@@ -61,6 +62,7 @@ class MigrationQualityReport:
             "data": self.data,
             "interface": self.interface,
             "openability": self.openability,
+            "openability_confidence": self.openability_confidence,
             "fabric": self.fabric,
         }
 
@@ -85,6 +87,11 @@ class MigrationQualityReport:
             stat_card(len(self.blockers), "Blockers", accent="fail"),
             stat_card(len(self.warnings), "Warnings", accent="warn"),
         ])
+        html += section_open("quality-confidence", "Openability confidence", "OK")
+        html += "<pre>" + esc(json.dumps(
+            self.openability_confidence, indent=2, ensure_ascii=False,
+            default=str)) + "</pre>"
+        html += section_close()
 
         html += section_open("quality-blockers", "Blockers", "!")
         html += self._html_list(self.blockers, "No blockers.")
@@ -154,6 +161,26 @@ def _fabric_validation(project_dir: str, report_name: str) -> Dict[str, Any]:
         return {"present": True, "valid": False, "errors": [str(exc)], "warnings": []}
 
 
+def _openability_confidence(openability: Dict[str, Any], fabric: Dict[str, Any]) -> Dict[str, Any]:
+    """Build an honest evidence label; static validation never implies Desktop."""
+    static_pass = bool(openability.get("openable"))
+    if fabric.get("present") and not fabric.get("valid", False):
+        static_pass = False
+    return {
+        "level": "STATIC_PASS" if static_pass else "UNVERIFIED",
+        "static_checks": {
+            "passed": sum(1 for check in openability.get("checks", [])
+                           if check.get("ok")),
+            "failed": sum(1 for check in openability.get("checks", [])
+                           if not check.get("ok")),
+        },
+        "desktop": {"status": "not_run", "version": None},
+        "semantic_execution": "not_run",
+        "refresh": "not_run",
+        "deployment": "not_run",
+    }
+
+
 def _build_priorities(parity: Dict[str, Any], blockers: list[str],
                       warnings: list[str]) -> list[Dict[str, Any]]:
     """Create a stable, deterministic remediation queue from verified findings."""
@@ -200,6 +227,8 @@ def build_quality_report(extracted: Dict, project_dir: str,
     interface = compare_report_interface(extracted or {}, project_dir, report_name)
     openability = check_openability(project_dir)
     fabric = _fabric_validation(project_dir, report_name)
+    openability_dict = _openability_dict(openability)
+    confidence = _openability_confidence(openability_dict, fabric)
 
     blockers = []
     warnings = []
@@ -232,7 +261,8 @@ def build_quality_report(extracted: Dict, project_dir: str,
         parity=parity,
         data=data,
         interface=interface,
-        openability=_openability_dict(openability),
+        openability=openability_dict,
+        openability_confidence=confidence,
         fabric=fabric,
         status=status,
         blockers=blockers,

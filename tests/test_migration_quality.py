@@ -77,6 +77,9 @@ class TestMigrationQuality(unittest.TestCase):
         report = self._build()
         self.assertEqual(report.status, 'PASS')
         self.assertFalse(report.fabric['present'])
+        self.assertEqual(report.openability_confidence['level'], 'STATIC_PASS')
+        self.assertEqual(report.openability_confidence['desktop']['status'], 'not_run')
+        self.assertEqual(report.openability_confidence['semantic_execution'], 'not_run')
         self.assertEqual(report.blockers, [])
         self.assertEqual(report.warnings, [])
 
@@ -128,6 +131,7 @@ class TestMigrationQuality(unittest.TestCase):
         report = self._build(openability=failed)
         self.assertEqual(report.status, 'FAIL')
         self.assertIn('Dangling dataset reference', report.blockers)
+        self.assertEqual(report.openability_confidence['level'], 'UNVERIFIED')
 
     def test_interface_gap_is_warning(self):
         report = self._build(interface={
@@ -145,6 +149,7 @@ class TestMigrationQuality(unittest.TestCase):
                 payload = json.load(fh)
         self.assertEqual(payload['report_name'], 'Demo')
         self.assertIn('parity', payload)
+        self.assertIn('openability_confidence', payload)
         self.assertEqual(payload['status'], 'PASS')
 
     def test_save_html_contains_quality_sections(self):
