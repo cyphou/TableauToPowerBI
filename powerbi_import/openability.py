@@ -267,6 +267,38 @@ def _check_semantic_validation(project_dir) -> CheckResult:
     return CheckResult("semantic_validation", not issues, "error", issues)
 
 
+def _check_visual_bindings(project_dir) -> CheckResult:
+    """Block PBIR visuals that reference missing model fields."""
+    try:
+        from powerbi_import.artifact_diff import _parse_tmdl_table
+        from powerbi_import.cross_validator import _check_visual_refs, _build_model_index
+        from powerbi_import.self_healing_report import load_report
+    except Exception as exc:  # noqa: BLE001 - preflight must return a check result
+        return CheckResult("visual_bindings", False, "error", [str(exc)])
+
+    model = {"model": {"tables": []}}
+    for model_dir in glob.glob(os.path.join(project_dir, "*.SemanticModel")):
+        for path in glob.glob(os.path.join(model_dir, "definition", "tables", "*.tmdl")):
+            parsed = _parse_tmdl_table(path)
+            if parsed:
+                model["model"]["tables"].append(parsed)
+    if not model["model"]["tables"]:
+        return CheckResult("visual_bindings", True, "error", [])
+
+    report_dirs = glob.glob(os.path.join(project_dir, "*.Report"))
+    if not report_dirs:
+        return CheckResult("visual_bindings", True, "error", [])
+    report_state = load_report(report_dirs[0])
+    if not report_state:
+        return CheckResult("visual_bindings", False, "error",
+                           ["report state could not be loaded"])
+    table_names, columns, measures = _build_model_index(model)
+    issues = _check_visual_refs(report_state, table_names, columns, measures)
+    return CheckResult("visual_bindings", not issues, "error", [
+        f"{issue.location}: {issue.message}" for issue in issues
+    ])
+
+
 def _check_schema(project_dir) -> CheckResult:
     issues = []
     for fp in glob.glob(os.path.join(project_dir, "**", "visual.json"), recursive=True):
@@ -423,6 +455,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_power_query(project_dir),
         _check_dax(project_dir),
         _check_semantic_validation(project_dir),
+        _check_visual_bindings(project_dir),
         _check_references(project_dir),
         _check_report_structure(project_dir),
         _check_schema(project_dir),

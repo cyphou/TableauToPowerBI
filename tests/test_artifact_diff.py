@@ -337,6 +337,28 @@ class TestTMDLParsing:
         names = {m['name'] for m in result['measures']}
         assert names == {'Date Range Start', 'Total Sales'}
 
+    def test_parse_single_line_column_name(self, tmp_dir):
+        path = os.path.join(tmp_dir, 'Sensors.tmdl')
+        _write(path, textwrap.dedent("""\
+            table 'Sensors'
+
+	column 'Vibration X' = 'Sensors'[value] * COS([angle])
+	column EnergyIndex = [value] * 2
+        """))
+        result = _parse_tmdl_table(path)
+        names = {c['name'] for c in result['columns']}
+        assert names == {'Vibration X', 'EnergyIndex'}
+
+    def test_parse_single_line_column_with_doubled_quote(self, tmp_dir):
+        path = os.path.join(tmp_dir, 'Sensors.tmdl')
+        _write(path, textwrap.dedent("""\
+            table 'Sensors'
+
+	column 'Sensor''s Value' = [value]
+        """))
+        result = _parse_tmdl_table(path)
+        assert result['columns'][0]['name'] == "Sensor's Value"
+
     def test_parse_single_line_measure_with_doubled_quote(self, tmp_dir):
         path = os.path.join(tmp_dir, 'Orders.tmdl')
         _write(path, textwrap.dedent("""\

@@ -208,8 +208,16 @@ def _parse_tmdl_table(filepath):
 
         # Column
         if stripped.startswith('\tcolumn ') or stripped.startswith('    column '):
-            col_name = re.sub(r"^\s+column\s+'?(.*?)'?\s*$", r'\1', stripped)
-            col_name = col_name.replace("''", "'")
+            quoted_col = re.match(r"^\s*column\s+'((?:[^']|'')*)'\s*=", stripped)
+            if quoted_col:
+                col_name = quoted_col.group(1).replace("''", "'")
+            else:
+                bare_col = re.match(r"^\s*column\s+(\S+)\s*=", stripped)
+                if bare_col:
+                    col_name = bare_col.group(1)
+                else:
+                    col_name = re.sub(r"^\s+column\s+'?(.*?)'?\s*$", r'\1', stripped)
+                    col_name = col_name.replace("''", "'")
             col_info = {'name': col_name}
             # Scan properties
             j = i + 1
