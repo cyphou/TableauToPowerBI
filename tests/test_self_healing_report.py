@@ -162,6 +162,25 @@ class TestOffCanvas(unittest.TestCase):
         state = _make_state(pages=[_page('p1', [v])])
         self.assertEqual(_heal_visual_off_canvas(state), 0)
 
+    def test_uses_page_own_size_not_default_1280x720(self):
+        """Regression: a visual that fits a page's own (non-default) size —
+        e.g. a 1400x900 Tableau dashboard — must NOT be clamped against the
+        1280x720 fallback. Found via cross-checking visual sizes: every
+        visual on a larger-than-default page was being incorrectly shrunk."""
+        v = _visual('v1', {'position': {'x': 700, 'y': 0, 'width': 700, 'height': 450}})
+        state = _make_state(pages=[_page('p1', [v], page_json={'width': 1400, 'height': 900})])
+        self.assertEqual(_heal_visual_off_canvas(state), 0)
+        pos = v['json']['position']
+        self.assertEqual(pos['width'], 700)
+        self.assertEqual(pos['height'], 450)
+
+    def test_still_clamps_against_own_oversized_page(self):
+        v = _visual('v1', {'position': {'x': 1300, 'y': 0, 'width': 200, 'height': 100}})
+        state = _make_state(pages=[_page('p1', [v], page_json={'width': 1400, 'height': 900})])
+        self.assertEqual(_heal_visual_off_canvas(state), 1)
+        pos = v['json']['position']
+        self.assertLessEqual(pos['x'] + pos['width'], 1400)
+
 
 # ════════════════════════════════════════════════════════════════════
 #  H4 — visual_zindex_collision

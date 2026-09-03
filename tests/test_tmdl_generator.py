@@ -34,6 +34,7 @@ from powerbi_import.tmdl_generator import (
     _write_model_tmdl,
     _write_relationships_tmdl,
     _write_table_tmdl,
+    _rewrite_bare_measure_references,
     generate_tmdl,
 )
 
@@ -1095,6 +1096,54 @@ class TestGenerateTmdl(unittest.TestCase):
         stats = self._generate(datasources, "Test", None, self.tmpdir)
         for key in ["tables", "columns", "measures", "relationships"]:
             self.assertIn(key, stats)
+
+
+class TestRewriteBareMeasureReferences(unittest.TestCase):
+    """Regression: renaming a measure (collision self-heal) must update every
+    other DAX expression that bare-references the old name, or Power BI
+    Desktop fails to load with "value cannot be determined" (issue seen in
+    the NBA player stats sample: a parameter measure named 'Rebounds' renamed
+    to 'Rebounds (Measure)' left a SWITCH([Rebounds], ...) reference dangling).
+    """
+
+    def _model(self):
+        return {"model": {"tables": [
+            {"name": "Params", "measures": [
+                {"name": "Rebounds", "expression": "SELECTEDVALUE('Params'[Value], 1)"},
+            ], "columns": []},
+            {"name": "Sheet1", "measures": [
+                {"name": "p. Rebounds",
+                 "expression": "SWITCH([Rebounds], 1, AVERAGE('Sheet1'[DEF]))"},
+            ], "columns": []},
+        ]}}
+
+    def test_rewrites_bare_reference_in_other_measure(self):
+        model = self._model()
+        _rewrite_bare_measure_references(model, "Rebounds", "Rebounds (Measure)")
+        other = model["model"]["tables"][1]["measures"][0]
+        self.assertEqual(
+            other["expression"],
+            "SWITCH([Rebounds (Measure)], 1, AVERAGE('Sheet1'[DEF]))")
+
+    def test_leaves_qualified_column_reference_untouched(self):
+        model = {"model": {"tables": [
+            {"name": "T1", "measures": [
+                {"name": "Rebounds", "expression": "1"},
+            ], "columns": []},
+            {"name": "T2", "measures": [
+                {"name": "M", "expression": "SUM('T2'[Rebounds])"},
+            ], "columns": []},
+        ]}}
+        _rewrite_bare_measure_references(model, "Rebounds", "Rebounds (Measure)")
+        self.assertEqual(
+            model["model"]["tables"][1]["measures"][0]["expression"],
+            "SUM('T2'[Rebounds])")
+
+    def test_noop_when_names_match(self):
+        model = self._model()
+        before = json.loads(json.dumps(model))
+        _rewrite_bare_measure_references(model, "Rebounds", "Rebounds")
+        self.assertEqual(model, before)
 
 
 class TestColumnDeduplication(unittest.TestCase):

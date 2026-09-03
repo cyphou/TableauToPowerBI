@@ -231,11 +231,17 @@ def _parse_tmdl_table(filepath):
 
         # Measure
         elif stripped.startswith('\tmeasure ') or stripped.startswith('    measure '):
-            meas_name = re.sub(r"^\s+measure\s+'?(.*?)'?\s*=\s*$", r'\1', stripped)
-            if meas_name == stripped:
-                # No trailing =, try without
-                meas_name = re.sub(r"^\s+measure\s+'?(.*?)'?\s*$", r'\1', stripped)
-            meas_name = meas_name.replace("''", "'")
+            # A measure line is ``measure <name> = <optional inline expr>``.
+            # The generator condenses DAX to a single line, so the name must
+            # be matched up to the first unquoted ``=`` — not assumed to be
+            # the entire remainder of the line (that swallowed the inline
+            # expression too, corrupting every single-line measure name).
+            qm = re.match(r"^\s*measure\s+'((?:[^']|'')*)'\s*=", stripped)
+            if qm:
+                meas_name = qm.group(1).replace("''", "'")
+            else:
+                bm = re.match(r"^\s*measure\s+(\S+)\s*=", stripped)
+                meas_name = bm.group(1) if bm else stripped
             # Collect expression lines
             expr_lines = []
             j = i + 1

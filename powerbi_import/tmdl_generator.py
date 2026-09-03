@@ -2691,6 +2691,7 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
                     nkey = new_name.casefold()
                     suffix += 1
                 print(f"  ⚕ Self-heal: Renamed colliding measure '{mname}' → '{new_name}'")
+                _rewrite_bare_measure_references(model, mname, new_name)
                 measure["name"] = new_name
                 key = nkey
             seen_in_table.add(key)
@@ -2737,6 +2738,7 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
             if key in all_column_names:
                 col_table, col_name = all_column_names[key]
                 new_name = f"{mname} (Measure)"
+                _rewrite_bare_measure_references(model, mname, new_name)
                 measure["name"] = new_name
                 print(f"  ⚕ Self-heal: Renamed measure '{mname}' → '{new_name}' (collision with column '{col_name}' in '{col_table}')")
 
@@ -4735,6 +4737,31 @@ def _auto_date_hierarchies(model):
         # Inject accumulated M steps into the table's partition
         if m_steps:
             _inject_m_steps_into_partition(table, m_steps)
+
+
+def _rewrite_bare_measure_references(model, old_name, new_name):
+    """Update every DAX expression that bare-references a renamed measure.
+
+    When a measure is renamed (e.g. to resolve a name collision), any other
+    measure/calculated-column expression using the unqualified ``[OldName]``
+    form would otherwise keep pointing at a name that no longer exists,
+    producing a Power BI load/eval error ("value cannot be determined").
+    Only unqualified references are rewritten — ``Table[OldName]`` /
+    ``'Table'[OldName]`` column references are left untouched since they
+    refer to a column, not the renamed measure.
+    """
+    if not old_name or old_name == new_name:
+        return
+    pattern = re.compile(r"(?<![\w'])\[" + re.escape(old_name) + r"\]")
+    for table in model["model"]["tables"]:
+        for measure in table.get("measures", []):
+            expr = measure.get("expression", "")
+            if isinstance(expr, str) and pattern.search(expr):
+                measure["expression"] = pattern.sub(f"[{new_name}]", expr)
+        for column in table.get("columns", []):
+            expr = column.get("expression", "")
+            if isinstance(expr, str) and pattern.search(expr):
+                column["expression"] = pattern.sub(f"[{new_name}]", expr)
 
 
 def _create_parameter_tables(model, parameters, main_table_name):

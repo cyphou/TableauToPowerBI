@@ -321,6 +321,42 @@ class TestTMDLParsing:
         result = _parse_tmdl_table('/nonexistent/path.tmdl')
         assert result is None
 
+    def test_parse_single_line_measure_name(self, tmp_dir):
+        # The generator condenses DAX to a single line (repo convention:
+        # "Single-line DAX formulas — multi-line formulas are condensed"),
+        # e.g. ``measure 'Date Range Start' = DATE(2024, 1, 1)``. The name
+        # must not swallow the inline expression after ``=``.
+        path = os.path.join(tmp_dir, 'Orders.tmdl')
+        _write(path, textwrap.dedent("""\
+            table 'Orders'
+
+            	measure 'Date Range Start' = DATE(2024, 1, 1)
+            	measure 'Total Sales' = SUM('Orders'[Amount])
+        """))
+        result = _parse_tmdl_table(path)
+        names = {m['name'] for m in result['measures']}
+        assert names == {'Date Range Start', 'Total Sales'}
+
+    def test_parse_single_line_measure_with_doubled_quote(self, tmp_dir):
+        path = os.path.join(tmp_dir, 'Orders.tmdl')
+        _write(path, textwrap.dedent("""\
+            table 'Orders'
+
+            	measure 'Owner''s Total' = SUM('Orders'[Amount])
+        """))
+        result = _parse_tmdl_table(path)
+        assert result['measures'][0]['name'] == "Owner's Total"
+
+    def test_parse_bare_unquoted_measure_name(self, tmp_dir):
+        path = os.path.join(tmp_dir, 'Orders.tmdl')
+        _write(path, textwrap.dedent("""\
+            table 'Orders'
+
+            	measure TotalSales = SUM('Orders'[Amount])
+        """))
+        result = _parse_tmdl_table(path)
+        assert result['measures'][0]['name'] == 'TotalSales'
+
     def test_parse_relationships(self, tmp_dir):
         path = os.path.join(tmp_dir, 'relationships.tmdl')
         _write(path, SAMPLE_RELATIONSHIPS)

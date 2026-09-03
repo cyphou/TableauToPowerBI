@@ -190,8 +190,22 @@ def _visual_position(visual_json: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return visual_json.get('position') if isinstance(visual_json.get('position'), dict) else None
 
 
-def _canvas_dimensions(report_json: Dict[str, Any]) -> tuple:
-    """Read explicit canvas size from report.json or fall back to defaults."""
+def _canvas_dimensions(report_json: Dict[str, Any],
+                       page_json: Optional[Dict[str, Any]] = None) -> tuple:
+    """Read the canvas size to clamp visuals against.
+
+    PBIR pages are independently sized (``page.json`` ``width``/``height``),
+    so the per-page size — not a single report-wide value — is authoritative.
+    Falls back to a report-level ``settings`` override, then to the 16:9
+    desktop default, only when the page doesn't declare its own size.
+    """
+    if isinstance(page_json, dict):
+        pw, ph = page_json.get('width'), page_json.get('height')
+        try:
+            if pw and ph:
+                return int(pw), int(ph)
+        except (TypeError, ValueError):
+            pass
     settings = report_json.get('settings') or {}
     cw = settings.get('canvasWidth') or _DEFAULT_CANVAS_WIDTH
     ch = settings.get('canvasHeight') or _DEFAULT_CANVAS_HEIGHT
@@ -275,10 +289,10 @@ def _heal_visual_zero_size(state, recovery=None) -> int:
 
 def _heal_visual_off_canvas(state, recovery=None) -> int:
     """Visual extending past canvas bounds is clipped in PBI Service.
-    Clamp position+size to the canvas."""
+    Clamp position+size to the canvas (each page's own declared size)."""
     repairs = 0
-    cw, ch = _canvas_dimensions(state['report_json'])
     for page in state['pages']:
+        cw, ch = _canvas_dimensions(state['report_json'], page.get('json'))
         for visual in page['visuals']:
             pos = _visual_position(visual['json'])
             if not pos:
