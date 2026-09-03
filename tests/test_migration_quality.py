@@ -9,7 +9,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from powerbi_import.migration_quality import build_quality_report
+from powerbi_import.migration_quality import (
+    add_ai_summary,
+    build_quality_prompt,
+    build_quality_report,
+)
 
 
 class _Assessment:
@@ -25,6 +29,20 @@ class _Openability:
 
     def to_dict(self):
         return {"openable": self.openable}
+
+
+class _LLMResult:
+    text = "Outcome: PASS\nHighest priority actions: none\nResidual risks: none"
+    source = "llm"
+
+
+class _Gateway:
+    def __init__(self):
+        self.calls = []
+
+    def complete(self, prompt, system=None):
+        self.calls.append((prompt, system))
+        return _LLMResult()
 
 
 class TestMigrationQuality(unittest.TestCase):
@@ -93,6 +111,29 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(payload['report_name'], 'Demo')
         self.assertIn('parity', payload)
         self.assertEqual(payload['status'], 'PASS')
+
+    def test_ai_prompt_contains_verified_facts_and_guardrails(self):
+        report = self._build()
+        prompt = build_quality_prompt(report)
+        self.assertIn('Do not invent tests', prompt)
+        self.assertIn('"status": "PASS"', prompt)
+        self.assertIn('"blockers": []', prompt)
+
+    def test_ai_summary_is_attached_without_changing_status(self):
+        report = self._build()
+        gateway = _Gateway()
+        updated = add_ai_summary(report, gateway)
+        self.assertIs(updated, report)
+        self.assertEqual(updated.status, 'PASS')
+        self.assertIn('Outcome: PASS', updated.ai_summary)
+        self.assertEqual(updated.ai_source, 'llm')
+        self.assertEqual(len(gateway.calls), 1)
+
+    def test_missing_gateway_leaves_deterministic_report_unchanged(self):
+        report = self._build()
+        add_ai_summary(report, None)
+        self.assertEqual(report.ai_summary, '')
+        self.assertEqual(report.ai_source, 'none')
 
 
 if __name__ == '__main__':

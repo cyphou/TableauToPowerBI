@@ -122,6 +122,12 @@ class TestArgumentParserHelpers(unittest.TestCase):
         self.assertEqual(args.deploy, 'WS1')
         self.assertEqual(args.parallel, 2)
 
+    def test_quality_ai_flag_is_registered(self):
+        parser = self._get_parser()
+        args = parser.parse_args(['test.twbx', '--quality-report', '--quality-ai'])
+        self.assertTrue(args.quality_report)
+        self.assertTrue(args.quality_ai)
+
     def test_simple_commands_are_limited_to_fourteen(self):
         import migrate
         self.assertEqual(len(migrate._SIMPLE_COMMANDS), 14)

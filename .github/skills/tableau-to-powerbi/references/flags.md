@@ -38,6 +38,7 @@ advanced options. Legacy flags remain supported for backward compatibility.
 | `--qa-strict` | Fail the run on any error-severity QA check |
 | `--quality-report` | Combined assessment, parity, data, interface, and openability report |
 | `--quality-strict` | Fail the run when the combined report has blockers |
+| `--quality-ai` | Add an optional AI summary grounded in verified findings; never changes status |
 | `--parity` | Feature parity scorecard |
 | `--bulk-assess DIR` | Assess every workbook in a folder |
 

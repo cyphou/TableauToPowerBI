@@ -33,6 +33,8 @@ class MigrationQualityReport:
     status: str
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    ai_summary: str = ""
+    ai_source: str = "none"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -40,6 +42,8 @@ class MigrationQualityReport:
             "status": self.status,
             "blockers": list(self.blockers),
             "warnings": list(self.warnings),
+            "ai_summary": self.ai_summary,
+            "ai_source": self.ai_source,
             "assessment": self.assessment,
             "parity": self.parity,
             "data": self.data,
@@ -105,3 +109,40 @@ def build_quality_report(extracted: Dict, project_dir: str,
         blockers=blockers,
         warnings=warnings,
     )
+
+
+def build_quality_prompt(report: MigrationQualityReport) -> str:
+    """Build a compact prompt from verified findings for an optional AI call."""
+    payload = {
+        "report_name": report.report_name,
+        "status": report.status,
+        "blockers": report.blockers,
+        "warnings": report.warnings,
+        "parity": report.parity,
+        "data": report.data,
+        "interface": report.interface,
+        "openability": report.openability,
+    }
+    return (
+        "Summarize this verified Tableau-to-Power BI migration quality report. "
+        "Use only the supplied facts. Do not invent tests, blockers, coverage, "
+        "or deployment status. Return three short sections: outcome, highest "
+        "priority actions, and residual risks.\n\n"
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    )
+
+
+def add_ai_summary(report: MigrationQualityReport, gateway: Any) -> MigrationQualityReport:
+    """Attach an optional AI summary; deterministic findings remain authoritative."""
+    if gateway is None:
+        return report
+    result = gateway.complete(
+        build_quality_prompt(report),
+        system=("You summarize verified migration QA evidence. Never change or "
+                "reinterpret the report status, blockers, or warnings."),
+    )
+    text = getattr(result, "text", result)
+    if text:
+        report.ai_summary = str(text).strip()
+        report.ai_source = getattr(result, "source", "llm") or "llm"
+    return report

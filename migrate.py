@@ -2314,6 +2314,14 @@ def _add_report_args(parser):
     )
 
     parser.add_argument(
+        '--quality-ai',
+        action='store_true',
+        default=False,
+        help='With --quality-report, request an optional grounded AI summary '
+             'of verified findings. AI never changes validation status.'
+    )
+
+    parser.add_argument(
         '--autoplay',
         action='store_true',
         default=False,
@@ -4864,7 +4872,7 @@ def _run_parity_mode(args):
 def _run_quality_report(args, source_basename):
     """Run the unified post-generation quality report."""
     try:
-        from powerbi_import.migration_quality import build_quality_report
+        from powerbi_import.migration_quality import add_ai_summary, build_quality_report
 
         extracted = {}
         json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
@@ -4880,6 +4888,19 @@ def _run_quality_report(args, source_basename):
             'artifacts', 'powerbi_projects', 'migrated')
         project_dir = os.path.join(out_base, source_basename)
         report = build_quality_report(extracted, project_dir, source_basename)
+        if getattr(args, 'quality_ai', False):
+            from powerbi_import.llm_gateway import LLMGateway
+            gateway = LLMGateway(
+                mode=getattr(args, 'llm_mode', None),
+                provider=getattr(args, 'llm_provider', None),
+                model=getattr(args, 'llm_model', None),
+                endpoint=getattr(args, 'llm_endpoint', None),
+                api_key=getattr(args, 'llm_key', None),
+                max_calls=1,
+                dry_run=getattr(args, 'llm_dry_run', False),
+                local_url=getattr(args, 'llm_local_url', None),
+            )
+            add_ai_summary(report, gateway)
         output_dir = args.output_dir or out_base
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(

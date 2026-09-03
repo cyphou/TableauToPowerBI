@@ -97,6 +97,8 @@ assessment, feature parity, data coverage, interface coverage, and Power BI
 openability. Use `parity` for feature coverage, `portfolio` for folder assessment,
 `plan` for migration waves, `lineage` for Prep flows, and `package` for a stakeholder
 deliverable. Add `--quality-strict` when a CI run should fail on quality blockers.
+Add `--quality-ai` for an optional summary based only on verified findings; AI
+never changes the validation status.
 Run `python migrate.py --help` for the concise command list. Existing flag-based
 automation remains compatible; use `python migrate.py --advanced-help` only when an
 advanced option is required. Secrets belong in environment variables, never in
