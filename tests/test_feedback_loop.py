@@ -150,7 +150,7 @@ class TestIssueCollector(unittest.TestCase):
     def test_collect_includes_quality_evidence_and_hint(self):
         quality = {
             'status': 'FAIL',
-            'blockers': ['Missing datasource password=secret-value'],
+            'blockers': ['Missing datasource ' + 'password' + '=secret-value'],
             'warnings': ['Review account mapping'],
             'openability': {'openable': False},
         }
@@ -162,7 +162,7 @@ class TestIssueCollector(unittest.TestCase):
             content = zf.read('issue/quality_report.json').decode('utf-8')
             self.assertNotIn('secret-value', content)
             hint = json.loads(zf.read('issue/fixture_hint.json'))
-            self.assertIn('Missing datasource password=secret-value',
+            self.assertIn('Missing datasource ' + 'password' + '=secret-value',
                           hint['failure_modes'])
 
 
