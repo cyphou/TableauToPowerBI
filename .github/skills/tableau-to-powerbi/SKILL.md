@@ -45,7 +45,7 @@ it correctly. **Prefer running the CLI over hand-editing generated artifacts.**
 - **Generation** (`powerbi_import/`): produces the full `.pbip` (TMDL semantic model,
   PBIR v4.0 report, Power Query M, visuals, filters, bookmarks).
 
-## Public CLI: 8 commands
+## Public CLI: 14 commands
 
 ```bash
 .venv\Scripts\python.exe migrate.py migrate workbook.twbx
@@ -56,7 +56,19 @@ it correctly. **Prefer running the CLI over hand-editing generated artifacts.**
 .venv\Scripts\python.exe migrate.py fabric workbook.twbx
 .venv\Scripts\python.exe migrate.py deploy workbook.twbx WORKSPACE_ID
 .venv\Scripts\python.exe migrate.py qa workbook.twbx
+.venv\Scripts\python.exe migrate.py quality workbook.twbx
+.venv\Scripts\python.exe migrate.py parity workbook.twbx
+.venv\Scripts\python.exe migrate.py portfolio .\workbooks
+.venv\Scripts\python.exe migrate.py plan workbook.twbx
+.venv\Scripts\python.exe migrate.py lineage .\prep_flows
+.venv\Scripts\python.exe migrate.py package workbook.twbx
 ```
+
+Use `quality` for one deterministic report combining assessment, feature parity,
+data coverage, interface coverage, and Power BI openability. Use `parity` for the
+feature scorecard, `portfolio` for folder assessment, `plan` for migration waves,
+`lineage` for Prep flows, and `package` for a stakeholder deliverable. Add
+`--quality-strict` when CI should fail on quality blockers.
 
 Run `.venv\Scripts\python.exe migrate.py --help` for the concise list. Existing
 flag-based automation remains compatible; `--advanced-help` exposes legacy options

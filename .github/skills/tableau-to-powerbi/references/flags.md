@@ -4,6 +4,20 @@ Deep-dive companion to the `tableau-to-powerbi` skill. Run
 `python migrate.py --help` for the authoritative list; this file groups the most
 useful flags by intent.
 
+For new scripts, prefer the concise commands below and use this page only for
+advanced options. Legacy flags remain supported for backward compatibility.
+
+| Workflow | Preferred command |
+|----------|-------------------|
+| Single workbook | `python migrate.py migrate WORKBOOK` |
+| Readiness assessment | `python migrate.py assess WORKBOOK` |
+| Unified post-migration validation | `python migrate.py quality WORKBOOK` |
+| Feature parity scorecard | `python migrate.py parity WORKBOOK` |
+| Portfolio assessment | `python migrate.py portfolio FOLDER` |
+| Migration planning | `python migrate.py plan SOURCE` |
+| Prep-flow lineage | `python migrate.py lineage FLOW_OR_FOLDER...` |
+| Stakeholder package | `python migrate.py package WORKBOOK` |
+
 ## Core
 
 | Flag | Purpose |
@@ -22,6 +36,9 @@ useful flags by intent.
 | `--assess` | Pre-migration readiness report (no output written) |
 | `--qa` | Post-migration real-world QA report card |
 | `--qa-strict` | Fail the run on any error-severity QA check |
+| `--quality-report` | Combined assessment, parity, data, interface, and openability report |
+| `--quality-strict` | Fail the run when the combined report has blockers |
+| `--parity` | Feature parity scorecard |
 | `--bulk-assess DIR` | Assess every workbook in a folder |
 
 ## Batch & shared model
