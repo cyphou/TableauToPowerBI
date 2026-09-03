@@ -18,11 +18,13 @@ import os
 import sys
 import glob
 import json
+import hashlib
 import logging
 import argparse
 import tempfile
 import zipfile
 import concurrent.futures
+import threading
 from datetime import datetime
 from enum import IntEnum
 
@@ -1730,6 +1732,59 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
     migrated_root = output_dir if output_dir else os.path.join(batch_dir, 'migrated')
     os.makedirs(migrated_root, exist_ok=True)
 
+    checkpoint_path = os.path.join(migrated_root, '.migration_batch_state.json')
+    checkpoint_lock = threading.Lock()
+
+    def _checkpoint_config():
+        return json.dumps({
+            'output_format': output_format,
+            'calendar_start': calendar_start,
+            'calendar_end': calendar_end,
+            'culture': culture,
+            'skip_extraction': skip_extraction,
+            'prep_file': os.path.abspath(prep_file) if prep_file else None,
+        }, sort_keys=True, default=str)
+
+    checkpoint_config = hashlib.sha256(_checkpoint_config().encode('utf-8')).hexdigest()
+
+    def _source_signature(path):
+        try:
+            stat = os.stat(path)
+            return f'{stat.st_size}:{stat.st_mtime_ns}'
+        except OSError:
+            return ''
+
+    def _load_checkpoint():
+        try:
+            with open(checkpoint_path, 'r', encoding='utf-8') as handle:
+                value = json.load(handle)
+            return value if isinstance(value, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    checkpoint = _load_checkpoint()
+
+    def _save_checkpoint():
+        temp_path = f'{checkpoint_path}.tmp'
+        with checkpoint_lock:
+            with open(temp_path, 'w', encoding='utf-8') as handle:
+                json.dump(checkpoint, handle, indent=2, default=str)
+            os.replace(temp_path, checkpoint_path)
+
+    def _set_checkpoint(task, status, result=None, duration_sec=0.0, error=''):
+        key = os.path.relpath(task['tableau_file'], batch_dir)
+        checkpoint[key] = {
+            'source_signature': _source_signature(task['tableau_file']),
+            'config_signature': checkpoint_config,
+            'output_format': task['output_format'],
+            'status': status,
+            'duration_sec': round(duration_sec, 3),
+            'result': result or {},
+            'error': error,
+            'updated_at': datetime.now().isoformat(),
+        }
+        _save_checkpoint()
+
     print_header("TABLEAU TO POWER BI BATCH MIGRATION")
     print(f"  Source:     {batch_dir}")
     print(f"  Workbooks:  {len(tableau_files)}")
@@ -1779,9 +1834,21 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             pbip_path = os.path.join(out_base, bn, f'{bn}.pbip')
             fabric_model = os.path.join(out_base, bn, f'{bn}.SemanticModel')
             completed_path = fabric_model if output_format == 'fabric' else pbip_path
-            if os.path.exists(completed_path):
+            state_key = os.path.relpath(twb, batch_dir)
+            state = checkpoint.get(state_key, {})
+            checkpoint_valid = (
+                state.get('status') == 'success'
+                and state.get('source_signature') == _source_signature(twb)
+                and state.get('config_signature') == checkpoint_config
+            )
+            if checkpoint_valid and os.path.exists(completed_path):
                 logger.info("Resume: skipping already-completed %s", bn)
                 _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': pbip_path})
+            elif not checkpoint and os.path.exists(completed_path):
+                # Backward-compatible fallback for batches created before checkpoints.
+                logger.info("Resume: skipping legacy completed %s", bn)
+                _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': pbip_path,
+                                             'legacy_marker': True})
             else:
                 filtered.append(twb)
         tableau_files = filtered
@@ -1850,33 +1917,41 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         print(f"{'=' * 80}")
 
         wb_start_time = datetime.now()
+        _set_checkpoint(task, 'running')
         _write_jsonl('workbook_start', {
             'workbook': task['display_name'],
             'index': task['index'],
             'total': len(tasks),
         })
 
-        wb_result = _migrate_single_workbook(
-            tableau_file=task['tableau_file'],
-            basename=task['basename'],
-            workbook_output_dir=task['workbook_output_dir'],
-            display_name=task['display_name'],
-            skip_extraction=task['skip_extraction'],
-            wb_prep=task['wb_prep'],
-            wb_cal_start=task['wb_cal_start'],
-            wb_cal_end=task['wb_cal_end'],
-            wb_culture=task['wb_culture'],
-            output_format=task['output_format'],
-            verify_open=verify_open,
-        )
-
         wb_duration = (datetime.now() - wb_start_time).total_seconds()
+        try:
+            wb_result = _migrate_single_workbook(
+                tableau_file=task['tableau_file'],
+                basename=task['basename'],
+                workbook_output_dir=task['workbook_output_dir'],
+                display_name=task['display_name'],
+                skip_extraction=task['skip_extraction'],
+                wb_prep=task['wb_prep'],
+                wb_cal_start=task['wb_cal_start'],
+                wb_cal_end=task['wb_cal_end'],
+                wb_culture=task['wb_culture'],
+                output_format=task['output_format'],
+                verify_open=verify_open,
+            )
+        except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
+            wb_result = {'success': False, 'error': str(exc), 'error_category': 'exception'}
+            logger.exception("Migration failed for %s", task['display_name'])
+        wb_duration = (datetime.now() - wb_start_time).total_seconds()
+        status = 'success' if wb_result.get('success', False) else 'failed'
+        _set_checkpoint(task, status, wb_result, wb_duration, wb_result.get('error', ''))
         _write_jsonl('workbook_end', {
             'workbook': task['display_name'],
             'success': wb_result.get('success', False),
             'duration_sec': wb_duration,
             'fidelity': wb_result.get('fidelity'),
             'stats': wb_result.get('stats', {}),
+            'checkpoint_status': status,
         })
         return task['display_name'], wb_result
 

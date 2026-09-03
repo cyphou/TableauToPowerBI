@@ -307,6 +307,55 @@ class TestParallelBatch(unittest.TestCase):
                 self.assertEqual(result, ExitCode.SUCCESS)
                 self.assertEqual(mock_migrate.call_count, 1)
 
+    def test_sequential_failure_does_not_abort_later_workbooks(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'source')
+            os.makedirs(src)
+            for name in ('failed.twbx', 'later.twbx'):
+                with open(os.path.join(src, name), 'w') as fh:
+                    fh.write('<workbook/>')
+            out = os.path.join(td, 'output')
+
+            def migrate(tableau_file, **_kwargs):
+                if os.path.basename(tableau_file) == 'failed.twbx':
+                    raise RuntimeError('synthetic extraction failure')
+                return {'success': True, 'stats': {}, 'fidelity': 100}
+
+            with patch('migrate._migrate_single_workbook', side_effect=migrate), \
+                    patch('migrate.run_batch_html_dashboard'):
+                result = run_batch_migration(batch_dir=src, output_dir=out)
+
+            self.assertEqual(result, ExitCode.BATCH_PARTIAL_FAIL)
+            checkpoint_path = os.path.join(out, '.migration_batch_state.json')
+            with open(checkpoint_path, encoding='utf-8') as fh:
+                checkpoint = json.load(fh)
+            self.assertEqual(checkpoint['failed.twbx']['status'], 'failed')
+            self.assertEqual(checkpoint['later.twbx']['status'], 'success')
+
+    def test_resume_retries_stale_source_checkpoint(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'source')
+            os.makedirs(src)
+            twb = os.path.join(src, 'report.twbx')
+            with open(twb, 'w') as fh:
+                fh.write('<workbook/>')
+            out = os.path.join(td, 'output')
+            checkpoint_path = os.path.join(out, '.migration_batch_state.json')
+            os.makedirs(out)
+            with open(checkpoint_path, 'w', encoding='utf-8') as fh:
+                json.dump({'report.twbx': {
+                    'status': 'success',
+                    'source_signature': 'stale',
+                    'config_signature': 'stale',
+                }}, fh)
+            with patch('migrate._migrate_single_workbook') as mock_migrate, \
+                    patch('migrate.run_batch_html_dashboard'):
+                mock_migrate.return_value = {'success': True, 'stats': {}, 'fidelity': 100}
+                result = run_batch_migration(batch_dir=src, output_dir=out, resume=True)
+
+            self.assertEqual(result, ExitCode.SUCCESS)
+            self.assertEqual(mock_migrate.call_count, 1)
+
 
 class TestMigrateSingleWorkbook(unittest.TestCase):
     """Test the _migrate_single_workbook helper function."""
