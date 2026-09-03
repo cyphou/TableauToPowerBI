@@ -1,14 +1,37 @@
-# Development Roadmap — v22.0.0 → v46.0.0
+# Development Roadmap — v22.0.0 → v47.0.0
 
 **Date:** 2026-09-03
-**Baseline:** v44.0.0 — 9,500+ tests (Python) + 38 extension unit tests, 0 collection errors
-**Current state:** v44.0.0 shipped. The current Fabric-native path generates and statically validates a six-artifact bundle with Direct Lake semantic-model partitions, item manifests, Dataflow-to-Lakehouse destinations, pipeline dependencies, and a single-workbook report binding. The migration engine now has visual-size, table/column, and interface comparison tooling across the demo corpus. **Near-term focus (v45.0.0): measured migration performance, CI regression enforcement, and contract hardening. Next roadmap (v46.0.0): Desktop openability hardening, shared-model quality gates, documentation parity, and release discipline. v47.0.0 then turns feature parity and the full migration path into an evidence-backed product contract.**
+**Baseline:** 2026-09-03 — 9,583 tests passed, 81 skipped, 1 expected failure; 8 known unrelated failures remain (7 pixel-golden fixture drifts and 1 regex-anchor check). 38 extension unit tests.
+**Current state:** v44.0.0 is the declared release baseline. The migration engine has now verified the complete local path across 27 example migration reports, 26 openable PBIP projects, and 26 valid Fabric-native six-artifact bundles. The concise CLI has 14 commands, including unified `quality`, `parity`, `portfolio`, `plan`, `lineage`, and `package` workflows. Unified JSON/HTML quality reporting and optional grounded AI summaries are available. **v45/v46 remain release-hardening work; v47.0.0 is now in progress and turns feature parity and the full migration path into an evidence-backed product contract.**
 
 ---
 
 ## Executive Summary
 
 The migration engine has broad PBIP, batch, shared-model, Tableau Server, self-healing, and developer-tooling coverage. Fabric-native generation now provides a **validated six-artifact scaffold**; environment-specific identities, connections, live deployment, and operational Fabric smoke tests remain outside the local deterministic contract. v45 establishes reproducible time and memory budgets and hardens that contract before production claims are made.
+
+### Verified Baseline — 2026-09-03
+
+The following capabilities are implemented and verified locally:
+
+- Full example migration: 27 migration reports with no reported batch failures.
+- PBIP generation: 26 projects generated; all 26 passed openability validation.
+- Fabric-native generation: 26 bundles validated by `FabricProjectValidator`.
+- Fabric artifact coverage: 26 Lakehouses, Dataflow Gen2 definitions, Notebooks,
+  Direct Lake semantic models, Pipelines, and Power BI Reports.
+- Cross-workbook/flow evidence: Prep lineage report generated for 17 flows with
+  14 cross-flow edges.
+- Fidelity tooling: visual geometry, table/column, interface, parity, and unified
+  JSON/HTML quality reports are available.
+- AI assistance: optional grounded summaries consume verified quality findings;
+  AI cannot change validation status or blockers.
+- CLI: 14 concise commands are documented; legacy flags remain compatible.
+- Publication safety: pre-push privacy/provenance audit rules are part of shared
+  agent instructions.
+
+These results prove the local generation and static-validation contract only.
+They do not prove live Fabric workspace deployment, identity/RBAC, gateway
+binding, refresh execution, or post-deployment health.
 
 | Version | Theme | Sprints | Status |
 |---------|-------|---------|--------|
@@ -41,7 +64,7 @@ The migration engine has broad PBIP, batch, shared-model, Tableau Server, self-h
 | **v44.0.0** | Agentic & Copilot-Native Migration | 215–220 | ✅ Shipped |
 | **v45.0.0** | Performance & Fabric Contract Completion | 222–226 | Planned |
 | **v46.0.0** | Desktop Reliability & Release Discipline | 227–231 | Planned |
-| **v47.0.0** | Feature Parity & End-to-End Migration Path | 232–237 | Planned |
+| **v47.0.0** | Feature Parity & End-to-End Migration Path | 232–237 | In progress |
 
 ---
 
@@ -78,7 +101,7 @@ still require an explicitly authorized environment.
 
 ## Next-Release Execution Matrix (All Agents)
 
-This is the working assignment for v45/v46. Each agent owns the listed
+This is the working assignment for v45–v47. Each agent owns the listed
 deliverables and must add focused tests or documentation evidence before the
 release gate is marked complete.
 
