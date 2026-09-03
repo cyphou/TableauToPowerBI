@@ -173,6 +173,15 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.status, 'FAIL')
         self.assertEqual(report.priorities[0]['priority'], 'P0')
 
+    def test_untracked_feature_family_is_warning(self):
+        report = self._build(parity={
+            'gaps': [],
+            'untracked_features': ['aliases'],
+        })
+        self.assertEqual(report.status, 'WARN')
+        self.assertIn('aliases', report.warnings[0])
+        self.assertEqual(report.priorities[0]['priority'], 'P2')
+
     def test_ai_prompt_contains_verified_facts_and_guardrails(self):
         report = self._build()
         prompt = build_quality_prompt(report)

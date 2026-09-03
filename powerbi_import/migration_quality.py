@@ -212,6 +212,9 @@ def build_quality_report(extracted: Dict, project_dir: str,
     if any(gap.get("status") == "unsupported"
            for gap in parity.get("gaps", [])):
         blockers.append("Unsupported Tableau features remain in use.")
+    if parity.get("untracked_features"):
+        names = ", ".join(parity["untracked_features"])
+        warnings.append(f"Feature families lack parity mappings: {names}.")
     if data.get("summary", {}).get("tables_found", 0) < data.get("summary", {}).get("source_tables", 0):
         blockers.append("One or more extracted source tables are missing from the target model.")
     if not interface.get("filters", {}).get("covered", True):

@@ -217,6 +217,20 @@ class TestSerialization(unittest.TestCase):
         self.assertIn("status_counts", d)
         self.assertIn("usages", d)
         self.assertIn("gaps", d)
+        self.assertIn("untracked_features", d)
+
+    def test_untracked_source_features_are_reported(self):
+        scan = scan_workbook({
+            "dashboards": [{"name": "Dashboard"}],
+            "aliases": [{"field": "Region"}],
+            "sort_orders": [{"field": "Month"}],
+        })
+        self.assertEqual(scan.untracked_features,
+                         ["sort_orders", "aliases", "dashboards"])
+
+    def test_empty_untracked_source_features_are_ignored(self):
+        scan = scan_workbook({"dashboards": [], "aliases": {}, "sort_orders": []})
+        self.assertEqual(scan.untracked_features, [])
 
     def test_save_json(self):
         with tempfile.TemporaryDirectory() as tmp:

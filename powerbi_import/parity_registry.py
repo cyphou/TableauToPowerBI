@@ -120,6 +120,16 @@ _FEATURES: List[Feature] = [
 
 _FEATURE_BY_KEY = {f.key: f for f in _FEATURES}
 
+# Extraction keys that represent feature families and should either have a
+# parity detector or be deliberately classified as empty/non-feature metadata.
+_SOURCE_FEATURE_KEYS = (
+    "calculations", "parameters", "filters", "sets", "groups", "bins",
+    "hierarchies", "user_filters", "actions", "custom_sql", "data_blending",
+    "hyper_files", "stories", "table_extensions", "linguistic_schema",
+    "custom_geocoding", "published_datasources", "datasource_filters",
+    "sort_orders", "aliases", "dashboards", "table_extensions",
+)
+
 
 def features_by_category() -> Dict[str, List[Feature]]:
     out: Dict[str, List[Feature]] = {}
@@ -289,6 +299,7 @@ class ParityScan:
     workbook: str
     registry_version: str = REGISTRY_VERSION
     usages: List[FeatureUsage] = field(default_factory=list)
+    untracked_features: List[str] = field(default_factory=list)
 
     # -- aggregates ---------------------------------------------------
     @property
@@ -335,6 +346,7 @@ class ParityScan:
             "status_counts": self.status_counts,
             "usages": [u.to_dict() for u in self.usages],
             "gaps": [u.to_dict() for u in self.gaps],
+            "untracked_features": list(self.untracked_features),
         }
 
     def save_json(self, path: str) -> str:
@@ -382,7 +394,19 @@ def scan_workbook(converted: Dict, workbook: str = "Workbook") -> ParityScan:
                       else [str(evidence_map[feat.key])]
                       if feat.key in evidence_map else []),
         ))
-    return ParityScan(workbook=workbook, usages=usages)
+    untracked = []
+    detector_keys = set(_DETECTORS)
+    for source_key in dict.fromkeys(_SOURCE_FEATURE_KEYS):
+        value = converted.get(source_key)
+        in_use = bool(value) if not isinstance(value, dict) else bool(value)
+        detector_present = any(
+            feature_key == source_key or feature_key.startswith(f"{source_key}_")
+            for feature_key in detector_keys
+        )
+        if in_use and not detector_present:
+            untracked.append(source_key)
+    return ParityScan(workbook=workbook, usages=usages,
+                      untracked_features=untracked)
 
 
 def _load_json_file(path: str) -> Dict:
