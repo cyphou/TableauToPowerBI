@@ -3097,11 +3097,11 @@ def _build_argument_parser():
 
 _SIMPLE_COMMANDS = {
     'migrate', 'assess', 'batch', 'server',
-    'merge', 'fabric', 'deploy', 'qa',
+    'merge', 'fabric', 'deploy', 'qa', 'quality',
 }
 
 _SIMPLE_HELP = """\
-Tableau to Power BI - 8 simple commands
+Tableau to Power BI - 9 simple commands
 
 Usage:
   python migrate.py migrate WORKBOOK [options]
@@ -3112,6 +3112,7 @@ Usage:
   python migrate.py fabric WORKBOOK [options]
   python migrate.py deploy WORKBOOK WORKSPACE_ID [options]
   python migrate.py qa WORKBOOK [options]
+    python migrate.py quality WORKBOOK [options]
 
 Commands:
   migrate   Convert one Tableau workbook to a validated PBIP project
@@ -3122,6 +3123,7 @@ Commands:
   fabric    Generate Lakehouse, Dataflow, Notebook, model, report, pipeline
   deploy    Generate Fabric artifacts, deploy them, and run the pipeline
   qa        Migrate a workbook and generate the QA report card
+    quality   Migrate a workbook and generate the unified quality report
 
 Common options:
   --output-dir PATH   Choose the output folder
@@ -3143,7 +3145,7 @@ def _expand_simple_command(argv):
 
     command = args[0]
     values = args[1:]
-    if command in {'migrate', 'assess', 'fabric', 'qa'}:
+    if command in {'migrate', 'assess', 'fabric', 'qa', 'quality'}:
         if not values or values[0].startswith('-'):
             raise ValueError(f"'{command}' requires a Tableau workbook path")
         source, options = values[0], values[1:]
@@ -3152,6 +3154,7 @@ def _expand_simple_command(argv):
             'assess': ['--assess'],
             'fabric': ['--output-format', 'fabric'],
             'qa': ['--qa'],
+            'quality': ['--quality-report'],
         }[command]
         return [source, *fixed, *options]
 

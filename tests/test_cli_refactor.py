@@ -122,9 +122,9 @@ class TestArgumentParserHelpers(unittest.TestCase):
         self.assertEqual(args.deploy, 'WS1')
         self.assertEqual(args.parallel, 2)
 
-    def test_simple_commands_are_limited_to_eight(self):
+    def test_simple_commands_are_limited_to_nine(self):
         import migrate
-        self.assertEqual(len(migrate._SIMPLE_COMMANDS), 8)
+        self.assertEqual(len(migrate._SIMPLE_COMMANDS), 9)
 
     def test_simple_migrate_command(self):
         import migrate
@@ -133,7 +133,7 @@ class TestArgumentParserHelpers(unittest.TestCase):
         self.assertEqual(args.tableau_file, 'sales.twbx')
         self.assertTrue(args.verbose)
 
-    def test_simple_assess_batch_fabric_and_qa_commands(self):
+    def test_simple_assess_batch_fabric_qa_and_quality_commands(self):
         import migrate
         parser = self._get_parser()
 
@@ -141,11 +141,13 @@ class TestArgumentParserHelpers(unittest.TestCase):
         batch = migrate._parse_cli_args(parser, ['batch', 'portfolio'])
         fabric = migrate._parse_cli_args(parser, ['fabric', 'sales.twbx'])
         qa = migrate._parse_cli_args(parser, ['qa', 'sales.twbx'])
+        quality = migrate._parse_cli_args(parser, ['quality', 'sales.twbx'])
 
         self.assertTrue(assess.assess)
         self.assertEqual(batch.batch, 'portfolio')
         self.assertEqual(fabric.output_format, 'fabric')
         self.assertTrue(qa.qa)
+        self.assertTrue(quality.quality_report)
 
     def test_simple_server_merge_and_deploy_commands(self):
         import migrate
@@ -179,7 +181,7 @@ class TestArgumentParserHelpers(unittest.TestCase):
             migrate._parse_cli_args(self._get_parser(), ['--help'])
 
         self.assertEqual(exit_context.exception.code, 0)
-        self.assertIn('8 simple commands', output.getvalue())
+        self.assertIn('9 simple commands', output.getvalue())
         self.assertIn('deploy WORKBOOK WORKSPACE_ID', output.getvalue())
         self.assertNotIn('--server-preserve-folders', output.getvalue())
 

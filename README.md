@@ -73,7 +73,7 @@ pip install tableauhyperapi           # .hyper extract file reading (v2+ format)
 
 ### More ways to migrate
 
-The public CLI has **8 commands**. These cover the normal workflows:
+The public CLI has **9 commands**. These cover the normal workflows:
 
 ```bash
 python migrate.py migrate workbook.twbx
@@ -84,11 +84,16 @@ python migrate.py merge wb1.twbx wb2.twbx --model-name "Sales"
 python migrate.py fabric workbook.twbx
 python migrate.py deploy workbook.twbx WORKSPACE_ID
 python migrate.py qa workbook.twbx
+python migrate.py quality workbook.twbx
 ```
 
-Run `python migrate.py --help` for this list. Existing flag-based automation remains
-compatible; use `python migrate.py --advanced-help` only when an advanced option is
-required. Secrets belong in environment variables, never in command history.
+Use `python migrate.py quality workbook.twbx` for one deterministic report combining
+assessment, feature parity, data coverage, interface coverage, and Power BI
+openability. Add `--quality-strict` when a CI run should fail on quality blockers.
+Run `python migrate.py --help` for the concise command list. Existing flag-based
+automation remains compatible; use `python migrate.py --advanced-help` only when an
+advanced option is required. Secrets belong in environment variables, never in
+command history.
 
 The optional Tkinter interface remains available through
 `powershell -ExecutionPolicy Bypass -File .\run_light_ui.ps1`.
