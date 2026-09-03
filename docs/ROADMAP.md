@@ -73,6 +73,49 @@ last-run snapshot must never be treated as evidence for every workbook.
 | **v46.0.0** | Desktop Reliability & Release Discipline | 227–231 | Planned |
 | **v47.0.0** | Feature Parity & End-to-End Migration Path | 232–237 | In progress |
 
+### Next Ten Development Phases
+
+These phases are the execution backlog after the current v47 parity and quality
+work. Each phase must produce an implementation artifact, focused tests, and a
+measurable exit gate before the next phase is marked complete.
+
+| Phase | Focus | Primary outcome | Exit gate |
+|---|---|---|---|
+| **1** | Feature-parity closure | Complete the capability matrix for calculations, filters, parameters, interactions, formatting, extracts, and complex workbook structures. | Every in-use feature is `exact`, `healed`, `approximated`, or `unsupported`; no silent drops. |
+| **2** | Semantic execution validation | Compare representative Tableau reference values with generated DAX/M behavior for filters, totals, blanks, dates, LOD grain, joins, and table calculations. | Static checks remain always-on; execution checks are typed, tolerance-aware, and explicitly environment-gated. |
+| **3** | PBIR behavior compatibility | Add round-trip parsing, reopen/save checks, nondeterministic-ID-safe diffs, and interaction coverage for visuals, bookmarks, themes, and layout. | Generated PBIR passes schema and round-trip checks; behavior gaps are reported with evidence. |
+| **4** | Fabric live-validation boundary | Add authenticated capability probes for workspace, Lakehouse, Dataflow Gen2, Notebook, Pipeline, Semantic Model, and Direct Lake targets. | Reports distinguish `not run`, `locally valid`, `deployed`, `refreshed`, and `post-deploy validated`; CI never requires live credentials. |
+| **5** | Versioned migration manifest and resume | Persist source hashes, strategy, artifacts, dependencies, validations, redacted configuration, and checkpoints. | Interrupted migrations resume idempotently without repeating completed stages; manifest schema upgrades are tested. |
+| **6** | AI-assisted conversion and autotest | Add optional grounded suggestions for mappings, translations, remediation, and regression-test generation. | AI is opt-in, redacted, budgeted, provenance-tracked, schema-validated, and cannot mutate release status without deterministic checks. |
+| **7** | Privacy and provenance | Centralize redaction and source lineage for logs, manifests, prompts, reports, and failure packages. | Pre-push privacy scan, sensitive-column tests, prompt-boundary tests, and source/license evidence pass. |
+| **8** | Performance and scale | Benchmark parsing, conversion, PBIR generation, validation, manifest I/O, and bounded concurrency across representative corpus sizes. | Performance regressions fail the configured gate; optimizations retain parity and memory budgets. |
+| **9** | CLI and documentation productization | Consolidate inspect, plan, migrate, validate, resume, report, and Fabric workflows with stable exit codes and machine-readable output. | CLI/docs/skill flag parity passes and offline/live boundaries are documented consistently. |
+| **10** | Release gates and compatibility policy | Publish supported Tableau, Power BI, PBIR, and Fabric ranges with release gates, deprecation policy, known limitations, and traceable reports. | Unit/integration, corpus, semantic, PBIR, resume, privacy, performance, and authorized Fabric gates are green or explicitly waived. |
+
+#### Phase Ownership and Dependencies
+
+1. **Feature-parity closure** — @assessor, @extractor, @visual, @semantic, @dax, @wiring.
+2. **Semantic execution validation** — @dax, @wiring, @semantic, @tester; depends on Phase 1.
+3. **PBIR behavior compatibility** — @visual, @tester; depends on Phase 1.
+4. **Fabric live-validation boundary** — @deployer, @generator, @orchestrator; requires an explicitly authorized test workspace.
+5. **Manifest and resume** — @orchestrator, @assessor, @deployer; should extend existing incremental and deployment state rather than duplicate it.
+6. **AI conversion and autotest** — @reviewer, @assessor, @dax, @wiring, @tester; depends on verified evidence schemas from Phases 1–3.
+7. **Privacy and provenance** — @reviewer, @orchestrator, @tester; applies to every later phase and is a pre-push requirement.
+8. **Performance and scale** — @orchestrator, @tester, all generator owners; benchmark before optimization.
+9. **CLI/docs productization** — @orchestrator, @reviewer, @web-designer; follows stable contracts from Phases 4–6.
+10. **Release gates and compatibility** — @reviewer, @tester, @orchestrator, @deployer; final release gate for the sequence.
+
+#### Non-Negotiable Boundaries
+
+- AI may summarize or suggest, but deterministic validators decide migration status.
+- Local artifact validation must never be presented as live Fabric deployment proof.
+- Approximation and unsupported behavior must remain visible in JSON, HTML, and
+  packaged reports.
+- New examples and fixtures require public provenance, license evidence, and a
+  privacy review before publication.
+- Every phase ends with focused executable validation and a recorded commit
+  boundary; generated artifacts remain excluded from source commits.
+
 ---
 
 ## v45.0.0 — Performance & Fabric Contract Completion (Sprints 222–226)
