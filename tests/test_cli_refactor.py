@@ -128,6 +128,15 @@ class TestArgumentParserHelpers(unittest.TestCase):
         self.assertTrue(args.quality_report)
         self.assertTrue(args.quality_ai)
 
+    def test_quality_command_supports_fabric_output(self):
+        import migrate
+        args = migrate._parse_cli_args(
+            self._get_parser(),
+            ['quality', 'sales.twbx', '--output-format', 'fabric'],
+        )
+        self.assertTrue(args.quality_report)
+        self.assertEqual(args.output_format, 'fabric')
+
     def test_simple_commands_are_limited_to_fourteen(self):
         import migrate
         self.assertEqual(len(migrate._SIMPLE_COMMANDS), 14)
