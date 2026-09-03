@@ -4951,7 +4951,8 @@ def _run_parity_mode(args):
 def _run_quality_report(args, source_basename):
     """Run the unified post-generation quality report."""
     try:
-        from powerbi_import.migration_quality import add_ai_summary, build_quality_report
+        from powerbi_import.migration_quality import (
+            add_ai_summary, apply_desktop_probe, build_quality_report)
 
         extracted = {}
         json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
@@ -4968,6 +4969,11 @@ def _run_quality_report(args, source_basename):
             'artifacts', 'powerbi_projects', 'migrated')
         project_dir = os.path.join(out_base, source_basename)
         report = build_quality_report(extracted, project_dir, source_basename)
+        probe_path = os.path.join(project_dir, 'desktop_probe_report.json')
+        if os.path.isfile(probe_path):
+            probe = _load_json(probe_path)
+            if probe:
+                apply_desktop_probe(report, probe)
         if getattr(args, 'quality_ai', False):
             from powerbi_import.llm_gateway import LLMGateway
             gateway = LLMGateway(

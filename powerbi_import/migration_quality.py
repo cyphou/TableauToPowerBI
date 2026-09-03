@@ -43,6 +43,7 @@ class MigrationQualityReport:
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     openability_confidence: Dict[str, Any] = field(default_factory=dict)
+    desktop: Dict[str, Any] = field(default_factory=dict)
     fabric: Dict[str, Any] = field(default_factory=dict)
     priorities: list[Dict[str, Any]] = field(default_factory=list)
     ai_summary: str = ""
@@ -63,6 +64,7 @@ class MigrationQualityReport:
             "interface": self.interface,
             "openability": self.openability,
             "openability_confidence": self.openability_confidence,
+            "desktop": self.desktop,
             "fabric": self.fabric,
         }
 
@@ -161,20 +163,30 @@ def _fabric_validation(project_dir: str, report_name: str) -> Dict[str, Any]:
         return {"present": True, "valid": False, "errors": [str(exc)], "warnings": []}
 
 
-def _openability_confidence(openability: Dict[str, Any], fabric: Dict[str, Any]) -> Dict[str, Any]:
+def _openability_confidence(openability: Dict[str, Any], fabric: Dict[str, Any],
+                            desktop: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Build an honest evidence label; static validation never implies Desktop."""
     static_pass = bool(openability.get("openable"))
     if fabric.get("present") and not fabric.get("valid", False):
         static_pass = False
+    desktop = desktop or {}
+    desktop_status = desktop.get("status", "not_run")
+    level = "STATIC_PASS" if static_pass else "UNVERIFIED"
+    if static_pass and desktop_status == "opened":
+        level = "DESKTOP_SMOKE_PASS"
     return {
-        "level": "STATIC_PASS" if static_pass else "UNVERIFIED",
+        "level": level,
         "static_checks": {
             "passed": sum(1 for check in openability.get("checks", [])
                            if check.get("ok")),
             "failed": sum(1 for check in openability.get("checks", [])
                            if not check.get("ok")),
         },
-        "desktop": {"status": "not_run", "version": None},
+        "desktop": {
+            "status": desktop_status,
+            "version": desktop.get("executable"),
+            "signals": desktop.get("signals", []),
+        },
         "semantic_execution": "not_run",
         "refresh": "not_run",
         "deployment": "not_run",
@@ -291,6 +303,15 @@ def build_quality_prompt(report: MigrationQualityReport) -> str:
         "priority actions, and residual risks.\n\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     )
+
+
+def apply_desktop_probe(report: MigrationQualityReport, probe: Any) -> MigrationQualityReport:
+    """Attach Desktop smoke evidence without upgrading to reopen/production status."""
+    evidence = probe.to_dict() if hasattr(probe, "to_dict") else dict(probe or {})
+    report.desktop = evidence
+    report.openability_confidence = _openability_confidence(
+        report.openability, report.fabric, evidence)
+    return report
 
 
 def add_ai_summary(report: MigrationQualityReport, gateway: Any) -> MigrationQualityReport:

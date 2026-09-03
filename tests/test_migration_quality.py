@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.migration_quality import (
     add_ai_summary,
+    apply_desktop_probe,
     build_quality_prompt,
     build_quality_report,
 )
@@ -209,6 +210,23 @@ class TestMigrationQuality(unittest.TestCase):
         add_ai_summary(report, None)
         self.assertEqual(report.ai_summary, '')
         self.assertEqual(report.ai_source, 'none')
+
+    def test_opened_desktop_probe_promotes_confidence(self):
+        report = self._build()
+        apply_desktop_probe(report, {
+            'status': 'opened',
+            'executable': 'PBIDesktop.exe',
+            'signals': [],
+        })
+        self.assertEqual(report.openability_confidence['level'],
+                         'DESKTOP_SMOKE_PASS')
+        self.assertEqual(report.openability_confidence['desktop']['status'], 'opened')
+
+    def test_failed_desktop_probe_does_not_promote_confidence(self):
+        report = self._build()
+        apply_desktop_probe(report, {'status': 'crashed', 'signals': ['load error']})
+        self.assertEqual(report.openability_confidence['level'], 'STATIC_PASS')
+        self.assertEqual(report.openability_confidence['desktop']['status'], 'crashed')
 
 
 if __name__ == '__main__':
