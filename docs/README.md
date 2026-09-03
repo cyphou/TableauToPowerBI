@@ -25,11 +25,17 @@ python migrate.py fabric file.twbx
 python migrate.py deploy file.twbx WORKSPACE_ID
 python migrate.py qa file.twbx
 python migrate.py quality file.twbx
+python migrate.py parity file.twbx
+python migrate.py portfolio ./workbooks
+python migrate.py plan file.twbx
+python migrate.py lineage ./prep_flows
+python migrate.py package file.twbx
 ```
 
 Use `python migrate.py quality file.twbx` for the combined assessment, parity,
-data, interface, and openability report. Existing flag-based automation remains
-compatible through `python migrate.py --advanced-help`.
+data, interface, and openability report. Use `python migrate.py --help` for the
+concise command list; existing flag-based automation remains compatible through
+`python migrate.py --advanced-help`.
 
 ### Project Structure
 

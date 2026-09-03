@@ -3098,10 +3098,11 @@ def _build_argument_parser():
 _SIMPLE_COMMANDS = {
     'migrate', 'assess', 'batch', 'server',
     'merge', 'fabric', 'deploy', 'qa', 'quality',
+    'parity', 'portfolio', 'plan', 'lineage', 'package',
 }
 
 _SIMPLE_HELP = """\
-Tableau to Power BI - 9 simple commands
+Tableau to Power BI - 14 simple commands
 
 Usage:
   python migrate.py migrate WORKBOOK [options]
@@ -3113,6 +3114,11 @@ Usage:
   python migrate.py deploy WORKBOOK WORKSPACE_ID [options]
   python migrate.py qa WORKBOOK [options]
     python migrate.py quality WORKBOOK [options]
+    python migrate.py parity WORKBOOK [options]
+    python migrate.py portfolio FOLDER [options]
+    python migrate.py plan SOURCE [options]
+    python migrate.py lineage FLOW_OR_FOLDER... [options]
+    python migrate.py package WORKBOOK [options]
 
 Commands:
   migrate   Convert one Tableau workbook to a validated PBIP project
@@ -3124,6 +3130,11 @@ Commands:
   deploy    Generate Fabric artifacts, deploy them, and run the pipeline
   qa        Migrate a workbook and generate the QA report card
     quality   Migrate a workbook and generate the unified quality report
+    parity    Scan Tableau feature usage and generate a parity scorecard
+    portfolio Assess a folder of workbooks and Prep flows without migrating
+    plan      Generate migration waves, effort estimates, and timeline
+    lineage   Analyze Prep-flow lineage and merge recommendations
+    package   Migrate a workbook and create the stakeholder report package
 
 Common options:
   --output-dir PATH   Choose the output folder
@@ -3145,7 +3156,8 @@ def _expand_simple_command(argv):
 
     command = args[0]
     values = args[1:]
-    if command in {'migrate', 'assess', 'fabric', 'qa', 'quality'}:
+    if command in {'migrate', 'assess', 'fabric', 'qa', 'quality', 'parity',
+                   'plan', 'package'}:
         if not values or values[0].startswith('-'):
             raise ValueError(f"'{command}' requires a Tableau workbook path")
         source, options = values[0], values[1:]
@@ -3155,6 +3167,9 @@ def _expand_simple_command(argv):
             'fabric': ['--output-format', 'fabric'],
             'qa': ['--qa'],
             'quality': ['--quality-report'],
+            'parity': ['--parity'],
+            'plan': ['--plan-migration'],
+            'package': ['--report-package'],
         }[command]
         return [source, *fixed, *options]
 
@@ -3162,6 +3177,16 @@ def _expand_simple_command(argv):
         if not values or values[0].startswith('-'):
             raise ValueError("'batch' requires a folder path")
         return ['--batch', values[0], *values[1:]]
+
+    if command == 'portfolio':
+        if not values or values[0].startswith('-'):
+            raise ValueError("'portfolio' requires a folder path")
+        return ['--bulk-assess', values[0], *values[1:]]
+
+    if command == 'lineage':
+        if not values or values[0].startswith('-'):
+            raise ValueError("'lineage' requires at least one flow path")
+        return ['--prep-lineage', *values]
 
     if command == 'server':
         if len(values) < 2 or any(value.startswith('-') for value in values[:2]):

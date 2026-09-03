@@ -122,9 +122,9 @@ class TestArgumentParserHelpers(unittest.TestCase):
         self.assertEqual(args.deploy, 'WS1')
         self.assertEqual(args.parallel, 2)
 
-    def test_simple_commands_are_limited_to_nine(self):
+    def test_simple_commands_are_limited_to_fourteen(self):
         import migrate
-        self.assertEqual(len(migrate._SIMPLE_COMMANDS), 9)
+        self.assertEqual(len(migrate._SIMPLE_COMMANDS), 14)
 
     def test_simple_migrate_command(self):
         import migrate
@@ -133,7 +133,7 @@ class TestArgumentParserHelpers(unittest.TestCase):
         self.assertEqual(args.tableau_file, 'sales.twbx')
         self.assertTrue(args.verbose)
 
-    def test_simple_assess_batch_fabric_qa_and_quality_commands(self):
+    def test_simple_assess_batch_fabric_qa_quality_and_audit_commands(self):
         import migrate
         parser = self._get_parser()
 
@@ -142,12 +142,24 @@ class TestArgumentParserHelpers(unittest.TestCase):
         fabric = migrate._parse_cli_args(parser, ['fabric', 'sales.twbx'])
         qa = migrate._parse_cli_args(parser, ['qa', 'sales.twbx'])
         quality = migrate._parse_cli_args(parser, ['quality', 'sales.twbx'])
+        parity = migrate._parse_cli_args(parser, ['parity', 'sales.twbx'])
+        portfolio = migrate._parse_cli_args(parser, ['portfolio', 'workbooks'])
+        plan = migrate._parse_cli_args(parser, ['plan', 'sales.twbx'])
+        package = migrate._parse_cli_args(parser, ['package', 'sales.twbx'])
 
         self.assertTrue(assess.assess)
         self.assertEqual(batch.batch, 'portfolio')
         self.assertEqual(fabric.output_format, 'fabric')
         self.assertTrue(qa.qa)
         self.assertTrue(quality.quality_report)
+        self.assertTrue(parity.parity)
+        self.assertEqual(portfolio.bulk_assess, 'workbooks')
+        self.assertTrue(plan.plan_migration)
+        self.assertTrue(package.report_package)
+
+        lineage = migrate._parse_cli_args(
+            parser, ['lineage', 'flow1.tfl', 'flow2.tfl'])
+        self.assertEqual(lineage.prep_lineage, ['flow1.tfl', 'flow2.tfl'])
 
     def test_simple_server_merge_and_deploy_commands(self):
         import migrate
@@ -181,8 +193,10 @@ class TestArgumentParserHelpers(unittest.TestCase):
             migrate._parse_cli_args(self._get_parser(), ['--help'])
 
         self.assertEqual(exit_context.exception.code, 0)
-        self.assertIn('9 simple commands', output.getvalue())
+        self.assertIn('14 simple commands', output.getvalue())
         self.assertIn('deploy WORKBOOK WORKSPACE_ID', output.getvalue())
+        self.assertIn('quality WORKBOOK', output.getvalue())
+        self.assertIn('lineage FLOW_OR_FOLDER...', output.getvalue())
         self.assertNotIn('--server-preserve-folders', output.getvalue())
 
     def test_simple_command_help_does_not_require_arguments(self):
