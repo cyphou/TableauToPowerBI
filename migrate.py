@@ -1749,8 +1749,11 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
 
     def _source_signature(path):
         try:
-            stat = os.stat(path)
-            return f'{stat.st_size}:{stat.st_mtime_ns}'
+            digest = hashlib.sha256()
+            with open(path, 'rb') as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            return digest.hexdigest()
         except OSError:
             return ''
 

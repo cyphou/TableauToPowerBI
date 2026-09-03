@@ -356,6 +356,33 @@ class TestParallelBatch(unittest.TestCase):
             self.assertEqual(result, ExitCode.SUCCESS)
             self.assertEqual(mock_migrate.call_count, 1)
 
+    def test_resume_retries_same_size_changed_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'source')
+            os.makedirs(src)
+            twb = os.path.join(src, 'report.twbx')
+            with open(twb, 'w') as fh:
+                fh.write('A' * 32)
+            out = os.path.join(td, 'output')
+            result = {'success': True, 'stats': {}, 'fidelity': 100}
+
+            with patch('migrate._migrate_single_workbook', return_value=result), \
+                    patch('migrate.run_batch_html_dashboard'):
+                self.assertEqual(run_batch_migration(batch_dir=src, output_dir=out),
+                                 ExitCode.SUCCESS)
+
+            os.makedirs(os.path.join(out, 'report'), exist_ok=True)
+            with open(os.path.join(out, 'report', 'report.pbip'), 'w') as fh:
+                fh.write('{}')
+            with open(twb, 'w') as fh:
+                fh.write('B' * 32)
+
+            with patch('migrate._migrate_single_workbook', return_value=result) as mock_migrate, \
+                    patch('migrate.run_batch_html_dashboard'):
+                self.assertEqual(run_batch_migration(batch_dir=src, output_dir=out,
+                                                     resume=True), ExitCode.SUCCESS)
+            self.assertEqual(mock_migrate.call_count, 1)
+
 
 class TestMigrateSingleWorkbook(unittest.TestCase):
     """Test the _migrate_single_workbook helper function."""
