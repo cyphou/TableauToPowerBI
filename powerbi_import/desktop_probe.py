@@ -166,7 +166,7 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
         report.signals.extend(_scan_trace_errors(start))
         alive = proc.poll() is None
 
-        if crashed or (report.signals and not alive):
+        if crashed or report.signals:
             report.status = "crashed"
         elif alive:
             report.status = "opened"

@@ -119,6 +119,21 @@ class TestProbe(unittest.TestCase):
         self.assertEqual(r.status, "crashed")
         self.assertTrue(any("FrownDump" in s for s in r.signals))
 
+    def test_trace_error_blocks_opened_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch("powerbi_import.desktop_probe.find_pbi_desktop",
+                            return_value="pbi.exe"), \
+                 mock.patch("powerbi_import.desktop_probe.subprocess.Popen",
+                            return_value=_FakeProc(poll_seq=[None])), \
+                 mock.patch("powerbi_import.desktop_probe._recent_matches",
+                            return_value=[]), \
+                 mock.patch("powerbi_import.desktop_probe._scan_trace_errors",
+                            return_value=["error tokens in trace Desktop.log"]), \
+                 mock.patch("powerbi_import.desktop_probe.time.sleep"):
+                r = probe_desktop_open(_pbip(d), settle=0, timeout=5)
+        self.assertEqual(r.status, "crashed")
+        self.assertFalse(r.opened)
+
     def test_launch_failure_is_error(self):
         with tempfile.TemporaryDirectory() as d:
             with mock.patch("powerbi_import.desktop_probe.find_pbi_desktop",
