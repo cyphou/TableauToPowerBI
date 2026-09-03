@@ -2297,6 +2297,23 @@ def _add_report_args(parser):
     )
 
     parser.add_argument(
+        '--quality-report',
+        action='store_true',
+        default=False,
+        help='After generation, run the unified deterministic quality report '
+             '(assessment, parity, data coverage, interface, and openability). '
+             'Writes migration_quality_<name>.json.'
+    )
+
+    parser.add_argument(
+        '--quality-strict',
+        action='store_true',
+        default=False,
+        help='With --quality-report, return a validation failure when the '
+             'unified quality report has blockers.'
+    )
+
+    parser.add_argument(
         '--autoplay',
         action='store_true',
         default=False,
@@ -4816,6 +4833,47 @@ def _run_parity_mode(args):
         return ExitCode.GENERAL_ERROR
 
 
+def _run_quality_report(args, source_basename):
+    """Run the unified post-generation quality report."""
+    try:
+        from powerbi_import.migration_quality import build_quality_report
+
+        extracted = {}
+        json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
+                      'parameters', 'filters', 'stories', 'actions', 'sets',
+                      'groups', 'bins', 'hierarchies', 'custom_sql', 'user_filters',
+                      'sort_orders', 'aliases', 'data_blending', 'hyper_files']
+        for json_name in json_files:
+            path = os.path.join(_get_extract_dir(), f'{json_name}.json')
+            if os.path.isfile(path):
+                extracted[json_name] = _load_json(path) or []
+
+        out_base = args.output_dir or os.path.join(
+            'artifacts', 'powerbi_projects', 'migrated')
+        project_dir = os.path.join(out_base, source_basename)
+        report = build_quality_report(extracted, project_dir, source_basename)
+        output_dir = args.output_dir or out_base
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(
+            output_dir, f'migration_quality_{source_basename}.json')
+        report.save_json(output_path)
+
+        print_header('MIGRATION QUALITY REPORT')
+        print(f'  Status   : {report.status}')
+        print(f'  Blockers : {len(report.blockers)}')
+        print(f'  Warnings : {len(report.warnings)}')
+        print(f'  Report   : {output_path}')
+        for blocker in report.blockers[:10]:
+            print(f'    ✗ {blocker}')
+        for warning in report.warnings[:10]:
+            print(f'    ⚠ {warning}')
+        return report
+    except Exception as exc:
+        logger.error('Unified quality report failed: %s', exc, exc_info=True)
+        print(f'\nError: {exc}')
+        return None
+
+
 # ── Assessment mode ──────────────────────────────────────────────────────────
 
 def _run_assessment_mode(args, results):
@@ -7159,6 +7217,14 @@ def _run_single_migration(args):
     # Step 3f4: Best-effort real Desktop open self-check (explicit --desktop-probe only)
     if getattr(args, 'desktop_probe', False) and results.get('generation') and not args.dry_run:
         _run_desktop_probe(args, source_basename)
+
+    # Step 3f5: Unified deterministic migration quality report
+    if getattr(args, 'quality_report', False) and results.get('generation') and not args.dry_run:
+        quality_report = _run_quality_report(args, source_basename)
+        if (getattr(args, 'quality_strict', False)
+                and (quality_report is None or quality_report.status == 'FAIL')):
+            progress.fail('Unified quality report: blockers detected')
+            return ExitCode.VALIDATION_FAILED
 
     # Step 3g: Auto-rollback quality gate (Phase 9)
     rollback_result = None
