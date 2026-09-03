@@ -150,6 +150,48 @@ def _check_structure(project_dir) -> CheckResult:
     return CheckResult("structure", not issues, "error", issues)
 
 
+def _check_pbip_contract(project_dir) -> CheckResult:
+    """Validate the required shell files for a standard PBIP project."""
+    fabric_suffixes = ("Lakehouse", "Dataflow", "Notebook", "Pipeline")
+    if any(glob.glob(os.path.join(project_dir, f"*.{suffix}"))
+           for suffix in fabric_suffixes):
+        return CheckResult("pbip_contract", True, "error", [])
+
+    report_dirs = glob.glob(os.path.join(project_dir, "*.Report"))
+    model_dirs = glob.glob(os.path.join(project_dir, "*.SemanticModel"))
+    if not report_dirs and not model_dirs:
+        return CheckResult("pbip_contract", True, "error", [])
+
+    issues = []
+    names = {os.path.basename(path).rsplit(".", 1)[0]
+             for path in report_dirs + model_dirs}
+    if len(names) != 1:
+        issues.append("Report and SemanticModel names do not match")
+        return CheckResult("pbip_contract", False, "error", issues)
+    name = next(iter(names))
+    required = [
+        f"{name}.pbip",
+        f"{name}.Report/.platform",
+        f"{name}.Report/definition.pbir",
+        f"{name}.Report/definition/version.json",
+        f"{name}.Report/definition/report.json",
+        f"{name}.Report/definition/pages/pages.json",
+        f"{name}.SemanticModel/.platform",
+        f"{name}.SemanticModel/definition.pbism",
+        f"{name}.SemanticModel/definition/model.tmdl",
+        f"{name}.SemanticModel/definition/database.tmdl",
+        f"{name}.SemanticModel/definition/expressions.tmdl",
+    ]
+    for relative in required:
+        if not os.path.isfile(os.path.join(project_dir, *relative.split("/"))):
+            issues.append(f"missing required PBIP artifact: {relative}")
+    tables_dir = os.path.join(project_dir, f"{name}.SemanticModel",
+                              "definition", "tables")
+    if not glob.glob(os.path.join(tables_dir, "*.tmdl")):
+        issues.append("missing required PBIP artifact: SemanticModel/definition/tables/*.tmdl")
+    return CheckResult("pbip_contract", not issues, "error", issues)
+
+
 def _check_json_parse(project_dir) -> CheckResult:
     issues = []
     patterns = ["*.json", "*.pbir", "*.pbip", ".platform"]
@@ -356,6 +398,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         return report
     report.checks = [
         _check_structure(project_dir),
+        _check_pbip_contract(project_dir),
         _check_json_parse(project_dir),
         _check_tmdl_present(project_dir),
         _check_tmdl_partitions(project_dir),
