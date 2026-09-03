@@ -4827,7 +4827,8 @@ def _run_parity_mode(args):
         json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
                       'parameters', 'filters', 'stories', 'actions', 'sets',
                       'groups', 'bins', 'hierarchies', 'custom_sql', 'user_filters',
-                      'sort_orders', 'aliases', 'data_blending', 'hyper_files']
+                      'sort_orders', 'aliases', 'data_blending', 'hyper_files',
+                      'schedules', 'extract_tasks', 'subscriptions']
         for jf in json_files:
             fpath = os.path.join(_get_extract_dir(), f'{jf}.json')
             if os.path.exists(fpath):
@@ -4878,7 +4879,8 @@ def _run_quality_report(args, source_basename):
         json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
                       'parameters', 'filters', 'stories', 'actions', 'sets',
                       'groups', 'bins', 'hierarchies', 'custom_sql', 'user_filters',
-                      'sort_orders', 'aliases', 'data_blending', 'hyper_files']
+                      'sort_orders', 'aliases', 'data_blending', 'hyper_files',
+                      'schedules', 'extract_tasks', 'subscriptions']
         for json_name in json_files:
             path = os.path.join(_get_extract_dir(), f'{json_name}.json')
             if os.path.isfile(path):
@@ -4940,7 +4942,8 @@ def _run_assessment_mode(args, results):
         json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
                       'parameters', 'filters', 'stories', 'actions', 'sets',
                       'groups', 'bins', 'hierarchies', 'custom_sql', 'user_filters',
-                      'sort_orders', 'aliases']
+                      'sort_orders', 'aliases', 'schedules', 'extract_tasks',
+                      'subscriptions']
         for jf in json_files:
             fpath = os.path.join(_get_extract_dir(), f'{jf}.json')
             if os.path.exists(fpath):

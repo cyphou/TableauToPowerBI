@@ -184,6 +184,16 @@ class TestOtherDetectors(unittest.TestCase):
         self.assertEqual(keys["alias"].count, 2)
         self.assertEqual(keys["sort_order"].count, 1)
 
+    def test_operational_feature_families_are_detected(self):
+        scan = scan_workbook({
+            "schedules": [{"name": "Daily"}],
+            "extract_tasks": [{"name": "Extract"}],
+            "subscriptions": [{"name": "Finance"}],
+        })
+        keys = {u.key: u for u in scan.usages}
+        self.assertEqual(keys["refresh_schedule"].count, 2)
+        self.assertEqual(keys["subscription"].count, 1)
+
 
 class TestScoring(unittest.TestCase):
     def test_empty_workbook_full_score(self):
@@ -307,6 +317,15 @@ class TestTargetEvidence(unittest.TestCase):
                 fh.write('{}')
             evidence = collect_target_evidence(tmp, "Demo")
         self.assertEqual(evidence["dashboard"], ["Demo.Report/definition/pages/p1/page.json"])
+
+    def test_collects_operational_configuration_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for filename in ("refresh_config.json", "pbi_subscriptions.json"):
+                with open(os.path.join(tmp, filename), "w", encoding="utf-8") as fh:
+                    fh.write('{}')
+            evidence = collect_target_evidence(tmp, "Demo")
+        self.assertEqual(evidence["refresh_schedule"], ["refresh_config.json"])
+        self.assertEqual(evidence["subscription"], ["pbi_subscriptions.json"])
 
 
 class TestMCPIntegration(unittest.TestCase):

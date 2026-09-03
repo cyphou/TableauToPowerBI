@@ -110,6 +110,12 @@ _FEATURES: List[Feature] = [
                 "Column caption or synonym", "Verify aliases remain available as target captions or synonyms."),
             Feature("sort_order", "Semantic Model", "Sort order", HEALED,
                 "Sort-by-column or visual sort state", "Verify custom sort direction and sort-by-column behavior."),
+                Feature("refresh_schedule", "Operations", "Refresh schedule", HEALED,
+                    "Power BI refresh configuration",
+                    "Verify gateway, credentials, timezone, and refresh ownership in the target service."),
+                Feature("subscription", "Operations", "Report subscription", APPROXIMATED,
+                    "Power BI subscription configuration",
+                    "Verify recipient permissions, cadence, and unsupported Tableau subscription options."),
     Feature("trend_line", "Analytics", "Trend line", APPROXIMATED,
             "Analytics-pane trend line", "Regression type may differ."),
     Feature("reference_line", "Analytics", "Reference line", EXACT,
@@ -134,6 +140,7 @@ _SOURCE_FEATURE_KEYS = (
     "hyper_files", "stories", "table_extensions", "linguistic_schema",
     "custom_geocoding", "published_datasources", "datasource_filters",
     "sort_orders", "aliases", "dashboards", "table_extensions",
+        "schedules", "extract_tasks", "subscriptions",
 )
 
 
@@ -197,6 +204,11 @@ def _count_linguistic_schema(converted: Dict) -> int:
         return sum(1 for values in schema.values()
                    if isinstance(values, (list, tuple, set, dict)) and values)
     return len(schema) if isinstance(schema, list) else 0
+
+
+def _count_refresh_schedules(converted: Dict) -> int:
+    return len(converted.get("schedules", []) or []) + len(
+        converted.get("extract_tasks", []) or [])
 
 
 def _len(key: str) -> Callable[[Dict], int]:
@@ -275,6 +287,8 @@ _DETECTORS: Dict[str, Callable[[Dict], int]] = {
     "dashboard": _len("dashboards"),
     "alias": _len("aliases"),
     "sort_order": _len("sort_orders"),
+    "refresh_schedule": _count_refresh_schedules,
+    "subscription": _len("subscriptions"),
     "trend_line": _count_worksheet_list("trend_lines"),
     "reference_line": _count_worksheet_list("reference_lines"),
     "forecast": _count_worksheet_list("forecasting"),
@@ -497,6 +511,10 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
             add("parameters", path)
 
     add("rls", os.path.join(semantic_dir, "definition", "roles.tmdl"))
+    for filename in ("refresh_config.json", "refresh.json", "pbi_refresh_config.json"):
+        add("refresh_schedule", os.path.join(project_dir, filename))
+    for filename in ("pbi_subscriptions.json", "subscriptions.json"):
+        add("subscription", os.path.join(project_dir, filename))
     return evidence
 
 
