@@ -136,6 +136,19 @@ def extract_m_partitions(tmdl_text: str) -> List[Tuple[str, str]]:
 #  Checks
 # ════════════════════════════════════════════════════════════════════
 
+def _is_model_only_project(project_dir):
+    """Return whether the PBIP shell declares only a semantic model."""
+    pbip_files = glob.glob(os.path.join(project_dir, "*.pbip"))
+    if len(pbip_files) != 1:
+        return False
+    manifest = _read_json(pbip_files[0])
+    artifacts = manifest.get("artifacts", []) if isinstance(manifest, dict) else []
+    return bool(artifacts) and all(
+        isinstance(item, dict) and "semanticModel" in item and "report" not in item
+        for item in artifacts
+    )
+
+
 def _check_structure(project_dir) -> CheckResult:
     issues = []
     has_sm = bool(glob.glob(os.path.join(project_dir, "**", "*.SemanticModel"),
@@ -145,7 +158,7 @@ def _check_structure(project_dir) -> CheckResult:
         glob.glob(os.path.join(project_dir, "**", "*.Report"), recursive=True))
     if not has_sm:
         issues.append("no semantic model (.SemanticModel / .tmdl) found")
-    if not has_report:
+    if not has_report and not _is_model_only_project(project_dir):
         issues.append("no report (definition.pbir / .Report) found")
     return CheckResult("structure", not issues, "error", issues)
 
@@ -169,19 +182,22 @@ def _check_pbip_contract(project_dir) -> CheckResult:
         issues.append("Report and SemanticModel names do not match")
         return CheckResult("pbip_contract", False, "error", issues)
     name = next(iter(names))
-    required = [
-        f"{name}.pbip",
-        f"{name}.Report/.platform",
-        f"{name}.Report/definition.pbir",
-        f"{name}.Report/definition/version.json",
-        f"{name}.Report/definition/report.json",
-        f"{name}.Report/definition/pages/pages.json",
+    required = [f"{name}.pbip"]
+    if report_dirs:
+        required.extend([
+            f"{name}.Report/.platform",
+            f"{name}.Report/definition.pbir",
+            f"{name}.Report/definition/version.json",
+            f"{name}.Report/definition/report.json",
+            f"{name}.Report/definition/pages/pages.json",
+        ])
+    required.extend([
         f"{name}.SemanticModel/.platform",
         f"{name}.SemanticModel/definition.pbism",
         f"{name}.SemanticModel/definition/model.tmdl",
         f"{name}.SemanticModel/definition/database.tmdl",
         f"{name}.SemanticModel/definition/expressions.tmdl",
-    ]
+    ])
     for relative in required:
         if not os.path.isfile(os.path.join(project_dir, *relative.split("/"))):
             issues.append(f"missing required PBIP artifact: {relative}")
@@ -208,6 +224,51 @@ def _check_generated_content(project_dir) -> CheckResult:
             issues.extend(f"{os.path.relpath(model_path, project_dir)}: {error}"
                           for error in errors)
     return CheckResult("generated_content", not issues, "error", issues)
+
+
+def _check_manifest_coherence(project_dir) -> CheckResult:
+    """Validate PBIP shell, platform identities, and report model binding."""
+    report_dirs = glob.glob(os.path.join(project_dir, "*.Report"))
+    model_dirs = glob.glob(os.path.join(project_dir, "*.SemanticModel"))
+    if not model_dirs:
+        return CheckResult("manifest_coherence", True, "error", [])
+    name = os.path.basename(model_dirs[0]).rsplit(".", 1)[0]
+    issues = []
+    pbip_path = os.path.join(project_dir, f"{name}.pbip")
+    pbip = _read_json(pbip_path)
+    if not isinstance(pbip, dict):
+        issues.append(f"{os.path.relpath(pbip_path, project_dir)}: invalid PBIP manifest")
+    else:
+        artifacts = [item for item in pbip.get("artifacts", [])
+                     if isinstance(item, dict)]
+        if report_dirs:
+            report_paths = [item.get("report", {}).get("path") for item in artifacts]
+            if f"{name}.Report" not in report_paths:
+                issues.append(f"{os.path.relpath(pbip_path, project_dir)}: report artifact is not declared")
+        else:
+            model_paths = [item.get("semanticModel", {}).get("path") for item in artifacts]
+            if f"{name}.SemanticModel" not in model_paths:
+                issues.append(f"{os.path.relpath(pbip_path, project_dir)}: semantic model artifact is not declared")
+
+    suffixes = (("Report", "Report"), ("SemanticModel", "SemanticModel")) if report_dirs else (("SemanticModel", "SemanticModel"),)
+    for suffix, expected_type in suffixes:
+        platform_path = os.path.join(project_dir, f"{name}.{suffix}", ".platform")
+        platform = _read_json(platform_path)
+        metadata = platform.get("metadata", {}) if isinstance(platform, dict) else {}
+        config = platform.get("config", {}) if isinstance(platform, dict) else {}
+        if metadata.get("type") != expected_type:
+            issues.append(f"{os.path.relpath(platform_path, project_dir)}: manifest type must be {expected_type}")
+        if not config.get("logicalId"):
+            issues.append(f"{os.path.relpath(platform_path, project_dir)}: manifest has no logicalId")
+
+    pbir_path = os.path.join(project_dir, f"{name}.Report", "definition.pbir")
+    pbir = _read_json(pbir_path)
+    by_path = ((pbir or {}).get("datasetReference") or {}).get("byPath", {}).get("path")
+    expected_model = os.path.normpath(os.path.join(
+        os.path.dirname(pbir_path), by_path or ""))
+    if by_path and expected_model != os.path.normpath(model_dirs[0]):
+        issues.append(f"{os.path.relpath(pbir_path, project_dir)}: datasetReference does not match SemanticModel")
+    return CheckResult("manifest_coherence", not issues, "error", issues)
 
 
 def _check_report_content(project_dir) -> CheckResult:
@@ -578,6 +639,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_structure(project_dir),
         _check_pbip_contract(project_dir),
         _check_generated_content(project_dir),
+        _check_manifest_coherence(project_dir),
         _check_report_content(project_dir),
         _check_json_parse(project_dir),
         _check_tmdl_present(project_dir),

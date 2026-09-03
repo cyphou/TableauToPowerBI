@@ -28,12 +28,15 @@ def _tmdl_with_m(m_lines):
 
 def _write_project(root, tmdl_text=None, visual=None, add_pbir=True):
     with open(os.path.join(root, "P.pbip"), "w", encoding="utf-8") as f:
-        json.dump({"version": "1.0"}, f)
+        json.dump({"version": "1.0", "artifacts": [
+            {"report": {"path": "P.Report"}}
+        ]}, f)
     sm = os.path.join(root, "P.SemanticModel", "definition", "tables")
     os.makedirs(sm, exist_ok=True)
     with open(os.path.join(root, "P.SemanticModel", ".platform"), "w",
               encoding="utf-8") as f:
-        json.dump({"metadata": {"type": "SemanticModel"}}, f)
+        json.dump({"metadata": {"type": "SemanticModel"},
+               "config": {"logicalId": "model-id"}}, f)
     for filename in ("definition.pbism", "definition/model.tmdl",
                      "definition/database.tmdl", "definition/expressions.tmdl"):
         path = os.path.join(root, "P.SemanticModel", *filename.split("/"))
@@ -52,7 +55,8 @@ def _write_project(root, tmdl_text=None, visual=None, add_pbir=True):
     os.makedirs(rep, exist_ok=True)
     with open(os.path.join(root, "P.Report", ".platform"), "w",
               encoding="utf-8") as f:
-        json.dump({"metadata": {"type": "Report"}}, f)
+        json.dump({"metadata": {"type": "Report"},
+               "config": {"logicalId": "report-id"}}, f)
     with open(os.path.join(rep, "report.json"), "w",
               encoding="utf-8") as f:
         json.dump({"$schema": "x", "config": {}}, f)
@@ -189,7 +193,7 @@ class TestOpenability(unittest.TestCase):
             for key in ("project_dir", "openable", "blocking_count",
                         "warning_count", "blocking_issues", "warnings", "checks"):
                 self.assertIn(key, data)
-            self.assertEqual(len(data["checks"]), 15)
+            self.assertEqual(len(data["checks"]), 16)
 
     def test_check_names_present(self):
         with tempfile.TemporaryDirectory() as d:
@@ -198,6 +202,7 @@ class TestOpenability(unittest.TestCase):
             self.assertEqual(names, {"structure", "json_parse", "tmdl_present",
                                      "tmdl_partitions", "power_query", "dax",
                                      "generated_content", "report_content",
+                                     "manifest_coherence",
                                      "semantic_validation", "executable_dax", "visual_bindings", "references", "report_structure", "schema",
                                      "pbip_contract"})
 
@@ -297,6 +302,28 @@ class TestOpenability(unittest.TestCase):
             self.assertFalse(r.openable)
             self.assertEqual(schema.severity, "error")
             self.assertTrue(any("visual.query" in issue for issue in schema.issues))
+
+    def test_manifest_coherence_is_checked(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(d, _tmdl_with_m(["let x=1 in x"]))
+            pbip_path = os.path.join(d, "P.pbip")
+            with open(pbip_path, "w", encoding="utf-8") as fh:
+                json.dump({"version": "1.0", "artifacts": []}, fh)
+            r = check_openability(d)
+            self.assertFalse(r.openable)
+            self.assertTrue(any("report artifact is not declared" in issue
+                                for issue in r.blocking_issues))
+
+    def test_missing_platform_identity_blocks_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(d, _tmdl_with_m(["let x=1 in x"]))
+            platform_path = os.path.join(d, "P.Report", ".platform")
+            with open(platform_path, "w", encoding="utf-8") as fh:
+                json.dump({"metadata": {"type": "Report"}}, fh)
+            r = check_openability(d)
+            self.assertFalse(r.openable)
+            self.assertTrue(any("has no logicalId" in issue
+                                for issue in r.blocking_issues))
 
     def test_invalid_calculated_partition_dax_blocks_open(self):
         with tempfile.TemporaryDirectory() as d:

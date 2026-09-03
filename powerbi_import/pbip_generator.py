@@ -289,9 +289,9 @@ class PowerBIProjectGenerator:
                 )
             print(f"  âœ“ SemanticModel created: {sm_dir}")
         
-        # 3. Create the Report structure (skip for datasource-only .tds migrations)
+        # 3. Create the Report structure only when the source has visuals.
         has_visuals = bool(converted_objects.get('worksheets') or converted_objects.get('dashboards'))
-        if self._output_format in ('pbip', 'pbir'):
+        if self._output_format in ('pbip', 'pbir') and has_visuals:
             with phase_timings.phase('report'):
                 report_dir = self.create_report_structure(
                     project_dir, report_name, converted_objects,
@@ -496,12 +496,11 @@ class PowerBIProjectGenerator:
             }
         }
         
-        # For datasource-only migrations (.tds), remove report artifact
-        # and reference only the SemanticModel.
+        # Datasource-only migrations contain a semantic model but no report.
         if hasattr(self, '_datasource_only') and self._datasource_only:
             pbip_content["artifacts"] = [
                 {
-                    "report": {
+                    "semanticModel": {
                         "path": f"{report_name}.SemanticModel"
                     }
                 }
