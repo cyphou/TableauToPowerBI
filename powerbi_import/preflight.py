@@ -287,7 +287,8 @@ def _check_xml_coherence(root: Optional[ET.Element], result: PreflightResult) ->
 
     worksheets = set(named("worksheet"))
     datasource_root = next((node for node in root if node.tag == "datasources"), None)
-    datasources = {node.attrib.get("name", "") for node in (datasource_root or [])
+    datasource_nodes = list(datasource_root) if datasource_root is not None else []
+    datasources = {node.attrib.get("name", "") for node in datasource_nodes
                    if node.tag == "datasource" and node.attrib.get("name")}
     for tag, code, label in (("worksheet", "duplicate_worksheet_name", "worksheet"),
                              ("dashboard", "duplicate_dashboard_name", "dashboard")):

@@ -92,6 +92,30 @@ measurable exit gate before the next phase is marked complete.
 | **9** | CLI and documentation productization | Consolidate inspect, plan, migrate, validate, resume, report, and Fabric workflows with stable exit codes and machine-readable output. | CLI/docs/skill flag parity passes and offline/live boundaries are documented consistently. |
 | **10** | Release gates and compatibility policy | Publish supported Tableau, Power BI, PBIR, and Fabric ranges with release gates, deprecation policy, known limitations, and traceable reports. | Unit/integration, corpus, semantic, PBIR, resume, privacy, performance, and authorized Fabric gates are green or explicitly waived. |
 
+#### Current Execution Status
+
+- **Phase 1 — Feature-parity closure:** active implementation slice completed
+  for the current PBIP confidence target. The canonical gate now fails closed
+  for missing PBIP output, validates the PBIP shell, semantic references,
+  visual-to-TMDL bindings, executable measure/column/RLS DAX, calculated
+  partitions, and source XML/archive coherence. The feedback loop packages
+  redacted quality evidence for reproducible remediation.
+- **Evidence:** 26 generated example PBIP projects pass the strengthened
+  openability gate; 26 example `.twb`/`.twbx` sources pass XML preflight; the
+  latest focused readiness run passed 581 tests with 4 skipped.
+- **Phase 2 — Semantic execution validation:** next active development target.
+  Add typed, tolerance-aware execution checks for representative measures,
+  calculated columns, relationships, dates, blanks, filters, LOD grain, and
+  table-calculation partitions. Keep execution environments explicit and do
+  not convert static validation into a claim of runtime equivalence.
+- **Phase 3 — PBIR behavior compatibility:** queued after the semantic
+  execution contract; expand from field-binding correctness to round-trip,
+  interaction, bookmark, layout, and rendering evidence.
+
+Phase 1 proves structural readiness and catches hidden source/target wiring
+errors. It does not prove that Power BI Desktop renders every visual correctly,
+that every connector refreshes, or that a live Fabric deployment succeeds.
+
 #### Phase Ownership and Dependencies
 
 1. **Feature-parity closure** — @assessor, @extractor, @visual, @semantic, @dax, @wiring.
