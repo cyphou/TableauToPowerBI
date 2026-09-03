@@ -121,7 +121,8 @@ class TestOpenability(unittest.TestCase):
     def test_clean_project_openable(self):
         with tempfile.TemporaryDirectory() as d:
             _write_project(d, _tmdl_with_m(["let", "    Source = 1", "in", "    Source"]),
-                           visual={"$schema": "x", "name": "v1", "visual": {}})
+                           visual={"$schema": "x", "name": "v1",
+                               "visual": {"visualType": "table"}})
             r = check_openability(d)
             self.assertIsInstance(r, OpenabilityReport)
             self.assertTrue(r.openable, r.blocking_issues)
@@ -166,7 +167,7 @@ class TestOpenability(unittest.TestCase):
     def test_missing_schema_is_warning_not_blocking(self):
         with tempfile.TemporaryDirectory() as d:
             _write_project(d, _tmdl_with_m(["let x=1 in x"]),
-                           visual={"name": "v1", "visual": {}})  # no $schema
+                           visual={"name": "v1", "visual": {"visualType": "table"}})  # no $schema
             r = check_openability(d)
             self.assertTrue(r.openable)          # warning only
             self.assertTrue(any("schema" in w for w in r.warnings))
@@ -187,7 +188,7 @@ class TestOpenability(unittest.TestCase):
             for key in ("project_dir", "openable", "blocking_count",
                         "warning_count", "blocking_issues", "warnings", "checks"):
                 self.assertIn(key, data)
-            self.assertEqual(len(data["checks"]), 14)
+            self.assertEqual(len(data["checks"]), 15)
 
     def test_check_names_present(self):
         with tempfile.TemporaryDirectory() as d:
@@ -195,7 +196,7 @@ class TestOpenability(unittest.TestCase):
             names = {c.name for c in check_openability(d).checks}
             self.assertEqual(names, {"structure", "json_parse", "tmdl_present",
                                      "tmdl_partitions", "power_query", "dax",
-                                     "generated_content",
+                                     "generated_content", "report_content",
                                      "semantic_validation", "executable_dax", "visual_bindings", "references", "report_structure", "schema",
                                      "pbip_contract"})
 
@@ -254,6 +255,27 @@ class TestOpenability(unittest.TestCase):
             r = check_openability(d)
             self.assertFalse(r.openable)
             self.assertTrue(any("model.tmdl" in issue and "empty" in issue.lower()
+                                for issue in r.blocking_issues))
+
+    def test_empty_report_definition_blocks_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(d, _tmdl_with_m(["let x=1 in x"]))
+            report_path = os.path.join(d, "P.Report", "definition", "report.json")
+            with open(report_path, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            r = check_openability(d)
+            self.assertFalse(r.openable)
+            self.assertTrue(any("empty report definition" in issue
+                                for issue in r.blocking_issues))
+
+    def test_empty_visual_definition_blocks_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(d, _tmdl_with_m(["let x=1 in x"]),
+                           visual={"$schema": "x", "name": "v1",
+                                   "visual": {}})
+            r = check_openability(d)
+            self.assertFalse(r.openable)
+            self.assertTrue(any("empty visual definition" in issue
                                 for issue in r.blocking_issues))
 
     def test_invalid_calculated_partition_dax_blocks_open(self):
@@ -341,7 +363,8 @@ class TestOpenability(unittest.TestCase):
             _write_project(
                 d,
                 _tmdl_with_m(["let x=1 in x"]),
-                visual={"$schema": "x", "name": "v1", "visual": {}},
+                visual={"$schema": "x", "name": "v1",
+                    "visual": {"visualType": "table"}},
             )
             page_json = os.path.join(
                 d, "P.Report", "definition", "pages", "p1", "page.json")

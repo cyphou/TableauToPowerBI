@@ -210,6 +210,36 @@ def _check_generated_content(project_dir) -> CheckResult:
     return CheckResult("generated_content", not issues, "error", issues)
 
 
+def _check_report_content(project_dir) -> CheckResult:
+    """Reject parseable but empty PBIR report/page/visual definitions."""
+    issues = []
+    report_dirs = glob.glob(os.path.join(project_dir, "*.Report"))
+    helper_types = {"textbox", "image", "actionButton", "shape", "basicShape"}
+    for report_dir in report_dirs:
+        definition = os.path.join(report_dir, "definition")
+        report_path = os.path.join(definition, "report.json")
+        report = _read_json(report_path)
+        if not isinstance(report, dict) or not report:
+            issues.append(f"{os.path.relpath(report_path, project_dir)}: empty report definition")
+        for page_path in glob.glob(os.path.join(definition, "pages", "*", "page.json")):
+            page = _read_json(page_path)
+            if not isinstance(page, dict) or not page:
+                issues.append(f"{os.path.relpath(page_path, project_dir)}: empty page definition")
+        for visual_path in glob.glob(os.path.join(
+                definition, "pages", "*", "visuals", "*", "visual.json")):
+            visual_json = _read_json(visual_path)
+            visual = visual_json.get("visual") if isinstance(visual_json, dict) else None
+            visual_type = visual.get("visualType") if isinstance(visual, dict) else None
+            if not isinstance(visual_json, dict) or not visual_json or not isinstance(visual, dict):
+                issues.append(f"{os.path.relpath(visual_path, project_dir)}: empty visual definition")
+            elif not visual_type and not (visual_json.get("type") in helper_types):
+                # Missing visualType remains a warning when the visual has a
+                # meaningful definition; only a truly empty visual is blocking.
+                if not visual:
+                    issues.append(f"{os.path.relpath(visual_path, project_dir)}: empty visual definition")
+    return CheckResult("report_content", not issues, "error", issues)
+
+
 def _check_json_parse(project_dir) -> CheckResult:
     issues = []
     patterns = ["*.json", "*.pbir", "*.pbip", ".platform"]
@@ -523,6 +553,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_structure(project_dir),
         _check_pbip_contract(project_dir),
         _check_generated_content(project_dir),
+        _check_report_content(project_dir),
         _check_json_parse(project_dir),
         _check_tmdl_present(project_dir),
         _check_tmdl_partitions(project_dir),
