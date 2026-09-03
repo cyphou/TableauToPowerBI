@@ -112,6 +112,17 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertIn('parity', payload)
         self.assertEqual(payload['status'], 'PASS')
 
+    def test_save_html_contains_quality_sections(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = self._build()
+            path = report.save_html(os.path.join(tmp, 'quality.html'))
+            with open(path, encoding='utf-8') as fh:
+                html = fh.read()
+        self.assertIn('Migration quality', html)
+        self.assertIn('Overall status', html)
+        self.assertIn('Validation details', html)
+        self.assertIn('No AI summary was requested', html)
+
     def test_ai_prompt_contains_verified_facts_and_guardrails(self):
         report = self._build()
         prompt = build_quality_prompt(report)

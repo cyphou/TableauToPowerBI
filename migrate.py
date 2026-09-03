@@ -4905,13 +4905,17 @@ def _run_quality_report(args, source_basename):
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(
             output_dir, f'migration_quality_{source_basename}.json')
+        html_path = os.path.join(
+            output_dir, f'migration_quality_{source_basename}.html')
         report.save_json(output_path)
+        report.save_html(html_path)
 
         print_header('MIGRATION QUALITY REPORT')
         print(f'  Status   : {report.status}')
         print(f'  Blockers : {len(report.blockers)}')
         print(f'  Warnings : {len(report.warnings)}')
-        print(f'  Report   : {output_path}')
+        print(f'  JSON     : {output_path}')
+        print(f'  HTML     : {html_path}')
         for blocker in report.blockers[:10]:
             print(f'    ✗ {blocker}')
         for warning in report.warnings[:10]:

@@ -14,6 +14,15 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from powerbi_import.assessment import run_assessment
+from powerbi_import.html_template import (
+    esc,
+    html_close,
+    html_open,
+    section_close,
+    section_open,
+    stat_card,
+    stat_grid,
+)
 from powerbi_import.interface_diff import compare_report_interface
 from powerbi_import.openability import check_openability
 from powerbi_import.parity_registry import scan_project
@@ -56,6 +65,51 @@ class MigrationQualityReport:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(self.to_dict(), fh, indent=2, ensure_ascii=False, default=str)
         return path
+
+    def save_html(self, path: str) -> str:
+        """Write a self-contained human-readable quality report."""
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        html = html_open(
+            f"Migration quality — {self.report_name}",
+            "Deterministic validation with optional grounded AI summary",
+        )
+        html += stat_grid([
+            stat_card(self.status, "Overall status",
+                      accent={"PASS": "success", "WARN": "warn", "FAIL": "fail"}.get(
+                          self.status, "")),
+            stat_card(self.parity.get("parity_score", "n/a"), "Parity score"),
+            stat_card(len(self.blockers), "Blockers", accent="fail"),
+            stat_card(len(self.warnings), "Warnings", accent="warn"),
+        ])
+
+        html += section_open("quality-blockers", "Blockers", "!")
+        html += self._html_list(self.blockers, "No blockers.")
+        html += section_close()
+        html += section_open("quality-warnings", "Warnings", "!")
+        html += self._html_list(self.warnings, "No warnings.")
+        html += section_close()
+        html += section_open("quality-ai", "AI summary", "AI")
+        html += (f"<p>{esc(self.ai_summary)}</p>"
+                 if self.ai_summary else "<p>No AI summary was requested or available.</p>")
+        html += section_close()
+        html += section_open("quality-details", "Validation details", "i")
+        html += "<pre>" + esc(json.dumps({
+            "parity": self.parity,
+            "data": self.data,
+            "interface": self.interface,
+            "openability": self.openability,
+        }, indent=2, ensure_ascii=False, default=str)) + "</pre>"
+        html += section_close()
+        html += html_close()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        return path
+
+    @staticmethod
+    def _html_list(items: list[str], empty_text: str) -> str:
+        if not items:
+            return f"<p>{esc(empty_text)}</p>"
+        return "<ul>" + "".join(f"<li>{esc(item)}</li>" for item in items) + "</ul>"
 
 
 def _assessment_dict(report: Any) -> Dict[str, Any]:
