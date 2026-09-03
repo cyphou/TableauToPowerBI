@@ -38,7 +38,12 @@ def _write_project(root, tmdl_text=None, visual=None, add_pbir=True):
         path = os.path.join(root, "P.SemanticModel", *filename.split("/"))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
-            f.write("{}" if filename == "definition.pbism" else "")
+            if filename == "definition.pbism":
+                f.write("{}")
+            elif filename == "definition/model.tmdl":
+                f.write("model Model\n")
+            else:
+                f.write("")
     if tmdl_text is not None:
         with open(os.path.join(sm, "Sales.tmdl"), "w", encoding="utf-8") as f:
             f.write(tmdl_text)
@@ -182,7 +187,7 @@ class TestOpenability(unittest.TestCase):
             for key in ("project_dir", "openable", "blocking_count",
                         "warning_count", "blocking_issues", "warnings", "checks"):
                 self.assertIn(key, data)
-            self.assertEqual(len(data["checks"]), 13)
+            self.assertEqual(len(data["checks"]), 14)
 
     def test_check_names_present(self):
         with tempfile.TemporaryDirectory() as d:
@@ -190,6 +195,7 @@ class TestOpenability(unittest.TestCase):
             names = {c.name for c in check_openability(d).checks}
             self.assertEqual(names, {"structure", "json_parse", "tmdl_present",
                                      "tmdl_partitions", "power_query", "dax",
+                                     "generated_content",
                                      "semantic_validation", "executable_dax", "visual_bindings", "references", "report_structure", "schema",
                                      "pbip_contract"})
 
@@ -237,6 +243,17 @@ class TestOpenability(unittest.TestCase):
             r = check_openability(d)
             self.assertFalse(r.openable)
             self.assertTrue(any("Unmatched opening parenthesis" in issue
+                                for issue in r.blocking_issues))
+
+    def test_empty_model_definition_blocks_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(d, _tmdl_with_m(["let x=1 in x"]))
+            model_path = os.path.join(d, "P.SemanticModel", "definition", "model.tmdl")
+            with open(model_path, "w", encoding="utf-8") as fh:
+                fh.write("")
+            r = check_openability(d)
+            self.assertFalse(r.openable)
+            self.assertTrue(any("model.tmdl" in issue and "empty" in issue.lower()
                                 for issue in r.blocking_issues))
 
     def test_invalid_calculated_partition_dax_blocks_open(self):

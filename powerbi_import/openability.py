@@ -192,6 +192,24 @@ def _check_pbip_contract(project_dir) -> CheckResult:
     return CheckResult("pbip_contract", not issues, "error", issues)
 
 
+def _check_generated_content(project_dir) -> CheckResult:
+    """Reject empty or invalid required semantic-model definition files."""
+    try:
+        from powerbi_import.validator import ArtifactValidator
+    except Exception as exc:  # noqa: BLE001 - preflight must return a check result
+        return CheckResult("generated_content", False, "error", [str(exc)])
+    issues = []
+    for model_dir in glob.glob(os.path.join(project_dir, "*.SemanticModel")):
+        model_path = os.path.join(model_dir, "definition", "model.tmdl")
+        if not os.path.isfile(model_path):
+            continue
+        valid, errors = ArtifactValidator.validate_tmdl_file(model_path)
+        if not valid:
+            issues.extend(f"{os.path.relpath(model_path, project_dir)}: {error}"
+                          for error in errors)
+    return CheckResult("generated_content", not issues, "error", issues)
+
+
 def _check_json_parse(project_dir) -> CheckResult:
     issues = []
     patterns = ["*.json", "*.pbir", "*.pbip", ".platform"]
@@ -504,6 +522,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
     report.checks = [
         _check_structure(project_dir),
         _check_pbip_contract(project_dir),
+        _check_generated_content(project_dir),
         _check_json_parse(project_dir),
         _check_tmdl_present(project_dir),
         _check_tmdl_partitions(project_dir),
