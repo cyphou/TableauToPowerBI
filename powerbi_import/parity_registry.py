@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Dict, List, Optional
 
-REGISTRY_VERSION = "1.0.0"
+REGISTRY_VERSION = "1.1.0"
 
 EXACT = "exact"
 HEALED = "healed"
@@ -69,6 +69,9 @@ _FEATURES: List[Feature] = [
     Feature("parameters", "Interactivity", "Parameter", EXACT,
             "What-If parameter / field parameter", ""),
     Feature("filters", "Filters", "Filter", EXACT, "Report/page/visual filter", ""),
+        Feature("datasource_filter", "Filters", "Datasource filter", HEALED,
+            "Report-level filter configuration",
+            "Verify the restriction remains a data-scope filter, not only a user-facing control."),
     Feature("sets", "Data Model", "Set", HEALED, "Boolean calculated column",
             "Cross-table sets fall back to DAX."),
     Feature("groups", "Data Model", "Group", HEALED, "SWITCH calculated column", ""),
@@ -89,6 +92,18 @@ _FEATURES: List[Feature] = [
             "Blends become relationships; verify direction/cardinality."),
     Feature("extract_hyper", "Datasource", "Hyper extract", HEALED,
             "Import / inlined table", "Choose Import vs DirectQuery per strategy."),
+        Feature("table_extension", "Datasource", "Table extension", APPROXIMATED,
+            "Power Query extension source",
+            "Verify endpoint, schema, authentication, and refresh behavior."),
+        Feature("published_datasource", "Datasource", "Published datasource", HEALED,
+            "Power Query connection / semantic model source",
+            "Bind the generated connection to the approved gateway or service source."),
+        Feature("custom_geocoding", "Datasource", "Custom geocoding", APPROXIMATED,
+            "Power BI geographic model or shape resource",
+            "Verify geographic roles and custom map resources manually."),
+        Feature("linguistic_schema", "Semantic Model", "Linguistic schema", HEALED,
+            "TMDL Copilot/Q&A synonyms",
+            "Review generated synonyms and validate them in the target semantic model."),
     Feature("trend_line", "Analytics", "Trend line", APPROXIMATED,
             "Analytics-pane trend line", "Regression type may differ."),
     Feature("reference_line", "Analytics", "Reference line", EXACT,
@@ -99,6 +114,8 @@ _FEATURES: List[Feature] = [
     Feature("cluster", "Analytics", "Clustering", UNSUPPORTED,
             "(no native target)",
             "No native clustering; approximate with a DAX/grouping alternative."),
+        Feature("story_bookmarks", "Interactivity", "Story point", HEALED,
+            "PBIR bookmark", "Review bookmark state and navigation in Power BI."),
 ]
 
 _FEATURE_BY_KEY = {f.key: f for f in _FEATURES}
@@ -147,6 +164,23 @@ def _count_basic_calc(converted: Dict) -> int:
             continue
         n += 1
     return n
+
+
+def _count_story_points(converted: Dict) -> int:
+    """Count non-empty Tableau story points mapped to PBIR bookmarks."""
+    stories = converted.get("stories", []) or []
+    if isinstance(stories, dict):
+        stories = stories.get("stories", [])
+    return sum(len(story.get("story_points", []) or [])
+               for story in stories if isinstance(story, dict))
+
+
+def _count_linguistic_schema(converted: Dict) -> int:
+    schema = converted.get("linguistic_schema", {}) or {}
+    if isinstance(schema, dict):
+        return sum(1 for values in schema.values()
+                   if isinstance(values, (list, tuple, set, dict)) and values)
+    return len(schema) if isinstance(schema, list) else 0
 
 
 def _len(key: str) -> Callable[[Dict], int]:
@@ -216,6 +250,12 @@ _DETECTORS: Dict[str, Callable[[Dict], int]] = {
     "custom_sql": _len("custom_sql"),
     "data_blending": _len("data_blending"),
     "extract_hyper": _len("hyper_files"),
+    "datasource_filter": _len("datasource_filters"),
+    "story_bookmarks": _count_story_points,
+    "table_extension": _len("table_extensions"),
+    "published_datasource": _len("published_datasources"),
+    "custom_geocoding": _len("custom_geocoding"),
+    "linguistic_schema": _count_linguistic_schema,
     "trend_line": _count_worksheet_list("trend_lines"),
     "reference_line": _count_worksheet_list("reference_lines"),
     "forecast": _count_worksheet_list("forecasting"),
@@ -388,6 +428,7 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
         pass
     if (report_data.get("filterConfig") or {}).get("filters"):
         add("filters", report_json)
+        add("datasource_filter", report_json)
 
     visual_paths = glob.glob(os.path.join(
         report_dir, "definition", "pages", "*", "visuals", "*", "visual.json"))
@@ -401,6 +442,10 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
         if visual.get("visualType") == "actionButton":
             add("action_url", path)
             add("action_nav", path)
+
+    for path in glob.glob(os.path.join(
+            report_dir, "definition", "bookmarks", "*", "bookmark.json")):
+        add("story_bookmarks", path)
 
     tables_glob = os.path.join(semantic_dir, "definition", "tables", "*.tmdl")
     for path in sorted(glob.glob(tables_glob)):

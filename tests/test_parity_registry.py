@@ -142,6 +142,37 @@ class TestOtherDetectors(unittest.TestCase):
         keys = {u.key: u for u in scan_workbook({"data_blending": [1]}).usages}
         self.assertEqual(keys["data_blending"].status, APPROXIMATED)
 
+    def test_story_points_are_counted(self):
+        scan = scan_workbook({
+            "stories": [{"story_points": [{"caption": "Start"}, {"caption": "End"}]}]
+        })
+        usage = {u.key: u for u in scan.usages}["story_bookmarks"]
+        self.assertEqual(usage.count, 2)
+        self.assertEqual(usage.status, HEALED)
+
+    def test_datasource_filters_are_separate_from_filters(self):
+        scan = scan_workbook({"filters": [1], "datasource_filters": [1, 2]})
+        keys = {u.key: u for u in scan.usages}
+        self.assertEqual(keys["filters"].count, 1)
+        self.assertEqual(keys["datasource_filter"].count, 2)
+        self.assertEqual(keys["datasource_filter"].status, HEALED)
+
+    def test_datasource_feature_families_are_detected(self):
+        scan = scan_workbook({
+            "table_extensions": [{"name": "Extension"}],
+            "published_datasources": [{"name": "Published"}],
+            "custom_geocoding": [{"name": "Postal"}],
+            "linguistic_schema": {
+                "Sales": ["Revenue", "Turnover"],
+                "Region": ["Territory"],
+            },
+        })
+        keys = {u.key: u for u in scan.usages}
+        self.assertEqual(keys["table_extension"].count, 1)
+        self.assertEqual(keys["published_datasource"].count, 1)
+        self.assertEqual(keys["custom_geocoding"].count, 1)
+        self.assertEqual(keys["linguistic_schema"].count, 2)
+
 
 class TestScoring(unittest.TestCase):
     def test_empty_workbook_full_score(self):
@@ -228,6 +259,17 @@ class TestTargetEvidence(unittest.TestCase):
 
         self.assertEqual(scan.usages[0].evidence,
                          ["Demo.Report/definition/report.json"])
+
+    def test_collects_bookmark_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bookmark = os.path.join(tmp, "Demo.Report", "definition",
+                                    "bookmarks", "b1", "bookmark.json")
+            os.makedirs(os.path.dirname(bookmark), exist_ok=True)
+            with open(bookmark, "w", encoding="utf-8") as fh:
+                fh.write('{}')
+            evidence = collect_target_evidence(tmp, "Demo")
+        self.assertEqual(evidence["story_bookmarks"],
+                         ["Demo.Report/definition/bookmarks/b1/bookmark.json"])
 
 
 class TestMCPIntegration(unittest.TestCase):

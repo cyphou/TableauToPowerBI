@@ -23,6 +23,10 @@ The following capabilities are implemented and verified locally:
   14 cross-flow edges.
 - Fidelity tooling: visual geometry, table/column, interface, parity, and unified
   JSON/HTML quality reports are available.
+- Parity registry v1.1 now explicitly tracks stories/bookmarks, datasource
+  filters, table extensions, published datasources, custom geocoding, and
+  linguistic schema in addition to calculations, visuals, actions, parameters,
+  RLS, blending, extracts, and analytics.
 - AI assistance: optional grounded summaries consume verified quality findings;
   AI cannot change validation status or blockers.
 - CLI: 14 concise commands are documented; legacy flags remain compatible.
@@ -32,6 +36,9 @@ The following capabilities are implemented and verified locally:
 These results prove the local generation and static-validation contract only.
 They do not prove live Fabric workspace deployment, identity/RBAC, gateway
 binding, refresh execution, or post-deployment health.
+Corpus-level parity measurements must use the extraction snapshot belonging to
+each workbook; the extractor writes a shared intermediate directory and a
+last-run snapshot must never be treated as evidence for every workbook.
 
 | Version | Theme | Sprints | Status |
 |---------|-------|---------|--------|
