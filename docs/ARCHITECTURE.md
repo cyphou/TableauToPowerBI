@@ -192,7 +192,7 @@ healing.py (facade — one import surface, heal_and_verify())
 | `dax_healing.py` | `heal_dax()` — idempotent, non-degrading, span-aware DAX repairs (`==`→`=`, `SUM([measure])`→`[measure]`, balance parens/brackets, trailing commas). |
 | `m_healing.py` | `heal_m()` — Power Query M repairs (identifier quoting, trailing commas, paren balance). |
 | `visual_healing.py` | `heal_visual()` — PBIR container repairs; flagship fix moves annotations to the container root (critical load-failure bug). |
-| `openability.py` | `check_openability()` preflight + `extract_m_partitions()` — validates every M partition, DAX measure, JSON file, TMDL, project structure, report→model reference and PBIR schema without opening Desktop (7 checks). |
+| `openability.py` | `check_openability()` preflight + `extract_m_partitions()` — validates every M partition, executable DAX, JSON file, TMDL, PBIP shell, semantic reference, visual binding, report→model reference and PBIR schema without opening Desktop. |
 | `desktop_probe.py` | `probe_desktop_open()` — best-effort **real** open self-check: launches Power BI Desktop against the `.pbip` and watches for an early crash / FrownDump / error traces (Windows + Desktop install; the static preflight stays authoritative). |
 | `autoheal.py` | `AutoHealer` closed loop — deterministic heal → collect residual errors (`StaticValidatorSource`/`LogFileSource`/`PbiDesktopSource`) → optional LLM correction via `LLMGateway` → **re-validate → apply only if valid** (never degrades). Records each applied fix as a `RepairAttempt` (distinct from `HealAction` — it carries the validation outcome). |
 | `recovery_report.py` | Records every applied repair (`record_heal`) into the recovery ledger via duck typing (no import coupling to the healers). |

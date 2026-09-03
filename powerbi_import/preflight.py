@@ -33,6 +33,8 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from powerbi_import.security_validator import SecurityError, safe_parse_xml
+
 logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────────────────────────
@@ -220,6 +222,15 @@ def _check_zip_integrity(path: str, result: PreflightResult) -> Optional[zipfile
             zf.close()
             return None
 
+    twb_members = [name for name in zf.namelist()
+                   if name.lower().endswith('.twb')]
+    if len(twb_members) > 1:
+        result.add(
+            BLOCKER, "duplicate_twb",
+            f"Workbook archive contains multiple .twb members: {twb_members!r}",
+            suggestion="Keep exactly one workbook XML member in the archive",
+        )
+
     return zf
 
 
@@ -255,15 +266,56 @@ def _check_xml_well_formed(xml_bytes: bytes,
         )
         return None
     try:
-        # Defensive: limit huge entity expansion via stdlib (no lxml)
-        return ET.fromstring(xml_bytes)
-    except ET.ParseError as e:
+        return safe_parse_xml(xml_bytes)
+    except (ET.ParseError, SecurityError) as e:
         result.add(
             BLOCKER, "corrupt_xml",
             f"Workbook XML is malformed: {e}",
             suggestion="Open in Tableau Desktop and re-save",
         )
         return None
+
+
+def _check_xml_coherence(root: Optional[ET.Element], result: PreflightResult) -> None:
+    """Check high-confidence references between Tableau XML object families."""
+    if root is None:
+        return
+
+    def named(tag):
+        return [node.attrib.get("name", "") for node in root.iter(tag)
+                if node.attrib.get("name")]
+
+    worksheets = set(named("worksheet"))
+    datasource_root = next((node for node in root if node.tag == "datasources"), None)
+    datasources = {node.attrib.get("name", "") for node in (datasource_root or [])
+                   if node.tag == "datasource" and node.attrib.get("name")}
+    for tag, code, label in (("worksheet", "duplicate_worksheet_name", "worksheet"),
+                             ("dashboard", "duplicate_dashboard_name", "dashboard")):
+        names = named(tag)
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        for name in duplicates:
+            result.add(BLOCKER, code, f"Duplicate {label} name: {name!r}",
+                       "Rename the duplicate Tableau objects before migration")
+
+    for dependency in root.iter("datasource-dependencies"):
+        ref = dependency.attrib.get("datasource", "")
+        if ref and ref not in datasources:
+            result.add(BLOCKER, "missing_datasource_reference",
+                       f"Worksheet references missing datasource {ref!r}",
+                       "Restore the datasource or update the worksheet dependency")
+    for node in root.iter("zone-contains"):
+        text = (node.text or "").strip()
+        match = re.match(r"Worksheet:\s*(.+)$", text)
+        if match and match.group(1) not in worksheets:
+            result.add(BLOCKER, "missing_worksheet_reference",
+                       f"Dashboard references missing worksheet {match.group(1)!r}",
+                       "Restore the worksheet or remove the dashboard zone")
+    for node in root.iter():
+        target = node.attrib.get("target-sheet", "")
+        if target and target not in worksheets and target not in named("dashboard"):
+            result.add(BLOCKER, "missing_navigation_target",
+                       f"Navigation references missing sheet {target!r}",
+                       "Restore the target sheet or update the navigation action")
 
 
 def _check_encryption(zf: Optional[zipfile.ZipFile],
@@ -394,6 +446,7 @@ def run_preflight(path: str) -> PreflightResult:
 
         root = _check_xml_well_formed(xml_bytes or b"", result) if xml_bytes is not None else None
         _check_tableau_version(root, result)
+        _check_xml_coherence(root, result)
         _check_connectors(root, result)
         _check_visual_count(root, result)
         _check_extracts(zf, root, result)

@@ -6,6 +6,7 @@ Use this checklist after running the migration tool to validate the generated Po
 
 ## 0. Openability Preflight (before opening Desktop)
 
+- [ ] Confirm source preflight passed: XML is safely parsed, the TWBX archive has one workbook member, and internal datasource/worksheet references are coherent
 - [ ] Confirm the migration reported `openable=true` (the static gate runs by default)
 - [ ] If `openable=false`, read `openability_report.json` blocking issues and fix at the source generator
 - [ ] Optionally run `--autoheal` (add `--llm-autofix` for opt-in LLM correction) to recover automatically

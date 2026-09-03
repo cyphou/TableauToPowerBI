@@ -181,6 +181,47 @@ class TestHappyPath(unittest.TestCase):
             r = run_preflight(p)
             self.assertTrue(r.ok, msg=r.format_console())
 
+    def test_duplicate_twb_members_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = _write_twbx(tmp, extra_files={'nested/second.twb': _MINIMAL_TWB})
+            r = run_preflight(p)
+            self.assertFalse(r.ok)
+            self.assertTrue(any(i.code == 'duplicate_twb' for i in r.blockers))
+
+    def test_xxe_xml_blocked_by_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = b'''<!DOCTYPE workbook [<!ENTITY xxe SYSTEM "file:///secret">]>
+<workbook><description>&xxe;</description></workbook>'''
+            r = run_preflight(_write_twb(tmp, body=body))
+            self.assertFalse(r.ok)
+            self.assertTrue(any(i.code == 'corrupt_xml' for i in r.blockers))
+
+    def test_missing_datasource_dependency_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = b'''<workbook><datasources><datasource name="ds1"/></datasources>
+<worksheets><worksheet name="Sheet1"><datasource-dependencies datasource="missing"/></worksheet>
+</worksheets></workbook>'''
+            r = run_preflight(_write_twb(tmp, body=body))
+            self.assertFalse(r.ok)
+            self.assertTrue(any(i.code == 'missing_datasource_reference' for i in r.blockers))
+
+    def test_missing_dashboard_worksheet_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = b'''<workbook><worksheets><worksheet name="Sheet1"/></worksheets>
+<dashboards><dashboard name="Dashboard"><zone-contains>Worksheet: Missing</zone-contains>
+</dashboard></dashboards></workbook>'''
+            r = run_preflight(_write_twb(tmp, body=body))
+            self.assertFalse(r.ok)
+            self.assertTrue(any(i.code == 'missing_worksheet_reference' for i in r.blockers))
+
+    def test_duplicate_worksheet_names_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = b'''<workbook><worksheets><worksheet name="Sheet1"/>
+<worksheet name="Sheet1"/></worksheets></workbook>'''
+            r = run_preflight(_write_twb(tmp, body=body))
+            self.assertFalse(r.ok)
+            self.assertTrue(any(i.code == 'duplicate_worksheet_name' for i in r.blockers))
+
     def test_supported_extensions_constant(self):
         # Defensive: don't accidentally drop one
         self.assertIn('.twb', SUPPORTED_EXTENSIONS)
