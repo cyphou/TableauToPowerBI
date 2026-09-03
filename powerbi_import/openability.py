@@ -403,12 +403,37 @@ def _check_visual_bindings(project_dir) -> CheckResult:
 
 
 def _check_schema(project_dir) -> CheckResult:
-    issues = []
+    errors = []
+    warnings = []
+    try:
+        from powerbi_import.schema_validator import validate_report_dir
+    except Exception as exc:  # noqa: BLE001 - preflight must return a check result
+        return CheckResult("schema", False, "error", [str(exc)])
+
+    for report_dir in glob.glob(os.path.join(project_dir, "*.Report")):
+        definition_dir = os.path.join(report_dir, "definition")
+        try:
+            results = validate_report_dir(definition_dir)
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{os.path.relpath(definition_dir, project_dir)}: "
+                          f"schema validation failed: {exc}")
+            continue
+        for result in results:
+            relative = os.path.relpath(result.file_path, project_dir)
+            for issue in result.errors:
+                if not issue.repaired:
+                    errors.append(f"{relative}: {issue.path}: {issue.message}")
+            for issue in result.warnings:
+                warnings.append(f"{relative}: {issue.path}: {issue.message}")
+
+    # Keep missing visual schemas advisory for backward-compatible helper files.
     for fp in glob.glob(os.path.join(project_dir, "**", "visual.json"), recursive=True):
         data = _read_json(fp)
         if isinstance(data, dict) and "$schema" not in data:
-            issues.append(f"{os.path.relpath(fp, project_dir)}: missing $schema")
-    return CheckResult("schema", not issues, "warning", issues)
+            warnings.append(f"{os.path.relpath(fp, project_dir)}: missing $schema")
+
+    issues = errors + warnings
+    return CheckResult("schema", not issues, "error" if errors else "warning", issues)
 
 
 def _check_references(project_dir) -> CheckResult:

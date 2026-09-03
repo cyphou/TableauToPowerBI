@@ -11,6 +11,7 @@ from powerbi_import.openability import (
     OpenabilityReport,
     CheckResult,
 )
+from powerbi_import.schema_validator import EXPECTED_SCHEMAS
 
 
 def _tmdl_with_m(m_lines):
@@ -277,6 +278,25 @@ class TestOpenability(unittest.TestCase):
             self.assertFalse(r.openable)
             self.assertTrue(any("empty visual definition" in issue
                                 for issue in r.blocking_issues))
+
+    def test_malformed_schema_bearing_visual_blocks_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            visual = {
+                "$schema": EXPECTED_SCHEMAS["visual"],
+                "name": "v1",
+                "position": {"x": 0, "y": 0, "z": 0,
+                              "width": 400, "height": 300, "tabOrder": 0},
+                "visual": {
+                    "visualType": "table",
+                    "query": "malformed-query-object",
+                },
+            }
+            _write_project(d, _tmdl_with_m(["let x=1 in x"]), visual=visual)
+            r = check_openability(d)
+            schema = next(c for c in r.checks if c.name == "schema")
+            self.assertFalse(r.openable)
+            self.assertEqual(schema.severity, "error")
+            self.assertTrue(any("visual.query" in issue for issue in schema.issues))
 
     def test_invalid_calculated_partition_dax_blocks_open(self):
         with tempfile.TemporaryDirectory() as d:
