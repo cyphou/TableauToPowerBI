@@ -27,6 +27,7 @@ All agents MUST follow these rules. They apply to every file in the project.
 4. **Test after every change** — run `pytest tests/ --tb=short -q`
 5. **Git hygiene** — commit only when tests pass, conventional messages (`feat:`, `fix:`, `test:`, `docs:`)
 6. **Identifier safety (Unicode + special chars)** — always preserve and validate field/table identifiers with accents, spaces, and symbols (for example `réalisé`, `%`, `/`, parentheses). Never assume ASCII-only names.
+7. **Pre-push privacy and provenance audit** — before pushing to any remote, audit the exact staged/committed scope and all changed documentation, tests, examples, and generated fixtures for personal data, customer/account data, tenant/subscription IDs, private endpoints, credentials, tokens, and unverified third-party content. Do not push while any finding is unresolved.
 
 ## Python Conventions
 
@@ -48,6 +49,37 @@ All agents MUST follow these rules. They apply to every file in the project.
 - Calendar `Date.MonthName()`/`Date.DayOfWeekName()` must pass explicit culture parameter
 - Connection string values must be escaped with `_m_escape_string()` before M injection
 - Regex/parsing for table/field refs must support Unicode identifiers and quoted names; include edge-case tests when touching ref parsing
+
+## Mandatory Pre-Push Privacy Audit
+
+This check is required before every `git push`, including documentation-only
+changes and agent/customization changes. It is a publication check, not a
+replacement for the security test suite.
+
+1. Inspect `git status`, the staged diff, and the complete list of staged paths.
+2. Scan staged text and binary-adjacent metadata for high-confidence secrets:
+     API keys, passwords, bearer/JWT tokens, PATs, private URLs, emails, phone
+     numbers, tenant/subscription/directory IDs, TPIDs, and connection strings.
+3. Review `tests/`, `examples/`, documentation, fixtures, screenshots, and
+     generated assets for personal names combined with location/contact data,
+     customer or account information, business transactions, or private
+     environment metadata.
+4. Verify public/example provenance and redistribution rights. A public URL is
+     not automatically a redistribution license; record source and license in
+     `examples/real_world/SOURCES.md` or remove the asset.
+5. Classify every finding as `synthetic`, `public with verified license`,
+     `provenance-required`, or `sensitive`. Treat unresolved `provenance-required`
+     or `sensitive` findings as a push blocker.
+6. Report the scan result in the final response. If a finding is ambiguous,
+     stop and ask for confirmation or sanitize/remove the asset before pushing.
+
+Minimum evidence for a clean push:
+
+- staged paths reviewed;
+- high-confidence secret scan clean;
+- tests/examples/docs reviewed for personal, customer, and business data;
+- public provenance checked for newly added assets; and
+- the user is told about any remaining provenance or sample-data caveat.
 
 ## Preceptorship Loop — Quality Gate
 
