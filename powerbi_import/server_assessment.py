@@ -83,6 +83,7 @@ class WorkbookReadiness:
     visual_count: int = 0
     calc_count: int = 0
     table_count: int = 0
+    lineage: Dict[str, object] = field(default_factory=dict)
     assessment_report: Optional[object] = None
 
     def to_dict(self) -> dict:
@@ -99,6 +100,7 @@ class WorkbookReadiness:
             "visual_count": self.visual_count,
             "calc_count": self.calc_count,
             "table_count": self.table_count,
+            "lineage": self.lineage,
         }
 
 
@@ -131,6 +133,7 @@ class ServerAssessment:
     red_count: int = 0
     total_effort_hours: float = 0.0
     timestamp: str = ""
+    dependency_hotspots: List[Dict[str, object]] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -143,6 +146,7 @@ class ServerAssessment:
             "workbook_results": [r.to_dict() for r in self.workbook_results],
             "connector_census": self.connector_census,
             "waves": [w.to_dict() for w in self.waves],
+            "dependency_hotspots": self.dependency_hotspots,
         }
 
     @property
@@ -199,6 +203,7 @@ def run_server_assessment(
 
     # Build migration waves
     result.waves = _build_migration_waves(result.workbook_results)
+    result.dependency_hotspots = _build_dependency_hotspots(result.workbook_results)
 
     return result
 
@@ -240,6 +245,7 @@ def _assess_single_workbook(wb_name: str, extracted: dict) -> WorkbookReadiness:
 
     # Estimate effort
     effort = _estimate_effort(extracted, complexity)
+    lineage = _compute_lineage_evidence(extracted)
 
     return WorkbookReadiness(
         name=wb_name,
@@ -254,6 +260,7 @@ def _assess_single_workbook(wb_name: str, extracted: dict) -> WorkbookReadiness:
         visual_count=complexity.get('visuals', 0),
         calc_count=complexity.get('calculations', 0),
         table_count=complexity.get('tables', 0),
+        lineage=lineage,
         assessment_report=report,
     )
 
@@ -321,6 +328,56 @@ def _estimate_effort(extracted: dict, complexity: Dict[str, int]) -> float:
     hours += ds_count * _EFFORT_PER_DATASOURCE
 
     return round(hours, 1)
+
+
+def _compute_lineage_evidence(extracted: dict) -> Dict[str, object]:
+    """Summarize locally observable workbook lineage and its completeness."""
+    datasources = extracted.get('datasources', []) or []
+    tables = [table for ds in datasources for table in ds.get('tables', []) or []]
+    relationships = [rel for ds in datasources
+                     for rel in ds.get('relationships', []) or []]
+    table_names = {table.get('name', '') for table in tables}
+    unresolved = 0
+    for relationship in relationships:
+        for side in ('left', 'right'):
+            endpoint = relationship.get(side, {})
+            if isinstance(endpoint, dict) and endpoint.get('table') not in table_names:
+                unresolved += 1
+    if not datasources:
+        status = 'not_available'
+    elif unresolved:
+        status = 'incomplete'
+    elif len(tables) <= 1 or relationships:
+        status = 'complete'
+    else:
+        status = 'partial'
+    return {
+        'status': status,
+        'datasources': len(datasources),
+        'tables': len(tables),
+        'relationships': len(relationships),
+        'unresolved_endpoints': unresolved,
+    }
+
+
+def _build_dependency_hotspots(
+    workbook_results: List[WorkbookReadiness],
+) -> List[Dict[str, object]]:
+    """Rank workbooks with the largest locally observed lineage surface."""
+    hotspots = []
+    for result in workbook_results:
+        lineage = result.lineage
+        surface = (int(lineage.get('datasources', 0)) +
+                   int(lineage.get('relationships', 0)) +
+                   int(lineage.get('unresolved_endpoints', 0)) * 2)
+        if surface:
+            hotspots.append({
+                'workbook': result.name,
+                'dependency_surface': surface,
+                'lineage_status': lineage.get('status', 'not_available'),
+            })
+    return sorted(hotspots, key=lambda item: (-int(item['dependency_surface']),
+                                                str(item['workbook'])))
 
 
 def _build_migration_waves(

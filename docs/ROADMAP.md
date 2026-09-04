@@ -166,6 +166,12 @@ measurable exit gate before the next phase is marked complete.
   MCP `quality_report` tool, with the same static semantic evidence as the
   single-workbook CLI. Batch and Notebook auto-coverage remain an explicit
   follow-up rather than being silently assumed.
+- **Server assessment lineage:** local portfolio assessment now records per-
+  workbook lineage completeness, datasource/table/relationship counts,
+  unresolved relationship endpoints, and ranked dependency hotspots. This is
+  extraction-derived evidence; authenticated Tableau Server metadata, usage,
+  permissions, subscriptions, and upstream/downstream lineage remain a live
+  validation phase using the existing `server_client.py` APIs.
 - **Phase 3 — PBIR behavior compatibility:** queued after the semantic
   execution contract; expand from field-binding correctness to round-trip,
   interaction, bookmark, layout, and rendering evidence.

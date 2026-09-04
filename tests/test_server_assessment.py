@@ -171,6 +171,8 @@ class TestAssessSingleWorkbook(unittest.TestCase):
         self.assertIn(r.status, ("GREEN", "YELLOW"))  # May vary by assessment
         self.assertGreater(r.effort_hours, 0)
         self.assertIn("postgres", r.connector_types)
+        self.assertEqual(r.lineage['status'], 'complete')
+        self.assertEqual(r.lineage['tables'], 1)
 
     def test_complex_red_workbook(self):
         ext = _make_extracted(
@@ -237,6 +239,21 @@ class TestRunServerAssessment(unittest.TestCase):
         # Connector census
         self.assertIn("postgres", result.connector_census)
         self.assertIn("mysql", result.connector_census)
+        self.assertEqual(len(result.dependency_hotspots), 2)
+
+    def test_lineage_evidence_and_dependency_hotspot(self):
+        extracted = _make_extracted(
+            tables=[('orders', ['id']), ('products', ['id'])],
+        )
+        extracted['datasources'][0]['relationships'] = [{
+            'left': {'table': 'orders', 'column': 'id'},
+            'right': {'table': 'products', 'column': 'id'},
+        }]
+        result = run_server_assessment([extracted], ['Sales'])
+        readiness = result.workbook_results[0]
+        self.assertEqual(readiness.lineage['status'], 'complete')
+        self.assertEqual(readiness.lineage['relationships'], 1)
+        self.assertEqual(result.dependency_hotspots[0]['workbook'], 'Sales')
 
         # Waves
         self.assertGreater(len(result.waves), 0)
