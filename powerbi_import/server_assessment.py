@@ -432,7 +432,31 @@ def collect_server_workbook_evidence(client: object, workbook_id: str) -> Dict[s
     })
     evidence['status'] = ('complete' if len(available) == 6 else
                           'partial' if available else 'unavailable')
+    evidence['risk'] = _server_evidence_risk(evidence)
     return evidence
+
+
+def _server_evidence_risk(evidence: Dict[str, object]) -> Dict[str, object]:
+    """Classify operational migration risk from normalized Server evidence."""
+    reasons = []
+    if evidence.get('status') == 'unavailable':
+        reasons.append('Server metadata unavailable')
+    elif evidence.get('status') == 'partial':
+        reasons.append('Server metadata is incomplete')
+    dependencies = evidence.get('dependencies', {})
+    if isinstance(dependencies, dict) and dependencies.get('downstream_workbooks', 0):
+        reasons.append('Shared datasource has downstream workbook dependencies')
+    refresh = evidence.get('refresh_delivery', {})
+    if isinstance(refresh, dict) and refresh.get('subscriptions', 0):
+        reasons.append('Subscriptions require delivery migration')
+    if isinstance(refresh, dict) and refresh.get('extract_tasks', 0):
+        reasons.append('Extract refresh tasks require schedule migration')
+    permissions = evidence.get('permissions', {})
+    if isinstance(permissions, dict) and permissions.get('entries', 0) == 0:
+        reasons.append('No workbook permission evidence returned')
+    level = 'high' if evidence.get('status') == 'unavailable' or len(reasons) >= 3 else (
+        'medium' if reasons else 'low')
+    return {'level': level, 'reasons': reasons}
 
 
 def enrich_with_server_evidence(

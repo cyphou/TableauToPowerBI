@@ -187,7 +187,9 @@ measurable exit gate before the next phase is marked complete.
   counts, dependency-hotspot rankings, and authenticated extract-task and
   subscription counts for operators. Server evidence status now covers six
   isolated endpoints, so refresh and delivery metadata is never inferred when
-  those APIs are unavailable.
+  those APIs are unavailable. The evidence collector now emits a risk level
+  (`low`, `medium`, or `high`) with reasons for incomplete metadata, downstream
+  dependencies, refresh schedules, subscriptions, and missing permissions.
 - **Desktop confidence correction:** a static PBIP pass is now downgraded to
   `UNVERIFIED` when an actual Desktop probe reports `crashed`, `timed_out`, or
   `error`; only a healthy `opened` probe can promote it to

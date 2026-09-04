@@ -63,6 +63,10 @@ history: quality blockers are classified as `quality_blocker` and cannot be
 counted as successful migrations. Batch runs use the same classification for
 each workbook.
 
+Authenticated Tableau Server evidence also includes an operational risk level
+and reasons, so dependency and refresh complexity can influence migration
+planning without turning unavailable API data into a false pass.
+
 ### Project Structure
 
 | Module | Purpose |

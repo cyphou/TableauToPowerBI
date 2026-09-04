@@ -284,6 +284,8 @@ class TestRunServerAssessment(unittest.TestCase):
         self.assertEqual(evidence['permissions']['groups'], 1)
         self.assertEqual(evidence['refresh_delivery']['extract_tasks'], 1)
         self.assertEqual(evidence['refresh_delivery']['subscriptions'], 1)
+        self.assertEqual(evidence['risk']['level'], 'high')
+        self.assertGreaterEqual(len(evidence['risk']['reasons']), 2)
 
     def test_enrich_server_evidence_matches_workbook_name(self):
         result = run_server_assessment([_make_extracted()], ['Sales'])
@@ -297,6 +299,7 @@ class TestRunServerAssessment(unittest.TestCase):
         })()
         enrich_with_server_evidence(result, client, {'Sales': 'wb-1'})
         self.assertEqual(result.workbook_results[0].server_evidence['workbook_id'], 'wb-1')
+        self.assertEqual(result.workbook_results[0].server_evidence['risk']['level'], 'medium')
 
         # Waves
         self.assertGreater(len(result.waves), 0)
