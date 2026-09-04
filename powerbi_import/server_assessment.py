@@ -84,6 +84,7 @@ class WorkbookReadiness:
     calc_count: int = 0
     table_count: int = 0
     lineage: Dict[str, object] = field(default_factory=dict)
+    server_evidence: Dict[str, object] = field(default_factory=dict)
     assessment_report: Optional[object] = None
 
     def to_dict(self) -> dict:
@@ -101,6 +102,7 @@ class WorkbookReadiness:
             "calc_count": self.calc_count,
             "table_count": self.table_count,
             "lineage": self.lineage,
+            "server_evidence": self.server_evidence,
         }
 
 
@@ -378,6 +380,66 @@ def _build_dependency_hotspots(
             })
     return sorted(hotspots, key=lambda item: (-int(item['dependency_surface']),
                                                 str(item['workbook'])))
+
+
+def collect_server_workbook_evidence(client: object, workbook_id: str) -> Dict[str, object]:
+    """Collect optional authenticated Server metadata for one workbook.
+
+    Each endpoint is isolated so a permission or API-version limitation is
+    recorded as unavailable instead of invalidating the whole assessment.
+    """
+    evidence: Dict[str, object] = {'workbook_id': workbook_id, 'status': 'partial'}
+    available = []
+
+    def call(name: str, default):
+        try:
+            method = getattr(client, name)
+            value = method(workbook_id)
+            available.append(name)
+            return value
+        except (AttributeError, OSError, ValueError, KeyError):
+            return default
+
+    dependencies = call('get_workbook_dependencies', {}) or {}
+    usage = call('get_usage_stats', {}) or {}
+    permissions = call('get_permissions', []) or []
+    upstream = call('get_lineage_upstream', {}) or {}
+    evidence.update({
+        'dependencies': {
+            'datasources': len(dependencies.get('datasources', []) or []),
+            'views': len(dependencies.get('views', []) or []),
+            'downstream_workbooks': len(dependencies.get('downstream_workbooks', []) or []),
+        },
+        'usage': {
+            'total_views': usage.get('totalViews', 0),
+            'last_accessed': usage.get('lastAccessed', ''),
+        },
+        'permissions': {
+            'entries': len(permissions),
+            'groups': sum(1 for item in permissions if item.get('granteeType') == 'group'),
+        },
+        'upstream_lineage': {
+            'datasources': len(upstream.get('datasources', []) or []),
+            'tables': len(upstream.get('tables', []) or []),
+            'databases': len(upstream.get('databases', []) or []),
+        },
+    })
+    evidence['status'] = ('complete' if len(available) == 4 else
+                          'partial' if available else 'unavailable')
+    return evidence
+
+
+def enrich_with_server_evidence(
+    assessment: ServerAssessment,
+    client: object,
+    workbook_ids: Dict[str, str],
+) -> ServerAssessment:
+    """Attach authenticated Server evidence to matching readiness records."""
+    for readiness in assessment.workbook_results:
+        workbook_id = workbook_ids.get(readiness.name)
+        if workbook_id:
+            readiness.server_evidence = collect_server_workbook_evidence(client, workbook_id)
+    return assessment
 
 
 def _build_migration_waves(

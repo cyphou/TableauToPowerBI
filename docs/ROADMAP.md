@@ -171,7 +171,10 @@ measurable exit gate before the next phase is marked complete.
   unresolved relationship endpoints, and ranked dependency hotspots. This is
   extraction-derived evidence; authenticated Tableau Server metadata, usage,
   permissions, subscriptions, and upstream/downstream lineage remain a live
-  validation phase using the existing `server_client.py` APIs.
+  validation phase using the existing `server_client.py` APIs. The assessment
+  now also provides `collect_server_workbook_evidence()` and
+  `enrich_with_server_evidence()` to attach that API evidence when authorized;
+  endpoint failures are classified as `partial` or `unavailable`.
 - **Phase 3 — PBIR behavior compatibility:** queued after the semantic
   execution contract; expand from field-binding correctness to round-trip,
   interaction, bookmark, layout, and rendering evidence.

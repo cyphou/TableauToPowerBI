@@ -31,6 +31,8 @@ from powerbi_import.server_assessment import (
     _compute_complexity,
     _estimate_effort,
     _build_migration_waves,
+    collect_server_workbook_evidence,
+    enrich_with_server_evidence,
 )
 
 
@@ -254,6 +256,37 @@ class TestRunServerAssessment(unittest.TestCase):
         self.assertEqual(readiness.lineage['status'], 'complete')
         self.assertEqual(readiness.lineage['relationships'], 1)
         self.assertEqual(result.dependency_hotspots[0]['workbook'], 'Sales')
+
+    def test_collect_authenticated_server_evidence(self):
+        class Client:
+            def get_workbook_dependencies(self, workbook_id):
+                return {'datasources': ['ds'], 'views': ['view'],
+                        'downstream_workbooks': ['other']}
+
+            def get_usage_stats(self, workbook_id):
+                return {'totalViews': 12, 'lastAccessed': '2026-09-04'}
+
+            def get_permissions(self, workbook_id):
+                return [{'granteeType': 'group'}, {'granteeType': 'user'}]
+
+            def get_lineage_upstream(self, workbook_id):
+                return {'datasources': ['ds'], 'tables': ['table'], 'databases': ['db']}
+
+        evidence = collect_server_workbook_evidence(Client(), 'wb-1')
+        self.assertEqual(evidence['status'], 'complete')
+        self.assertEqual(evidence['dependencies']['downstream_workbooks'], 1)
+        self.assertEqual(evidence['permissions']['groups'], 1)
+
+    def test_enrich_server_evidence_matches_workbook_name(self):
+        result = run_server_assessment([_make_extracted()], ['Sales'])
+        client = type('Client', (), {
+            'get_workbook_dependencies': lambda self, workbook_id: {},
+            'get_usage_stats': lambda self, workbook_id: {},
+            'get_permissions': lambda self, workbook_id: [],
+            'get_lineage_upstream': lambda self, workbook_id: {},
+        })()
+        enrich_with_server_evidence(result, client, {'Sales': 'wb-1'})
+        self.assertEqual(result.workbook_results[0].server_evidence['workbook_id'], 'wb-1')
 
         # Waves
         self.assertGreater(len(result.waves), 0)
