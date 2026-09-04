@@ -607,6 +607,22 @@ def generate_server_html_report(
     html += '</div>'  # chart-row
     html += section_close()
 
+    if assessment.dependency_hotspots:
+        html += section_open("dependencies", "Dependency Hotspots", "&#128279;")
+        hotspot_rows = []
+        for hotspot in assessment.dependency_hotspots:
+            hotspot_rows.append([
+                esc(str(hotspot['workbook'])),
+                str(hotspot['dependency_surface']),
+                esc(str(hotspot['lineage_status'])),
+            ])
+        html += '<div class="card">'
+        html += data_table(
+            ["Workbook", "Dependency Surface", "Lineage Status"],
+            hotspot_rows, "dependency-hotspots-tbl", sortable=True)
+        html += '</div>'
+        html += section_close()
+
     # ── Migration Waves ──────────────────────────────────────────
     if assessment.waves:
         html += section_open("waves", "Migration Waves", "&#128640;")
@@ -640,12 +656,14 @@ def generate_server_html_report(
             str(r.calc_count),
             str(r.table_count),
             str(r.complexity.get('lod_expressions', 0)),
+            esc(str(r.lineage.get('status', 'not_available'))),
+            str(r.lineage.get('relationships', 0)),
             f'{r.effort_hours:.1f}h',
             ', '.join(esc(c) for c in r.connector_types) or 'N/A',
         ])
     html += '<div class="card">'
     html += data_table(
-        ["Status", "Workbook", "Visuals", "Calcs", "Tables", "LOD", "Effort", "Connectors"],
+        ["Status", "Workbook", "Visuals", "Calcs", "Tables", "LOD", "Lineage", "Relationships", "Effort", "Connectors"],
         wb_rows, "wb-detail-tbl", sortable=True, searchable=True)
     html += '</div>'
     html += section_close()
