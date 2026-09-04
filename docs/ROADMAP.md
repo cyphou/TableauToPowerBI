@@ -176,7 +176,10 @@ measurable exit gate before the next phase is marked complete.
   `enrich_with_server_evidence()` to attach that API evidence when authorized;
   endpoint failures are classified as `partial` or `unavailable`. The existing
   portfolio JSON and HTML outputs now expose lineage status, relationship
-  counts, and dependency-hotspot rankings for operators.
+  counts, dependency-hotspot rankings, and authenticated extract-task and
+  subscription counts for operators. Server evidence status now covers six
+  isolated endpoints, so refresh and delivery metadata is never inferred when
+  those APIs are unavailable.
 - **Phase 3 — PBIR behavior compatibility:** queued after the semantic
   execution contract; expand from field-binding correctness to round-trip,
   interaction, bookmark, layout, and rendering evidence.

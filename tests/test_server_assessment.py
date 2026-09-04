@@ -272,10 +272,18 @@ class TestRunServerAssessment(unittest.TestCase):
             def get_lineage_upstream(self, workbook_id):
                 return {'datasources': ['ds'], 'tables': ['table'], 'databases': ['db']}
 
+            def get_workbook_extract_tasks(self, workbook_id):
+                return [{'id': 'task'}]
+
+            def get_workbook_subscriptions(self, workbook_id):
+                return [{'id': 'subscription'}]
+
         evidence = collect_server_workbook_evidence(Client(), 'wb-1')
         self.assertEqual(evidence['status'], 'complete')
         self.assertEqual(evidence['dependencies']['downstream_workbooks'], 1)
         self.assertEqual(evidence['permissions']['groups'], 1)
+        self.assertEqual(evidence['refresh_delivery']['extract_tasks'], 1)
+        self.assertEqual(evidence['refresh_delivery']['subscriptions'], 1)
 
     def test_enrich_server_evidence_matches_workbook_name(self):
         result = run_server_assessment([_make_extracted()], ['Sales'])
@@ -284,6 +292,8 @@ class TestRunServerAssessment(unittest.TestCase):
             'get_usage_stats': lambda self, workbook_id: {},
             'get_permissions': lambda self, workbook_id: [],
             'get_lineage_upstream': lambda self, workbook_id: {},
+            'get_workbook_extract_tasks': lambda self, workbook_id: [],
+            'get_workbook_subscriptions': lambda self, workbook_id: [],
         })()
         enrich_with_server_evidence(result, client, {'Sales': 'wb-1'})
         self.assertEqual(result.workbook_results[0].server_evidence['workbook_id'], 'wb-1')

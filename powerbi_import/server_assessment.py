@@ -397,13 +397,15 @@ def collect_server_workbook_evidence(client: object, workbook_id: str) -> Dict[s
             value = method(workbook_id)
             available.append(name)
             return value
-        except (AttributeError, OSError, ValueError, KeyError):
+        except (AttributeError, OSError, ValueError, KeyError, RuntimeError, TypeError):
             return default
 
     dependencies = call('get_workbook_dependencies', {}) or {}
     usage = call('get_usage_stats', {}) or {}
     permissions = call('get_permissions', []) or []
     upstream = call('get_lineage_upstream', {}) or {}
+    extract_tasks = call('get_workbook_extract_tasks', []) or []
+    subscriptions = call('get_workbook_subscriptions', []) or []
     evidence.update({
         'dependencies': {
             'datasources': len(dependencies.get('datasources', []) or []),
@@ -423,8 +425,12 @@ def collect_server_workbook_evidence(client: object, workbook_id: str) -> Dict[s
             'tables': len(upstream.get('tables', []) or []),
             'databases': len(upstream.get('databases', []) or []),
         },
+        'refresh_delivery': {
+            'extract_tasks': len(extract_tasks),
+            'subscriptions': len(subscriptions),
+        },
     })
-    evidence['status'] = ('complete' if len(available) == 4 else
+    evidence['status'] = ('complete' if len(available) == 6 else
                           'partial' if available else 'unavailable')
     return evidence
 
