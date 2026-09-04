@@ -16,6 +16,7 @@ Supports:
 
 import os
 import sys
+import textwrap
 import glob
 import json
 import hashlib
@@ -3252,7 +3253,7 @@ _SIMPLE_COMMANDS = {
     'parity', 'portfolio', 'plan', 'lineage', 'package',
 }
 
-_SIMPLE_HELP = """\
+_SIMPLE_HELP = textwrap.dedent("""\
 Tableau to Power BI - 14 simple commands
 
 Usage:
@@ -3263,7 +3264,7 @@ Usage:
   python migrate.py merge WORKBOOK... [options]
   python migrate.py fabric WORKBOOK [options]
   python migrate.py deploy WORKBOOK WORKSPACE_ID [options]
-  python migrate.py qa WORKBOOK [options]
+    python migrate.py qa WORKBOOK [options]
     python migrate.py quality WORKBOOK [options]
     python migrate.py parity WORKBOOK [options]
     python migrate.py portfolio FOLDER [options]
@@ -3279,7 +3280,7 @@ Commands:
   merge     Build one shared semantic model from multiple workbooks
   fabric    Generate Lakehouse, Dataflow, Notebook, model, report, pipeline
   deploy    Generate Fabric artifacts, deploy them, and run the pipeline
-  qa        Migrate a workbook and generate the QA report card
+    qa        Migrate a workbook and generate the QA report card
     quality   Migrate a workbook and generate the unified quality report
     parity    Scan Tableau feature usage and generate a parity scorecard
     portfolio Assess a folder of workbooks and Prep flows without migrating
@@ -3295,8 +3296,15 @@ Common options:
 Compatibility:
   Existing flag-based commands still work unchanged.
   Use "python migrate.py --advanced-help" for every legacy option.
-  Power BI Desktop opens only when --desktop-probe is explicitly provided.
-"""
+    Power BI Desktop opens only when --desktop-probe is explicitly provided.
+""").strip().replace("\n    python migrate", "\n  python migrate").replace(
+    "\n    qa        ", "\n  qa        ").replace(
+    "\n    quality  ", "\n  quality  ").replace(
+    "\n    parity   ", "\n  parity   ").replace(
+    "\n    portfolio", "\n  portfolio").replace(
+    "\n    plan     ", "\n  plan     ").replace(
+    "\n    lineage  ", "\n  lineage  ").replace(
+    "\n    package  ", "\n  package  ") + "\n"
 
 
 def _expand_simple_command(argv):
