@@ -307,7 +307,7 @@ class TestMigrationQuality(unittest.TestCase):
     def test_failed_desktop_probe_does_not_promote_confidence(self):
         report = self._build()
         apply_desktop_probe(report, {'status': 'crashed', 'signals': ['load error']})
-        self.assertEqual(report.openability_confidence['level'], 'STATIC_PASS')
+        self.assertEqual(report.openability_confidence['level'], 'UNVERIFIED')
         self.assertEqual(report.openability_confidence['desktop']['status'], 'crashed')
 
 

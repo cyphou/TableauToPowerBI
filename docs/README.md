@@ -54,6 +54,10 @@ Notebook sessions can run the same report explicitly after generation:
 project and keeps live semantic execution marked `not_run` until an authorized
 runtime is used.
 
+Desktop probe results are evidence gates: a successful launch can produce
+`DESKTOP_SMOKE_PASS`, while a crash, timeout, or probe error downgrades the
+confidence level to `UNVERIFIED` even when static validation passed.
+
 ### Project Structure
 
 | Module | Purpose |

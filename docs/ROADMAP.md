@@ -185,6 +185,10 @@ measurable exit gate before the next phase is marked complete.
   subscription counts for operators. Server evidence status now covers six
   isolated endpoints, so refresh and delivery metadata is never inferred when
   those APIs are unavailable.
+- **Desktop confidence correction:** a static PBIP pass is now downgraded to
+  `UNVERIFIED` when an actual Desktop probe reports `crashed`, `timed_out`, or
+  `error`; only a healthy `opened` probe can promote it to
+  `DESKTOP_SMOKE_PASS`.
 - **Phase 3 — PBIR behavior compatibility:** queued after the semantic
   execution contract; expand from field-binding correctness to round-trip,
   interaction, bookmark, layout, and rendering evidence.
