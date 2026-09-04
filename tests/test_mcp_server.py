@@ -40,7 +40,7 @@ class TestProtocol(unittest.TestCase):
     def test_tools_list(self):
         resp = self.server.handle_request(_req("tools/list"))
         names = [t["name"] for t in resp["result"]["tools"]]
-        self.assertEqual(names, ["assess", "migrate", "qa", "parity_scan",
+        self.assertEqual(names, ["assess", "migrate", "qa", "quality_report", "parity_scan",
                                  "shared_model", "diff", "deploy", "llm_status",
                                  "autoheal", "verify_open"])
 
@@ -48,6 +48,7 @@ class TestProtocol(unittest.TestCase):
         resp = self.server.handle_request(_req("resources/list"))
         uris = [r["uri"] for r in resp["result"]["resources"]]
         self.assertIn("ttpbi://reports/assessment", uris)
+        self.assertIn("ttpbi://reports/quality", uris)
 
     def test_unknown_method(self):
         resp = self.server.handle_request(_req("does/not/exist"))
@@ -133,6 +134,12 @@ class TestToolsCall(unittest.TestCase):
 
     def test_qa_bad_dir(self):
         resp, payload = self._call("qa", {"project_dir": "/no/such/dir"})
+        self.assertFalse(payload["ok"])
+
+    def test_quality_report_bad_project_dir(self):
+        resp, payload = self._call("quality_report", {
+            "file": _SAMPLE, "project_dir": "/no/such/dir"
+        })
         self.assertFalse(payload["ok"])
 
     def test_shared_model_needs_two(self):

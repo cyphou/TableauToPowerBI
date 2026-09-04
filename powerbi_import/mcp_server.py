@@ -109,6 +109,19 @@ def _tool_catalogue():
             },
         },
         {
+            "name": "quality_report",
+            "description": "Run the unified deterministic quality report, including "
+                           "openability and semantic-context diagnostics.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string", "description": "Source Tableau workbook"},
+                    "project_dir": {"type": "string", "description": "Generated project dir"},
+                },
+                "required": ["file", "project_dir"],
+            },
+        },
+        {
             "name": "parity_scan",
             "description": "Scan a Tableau workbook for Tableau→Power BI functionality "
                            "parity (exact/approximated/healed/unsupported per feature).",
@@ -236,6 +249,12 @@ def _resource_catalogue():
             "mimeType": "application/json",
         },
         {
+            "uri": "ttpbi://reports/quality",
+            "name": "Unified quality report (JSON)",
+            "description": "Latest quality report produced by the quality_report tool.",
+            "mimeType": "application/json",
+        },
+        {
             "uri": "ttpbi://reports/parity",
             "name": "Parity scan (JSON)",
             "description": "Latest parity scan produced by the parity_scan tool.",
@@ -330,6 +349,23 @@ class MigrationTools:
         report = run_qa_suite(project_dir, extraction_dir=args.get("extraction_dir"))
         payload = report.to_dict()
         self.report_store["qa"] = payload
+        return {"ok": True, "report": payload}
+
+    # -- quality_report ----------------------------------------------
+    def quality_report(self, args):
+        err = _validate_input_file(args.get("file"))
+        if err:
+            return {"ok": False, "error": err}
+        project_dir = args.get("project_dir")
+        if not project_dir or not os.path.isdir(project_dir):
+            return {"ok": False, "error": f"project_dir not found: {project_dir}"}
+        from powerbi_import.migration_quality import build_quality_report
+        with tempfile.TemporaryDirectory(prefix="ttpbi_mcp_quality_") as tmp:
+            _, converted = _extract_to_dir(args["file"], tmp)
+            name = os.path.splitext(os.path.basename(args["file"]))[0]
+            report = build_quality_report(converted, project_dir, name)
+            payload = report.to_dict()
+        self.report_store["quality"] = payload
         return {"ok": True, "report": payload}
 
     # -- parity_scan --------------------------------------------------
@@ -537,7 +573,8 @@ class MCPServer:
     def _resources_read(self, params):
         uri = (params or {}).get("uri", "")
         kind = uri.rsplit("/", 1)[-1] if uri.startswith("ttpbi://reports/") else None
-        store_key = {"assessment": "assessment", "qa": "qa", "parity": "parity"}.get(kind)
+        store_key = {"assessment": "assessment", "qa": "qa", "quality": "quality",
+                 "parity": "parity"}.get(kind)
         if not store_key or store_key not in self.tools.report_store:
             raise _RpcError(INVALID_PARAMS, f"no report available for uri: {uri}")
         payload = self.tools.report_store[store_key]

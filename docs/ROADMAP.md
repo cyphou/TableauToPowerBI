@@ -162,6 +162,10 @@ measurable exit gate before the next phase is marked complete.
   This includes an end-to-end generated-SemanticModel regression for stale
   `ALLEXCEPT` references. Execution status in unified quality reports remains
   `not_run` unless an authorized execution environment provides evidence.
+- **Quality-surface coverage:** the unified report is now available through the
+  MCP `quality_report` tool, with the same static semantic evidence as the
+  single-workbook CLI. Batch and Notebook auto-coverage remain an explicit
+  follow-up rather than being silently assumed.
 - **Phase 3 — PBIR behavior compatibility:** queued after the semantic
   execution contract; expand from field-binding correctness to round-trip,
   interaction, bookmark, layout, and rendering evidence.

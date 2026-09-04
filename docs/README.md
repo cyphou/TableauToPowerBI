@@ -43,6 +43,12 @@ Semantic-context checks for converted LOD expressions are available through
 the unified quality report continues to label live semantic execution as
 `not_run` until an authorized execution environment supplies evidence.
 
+Quality-surface coverage is explicit: the concise single-workbook CLI and MCP
+`quality_report` tool run the unified report; `qa` remains the specialized
+real-world report card. Batch and Notebook workflows currently expose their own
+migration/assessment operations and do not implicitly run the unified quality
+report for every item.
+
 ### Project Structure
 
 | Module | Purpose |
