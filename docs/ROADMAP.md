@@ -144,11 +144,19 @@ measurable exit gate before the next phase is marked complete.
 - **Evidence:** 26 generated example PBIP projects pass the strengthened
   openability gate; 26 example `.twb`/`.twbx` sources pass XML preflight; the
   latest focused readiness run passed 581 tests with 4 skipped.
-- **Phase 2 — Semantic execution validation:** next active development target.
-  Add typed, tolerance-aware execution checks for representative measures,
-  calculated columns, relationships, dates, blanks, filters, LOD grain, and
-  table-calculation partitions. Keep execution environments explicit and do
-  not convert static validation into a claim of runtime equivalence.
+- **Phase 2 — Semantic execution validation:** active development target.
+  The first static slice is now available in
+  `powerbi_import/semantic_execution_validator.py`: it checks converted
+  `FIXED`/`INCLUDE`/`EXCLUDE` dimensions against the semantic model and reports
+  missing dimensions, table-resolution mismatches, and many-to-many grain
+  risks. The validator is deliberately standalone until typed execution
+  adapters are available, so it cannot promote static findings to runtime
+  equivalence. Next work adds representative measure, calculated-column,
+  relationship, date, blank, filter, and table-calculation execution checks.
+- **Phase 2 evidence:** focused LOD validation currently passes 4 tests covering
+  valid dimensions and the three principal warning paths. Execution status in
+  unified quality reports remains `not_run` unless an authorized execution
+  environment provides evidence.
 - **Phase 3 — PBIR behavior compatibility:** queued after the semantic
   execution contract; expand from field-binding correctness to round-trip,
   interaction, bookmark, layout, and rendering evidence.

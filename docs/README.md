@@ -10,6 +10,7 @@ Current release baseline: **v44.0.0** with the verified PBIP manifest-coherence 
 - [TABLEAU_TO_POWERQUERY_REFERENCE.md](TABLEAU_TO_POWERQUERY_REFERENCE.md) — Complete 108-property Tableau → Power Query M mapping (25 connectors)
 - [TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md) — Complete 165-operation Tableau Prep → Power Query M transformation mapping
 - [FAQ.md](FAQ.md) — Frequently asked questions
+- [ROADMAP.md](ROADMAP.md) — Release gates, verified evidence, and active semantic-validation work
 
 ## Quick Reference
 
@@ -36,6 +37,11 @@ Use `python migrate.py quality file.twbx` for the combined assessment, parity,
 data, interface, and openability report. Use `python migrate.py --help` for the
 concise command list; existing flag-based automation remains compatible through
 `python migrate.py --advanced-help`.
+
+Semantic-context checks for converted LOD expressions are available through
+`powerbi_import.semantic_execution_validator`. They are static diagnostics only;
+the unified quality report continues to label live semantic execution as
+`not_run` until an authorized execution environment supplies evidence.
 
 ### Project Structure
 
