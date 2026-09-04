@@ -1592,6 +1592,24 @@ def _print_batch_summary(batch_results, batch_duration, migrated_root):
         quality_fail = sum(1 for r in quality_results if r['quality_status'] == 'FAIL')
         print(f"  Quality reports: {len(quality_results)} "
               f"(PASS {quality_pass}, WARN {quality_warn}, FAIL {quality_fail})")
+        quality_summary = {
+            'total_reports': len(quality_results),
+            'pass_count': quality_pass,
+            'warn_count': quality_warn,
+            'fail_count': quality_fail,
+            'workbooks': {
+                name: {
+                    'status': result.get('quality_status'),
+                    'json_path': result.get('quality_json'),
+                }
+                for name, result in wb_results.items()
+                if result.get('quality_status')
+            },
+        }
+        quality_summary_path = os.path.join(migrated_root, 'batch_quality_summary.json')
+        with open(quality_summary_path, 'w', encoding='utf-8') as handle:
+            json.dump(quality_summary, handle, indent=2, ensure_ascii=False)
+        print(f"  Quality summary: {quality_summary_path}")
     print()
 
     # Workbook summary table

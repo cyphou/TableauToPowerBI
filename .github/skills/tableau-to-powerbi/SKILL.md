@@ -74,7 +74,8 @@ Batch migration writes a unified quality JSON and HTML report beside each
 successful workbook output and prints aggregate PASS/WARN/FAIL counts. Extraction
 data is snapshotted per workbook before the next batch item starts, so parallel
 or resumed batches do not compare a target against another workbook's source
-snapshot.
+snapshot. The batch root also contains `batch_quality_summary.json` with
+per-workbook statuses and report paths for CI or downstream automation.
 
 Run `.venv\Scripts\python.exe migrate.py --help` for the concise list. Existing
 flag-based automation remains compatible; `--advanced-help` exposes legacy options
