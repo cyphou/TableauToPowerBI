@@ -148,15 +148,17 @@ measurable exit gate before the next phase is marked complete.
   The first static slice is now available in
   `powerbi_import/semantic_execution_validator.py`, integrated into the
   unified quality report as non-blocking `semantic_context` evidence. It checks
-  converted `FIXED`/`INCLUDE`/`EXCLUDE` dimensions against the semantic model
-  and reports missing dimensions, table-resolution mismatches, and many-to-many
-  grain risks. It cannot promote static findings to runtime equivalence. Next
-  work adds representative measure, calculated-column,
+  converted `FIXED`/`INCLUDE`/`EXCLUDE` dimensions and extracted table-calculation
+  partition fields against the semantic model. It reports missing dimensions,
+  table-resolution mismatches, many-to-many grain risks, and missing partition
+  fields. It cannot promote static findings to runtime equivalence. Next work
+  adds representative measure, calculated-column,
   relationship, date, blank, filter, and table-calculation execution checks.
-- **Phase 2 evidence:** focused LOD validation currently passes 4 tests covering
-  valid dimensions and the three principal warning paths. Execution status in
-  unified quality reports remains `not_run` unless an authorized execution
-  environment provides evidence.
+- **Phase 2 evidence:** focused semantic validation currently passes 5 tests;
+  unified quality-report coverage passes 19 tests for static LOD and
+  table-calculation diagnostics. Execution status in unified quality reports
+  remains `not_run` unless an authorized execution environment provides
+  evidence.
 - **Phase 3 — PBIR behavior compatibility:** queued after the semantic
   execution contract; expand from field-binding correctness to round-trip,
   interaction, bookmark, layout, and rendering evidence.

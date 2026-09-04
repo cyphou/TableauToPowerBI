@@ -111,6 +111,33 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.semantic_context['issue_count'], 1)
         self.assertIn('not present', report.semantic_context['lod_issues'][0]['issue'])
 
+    def test_table_calc_partition_diagnostics_are_reported(self):
+        extracted = {
+            'datasources': [{
+                'tables': [{'name': 'Sales', 'columns': [{'name': 'Region'}]}],
+                'calculations': [{
+                    'caption': 'Running sales',
+                    'formula': 'RUNNING_SUM(SUM([Amount]))',
+                    'table_calc_partitioning': ['MissingGroup'],
+                }],
+                'relationships': [],
+            }],
+        }
+        with patch('powerbi_import.migration_quality.run_assessment',
+                   return_value=_Assessment()), \
+             patch('powerbi_import.migration_quality.scan_project') as scan, \
+             patch('powerbi_import.migration_quality.compare_report_tables',
+                   return_value={'summary': {'source_tables': 1, 'tables_found': 1}}), \
+             patch('powerbi_import.migration_quality.compare_report_interface',
+                   return_value={'filters': {'covered': True}, 'parameters': {'covered': True}}), \
+             patch('powerbi_import.migration_quality.check_openability',
+                   return_value=_Openability()):
+            scan.return_value.to_dict.return_value = {'gaps': []}
+            report = build_quality_report(extracted, 'project', 'Demo')
+        self.assertEqual(report.status, 'PASS')
+        self.assertEqual(report.semantic_context['issue_count'], 1)
+        self.assertIn('MissingGroup', report.semantic_context['lod_issues'][0]['issue'])
+
     def test_unsupported_feature_is_blocker(self):
         report = self._build(parity={
             'gaps': [{'key': 'forecast', 'status': 'unsupported'}]

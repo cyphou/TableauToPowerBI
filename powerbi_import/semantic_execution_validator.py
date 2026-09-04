@@ -19,6 +19,25 @@ _COLUMN_RE = re.compile(r"(?:'((?:[^']|'')+)'|([A-Za-z_][\w ]*))\s*\[([^\]]+)\]"
 class SemanticExecutionValidator:
     """Perform deterministic, execution-independent semantic checks."""
 
+    @staticmethod
+    def validate_table_calc_partition(
+        calculation: Mapping[str, object],
+        column_table_map: Mapping[str, str],
+    ) -> List[str]:
+        """Check extracted table-calculation partition fields exist in the model."""
+        issues: List[str] = []
+        fields = calculation.get("table_calc_partitioning", []) or []
+        for field in fields:
+            field_name = str(field).strip()
+            if field_name.startswith("[") and field_name.endswith("]"):
+                field_name = field_name[1:-1]
+            if field_name and field_name not in column_table_map:
+                issues.append(
+                    f"Table calculation partition field '{field_name}' is not "
+                    "present in the semantic model"
+                )
+        return issues
+
     def validate_lod_grain_compatibility(
         self,
         expression: str,

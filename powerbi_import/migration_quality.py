@@ -254,12 +254,16 @@ def _semantic_context_validation(extracted: Dict[str, Any]) -> Dict[str, Any]:
         formula = calculation.get("formula", "")
         if not formula:
             continue
+        calculation_issues = validator.validate_lod_grain_compatibility(
+            formula, column_table_map, relationships
+        )
+        calculation_issues.extend(validator.validate_table_calc_partition(
+            calculation, column_table_map
+        ))
         issues.extend({
             "calculation": calculation.get("caption", calculation.get("name", "")),
             "issue": issue,
-        } for issue in validator.validate_lod_grain_compatibility(
-            formula, column_table_map, relationships
-        ))
+        } for issue in calculation_issues)
     return {
         "status": "static_diagnostics",
         "calculations_scanned": len(calculations),

@@ -53,6 +53,14 @@ class TestSemanticExecutionValidator(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertIn("resolves to table", issues[0])
 
+    def test_table_calc_partition_reports_unknown_field(self):
+        issues = self.validator.validate_table_calc_partition(
+            {"table_calc_partitioning": ["Region", "MissingGroup"]},
+            self.columns,
+        )
+        self.assertEqual(len(issues), 1)
+        self.assertIn("MissingGroup", issues[0])
+
 
 if __name__ == "__main__":
     unittest.main()
