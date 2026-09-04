@@ -273,6 +273,29 @@ def _semantic_context_validation(extracted: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _measure_context_validation(project_dir: str) -> Dict[str, Any]:
+    """Collect target-model measure context diagnostics when a model exists."""
+    try:
+        model_dirs = [name for name in os.listdir(project_dir)
+                      if name.endswith(".SemanticModel")]
+    except OSError:
+        model_dirs = []
+    if not model_dirs:
+        return {"status": "not_available", "issues": [], "issue_count": 0}
+    try:
+        from powerbi_import.validator import ArtifactValidator
+        issues = ArtifactValidator.validate_measure_column_context(
+            os.path.join(project_dir, model_dirs[0])
+        )
+    except (OSError, ValueError):
+        issues = []
+    return {
+        "status": "static_diagnostics",
+        "issues": list(issues),
+        "issue_count": len(issues),
+    }
+
+
 def build_quality_report(extracted: Dict, project_dir: str,
                          report_name: str) -> MigrationQualityReport:
     """Run all local quality checks and aggregate their verified results."""
@@ -283,6 +306,8 @@ def build_quality_report(extracted: Dict, project_dir: str,
     openability = check_openability(project_dir)
     fabric = _fabric_validation(project_dir, report_name)
     semantic_context = _semantic_context_validation(extracted or {})
+    measure_context = _measure_context_validation(project_dir)
+    semantic_context["measure_context"] = measure_context
     openability_dict = _openability_dict(openability)
     confidence = _openability_confidence(openability_dict, fabric)
 

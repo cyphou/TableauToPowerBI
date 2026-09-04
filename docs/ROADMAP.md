@@ -155,10 +155,10 @@ measurable exit gate before the next phase is marked complete.
   adds representative measure, calculated-column,
   relationship, date, blank, filter, and table-calculation execution checks.
 - **Phase 2 evidence:** focused semantic validation currently passes 5 tests;
-  unified quality-report coverage passes 19 tests for static LOD and
-  table-calculation diagnostics. Execution status in unified quality reports
-  remains `not_run` unless an authorized execution environment provides
-  evidence.
+  unified quality-report coverage passes 20 tests for static LOD,
+  table-calculation, and target measure-context diagnostics. Execution status
+  in unified quality reports remains `not_run` unless an authorized execution
+  environment provides evidence.
 - **Phase 3 — PBIR behavior compatibility:** queued after the semantic
   execution contract; expand from field-binding correctness to round-trip,
   interaction, bookmark, layout, and rendering evidence.

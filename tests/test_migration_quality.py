@@ -138,6 +138,17 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.semantic_context['issue_count'], 1)
         self.assertIn('MissingGroup', report.semantic_context['lod_issues'][0]['issue'])
 
+    def test_target_measure_context_diagnostics_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, 'Demo.SemanticModel'))
+            with patch('powerbi_import.validator.ArtifactValidator.validate_measure_column_context',
+                       return_value=['bare column reference']):
+                report = self._build(project_dir=tmp)
+        self.assertEqual(report.status, 'PASS')
+        self.assertEqual(report.semantic_context['measure_context']['issue_count'], 1)
+        self.assertEqual(report.semantic_context['measure_context']['status'],
+                         'static_diagnostics')
+
     def test_unsupported_feature_is_blocker(self):
         report = self._build(parity={
             'gaps': [{'key': 'forecast', 'status': 'unsupported'}]
