@@ -211,7 +211,8 @@ measurable exit gate before the next phase is marked complete.
 - **Desktop confidence correction:** a static PBIP pass is now downgraded to
   `UNVERIFIED` when an actual Desktop probe reports `crashed`, `timed_out`, or
   `error`; only a healthy `opened` probe can promote it to
-  `DESKTOP_SMOKE_PASS`.
+  `DESKTOP_SMOKE_PASS`. A healthy two-launch `reopened` probe now promotes the
+  confidence level to `DESKTOP_REOPEN_PASS`.
 - **Quality-to-feedback loop:** unified quality blockers now record as
   `quality_blocker` in zero-touch history instead of being counted as successful
   migrations. This keeps quality evidence and remediation metrics aligned while

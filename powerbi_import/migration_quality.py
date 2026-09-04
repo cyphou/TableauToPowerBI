@@ -179,7 +179,9 @@ def _openability_confidence(openability: Dict[str, Any], fabric: Dict[str, Any],
     desktop = desktop or {}
     desktop_status = desktop.get("status", "not_run")
     level = "STATIC_PASS" if static_pass else "UNVERIFIED"
-    if static_pass and desktop_status == "opened":
+    if static_pass and desktop_status == "reopened":
+        level = "DESKTOP_REOPEN_PASS"
+    elif static_pass and desktop_status == "opened":
         level = "DESKTOP_SMOKE_PASS"
     elif desktop_status in {"crashed", "timed_out", "error"}:
         level = "UNVERIFIED"

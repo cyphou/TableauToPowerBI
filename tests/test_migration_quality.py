@@ -312,6 +312,12 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.openability_confidence['level'], 'UNVERIFIED')
         self.assertEqual(report.openability_confidence['desktop']['status'], 'crashed')
 
+    def test_reopened_desktop_probe_promotes_reopen_confidence(self):
+        report = self._build()
+        apply_desktop_probe(report, {'status': 'reopened', 'signals': []})
+        self.assertEqual(report.openability_confidence['level'],
+                         'DESKTOP_REOPEN_PASS')
+
 
 if __name__ == '__main__':
     unittest.main()

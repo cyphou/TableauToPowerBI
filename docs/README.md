@@ -56,7 +56,9 @@ runtime is used.
 
 Desktop probe results are evidence gates: a successful launch can produce
 `DESKTOP_SMOKE_PASS`, while a crash, timeout, or probe error downgrades the
-confidence level to `UNVERIFIED` even when static validation passed.
+confidence level to `UNVERIFIED` even when static validation passed. Two
+successful consecutive launches produce `DESKTOP_REOPEN_PASS`; this still does
+not claim that Desktop saved project changes.
 
 The feedback loop uses the unified quality status when recording zero-touch
 history: quality blockers are classified as `quality_blocker` and cannot be
