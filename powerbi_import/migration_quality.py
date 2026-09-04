@@ -29,6 +29,7 @@ from powerbi_import.openability import check_openability
 from powerbi_import.parity_registry import scan_project
 from powerbi_import.powerquery_diff import compare_report_tables
 from powerbi_import.semantic_execution_validator import SemanticExecutionValidator
+from powerbi_import.evidence_manifest import build_evidence_manifest
 
 
 @dataclass
@@ -48,6 +49,7 @@ class MigrationQualityReport:
     desktop: Dict[str, Any] = field(default_factory=dict)
     fabric: Dict[str, Any] = field(default_factory=dict)
     semantic_context: Dict[str, Any] = field(default_factory=dict)
+    evidence_manifest: Dict[str, Any] = field(default_factory=dict)
     priorities: list[Dict[str, Any]] = field(default_factory=list)
     ai_summary: str = ""
     ai_source: str = "none"
@@ -70,6 +72,7 @@ class MigrationQualityReport:
             "desktop": self.desktop,
             "fabric": self.fabric,
             "semantic_context": self.semantic_context,
+            "evidence_manifest": self.evidence_manifest,
         }
 
     def save_json(self, path: str) -> str:
@@ -375,6 +378,11 @@ def build_quality_report(extracted: Dict, project_dir: str,
 
     status = "FAIL" if blockers else "WARN" if warnings else "PASS"
     priorities = _build_priorities(parity, blockers, warnings)
+    evidence_manifest = build_evidence_manifest(
+        target_path=project_dir,
+        validation={"status": status, "blockers": blockers, "warnings": warnings},
+        environment=confidence,
+    )
     return MigrationQualityReport(
         report_name=report_name,
         assessment=_assessment_dict(assessment),
@@ -389,6 +397,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         blockers=blockers,
         warnings=warnings,
         priorities=priorities,
+        evidence_manifest=evidence_manifest,
     )
 
 

@@ -81,6 +81,8 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.openability_confidence['level'], 'STATIC_PASS')
         self.assertEqual(report.openability_confidence['desktop']['status'], 'not_run')
         self.assertEqual(report.openability_confidence['semantic_execution'], 'not_run')
+        self.assertEqual(report.evidence_manifest['manifest_version'], '1.0')
+        self.assertEqual(report.evidence_manifest['validation']['status'], 'PASS')
         self.assertEqual(report.blockers, [])
         self.assertEqual(report.warnings, [])
         self.assertEqual(report.semantic_context['execution'], 'not_run')

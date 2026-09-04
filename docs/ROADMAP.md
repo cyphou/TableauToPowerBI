@@ -203,6 +203,11 @@ measurable exit gate before the next phase is marked complete.
   `reopened` probe, and Server assessment can emit a normalized portfolio graph
   of workbook, datasource, and downstream dependency nodes. None of these
   local contracts claims live refresh, save persistence, or deployment success.
+- **Shared quality provenance:** unified quality reports now carry the same
+  versioned evidence manifest across CLI, batch, MCP, and Notebook surfaces;
+  Fabric metadata carries the manifest as well. Source hashes are populated
+  when a source path is available, while runtime and deployment states remain
+  explicit.
 - **Desktop confidence correction:** a static PBIP pass is now downgraded to
   `UNVERIFIED` when an actual Desktop probe reports `crashed`, `timed_out`, or
   `error`; only a healthy `opened` probe can promote it to

@@ -71,6 +71,9 @@ The control-plane foundations are available as `evidence_manifest` for generated
 Fabric metadata, `probe_desktop_reopen()` for repeated Desktop loading, and
 `build_server_lineage_graph()` for normalized portfolio dependencies.
 
+Unified quality reports also include the versioned `evidence_manifest`, keeping
+CLI, batch, MCP, Notebook, and Fabric outputs on the same provenance contract.
+
 ### Project Structure
 
 | Module | Purpose |
