@@ -67,6 +67,10 @@ Authenticated Tableau Server evidence also includes an operational risk level
 and reasons, so dependency and refresh complexity can influence migration
 planning without turning unavailable API data into a false pass.
 
+The control-plane foundations are available as `evidence_manifest` for generated
+Fabric metadata, `probe_desktop_reopen()` for repeated Desktop loading, and
+`build_server_lineage_graph()` for normalized portfolio dependencies.
+
 ### Project Structure
 
 | Module | Purpose |

@@ -21,6 +21,7 @@ from .dataflow_generator import DataflowGenerator
 from .fabric_item import build_item_registry, logical_id
 from .fabric_semantic_model_generator import FabricSemanticModelGenerator
 from .fabric_validator import FabricProjectValidator
+from .evidence_manifest import build_evidence_manifest
 from .lakehouse_generator import LakehouseGenerator
 from .notebook_generator import NotebookGenerator
 from .pipeline_generator import PipelineGenerator
@@ -212,6 +213,11 @@ class FabricProjectGenerator:
             'refresh': 'not_run',
             'deployment': 'not_run',
         }
+        results['evidence_manifest'] = build_evidence_manifest(
+            target_path=project_dir,
+            validation=results['quality'],
+            environment=results['quality'],
+        )
 
         # Write project metadata
         meta_path = os.path.join(project_dir, 'fabric_project_metadata.json')

@@ -998,6 +998,8 @@ class TestFabricProjectGenerator:
         assert os.path.isdir(os.path.join(project_dir, 'TestProject.Notebook'))
         assert os.path.isdir(os.path.join(project_dir, 'TestProject.SemanticModel'))
         assert os.path.isdir(os.path.join(project_dir, 'TestProject.Pipeline'))
+        assert results['evidence_manifest']['manifest_version'] == '1.0'
+        assert results['evidence_manifest']['target']['path'] == project_dir
 
     def test_generate_project_returns_full_stats(self, temp_dir, sample_extracted_data):
         from powerbi_import.fabric_project_generator import FabricProjectGenerator

@@ -33,6 +33,7 @@ from powerbi_import.server_assessment import (
     _build_migration_waves,
     collect_server_workbook_evidence,
     enrich_with_server_evidence,
+    build_server_lineage_graph,
 )
 
 
@@ -300,6 +301,17 @@ class TestRunServerAssessment(unittest.TestCase):
         enrich_with_server_evidence(result, client, {'Sales': 'wb-1'})
         self.assertEqual(result.workbook_results[0].server_evidence['workbook_id'], 'wb-1')
         self.assertEqual(result.workbook_results[0].server_evidence['risk']['level'], 'medium')
+
+    def test_build_server_lineage_graph(self):
+        result = run_server_assessment([_make_extracted(
+            tables=[('orders', ['id'])])], ['Sales'])
+        result.workbook_results[0].server_evidence = {
+            'dependencies': {'downstream_workbooks': 1}
+        }
+        graph = build_server_lineage_graph(result)
+        self.assertEqual(graph['workbooks'], 1)
+        self.assertEqual(graph['edge_count'], 2)
+        self.assertTrue(any(edge['type'] == 'dependency' for edge in graph['edges']))
 
         # Waves
         self.assertGreater(len(result.waves), 0)

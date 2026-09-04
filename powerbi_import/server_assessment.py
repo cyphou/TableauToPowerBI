@@ -472,6 +472,32 @@ def enrich_with_server_evidence(
     return assessment
 
 
+def build_server_lineage_graph(assessment: ServerAssessment) -> Dict[str, object]:
+    """Build a normalized portfolio graph from available assessment evidence."""
+    nodes = []
+    edges = []
+    for result in assessment.workbook_results:
+        workbook_id = f"workbook:{result.name}"
+        nodes.append({'id': workbook_id, 'type': 'workbook', 'name': result.name})
+        for index in range(int(result.lineage.get('datasources', 0))):
+            datasource_id = f"datasource:{result.name}:{index}"
+            nodes.append({'id': datasource_id, 'type': 'datasource',
+                          'name': f"Datasource {index + 1}"})
+            edges.append({'source': datasource_id, 'target': workbook_id,
+                          'type': 'feeds'})
+        evidence = result.server_evidence
+        dependencies = evidence.get('dependencies', {})
+        for index in range(int(dependencies.get('downstream_workbooks', 0))):
+            downstream_id = f"downstream:{result.name}:{index}"
+            nodes.append({'id': downstream_id, 'type': 'workbook',
+                          'name': f"Downstream workbook {index + 1}"})
+            edges.append({'source': workbook_id, 'target': downstream_id,
+                          'type': 'dependency'})
+    return {'nodes': nodes, 'edges': edges,
+            'workbooks': len(assessment.workbook_results),
+            'edge_count': len(edges)}
+
+
 def _build_migration_waves(
     workbook_results: List[WorkbookReadiness],
 ) -> List[MigrationWave]:

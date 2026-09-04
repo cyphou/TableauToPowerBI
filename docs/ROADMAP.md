@@ -195,7 +195,14 @@ measurable exit gate before the next phase is marked complete.
 - **Fabric evidence envelope:** successful Fabric-native generation now records
   `FABRIC_STATIC_PASS` with `locally_valid` validation and explicit
   `not_run` states for semantic execution, refresh, and deployment. Live Fabric
-  evidence remains environment-gated.
+  evidence remains environment-gated. The generated metadata also carries the
+  versioned evidence manifest with target path, validation, and environment
+  states.
+- **Three control-plane foundations:** versioned evidence manifests are now
+  attached to Fabric metadata, Desktop supports an explicit two-launch
+  `reopened` probe, and Server assessment can emit a normalized portfolio graph
+  of workbook, datasource, and downstream dependency nodes. None of these
+  local contracts claims live refresh, save persistence, or deployment success.
 - **Desktop confidence correction:** a static PBIP pass is now downgraded to
   `UNVERIFIED` when an actual Desktop probe reports `crashed`, `timed_out`, or
   `error`; only a healthy `opened` probe can promote it to

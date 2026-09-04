@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 
 from powerbi_import.desktop_probe import (
-    probe_desktop_open, find_pbi_desktop, DesktopProbeReport,
+    probe_desktop_open, probe_desktop_reopen, find_pbi_desktop, DesktopProbeReport,
 )
 
 
@@ -148,6 +148,21 @@ class TestProbe(unittest.TestCase):
         d = r.to_dict()
         self.assertTrue(d["opened"])
         self.assertEqual(d["status"], "opened")
+
+    def test_reopen_requires_two_healthy_launches(self):
+        first = DesktopProbeReport(pbip_path='P.pbip', status='opened')
+        second = DesktopProbeReport(pbip_path='P.pbip', status='opened')
+        with mock.patch('powerbi_import.desktop_probe.probe_desktop_open',
+                        side_effect=[first, second]):
+            result = probe_desktop_reopen('P.pbip')
+        self.assertEqual(result.status, 'reopened')
+
+    def test_reopen_returns_initial_failure(self):
+        first = DesktopProbeReport(pbip_path='P.pbip', status='crashed')
+        with mock.patch('powerbi_import.desktop_probe.probe_desktop_open',
+                        return_value=first):
+            result = probe_desktop_reopen('P.pbip')
+        self.assertEqual(result.status, 'crashed')
 
 
 if __name__ == "__main__":

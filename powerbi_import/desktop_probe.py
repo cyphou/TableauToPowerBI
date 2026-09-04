@@ -186,3 +186,24 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
                 pass
     report.duration_s = round(time.time() - start, 1)
     return report
+
+
+def probe_desktop_reopen(pbip_path: str, *, settle: int = 20, timeout: int = 90,
+                         close_after: bool = True) -> DesktopProbeReport:
+    """Open the same project twice and report a successful second launch.
+
+    This verifies repeated loading only; it does not claim that Desktop saved
+    or persisted changes between launches.
+    """
+    first = probe_desktop_open(pbip_path, settle=settle, timeout=timeout,
+                               close_after=close_after)
+    if first.status != "opened":
+        first.note = "Initial Desktop open did not reach a healthy state."
+        return first
+    second = probe_desktop_open(pbip_path, settle=settle, timeout=timeout,
+                                close_after=close_after)
+    second.signals = [f"initial: {signal}" for signal in first.signals] + second.signals
+    if second.status == "opened":
+        second.status = "reopened"
+        second.note = "Two consecutive Desktop launches completed without observed load errors."
+    return second
