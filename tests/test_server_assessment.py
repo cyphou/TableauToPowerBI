@@ -368,6 +368,7 @@ class TestServerHtmlReport(unittest.TestCase):
             self.assertIn('Connector Census', html)
             self.assertIn('Dependency Hotspots', html)
             self.assertIn('Lineage Status', html)
+            self.assertIn('Server Risk', html)
 
     def test_html_has_wave_section(self):
         ext_a = _make_extracted(tables=[("t1", ["a"])])

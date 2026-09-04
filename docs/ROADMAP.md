@@ -190,6 +190,8 @@ measurable exit gate before the next phase is marked complete.
   those APIs are unavailable. The evidence collector now emits a risk level
   (`low`, `medium`, or `high`) with reasons for incomplete metadata, downstream
   dependencies, refresh schedules, subscriptions, and missing permissions.
+  The HTML and console portfolio reports now expose dependency hotspots and
+  Server risk alongside workbook lineage status.
 - **Desktop confidence correction:** a static PBIP pass is now downgraded to
   `UNVERIFIED` when an actual Desktop probe reports `crashed`, `timed_out`, or
   `error`; only a healthy `opened` probe can promote it to

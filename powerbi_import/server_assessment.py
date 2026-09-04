@@ -574,6 +574,14 @@ def print_server_summary(assessment: ServerAssessment):
         print(f"    Est. effort: {wave.total_effort:.1f} hours")
         print()
 
+    if assessment.dependency_hotspots:
+        print("  DEPENDENCY HOTSPOTS:")
+        for hotspot in assessment.dependency_hotspots[:10]:
+            print(f"    {hotspot['workbook']}: "
+                  f"{hotspot['dependency_surface']} "
+                  f"({hotspot['lineage_status']})")
+        print()
+
     print("=" * w)
 
 
@@ -688,12 +696,13 @@ def generate_server_html_report(
             str(r.complexity.get('lod_expressions', 0)),
             esc(str(r.lineage.get('status', 'not_available'))),
             str(r.lineage.get('relationships', 0)),
+            esc(str(r.server_evidence.get('risk', {}).get('level', 'not_run'))),
             f'{r.effort_hours:.1f}h',
             ', '.join(esc(c) for c in r.connector_types) or 'N/A',
         ])
     html += '<div class="card">'
     html += data_table(
-        ["Status", "Workbook", "Visuals", "Calcs", "Tables", "LOD", "Lineage", "Relationships", "Effort", "Connectors"],
+        ["Status", "Workbook", "Visuals", "Calcs", "Tables", "LOD", "Lineage", "Relationships", "Server Risk", "Effort", "Connectors"],
         wb_rows, "wb-detail-tbl", sortable=True, searchable=True)
     html += '</div>'
     html += section_close()
