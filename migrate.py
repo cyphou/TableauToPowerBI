@@ -26,10 +26,12 @@ import tempfile
 import zipfile
 import concurrent.futures
 import threading
+import shutil
 from datetime import datetime
 from enum import IntEnum
 
 from powerbi_import.security_validator import safe_zip_extract_member, SecurityError
+from powerbi_import.incremental import MigrationCheckpoint
 
 
 # ── Structured exit codes ────────────────────────────────────────────
@@ -1467,7 +1469,9 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
             from powerbi_import.migration_quality import build_quality_report
             project_dir = os.path.join(workbook_output_dir, basename)
             quality_report = build_quality_report(
-                extracted_objects, project_dir, basename)
+                extracted_objects, project_dir, basename,
+                source_path=tableau_file,
+                prep_flow=bool(wb_prep))
             quality_json = os.path.join(
                 workbook_output_dir, f'migration_quality_{basename}.json')
             quality_html = os.path.join(
@@ -1479,8 +1483,16 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
             logger.warning("Quality report failed for %s: %s", display_name, exc)
 
     all_ok = all(v for v in file_results.values() if v is not None)
+    stage_results = {
+        'extraction': 'completed' if file_results.get('extraction') else 'failed',
+        'generation': 'completed' if file_results.get('generation') else 'failed',
+    }
+    if 'openability' in file_results:
+        stage_results['validation'] = (
+            'completed' if file_results.get('openability') else 'failed')
     return {
         'success': all_ok,
+        'stages': stage_results,
         'stats': _stats.to_dict(),
         'fidelity': report_summary.get('overall_score', report_summary.get('fidelity_score')) if report_summary else None,
         'report_name': basename,
@@ -1842,13 +1854,26 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
 
     def _set_checkpoint(task, status, result=None, duration_sec=0.0, error=''):
         key = os.path.relpath(task['tableau_file'], batch_dir)
+        result = result or {}
+        stages = dict(result.get('stages') or {
+            'extraction': 'completed' if result.get('success') else 'failed',
+            'generation': 'completed' if result.get('success') else 'failed',
+        })
+        if 'openability' in result:
+            stages['validation'] = (
+                'completed' if result.get('openability') else 'failed')
+        if result.get('quality_status') is not None:
+            stages['quality'] = str(result['quality_status']).lower()
+        if result.get('prep_flow'):
+            stages['prep'] = 'completed' if result.get('success') else 'failed'
         checkpoint[key] = {
             'source_signature': _source_signature(task['tableau_file']),
             'config_signature': checkpoint_config,
             'output_format': task['output_format'],
             'status': status,
             'duration_sec': round(duration_sec, 3),
-            'result': result or {},
+            'result': result,
+            'stages': stages,
             'error': error,
             'updated_at': datetime.now().isoformat(),
         }
@@ -5041,7 +5066,12 @@ def _run_quality_report(args, source_basename):
         out_base = args.output_dir or os.path.join(
             'artifacts', 'powerbi_projects', 'migrated')
         project_dir = os.path.join(out_base, source_basename)
-        report = build_quality_report(extracted, project_dir, source_basename)
+        report = build_quality_report(
+            extracted, project_dir, source_basename,
+            source_path=getattr(args, 'tableau_file', None),
+            checkpoint_path=os.path.join(
+                os.path.dirname(project_dir),
+                f'.{source_basename}.migration_checkpoint.json'))
         probe_path = os.path.join(project_dir, 'desktop_probe_report.json')
         if os.path.isfile(probe_path):
             probe = _load_json(probe_path)
@@ -5119,6 +5149,19 @@ def _run_assessment_mode(args, results):
         save_assessment_report(report, assess_path)
         print(f"\n  Assessment saved to: {assess_path}")
 
+        # Persist the strategy before optional packaging so a fresh package
+        # contains the same decision shown to the operator.
+        has_prep = bool(args.prep and results.get('prep'))
+        rec = recommend_strategy(extracted, prep_flow=has_prep)
+        strategy_path = os.path.join(
+            out_dir, f'migration_strategy_{source_basename}.json')
+        with open(strategy_path, 'w', encoding='utf-8') as handle:
+            json.dump({
+                'workbook': source_basename,
+                'source': os.path.basename(args.tableau_file),
+                'recommendation': rec.to_dict(),
+            }, handle, indent=2, ensure_ascii=False)
+
         # ── Report export formats (Sprint 175) ────────────────────
         do_pdf = getattr(args, 'pdf', False)
         do_pptx = getattr(args, 'pptx', False)
@@ -5168,12 +5211,35 @@ def _run_assessment_mode(args, results):
             from powerbi_import.report_packager import generate_report_package
             if html_content:
                 pkg_path = os.path.join(out_dir, f'assessment_{source_basename}_package.zip')
-                generate_report_package(report, html_content, pkg_path)
+                manifest_path = os.path.join(
+                    out_dir, f'assessment_{source_basename}_manifest.json')
+                from powerbi_import.evidence_manifest import (
+                    build_evidence_manifest, save_evidence_manifest,
+                )
+                save_evidence_manifest(
+                    build_evidence_manifest(
+                        args.tableau_file,
+                        validation={
+                            'assessment': report.overall_score,
+                            'status': 'completed',
+                        },
+                    ),
+                    manifest_path,
+                )
+                checkpoint_path = os.path.join(
+                    args.output_dir or os.path.join(
+                        'artifacts', 'powerbi_projects', 'migrated'),
+                    f'.{source_basename}.migration_checkpoint.json',
+                )
+                generate_report_package(
+                    report, html_content, pkg_path,
+                    evidence_manifest_path=manifest_path,
+                    checkpoint_path=checkpoint_path,
+                    strategy_path=strategy_path,
+                )
                 print(f"  Report package:  {pkg_path}")
 
-        # Strategy recommendation
-        has_prep = bool(args.prep and results.get('prep'))
-        rec = recommend_strategy(extracted, prep_flow=has_prep)
+        print(f"  Strategy saved to: {strategy_path}")
         print_recommendation(rec)
 
         # Generate migration-compatible summary CSV for UI KPI parity.
@@ -7261,10 +7327,44 @@ def _run_single_migration(args):
     telemetry = _init_telemetry(args)
 
     # Step 1: Extraction
+    source_basename = os.path.splitext(os.path.basename(args.tableau_file))[0]
+    out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    checkpoint_path = os.path.join(
+        out_base, f'.{source_basename}.migration_checkpoint.json')
+    checkpoint_config = {
+        'prep': getattr(args, 'prep', None),
+        'output_format': getattr(args, 'output_format', 'pbip'),
+        'calendar_start': getattr(args, 'calendar_start', None),
+        'calendar_end': getattr(args, 'calendar_end', None),
+        'culture': getattr(args, 'culture', None),
+        'mode': getattr(args, 'mode', None),
+        'skip_extraction': getattr(args, 'skip_extraction', False),
+    }
+    try:
+        source_signature = MigrationCheckpoint.hash_file(args.tableau_file)
+    except OSError:
+        source_signature = ''
+    checkpoint = MigrationCheckpoint.load(
+        checkpoint_path,
+        source_signature,
+        MigrationCheckpoint.hash_config(checkpoint_config),
+    )
+    extract_snapshot = f'{checkpoint_path}.extract'
+    checkpoint_reused = (
+        getattr(args, 'resume', False)
+        and checkpoint.completed('extraction')
+        and os.path.isdir(extract_snapshot)
+    )
+    if checkpoint_reused:
+        os.environ['TTPBI_EXTRACT_DIR'] = extract_snapshot
+        print(f"  Resume: reused extraction checkpoint for {source_basename}")
+
     progress.start("Extracting Tableau data")
     _is_prep_standalone = os.path.splitext(args.tableau_file)[1].lower() in ('.tfl', '.tflx')
     if not args.skip_extraction:
-        if _is_prep_standalone:
+        if checkpoint_reused:
+            results['extraction'] = True
+        elif _is_prep_standalone:
             results['extraction'] = run_standalone_prep(args.tableau_file)
         else:
             results['extraction'] = run_extraction(
@@ -7272,9 +7372,13 @@ def _run_single_migration(args):
                 hyper_max_rows=getattr(args, 'hyper_rows', None),
             )
         if not results['extraction']:
+            checkpoint.mark('extraction', 'failed')
             progress.fail("Extraction failed")
             print("\nMigration aborted due to extraction failure")
             return ExitCode.EXTRACTION_FAILED
+        if not checkpoint_reused:
+            shutil.copytree(_get_extract_dir(), extract_snapshot, dirs_exist_ok=True)
+            checkpoint.mark('extraction', source='snapshot', path=extract_snapshot)
         progress.complete(f"Extracted from {os.path.basename(args.tableau_file)}")
     else:
         progress.complete("Skipped (using existing data)")
@@ -7300,7 +7404,6 @@ def _run_single_migration(args):
         return _run_parity_mode(args)
 
     # Step 2: Generate .pbip project
-    source_basename = os.path.splitext(os.path.basename(args.tableau_file))[0]
 
     # Rollback: backup existing output if requested
     if args.rollback and not args.dry_run:
@@ -7322,6 +7425,12 @@ def _run_single_migration(args):
         results['generation'] = True
         progress.start("Generating Power BI project")
         progress.complete("Dry run — skipped")
+    elif (getattr(args, 'resume', False)
+          and checkpoint.completed('generation')
+          and os.path.isdir(os.path.join(out_base, source_basename))):
+        results['generation'] = True
+        progress.start("Generating Power BI project")
+        progress.complete(f"Resume — reused generated {source_basename}")
     else:
         progress.start("Generating Power BI project")
         results['generation'] = run_generation(
@@ -7339,6 +7448,8 @@ def _run_single_migration(args):
             parameterize=getattr(args, 'parameterize', True),
         )
         if results['generation']:
+            checkpoint.mark(
+                'generation', output_dir=os.path.join(out_base, source_basename))
             progress.complete(f"Generated {source_basename}")
             # Extract embedded data files from TWBX into PBI output
             _extract_twbx_data_files(args, source_basename)
@@ -7435,8 +7546,10 @@ def _run_single_migration(args):
             and getattr(args, 'output_format', 'pbip') == 'pbip'
             and results.get('generation') and not args.dry_run):
         if not _run_verify_open(args, source_basename):
+            checkpoint.mark('validation', 'failed', check='openability')
             progress.fail("Openability preflight: project would NOT open in PBI Desktop")
             return ExitCode.VALIDATION_FAILED
+        checkpoint.mark('validation', check='openability')
 
     # Step 3f4: Best-effort real Desktop open self-check (explicit --desktop-probe only)
     if getattr(args, 'desktop_probe', False) and results.get('generation') and not args.dry_run:
@@ -7494,6 +7607,11 @@ def _run_single_migration(args):
     if getattr(args, 'deploy', None) and results.get('generation') and not args.dry_run:
         deployment_result = _run_generated_project_deployment(
             args, source_basename)
+        checkpoint.mark(
+            'deployment',
+            'completed' if deployment_result and deployment_result.get('success') else 'failed',
+            target=getattr(args, 'deploy', None),
+        )
         if getattr(args, 'output_format', 'pbip') == 'fabric':
             results['deployment'] = bool(
                 deployment_result and deployment_result.get('success'))

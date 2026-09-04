@@ -16,10 +16,81 @@ import json
 import os
 import shutil
 import logging
+import hashlib
 from pathlib import Path
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+class MigrationCheckpoint:
+    """Persist resumable stages for one migration run."""
+
+    VERSION = 1
+
+    def __init__(self, path, source_signature='', config_signature=''):
+        self.path = Path(path)
+        self.source_signature = source_signature
+        self.config_signature = config_signature
+        self.stages = {}
+
+    @classmethod
+    def load(cls, path, source_signature, config_signature):
+        """Load a compatible checkpoint, or return a new empty one."""
+        checkpoint = cls(path, source_signature, config_signature)
+        try:
+            with open(path, 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            if (data.get('version') == cls.VERSION
+                    and data.get('source_signature') == source_signature
+                    and data.get('config_signature') == config_signature):
+                checkpoint.stages = data.get('stages', {})
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
+        return checkpoint
+
+    @staticmethod
+    def hash_file(path):
+        """Return a SHA-256 signature for a source file."""
+        digest = hashlib.sha256()
+        with open(path, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def hash_config(config):
+        """Return a stable SHA-256 signature for migration options."""
+        payload = json.dumps(config, sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+    def completed(self, stage):
+        """Return whether *stage* completed in this compatible checkpoint."""
+        return self.stages.get(stage, {}).get('status') == 'completed'
+
+    def mark(self, stage, status='completed', **details):
+        """Record a stage transition and persist it atomically."""
+        self.stages[stage] = {
+            'status': status,
+            'updated_at': datetime.now().isoformat(),
+            **details,
+        }
+        self.save()
+
+    def save(self):
+        """Write the checkpoint manifest atomically."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.path.with_name(self.path.name + '.tmp')
+        payload = {
+            'version': self.VERSION,
+            'source_signature': self.source_signature,
+            'config_signature': self.config_signature,
+            'stages': self.stages,
+            'updated_at': datetime.now().isoformat(),
+        }
+        with open(temp_path, 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+        os.replace(temp_path, self.path)
 
 
 class DiffEntry:

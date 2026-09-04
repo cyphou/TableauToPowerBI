@@ -256,9 +256,31 @@ class TestLineageMap:
     def test_empty_input(self):
         lineage = self._build([], [], {}, [])
         assert lineage['tables'] == []
+        assert lineage['columns'] == []
         assert lineage['calculations'] == []
         assert lineage['relationships'] == []
         assert lineage['worksheets'] == []
+        assert lineage['filters'] == []
+        assert lineage['parameters'] == []
+        assert lineage['actions'] == []
+
+    def test_behavior_object_lineage(self):
+        lineage = self._build(
+            [{'name': 'Orders', 'measures': [], 'columns': [
+                {'name': 'Order Date', 'sourceColumn': 'order_date'},
+            ]}],
+            [],
+            {
+                'filters': [{'field': '[Orders].[Region]'}],
+                'parameters': [{'name': 'Year Parameter'}],
+                'actions': [{'name': 'Filter Dashboard', 'type': 'filter'}],
+            },
+            [{'name': 'Sales', 'tables': [{'name': 'Orders'}]}],
+        )
+        assert lineage['columns'][0]['tableau_column'] == 'order_date'
+        assert lineage['filters'][0]['tableau_object'] == '[Orders].[Region]'
+        assert lineage['parameters'][0]['tableau_object'] == 'Year Parameter'
+        assert lineage['actions'][0]['object_type'] == 'action'
 
     def test_calculated_column_lineage(self):
         tables = [{'name': 'T1', 'measures': [], 'columns': [

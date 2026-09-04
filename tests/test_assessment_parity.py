@@ -60,6 +60,12 @@ class TestParityCategory(unittest.TestCase):
         clean = [c for c in cat.checks if c.name == "No parity gaps"]
         self.assertEqual(len(clean), 1)
 
+    def test_untracked_features_are_visible(self):
+        cat = _check_functionality_parity({"schedules": [{"name": "Nightly"}]})
+        findings = [c for c in cat.checks if c.name == "Untracked feature: schedules"]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].severity, INFO)
+
     def test_does_not_change_overall_score(self):
         # A workbook with only approximated/unsupported parity gaps but no other
         # warn/fail should still assess GREEN (parity findings are INFO).

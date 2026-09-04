@@ -331,6 +331,31 @@ class TestParallelBatch(unittest.TestCase):
                 checkpoint = json.load(fh)
             self.assertEqual(checkpoint['failed.twbx']['status'], 'failed')
             self.assertEqual(checkpoint['later.twbx']['status'], 'success')
+            self.assertEqual(checkpoint['later.twbx']['stages']['generation'], 'completed')
+
+    def test_batch_checkpoint_records_validation_stage(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'source')
+            os.makedirs(src)
+            with open(os.path.join(src, 'report.twbx'), 'w') as fh:
+                fh.write('<workbook/>')
+            out = os.path.join(td, 'output')
+
+            with patch('migrate._migrate_single_workbook') as mock_migrate, \
+                    patch('migrate.run_batch_html_dashboard'):
+                mock_migrate.return_value = {
+                    'success': True, 'openability': True,
+                    'quality_status': 'WARN', 'stats': {}, 'fidelity': 100,
+                }
+                result = run_batch_migration(
+                    batch_dir=src, output_dir=out, verify_open=True)
+
+            self.assertEqual(result, ExitCode.SUCCESS)
+            with open(os.path.join(out, '.migration_batch_state.json'), encoding='utf-8') as fh:
+                checkpoint = json.load(fh)
+            stages = checkpoint['report.twbx']['stages']
+            self.assertEqual(stages['validation'], 'completed')
+            self.assertEqual(stages['quality'], 'warn')
 
     def test_resume_retries_stale_source_checkpoint(self):
         with tempfile.TemporaryDirectory() as td:

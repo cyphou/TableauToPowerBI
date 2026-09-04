@@ -30,6 +30,7 @@ from powerbi_import.parity_registry import scan_project
 from powerbi_import.powerquery_diff import compare_report_tables
 from powerbi_import.semantic_execution_validator import SemanticExecutionValidator
 from powerbi_import.evidence_manifest import build_evidence_manifest
+from powerbi_import.strategy_advisor import recommend_strategy
 
 
 @dataclass
@@ -50,6 +51,9 @@ class MigrationQualityReport:
     fabric: Dict[str, Any] = field(default_factory=dict)
     semantic_context: Dict[str, Any] = field(default_factory=dict)
     evidence_manifest: Dict[str, Any] = field(default_factory=dict)
+    strategy: Dict[str, Any] = field(default_factory=dict)
+    lineage: Dict[str, Any] = field(default_factory=dict)
+    handoff_status: str = "UNVERIFIED"
     priorities: list[Dict[str, Any]] = field(default_factory=list)
     ai_summary: str = ""
     ai_source: str = "none"
@@ -73,6 +77,9 @@ class MigrationQualityReport:
             "fabric": self.fabric,
             "semantic_context": self.semantic_context,
             "evidence_manifest": self.evidence_manifest,
+            "strategy": self.strategy,
+            "lineage": self.lineage,
+            "handoff_status": self.handoff_status,
         }
 
     def save_json(self, path: str) -> str:
@@ -100,6 +107,14 @@ class MigrationQualityReport:
         html += "<pre>" + esc(json.dumps(
             self.openability_confidence, indent=2, ensure_ascii=False,
             default=str)) + "</pre>"
+        html += section_close()
+        html += section_open("quality-handoff", "Operator handoff", "->")
+        html += "<pre>" + esc(json.dumps({
+            "handoff_status": self.handoff_status,
+            "strategy": self.strategy,
+            "lineage": self.lineage,
+            "checkpoints": self.evidence_manifest.get("checkpoints", {}),
+        }, indent=2, ensure_ascii=False, default=str)) + "</pre>"
         html += section_close()
 
         html += section_open("quality-blockers", "Blockers", "!")
@@ -130,6 +145,8 @@ class MigrationQualityReport:
             "interface": self.interface,
             "openability": self.openability,
             "fabric": self.fabric,
+            "strategy": self.strategy,
+            "lineage": self.lineage,
         }, indent=2, ensure_ascii=False, default=str)) + "</pre>"
         html += section_close()
         html += html_close()
@@ -339,8 +356,94 @@ def _filter_context_validation(project_dir: str) -> Dict[str, Any]:
     return {"status": "static_diagnostics", "issues": issues, "issue_count": len(issues)}
 
 
+def _handoff_status(status: str, openability: Dict[str, Any]) -> str:
+    """Translate local quality into an operator-facing handoff state."""
+    if status == "FAIL" or not openability.get("openable", False):
+        return "BLOCKED"
+    if status == "WARN":
+        return "WARN"
+    return "PASS"
+
+
+def _lineage_evidence(extracted: Dict[str, Any], data: Dict[str, Any],
+                      interface: Dict[str, Any], parity: Dict[str, Any]) -> Dict[str, Any]:
+    """Summarize source-to-target coverage without inventing runtime lineage."""
+    datasources = extracted.get("datasources", []) or []
+    source_tables = sum(len(ds.get("tables", []) or []) for ds in datasources)
+    source_columns = sum(
+        len(table.get("columns", []) or [])
+        for ds in datasources for table in (ds.get("tables", []) or [])
+    )
+    return {
+        "status": "static_evidence",
+        "source": {
+            "datasources": len(datasources),
+            "tables": source_tables,
+            "columns": source_columns,
+            "worksheets": len(extracted.get("worksheets", []) or []),
+            "calculations": len(extracted.get("calculations", []) or []),
+        },
+        "target": {
+            "tables": data.get("summary", {}).get("tables_found", 0),
+            "visuals": interface.get("visuals", {}).get("target", 0),
+            "calculation_features": parity.get("status_counts", {}),
+        },
+        "coverage": {
+            "tables": {
+                "source": source_tables,
+                "target": data.get("summary", {}).get("tables_found", 0),
+                "complete": data.get("summary", {}).get("tables_found", 0) >= source_tables,
+            },
+            "parity_evidence_percent": parity.get("evidence_coverage", {}).get(
+                "coverage_percent", 0.0),
+        },
+        "runtime": "not_run",
+    }
+
+
+def _checkpoint_evidence(project_dir: str, checkpoint_path: Optional[str]) -> Dict[str, Any]:
+    """Load checkpoint metadata while keeping the report portable and redacted."""
+    path = checkpoint_path
+    if not path:
+        parent = os.path.dirname(os.path.abspath(project_dir))
+        name = os.path.basename(project_dir)
+        candidate = os.path.join(parent, f".{name}.migration_checkpoint.json")
+        path = candidate if os.path.isfile(candidate) else None
+    if not path or not os.path.isfile(path):
+        return {"status": "not_found", "stages": {}}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {"status": "invalid", "stages": {}}
+    stages = payload.get("stages", {})
+    return {
+        "status": "available",
+        "version": payload.get("version"),
+        "updated_at": payload.get("updated_at"),
+        "stages": stages if isinstance(stages, dict) else {},
+    }
+
+
+def _artifact_evidence(project_dir: str) -> Dict[str, Any]:
+    """List generated artifact families, not customer payloads."""
+    try:
+        entries = os.listdir(project_dir)
+    except OSError:
+        entries = []
+    families = {
+        "pbip": any(name.endswith(".pbip") for name in entries),
+        "report": any(name.endswith(".Report") for name in entries),
+        "semantic_model": any(name.endswith(".SemanticModel") for name in entries),
+        "fabric": any(name.endswith(".Lakehouse") for name in entries),
+    }
+    return {"status": "generated" if any(families.values()) else "missing", "families": families}
+
+
 def build_quality_report(extracted: Dict, project_dir: str,
-                         report_name: str) -> MigrationQualityReport:
+                         report_name: str, *, source_path: Optional[str] = None,
+                         checkpoint_path: Optional[str] = None,
+                         prep_flow: bool = False) -> MigrationQualityReport:
     """Run all local quality checks and aggregate their verified results."""
     assessment = run_assessment(extracted or {}, workbook_name=report_name)
     parity = scan_project(extracted or {}, project_dir, report_name).to_dict()
@@ -380,10 +483,26 @@ def build_quality_report(extracted: Dict, project_dir: str,
 
     status = "FAIL" if blockers else "WARN" if warnings else "PASS"
     priorities = _build_priorities(parity, blockers, warnings)
+    strategy = recommend_strategy(extracted or {}, prep_flow=prep_flow).to_dict()
+    strategy["status"] = "recommended"
+    lineage = _lineage_evidence(extracted or {}, data, interface, parity)
+    checkpoints = _checkpoint_evidence(project_dir, checkpoint_path)
+    artifacts = _artifact_evidence(project_dir)
+    handoff_status = _handoff_status(status, openability_dict)
+    next_action = priorities[0]["action"] if priorities else (
+        "Run authorized Desktop/Fabric checks" if confidence["level"] == "STATIC_PASS"
+        else "Generate and validate a target project")
     evidence_manifest = build_evidence_manifest(
+        source_path=source_path,
         target_path=project_dir,
-        validation={"status": status, "blockers": blockers, "warnings": warnings},
+        validation={"status": status, "handoff_status": handoff_status,
+                    "blockers": blockers, "warnings": warnings,
+                    "next_action": next_action},
         environment=confidence,
+        checkpoints=checkpoints,
+        strategy=strategy,
+        lineage=lineage,
+        artifacts=artifacts,
     )
     return MigrationQualityReport(
         report_name=report_name,
@@ -399,6 +518,9 @@ def build_quality_report(extracted: Dict, project_dir: str,
         blockers=blockers,
         warnings=warnings,
         priorities=priorities,
+        strategy=strategy,
+        lineage=lineage,
+        handoff_status=handoff_status,
         evidence_manifest=evidence_manifest,
     )
 

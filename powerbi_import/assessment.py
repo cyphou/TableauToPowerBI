@@ -191,6 +191,12 @@ class AssessmentReport:
     timestamp: str
     categories: List[CategoryResult] = field(default_factory=list)
     summary: Dict = field(default_factory=dict)
+    evidence: Dict = field(default_factory=lambda: {
+        "scope": "source_assessment",
+        "validation": "static",
+        "desktop": "not_run",
+        "fabric": "not_run",
+    })
 
     @property
     def overall_score(self) -> str:
@@ -226,6 +232,7 @@ class AssessmentReport:
             "timestamp": self.timestamp,
             "overall_score": self.overall_score,
             "summary": self.summary,
+            "evidence": self.evidence,
             "totals": {
                 "checks": self.total_checks,
                 "pass": self.total_pass,
@@ -1450,6 +1457,14 @@ def _check_functionality_parity(extracted: Dict) -> CategoryResult:
             f"{u.count} in use → {u.target}.",
             u.remediation,
         ))
+    for feature_key in scan.untracked_features:
+        cat.checks.append(CheckItem(
+            cat.name,
+            f"Untracked feature: {feature_key}",
+            INFO,
+            "Source feature family detected without a parity registry record.",
+            "Add a target mapping or document the feature as unsupported before release.",
+        ))
     if not scan.gaps:
         cat.checks.append(CheckItem(
             cat.name, "No parity gaps", PASS,
@@ -1508,6 +1523,20 @@ def run_assessment(
         "passed": report.total_pass,
         "warnings": report.total_warn,
         "failures": report.total_fail,
+    }
+    report.evidence = {
+        "scope": "source_assessment",
+        "validation": "static",
+        "desktop": "not_run",
+        "fabric": "not_run",
+        "source_objects": sum(
+            len(extracted.get(key, []))
+            for key in (
+                "datasources", "worksheets", "dashboards", "calculations",
+                "filters", "parameters", "actions", "stories",
+            )
+            if isinstance(extracted.get(key, []), list)
+        ),
     }
 
     logger.info(

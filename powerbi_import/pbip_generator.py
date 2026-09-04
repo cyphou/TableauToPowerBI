@@ -569,6 +569,8 @@ class PowerBIProjectGenerator:
             'bins': converted_objects.get('bins', []),
             'aliases': converted_objects.get('aliases', {}),
             'parameters': converted_objects.get('parameters', []),
+            'filters': converted_objects.get('filters', []),
+            'actions': converted_objects.get('actions', []),
             'user_filters': converted_objects.get('user_filters', []),
             '_datasources': converted_objects.get('datasources', []),
             '_worksheets': converted_objects.get('worksheets', []),

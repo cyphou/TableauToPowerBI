@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from powerbi_import.incremental import DiffEntry, IncrementalMerger
+from powerbi_import.incremental import DiffEntry, IncrementalMerger, MigrationCheckpoint
 
 
 def _create_file(directory, rel_path, content):
@@ -63,6 +63,43 @@ class TestDiffEntry(unittest.TestCase):
         self.assertEqual(DiffEntry.REMOVED, 'removed')
         self.assertEqual(DiffEntry.MODIFIED, 'modified')
         self.assertEqual(DiffEntry.UNCHANGED, 'unchanged')
+
+
+class TestMigrationCheckpoint(unittest.TestCase):
+    def test_checkpoint_round_trip_and_stage_status(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'checkpoint.json')
+            checkpoint = MigrationCheckpoint(path, 'source', 'config')
+            checkpoint.mark('extraction', path='extract')
+
+            loaded = MigrationCheckpoint.load(path, 'source', 'config')
+
+            self.assertTrue(loaded.completed('extraction'))
+            self.assertEqual(loaded.stages['extraction']['path'], 'extract')
+            with open(path, encoding='utf-8') as handle:
+                self.assertEqual(json.load(handle)['version'], 1)
+
+    def test_checkpoint_invalidates_changed_source_or_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'checkpoint.json')
+            checkpoint = MigrationCheckpoint(path, 'source', 'config')
+            checkpoint.mark('generation')
+
+            self.assertFalse(
+                MigrationCheckpoint.load(path, 'changed', 'config').completed('generation'))
+            self.assertFalse(
+                MigrationCheckpoint.load(path, 'source', 'changed').completed('generation'))
+
+    def test_checkpoint_tracks_validation_and_deployment_outcomes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'checkpoint.json')
+            checkpoint = MigrationCheckpoint(path, 'source', 'config')
+            checkpoint.mark('validation', check='openability')
+            checkpoint.mark('deployment', 'failed', target='workspace')
+            loaded = MigrationCheckpoint.load(path, 'source', 'config')
+            self.assertTrue(loaded.completed('validation'))
+            self.assertFalse(loaded.completed('deployment'))
+            self.assertEqual(loaded.stages['deployment']['target'], 'workspace')
 
 
 class TestDiffProjects(unittest.TestCase):

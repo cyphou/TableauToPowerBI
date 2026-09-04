@@ -311,6 +311,7 @@ class FeatureUsage:
     target: str
     remediation: str
     evidence: List[str] = field(default_factory=list)
+    evidence_status: str = "source_only"  # evidenced | source_only
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -352,11 +353,12 @@ class ParityScan:
     @property
     def evidence_coverage(self) -> Dict[str, float]:
         """Summarize how many in-use feature families have target evidence."""
-        tracked = len(self.usages)
+        tracked = len(self.usages) + len(self.untracked_features)
         evidenced = sum(1 for usage in self.usages if usage.evidence)
         return {
             "tracked_features": tracked,
             "evidenced_features": evidenced,
+            "untracked_features": len(self.untracked_features),
             "coverage_percent": round(evidenced / tracked * 100.0, 1)
             if tracked else 100.0,
         }
@@ -421,14 +423,16 @@ def scan_workbook(converted: Dict, workbook: str = "Workbook") -> ParityScan:
             count = 0
         if count <= 0:
             continue
+        feature_evidence = (evidence_map.get(feat.key, [])
+                            if isinstance(evidence_map.get(feat.key, []), list)
+                            else [str(evidence_map[feat.key])]
+                            if feat.key in evidence_map else [])
         usages.append(FeatureUsage(
             key=feat.key, label=feat.label, category=feat.category,
             status=feat.status, count=count, target=feat.target,
             remediation=feat.remediation,
-            evidence=(evidence_map.get(feat.key, [])
-                      if isinstance(evidence_map.get(feat.key, []), list)
-                      else [str(evidence_map[feat.key])]
-                      if feat.key in evidence_map else []),
+            evidence=feature_evidence,
+            evidence_status="evidenced" if feature_evidence else "source_only",
         ))
     untracked = []
     detector_keys = set(_DETECTORS)
@@ -439,10 +443,16 @@ def scan_workbook(converted: Dict, workbook: str = "Workbook") -> ParityScan:
             "aliases": "alias",
             "dashboards": "dashboard",
             "sort_orders": "sort_order",
+            "calculations": "calc_",
+            "user_filters": "rls",
+            "actions": "action_",
+            "stories": "story_",
+            "hyper_files": "extract_",
         }.get(source_key, source_key[:-1] if source_key.endswith("s") else source_key)
         detector_present = any(
             feature_key in (source_key, singular_key)
             or feature_key.startswith(f"{source_key}_")
+            or (singular_key.endswith("_") and feature_key.startswith(singular_key))
             for feature_key in detector_keys
         )
         if in_use and not detector_present:

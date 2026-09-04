@@ -418,6 +418,31 @@ class TestReportPackager(unittest.TestCase):
             )
             self.assertTrue(os.path.exists(path))
 
+    def test_package_includes_optional_migration_handoff_files(self):
+        from powerbi_import.report_packager import generate_report_package
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = os.path.join(tmpdir, 'manifest.json')
+            checkpoint = os.path.join(tmpdir, 'checkpoint.json')
+            strategy = os.path.join(tmpdir, 'strategy.json')
+            with open(manifest, 'w', encoding='utf-8') as handle:
+                handle.write('{"manifest_version":"1.0"}')
+            with open(checkpoint, 'w', encoding='utf-8') as handle:
+                handle.write('{"version":1,"stages":{}}')
+            with open(strategy, 'w', encoding='utf-8') as handle:
+                handle.write('{"strategy":"import"}')
+            path = os.path.join(tmpdir, 'package.zip')
+            generate_report_package(
+                self._MockReport(), '<html></html>', path,
+                evidence_manifest_path=manifest,
+                checkpoint_path=checkpoint,
+                strategy_path=strategy,
+            )
+            with zipfile.ZipFile(path, 'r') as zf:
+                self.assertIn('evidence_manifest.json', zf.namelist())
+                self.assertIn('migration_checkpoint.json', zf.namelist())
+                self.assertIn('migration_strategy.json', zf.namelist())
+
     def test_package_creates_parent_dirs(self):
         from powerbi_import.report_packager import generate_report_package
 

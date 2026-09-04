@@ -77,12 +77,16 @@ class TestMigrationQuality(unittest.TestCase):
     def test_pass_when_all_checks_are_clean(self):
         report = self._build()
         self.assertEqual(report.status, 'PASS')
+        self.assertEqual(report.handoff_status, 'PASS')
         self.assertFalse(report.fabric['present'])
         self.assertEqual(report.openability_confidence['level'], 'STATIC_PASS')
         self.assertEqual(report.openability_confidence['desktop']['status'], 'not_run')
         self.assertEqual(report.openability_confidence['semantic_execution'], 'not_run')
         self.assertEqual(report.evidence_manifest['manifest_version'], '1.0')
         self.assertEqual(report.evidence_manifest['validation']['status'], 'PASS')
+        self.assertEqual(report.strategy['status'], 'recommended')
+        self.assertEqual(report.lineage['status'], 'static_evidence')
+        self.assertEqual(report.evidence_manifest['checkpoints']['status'], 'not_found')
         self.assertEqual(report.blockers, [])
         self.assertEqual(report.warnings, [])
         self.assertEqual(report.semantic_context['execution'], 'not_run')
@@ -217,6 +221,8 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.status, 'FAIL')
         self.assertIn('Dangling dataset reference', report.blockers)
         self.assertEqual(report.openability_confidence['level'], 'UNVERIFIED')
+        self.assertEqual(report.handoff_status, 'BLOCKED')
+        self.assertEqual(report.evidence_manifest['handoff']['status'], 'BLOCKED')
 
     def test_interface_gap_is_warning(self):
         report = self._build(interface={

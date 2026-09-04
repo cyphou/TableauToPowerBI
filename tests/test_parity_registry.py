@@ -251,6 +251,39 @@ class TestSerialization(unittest.TestCase):
         self.assertEqual(scan.evidence_coverage["evidenced_features"], 1)
         self.assertEqual(scan.evidence_coverage["coverage_percent"], 50.0)
 
+    def test_usage_marks_missing_target_evidence(self):
+        scan = scan_workbook({"calculations": [{"formula": "[Sales]"}]})
+        usage = next(u for u in scan.usages if u.key == "calc_basic")
+        self.assertEqual(usage.evidence_status, "source_only")
+
+    def test_usage_marks_target_evidence(self):
+        scan = scan_workbook({
+            "calculations": [{"formula": "[Sales]"}],
+            "_parity_evidence": {"calc_basic": ["Model.tmdl"]},
+        })
+        usage = next(u for u in scan.usages if u.key == "calc_basic")
+        self.assertEqual(usage.evidence_status, "evidenced")
+
+    def test_untracked_features_reduce_evidence_coverage(self):
+        scan = scan_workbook({"schedules": [{"name": "Nightly"}]})
+        self.assertIn("schedules", scan.untracked_features)
+        self.assertEqual(scan.evidence_coverage["untracked_features"], 1)
+        self.assertEqual(scan.evidence_coverage["coverage_percent"], 0.0)
+
+    def test_mapped_feature_families_are_not_reported_as_untracked(self):
+        scan = scan_workbook({
+            "calculations": [{"formula": "[Sales]"}],
+            "user_filters": [{"field": "Region"}],
+            "actions": [{"type": "filter"}],
+            "stories": [{"story_points": [{"name": "Overview"}]}],
+            "hyper_files": [{"name": "extract.hyper"}],
+        })
+        self.assertNotIn("calculations", scan.untracked_features)
+        self.assertNotIn("user_filters", scan.untracked_features)
+        self.assertNotIn("actions", scan.untracked_features)
+        self.assertNotIn("stories", scan.untracked_features)
+        self.assertNotIn("hyper_files", scan.untracked_features)
+
     def test_report_feature_families_are_no_longer_untracked(self):
         scan = scan_workbook({
             "dashboards": [{"name": "Dashboard"}],

@@ -1807,9 +1807,13 @@ def _build_lineage_map(tables, relationships, extra_objects, datasources):
     extra = extra_objects or {}
     lineage = {
         'tables': [],
+        'columns': [],
         'calculations': [],
         'relationships': [],
         'worksheets': [],
+        'filters': [],
+        'parameters': [],
+        'actions': [],
     }
 
     # Table lineage: Tableau datasource.table → PBI table
@@ -1829,6 +1833,15 @@ def _build_lineage_map(tables, relationships, extra_objects, datasources):
                 'tableau_table': pbi_name,
                 'pbi_table': pbi_name,
             })
+            for col in t.get('columns', []):
+                column_name = col.get('name', '')
+                if column_name:
+                    lineage['columns'].append({
+                        'tableau_table': pbi_name,
+                        'tableau_column': col.get('sourceColumn', column_name),
+                        'pbi_table': pbi_name,
+                        'pbi_column': column_name,
+                    })
 
     # Calculation lineage: Tableau calc → PBI measure or calculated column
     calcs = extra.get('calculations', [])
@@ -1876,6 +1889,21 @@ def _build_lineage_map(tables, relationships, extra_objects, datasources):
             lineage['worksheets'].append({
                 'tableau_worksheet': ws_name,
                 'pbi_page': ws_name,
+            })
+
+    # Report-behavior lineage: retain the source object identity even when
+    # the generated report represents it through a different Power BI object.
+    for key in ('filters', 'parameters', 'actions'):
+        for index, obj in enumerate(extra.get(key, []) or []):
+            name = obj.get('name') or obj.get('caption') or obj.get('field') or f'{key}_{index + 1}'
+            identity = {'name': name}
+            for field_name in ('field', 'type', 'worksheet'):
+                if obj.get(field_name):
+                    identity[field_name] = obj[field_name]
+            lineage[key].append({
+                'tableau_object': name,
+                'object_type': key[:-1],
+                'source_identity': identity,
             })
 
     return lineage

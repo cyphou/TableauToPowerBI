@@ -45,6 +45,14 @@ class TestStrategyRecommendation(unittest.TestCase):
         rec = StrategyRecommendation(strategy='composite')
         self.assertIn('Composite', rec.connection_mode)
 
+    def test_recommendation_to_dict_is_machine_readable(self):
+        rec = recommend_strategy(_make_extracted('Excel'))
+        payload = rec.to_dict()
+        self.assertEqual(payload['strategy'], rec.strategy)
+        self.assertEqual(payload['connection_mode'], 'Import')
+        self.assertTrue(payload['signals'])
+        self.assertIn('name', payload['signals'][0])
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  Simple workbook → Import

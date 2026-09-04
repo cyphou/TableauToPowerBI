@@ -10,6 +10,68 @@
 
 The migration engine has broad PBIP, batch, shared-model, Tableau Server, self-healing, and developer-tooling coverage. Fabric-native generation now provides a **validated six-artifact scaffold**; environment-specific identities, connections, live deployment, and operational Fabric smoke tests remain outside the local deterministic contract. v45 establishes reproducible time and memory budgets and hardens that contract before production claims are made.
 
+### Immediate Next Focus — Assessment, Lineage, Conversion, Desktop Openability
+
+The next delivery slice is intentionally scoped to the four issues that determine whether an automated Tableau migration is trustworthy in practice:
+
+1. **Assessment completeness**
+  - Move from a generic readiness score to an evidence-first workbook assessment with explicit `pass / warn / fail / not_run` states.
+  - Distinguish static validation from live Power BI Desktop and Fabric evidence so no local success claim implies deployment success.
+  - Surface blockers at the workbook and datasource level, with recommendations that are actionable and traceable to extracted source evidence.
+
+2. **Lineage gathering and provenance**
+  - Capture workbook-to-datasource-to-table-to-column lineage across extracted objects, generated TMDL artifacts, and report bindings.
+  - Extend the lineage graph to include relationship endpoints, parameter flows, action/filter dependencies, and cross-workbook merge candidates.
+  - Ensure every lineage assertion is tied to actual source metadata instead of inferred defaults or last-run snapshots.
+
+3. **Conversion fidelity**
+  - Close the gap between exact, healed, approximated, and unsupported conversions with explicit parity evidence.
+  - Reduce silent approximation by requiring each conversion to carry its provenance and confidence class.
+  - Keep DAX/M/TMDL/PBIR fixes focused on actual mismatch evidence, not broad speculative rewrites.
+
+4. **100% migration confidence when opening in Power BI Desktop**
+  - Treat the Desktop probe as an explicit verification stage, not as a byproduct of static local validation.
+  - Require a healthy Desktop smoke pass and a reopened/re-saved pass before signaling `DESKTOP_REOPEN_PASS`.
+  - Use the openability gate to catch invalid report/model references, synthetic control bindings, stale measure IDs, and XML/BIM coherence issues before release.
+
+This focus keeps the repo aligned with the real minimum bar for migration quality: structural validity, lineage provenance, conversion fidelity, and live openability evidence in an authorized Desktop environment.
+
+### Next Roadmap — v48 Product Capability Track
+
+The detailed end-to-end evolution plan is maintained in
+[docs/FULL_MIGRATION_EVOLUTION_PLAN.md](FULL_MIGRATION_EVOLUTION_PLAN.md).
+
+The demo corpus and recent implementation work establish a usable foundation:
+10 Tableau workbooks and 1 Prep flow process successfully, 4 of 10 workbook
+quality reports are now PASS after parity-family resolution, and checkpointed
+execution plus handoff packaging are available. The next release should turn
+those foundations into operator-facing migration capabilities.
+
+| Phase | Product capability | Primary owners | Exit gate |
+|---|---|---|---|
+| **48.1** | **Resumable migration orchestration** — extend checkpoints across batch extraction, generation, validation, packaging, and deployment handoff; expose stage history and retry reasons. | @orchestrator, @reviewer, @tester | A failed stage resumes without repeating compatible completed stages; stale source/configuration invalidates only affected work. |
+| **48.2** | **Evidence-backed migration package** — package source inventory, strategy, lineage, parity evidence, healing ledger, validation states, credentials template, and rollback instructions in one portable handoff. | @assessor, @orchestrator, @deployer | An operator can reconstruct what was migrated, what remains, and what is required without inspecting transient logs or raw credentials. |
+| **48.3** | **Conversion strategy and fidelity controls** — make Import, DirectQuery, Composite, Direct Lake, Dataflow, Notebook, and shared-model decisions explicit; route unsupported or approximate calculations to actionable remediation. | @dax, @wiring, @semantic, @generator | Every generated target has a strategy rationale and every approximation has a visible target, confidence, and remediation path. |
+| **48.4** | **Desktop verification harness** — add authorized Windows Desktop smoke/reopen/save evidence, version capture, crash/trace collection, and post-save static revalidation. | @visual, @orchestrator, @reviewer, @tester | `DESKTOP_REOPEN_PASS` is emitted only after two healthy launches, save/reopen evidence, and a passing post-save contract. |
+| **48.5** | **Fabric deployment handoff** — bind generated Lakehouse, Dataflow Gen2, Notebook, Pipeline, Semantic Model, and Report artifacts to environment configuration with dry-run and post-deploy states. | @generator, @deployer, @semantic | Local generation, deployment, refresh, and post-deployment validation remain distinct and are represented in the manifest. |
+| **48.6** | **Portfolio migration operations** — provide a corpus command that produces status, blockers, lineage hotspots, conversion risks, effort, and remediation queues for every input. | @assessor, @tableau, @orchestrator, @web-designer | One sanitized portfolio report identifies the next operator action for every workbook and Prep flow. |
+
+#### v48 Sequencing Rules
+
+1. Complete `48.1` and `48.2` before adding more autonomous behavior; recovery and provenance are the control plane for every later feature.
+2. Use the refreshed demo corpus as the regression portfolio, but treat its WARN results as implementation signals rather than suppressing them to obtain PASS.
+3. Prioritize the remaining WARN categories by observed impact: partially supported calculations, connector prerequisites, and openability warnings.
+4. Keep Desktop and Fabric execution opt-in and environment-gated. Static generation may be automated everywhere; live evidence requires an authorized machine or workspace.
+5. Every phase must add one user-visible capability, one machine-readable artifact, and one executable release gate. Tests support the feature but are not the feature outcome.
+
+#### v48 Release Gate
+
+- The full demo corpus completes through assess, migrate, validate, package, and resumable rerun without source changes.
+- No migration stage is reported complete without a corresponding checkpoint and evidence record.
+- Every WARN has a concrete remediation owner and source/target evidence; no warning is hidden by score normalization.
+- Desktop confidence remains `STATIC_PASS` or `UNVERIFIED` unless live smoke/reopen evidence exists.
+- Fabric outputs remain `locally_valid` until authorized deployment, refresh, and post-deployment checks succeed.
+
 ### Verified Baseline — 2026-09-03
 
 The following capabilities are implemented and verified locally:
@@ -134,6 +196,17 @@ measurable exit gate before the next phase is marked complete.
 | **10** | Release gates and compatibility policy | Publish supported Tableau, Power BI, PBIR, and Fabric ranges with release gates, deprecation policy, known limitations, and traceable reports. | Unit/integration, corpus, semantic, PBIR, resume, privacy, performance, and authorized Fabric gates are green or explicitly waived. |
 
 #### Current Execution Status
+
+- **Phase 5/7 — Continuity and handoff evidence:** the unified quality report now
+  emits a stable operator handoff state (`PASS`, `WARN`, or `BLOCKED`) plus
+  strategy rationale, static source-to-target lineage coverage, generated
+  artifact families, and discovered checkpoint stage history. JSON and HTML
+  expose the same evidence, while Desktop, semantic execution, refresh, and
+  deployment remain explicit `not_run` boundaries until authorized runtime
+  evidence is supplied.
+- **Validation:** the refreshed demo workbook corpus completes with exit code 0
+  and currently reports 4 `PASS` and 6 `WARN`, with 0 blockers. The warnings are
+  retained as remediation work; they are not normalized into passes.
 
 - **Phase 1 — Feature-parity closure:** active implementation slice completed
   for the current PBIP confidence target. The canonical gate now fails closed

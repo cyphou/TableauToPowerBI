@@ -41,6 +41,9 @@ def generate_report_package(
     output_path: str,
     *,
     migration_stats: dict | None = None,
+    evidence_manifest_path: str | None = None,
+    checkpoint_path: str | None = None,
+    strategy_path: str | None = None,
 ) -> str:
     """Generate a ZIP package with all report formats.
 
@@ -49,6 +52,9 @@ def generate_report_package(
         html_content: The interactive HTML report string.
         output_path: Path for the output ``.zip`` file.
         migration_stats: Optional extra stats for the PPTX.
+        evidence_manifest_path: Optional path to the migration evidence manifest.
+        checkpoint_path: Optional path to the migration checkpoint.
+        strategy_path: Optional path to the migration strategy decision.
 
     Returns:
         Absolute path to the generated ZIP file.
@@ -97,6 +103,17 @@ def generate_report_package(
             'assessment_data.json',
             json.dumps(data, indent=2, ensure_ascii=False),
         )
+
+        # Machine-readable handoff state is optional so legacy callers keep
+        # producing the original package contents unchanged.
+        for archive_name, source_path in (
+            ('evidence_manifest.json', evidence_manifest_path),
+            ('migration_checkpoint.json', checkpoint_path),
+            ('migration_strategy.json', strategy_path),
+        ):
+            if source_path and os.path.isfile(source_path):
+                with open(source_path, 'rb') as handle:
+                    zf.writestr(archive_name, handle.read())
 
         # 5. CSV of all checks
         csv_content = _build_checks_csv(data)

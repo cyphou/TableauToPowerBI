@@ -30,6 +30,10 @@ def build_evidence_manifest(
     validation: Optional[Dict[str, Any]] = None,
     repairs: Optional[list] = None,
     environment: Optional[Dict[str, Any]] = None,
+    checkpoints: Optional[Dict[str, Any]] = None,
+    strategy: Optional[Dict[str, Any]] = None,
+    lineage: Optional[Dict[str, Any]] = None,
+    artifacts: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a deterministic-shaped manifest without credentials or payloads."""
     source = {
@@ -39,6 +43,12 @@ def build_evidence_manifest(
     target = {
         "path": os.path.abspath(target_path) if target_path else None,
     }
+    runtime = environment or {
+        "semantic_execution": "not_run",
+        "desktop": "not_run",
+        "refresh": "not_run",
+        "deployment": "not_run",
+    }
     return {
         "manifest_version": MANIFEST_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -46,11 +56,16 @@ def build_evidence_manifest(
         "target": target,
         "validation": validation or {},
         "repairs": repairs or [],
-        "environment": environment or {
-            "semantic_execution": "not_run",
-            "desktop": "not_run",
-            "refresh": "not_run",
-            "deployment": "not_run",
+        "environment": runtime,
+        "checkpoints": checkpoints or {"status": "not_run", "stages": {}},
+        "strategy": strategy or {"status": "not_run"},
+        "lineage": lineage or {"status": "not_run"},
+        "artifacts": artifacts or {},
+        "handoff": {
+            "status": validation.get("handoff_status", "UNVERIFIED")
+            if validation else "UNVERIFIED",
+            "next_action": validation.get("next_action", "Review migration findings")
+            if validation else "Review migration findings",
         },
     }
 

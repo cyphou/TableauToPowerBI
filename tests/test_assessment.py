@@ -185,6 +185,14 @@ class TestDataClasses(unittest.TestCase):
         self.assertEqual(len(d["categories"]), 1)
         self.assertEqual(d["totals"]["pass"], 1)
 
+    def test_to_dict_includes_conservative_evidence_state(self):
+        report = AssessmentReport("WB", "2025-01-01T00:00:00Z")
+        evidence = report.to_dict()["evidence"]
+        self.assertEqual(evidence["scope"], "source_assessment")
+        self.assertEqual(evidence["validation"], "static")
+        self.assertEqual(evidence["desktop"], "not_run")
+        self.assertEqual(evidence["fabric"], "not_run")
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  Category check tests

@@ -147,6 +147,14 @@ class StrategySignal:
     favours: str            # 'import' | 'directquery'
     weight: int = 1         # how many score points this signal awards
 
+    def to_dict(self) -> Dict:
+        return {
+            'name': self.name,
+            'description': self.description,
+            'favours': self.favours,
+            'weight': self.weight,
+        }
+
 
 @dataclass
 class StrategyRecommendation:
@@ -165,6 +173,16 @@ class StrategyRecommendation:
             'directquery': 'DirectQuery',
             'composite': 'Composite (Import + DirectQuery)',
         }.get(self.strategy, 'Import')
+
+    def to_dict(self) -> Dict:
+        return {
+            'strategy': self.strategy,
+            'connection_mode': self.connection_mode,
+            'import_score': self.import_score,
+            'directquery_score': self.directquery_score,
+            'signals': [signal.to_dict() for signal in self.signals],
+            'summary': self.summary,
+        }
 
 
 # ── Main advisor function ──────────────────────────────────────────
