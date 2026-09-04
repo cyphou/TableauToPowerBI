@@ -6,6 +6,7 @@ Each connector type has its own generator function dispatched via _M_GENERATORS.
 """
 
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,10 @@ def _m_literal(value):
 
 def _m_field_ref(name):
     """Return a quoted M field reference for arbitrary Tableau metadata."""
+    if name.startswith('[') and name.endswith(']'):
+        name = name[1:-1]
+    if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
+        return '[' + name + ']'
     return '[#' + _m_literal(name) + ']'
 
 
@@ -1724,30 +1729,32 @@ def m_transform_aggregate(group_by_columns, aggregations):
         group_by_columns: list of column names to group by
         aggregations: list of dicts [{"name": "Total", "column": "Sales", "agg": "sum"}, ...]
     """
-    group_cols = ', '.join([f'"{c}"' for c in group_by_columns])
+    group_cols = ', '.join([_m_literal(c) for c in group_by_columns])
     agg_parts = []
     for a in aggregations:
         name = a['name']
         col = a['column']
         agg = a['agg'].lower()
+        output_name = _m_literal(name)
+        field_ref = _m_field_ref(col)
         if agg == 'count':
-            agg_parts.append(f'{{"{name}", each Table.RowCount(_), Int64.Type}}')
+            agg_parts.append(f'{{{output_name}, each Table.RowCount(_), Int64.Type}}')
         elif agg == 'countd':
-            agg_parts.append(f'{{"{name}", each List.Count(List.Distinct([{col}])), Int64.Type}}')
+            agg_parts.append(f'{{{output_name}, each List.Count(List.Distinct({field_ref})), Int64.Type}}')
         elif agg == 'var':
             # Sample variance = StdDev² (M has no built-in List.Variance)
-            agg_parts.append(f'{{"{name}", each Number.Power(List.StandardDeviation([{col}]), 2), type number}}')
+            agg_parts.append(f'{{{output_name}, each Number.Power(List.StandardDeviation({field_ref}), 2), type number}}')
         elif agg == 'varp':
             # Population variance = avg((x - mean)²)
             agg_parts.append(
-                f'{{"{name}", each '
-                f'List.Average(List.Transform([{col}], (x) => Number.Power(x - List.Average([{col}]), 2))), '
+                f'{{{output_name}, each '
+                f'List.Average(List.Transform({field_ref}, (x) => Number.Power(x - List.Average({field_ref}), 2))), '
                 f'type number}}'
             )
         else:
             mapping = _M_AGG_MAP.get(agg, ('List.Sum', 'type number'))
             func, m_type = mapping
-            agg_parts.append(f'{{"{name}", each {func}([{col}]), {m_type}}}')
+            agg_parts.append(f'{{{output_name}, each {func}({field_ref}), {m_type}}}')
 
     aggs = ', '.join(agg_parts)
     return ('#"Grouped Rows"', f'Table.Group({{prev}}, {{{group_cols}}}, {{{aggs}}})')
@@ -1757,23 +1764,24 @@ def m_transform_aggregate(group_by_columns, aggregations):
 
 def m_transform_unpivot(columns, attribute_name="Attribute", value_name="Value"):
     """Unpivot specific columns (columns become rows). Tableau Prep: Pivot Columns to Rows."""
-    cols = ', '.join([f'"{c}"' for c in columns])
+    cols = ', '.join([_m_literal(c) for c in columns])
     return ('#"Unpivoted Columns"',
-            f'Table.Unpivot({{prev}}, {{{cols}}}, "{attribute_name}", "{value_name}")')
+            f'Table.Unpivot({{prev}}, {{{cols}}}, {_m_literal(attribute_name)}, {_m_literal(value_name)})')
 
 
 def m_transform_unpivot_other(keep_columns, attribute_name="Attribute", value_name="Value"):
     """Unpivot all columns except specified ones."""
-    cols = ', '.join([f'"{c}"' for c in keep_columns])
+    cols = ', '.join([_m_literal(c) for c in keep_columns])
     return ('#"Unpivoted Other Columns"',
-            f'Table.UnpivotOtherColumns({{prev}}, {{{cols}}}, "{attribute_name}", "{value_name}")')
+            f'Table.UnpivotOtherColumns({{prev}}, {{{cols}}}, '
+            f'{_m_literal(attribute_name)}, {_m_literal(value_name)})')
 
 
 def m_transform_pivot(pivot_column, value_column, agg_function="List.Sum"):
     """Pivot rows to columns. Tableau Prep: Pivot Rows to Columns."""
     return ('#"Pivoted Column"',
-            f'Table.Pivot({{prev}}, List.Distinct({{prev}}[{pivot_column}]), '
-            f'"{pivot_column}", "{value_column}", {agg_function})')
+            f'Table.Pivot({{prev}}, List.Distinct({{prev}}{_m_field_ref(pivot_column)}), '
+            f'{_m_literal(pivot_column)}, {_m_literal(value_column)}, {agg_function})')
 
 
 # ── Join operations ───────────────────────────────────────────────────────────
@@ -1829,20 +1837,20 @@ def m_transform_join(right_table_ref, left_keys, right_keys, join_type='left',
     """
     kind = _M_JOIN_KIND.get(join_type.lower().replace(' ', ''), 'JoinKind.LeftOuter')
     if len(left_keys) == 1:
-        lk, rk = f'"{left_keys[0]}"', f'"{right_keys[0]}"'
+        lk, rk = _m_literal(left_keys[0]), _m_literal(right_keys[0])
     else:
-        lk = '{' + ', '.join([f'"{k}"' for k in left_keys]) + '}'
-        rk = '{' + ', '.join([f'"{k}"' for k in right_keys]) + '}'
+        lk = '{' + ', '.join([_m_literal(k) for k in left_keys]) + '}'
+        rk = '{' + ', '.join([_m_literal(k) for k in right_keys]) + '}'
 
     effective_right = f'Table.Buffer({right_table_ref})' if buffer_right else right_table_ref
 
     steps = [(f'#"Joined {joined_name}"',
               f'Table.NestedJoin({{prev}}, {lk}, {effective_right}, {rk}, '
-              f'"{joined_name}", {kind})')]
+              f'{_m_literal(joined_name)}, {kind})')]
     if expand_columns:
-        cols = ', '.join([f'"{c}"' for c in expand_columns])
+        cols = ', '.join([_m_literal(c) for c in expand_columns])
         steps.append((f'#"Expanded {joined_name}"',
-                       f'Table.ExpandTableColumn({{prev}}, "{joined_name}", {{{cols}}})'))
+                       f'Table.ExpandTableColumn({{prev}}, {_m_literal(joined_name)}, {{{cols}}})'))
     return steps
 
 
@@ -1988,10 +1996,10 @@ def m_regex_match(column, pattern):
     Uses ``Text.RegexMatch`` available in Power Query (December 2024+).
     Falls back to a ``Text.Contains`` approximation comment for older engines.
     """
-    safe_col = f'[{column}]' if not column.startswith('[') else column
-    return (f'#"Regex Match {column}"',
-            f'Table.AddColumn({{prev}}, "{column}_match", '
-            f'each try Text.RegexMatch({safe_col}, "{pattern}") otherwise false, type logical)')
+    safe_col = _m_field_ref(column)
+    return (f'#"Regex Match {_m_escape_col_name(column)}"',
+            f'Table.AddColumn({{prev}}, {_m_literal(column + "_match")}, '
+            f'each try Text.RegexMatch({safe_col}, {_m_literal(pattern)}) otherwise false, type logical)')
 
 
 def m_regex_extract(column, pattern, new_column=None):
@@ -1999,11 +2007,11 @@ def m_regex_extract(column, pattern, new_column=None):
 
     Uses ``Text.RegexExtract`` to pull the first capture group from *pattern*.
     """
-    safe_col = f'[{column}]' if not column.startswith('[') else column
+    safe_col = _m_field_ref(column)
     out_col = new_column or f'{column}_extract'
-    return (f'#"Regex Extract {column}"',
-            f'Table.AddColumn({{prev}}, "{out_col}", '
-            f'each try Text.RegexExtract({safe_col}, "{pattern}") otherwise null, type text)')
+    return (f'#"Regex Extract {_m_escape_col_name(column)}"',
+            f'Table.AddColumn({{prev}}, {_m_literal(out_col)}, '
+            f'each try Text.RegexExtract({safe_col}, {_m_literal(pattern)}) otherwise null, type text)')
 
 
 def m_regex_replace(column, pattern, replacement):
@@ -2011,10 +2019,11 @@ def m_regex_replace(column, pattern, replacement):
 
     Uses ``Text.RegexReplace`` to substitute all matches of *pattern*.
     """
-    safe_col = f'[{column}]' if not column.startswith('[') else column
-    return (f'#"Regex Replace {column}"',
-            f'Table.TransformColumns({{prev}}, {{{{"{column}", '
-            f'each try Text.RegexReplace({safe_col}, "{pattern}", "{replacement}") otherwise {safe_col}}}}})')
+    safe_col = _m_field_ref(column)
+    return (f'#"Regex Replace {_m_escape_col_name(column)}"',
+            f'Table.TransformColumns({{prev}}, {{{{{_m_literal(column)}, '
+            f'each try Text.RegexReplace({safe_col}, {_m_literal(pattern)}, '
+            f'{_m_literal(replacement)}) otherwise {safe_col}}}}})')
 
 
 def convert_tableau_regex_to_m(formula, column_name):
@@ -2237,9 +2246,11 @@ def gen_extract_regex(column, pattern, group=0):
     """
     step_name = f'Regex_{column}'
     expr = (
-        f'Table.TransformColumns({{prev}}, '
-        f'{{{{"{column}", each try Text.RegexExtract(_, "{pattern}", {group}) otherwise null}}}}'
-        f')'
+        'Table.TransformColumns({prev}, {{'
+        + _m_literal(column)
+        + ', each try Text.RegexExtract(_, '
+        + _m_literal(pattern)
+        + f', {group}) otherwise null}})'
     )
     return (step_name, expr)
 

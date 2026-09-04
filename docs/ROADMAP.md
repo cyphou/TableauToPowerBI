@@ -56,6 +56,30 @@ those foundations into operator-facing migration capabilities.
 | **48.5** | **Fabric deployment handoff** — bind generated Lakehouse, Dataflow Gen2, Notebook, Pipeline, Semantic Model, and Report artifacts to environment configuration with dry-run and post-deploy states. | @generator, @deployer, @semantic | Local generation, deployment, refresh, and post-deployment validation remain distinct and are represented in the manifest. |
 | **48.6** | **Portfolio migration operations** — provide a corpus command that produces status, blockers, lineage hotspots, conversion risks, effort, and remediation queues for every input. | @assessor, @tableau, @orchestrator, @web-designer | One sanitized portfolio report identifies the next operator action for every workbook and Prep flow. |
 
+#### v48 Delivered Slices
+
+- **Semantic lineage contract:** generated lineage maps now carry a versioned
+  source-to-target contract with table, column, calculation, and relationship
+  provenance, normalized source matching, generated Calendar/parameter
+  classification, coverage percentages, and explicit unresolved records.
+- **Power Query literal safety:** aggregate, join, pivot/unpivot, regex, and
+  core transformation emitters now escape Tableau field names, values, and
+  delimiters safely while preserving the existing output for simple names.
+- **Validation evidence:** the semantic lineage and M-emitter slices have
+  focused executable coverage and remain static evidence; neither slice claims
+  Desktop execution, refresh success, or Fabric deployment.
+
+#### v48 Next Implementation Order
+
+1. Complete the remaining M fallback/error emitters and add generated-M
+   contract validation for every connector path.
+2. Feed lineage resolution status into strict quality policies so unresolved
+   semantic endpoints become actionable blockers instead of passive metadata.
+3. Add representative semantic value execution checks for relationships,
+   blanks, dates, LOD grain, and table-calculation partitions.
+4. Run the authorized Desktop smoke/reopen harness, then the authorized Fabric
+   deployment and refresh gates; keep all unavailable environments `not_run`.
+
 #### v48 Sequencing Rules
 
 1. Complete `48.1` and `48.2` before adding more autonomous behavior; recovery and provenance are the control plane for every later feature.
