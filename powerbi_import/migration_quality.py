@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -296,6 +297,41 @@ def _measure_context_validation(project_dir: str) -> Dict[str, Any]:
     }
 
 
+def _filter_context_validation(project_dir: str) -> Dict[str, Any]:
+    """Check generated DAX context modifiers against emitted TMDL columns."""
+    try:
+        project_entries = os.listdir(project_dir)
+    except OSError:
+        project_entries = []
+    model_dir = next((os.path.join(project_dir, name) for name in project_entries
+                      if name.endswith(".SemanticModel")), None)
+    if not model_dir:
+        return {"status": "not_available", "issues": [], "issue_count": 0}
+    tables_dir = os.path.join(model_dir, "definition", "tables")
+    if not os.path.isdir(tables_dir):
+        return {"status": "not_available", "issues": [], "issue_count": 0}
+    column_table_map: Dict[str, str] = {}
+    measures = []
+    for filename in os.listdir(tables_dir):
+        if not filename.endswith(".tmdl"):
+            continue
+        path = os.path.join(tables_dir, filename)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                content = handle.read()
+        except OSError:
+            continue
+        table_match = re.search(r"^table\s+(.+?)\s*$", content, re.MULTILINE)
+        table_name = table_match.group(1).strip(" '") if table_match else ""
+        for column in re.findall(r"^\s*column\s+'((?:[^']|'')+)'", content, re.MULTILINE):
+            column_table_map[column.replace("''", "'")] = table_name
+        measures.extend(re.findall(r"^\s*measure\s+.*?=\s*(.+)$", content, re.MULTILINE))
+    validator = SemanticExecutionValidator()
+    issues = [issue for expression in measures for issue in
+              validator.validate_filter_context_expression(expression, column_table_map)]
+    return {"status": "static_diagnostics", "issues": issues, "issue_count": len(issues)}
+
+
 def build_quality_report(extracted: Dict, project_dir: str,
                          report_name: str) -> MigrationQualityReport:
     """Run all local quality checks and aggregate their verified results."""
@@ -308,6 +344,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
     semantic_context = _semantic_context_validation(extracted or {})
     measure_context = _measure_context_validation(project_dir)
     semantic_context["measure_context"] = measure_context
+    semantic_context["filter_context"] = _filter_context_validation(project_dir)
     openability_dict = _openability_dict(openability)
     confidence = _openability_confidence(openability_dict, fabric)
 

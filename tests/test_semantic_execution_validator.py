@@ -61,6 +61,14 @@ class TestSemanticExecutionValidator(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertIn("MissingGroup", issues[0])
 
+    def test_filter_context_reports_unknown_modifier_column(self):
+        issues = self.validator.validate_filter_context_expression(
+            "CALCULATE([Sales], ALLEXCEPT('Sales', 'Sales'[MissingGroup]))",
+            {"Region": "Sales"},
+        )
+        self.assertEqual(len(issues), 1)
+        self.assertIn("ALLEXCEPT", issues[0])
+
 
 if __name__ == "__main__":
     unittest.main()

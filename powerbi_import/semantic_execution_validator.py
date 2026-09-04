@@ -14,6 +14,9 @@ _LOD_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _COLUMN_RE = re.compile(r"(?:'((?:[^']|'')+)'|([A-Za-z_][\w ]*))\s*\[([^\]]+)\]")
+_CONTEXT_RE = re.compile(
+    r"(?:ALLEXCEPT|REMOVEFILTERS)\s*\((.*?)\)", re.IGNORECASE
+)
 
 
 class SemanticExecutionValidator:
@@ -36,6 +39,30 @@ class SemanticExecutionValidator:
                     f"Table calculation partition field '{field_name}' is not "
                     "present in the semantic model"
                 )
+        return issues
+
+    @classmethod
+    def validate_filter_context_expression(
+        cls, expression: str, column_table_map: Mapping[str, str]
+    ) -> List[str]:
+        """Check columns used by DAX filter-context modifiers."""
+        issues: List[str] = []
+        for modifier in _CONTEXT_RE.finditer(expression or ""):
+            function = expression[modifier.start():].split("(", 1)[0].upper()
+            for table, column in cls._extract_dimensions(
+                modifier.group(1), column_table_map
+            ):
+                known_table = column_table_map.get(column)
+                if known_table is None:
+                    issues.append(
+                        f"{function} column '{column}' is not present in the "
+                        "semantic model"
+                    )
+                elif table and table != known_table:
+                    issues.append(
+                        f"{function} column '{table}[{column}]' resolves to "
+                        f"table '{known_table}'"
+                    )
         return issues
 
     def validate_lod_grain_compatibility(
