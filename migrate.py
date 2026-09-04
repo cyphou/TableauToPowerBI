@@ -5888,6 +5888,15 @@ def _record_zero_touch(args, source_basename, *, success, failure_mode='',
         tracker.save_dashboard(dashboard_path)
 
 
+def _quality_zero_touch_result(all_success, quality_report):
+    """Keep unified quality blockers out of zero-touch success metrics."""
+    if not all_success:
+        return False, 'migration_failed'
+    if quality_report is not None and getattr(quality_report, 'status', '') == 'FAIL':
+        return False, 'quality_blocker'
+    return True, ''
+
+
 def _run_autoheal(args, source_basename):
     """Closed-loop autoheal so the generated .pbip opens cleanly in PBI Desktop."""
     out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
@@ -7522,7 +7531,10 @@ def _run_single_migration(args):
     all_success = _print_migration_summary(results, report_summary, start_time)
 
     # Record Zero-Touch Open Rate (Phase 10)
-    _record_zero_touch(args, source_basename, success=all_success,
+    zero_touch_success, zero_touch_failure = _quality_zero_touch_result(
+        all_success, quality_report if 'quality_report' in locals() else None)
+    _record_zero_touch(args, source_basename, success=zero_touch_success,
+                       failure_mode=zero_touch_failure,
                        rollback_result=rollback_result)
 
     _finalize_telemetry(telemetry, all_success, results)

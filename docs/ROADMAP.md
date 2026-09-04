@@ -189,6 +189,10 @@ measurable exit gate before the next phase is marked complete.
   `UNVERIFIED` when an actual Desktop probe reports `crashed`, `timed_out`, or
   `error`; only a healthy `opened` probe can promote it to
   `DESKTOP_SMOKE_PASS`.
+- **Quality-to-feedback loop:** unified quality blockers now record as
+  `quality_blocker` in zero-touch history instead of being counted as successful
+  migrations. This keeps quality evidence and remediation metrics aligned while
+  preserving WARN as a non-blocking outcome.
 - **Phase 3 — PBIR behavior compatibility:** queued after the semantic
   execution contract; expand from field-binding correctness to round-trip,
   interaction, bookmark, layout, and rendering evidence.

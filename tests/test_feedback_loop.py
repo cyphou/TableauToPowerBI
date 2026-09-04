@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 import zipfile
+from migrate import _quality_zero_touch_result
 
 from powerbi_import.feedback_loop import (
     IssueCollector,
@@ -230,6 +231,15 @@ class TestZeroTouchTracker(unittest.TestCase):
         tracker = ZeroTouchTracker()
         self.assertEqual(tracker.zero_touch_rate, 0.0)
         self.assertEqual(tracker.total_count, 0)
+
+    def test_quality_blocker_is_not_zero_touch_success(self):
+        quality = type('Quality', (), {'status': 'FAIL'})()
+        self.assertEqual(_quality_zero_touch_result(True, quality),
+                         (False, 'quality_blocker'))
+
+    def test_quality_pass_remains_zero_touch_success(self):
+        quality = type('Quality', (), {'status': 'PASS'})()
+        self.assertEqual(_quality_zero_touch_result(True, quality), (True, ''))
 
     def test_all_success(self):
         tracker = ZeroTouchTracker()

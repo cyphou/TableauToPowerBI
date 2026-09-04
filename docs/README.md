@@ -58,6 +58,10 @@ Desktop probe results are evidence gates: a successful launch can produce
 `DESKTOP_SMOKE_PASS`, while a crash, timeout, or probe error downgrades the
 confidence level to `UNVERIFIED` even when static validation passed.
 
+The feedback loop uses the unified quality status when recording zero-touch
+history: quality blockers are classified as `quality_blocker` and cannot be
+counted as successful migrations.
+
 ### Project Structure
 
 | Module | Purpose |
