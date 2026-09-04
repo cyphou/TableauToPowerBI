@@ -49,6 +49,11 @@ real-world report card. Batch and Notebook workflows currently expose their own
 migration/assessment operations and do not implicitly run the unified quality
 report for every item.
 
+Notebook sessions can run the same report explicitly after generation:
+`session.quality_report()`. It writes JSON and HTML evidence beside the generated
+project and keeps live semantic execution marked `not_run` until an authorized
+runtime is used.
+
 ### Project Structure
 
 | Module | Purpose |

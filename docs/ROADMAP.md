@@ -166,8 +166,10 @@ measurable exit gate before the next phase is marked complete.
   MCP `quality_report` tool, with the same static semantic evidence as the
   single-workbook CLI. Batch migrations now snapshot extraction data per
   workbook and write per-item unified JSON/HTML quality reports plus aggregate
-  PASS/WARN/FAIL counts. Notebook auto-coverage remains an explicit follow-up
-  rather than being silently assumed.
+  PASS/WARN/FAIL counts. Notebook sessions now expose `quality_report()` against
+  the session extraction snapshot and generated project. Live Desktop and
+  Fabric evidence remain explicit environment-gated follow-ups rather than
+  being silently assumed.
 - **Server assessment lineage:** local portfolio assessment now records per-
   workbook lineage completeness, datasource/table/relationship counts,
   unresolved relationship endpoints, and ranked dependency hotspots. This is

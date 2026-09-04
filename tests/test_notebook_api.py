@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
@@ -30,6 +31,39 @@ class TestMigrationSessionInit(unittest.TestCase):
         self.assertIsNone(s._extracted)
         self.assertEqual(s._dax_overrides, {})
         self.assertEqual(s._visual_overrides, {})
+
+    def test_quality_report_requires_generated_project(self):
+        s = MigrationSession()
+        s._extracted = {}
+        with self.assertRaises(RuntimeError):
+            s.quality_report()
+
+    def test_quality_report_writes_unified_outputs(self):
+        class Report:
+            def to_dict(self):
+                return {'status': 'PASS'}
+
+            def save_json(self, path):
+                open(path, 'w', encoding='utf-8').close()
+
+            def save_html(self, path):
+                open(path, 'w', encoding='utf-8').close()
+
+        s = MigrationSession()
+        s._workbook_path = 'Sales.twbx'
+        s._extracted = {}
+        with tempfile.TemporaryDirectory() as project_dir, \
+             patch('powerbi_import.migration_quality.build_quality_report',
+                   return_value=Report()) as build:
+            s._generated_path = project_dir
+            output_dir = os.path.join(project_dir, 'reports')
+            os.makedirs(output_dir)
+            result = s.quality_report(output_dir)
+            output_exists = os.path.isfile(os.path.join(
+                output_dir, 'migration_quality_Sales.json'))
+        self.assertEqual(result['status'], 'PASS')
+        build.assert_called_once_with({}, project_dir, 'Sales')
+        self.assertTrue(output_exists)
 
     def test_default_config(self):
         s = MigrationSession()

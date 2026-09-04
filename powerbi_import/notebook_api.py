@@ -362,6 +362,24 @@ class MigrationSession:
         self._validation_result = result
         return result
 
+    def quality_report(self, output_dir=None):
+        """Run the unified deterministic quality report for the generated project."""
+        self._require_loaded()
+        if not self._generated_path:
+            raise RuntimeError("No project generated yet — call generate() first")
+
+        from powerbi_import.migration_quality import build_quality_report
+
+        report_name = (self._config.get('workbook_name') or
+                       os.path.splitext(os.path.basename(self._workbook_path or 'Workbook'))[0])
+        output_dir = output_dir or self._generated_path
+        report = build_quality_report(self._extracted, self._generated_path, report_name)
+        json_path = os.path.join(output_dir, f'migration_quality_{report_name}.json')
+        html_path = os.path.join(output_dir, f'migration_quality_{report_name}.html')
+        report.save_json(json_path)
+        report.save_html(html_path)
+        return report.to_dict()
+
     # ── Deployment ────────────────────────────────────────────
 
     def deploy(self, workspace_id, refresh=False):
