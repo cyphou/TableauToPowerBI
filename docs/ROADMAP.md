@@ -192,6 +192,10 @@ measurable exit gate before the next phase is marked complete.
   dependencies, refresh schedules, subscriptions, and missing permissions.
   The HTML and console portfolio reports now expose dependency hotspots and
   Server risk alongside workbook lineage status.
+- **Fabric evidence envelope:** successful Fabric-native generation now records
+  `FABRIC_STATIC_PASS` with `locally_valid` validation and explicit
+  `not_run` states for semantic execution, refresh, and deployment. Live Fabric
+  evidence remains environment-gated.
 - **Desktop confidence correction:** a static PBIP pass is now downgraded to
   `UNVERIFIED` when an actual Desktop probe reports `crashed`, `timed_out`, or
   `error`; only a healthy `opened` probe can promote it to

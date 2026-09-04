@@ -1010,6 +1010,8 @@ class TestFabricProjectGenerator:
         assert 'notebook' in results['artifacts']
         assert 'semantic_model' in results['artifacts']
         assert 'pipeline' in results['artifacts']
+        assert results['quality']['confidence'] == 'FABRIC_STATIC_PASS'
+        assert results['quality']['deployment'] == 'not_run'
 
     def test_generate_project_creates_metadata(self, temp_dir, sample_extracted_data):
         from powerbi_import.fabric_project_generator import FabricProjectGenerator

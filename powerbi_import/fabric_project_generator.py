@@ -205,6 +205,13 @@ class FabricProjectGenerator:
         if not validation['valid']:
             details = '; '.join(validation['errors'])
             raise ValueError(f'Fabric project validation failed: {details}')
+        results['quality'] = {
+            'confidence': 'FABRIC_STATIC_PASS',
+            'validation': 'locally_valid',
+            'semantic_execution': 'not_run',
+            'refresh': 'not_run',
+            'deployment': 'not_run',
+        }
 
         # Write project metadata
         meta_path = os.path.join(project_dir, 'fabric_project_metadata.json')
