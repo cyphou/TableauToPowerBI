@@ -552,6 +552,14 @@ class TestBuildVisualQuery(unittest.TestCase):
             self.assertEqual(projection['field']['Column']['Expression']['SourceRef']['Entity'], 'Orders')
             self.assertEqual(projection['field']['Column']['Property'], 'Order Date')
 
+    def test_unmapped_filter_control_is_skipped_without_bim_symbols(self):
+        self.gen._field_map = {'Region': ('Orders', 'Region')}
+        with tempfile.TemporaryDirectory() as tmp:
+            self.gen._create_visual_filter_control(
+                tmp, {'field': 'South Map', 'calc_column_id': 'South Map'},
+                1.0, 1.0, 0, {}, {'datasources': []})
+            self.assertEqual(list(Path(tmp).rglob('visual.json')), [])
+
     def test_map_type(self):
         fields = [{'name': 'Region'}, {'name': 'Revenue'}]
         result = self._query('map', fields)

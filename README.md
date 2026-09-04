@@ -4,28 +4,28 @@
 
 | | |
 |---|---|
-| 🏷️ **Version** | 44.0.0 |
-| ✅ **Tests** | 9,500+ passed (Python) · 38 extension unit tests |
+| 🏷️ **Version** | 45.0.0 |
+| ✅ **Tests** | 275 focused regression tests passed · 9,500+ repository tests available across the suite |
 | 🐍 **Python** | 3.12+ · zero external dependencies |
 | 📜 **License** | MIT |
 
 | 🎯 **Capabilities** | 133+ DAX conversions · 190 visual types · 87 connectors · 23 object types |
 
-### What is new in v44.0.0
+### Latest verified baseline (2026-09-04)
 
-- **Copilot and MCP agent surface**: the repository-scoped skill, stdio MCP server, grounded conversational assessment, remediation routing, parity scanning, and guarded deployment tools are documented in `docs/AGENT_SURFACE.md`.
-- **Openability verification and auto-healing**: PBIP output is checked by default for structure, JSON, TMDL, Power Query M, DAX, schemas, and report/model references. Deterministic DAX/M/visual healing and optional offline-first LLM correction are available through the CLI and MCP surface.
-- **Safety-first automation**: deployment is dry-run by default, credentials stay in environment variables, LLM refinement is opt-in, and fixes are applied only after re-validation.
-- **VS Code Extension**: assess, preview DAX, and migrate workbooks without leaving the editor — workbook tree view, assessment webview, one-click migrate, status bar, and a side-by-side DAX preview with editable overrides. Includes TextMate syntax highlighting for DAX and Tableau calculations. See `docs/VS_CODE_EXTENSION.md`.
-- **Interactive Notebook API v2**: `MigrationSession` gains interactive assessment (radar SVG), a filterable DAX explorer, a Mermaid relationship diagram, and step-by-step extract/convert/generate/validate helpers for Jupyter.
-- **Plugin SDK v2**: a versioned `MigrationPlugin` base class with formal hooks, manifest validation, error-isolated dispatch, and a `PluginTestRunner`. Backward compatible with the legacy hook-based plugins. See `docs/PLUGIN_SDK.md`.
-- **Marketplace v2**: pattern dependency resolution, remote catalogue sync, and curated Healthcare/Finance/Retail industry packs.
+This repo is currently validated on the following evidence-backed conditions:
 
-### Latest verified hardening (post-v44 baseline)
+- `python -m pytest tests/test_pbip_generator_coverage.py tests/test_openability.py -q` passed with `275 passed in 4.41s`.
+- Targeted real-world migrations for `examples/real_world/global_superstores_db.twb` and `examples/real_world/nba_player_stats.twbx` generated valid PBIP outputs and passed the local project-generation checks.
+- The static openability and model/report validation gates continue to fail closed on malformed outputs rather than silently passing a broken project.
+- Live Power BI Desktop and Fabric deployment remain explicit environment-gated checks; they are not inferred from static validation alone.
 
-- **Datasource-only projects now emit a valid SemanticModel contract** rather than a malformed report shell, which closes the gap that previously broke the PBIP manifest contract for model-only outputs.
-- **Openability checks fail closed** when the project lacks the required structure, report references, model references, or JSON/TMDL coherence.
-- **Quality evidence stays deterministic**: static validation is recorded with blocking checks, optional AI summaries only consume verified findings, and live Desktop/Fabric deployment remains explicit and environment-gated.
+### What is new in v45.0.0
+
+- **Static validation hardened around real-world blockers**: the generator now uses a stricter model/report contract and removes synthetic Tableau field references that were causing invalid visual-control bindings.
+- **Quality evidence is explicit and deterministic**: static validation, warnings, and repair actions are recorded without overstating live Desktop/Fabric readiness.
+- **MCP and CLI surfaces remain stable**: the concise 14-command CLI and quality/prioritization flows continue to document the verified static path cleanly.
+- **Safety-first automation**: deployment remains dry-run by default, credentials stay in environment variables, and optional AI assistance only acts on verified findings.
 
 These checks are part of the current verified baseline and are intended to raise confidence in local migration quality without overstating live Desktop or Fabric deployment readiness.
 

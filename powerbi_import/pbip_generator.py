@@ -1490,6 +1490,9 @@ class PowerBIProjectGenerator:
             _bim_props = {prop for (_, prop) in _bim_sym}
             if column_name not in _bim_props:
                 return
+        elif (column_name and hasattr(self, '_field_map') and
+              column_name not in self._field_map):
+            return
         _bim_measures = getattr(self, '_actual_bim_measure_names', None) or set()
         if column_name in _bim_measures:
             return
@@ -1546,6 +1549,9 @@ class PowerBIProjectGenerator:
             _bim_tables = {tbl for (tbl, _) in _bim_sym}
             if table_name not in _bim_tables:
                 return
+        elif hasattr(self, '_field_map') and not any(
+                entity == table_name for entity, _ in self._field_map.values()):
+            return
 
         vpos = self._make_visual_position(pos, scale_x, scale_y, visual_count)
         vx, vy, vw, vh = vpos['x'], vpos['y'], vpos['width'], vpos['height']

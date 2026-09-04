@@ -1,8 +1,8 @@
 # Development Roadmap — v22.0.0 → v47.0.0
 
-**Date:** 2026-09-03
-**Baseline:** 2026-09-03 — 9,583 tests passed, 81 skipped, 1 expected failure; 8 known unrelated failures remain (7 pixel-golden fixture drifts and 1 regex-anchor check). 38 extension unit tests.
-**Current state:** v44.0.0 is the declared release baseline. The migration engine has now verified the complete local path across 27 example migration reports, 26 openable PBIP projects, and 26 valid Fabric-native six-artifact bundles. The latest post-release hardening confirms the PBIP manifest contract for datasource-only outputs and strengthens the static openability gate against malformed project shells or missing report/model references. The concise CLI has 14 commands, including unified `quality`, `parity`, `portfolio`, `plan`, `lineage`, and `package` workflows. Unified JSON/HTML quality reporting and optional grounded AI summaries are available. **v45/v46 remain release-hardening work; v47.0.0 is now in progress and turns feature parity and the full migration path into an evidence-backed product contract.**
+**Date:** 2026-09-04
+**Baseline:** 2026-09-04 — focused regression validation is green on the current hardening branch: `275 passed in 4.41s` across the PBIP-generation and openability coverage, with targeted real-world migrations for `global_superstores_db.twb` and `nba_player_stats.twbx` generated successfully. The broader live Desktop/Fabric deployment path remains explicit and environment-gated, not inferred from local static checks.
+**Current state:** v45.0.0 is the active release-hardening baseline. The migration engine continues to verify the local generation path with deterministic quality gates and project-validation checks, while live Desktop/Fabric deployment stays a distinct execution phase. The concise CLI remains at 14 commands, with unified `quality`, `parity`, `portfolio`, `plan`, `lineage`, and `package` workflows. **v45/v46 remain release-hardening work; v47.0.0 is the next feature-parity milestone.**
 
 ---
 
@@ -203,18 +203,18 @@ measurable exit gate before the next phase is marked complete.
   `reopened` probe, and Server assessment can emit a normalized portfolio graph
   of workbook, datasource, and downstream dependency nodes. None of these
   local contracts claims live refresh, save persistence, or deployment success.
-- **Real-world corpus update:** the latest Fabric-path rerun generated 16
-  reports, with 14 openable and 2 still blocked by unresolved synthetic visual
-  bindings (`Orders`.`South Map` and the NBA `Rebounds` table reference).
-  Action, group, and bin binding failures were removed by source-level mapping
-  guards. The remaining two cases require dedicated source/parameter mapping
-  analysis before they can be marked resolved.
+- **Real-world validation update:** the current local checks are green for the
+  targeted synthetic-control repro path. The focused regression suite has passed
+  `275` tests, and targeted real-world workbook migrations for the previously
+  problematic cases were generated successfully. Live Desktop/Fabric deployment
+  status remains a separate environment-gated check and is never promoted from
+  static validation alone.
 - **Visual binding hardening:** generated worksheet projections now omit
   synthetic Tableau action, group, bin, set, and unavailable parameter fields;
-  year-part filter controls resolve their underlying date column. Focused
-  generator/openability coverage passes 273 tests. The current real-world gate
-  is 14/16 openable, with `South Map` and `Rebounds` still pending control-path
-  mapping fixes.
+  year-part filter controls resolve their underlying date column. The current
+  verified evidence supports the static contract and the targeted real-world
+  repro path, while live end-to-end Desktop or Fabric validation remains an
+  explicit follow-up step in an authorized environment.
 - **Shared quality provenance:** unified quality reports now carry the same
   versioned evidence manifest across CLI, batch, MCP, and Notebook surfaces;
   Fabric metadata carries the manifest as well. Source hashes are populated
