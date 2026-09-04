@@ -98,6 +98,14 @@ _PARTIAL_FUNCTIONS = re.compile(
     re.IGNORECASE,
 )
 
+_SUPPORTED_RAWSQL = re.compile(
+    r"^RAWSQL_(?:BOOL|INT|REAL|STR|DATE|DATETIME|SPATIAL)\s*\(\s*"
+    r"['\"]\s*(?:UPPER|LOWER|TRIM|LTRIM|RTRIM|LENGTH|ABS)\s*\(\s*%1\s*\)\s*['\"]\s*,\s*"
+    r"[^,()]+\s*\)$|"
+    r"^RAWSQL_(?:BOOL|INT|REAL|STR|DATE|DATETIME|SPATIAL)\s*\(\s*['\"]ROUND\s*\(\s*%1\s*,\s*\d+\s*\)\s*['\"]\s*,\s*[^,()]+\s*\)$",
+    re.IGNORECASE,
+)
+
 _LOD_PATTERN = re.compile(
     r'\{\s*(FIXED|INCLUDE|EXCLUDE)\s+', re.IGNORECASE,
 )
@@ -497,7 +505,11 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
             unsupported.append(name)
         if _SCRIPT_FUNCTIONS.search(formula):
             script_calcs.append(name)
-        if _PARTIAL_FUNCTIONS.search(formula):
+        partial_match = _PARTIAL_FUNCTIONS.search(formula)
+        if partial_match and not (
+            partial_match.group(1).upper().startswith('RAWSQL_')
+            and _SUPPORTED_RAWSQL.fullmatch(formula.strip())
+        ):
             partial.append(name)
         if _LOD_PATTERN.search(formula):
             lod_calcs.append(name)

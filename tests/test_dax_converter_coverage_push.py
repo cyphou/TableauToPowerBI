@@ -48,6 +48,7 @@ from tableau_export.dax_converter import (
     _convert_corr_covar,
     _convert_previous_value,
     _convert_lookup,
+    _convert_rawsql,
     _convert_find,
     _convert_str_to_format,
     _convert_float_to_convert,
@@ -78,6 +79,24 @@ from tableau_export.dax_converter import (
     _detect_script_language,
     _convert_datediff,
 )
+
+
+class TestRawSqlConversion(unittest.TestCase):
+    """RAWSQL only converts provider-independent scalar wrappers."""
+
+    def test_scalar_wrapper_is_converted(self):
+        result = _convert_rawsql('RAWSQL_STR("UPPER(%1)", [Name])')
+        self.assertEqual(result, 'UPPER([Name])')
+
+    def test_round_wrapper_preserves_precision_argument(self):
+        result = _convert_rawsql('RAWSQL_REAL("ROUND(%1, 2)", [Amount])')
+        self.assertEqual(result, 'ROUND([Amount], 2)')
+
+    def test_unsupported_sql_is_explicit_and_typed(self):
+        result = _convert_rawsql('RAWSQL_INT("REGEXP_REPLACE(%1, \'x\', \'y\')", [Name])')
+        self.assertIn('unsupported SQL', result)
+        self.assertIn('REGEXP_REPLACE', result)
+        self.assertTrue(result.endswith(' 0'))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

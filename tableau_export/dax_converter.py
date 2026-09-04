@@ -222,6 +222,7 @@ _RE_DATE_LITERAL = re.compile(r'#(\d{4})-(\d{2})-(\d{2})#')
 _RE_COLUMN_RESOLVE = re.compile(r"(?<!')\[([^\]]+)\]")
 _RE_PREVIOUS_VALUE = re.compile(r'\bPREVIOUS_VALUE\s*\(', re.IGNORECASE)
 _RE_LOOKUP = re.compile(r'\bLOOKUP\s*\(', re.IGNORECASE)
+_RE_RAWSQL = re.compile(r'\bRAWSQL_(?:BOOL|INT|REAL|STR|DATE|DATETIME|SPATIAL)\s*\(', re.IGNORECASE)
 _RE_FIND = re.compile(r'\bFIND\s*\(', re.IGNORECASE)
 _RE_TOTAL = re.compile(r'\bTOTAL\s*\(', re.IGNORECASE)
 _RE_LOD_NO_DIM = re.compile(
@@ -369,6 +370,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_regexp_extract(dax)
     dax = _convert_regexp_extract_nth(dax)
     dax = _convert_regexp_replace(dax)
+    dax = _convert_rawsql(dax)
     dax = _convert_attr(dax, measure_names)
 
     # 3b. Apply all simple function mappings (table-driven)
@@ -860,6 +862,50 @@ def _convert_lookup(dax, table_name, compute_using=None, column_table_map=None):
             )
             dax = dax[:match.start()] + replacement + dax[i:]
         match = pattern.search(dax, match.start() + 1 if depth != 0 else 0)
+    return dax
+
+
+def _convert_rawsql(dax):
+    """Convert a narrow whitelist of scalar ``RAWSQL_*`` wrappers.
+
+    Tableau RAWSQL accepts arbitrary database-specific SQL, which cannot be
+    translated safely in a model-independent way. Only one-argument scalar
+    wrappers with a single ``%1`` placeholder are converted; every other form
+    becomes a typed BLANK with the original template preserved in a note.
+    """
+    safe_wrappers = {
+        'UPPER': 'UPPER', 'LOWER': 'LOWER', 'TRIM': 'TRIM',
+        'LTRIM': 'TRIM', 'RTRIM': 'TRIM', 'LENGTH': 'LEN',
+        'ABS': 'ABS', 'ROUND': 'ROUND',
+    }
+
+    def _xf(args, function_name):
+        type_suffix = function_name.rsplit('_', 1)[-1].upper()
+        fallback = '0' if type_suffix in ('BOOL', 'INT', 'REAL') else 'BLANK()'
+        if not args:
+            return f'/* {function_name}: missing SQL template — manual conversion needed */ {fallback}'
+        template = args[0].strip()
+        if len(template) < 2 or template[0] not in ('"', "'") or template[-1] != template[0]:
+            return f'/* {function_name}: SQL template must be a literal — manual conversion needed */ {fallback}'
+        sql = template[1:-1]
+        value_args = [arg.strip() for arg in args[1:]]
+        if '%1' not in sql or any(f'%{index}' in sql for index in range(2, 10)) or len(value_args) != 1:
+            return f'/* {function_name}({sql}): unsupported SQL — manual conversion needed */ {fallback}'
+        match = re.fullmatch(r'\s*([A-Za-z]+)\s*\(\s*%1(?:\s*,\s*([0-9]+))?\s*\)\s*', sql)
+        if not match or match.group(1).upper() not in safe_wrappers:
+            return f'/* {function_name}({sql}): unsupported SQL — manual conversion needed */ {fallback}'
+        dax_function = safe_wrappers[match.group(1).upper()]
+        value = value_args[0]
+        if dax_function == 'ROUND':
+            return f'ROUND({value}, {match.group(2) or "0"})'
+        return f'{dax_function}({value})'
+
+    for function_name in ('RAWSQL_BOOL', 'RAWSQL_INT', 'RAWSQL_REAL', 'RAWSQL_STR',
+                          'RAWSQL_DATE', 'RAWSQL_DATETIME', 'RAWSQL_SPATIAL'):
+        dax = _transform_func_call(
+            dax, function_name,
+            lambda args, inner, _name=function_name: _xf(args, _name),
+        )
     return dax
 
 

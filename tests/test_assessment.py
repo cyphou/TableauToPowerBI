@@ -296,6 +296,22 @@ class TestCheckCalculations(unittest.TestCase):
         cat = _check_calculations(ext)
         self.assertEqual(cat.worst_severity, WARN)
 
+    def test_supported_rawsql_wrapper_is_not_partial_warning(self):
+        ext = {'calculations': [
+            {'name': 'UpperName', 'formula': 'RAWSQL_STR("UPPER(%1)", [Name])'},
+        ]}
+        cat = _check_calculations(ext)
+        partial_checks = [c for c in cat.checks if c.name == 'Partially-supported functions']
+        self.assertEqual(partial_checks[0].severity, PASS)
+
+    def test_unsupported_rawsql_remains_partial_warning(self):
+        ext = {'calculations': [
+            {'name': 'DbRegex', 'formula': 'RAWSQL_STR("REGEXP_REPLACE(%1, \'x\', \'y\')", [Name])'},
+        ]}
+        cat = _check_calculations(ext)
+        partial_checks = [c for c in cat.checks if c.name == 'Partially-supported functions']
+        self.assertEqual(partial_checks[0].severity, WARN)
+
     def test_lod_detected(self):
         ext = {'calculations': [
             {'name': 'LOD', 'caption': 'LOD', 'formula': '{FIXED [Region] : SUM([Sales])}'},

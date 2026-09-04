@@ -67,6 +67,7 @@ from m_query_builder import (
     m_transform_add_column,
     m_transform_conditional_column,
 )
+from powerbi_import.m_validator import validate_m_query
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -424,6 +425,17 @@ class TestFilterTransforms(unittest.TestCase):
         self.assertIn("Filtered Contains", name)
         self.assertIn("Text.Contains", expr)
         self.assertIn("Corp", expr)
+
+    def test_metadata_quotes_are_escaped_and_query_validates(self):
+        base_query = 'let\n    Source = Table.FromRows({})\nin\n    Source'
+        steps = [
+            m_transform_filter_contains('Customer "Name"', 'A "quoted" value'),
+            m_transform_split_by_delimiter('Customer "Name"', '\\'),
+        ]
+        query = inject_m_steps(base_query, steps)
+        self.assertIn('[#"Customer ""Name"""]', query)
+        self.assertIn('"A ""quoted"" value"', query)
+        self.assertEqual(validate_m_query(query), [])
 
     def test_distinct_all(self):
         name, expr = m_transform_distinct()

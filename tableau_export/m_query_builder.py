@@ -85,6 +85,16 @@ def _m_escape_string(value):
     return (value or '').replace('"', '""')
 
 
+def _m_literal(value):
+    """Return *value* as an escaped M text literal."""
+    return '"' + _m_escape_string(str(value)) + '"'
+
+
+def _m_field_ref(name):
+    """Return a quoted M field reference for arbitrary Tableau metadata."""
+    return '[#' + _m_literal(name) + ']'
+
+
 def _odbc_escape(value):
     """Sanitise a value for embedding inside an ODBC connection string.
 
@@ -1516,31 +1526,33 @@ def inject_m_steps(m_query, steps):
 
 def m_transform_rename(renames):
     """Rename columns. renames: dict {old_name: new_name}"""
-    pairs = ', '.join([f'{{"{old}", "{new}"}}' for old, new in renames.items()])
+    pairs = ', '.join([f'{{{_m_literal(old)}, {_m_literal(new)}}}'
+                       for old, new in renames.items()])
     return ('#"Renamed Columns"', f'Table.RenameColumns({{prev}}, {{{pairs}}})')
 
 
 def m_transform_remove_columns(columns):
     """Remove specified columns."""
-    cols = ', '.join([f'"{c}"' for c in columns])
+    cols = ', '.join([_m_literal(c) for c in columns])
     return ('#"Removed Columns"', f'Table.RemoveColumns({{prev}}, {{{cols}}})')
 
 
 def m_transform_select_columns(columns):
     """Keep only specified columns."""
-    cols = ', '.join([f'"{c}"' for c in columns])
+    cols = ', '.join([_m_literal(c) for c in columns])
     return ('#"Selected Columns"', f'Table.SelectColumns({{prev}}, {{{cols}}})')
 
 
 def m_transform_duplicate_column(source_col, new_col):
     """Duplicate a column."""
     return ('#"Duplicated Column"',
-            f'Table.DuplicateColumn({{prev}}, "{source_col}", "{new_col}")')
+            f'Table.DuplicateColumn({{prev}}, {_m_literal(source_col)}, '
+            f'{_m_literal(new_col)})')
 
 
 def m_transform_reorder_columns(column_order):
     """Reorder columns."""
-    cols = ', '.join([f'"{c}"' for c in column_order])
+    cols = ', '.join([_m_literal(c) for c in column_order])
     return ('#"Reordered Columns"', f'Table.ReorderColumns({{prev}}, {{{cols}}})')
 
 
@@ -1549,19 +1561,20 @@ def m_transform_split_by_delimiter(column, delimiter, num_parts=None):
     name = f'#"Split {column}"'
     if num_parts:
         return (name,
-                f'Table.SplitColumn({{prev}}, "{column}", '
-                f'Splitter.SplitTextByDelimiter("{delimiter}", QuoteStyle.None), {num_parts})')
+                f'Table.SplitColumn({{prev}}, {_m_literal(column)}, '
+                f'Splitter.SplitTextByDelimiter({_m_literal(delimiter)}, QuoteStyle.None), {num_parts})')
     return (name,
-            f'Table.SplitColumn({{prev}}, "{column}", '
-            f'Splitter.SplitTextByDelimiter("{delimiter}", QuoteStyle.None))')
+            f'Table.SplitColumn({{prev}}, {_m_literal(column)}, '
+            f'Splitter.SplitTextByDelimiter({_m_literal(delimiter)}, QuoteStyle.None))')
 
 
 def m_transform_merge_columns(columns, new_name, separator=" "):
     """Merge multiple columns into one."""
-    cols = ', '.join([f'"{c}"' for c in columns])
+    cols = ', '.join([_m_literal(c) for c in columns])
     return ('#"Merged Columns"',
             f'Table.CombineColumns({{prev}}, {{{cols}}}, '
-            f'Combiner.CombineTextByDelimiter("{separator}", QuoteStyle.None), "{new_name}")')
+            f'Combiner.CombineTextByDelimiter({_m_literal(separator)}, QuoteStyle.None), '
+            f'{_m_literal(new_name)})')
 
 
 # ── Value operations ──────────────────────────────────────────────────────────
@@ -1569,15 +1582,15 @@ def m_transform_merge_columns(columns, new_name, separator=" "):
 def m_transform_replace_value(column, old_value, new_value, replace_text=True):
     """Replace values in a column."""
     replacer = 'Replacer.ReplaceText' if replace_text else 'Replacer.ReplaceValue'
-    old_repr = f'"{old_value}"' if isinstance(old_value, str) else ('null' if old_value is None else str(old_value))
-    new_repr = f'"{new_value}"' if isinstance(new_value, str) else ('null' if new_value is None else str(new_value))
+    old_repr = _m_literal(old_value) if isinstance(old_value, str) else ('null' if old_value is None else str(old_value))
+    new_repr = _m_literal(new_value) if isinstance(new_value, str) else ('null' if new_value is None else str(new_value))
     return ('#"Replaced Values"',
             f'Table.ReplaceValue({{prev}}, {old_repr}, {new_repr}, {replacer}, {{"{column}"}})')
 
 
 def m_transform_replace_nulls(column, default_value):
     """Replace null values with a default."""
-    val_repr = f'"{default_value}"' if isinstance(default_value, str) else str(default_value)
+    val_repr = _m_literal(default_value) if isinstance(default_value, str) else str(default_value)
     return (f'#"Replaced Nulls in {column}"',
             f'Table.ReplaceValue({{prev}}, null, {val_repr}, Replacer.ReplaceValue, {{"{column}"}})')
 
@@ -1632,20 +1645,20 @@ def m_transform_filter_values(column, keep_values):
     if not keep_values:
         return ('#"Filtered Rows"', '{prev}')
     if len(keep_values) == 1:
-        condition = f'each [#"{column}"] = "{keep_values[0]}"'
+        condition = f'each {_m_field_ref(column)} = {_m_literal(keep_values[0])}'
     else:
-        vals = ', '.join([f'"{v}"' for v in keep_values])
-        condition = f'each List.Contains({{{vals}}}, [#"{column}"])'
+        vals = ', '.join([_m_literal(v) for v in keep_values])
+        condition = f'each List.Contains({{{vals}}}, {_m_field_ref(column)})'
     return ('#"Filtered Rows"', f'Table.SelectRows({{prev}}, {condition})')
 
 
 def m_transform_exclude_values(column, exclude_values):
     """Exclude rows where column matches specified values."""
     if len(exclude_values) == 1:
-        condition = f'each [#"{column}"] <> "{exclude_values[0]}"'
+        condition = f'each {_m_field_ref(column)} <> {_m_literal(exclude_values[0])}'
     else:
-        vals = ', '.join([f'"{v}"' for v in exclude_values])
-        condition = f'each not List.Contains({{{vals}}}, [#"{column}"])'
+        vals = ', '.join([_m_literal(v) for v in exclude_values])
+        condition = f'each not List.Contains({{{vals}}}, {_m_field_ref(column)})'
     return ('#"Excluded Rows"', f'Table.SelectRows({{prev}}, {condition})')
 
 
@@ -1653,9 +1666,9 @@ def m_transform_filter_range(column, min_val=None, max_val=None):
     """Keep rows in a numeric or date range."""
     conditions = []
     if min_val is not None:
-        conditions.append(f'[#"{column}"] >= {min_val}')
+        conditions.append(f'{_m_field_ref(column)} >= {min_val}')
     if max_val is not None:
-        conditions.append(f'[#"{column}"] <= {max_val}')
+        conditions.append(f'{_m_field_ref(column)} <= {max_val}')
     condition = ' and '.join(conditions) if conditions else 'true'
     return ('#"Filtered Range"', f'Table.SelectRows({{prev}}, each {condition})')
 
@@ -1663,13 +1676,13 @@ def m_transform_filter_range(column, min_val=None, max_val=None):
 def m_transform_filter_nulls(column, keep_nulls=False):
     """Filter null or non-null values."""
     op = '=' if keep_nulls else '<>'
-    return ('#"Filtered Nulls"', f'Table.SelectRows({{prev}}, each [#"{column}"] {op} null)')
+    return ('#"Filtered Nulls"', f'Table.SelectRows({{prev}}, each {_m_field_ref(column)} {op} null)')
 
 
 def m_transform_filter_contains(column, text):
     """Keep rows where column contains text (wildcard match)."""
     return ('#"Filtered Contains"',
-            f'Table.SelectRows({{prev}}, each Text.Contains([#"{column}"], "{text}"))')
+            f'Table.SelectRows({{prev}}, each Text.Contains({_m_field_ref(column)}, {_m_literal(text)}))')
 
 
 def m_transform_distinct(columns=None):
