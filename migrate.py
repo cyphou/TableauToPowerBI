@@ -1404,6 +1404,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         return _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, display_name)
 
     file_results = {}
+    extracted_objects = {}
 
     # Step 1: Extract
     if not skip_extraction:
@@ -1413,6 +1414,12 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
             return {'success': False, 'error': 'extraction', 'report_name': basename,
                     'output_dir': workbook_output_dir,
                     'metadata_path': os.path.join(workbook_output_dir, basename, 'migration_metadata.json')}
+        try:
+            from import_to_powerbi import PowerBIImporter
+            extracted_objects = PowerBIImporter(
+                source_dir=_get_extract_dir())._load_converted_objects()
+        except (ImportError, OSError, ValueError) as exc:
+            logger.warning("Could not snapshot extraction for %s: %s", display_name, exc)
     else:
         file_results['extraction'] = True
 
@@ -1452,6 +1459,24 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         project_dir = os.path.join(workbook_output_dir, basename)
         file_results['openability'] = _run_openability_gate(project_dir)
 
+    quality_status = None
+    quality_json = None
+    if file_results.get('generation') and extracted_objects:
+        try:
+            from powerbi_import.migration_quality import build_quality_report
+            project_dir = os.path.join(workbook_output_dir, basename)
+            quality_report = build_quality_report(
+                extracted_objects, project_dir, basename)
+            quality_json = os.path.join(
+                workbook_output_dir, f'migration_quality_{basename}.json')
+            quality_html = os.path.join(
+                workbook_output_dir, f'migration_quality_{basename}.html')
+            quality_report.save_json(quality_json)
+            quality_report.save_html(quality_html)
+            quality_status = quality_report.status
+        except (ImportError, OSError, ValueError) as exc:
+            logger.warning("Quality report failed for %s: %s", display_name, exc)
+
     all_ok = all(v for v in file_results.values() if v is not None)
     return {
         'success': all_ok,
@@ -1460,6 +1485,8 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         'report_name': basename,
         'output_dir': workbook_output_dir,
         'metadata_path': os.path.join(workbook_output_dir, basename, 'migration_metadata.json'),
+        'quality_status': quality_status,
+        'quality_json': quality_json,
     }
 
 
@@ -1558,6 +1585,13 @@ def _print_batch_summary(batch_results, batch_duration, migrated_root):
     print(f"  Succeeded:       {succeeded}")
     print(f"  Failed:          {failed}")
     print(f"  Duration:        {batch_duration}")
+    quality_results = [r for r in wb_results.values() if r.get('quality_status')]
+    if quality_results:
+        quality_pass = sum(1 for r in quality_results if r['quality_status'] == 'PASS')
+        quality_warn = sum(1 for r in quality_results if r['quality_status'] == 'WARN')
+        quality_fail = sum(1 for r in quality_results if r['quality_status'] == 'FAIL')
+        print(f"  Quality reports: {len(quality_results)} "
+              f"(PASS {quality_pass}, WARN {quality_warn}, FAIL {quality_fail})")
     print()
 
     # Workbook summary table

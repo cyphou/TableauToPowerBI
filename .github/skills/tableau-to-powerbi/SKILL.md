@@ -70,6 +70,12 @@ feature scorecard, `portfolio` for folder assessment, `plan` for migration waves
 `lineage` for Prep flows, and `package` for a stakeholder deliverable. Add
 `--quality-strict` when CI should fail on quality blockers.
 
+Batch migration writes a unified quality JSON and HTML report beside each
+successful workbook output and prints aggregate PASS/WARN/FAIL counts. Extraction
+data is snapshotted per workbook before the next batch item starts, so parallel
+or resumed batches do not compare a target against another workbook's source
+snapshot.
+
 Run `.venv\Scripts\python.exe migrate.py --help` for the concise list. Existing
 flag-based automation remains compatible; `--advanced-help` exposes legacy options
 including `--assess`, `--batch`, and `--qa`. Prefer the subcommands for new workflows.
