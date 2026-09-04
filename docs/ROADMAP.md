@@ -209,6 +209,12 @@ measurable exit gate before the next phase is marked complete.
   Action, group, and bin binding failures were removed by source-level mapping
   guards. The remaining two cases require dedicated source/parameter mapping
   analysis before they can be marked resolved.
+- **Visual binding hardening:** generated worksheet projections now omit
+  synthetic Tableau action, group, bin, set, and unavailable parameter fields;
+  year-part filter controls resolve their underlying date column. Focused
+  generator/openability coverage passes 273 tests. The current real-world gate
+  is 14/16 openable, with `South Map` and `Rebounds` still pending control-path
+  mapping fixes.
 - **Shared quality provenance:** unified quality reports now carry the same
   versioned evidence manifest across CLI, batch, MCP, and Notebook surfaces;
   Fabric metadata carries the manifest as well. Source hashes are populated

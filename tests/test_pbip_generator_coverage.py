@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import sys
@@ -532,6 +533,24 @@ class TestBuildVisualQuery(unittest.TestCase):
         self.gen._output_format = 'fabric'
         self.assertIsNone(self._query('bar', [
             {'name': 'South Map'}, {'name': 'Rebounds'}]))
+
+    def test_year_filter_control_resolves_underlying_date_column(self):
+        self.gen._field_map['Order Date'] = ('Orders', 'Order Date')
+        self.gen._actual_bim_symbols = {('Orders', 'Order Date')}
+        with tempfile.TemporaryDirectory() as tmp:
+            self.gen._create_visual_filter_control(
+                tmp,
+                {'name': 'South Map', 'field': 'Order Date',
+                 'calc_column_id': 'Order Date',
+                 'param': '[ds].[yr:Order Date:ok]',
+                 'position': {'x': 0, 'y': 0, 'w': 100, 'h': 100}},
+                1.0, 1.0, 0, {}, {'datasources': []})
+            visual_files = list(Path(tmp).rglob('visual.json'))
+            self.assertEqual(len(visual_files), 1)
+            payload = json.loads(visual_files[0].read_text(encoding='utf-8'))
+            projection = payload['visual']['query']['queryState']['Values']['projections'][0]
+            self.assertEqual(projection['field']['Column']['Expression']['SourceRef']['Entity'], 'Orders')
+            self.assertEqual(projection['field']['Column']['Property'], 'Order Date')
 
     def test_map_type(self):
         fields = [{'name': 'Region'}, {'name': 'Revenue'}]

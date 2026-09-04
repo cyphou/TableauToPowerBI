@@ -1468,7 +1468,7 @@ class PowerBIProjectGenerator:
             param_ref = obj.get('param', '')
             if param_ref:
                 import re
-                pm = re.search(r'\.\[(?:usr|none):([^:]+):', param_ref)
+                pm = re.search(r'\.\[(?:usr|none|yr|qr|mo|wk|dy):([^:]+):', param_ref)
                 if pm:
                     column_name = calc_id_to_caption.get(pm.group(1), '')
         if not column_name:
