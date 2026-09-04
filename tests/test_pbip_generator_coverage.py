@@ -504,6 +504,35 @@ class TestBuildVisualQuery(unittest.TestCase):
         fields = [{'name': 'Measure Names'}, {'name': 'Measure Values'}]
         self.assertIsNone(self._query('bar', fields))
 
+    def test_action_fields_are_not_bound_as_model_columns(self):
+        fields = [{'name': 'Action (Region)'},
+                  {'name': 'Action (YEAR(Date (year)))'}]
+        self.assertIsNone(self._query('bar', fields))
+
+    def test_missing_parameter_table_is_not_mapped(self):
+        self.gen._actual_bim_symbols = {('Sales', 'Revenue')}
+        self.gen._build_field_mapping({
+            'datasources': [{'tables': [{'name': 'Sales', 'columns': []}],
+                             'columns': [], 'calculations': []}],
+            'parameters': [{'name': 'Rebounds', 'caption': 'Rebounds',
+                            'domain_type': 'list'}],
+            'calculations': [], 'groups': [],
+        })
+        self.assertNotIn('Rebounds', self.gen._field_map)
+
+    def test_unavailable_synthetic_fields_are_not_bound(self):
+        self.gen._unavailable_parameter_names = {'Rebounds'}
+        self.assertIsNone(self._query('bar', [
+            {'name': 'Rebounds'},
+            {'name': 'Sub-Category (group)'},
+            {'name': 'io:BurstoutSet'},
+        ]))
+
+    def test_fabric_placeholder_fields_are_not_bound(self):
+        self.gen._output_format = 'fabric'
+        self.assertIsNone(self._query('bar', [
+            {'name': 'South Map'}, {'name': 'Rebounds'}]))
+
     def test_map_type(self):
         fields = [{'name': 'Region'}, {'name': 'Revenue'}]
         result = self._query('map', fields)

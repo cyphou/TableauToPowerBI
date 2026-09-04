@@ -203,6 +203,12 @@ measurable exit gate before the next phase is marked complete.
   `reopened` probe, and Server assessment can emit a normalized portfolio graph
   of workbook, datasource, and downstream dependency nodes. None of these
   local contracts claims live refresh, save persistence, or deployment success.
+- **Real-world corpus update:** the latest Fabric-path rerun generated 16
+  reports, with 14 openable and 2 still blocked by unresolved synthetic visual
+  bindings (`Orders`.`South Map` and the NBA `Rebounds` table reference).
+  Action, group, and bin binding failures were removed by source-level mapping
+  guards. The remaining two cases require dedicated source/parameter mapping
+  analysis before they can be marked resolved.
 - **Shared quality provenance:** unified quality reports now carry the same
   versioned evidence manifest across CLI, batch, MCP, and Notebook surfaces;
   Fabric metadata carries the manifest as well. Source hashes are populated
