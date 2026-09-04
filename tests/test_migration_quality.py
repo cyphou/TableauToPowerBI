@@ -83,6 +83,33 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.openability_confidence['semantic_execution'], 'not_run')
         self.assertEqual(report.blockers, [])
         self.assertEqual(report.warnings, [])
+        self.assertEqual(report.semantic_context['execution'], 'not_run')
+
+    def test_static_lod_diagnostics_are_reported_without_changing_status(self):
+        extracted = {
+            'datasources': [{
+                'tables': [{'name': 'Sales', 'columns': [{'name': 'Territory'}]}],
+                'calculations': [{
+                    'caption': 'Sales by territory',
+                    'formula': "{FIXED [MissingTerritory] : SUM([Amount])}",
+                }],
+                'relationships': [],
+            }],
+        }
+        with patch('powerbi_import.migration_quality.run_assessment',
+                   return_value=_Assessment()), \
+             patch('powerbi_import.migration_quality.scan_project') as scan, \
+             patch('powerbi_import.migration_quality.compare_report_tables',
+                   return_value={'summary': {'source_tables': 1, 'tables_found': 1}}), \
+             patch('powerbi_import.migration_quality.compare_report_interface',
+                   return_value={'filters': {'covered': True}, 'parameters': {'covered': True}}), \
+             patch('powerbi_import.migration_quality.check_openability',
+                   return_value=_Openability()):
+            scan.return_value.to_dict.return_value = {'gaps': []}
+            report = build_quality_report(extracted, 'project', 'Demo')
+        self.assertEqual(report.status, 'PASS')
+        self.assertEqual(report.semantic_context['issue_count'], 1)
+        self.assertIn('not present', report.semantic_context['lod_issues'][0]['issue'])
 
     def test_unsupported_feature_is_blocker(self):
         report = self._build(parity={

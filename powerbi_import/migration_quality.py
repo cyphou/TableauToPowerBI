@@ -27,6 +27,7 @@ from powerbi_import.interface_diff import compare_report_interface
 from powerbi_import.openability import check_openability
 from powerbi_import.parity_registry import scan_project
 from powerbi_import.powerquery_diff import compare_report_tables
+from powerbi_import.semantic_execution_validator import SemanticExecutionValidator
 
 
 @dataclass
@@ -45,6 +46,7 @@ class MigrationQualityReport:
     openability_confidence: Dict[str, Any] = field(default_factory=dict)
     desktop: Dict[str, Any] = field(default_factory=dict)
     fabric: Dict[str, Any] = field(default_factory=dict)
+    semantic_context: Dict[str, Any] = field(default_factory=dict)
     priorities: list[Dict[str, Any]] = field(default_factory=list)
     ai_summary: str = ""
     ai_source: str = "none"
@@ -66,6 +68,7 @@ class MigrationQualityReport:
             "openability_confidence": self.openability_confidence,
             "desktop": self.desktop,
             "fabric": self.fabric,
+            "semantic_context": self.semantic_context,
         }
 
     def save_json(self, path: str) -> str:
@@ -230,6 +233,42 @@ def _build_priorities(parity: Dict[str, Any], blockers: list[str],
     return priorities
 
 
+def _semantic_context_validation(extracted: Dict[str, Any]) -> Dict[str, Any]:
+    """Collect static LOD diagnostics without implying DAX execution."""
+    column_table_map: Dict[str, str] = {}
+    calculations = []
+    relationships = []
+    for datasource in extracted.get("datasources", []) or []:
+        for table in datasource.get("tables", []) or []:
+            table_name = table.get("name", "")
+            for column in table.get("columns", []) or []:
+                column_name = column.get("name", "")
+                if column_name and table_name and column_name not in column_table_map:
+                    column_table_map[column_name] = table_name
+        calculations.extend(datasource.get("calculations", []) or [])
+        relationships.extend(datasource.get("relationships", []) or [])
+    calculations.extend(extracted.get("calculations", []) or [])
+    validator = SemanticExecutionValidator()
+    issues = []
+    for calculation in calculations:
+        formula = calculation.get("formula", "")
+        if not formula:
+            continue
+        issues.extend({
+            "calculation": calculation.get("caption", calculation.get("name", "")),
+            "issue": issue,
+        } for issue in validator.validate_lod_grain_compatibility(
+            formula, column_table_map, relationships
+        ))
+    return {
+        "status": "static_diagnostics",
+        "calculations_scanned": len(calculations),
+        "lod_issues": issues,
+        "issue_count": len(issues),
+        "execution": "not_run",
+    }
+
+
 def build_quality_report(extracted: Dict, project_dir: str,
                          report_name: str) -> MigrationQualityReport:
     """Run all local quality checks and aggregate their verified results."""
@@ -239,6 +278,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
     interface = compare_report_interface(extracted or {}, project_dir, report_name)
     openability = check_openability(project_dir)
     fabric = _fabric_validation(project_dir, report_name)
+    semantic_context = _semantic_context_validation(extracted or {})
     openability_dict = _openability_dict(openability)
     confidence = _openability_confidence(openability_dict, fabric)
 
@@ -276,6 +316,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         openability=openability_dict,
         openability_confidence=confidence,
         fabric=fabric,
+        semantic_context=semantic_context,
         status=status,
         blockers=blockers,
         warnings=warnings,

@@ -34,7 +34,7 @@ class SemanticExecutionValidator:
         issues: List[str] = []
         for match in _LOD_RE.finditer(expression or ""):
             lod_type = match.group(1).upper()
-            dimensions = self._extract_dimensions(match.group(2))
+            dimensions = self._extract_dimensions(match.group(2), column_table_map)
             for table, column in dimensions:
                 known_table = column_table_map.get(column)
                 if known_table is None:
@@ -66,12 +66,22 @@ class SemanticExecutionValidator:
         return issues
 
     @staticmethod
-    def _extract_dimensions(text: str) -> List[Tuple[str, str]]:
+    def _extract_dimensions(
+        text: str, column_table_map: Mapping[str, str]
+    ) -> List[Tuple[str, str]]:
         dimensions: List[Tuple[str, str]] = []
+        qualified_spans = set()
         for match in _COLUMN_RE.finditer(text):
-            table = match.group(1) or match.group(2)
-            table = table.replace("''", "'").strip()
-            dimensions.append((table, match.group(3).strip()))
+            table = (match.group(1) or match.group(2)).replace("''", "'").strip()
+            column = match.group(3).strip()
+            dimensions.append((table, column))
+            qualified_spans.add((match.start(), match.end()))
+        for match in re.finditer(r"\[([^\]]+)\]", text):
+            if any(start <= match.start() < end for start, end in qualified_spans):
+                continue
+            column = match.group(1).strip()
+            table = column_table_map.get(column)
+            dimensions.append((table or "", column))
         return dimensions
 
     @staticmethod
@@ -91,7 +101,16 @@ class SemanticExecutionValidator:
             (cls._value(relationship, "toTable", "to_table"),
              cls._value(relationship, "toColumn", "to_column")),
         )
-        return any(
+        if any(
             str(endpoint_table) == table and str(endpoint_column) == column
             for endpoint_table, endpoint_column in endpoints
-        )
+        ):
+            return True
+        for side in ("left", "right", "from", "to"):
+            nested = relationship.get(side)
+            if isinstance(nested, Mapping):
+                nested_table = nested.get("table", nested.get("name"))
+                nested_column = nested.get("column")
+                if str(nested_table) == table and str(nested_column) == column:
+                    return True
+        return False

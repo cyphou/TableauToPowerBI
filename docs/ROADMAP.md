@@ -146,12 +146,12 @@ measurable exit gate before the next phase is marked complete.
   latest focused readiness run passed 581 tests with 4 skipped.
 - **Phase 2 — Semantic execution validation:** active development target.
   The first static slice is now available in
-  `powerbi_import/semantic_execution_validator.py`: it checks converted
-  `FIXED`/`INCLUDE`/`EXCLUDE` dimensions against the semantic model and reports
-  missing dimensions, table-resolution mismatches, and many-to-many grain
-  risks. The validator is deliberately standalone until typed execution
-  adapters are available, so it cannot promote static findings to runtime
-  equivalence. Next work adds representative measure, calculated-column,
+  `powerbi_import/semantic_execution_validator.py`, integrated into the
+  unified quality report as non-blocking `semantic_context` evidence. It checks
+  converted `FIXED`/`INCLUDE`/`EXCLUDE` dimensions against the semantic model
+  and reports missing dimensions, table-resolution mismatches, and many-to-many
+  grain risks. It cannot promote static findings to runtime equivalence. Next
+  work adds representative measure, calculated-column,
   relationship, date, blank, filter, and table-calculation execution checks.
 - **Phase 2 evidence:** focused LOD validation currently passes 4 tests covering
   valid dimensions and the three principal warning paths. Execution status in
