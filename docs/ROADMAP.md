@@ -167,6 +167,9 @@ measurable exit gate before the next phase is marked complete.
   single-workbook CLI. Batch migrations now snapshot extraction data per
   workbook and write per-item unified JSON/HTML quality reports plus aggregate
   PASS/WARN/FAIL counts and a machine-readable `batch_quality_summary.json`.
+  Batch items now also feed the shared zero-touch history, with quality blockers
+  recorded distinctly from migration failures. This behavior is now applied at
+  the batch summary boundary as well as the single-workbook path.
   Notebook sessions now expose `quality_report()` against
   the session extraction snapshot and generated project. Live Desktop and
   Fabric evidence remain explicit environment-gated follow-ups rather than

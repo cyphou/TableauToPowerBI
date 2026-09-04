@@ -1610,6 +1610,19 @@ def _print_batch_summary(batch_results, batch_duration, migrated_root):
         with open(quality_summary_path, 'w', encoding='utf-8') as handle:
             json.dump(quality_summary, handle, indent=2, ensure_ascii=False)
         print(f"  Quality summary: {quality_summary_path}")
+
+    try:
+        from powerbi_import.feedback_loop import ZeroTouchTracker
+        tracker = ZeroTouchTracker(
+            history_path=os.path.join(migrated_root, 'zero_touch_history.json'))
+        for name, result in wb_results.items():
+            success, failure_mode = _quality_zero_touch_result(
+                bool(result.get('success')), result.get('quality_status'))
+            tracker.record(name, success=success, failure_mode=failure_mode)
+        if wb_results:
+            tracker.save()
+    except (ImportError, OSError, ValueError) as exc:
+        logger.warning("Batch zero-touch tracking failed: %s", exc)
     print()
 
     # Workbook summary table
@@ -5892,7 +5905,9 @@ def _quality_zero_touch_result(all_success, quality_report):
     """Keep unified quality blockers out of zero-touch success metrics."""
     if not all_success:
         return False, 'migration_failed'
-    if quality_report is not None and getattr(quality_report, 'status', '') == 'FAIL':
+    quality_status = (quality_report if isinstance(quality_report, str)
+                      else getattr(quality_report, 'status', ''))
+    if quality_status == 'FAIL':
         return False, 'quality_blocker'
     return True, ''
 

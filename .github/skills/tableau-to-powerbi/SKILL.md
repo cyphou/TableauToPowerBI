@@ -75,7 +75,9 @@ successful workbook output and prints aggregate PASS/WARN/FAIL counts. Extractio
 data is snapshotted per workbook before the next batch item starts, so parallel
 or resumed batches do not compare a target against another workbook's source
 snapshot. The batch root also contains `batch_quality_summary.json` with
-per-workbook statuses and report paths for CI or downstream automation.
+per-workbook statuses and report paths for CI or downstream automation. Batch
+outcomes also update `zero_touch_history.json`; a quality `FAIL` is recorded as
+`quality_blocker` rather than a successful migration.
 
 Run `.venv\Scripts\python.exe migrate.py --help` for the concise list. Existing
 flag-based automation remains compatible; `--advanced-help` exposes legacy options

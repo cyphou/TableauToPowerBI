@@ -241,6 +241,10 @@ class TestZeroTouchTracker(unittest.TestCase):
         quality = type('Quality', (), {'status': 'PASS'})()
         self.assertEqual(_quality_zero_touch_result(True, quality), (True, ''))
 
+    def test_failed_migration_is_not_zero_touch_success(self):
+        self.assertEqual(_quality_zero_touch_result(False, None),
+                         (False, 'migration_failed'))
+
     def test_all_success(self):
         tracker = ZeroTouchTracker()
         tracker.record('wb1', success=True)
