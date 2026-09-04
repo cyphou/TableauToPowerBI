@@ -149,6 +149,23 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.semantic_context['measure_context']['status'],
                          'static_diagnostics')
 
+    def test_generated_filter_context_diagnostics_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tables = os.path.join(tmp, 'Demo.SemanticModel', 'definition', 'tables')
+            os.makedirs(tables)
+            with open(os.path.join(tables, 'Sales.tmdl'), 'w', encoding='utf-8') as handle:
+                handle.write(
+                    "table 'Sales'\n"
+                    "\tcolumn 'Region'\n"
+                    "\tmeasure 'By region' = CALCULATE([Sales], "
+                    "ALLEXCEPT('Sales', 'Sales'[MissingGroup]))\n"
+                )
+            report = self._build(project_dir=tmp)
+        self.assertEqual(report.status, 'PASS')
+        filter_context = report.semantic_context['filter_context']
+        self.assertEqual(filter_context['issue_count'], 1)
+        self.assertIn('MissingGroup', filter_context['issues'][0])
+
     def test_unsupported_feature_is_blocker(self):
         report = self._build(parity={
             'gaps': [{'key': 'forecast', 'status': 'unsupported'}]
