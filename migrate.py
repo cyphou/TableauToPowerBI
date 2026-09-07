@@ -1388,7 +1388,8 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
 
 def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, display_name,
                              skip_extraction, wb_prep, wb_cal_start, wb_cal_end, wb_culture,
-                             verify_open=True, output_format='pbip'):
+                             verify_open=True, output_format='pbip',
+                             quality_policy='report'):
     """Migrate a single workbook — used by both sequential and parallel batch modes.
 
     For .tfl/.tflx files, delegates to _migrate_single_prep_flow() which produces
@@ -1471,7 +1472,8 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
             quality_report = build_quality_report(
                 extracted_objects, project_dir, basename,
                 source_path=tableau_file,
-                prep_flow=bool(wb_prep))
+                prep_flow=bool(wb_prep),
+                quality_policy=quality_policy)
             quality_json = os.path.join(
                 workbook_output_dir, f'migration_quality_{basename}.json')
             quality_html = os.path.join(
@@ -1760,7 +1762,8 @@ def _run_full_lineage(batch_results, migrated_root):
 def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extraction=False,
                         calendar_start=None, calendar_end=None, culture=None,
                         parallel=None, resume=False, jsonl_log=None, manifest=None,
-                        full_lineage=False, verify_open=True, output_format='pbip'):
+                        full_lineage=False, verify_open=True, output_format='pbip',
+                        quality_policy='report'):
     """Batch migrate all .twb/.twbx files in a directory (recursive).
 
     Searches the directory tree recursively for Tableau workbooks and
@@ -2002,6 +2005,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'wb_cal_end': wb_cal_end,
             'wb_culture': wb_culture,
             'output_format': output_format,
+            'quality_policy': quality_policy,
         })
 
     def _run_task(task):
@@ -2032,6 +2036,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 wb_culture=task['wb_culture'],
                 output_format=task['output_format'],
                 verify_open=verify_open,
+                quality_policy=task['quality_policy'],
             )
         except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
             wb_result = {'success': False, 'error': str(exc), 'error_category': 'exception'}
@@ -2480,6 +2485,15 @@ def _add_report_args(parser):
         default=False,
         help='With --quality-report, return a validation failure when the '
              'unified quality report has blockers.'
+    )
+
+    parser.add_argument(
+        '--quality-policy',
+        choices=('report', 'enterprise', 'production'),
+        default='report',
+        help='Quality policy for lineage and semantic diagnostics: report keeps '
+             'static diagnostics non-blocking, enterprise blocks semantic diagnostics, '
+             'production also blocks unresolved lineage.'
     )
 
     parser.add_argument(
@@ -5071,7 +5085,8 @@ def _run_quality_report(args, source_basename):
             source_path=getattr(args, 'tableau_file', None),
             checkpoint_path=os.path.join(
                 os.path.dirname(project_dir),
-                f'.{source_basename}.migration_checkpoint.json'))
+                f'.{source_basename}.migration_checkpoint.json'),
+            quality_policy=getattr(args, 'quality_policy', 'report'))
         probe_path = os.path.join(project_dir, 'desktop_probe_report.json')
         if os.path.isfile(probe_path):
             probe = _load_json(probe_path)
@@ -5585,6 +5600,7 @@ def main():
             full_lineage=getattr(args, 'full_lineage', False),
             verify_open=getattr(args, 'verify_open', True),
             output_format=getattr(args, 'output_format', 'pbip'),
+            quality_policy=getattr(args, 'quality_policy', 'report'),
         )
 
     # ── Single file migration ─────────────────────────────────

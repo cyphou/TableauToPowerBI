@@ -1,8 +1,22 @@
-# Development Roadmap — v22.0.0 → v47.0.0
+# Development Roadmap — v22.0.0 → v48.0.0
 
-**Date:** 2026-09-04
-**Baseline:** 2026-09-04 — focused regression validation is green on the current hardening branch: `275 passed in 4.41s` across the PBIP-generation and openability coverage, with targeted real-world migrations for `global_superstores_db.twb` and `nba_player_stats.twbx` generated successfully. The broader live Desktop/Fabric deployment path remains explicit and environment-gated, not inferred from local static checks.
-**Current state:** v45.0.0 is the active release-hardening baseline. The migration engine continues to verify the local generation path with deterministic quality gates and project-validation checks, while live Desktop/Fabric deployment stays a distinct execution phase. The concise CLI remains at 14 commands, with unified `quality`, `parity`, `portfolio`, `plan`, `lineage`, and `package` workflows. **v45/v46 remain release-hardening work; v47.0.0 is the next feature-parity milestone.**
+**Date:** 2026-09-07
+**Baseline:** 2026-09-04 HEAD plus the current local quality-report hardening work. The latest committed evolution strengthens semantic lineage provenance and Power Query literal escaping; the current validation baseline also covers PBIP manifest coherence, datasource-only projects, openability, Fabric bundle structure, and real-world migration evidence. The broader live Desktop/Fabric deployment path remains explicit and environment-gated, not inferred from local static checks.
+**Current state:** the v45/v46 local release-hardening contracts are implemented, while release packaging and authorized runtime evidence remain open. The migration engine now has versioned evidence manifests, resumable checkpoints, unified quality reports, full-fidelity comparison helpers, static openability verification, optional Desktop probing, and Fabric artifact validation. **v47.0.0 is the active feature-parity and end-to-end hardening milestone; v48 is the next operator-capability track.**
+
+### Latest Evolution Verified — 2026-09-07
+
+- **Semantic lineage and conversion safety:** generated lineage records now carry source-to-target provenance, normalized matching, coverage, and unresolved records; M emitters escape field names, values, and delimiters across aggregate, join, pivot/unpivot, regex, and core transformation paths.
+- **Unified evidence surface:** `migration_quality.py` composes assessment, parity, table/column coverage, interface coverage, openability, Fabric validation, strategy, lineage, checkpoints, and handoff status. The same evidence is available through CLI, batch, MCP, and Notebook paths where supported.
+- **Recovery and handoff:** `MigrationCheckpoint` invalidates stale source/configuration state, while `evidence_manifest.py` records redaction-friendly source, target, validation, runtime, repair, strategy, lineage, artifact, and handoff metadata.
+- **Fidelity audits:** the repository includes visual geometry, Power Query table/column, interface, and full-fidelity comparison tooling, with focused regression suites. These are static or fixture-based checks and do not imply Desktop rendering or refresh equivalence.
+- **Openability boundary:** static PBIP/PBIR/TMDL/M/DAX/reference checks are the authoritative local gate; the optional Windows Desktop probe can add smoke/reopen evidence, but it is never run or promoted implicitly.
+- **Fabric boundary:** Fabric-native output is validated as a local six-artifact bundle. OneLake staging, deployment preflight, identity/RBAC, refresh, semantic execution, and post-deployment health remain authorized-environment work rather than local release evidence.
+- **Quality policy enforcement:** unified quality reports now accept `report`,
+  `enterprise`, and `production` policies. The default preserves non-blocking
+  static diagnostics; enterprise blocks semantic context findings; production
+  also blocks unresolved lineage records. The selected policy is retained in
+  the evidence manifest.
 
 ---
 
@@ -68,15 +82,19 @@ those foundations into operator-facing migration capabilities.
 - **Validation evidence:** the semantic lineage and M-emitter slices have
   focused executable coverage and remain static evidence; neither slice claims
   Desktop execution, refresh success, or Fabric deployment.
+- **Semantic runtime contract:** `semantic_runtime.py` now provides an
+  offline-safe injected executor boundary and unified quality reports retain
+  bounded DAX execution results as machine-readable evidence.
 
 #### v48 Next Implementation Order
 
 1. Complete the remaining M fallback/error emitters and add generated-M
    contract validation for every connector path.
-2. Feed lineage resolution status into strict quality policies so unresolved
-   semantic endpoints become actionable blockers instead of passive metadata.
+2. Connect an authorized Power BI/Fabric executor to the semantic runtime
+  adapter and capture redacted connection/version evidence.
 3. Add representative semantic value execution checks for relationships,
-   blanks, dates, LOD grain, and table-calculation partitions.
+  blanks, dates, LOD grain, filters, and table-calculation partitions, with
+  tolerance-aware comparisons against source expectations.
 4. Run the authorized Desktop smoke/reopen harness, then the authorized Fabric
    deployment and refresh gates; keep all unavailable environments `not_run`.
 
@@ -196,8 +214,8 @@ Rules:
 | **v42.0.0** | Ecosystem Maturity & GA Polish | 195–199 | Planned |
 | **v43.0.0** | Self-Healing Maturity & Functionality Parity | 209–214 | ✅ Shipped |
 | **v44.0.0** | Agentic & Copilot-Native Migration | 215–220 | ✅ Shipped |
-| **v45.0.0** | Performance & Fabric Contract Completion | 222–226 | Planned |
-| **v46.0.0** | Desktop Reliability & Release Discipline | 227–231 | Planned |
+| **v45.0.0** | Performance & Fabric Contract Completion | 222–226 | ✅ Local contract complete; release packaging pending |
+| **v46.0.0** | Desktop Reliability & Release Discipline | 227–231 | ✅ Local contract complete; release packaging pending |
 | **v47.0.0** | Feature Parity & End-to-End Migration Path | 232–237 | In progress |
 
 ### Next Ten Development Phases
@@ -221,13 +239,14 @@ measurable exit gate before the next phase is marked complete.
 
 #### Current Execution Status
 
-- **Phase 5/7 — Continuity and handoff evidence:** the unified quality report now
-  emits a stable operator handoff state (`PASS`, `WARN`, or `BLOCKED`) plus
-  strategy rationale, static source-to-target lineage coverage, generated
-  artifact families, and discovered checkpoint stage history. JSON and HTML
-  expose the same evidence, while Desktop, semantic execution, refresh, and
-  deployment remain explicit `not_run` boundaries until authorized runtime
-  evidence is supplied.
+- **Phase 5/7 — Continuity and handoff evidence:** the versioned evidence
+  manifest, source/configuration-aware checkpoints, unified quality report, and
+  report packaging foundations are implemented. The quality report emits a
+  stable operator handoff state (`PASS`, `WARN`, or `BLOCKED`) plus strategy
+  rationale, static source-to-target lineage coverage, generated artifact
+  families, and checkpoint stage history. JSON and HTML expose the same
+  evidence, while Desktop, semantic execution, refresh, and deployment remain
+  explicit `not_run` boundaries until authorized runtime evidence is supplied.
 - **Validation:** the refreshed demo workbook corpus completes with exit code 0
   and currently reports 4 `PASS` and 6 `WARN`, with 0 blockers. The warnings are
   retained as remediation work; they are not normalized into passes.
@@ -241,7 +260,8 @@ measurable exit gate before the next phase is marked complete.
 - **Evidence:** 26 generated example PBIP projects pass the strengthened
   openability gate; 26 example `.twb`/`.twbx` sources pass XML preflight; the
   latest focused readiness run passed 581 tests with 4 skipped.
-- **Phase 2 — Semantic execution validation:** active development target.
+- **Phase 2 — Semantic execution validation:** runtime contract implemented;
+  authorized execution remains the active delivery target.
   The first static slice is now available in
   `powerbi_import/semantic_execution_validator.py`, integrated into the
   unified quality report as non-blocking `semantic_context` evidence. It checks
@@ -249,16 +269,24 @@ measurable exit gate before the next phase is marked complete.
   partition fields, and generated DAX `ALLEXCEPT`/`REMOVEFILTERS` columns
   against the semantic model. It reports missing dimensions,
   table-resolution mismatches, many-to-many grain risks, missing partition
-  fields, and stale filter-context references. It cannot promote static
-  findings to runtime equivalence. Next work adds representative measure,
-  calculated-column,
-  relationship, date, blank, filter, and table-calculation execution checks.
+  fields, and stale filter-context references. The new `semantic_runtime.py`
+  adapter normalizes injected executor results to `not_run`, `passed`, or
+  `failed`, records bounded query evidence, and never requires credentials in
+  local CI. It cannot promote static findings to runtime equivalence. Next
+  work connects an authorized Power BI/Fabric executor and adds representative
+  measure, calculated-column, relationship, date, blank, filter, and
+  table-calculation value comparisons.
 - **Phase 2 evidence:** focused semantic validation currently passes 6 tests;
   unified quality-report coverage passes 21 tests for static LOD,
   table-calculation, target measure-context, and filter-context diagnostics.
   This includes an end-to-end generated-SemanticModel regression for stale
   `ALLEXCEPT` references. Execution status in unified quality reports remains
   `not_run` unless an authorized execution environment provides evidence.
+- **Phase 2 policy slice:** quality reports retain representative semantic
+  diagnostics as evidence and can escalate them under the `enterprise` and
+  `production` policies. The next slice is authorized value execution for
+  relationships, blanks, dates, LOD grain, filters, and table-calculation
+  partitions; no local static result is promoted to runtime equivalence.
 - **Quality-surface coverage:** the unified report is now available through the
   MCP `quality_report` tool, with the same static semantic evidence as the
   single-workbook CLI. Batch migrations now snapshot extraction data per
@@ -362,28 +390,35 @@ that every connector refreshes, or that a live Fabric deployment succeeds.
 
 ## v45.0.0 — Performance & Fabric Contract Completion (Sprints 222–226)
 
+**Current disposition:** local contract complete; release packaging and
+authorized Fabric smoke evidence remain open. Generated Fabric artifacts are
+validated locally and runtime/deployment states remain explicit.
+
 The implementation-grade plan, measured baselines, owners, acceptance criteria, and
 release gates are maintained in this roadmap and the linked source/test artifacts.
 
 Verified audit baseline:
 
-- Superstore Fabric CLI generation: 1.42 s for the current five-directory scaffold.
-- Fabric and CLI focused suites: 173 passed.
-- Performance suites: 28 passed, 2 failed; `Enterprise_Sales` took 6.10 s and
-  `Complex_Enterprise` took 14.38 s against the current 5.00 s budget.
-- Current Fabric output is locally validated as a six-artifact bundle. Remaining
-  v45 work is environment-aware binding verification, performance regression
-  enforcement, and opt-in live Fabric smoke testing.
+- Performance baselines have a repeatable runner and an opt-in regression gate;
+  relationship-inference hot-path caching is implemented and covered by
+  focused regression tests. The remaining optimization target is large-
+  workbook I/O in the post-write self-healing pass, which requires dedicated
+  regression guards.
+- Fabric-native output is locally validated as a six-artifact bundle, with
+  source staging, Notebook/Dataflow ownership, artifact validation, evidence
+  manifests, and guarded deployment boundaries represented in the codebase.
+- Remaining v45 work is release packaging, documented performance-budget
+  closure for the representative corpus, and opt-in live Fabric smoke testing.
 
 v45 sequencing:
 
 | Sprint | Theme | Primary exit gate |
 |--------|-------|-------------------|
-| **222** | Performance baseline and observability | Phase timings, peak memory, stable benchmark runner, CI trend artifact; `compare_perf_baselines.py --fail-on-regression` now provides the opt-in CI exit gate |
-| **223** | Profile-led hot-path optimization | Current performance regressions resolved without fidelity loss (started: relationship-inference `.lower()` caching removes ~24% of warm generation function calls) |
-| **224** | True Direct Lake and artifact contract | Entity/Direct Lake partitions, complete manifests, concrete Lakehouse/Dataflow mapping |
-| **225** | Pipeline, Power BI report, and native deployment | Six-artifact chain deploys in dependency order with resolvable IDs |
-| **226** | Contract/performance gates and release | Static cross-validation plus opt-in live Fabric smoke test pass |
+| **222** | Performance baseline and observability | ✅ Stable benchmark runner, phase/memory evidence, and opt-in regression exit gate |
+| **223** | Profile-led hot-path optimization | ✅ Relationship-inference caching verified without fidelity loss; large-workbook I/O remains a follow-up |
+| **224** | True Direct Lake and artifact contract | ✅ Local Direct Lake structure, manifests, and Lakehouse/Dataflow mapping validated |
+| **225** | Pipeline, Power BI report, and native deployment | ✅ Local six-artifact dependency contract; live workspace binding remains environment-gated |
+| **226** | Contract/performance gates and release | In progress: close representative-corpus budgets, run authorized Fabric smoke, and complete release packaging |
 
 Until the Sprint 226 gates pass, documentation and CLI output must describe
 `--output-format fabric` as a **validated local scaffold**, not as a complete
@@ -430,12 +465,22 @@ tenant metadata, or unverified files merely to increase fixture count.
 
 ## v46.0.0 — Desktop Reliability & Release Discipline (Sprints 227–231)
 
+**Current disposition:** local reliability contract complete; release packaging
+and an authorized Desktop run remain open. Static `verify-open` is enabled by
+default for PBIP paths, while `desktop-probe` remains explicitly opt-in.
+
 v46 converts recent quality hardening into a repeatable, release-grade contract:
 
 - openability checks become explicit release gates,
 - shared-model generation must remain non-empty and thin-report-safe,
 - README/docs/CLI/test suites stay synchronized,
 - push/CI workflow avoids local git-maintenance prompt failures.
+
+Implemented local evidence includes the seven-check PBIP openability contract,
+reference validation, optional Windows Desktop smoke/reopen probing, shared
+model non-empty/thin-report safety controls, and evidence-backed quality
+reporting. These checks remain distinct from a successful Desktop save/reopen
+run or production deployment.
 
 ### Sprint 227 — Openability Gate Consolidation
 

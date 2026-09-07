@@ -29,6 +29,7 @@ from powerbi_import.openability import check_openability
 from powerbi_import.parity_registry import scan_project
 from powerbi_import.powerquery_diff import compare_report_tables
 from powerbi_import.semantic_execution_validator import SemanticExecutionValidator
+from powerbi_import.semantic_runtime import validate_semantic_execution
 from powerbi_import.evidence_manifest import build_evidence_manifest
 from powerbi_import.strategy_advisor import recommend_strategy
 
@@ -365,6 +366,18 @@ def _handoff_status(status: str, openability: Dict[str, Any]) -> str:
     return "PASS"
 
 
+_QUALITY_POLICIES = {
+    "report": {"unresolved_lineage": "warning", "semantic_diagnostics": "ignore"},
+    "enterprise": {"unresolved_lineage": "warning", "semantic_diagnostics": "blocker"},
+    "production": {"unresolved_lineage": "blocker", "semantic_diagnostics": "blocker"},
+}
+
+
+def _quality_policy(name: str) -> Dict[str, str]:
+    """Return a known quality policy, failing closed for unknown names."""
+    return dict(_QUALITY_POLICIES.get(name, _QUALITY_POLICIES["production"]))
+
+
 def _lineage_evidence(extracted: Dict[str, Any], data: Dict[str, Any],
                       interface: Dict[str, Any], parity: Dict[str, Any]) -> Dict[str, Any]:
     """Summarize source-to-target coverage without inventing runtime lineage."""
@@ -399,6 +412,23 @@ def _lineage_evidence(extracted: Dict[str, Any], data: Dict[str, Any],
         },
         "runtime": "not_run",
     }
+
+
+def _load_lineage_contract(project_dir: str) -> Dict[str, Any]:
+    """Load the generated static lineage contract when available."""
+    candidates = [
+        os.path.join(project_dir, "lineage_map.json"),
+        os.path.join(os.path.dirname(os.path.abspath(project_dir)), "lineage_map.json"),
+    ]
+    for path in candidates:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict) and isinstance(payload.get("contract"), dict):
+                return payload["contract"]
+        except (OSError, ValueError):
+            continue
+    return {"status": "not_found", "coverage": {}, "unresolved": []}
 
 
 def _checkpoint_evidence(project_dir: str, checkpoint_path: Optional[str]) -> Dict[str, Any]:
@@ -443,8 +473,12 @@ def _artifact_evidence(project_dir: str) -> Dict[str, Any]:
 def build_quality_report(extracted: Dict, project_dir: str,
                          report_name: str, *, source_path: Optional[str] = None,
                          checkpoint_path: Optional[str] = None,
-                         prep_flow: bool = False) -> MigrationQualityReport:
+                         prep_flow: bool = False,
+                         quality_policy: str = "report",
+                         semantic_queries: Optional[list] = None,
+                         semantic_executor: Any = None) -> MigrationQualityReport:
     """Run all local quality checks and aggregate their verified results."""
+    policy = _quality_policy(quality_policy)
     assessment = run_assessment(extracted or {}, workbook_name=report_name)
     parity = scan_project(extracted or {}, project_dir, report_name).to_dict()
     data = compare_report_tables(extracted or {}, project_dir, report_name)
@@ -455,6 +489,14 @@ def build_quality_report(extracted: Dict, project_dir: str,
     measure_context = _measure_context_validation(project_dir)
     semantic_context["measure_context"] = measure_context
     semantic_context["filter_context"] = _filter_context_validation(project_dir)
+    semantic_context["execution"] = validate_semantic_execution(
+        semantic_queries or [], semantic_executor)
+    semantic_issue_count = (
+        semantic_context.get("issue_count", 0)
+        + measure_context.get("issue_count", 0)
+        + semantic_context["filter_context"].get("issue_count", 0)
+    )
+    semantic_runtime_failures = semantic_context["execution"].get("failed", 0)
     openability_dict = _openability_dict(openability)
     confidence = _openability_confidence(openability_dict, fabric)
 
@@ -481,11 +523,42 @@ def build_quality_report(extracted: Dict, project_dir: str,
     if assessment.overall_score == "YELLOW":
         warnings.append("Pre-migration assessment contains warnings.")
 
+    lineage = _lineage_evidence(extracted or {}, data, interface, parity)
+    lineage_contract = _load_lineage_contract(project_dir)
+    lineage["contract"] = lineage_contract
+    unresolved_lineage = lineage_contract.get("unresolved", [])
+    if unresolved_lineage:
+        message = (
+            f"Semantic lineage has {len(unresolved_lineage)} unresolved "
+            "source-to-target record(s)."
+        )
+        if policy["unresolved_lineage"] == "blocker":
+            blockers.append(message)
+        else:
+            warnings.append(message)
+    if semantic_issue_count:
+        message = (
+            f"Semantic validation found {semantic_issue_count} static "
+            "context issue(s)."
+        )
+        if policy["semantic_diagnostics"] == "blocker":
+            blockers.append(message)
+        elif policy["semantic_diagnostics"] == "warning":
+            warnings.append(message)
+    if semantic_runtime_failures:
+        message = (
+            f"Semantic runtime validation failed for {semantic_runtime_failures} "
+            "query(ies)."
+        )
+        if policy["semantic_diagnostics"] == "blocker":
+            blockers.append(message)
+        elif policy["semantic_diagnostics"] == "warning":
+            warnings.append(message)
+
     status = "FAIL" if blockers else "WARN" if warnings else "PASS"
     priorities = _build_priorities(parity, blockers, warnings)
     strategy = recommend_strategy(extracted or {}, prep_flow=prep_flow).to_dict()
     strategy["status"] = "recommended"
-    lineage = _lineage_evidence(extracted or {}, data, interface, parity)
     checkpoints = _checkpoint_evidence(project_dir, checkpoint_path)
     artifacts = _artifact_evidence(project_dir)
     handoff_status = _handoff_status(status, openability_dict)
@@ -497,7 +570,8 @@ def build_quality_report(extracted: Dict, project_dir: str,
         target_path=project_dir,
         validation={"status": status, "handoff_status": handoff_status,
                     "blockers": blockers, "warnings": warnings,
-                    "next_action": next_action},
+                "next_action": next_action,
+                "quality_policy": quality_policy},
         environment=confidence,
         checkpoints=checkpoints,
         strategy=strategy,

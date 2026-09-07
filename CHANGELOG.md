@@ -3,6 +3,8 @@
 ## Unreleased — Verified PBIP Manifest Hardening
 
 ### Highlights
+- **Semantic runtime evidence boundary added**: `powerbi_import/semantic_runtime.py` accepts an injected Power BI/Fabric executor, normalizes bounded DAX query results to `not_run`, `passed`, or `failed`, and records query evidence without requiring credentials in local CI.
+- **Quality policies added**: unified quality reports and `--quality-policy {report,enterprise,production}` now control escalation of semantic diagnostics and unresolved lineage. The selected policy is retained in the evidence manifest; static results never imply runtime success.
 - **Datasource-only PBIP contract corrected**: `.pbip` projects with no report visuals now emit the correct `SemanticModel` contract instead of a malformed report shell, and the generated project passes the static openability gate.
 - **Manifest coherence and static openability hardened**: the canonical validator now checks PBIP shell structure, JSON/PBIR/TMDL consistency, report/model references, visual binding, and source archive/XML safety before a project is treated as openable.
 - **Repair workflow tightened**: page-local visual sizing, bare-measure reference rewrites after renames, and TMDL parsing for inline calculated columns are now validated in the same quality loop that produces migration evidence.
@@ -15,6 +17,7 @@
 
 ### Notes
 - This hardening is treated as a verified local-contract improvement rather than a production deployment claim.
+- Runtime semantic execution remains `not_run` unless an authorized executor is injected; production policy can fail a report when an injected runtime query fails.
 - Live Desktop/Fabric success remains environment-gated and must be reported as `not_run` unless explicit proof exists.
 
 ## v44.0.0 — Agentic & Copilot-Native Migration

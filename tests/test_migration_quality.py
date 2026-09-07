@@ -56,7 +56,8 @@ class _Gateway:
 
 class TestMigrationQuality(unittest.TestCase):
     def _build(self, *, parity=None, data=None, interface=None, openability=None,
-               assessment=None, project_dir='project'):
+               assessment=None, project_dir='project', quality_policy='report',
+               extracted=None, semantic_queries=None, semantic_executor=None):
         with patch('powerbi_import.migration_quality.run_assessment',
                    return_value=assessment or _Assessment()), \
              patch('powerbi_import.migration_quality.scan_project') as scan, \
@@ -72,7 +73,12 @@ class TestMigrationQuality(unittest.TestCase):
              patch('powerbi_import.migration_quality.check_openability',
                    return_value=openability or _Openability()):
             scan.return_value.to_dict.return_value = parity or {'gaps': []}
-            return build_quality_report({}, project_dir, 'Demo')
+            return build_quality_report(
+                extracted or {}, project_dir, 'Demo',
+                quality_policy=quality_policy,
+                semantic_queries=semantic_queries,
+                semantic_executor=semantic_executor,
+            )
 
     def test_pass_when_all_checks_are_clean(self):
         report = self._build()
@@ -89,7 +95,57 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.evidence_manifest['checkpoints']['status'], 'not_found')
         self.assertEqual(report.blockers, [])
         self.assertEqual(report.warnings, [])
-        self.assertEqual(report.semantic_context['execution'], 'not_run')
+        self.assertEqual(report.semantic_context['execution']['status'], 'not_run')
+
+    def test_semantic_runtime_executor_passes(self):
+        report = self._build(
+            semantic_queries=[{'name': 'Sales_total', 'dax': 'EVALUATE ROW("x", 1)'}],
+            semantic_executor=lambda query: {'rows': [{'x': 1}]},
+        )
+        execution = report.semantic_context['execution']
+        self.assertEqual(execution['status'], 'passed')
+        self.assertEqual(execution['passed'], 1)
+        self.assertEqual(report.status, 'PASS')
+
+    def test_production_policy_blocks_semantic_runtime_failure(self):
+        report = self._build(
+            quality_policy='production',
+            semantic_queries=[{'name': 'Broken', 'dax': 'EVALUATE ROW("x", 1)'}],
+            semantic_executor=lambda query: {'error': 'unauthorized'},
+        )
+        execution = report.semantic_context['execution']
+        self.assertEqual(execution['status'], 'failed')
+        self.assertEqual(execution['failed'], 1)
+        self.assertEqual(report.status, 'FAIL')
+        self.assertIn('Semantic runtime validation failed', report.blockers[-1])
+
+    def test_unresolved_lineage_contract_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, 'lineage_map.json'), 'w', encoding='utf-8') as handle:
+                json.dump({
+                    'contract': {
+                        'status': 'partial',
+                        'coverage': {'columns': {'percent': 50.0}},
+                        'unresolved': [{'source_column': 'Missing'}],
+                    }
+                }, handle)
+            report = self._build(project_dir=tmpdir)
+        self.assertEqual(report.status, 'WARN')
+        self.assertIn('1 unresolved source-to-target record(s)', report.warnings[-1])
+        self.assertEqual(report.lineage['contract']['status'], 'partial')
+
+    def test_production_policy_blocks_unresolved_lineage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, 'lineage_map.json'), 'w', encoding='utf-8') as handle:
+                json.dump({'contract': {'status': 'partial', 'unresolved': [
+                    {'source_column': 'Missing'}
+                ]}}, handle)
+            report = self._build(project_dir=tmpdir, quality_policy='production')
+        self.assertEqual(report.status, 'FAIL')
+        self.assertIn('unresolved source-to-target', report.blockers[0])
+        self.assertEqual(
+            report.evidence_manifest['validation']['quality_policy'], 'production'
+        )
 
     def test_static_lod_diagnostics_are_reported_without_changing_status(self):
         extracted = {
@@ -116,6 +172,20 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.status, 'PASS')
         self.assertEqual(report.semantic_context['issue_count'], 1)
         self.assertIn('not present', report.semantic_context['lod_issues'][0]['issue'])
+
+    def test_production_policy_blocks_semantic_diagnostics(self):
+        extracted = {
+            'datasources': [{
+                'tables': [{'name': 'Sales', 'columns': [{'name': 'Territory'}]}],
+                'calculations': [{
+                    'caption': 'Sales by territory',
+                    'formula': '{FIXED [MissingTerritory] : SUM([Amount])}',
+                }],
+            }],
+        }
+        report = self._build(extracted=extracted, quality_policy='production')
+        self.assertEqual(report.status, 'FAIL')
+        self.assertIn('static context issue(s)', report.blockers[0])
 
     def test_table_calc_partition_diagnostics_are_reported(self):
         extracted = {

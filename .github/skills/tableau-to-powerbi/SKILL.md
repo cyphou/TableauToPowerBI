@@ -68,7 +68,11 @@ Use `quality` for one deterministic report combining assessment, feature parity,
 data coverage, interface coverage, and Power BI openability. Use `parity` for the
 feature scorecard, `portfolio` for folder assessment, `plan` for migration waves,
 `lineage` for Prep flows, and `package` for a stakeholder deliverable. Add
-`--quality-strict` when CI should fail on quality blockers.
+`--quality-strict` when CI should fail on quality blockers. Use
+`--quality-policy report|enterprise|production` to control escalation of
+static semantic diagnostics and unresolved lineage. The semantic runtime
+adapter is offline-safe: without an explicitly authorized executor, runtime
+status remains `not_run`.
 
 Batch migration writes a unified quality JSON and HTML report beside each
 successful workbook output and prints aggregate PASS/WARN/FAIL counts. Extraction

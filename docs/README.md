@@ -34,14 +34,18 @@ python migrate.py package file.twbx
 ```
 
 Use `python migrate.py quality file.twbx` for the combined assessment, parity,
-data, interface, and openability report. Use `python migrate.py --help` for the
+data, interface, and openability report. Add `--quality-policy report|enterprise|production`
+to control escalation of static semantic diagnostics and unresolved lineage.
+Use `python migrate.py --help` for the
 concise command list; existing flag-based automation remains compatible through
 `python migrate.py --advanced-help`.
 
 Semantic-context checks for converted LOD expressions are available through
 `powerbi_import.semantic_execution_validator`. They are static diagnostics only;
-the unified quality report continues to label live semantic execution as
-`not_run` until an authorized execution environment supplies evidence.
+the optional `powerbi_import.semantic_runtime` adapter accepts an injected
+executor and records bounded DAX query evidence as `not_run`, `passed`, or
+`failed`. The unified quality report continues to label live semantic execution
+as `not_run` until an authorized execution environment supplies evidence.
 
 Quality-surface coverage is explicit: the concise single-workbook CLI and MCP
 `quality_report` tool run the unified report; `qa` remains the specialized

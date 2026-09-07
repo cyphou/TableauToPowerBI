@@ -11,7 +11,7 @@
 
 | 🎯 **Capabilities** | 133+ DAX conversions · 190 visual types · 87 connectors · 23 object types |
 
-### Latest verified baseline (2026-09-04)
+### Latest verified baseline (2026-09-07)
 
 This repo is currently validated on the following evidence-backed conditions:
 
@@ -19,6 +19,7 @@ This repo is currently validated on the following evidence-backed conditions:
 - Targeted real-world migrations for `examples/real_world/global_superstores_db.twb` and `examples/real_world/nba_player_stats.twbx` generated valid PBIP outputs and passed the local project-generation checks.
 - The static openability and model/report validation gates continue to fail closed on malformed outputs rather than silently passing a broken project.
 - Live Power BI Desktop and Fabric deployment remain explicit environment-gated checks; they are not inferred from static validation alone.
+- Unified quality reports support `report`, `enterprise`, and `production` policies. Runtime semantic execution is `not_run` unless an authorized executor is supplied.
 
 ### What is new in v45.0.0
 
@@ -105,6 +106,9 @@ assessment, feature parity, data coverage, interface coverage, and Power BI
 openability. Use `parity` for feature coverage, `portfolio` for folder assessment,
 `plan` for migration waves, `lineage` for Prep flows, and `package` for a stakeholder
 deliverable. Add `--quality-strict` when a CI run should fail on quality blockers.
+Use `--quality-policy report|enterprise|production` to control whether static
+semantic diagnostics and unresolved lineage are informational, warnings, or
+blocking findings. Runtime execution still requires an authorized executor.
 Add `--quality-ai` for an optional summary based only on verified findings; AI
 never changes the validation status.
 Run `python migrate.py --help` for the concise command list. Existing flag-based
