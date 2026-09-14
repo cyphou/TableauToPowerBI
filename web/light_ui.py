@@ -48,6 +48,7 @@ class LightMigrationUI:
         self.global_assess_var = tk.BooleanVar(value=False)
         self.prep_lineage_only_var = tk.BooleanVar(value=False)
         self.quality_policy_var = tk.StringVar(value="report")
+        self.output_format_var = tk.StringVar(value="pbip")
         self.server_url_var = tk.StringVar(value="")
         self.server_site_var = tk.StringVar(value="")
         self.server_token_name_var = tk.StringVar(value="")
@@ -142,6 +143,7 @@ class LightMigrationUI:
         notify = data.get("notify")
         auto_open = data.get("auto_open_report")
         quality_policy = data.get("quality_policy")
+        output_format = data.get("output_format")
         server_url = data.get("server_url")
         server_site = data.get("server_site")
         server_token_name = data.get("server_token_name")
@@ -154,7 +156,7 @@ class LightMigrationUI:
             self.output_var.set(output)
         else:
             self.output_var.set(str(self.repo_root))
-        if preset in {"Assess", "Migrate", "Quality", "M Coverage", "Server", "Lineage"}:
+        if preset in {"Assess", "Migrate", "Fabric", "Quality", "M Coverage", "Server", "Lineage"}:
             self.preset_var.set(preset)
         if isinstance(verbose, bool):
             self.verbose_var.set(verbose)
@@ -164,6 +166,8 @@ class LightMigrationUI:
             self.auto_open_report_var.set(auto_open)
         if quality_policy in {"report", "enterprise", "production"}:
             self.quality_policy_var.set(quality_policy)
+        if output_format in {"pbip", "fabric"}:
+            self.output_format_var.set(output_format)
         for value, variable in (
             (server_url, self.server_url_var),
             (server_site, self.server_site_var),
@@ -184,6 +188,7 @@ class LightMigrationUI:
             "notify": self.notify_var.get(),
             "auto_open_report": self.auto_open_report_var.get(),
             "quality_policy": self.quality_policy_var.get(),
+            "output_format": self.output_format_var.get(),
             "server_url": self.server_url_var.get().strip(),
             "server_site": self.server_site_var.get().strip(),
             "server_token_name": self.server_token_name_var.get().strip(),
@@ -318,7 +323,7 @@ class LightMigrationUI:
         task_chip_row = tk.Frame(setup_card, bg=self.ui["surface"])
         task_chip_row.pack(fill=tk.X, pady=(2, 6))
         tk.Label(task_chip_row, text="Task", width=14, anchor="w", fg=self.ui["muted"], bg=self.ui["surface"]).pack(side=tk.LEFT)
-        for task in ("Assess", "Migrate", "Quality", "M Coverage", "Server", "Lineage"):
+        for task in ("Assess", "Migrate", "Fabric", "Quality", "M Coverage", "Server", "Lineage"):
             btn = tk.Button(
                 task_chip_row,
                 text=task,
@@ -337,7 +342,7 @@ class LightMigrationUI:
 
         self.workflow_hint = tk.Label(
             setup_card,
-            text="Choose Assess, Migrate, Quality, M Coverage, Server, or Lineage.",
+            text="Choose Assess, Migrate, Fabric, Quality, M Coverage, Server, or Lineage.",
             fg=self.ui["muted"],
             bg=self.ui["surface"],
             anchor="w",
@@ -414,6 +419,15 @@ class LightMigrationUI:
             width=13,
         )
         self.quality_policy_combo.pack(side=tk.LEFT, padx=(4, 0))
+        tk.Label(opts_row, text="Output", width=8, anchor="w", bg=self.ui["surface"], fg=self.ui["muted"]).pack(side=tk.LEFT, padx=(14, 0))
+        self.output_format_combo = ttk.Combobox(
+            opts_row,
+            textvariable=self.output_format_var,
+            values=("pbip", "fabric"),
+            state="readonly",
+            width=9,
+        )
+        self.output_format_combo.pack(side=tk.LEFT, padx=(4, 0))
 
         mode_opts_row = tk.Frame(setup_card, bg=self.ui["surface"])
         self.assess_cb = tk.Checkbutton(
@@ -658,6 +672,14 @@ class LightMigrationUI:
                 self.prep_lineage_only_var.set(False)
                 self.verbose_var.set(True)
                 self.workflow_hint.configure(text="Run a full migration batch and generate Power BI outputs.")
+            elif preset == "Fabric":
+                self.mode_var.set("batch")
+                self.assess_only_var.set(False)
+                self.global_assess_var.set(False)
+                self.prep_lineage_only_var.set(False)
+                self.output_format_var.set("fabric")
+                self.verbose_var.set(True)
+                self.workflow_hint.configure(text="Generate the local Fabric six-artifact scaffold; live deployment and refresh remain separate.")
             elif preset == "Server":
                 self.mode_var.set("server")
                 self.assess_only_var.set(False)
@@ -784,6 +806,8 @@ class LightMigrationUI:
             cmd += ["--batch", source]
 
         cmd += ["--output-dir", output]
+        if self.preset_var.get() != "M Coverage":
+            cmd += ["--output-format", self.output_format_var.get()]
         cmd += ["--quality-policy", self.quality_policy_var.get()]
         if self.verbose_var.get():
             cmd.append("--verbose")

@@ -123,14 +123,15 @@ The optional Tkinter interface remains available through
 ### Windows desktop application
 
 The Windows migration application is `web/light_ui.py`, launched by
-`run_light_ui.ps1`. It provides folder-based Assess, Migrate, Quality, M Coverage, and
+`run_light_ui.ps1`. It provides folder-based Assess, Migrate, Fabric, Quality, M Coverage, and
 Prep Lineage workflows, output-folder selection, progress/logging, generated
 dashboard links, and the current quality policies: `report`, `enterprise`, and
 `production`. The default static openability gate remains enabled by the
 underlying engine; Desktop probing and live Fabric execution remain explicit
 runtime steps. The **M Coverage** task runs the offline connector matrix and
 writes `m_emitter_matrix.json` with generated/fallback/error counts and
-remediation ownership.
+remediation ownership. The Fabric task generates the local six-artifact
+scaffold and does not claim live deployment or refresh success.
 
 It also provides a **Server** task for downloading and migrating one Tableau
 Server/Cloud workbook or an entire Tableau project. Enter the Server URL, site

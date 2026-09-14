@@ -65,6 +65,9 @@ The Windows desktop application is `web/light_ui.py`, launched with
 passes the selected `report`, `enterprise`, or `production` policy to the batch
 engine and exposes the generated output and HTML dashboard. Its M Coverage task
 runs the offline 98-path M-emitter matrix and writes `m_emitter_matrix.json`.
+The Fabric task selects `--output-format fabric` and generates the local
+Lakehouse, Dataflow, Notebook, Semantic Model, Report, and Pipeline scaffold;
+deployment and refresh remain authorized runtime steps.
 
 The Server task downloads one Tableau Server/Cloud workbook or a project before
 migrating it. Set `TABLEAU_TOKEN_SECRET` in the PowerShell session; the UI only
