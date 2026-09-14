@@ -57,7 +57,8 @@ class _Gateway:
 class TestMigrationQuality(unittest.TestCase):
     def _build(self, *, parity=None, data=None, interface=None, openability=None,
                assessment=None, project_dir='project', quality_policy='report',
-               extracted=None, semantic_queries=None, semantic_executor=None):
+               extracted=None, semantic_queries=None, semantic_executor=None,
+               semantic_fixture_path=None):
         with patch('powerbi_import.migration_quality.run_assessment',
                    return_value=assessment or _Assessment()), \
              patch('powerbi_import.migration_quality.scan_project') as scan, \
@@ -78,6 +79,7 @@ class TestMigrationQuality(unittest.TestCase):
                 quality_policy=quality_policy,
                 semantic_queries=semantic_queries,
                 semantic_executor=semantic_executor,
+                semantic_fixture_path=semantic_fixture_path,
             )
 
     def test_pass_when_all_checks_are_clean(self):
@@ -134,6 +136,37 @@ class TestMigrationQuality(unittest.TestCase):
         result = report.semantic_context['execution']['results'][0]
         self.assertEqual(result['error'], 'semantic result mismatch')
         self.assertIn('value[0].x', result['evidence']['comparison']['mismatches'][0])
+        self.assertEqual(report.status, 'FAIL')
+
+    def test_semantic_fixture_loads_expected_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture_path = os.path.join(tmpdir, 'semantic.json')
+            with open(fixture_path, 'w', encoding='utf-8') as handle:
+                json.dump({
+                    'version': 1,
+                    'name': 'public-sales-reference',
+                    'queries': [{
+                        'name': 'Sales_total',
+                        'dax': 'EVALUATE ROW("x", 1)',
+                        'expected_rows': [{'x': 10}],
+                    }],
+                }, handle)
+            report = self._build(
+                semantic_fixture_path=fixture_path,
+                semantic_executor=lambda query: {'rows': [{'x': 10}]},
+            )
+        self.assertEqual(report.semantic_context['execution']['status'], 'passed')
+
+    def test_invalid_semantic_fixture_is_runtime_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture_path = os.path.join(tmpdir, 'semantic.json')
+            with open(fixture_path, 'w', encoding='utf-8') as handle:
+                json.dump({'version': 99, 'queries': []}, handle)
+            report = self._build(
+                quality_policy='production', semantic_fixture_path=fixture_path,
+                semantic_executor=lambda query: {'rows': []},
+            )
+        self.assertEqual(report.semantic_context['execution']['status'], 'failed')
         self.assertEqual(report.status, 'FAIL')
 
     def test_production_policy_blocks_semantic_runtime_failure(self):

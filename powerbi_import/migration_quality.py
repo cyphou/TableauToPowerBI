@@ -30,6 +30,7 @@ from powerbi_import.parity_registry import scan_project
 from powerbi_import.powerquery_diff import compare_report_tables
 from powerbi_import.semantic_execution_validator import SemanticExecutionValidator
 from powerbi_import.semantic_runtime import validate_semantic_execution
+from powerbi_import.semantic_fixtures import load_semantic_fixture
 from powerbi_import.evidence_manifest import build_evidence_manifest
 from powerbi_import.strategy_advisor import recommend_strategy
 
@@ -476,7 +477,8 @@ def build_quality_report(extracted: Dict, project_dir: str,
                          prep_flow: bool = False,
                          quality_policy: str = "report",
                          semantic_queries: Optional[list] = None,
-                         semantic_executor: Any = None) -> MigrationQualityReport:
+                         semantic_executor: Any = None,
+                         semantic_fixture_path: Optional[str] = None) -> MigrationQualityReport:
     """Run all local quality checks and aggregate their verified results."""
     policy = _quality_policy(quality_policy)
     assessment = run_assessment(extracted or {}, workbook_name=report_name)
@@ -489,8 +491,24 @@ def build_quality_report(extracted: Dict, project_dir: str,
     measure_context = _measure_context_validation(project_dir)
     semantic_context["measure_context"] = measure_context
     semantic_context["filter_context"] = _filter_context_validation(project_dir)
-    semantic_context["execution"] = validate_semantic_execution(
-        semantic_queries or [], semantic_executor)
+    fixture_error = ""
+    if semantic_fixture_path:
+        try:
+            semantic_queries = load_semantic_fixture(semantic_fixture_path)["queries"]
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            fixture_error = str(exc)
+    if fixture_error:
+        semantic_context["execution"] = {
+            "status": "failed",
+            "queries_requested": 0,
+            "queries_run": 0,
+            "passed": 0,
+            "failed": 1,
+            "results": [{"name": "fixture", "status": "failed", "error": fixture_error}],
+        }
+    else:
+        semantic_context["execution"] = validate_semantic_execution(
+            semantic_queries or [], semantic_executor)
     semantic_issue_count = (
         semantic_context.get("issue_count", 0)
         + measure_context.get("issue_count", 0)

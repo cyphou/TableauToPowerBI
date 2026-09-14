@@ -158,6 +158,7 @@ For environments without Mermaid rendering:
 | `assessment.py` | Pre-migration readiness assessment: 9 categories (datasource, calculation, visual, filter, data model, interactivity, extract, scope, connection audit), pass/warn/fail scoring |
 | `migration_quality.py` | Unified deterministic quality report: assessment, parity, data/interface coverage, openability, Fabric validation, lineage, policy escalation, and handoff evidence |
 | `semantic_runtime.py` | Optional injected semantic executor boundary: bounded DAX execution evidence with explicit `not_run`, `passed`, or `failed` status |
+| `semantic_fixtures.py` | Versioned sanitized semantic reference fixtures with expected rows, schema checks, and credential-like field rejection |
 | `semantic_execution_validator.py` | Static semantic-context checks for LOD grain, table-calculation partitions, and generated filter modifiers; never claims runtime equivalence |
 | `server_assessment.py` | Server-level portfolio assessment: per-workbook GREEN/YELLOW/RED grading, 8-axis complexity, effort estimation, migration wave planning, HTML dashboard |
 | `global_assessment.py` | Cross-workbook global assessment: pairwise merge scoring, BFS clustering, HTML heatmap report |
