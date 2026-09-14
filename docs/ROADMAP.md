@@ -1,8 +1,8 @@
 # Development Roadmap — v22.0.0 → v48.0.0
 
-**Date:** 2026-09-07
-**Baseline:** 2026-09-04 HEAD plus the current local quality-report hardening work. The latest committed evolution strengthens semantic lineage provenance and Power Query literal escaping; the current validation baseline also covers PBIP manifest coherence, datasource-only projects, openability, Fabric bundle structure, and real-world migration evidence. The broader live Desktop/Fabric deployment path remains explicit and environment-gated, not inferred from local static checks.
-**Current state:** the v45/v46 local release-hardening contracts are implemented, while release packaging and authorized runtime evidence remain open. The migration engine now has versioned evidence manifests, resumable checkpoints, unified quality reports, full-fidelity comparison helpers, static openability verification, optional Desktop probing, and Fabric artifact validation. **v47.0.0 is the active feature-parity and end-to-end hardening milestone; v48 is the next operator-capability track.**
+**Date:** 2026-09-14
+**Baseline:** commit `7887ae1` (`Add semantic runtime quality evidence`), verified through the 2026-09-07 focused release validation. The current baseline covers PBIP manifest coherence, datasource-only projects, openability, Fabric bundle structure, semantic runtime evidence contracts, quality-policy escalation, and real-world migration evidence. The broader live Desktop/Fabric deployment path remains explicit and environment-gated, not inferred from local static checks.
+**Current state:** v45/v46 local release-hardening contracts are complete, with release packaging and authorized runtime evidence still open. v47 feature-parity foundations are complete and carried forward into **v48.0.0**, which is now the active operator-capability and runtime-proof track. The migration engine has versioned evidence manifests, resumable checkpoints, unified quality reports, full-fidelity comparison helpers, static openability verification, optional Desktop probing, and Fabric artifact validation.
 
 ### Latest Evolution Verified — 2026-09-07
 
@@ -43,10 +43,11 @@ The next delivery slice is intentionally scoped to the four issues that determin
   - Reduce silent approximation by requiring each conversion to carry its provenance and confidence class.
   - Keep DAX/M/TMDL/PBIR fixes focused on actual mismatch evidence, not broad speculative rewrites.
 
-4. **100% migration confidence when opening in Power BI Desktop**
+4. **Desktop openability evidence**
   - Treat the Desktop probe as an explicit verification stage, not as a byproduct of static local validation.
   - Require a healthy Desktop smoke pass and a reopened/re-saved pass before signaling `DESKTOP_REOPEN_PASS`.
   - Use the openability gate to catch invalid report/model references, synthetic control bindings, stale measure IDs, and XML/BIM coherence issues before release.
+  - Target `DESKTOP_REOPEN_PASS` for an authorized Desktop version; reserve `PRODUCTION_CONFIRMED` for Desktop, semantic execution, refresh, and deployment evidence.
 
 This focus keeps the repo aligned with the real minimum bar for migration quality: structural validity, lineage provenance, conversion fidelity, and live openability evidence in an authorized Desktop environment.
 
@@ -55,7 +56,8 @@ This focus keeps the repo aligned with the real minimum bar for migration qualit
 The detailed end-to-end evolution plan is maintained in
 [docs/FULL_MIGRATION_EVOLUTION_PLAN.md](FULL_MIGRATION_EVOLUTION_PLAN.md).
 
-The demo corpus and recent implementation work establish a usable foundation:
+The demo corpus and recent implementation work establish a usable foundation
+(snapshot validated 2026-09-07):
 10 Tableau workbooks and 1 Prep flow process successfully, 4 of 10 workbook
 quality reports are now PASS after parity-family resolution, and checkpointed
 execution plus handoff packaging are available. The next release should turn
@@ -63,8 +65,8 @@ those foundations into operator-facing migration capabilities.
 
 | Phase | Product capability | Primary owners | Exit gate |
 |---|---|---|---|
-| **48.1** | **Resumable migration orchestration** — extend checkpoints across batch extraction, generation, validation, packaging, and deployment handoff; expose stage history and retry reasons. | @orchestrator, @reviewer, @tester | A failed stage resumes without repeating compatible completed stages; stale source/configuration invalidates only affected work. |
-| **48.2** | **Evidence-backed migration package** — package source inventory, strategy, lineage, parity evidence, healing ledger, validation states, credentials template, and rollback instructions in one portable handoff. | @assessor, @orchestrator, @deployer | An operator can reconstruct what was migrated, what remains, and what is required without inspecting transient logs or raw credentials. |
+| **48.1** | **Resumable migration orchestration** — foundation delivered; complete operator-visible stage history, retry reasons, and packaging/deployment checkpoints. | @orchestrator, @reviewer, @tester | A failed stage resumes without repeating compatible completed stages; stale source/configuration invalidates only affected work; resume evidence is verified across the full demo corpus. |
+| **48.2** | **Evidence-backed migration package** — foundation delivered; complete the portable operator handoff contract. | @assessor, @orchestrator, @deployer | The package contains source inventory, strategy, lineage, parity, healing, validation, credentials template, rollback instructions, and a deterministic next action without transient logs or raw credentials. |
 | **48.3** | **Conversion strategy and fidelity controls** — make Import, DirectQuery, Composite, Direct Lake, Dataflow, Notebook, and shared-model decisions explicit; route unsupported or approximate calculations to actionable remediation. | @dax, @wiring, @semantic, @generator | Every generated target has a strategy rationale and every approximation has a visible target, confidence, and remediation path. |
 | **48.4** | **Desktop verification harness** — add authorized Windows Desktop smoke/reopen/save evidence, version capture, crash/trace collection, and post-save static revalidation. | @visual, @orchestrator, @reviewer, @tester | `DESKTOP_REOPEN_PASS` is emitted only after two healthy launches, save/reopen evidence, and a passing post-save contract. |
 | **48.5** | **Fabric deployment handoff** — bind generated Lakehouse, Dataflow Gen2, Notebook, Pipeline, Semantic Model, and Report artifacts to environment configuration with dry-run and post-deploy states. | @generator, @deployer, @semantic | Local generation, deployment, refresh, and post-deployment validation remain distinct and are represented in the manifest. |
@@ -86,10 +88,16 @@ those foundations into operator-facing migration capabilities.
   offline-safe injected executor boundary and unified quality reports retain
   bounded DAX execution results as machine-readable evidence.
 
+**Phase status:** 48.1 and 48.2 foundations are delivered locally; their
+operator-complete exit gates remain open. 48.3 is partially delivered through
+strategy manifests and parity evidence. 48.4 and 48.5 remain explicitly
+authorized-environment work. 48.6 remains portfolio-operations work.
+
 #### v48 Next Implementation Order
 
-1. Complete the remaining M fallback/error emitters and add generated-M
-   contract validation for every connector path.
+1. Build the M fallback/error matrix by connector and emitter, then add
+  generated-M contract validation for every listed path; each unsupported or
+  fallback result must include an owner, evidence, and remediation.
 2. Connect an authorized Power BI/Fabric executor to the semantic runtime
   adapter and capture redacted connection/version evidence.
 3. Add representative semantic value execution checks for relationships,
@@ -114,7 +122,7 @@ those foundations into operator-facing migration capabilities.
 - Desktop confidence remains `STATIC_PASS` or `UNVERIFIED` unless live smoke/reopen evidence exists.
 - Fabric outputs remain `locally_valid` until authorized deployment, refresh, and post-deployment checks succeed.
 
-### Verified Baseline — 2026-09-03
+### Historical Verified Baseline — 2026-09-03
 
 The following capabilities are implemented and verified locally:
 
@@ -210,18 +218,19 @@ Rules:
 | **v38.5.0** | Floating-Overlay Fidelity & Real-World QA | 204–208 | ✅ Shipped |
 | **v39.0.0** | Data Blending & Advanced Connectivity | 180–184 | ✅ Shipped |
 | **v40.0.0** | VS Code Extension & Interactive Tooling | 185–189 | ✅ Shipped |
-| **v41.0.0** | Real-Time, Streaming & Paginated Reports | 190–194 | Planned |
-| **v42.0.0** | Ecosystem Maturity & GA Polish | 195–199 | Planned |
+| **v41.0.0** | Real-Time, Streaming & Paginated Reports | 190–194 | Superseded/absorbed into later capabilities |
+| **v42.0.0** | Ecosystem Maturity & GA Polish | 195–199 | Superseded/absorbed into v43/v44 hardening |
 | **v43.0.0** | Self-Healing Maturity & Functionality Parity | 209–214 | ✅ Shipped |
 | **v44.0.0** | Agentic & Copilot-Native Migration | 215–220 | ✅ Shipped |
 | **v45.0.0** | Performance & Fabric Contract Completion | 222–226 | ✅ Local contract complete; release packaging pending |
 | **v46.0.0** | Desktop Reliability & Release Discipline | 227–231 | ✅ Local contract complete; release packaging pending |
-| **v47.0.0** | Feature Parity & End-to-End Migration Path | 232–237 | In progress |
+| **v47.0.0** | Feature Parity & End-to-End Migration Path | 232–237 | ✅ Foundations complete; follow-up carried into v48 |
+| **v48.0.0** | Operator Capability & Runtime Proof | 238+ | In progress |
 
-### Next Ten Development Phases
+### v48 Development Backlog
 
-These phases are the execution backlog after the current v47 parity and quality
-work. Each phase must produce an implementation artifact, focused tests, and a
+These phases are the cross-cutting execution backlog for the active v48 track.
+Each phase must produce an implementation artifact, focused tests, and a
 measurable exit gate before the next phase is marked complete.
 
 | Phase | Focus | Primary outcome | Exit gate |
@@ -247,17 +256,19 @@ measurable exit gate before the next phase is marked complete.
   families, and checkpoint stage history. JSON and HTML expose the same
   evidence, while Desktop, semantic execution, refresh, and deployment remain
   explicit `not_run` boundaries until authorized runtime evidence is supplied.
-- **Validation:** the refreshed demo workbook corpus completes with exit code 0
-  and currently reports 4 `PASS` and 6 `WARN`, with 0 blockers. The warnings are
-  retained as remediation work; they are not normalized into passes.
+- **Validation snapshot (2026-09-07):** the focused release suite passed 146
+  tests, including quality-policy, semantic runtime, semantic-context, M
+  validation, CLI, and skill-documentation checks. The demo-corpus result
+  remains a dated snapshot and must be regenerated before a release decision;
+  warnings remain remediation work and are not normalized into passes.
 
-- **Phase 1 — Feature-parity closure:** active implementation slice completed
+- **Phase 1 — Feature-parity closure:** implementation slice completed
   for the current PBIP confidence target. The canonical gate now fails closed
   for missing PBIP output, validates the PBIP shell, semantic references,
   visual-to-TMDL bindings, executable measure/column/RLS DAX, calculated
   partitions, and source XML/archive coherence. The feedback loop packages
   redacted quality evidence for reproducible remediation.
-- **Evidence:** 26 generated example PBIP projects pass the strengthened
+- **Evidence snapshot (2026-09-07):** 26 generated example PBIP projects pass the strengthened
   openability gate; 26 example `.twb`/`.twbx` sources pass XML preflight; the
   latest focused readiness run passed 581 tests with 4 skipped.
 - **Phase 2 — Semantic execution validation:** runtime contract implemented;
@@ -276,12 +287,12 @@ measurable exit gate before the next phase is marked complete.
   work connects an authorized Power BI/Fabric executor and adds representative
   measure, calculated-column, relationship, date, blank, filter, and
   table-calculation value comparisons.
-- **Phase 2 evidence:** focused semantic validation currently passes 6 tests;
-  unified quality-report coverage passes 21 tests for static LOD,
-  table-calculation, target measure-context, and filter-context diagnostics.
-  This includes an end-to-end generated-SemanticModel regression for stale
-  `ALLEXCEPT` references. Execution status in unified quality reports remains
-  `not_run` unless an authorized execution environment provides evidence.
+- **Phase 2 evidence snapshot (2026-09-07):** the focused release suite passed
+  146 tests across static LOD, table-calculation, target measure-context,
+  filter-context, semantic runtime, M validation, CLI, and skill-documentation
+  diagnostics. This includes an end-to-end generated-SemanticModel regression
+  for stale `ALLEXCEPT` references. Execution status in unified quality reports
+  remains `not_run` unless an authorized execution environment provides evidence.
 - **Phase 2 policy slice:** quality reports retain representative semantic
   diagnostics as evidence and can escalate them under the `enterprise` and
   `production` policies. The next slice is authorized value execution for
@@ -535,6 +546,10 @@ Release criteria:
 - no unresolved blocking risks in changelog release note.
 
 ## v47.0.0 — Feature Parity & End-to-End Migration Path (Sprints 232–237)
+
+**Disposition:** foundations complete. The parity, manifest, recovery, and
+handoff contracts from v47 are carried into v48 for operator-complete resume,
+runtime evidence, Desktop verification, and Fabric delivery gates.
 
 v47 makes migration fidelity a product contract rather than a collection of
 independent converters. It connects the full journey — assess, plan, extract,

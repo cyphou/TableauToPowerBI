@@ -1,6 +1,8 @@
 # Documentation
 
-Current release baseline: **v44.0.0** with the verified PBIP manifest-coherence and static-openability hardening from 2026-09-03 (see `../CHANGELOG.md` and `ROADMAP.md`).
+Current package baseline: **v44.0.0**. Active roadmap track: **v48.0.0**, with
+verified PBIP manifest-coherence, static-openability, quality-policy, and
+semantic-runtime evidence hardening (see `../CHANGELOG.md` and `ROADMAP.md`).
 
 ## Guides
 

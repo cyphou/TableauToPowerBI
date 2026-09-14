@@ -1,6 +1,6 @@
 # Full Migration Evolution Plan
 
-**Date:** 2026-09-04  
+**Date:** 2026-09-14
 **Scope:** Tableau source to Power BI Desktop, PBIP, and Fabric migration  
 **Primary outcome:** A migration is reported as complete only when its source inventory, target artifacts, behavior checks, and operator handoff are all backed by evidence.
 
@@ -26,8 +26,8 @@ The repository currently provides:
 - PBIP/PBIR/TMDL and Fabric-native artifact generation.
 - Assessment, parity registry, lineage, self-healing, quality reporting, and handoff packaging.
 - Single-workbook and batch checkpoints with source/configuration invalidation.
-- Demo corpus evidence: 10 workbooks plus 1 Prep flow processed successfully; the refreshed workbook quality set is 4 PASS, 6 WARN, 0 FAIL.
-- Static openability and quality validation; live Power BI Desktop and Fabric evidence remains environment-gated.
+- Demo corpus evidence snapshot (2026-09-07): 10 workbooks plus 1 Prep flow processed successfully; the refreshed workbook quality set is 4 PASS, 6 WARN, 0 FAIL.
+- Static openability, quality-policy enforcement, and an offline-safe semantic runtime evidence contract; live Power BI Desktop and Fabric evidence remains environment-gated.
 
 The remaining work is therefore feature closure and runtime proof, not simply increasing test counts or suppressing warnings.
 

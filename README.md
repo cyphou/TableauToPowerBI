@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| 🏷️ **Version** | 45.0.0 |
+| 🏷️ **Package** | 44.0.0 · roadmap track v48 |
 | ✅ **Tests** | 275 focused regression tests passed · 9,500+ repository tests available across the suite |
 | 🐍 **Python** | 3.12+ · zero external dependencies |
 | 📜 **License** | MIT |
@@ -21,12 +21,13 @@ This repo is currently validated on the following evidence-backed conditions:
 - Live Power BI Desktop and Fabric deployment remain explicit environment-gated checks; they are not inferred from static validation alone.
 - Unified quality reports support `report`, `enterprise`, and `production` policies. Runtime semantic execution is `not_run` unless an authorized executor is supplied.
 
-### What is new in v45.0.0
+### Current roadmap track: v48.0.0
 
 - **Static validation hardened around real-world blockers**: the generator now uses a stricter model/report contract and removes synthetic Tableau field references that were causing invalid visual-control bindings.
 - **Quality evidence is explicit and deterministic**: static validation, warnings, and repair actions are recorded without overstating live Desktop/Fabric readiness.
 - **MCP and CLI surfaces remain stable**: the concise 14-command CLI and quality/prioritization flows continue to document the verified static path cleanly.
 - **Safety-first automation**: deployment remains dry-run by default, credentials stay in environment variables, and optional AI assistance only acts on verified findings.
+- **Semantic runtime evidence**: an injected executor boundary records `not_run`, `passed`, or `failed` DAX evidence without requiring credentials in local CI. Use `--quality-policy report|enterprise|production` to control escalation of semantic diagnostics and unresolved lineage.
 
 These checks are part of the current verified baseline and are intended to raise confidence in local migration quality without overstating live Desktop or Fabric deployment readiness.
 
