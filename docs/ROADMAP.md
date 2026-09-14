@@ -87,6 +87,10 @@ those foundations into operator-facing migration capabilities.
 - **Semantic runtime contract:** `semantic_runtime.py` now provides an
   offline-safe injected executor boundary and unified quality reports retain
   bounded DAX execution results as machine-readable evidence.
+- **Semantic comparison slice:** runtime queries may now carry expected rows
+  and numeric tolerances; nested result mismatches are classified as failed and
+  retained with path-level evidence. This remains an injected-runtime contract,
+  not live Power BI/Fabric proof.
 
 **Phase status:** 48.1 and 48.2 foundations are delivered locally; their
 operator-complete exit gates remain open. 48.3 is partially delivered through
@@ -102,7 +106,9 @@ authorized-environment work. 48.6 remains portfolio-operations work.
   adapter and capture redacted connection/version evidence.
 3. Add representative semantic value execution checks for relationships,
   blanks, dates, LOD grain, filters, and table-calculation partitions, with
-  tolerance-aware comparisons against source expectations.
+   tolerance-aware comparisons against source expectations. The comparison
+   primitive is delivered; source-reference fixtures and an authorized executor
+   remain open.
 4. Run the authorized Desktop smoke/reopen harness, then the authorized Fabric
    deployment and refresh gates; keep all unavailable environments `not_run`.
 

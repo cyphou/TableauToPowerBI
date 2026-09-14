@@ -56,17 +56,48 @@ def _normalize_response(response: Any) -> tuple[str, Any, str, Dict[str, Any]]:
     return "passed", response, "", {}
 
 
+def _compare_values(actual: Any, expected: Any, tolerance: float, path: str = "value") -> List[str]:
+    """Return deterministic mismatch descriptions for JSON-like query values."""
+    if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+        if abs(float(actual) - float(expected)) <= tolerance:
+            return []
+        return [f"{path}: expected {expected!r}, got {actual!r}"]
+    if type(actual) is not type(expected):
+        return [f"{path}: expected type {type(expected).__name__}, got {type(actual).__name__}"]
+    if isinstance(actual, dict):
+        mismatches: List[str] = []
+        for key in sorted(set(actual) | set(expected), key=str):
+            if key not in actual:
+                mismatches.append(f"{path}.{key}: missing actual value")
+            elif key not in expected:
+                mismatches.append(f"{path}.{key}: unexpected actual value")
+            else:
+                mismatches.extend(_compare_values(actual[key], expected[key], tolerance, f"{path}.{key}"))
+        return mismatches
+    if isinstance(actual, list):
+        mismatches = []
+        if len(actual) != len(expected):
+            mismatches.append(f"{path}: expected {len(expected)} row(s), got {len(actual)}")
+        for index, (actual_item, expected_item) in enumerate(zip(actual, expected)):
+            mismatches.extend(_compare_values(actual_item, expected_item, tolerance, f"{path}[{index}]"))
+        return mismatches
+    return [] if actual == expected else [f"{path}: expected {expected!r}, got {actual!r}"]
+
+
 def validate_semantic_execution(
     queries: Iterable[Dict[str, Any]],
     executor: Any = None,
     *,
     max_queries: int = 25,
+    default_tolerance: float = 0.0,
 ) -> Dict[str, Any]:
     """Execute bounded semantic queries and return portable evidence.
 
-    ``queries`` entries require ``name`` and ``dax`` keys. An absent executor
-    never counts as success or failure; it returns ``not_run``. Runtime errors
-    are captured per query so one bad query does not hide the remaining evidence.
+    ``queries`` entries require ``name`` and ``dax`` keys and may provide
+    ``expected_rows``/``expected`` plus a numeric ``tolerance``. An absent
+    executor never counts as success or failure; it returns ``not_run``.
+    Runtime errors and result mismatches are captured per query so one bad query
+    does not hide the remaining evidence.
     """
     selected = list(queries or [])[:max(0, max_queries)]
     if executor is None:
@@ -83,10 +114,24 @@ def validate_semantic_execution(
     for item in selected:
         name = str(item.get("name", "query"))
         query = str(item.get("dax", ""))
+        expected = item.get("expected_rows", item.get("expected"))
+        tolerance = float(item.get("tolerance", default_tolerance))
         started = time.perf_counter()
         try:
             response = _execute(executor, query)
             status, rows, error, evidence = _normalize_response(response)
+            mismatches = []
+            if status == "passed" and expected is not None:
+                mismatches = _compare_values(rows, expected, tolerance)
+                if mismatches:
+                    status = "failed"
+                    error = "semantic result mismatch"
+                evidence = dict(evidence)
+                evidence["comparison"] = {
+                    "matched": not mismatches,
+                    "tolerance": tolerance,
+                    "mismatches": mismatches,
+                }
         except Exception as exc:  # runtime boundary must return evidence, not raise
             status, rows, error, evidence = "failed", None, str(exc), {}
         duration_ms = round((time.perf_counter() - started) * 1000, 3)

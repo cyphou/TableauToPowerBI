@@ -107,6 +107,35 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(execution['passed'], 1)
         self.assertEqual(report.status, 'PASS')
 
+    def test_semantic_runtime_tolerance_accepts_numeric_difference(self):
+        report = self._build(
+            semantic_queries=[{
+                'name': 'Sales_total',
+                'dax': 'EVALUATE ROW("x", 1)',
+                'expected_rows': [{'x': 10.0}],
+                'tolerance': 0.1,
+            }],
+            semantic_executor=lambda query: {'rows': [{'x': 10.05}]},
+        )
+        comparison = report.semantic_context['execution']['results'][0]['evidence']['comparison']
+        self.assertTrue(comparison['matched'])
+        self.assertEqual(report.status, 'PASS')
+
+    def test_semantic_runtime_mismatch_is_failure_with_evidence(self):
+        report = self._build(
+            quality_policy='production',
+            semantic_queries=[{
+                'name': 'Sales_total',
+                'dax': 'EVALUATE ROW("x", 1)',
+                'expected_rows': [{'x': 10.0}],
+            }],
+            semantic_executor=lambda query: {'rows': [{'x': 12.0}]},
+        )
+        result = report.semantic_context['execution']['results'][0]
+        self.assertEqual(result['error'], 'semantic result mismatch')
+        self.assertIn('value[0].x', result['evidence']['comparison']['mismatches'][0])
+        self.assertEqual(report.status, 'FAIL')
+
     def test_production_policy_blocks_semantic_runtime_failure(self):
         report = self._build(
             quality_policy='production',
