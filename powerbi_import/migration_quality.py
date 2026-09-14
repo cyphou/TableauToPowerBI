@@ -34,6 +34,7 @@ from powerbi_import.semantic_fixtures import load_semantic_fixture
 from powerbi_import.m_emitter_matrix import build_m_emitter_matrix, summarize_m_emitter_matrix
 from powerbi_import.evidence_manifest import build_evidence_manifest
 from powerbi_import.strategy_advisor import recommend_strategy
+from powerbi_import.fabric_evidence import build_fabric_evidence
 
 
 @dataclass
@@ -52,6 +53,7 @@ class MigrationQualityReport:
     openability_confidence: Dict[str, Any] = field(default_factory=dict)
     desktop: Dict[str, Any] = field(default_factory=dict)
     fabric: Dict[str, Any] = field(default_factory=dict)
+    fabric_evidence: Dict[str, Any] = field(default_factory=dict)
     semantic_context: Dict[str, Any] = field(default_factory=dict)
     m_emitters: Dict[str, Any] = field(default_factory=dict)
     evidence_manifest: Dict[str, Any] = field(default_factory=dict)
@@ -79,6 +81,7 @@ class MigrationQualityReport:
             "openability_confidence": self.openability_confidence,
             "desktop": self.desktop,
             "fabric": self.fabric,
+            "fabric_evidence": self.fabric_evidence,
             "semantic_context": self.semantic_context,
             "m_emitters": self.m_emitters,
             "evidence_manifest": self.evidence_manifest,
@@ -512,6 +515,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
     interface = compare_report_interface(extracted or {}, project_dir, report_name)
     openability = check_openability(project_dir)
     fabric = _fabric_validation(project_dir, report_name)
+    fabric_evidence = build_fabric_evidence(project_dir, report_name)
     semantic_context = _semantic_context_validation(extracted or {})
     measure_context = _measure_context_validation(project_dir)
     semantic_context["measure_context"] = measure_context
@@ -629,7 +633,11 @@ def build_quality_report(extracted: Dict, project_dir: str,
         checkpoints=checkpoints,
         strategy=strategy,
         lineage=lineage,
-        artifacts={**artifacts, "m_emitters": m_emitters.get("summary", {})},
+        artifacts={
+            **artifacts,
+            "m_emitters": m_emitters.get("summary", {}),
+            "fabric": fabric_evidence.get("artifacts", {}),
+        },
     )
     return MigrationQualityReport(
         report_name=report_name,
@@ -640,6 +648,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         openability=openability_dict,
         openability_confidence=confidence,
         fabric=fabric,
+        fabric_evidence=fabric_evidence,
         semantic_context=semantic_context,
         m_emitters=m_emitters,
         status=status,

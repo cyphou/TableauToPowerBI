@@ -160,6 +160,7 @@ For environments without Mermaid rendering:
 | `semantic_runtime.py` | Optional injected semantic executor boundary: bounded DAX execution evidence with explicit `not_run`, `passed`, or `failed` status |
 | `semantic_fixtures.py` | Versioned sanitized semantic reference fixtures with expected rows, schema checks, and credential-like field rejection |
 | `m_emitter_matrix.py` | Offline coverage matrix for all registered M connector aliases plus the explicit unknown-connector fallback |
+| `fabric_evidence.py` | Normalized local Fabric evidence: six artifact families, dependency order, local validity, and explicit runtime `not_run` states |
 | `semantic_execution_validator.py` | Static semantic-context checks for LOD grain, table-calculation partitions, and generated filter modifiers; never claims runtime equivalence |
 | `server_assessment.py` | Server-level portfolio assessment: per-workbook GREEN/YELLOW/RED grading, 8-axis complexity, effort estimation, migration wave planning, HTML dashboard |
 | `global_assessment.py` | Cross-workbook global assessment: pairwise merge scoring, BFS clustering, HTML heatmap report |

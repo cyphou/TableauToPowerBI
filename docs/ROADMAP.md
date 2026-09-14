@@ -116,6 +116,10 @@ those foundations into operator-facing migration capabilities.
   and PBIP/Fabric output selector, using the same batch engine and quality
   policy path. It reports a locally valid scaffold without claiming live
   deployment, refresh, or post-deployment health.
+- **Fabric evidence manifest:** unified quality reports now expose the six local
+  Fabric artifact families, dependency order, per-artifact local status, and
+  explicit `deployment`, `refresh`, `semantic_execution`, and `post_deploy`
+  states. A local scaffold is never promoted to live Fabric success.
 - **Autonomous Windows distribution:** the supported runtime package is the
   Python 3.13-built onedir bundle at `dist/windows/TableauToPowerBI/`. It embeds
   the UI and migration engine, requires no Python/PowerShell/repository at
