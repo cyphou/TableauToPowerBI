@@ -120,6 +120,16 @@ command history.
 The optional Tkinter interface remains available through
 `powershell -ExecutionPolicy Bypass -File .\run_light_ui.ps1`.
 
+### Windows desktop application
+
+The Windows migration application is `web/light_ui.py`, launched by
+`run_light_ui.ps1`. It provides folder-based Assess, Migrate, Quality, and
+Prep Lineage workflows, output-folder selection, progress/logging, generated
+dashboard links, and the current quality policies: `report`, `enterprise`, and
+`production`. The default static openability gate remains enabled by the
+underlying engine; Desktop probing and live Fabric execution remain explicit
+runtime steps.
+
 ---
 
 ## 🎯 Key Features

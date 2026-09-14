@@ -47,6 +47,7 @@ class LightMigrationUI:
         self.assess_only_var = tk.BooleanVar(value=False)
         self.global_assess_var = tk.BooleanVar(value=False)
         self.prep_lineage_only_var = tk.BooleanVar(value=False)
+        self.quality_policy_var = tk.StringVar(value="report")
         self.notify_var = tk.BooleanVar(value=True)
         self.auto_open_report_var = tk.BooleanVar(value=True)
         self.progress_var = tk.DoubleVar(value=0.0)
@@ -135,6 +136,7 @@ class LightMigrationUI:
         verbose = data.get("verbose")
         notify = data.get("notify")
         auto_open = data.get("auto_open_report")
+        quality_policy = data.get("quality_policy")
 
         if isinstance(source, str):
             self.source_var.set(source)
@@ -142,7 +144,7 @@ class LightMigrationUI:
             self.output_var.set(output)
         else:
             self.output_var.set(str(self.repo_root))
-        if preset in {"Assess", "Migrate", "Lineage"}:
+        if preset in {"Assess", "Migrate", "Quality", "Lineage"}:
             self.preset_var.set(preset)
         if isinstance(verbose, bool):
             self.verbose_var.set(verbose)
@@ -150,6 +152,8 @@ class LightMigrationUI:
             self.notify_var.set(notify)
         if isinstance(auto_open, bool):
             self.auto_open_report_var.set(auto_open)
+        if quality_policy in {"report", "enterprise", "production"}:
+            self.quality_policy_var.set(quality_policy)
 
     def _save_settings(self) -> None:
         data = {
@@ -159,6 +163,7 @@ class LightMigrationUI:
             "verbose": self.verbose_var.get(),
             "notify": self.notify_var.get(),
             "auto_open_report": self.auto_open_report_var.get(),
+            "quality_policy": self.quality_policy_var.get(),
         }
         try:
             self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -288,7 +293,7 @@ class LightMigrationUI:
         task_chip_row = tk.Frame(setup_card, bg=self.ui["surface"])
         task_chip_row.pack(fill=tk.X, pady=(2, 6))
         tk.Label(task_chip_row, text="Task", width=14, anchor="w", fg=self.ui["muted"], bg=self.ui["surface"]).pack(side=tk.LEFT)
-        for task in ("Assess", "Migrate", "Lineage"):
+        for task in ("Assess", "Migrate", "Quality", "Lineage"):
             btn = tk.Button(
                 task_chip_row,
                 text=task,
@@ -307,7 +312,7 @@ class LightMigrationUI:
 
         self.workflow_hint = tk.Label(
             setup_card,
-            text="Batch workflow only. Pick one task: Assess, Migrate, or Lineage.",
+            text="Batch workflow. Pick Assess, Migrate, Quality, or Lineage.",
             fg=self.ui["muted"],
             bg=self.ui["surface"],
             anchor="w",
@@ -336,6 +341,15 @@ class LightMigrationUI:
         tk.Label(opts_row, text="Options", width=14, anchor="w", bg=self.ui["surface"], fg=self.ui["muted"]).pack(side=tk.LEFT)
         tk.Checkbutton(opts_row, text="Verbose output", variable=self.verbose_var, bg=self.ui["surface"], activebackground=self.ui["surface"]).pack(side=tk.LEFT)
         tk.Checkbutton(opts_row, text="Notify when done", variable=self.notify_var, bg=self.ui["surface"], activebackground=self.ui["surface"]).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(opts_row, text="Quality policy", width=14, anchor="w", bg=self.ui["surface"], fg=self.ui["muted"]).pack(side=tk.LEFT, padx=(18, 0))
+        self.quality_policy_combo = ttk.Combobox(
+            opts_row,
+            textvariable=self.quality_policy_var,
+            values=("report", "enterprise", "production"),
+            state="readonly",
+            width=13,
+        )
+        self.quality_policy_combo.pack(side=tk.LEFT, padx=(4, 0))
 
         mode_opts_row = tk.Frame(setup_card, bg=self.ui["surface"])
         self.assess_cb = tk.Checkbutton(
@@ -594,6 +608,13 @@ class LightMigrationUI:
                 self.prep_lineage_only_var.set(False)
                 self.verbose_var.set(True)
                 self.workflow_hint.configure(text="Review a whole folder and generate an overall assessment summary.")
+            elif preset == "Quality":
+                self.mode_var.set("batch")
+                self.assess_only_var.set(False)
+                self.global_assess_var.set(False)
+                self.prep_lineage_only_var.set(False)
+                self.verbose_var.set(True)
+                self.workflow_hint.configure(text="Run the batch migration and inspect quality, openability, and policy evidence.")
         finally:
             self._applying_preset = False
             self._refresh_task_chip_states()
@@ -671,6 +692,7 @@ class LightMigrationUI:
             cmd += ["--batch", source]
 
         cmd += ["--output-dir", output]
+        cmd += ["--quality-policy", self.quality_policy_var.get()]
         if self.verbose_var.get():
             cmd.append("--verbose")
         return cmd
@@ -965,6 +987,7 @@ class LightMigrationUI:
             "assess_only": self.assess_only_var.get(),
             "global_assess": self.global_assess_var.get(),
             "prep_lineage_only": self.prep_lineage_only_var.get(),
+            "quality_policy": self.quality_policy_var.get(),
             "preset": self.preset_var.get(),
         }
 
