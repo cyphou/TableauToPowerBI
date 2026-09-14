@@ -154,7 +154,7 @@ class LightMigrationUI:
             self.output_var.set(output)
         else:
             self.output_var.set(str(self.repo_root))
-        if preset in {"Assess", "Migrate", "Quality", "Server", "Lineage"}:
+        if preset in {"Assess", "Migrate", "Quality", "M Coverage", "Server", "Lineage"}:
             self.preset_var.set(preset)
         if isinstance(verbose, bool):
             self.verbose_var.set(verbose)
@@ -318,7 +318,7 @@ class LightMigrationUI:
         task_chip_row = tk.Frame(setup_card, bg=self.ui["surface"])
         task_chip_row.pack(fill=tk.X, pady=(2, 6))
         tk.Label(task_chip_row, text="Task", width=14, anchor="w", fg=self.ui["muted"], bg=self.ui["surface"]).pack(side=tk.LEFT)
-        for task in ("Assess", "Migrate", "Quality", "Server", "Lineage"):
+        for task in ("Assess", "Migrate", "Quality", "M Coverage", "Server", "Lineage"):
             btn = tk.Button(
                 task_chip_row,
                 text=task,
@@ -337,7 +337,7 @@ class LightMigrationUI:
 
         self.workflow_hint = tk.Label(
             setup_card,
-            text="Batch workflow. Pick Assess, Migrate, Quality, or Lineage.",
+            text="Choose Assess, Migrate, Quality, M Coverage, Server, or Lineage.",
             fg=self.ui["muted"],
             bg=self.ui["surface"],
             anchor="w",
@@ -686,6 +686,13 @@ class LightMigrationUI:
                 self.prep_lineage_only_var.set(False)
                 self.verbose_var.set(True)
                 self.workflow_hint.configure(text="Run the batch migration and inspect quality, openability, and policy evidence.")
+            elif preset == "M Coverage":
+                self.mode_var.set("matrix")
+                self.assess_only_var.set(False)
+                self.global_assess_var.set(False)
+                self.prep_lineage_only_var.set(False)
+                self.verbose_var.set(True)
+                self.workflow_hint.configure(text="Validate every registered Power Query M connector alias and fallback remediation evidence.")
         finally:
             self._applying_preset = False
             self._refresh_task_chip_states()
@@ -760,7 +767,9 @@ class LightMigrationUI:
         output = self.output_var.get().strip()
 
         cmd = [sys.executable, str(self.migrate_script)]
-        if self.preset_var.get() == "Server":
+        if self.preset_var.get() == "M Coverage":
+            cmd += ["--m-emitter-matrix"]
+        elif self.preset_var.get() == "Server":
             cmd += ["--server", self.server_url_var.get().strip(), "--site", self.server_site_var.get().strip()]
             cmd += ["--token-name", self.server_token_name_var.get().strip()]
             if self.server_target_mode_var.get() == "project":
@@ -790,6 +799,9 @@ class LightMigrationUI:
         if not self.migrate_script.exists():
             messagebox.showerror("Missing script", f"Could not find migrate.py at:\n{self.migrate_script}")
             return False
+        if self.preset_var.get() == "M Coverage":
+            return True
+
         if self.preset_var.get() == "Server":
             if not self.server_url_var.get().strip() or not self.server_target_var.get().strip():
                 messagebox.showwarning("Missing Server input", "Enter the Server URL and workbook/project target.")

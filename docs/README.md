@@ -63,7 +63,8 @@ runtime is used.
 The Windows desktop application is `web/light_ui.py`, launched with
 `powershell -ExecutionPolicy Bypass -File .\run_light_ui.ps1`. Its Quality task
 passes the selected `report`, `enterprise`, or `production` policy to the batch
-engine and exposes the generated output and HTML dashboard.
+engine and exposes the generated output and HTML dashboard. Its M Coverage task
+runs the offline 98-path M-emitter matrix and writes `m_emitter_matrix.json`.
 
 The Server task downloads one Tableau Server/Cloud workbook or a project before
 migrating it. Set `TABLEAU_TOKEN_SECRET` in the PowerShell session; the UI only

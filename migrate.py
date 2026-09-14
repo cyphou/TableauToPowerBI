@@ -2505,6 +2505,13 @@ def _add_report_args(parser):
     )
 
     parser.add_argument(
+        '--m-emitter-matrix',
+        action='store_true',
+        default=False,
+        help='Run the offline Power Query M connector-emitter coverage matrix and write JSON evidence.'
+    )
+
+    parser.add_argument(
         '--autoplay',
         action='store_true',
         default=False,
@@ -5431,6 +5438,26 @@ def main():
     # Setup structured logging
     setup_logging(verbose=args.verbose, log_file=args.log_file,
                   quiet=getattr(args, 'quiet', False))
+
+    if getattr(args, 'm_emitter_matrix', False):
+        from powerbi_import.m_emitter_matrix import (
+            build_m_emitter_matrix, summarize_m_emitter_matrix,
+        )
+        output_dir = args.output_dir or os.path.join('artifacts', 'm_emitter_matrix')
+        os.makedirs(output_dir, exist_ok=True)
+        rows = build_m_emitter_matrix()
+        summary = summarize_m_emitter_matrix(rows)
+        payload = {'summary': summary, 'rows': rows}
+        output_path = os.path.join(output_dir, 'm_emitter_matrix.json')
+        with open(output_path, 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+        print(f"M emitter matrix: {output_path}")
+        print(
+            f"Aliases: {summary['aliases']} | "
+            f"Statuses: {summary['status_counts']} | "
+            f"Fallbacks: {len(summary['fallback_connectors'])}"
+        )
+        return ExitCode.SUCCESS if not summary['invalid_connectors'] else ExitCode.VALIDATION_FAILED
 
     # ── Batch-config migration mode ───────────────────────────
     if args.batch_config:
