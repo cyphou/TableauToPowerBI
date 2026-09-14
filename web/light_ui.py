@@ -244,14 +244,19 @@ class LightMigrationUI:
         btn.bind("<Leave>", _on_leave)
 
     def _set_app_icon(self) -> None:
-        # Build a small in-memory icon so no external asset is required.
-        icon = tk.PhotoImage(width=16, height=16)
-        for y in range(16):
-            for x in range(16):
-                color = "#0f4c81" if x < 8 else "#1d9bf0"
-                if (x + y) % 5 == 0:
-                    color = "#f5b700"
-                icon.put(color, (x, y))
+        logo_path = self.repo_root / "web" / "assets" / "logo-migration-dashboards.png"
+        if logo_path.is_file():
+            icon = tk.PhotoImage(file=str(logo_path))
+            scale = max(1, icon.width() // 32)
+            icon = icon.subsample(scale, scale)
+        else:
+            icon = tk.PhotoImage(width=16, height=16)
+            for y in range(16):
+                for x in range(16):
+                    color = "#0f4c81" if x < 8 else "#1d9bf0"
+                    if (x + y) % 5 == 0:
+                        color = "#f5b700"
+                    icon.put(color, (x, y))
         self._app_icon = icon
         self.root.iconphoto(True, self._app_icon)
 
@@ -263,15 +268,19 @@ class LightMigrationUI:
 
         hero = tk.Frame(top, bg=self.ui["hero_bg"], padx=20, pady=18, bd=0, highlightthickness=0)
         hero.pack(fill=tk.X)
+        hero_title_row = tk.Frame(hero, bg=self.ui["hero_bg"])
+        hero_title_row.pack(fill=tk.X)
+        if hasattr(self, "_app_icon"):
+            tk.Label(hero_title_row, image=self._app_icon, bg=self.ui["hero_bg"]).pack(side=tk.LEFT, padx=(0, 12))
         self.hero_title_label = tk.Label(
-            hero,
+            hero_title_row,
             text="Tableau to Power BI Migration",
             font=("Segoe UI", 20, "bold"),
             anchor="w",
             bg=self.ui["hero_bg"],
             fg=self.ui["hero_fg"],
         )
-        self.hero_title_label.pack(fill=tk.X)
+        self.hero_title_label.pack(side=tk.LEFT, fill=tk.X)
         self.hero_subtitle_label = tk.Label(
             hero,
             text="Pick a batch folder, choose where the result should go, then run the migration.",

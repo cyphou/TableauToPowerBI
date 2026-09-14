@@ -1,5 +1,7 @@
 # Windows Desktop Application
 
+![Tableau to Power BI migration logo](images/logo-migration-dashboards.png)
+
 The distributable Windows application is the portable folder:
 
 ```text

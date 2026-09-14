@@ -26,6 +26,7 @@ if ($Clean) {
     --onedir `
     --windowed `
     --name TableauToPowerBI `
+    --icon web\assets\TableauToPowerBI.ico `
     --distpath dist\windows `
     --workpath build\windows `
     --add-data "migrate.py;." `
