@@ -103,6 +103,10 @@ those foundations into operator-facing migration capabilities.
   machine-readable owner and remediation action. The current unknown-connector
   fallback is assigned to `@wiring` with a connector-specific generator and
   regression-test requirement.
+- **Unified M quality evidence:** quality reports now embed the 98-path emitter
+  matrix and identify fallback connectors actually used by the source workbook.
+  Report policy exposes those paths as warnings; enterprise and production
+  policies block delivery until remediation evidence exists.
 
 **Phase status:** 48.1 and 48.2 foundations are delivered locally; their
 operator-complete exit gates remain open. 48.3 is partially delivered through
@@ -112,8 +116,9 @@ authorized-environment work. 48.6 remains portfolio-operations work.
 #### v48 Next Implementation Order
 
 1. Extend the delivered M matrix with connector-specific fallback semantics and
-  remediation fixtures; the baseline matrix already validates 98 outputs and
-  assigns ownership to every fallback/error row.
+  remediation fixtures; the baseline matrix already validates 98 outputs,
+  assigns ownership to every fallback/error row, and feeds unified quality
+  policy enforcement.
 2. Connect an authorized Power BI/Fabric executor to the semantic runtime
   adapter and capture redacted connection/version evidence.
 3. Add representative semantic value execution checks for relationships,

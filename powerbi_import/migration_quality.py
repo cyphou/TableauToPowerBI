@@ -31,6 +31,7 @@ from powerbi_import.powerquery_diff import compare_report_tables
 from powerbi_import.semantic_execution_validator import SemanticExecutionValidator
 from powerbi_import.semantic_runtime import validate_semantic_execution
 from powerbi_import.semantic_fixtures import load_semantic_fixture
+from powerbi_import.m_emitter_matrix import build_m_emitter_matrix, summarize_m_emitter_matrix
 from powerbi_import.evidence_manifest import build_evidence_manifest
 from powerbi_import.strategy_advisor import recommend_strategy
 
@@ -52,6 +53,7 @@ class MigrationQualityReport:
     desktop: Dict[str, Any] = field(default_factory=dict)
     fabric: Dict[str, Any] = field(default_factory=dict)
     semantic_context: Dict[str, Any] = field(default_factory=dict)
+    m_emitters: Dict[str, Any] = field(default_factory=dict)
     evidence_manifest: Dict[str, Any] = field(default_factory=dict)
     strategy: Dict[str, Any] = field(default_factory=dict)
     lineage: Dict[str, Any] = field(default_factory=dict)
@@ -78,6 +80,7 @@ class MigrationQualityReport:
             "desktop": self.desktop,
             "fabric": self.fabric,
             "semantic_context": self.semantic_context,
+            "m_emitters": self.m_emitters,
             "evidence_manifest": self.evidence_manifest,
             "strategy": self.strategy,
             "lineage": self.lineage,
@@ -368,15 +371,36 @@ def _handoff_status(status: str, openability: Dict[str, Any]) -> str:
 
 
 _QUALITY_POLICIES = {
-    "report": {"unresolved_lineage": "warning", "semantic_diagnostics": "ignore"},
-    "enterprise": {"unresolved_lineage": "warning", "semantic_diagnostics": "blocker"},
-    "production": {"unresolved_lineage": "blocker", "semantic_diagnostics": "blocker"},
+    "report": {"unresolved_lineage": "warning", "semantic_diagnostics": "ignore", "m_fallback": "warning"},
+    "enterprise": {"unresolved_lineage": "warning", "semantic_diagnostics": "blocker", "m_fallback": "blocker"},
+    "production": {"unresolved_lineage": "blocker", "semantic_diagnostics": "blocker", "m_fallback": "blocker"},
 }
 
 
 def _quality_policy(name: str) -> Dict[str, str]:
     """Return a known quality policy, failing closed for unknown names."""
     return dict(_QUALITY_POLICIES.get(name, _QUALITY_POLICIES["production"]))
+
+
+def _m_emitter_evidence(extracted: Dict[str, Any]) -> Dict[str, Any]:
+    """Build matrix evidence and identify fallback connectors actually in use."""
+    rows = build_m_emitter_matrix()
+    summary = summarize_m_emitter_matrix(rows)
+    source_types = set()
+    for datasource in extracted.get("datasources", []) or []:
+        connection = datasource.get("connection", {}) or {}
+        source_types.add(str(connection.get("type", "")))
+        source_types.add(str(connection.get("class", "")))
+    fallback_rows = [
+        row for row in rows
+        if row.get("status") == "fallback" and row.get("connector") in source_types
+    ]
+    return {
+        "status": "static_evidence",
+        "summary": summary,
+        "fallback_in_use": fallback_rows,
+        "rows": rows,
+    }
 
 
 def _lineage_evidence(extracted: Dict[str, Any], data: Dict[str, Any],
@@ -481,6 +505,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
                          semantic_fixture_path: Optional[str] = None) -> MigrationQualityReport:
     """Run all local quality checks and aggregate their verified results."""
     policy = _quality_policy(quality_policy)
+    m_emitters = _m_emitter_evidence(extracted or {})
     assessment = run_assessment(extracted or {}, workbook_name=report_name)
     parity = scan_project(extracted or {}, project_dir, report_name).to_dict()
     data = compare_report_tables(extracted or {}, project_dir, report_name)
@@ -572,6 +597,16 @@ def build_quality_report(extracted: Dict, project_dir: str,
             blockers.append(message)
         elif policy["semantic_diagnostics"] == "warning":
             warnings.append(message)
+    fallback_in_use = m_emitters.get("fallback_in_use", [])
+    if fallback_in_use:
+        message = (
+            f"M fallback emitters are in use for {len(fallback_in_use)} "
+            "connector path(s)."
+        )
+        if policy["m_fallback"] == "blocker":
+            blockers.append(message)
+        elif policy["m_fallback"] == "warning":
+            warnings.append(message)
 
     status = "FAIL" if blockers else "WARN" if warnings else "PASS"
     priorities = _build_priorities(parity, blockers, warnings)
@@ -594,7 +629,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         checkpoints=checkpoints,
         strategy=strategy,
         lineage=lineage,
-        artifacts=artifacts,
+        artifacts={**artifacts, "m_emitters": m_emitters.get("summary", {})},
     )
     return MigrationQualityReport(
         report_name=report_name,
@@ -606,6 +641,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         openability_confidence=confidence,
         fabric=fabric,
         semantic_context=semantic_context,
+        m_emitters=m_emitters,
         status=status,
         blockers=blockers,
         warnings=warnings,

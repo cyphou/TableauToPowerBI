@@ -98,6 +98,24 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.blockers, [])
         self.assertEqual(report.warnings, [])
         self.assertEqual(report.semantic_context['execution']['status'], 'not_run')
+        self.assertIn('summary', report.m_emitters)
+        self.assertEqual(report.m_emitters['summary']['aliases'], 98)
+
+    def test_m_fallback_is_visible_when_source_uses_it(self):
+        extracted = {
+            'datasources': [{'connection': {'type': 'UnknownConnector'}}],
+        }
+        report = self._build(extracted=extracted)
+        self.assertEqual(report.status, 'WARN')
+        self.assertIn('M fallback emitters are in use', report.warnings[-1])
+
+    def test_production_policy_blocks_m_fallback_in_use(self):
+        extracted = {
+            'datasources': [{'connection': {'type': 'UnknownConnector'}}],
+        }
+        report = self._build(extracted=extracted, quality_policy='production')
+        self.assertEqual(report.status, 'FAIL')
+        self.assertIn('M fallback emitters are in use', report.blockers[-1])
 
     def test_semantic_runtime_executor_passes(self):
         report = self._build(
