@@ -65,6 +65,11 @@ The Windows desktop application is `web/light_ui.py`, launched with
 passes the selected `report`, `enterprise`, or `production` policy to the batch
 engine and exposes the generated output and HTML dashboard.
 
+The Server task downloads one Tableau Server/Cloud workbook or a project before
+migrating it. Set `TABLEAU_TOKEN_SECRET` in the PowerShell session; the UI only
+stores the Server URL, site, PAT name, and workbook/project target. Server tests
+require content-download permissions and a reachable Tableau endpoint.
+
 Build the optional Windows launcher EXE with:
 `powershell -ExecutionPolicy Bypass -File .\scripts\build_light_ui_exe.ps1 -Clean`.
 The resulting `dist\TableauToPowerBI.exe` must remain beside the repository or

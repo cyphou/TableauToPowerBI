@@ -48,6 +48,11 @@ class LightMigrationUI:
         self.global_assess_var = tk.BooleanVar(value=False)
         self.prep_lineage_only_var = tk.BooleanVar(value=False)
         self.quality_policy_var = tk.StringVar(value="report")
+        self.server_url_var = tk.StringVar(value="")
+        self.server_site_var = tk.StringVar(value="")
+        self.server_token_name_var = tk.StringVar(value="")
+        self.server_target_var = tk.StringVar(value="")
+        self.server_target_mode_var = tk.StringVar(value="workbook")
         self.notify_var = tk.BooleanVar(value=True)
         self.auto_open_report_var = tk.BooleanVar(value=True)
         self.progress_var = tk.DoubleVar(value=0.0)
@@ -137,6 +142,11 @@ class LightMigrationUI:
         notify = data.get("notify")
         auto_open = data.get("auto_open_report")
         quality_policy = data.get("quality_policy")
+        server_url = data.get("server_url")
+        server_site = data.get("server_site")
+        server_token_name = data.get("server_token_name")
+        server_target = data.get("server_target")
+        server_target_mode = data.get("server_target_mode")
 
         if isinstance(source, str):
             self.source_var.set(source)
@@ -144,7 +154,7 @@ class LightMigrationUI:
             self.output_var.set(output)
         else:
             self.output_var.set(str(self.repo_root))
-        if preset in {"Assess", "Migrate", "Quality", "Lineage"}:
+        if preset in {"Assess", "Migrate", "Quality", "Server", "Lineage"}:
             self.preset_var.set(preset)
         if isinstance(verbose, bool):
             self.verbose_var.set(verbose)
@@ -154,6 +164,16 @@ class LightMigrationUI:
             self.auto_open_report_var.set(auto_open)
         if quality_policy in {"report", "enterprise", "production"}:
             self.quality_policy_var.set(quality_policy)
+        for value, variable in (
+            (server_url, self.server_url_var),
+            (server_site, self.server_site_var),
+            (server_token_name, self.server_token_name_var),
+            (server_target, self.server_target_var),
+        ):
+            if isinstance(value, str):
+                variable.set(value)
+        if server_target_mode in {"workbook", "project"}:
+            self.server_target_mode_var.set(server_target_mode)
 
     def _save_settings(self) -> None:
         data = {
@@ -164,6 +184,11 @@ class LightMigrationUI:
             "notify": self.notify_var.get(),
             "auto_open_report": self.auto_open_report_var.get(),
             "quality_policy": self.quality_policy_var.get(),
+            "server_url": self.server_url_var.get().strip(),
+            "server_site": self.server_site_var.get().strip(),
+            "server_token_name": self.server_token_name_var.get().strip(),
+            "server_target": self.server_target_var.get().strip(),
+            "server_target_mode": self.server_target_mode_var.get(),
         }
         try:
             self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -293,7 +318,7 @@ class LightMigrationUI:
         task_chip_row = tk.Frame(setup_card, bg=self.ui["surface"])
         task_chip_row.pack(fill=tk.X, pady=(2, 6))
         tk.Label(task_chip_row, text="Task", width=14, anchor="w", fg=self.ui["muted"], bg=self.ui["surface"]).pack(side=tk.LEFT)
-        for task in ("Assess", "Migrate", "Quality", "Lineage"):
+        for task in ("Assess", "Migrate", "Quality", "Server", "Lineage"):
             btn = tk.Button(
                 task_chip_row,
                 text=task,
@@ -319,6 +344,45 @@ class LightMigrationUI:
             justify="left",
         )
         self.workflow_hint.pack(fill=tk.X, pady=(0, 6))
+
+        server_card = tk.Frame(setup_card, bg=self.ui["surface"])
+        server_card.pack(fill=tk.X, pady=(0, 6))
+        self.server_card = server_card
+        tk.Label(
+            server_card,
+            text="Tableau Server / Cloud",
+            width=14,
+            anchor="w",
+            bg=self.ui["surface"],
+            fg=self.ui["muted"],
+        ).pack(side=tk.LEFT)
+        server_fields = tk.Frame(server_card, bg=self.ui["surface"])
+        server_fields.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        server_top = tk.Frame(server_fields, bg=self.ui["surface"])
+        server_top.pack(fill=tk.X, pady=2)
+        tk.Label(server_top, text="URL", bg=self.ui["surface"], fg=self.ui["muted"]).pack(side=tk.LEFT)
+        tk.Entry(server_top, textvariable=self.server_url_var, width=28, relief="solid", bd=1).pack(side=tk.LEFT, padx=(4, 8))
+        tk.Label(server_top, text="Site", bg=self.ui["surface"], fg=self.ui["muted"]).pack(side=tk.LEFT)
+        tk.Entry(server_top, textvariable=self.server_site_var, width=14, relief="solid", bd=1).pack(side=tk.LEFT, padx=(4, 8))
+        tk.Label(server_top, text="PAT name", bg=self.ui["surface"], fg=self.ui["muted"]).pack(side=tk.LEFT)
+        tk.Entry(server_top, textvariable=self.server_token_name_var, width=14, relief="solid", bd=1).pack(side=tk.LEFT, padx=(4, 0))
+        server_bottom = tk.Frame(server_fields, bg=self.ui["surface"])
+        server_bottom.pack(fill=tk.X, pady=2)
+        ttk.Combobox(
+            server_bottom,
+            textvariable=self.server_target_mode_var,
+            values=("workbook", "project"),
+            state="readonly",
+            width=10,
+        ).pack(side=tk.LEFT)
+        tk.Entry(server_bottom, textvariable=self.server_target_var, relief="solid", bd=1).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
+        tk.Label(
+            server_bottom,
+            text="Secret stays in TABLEAU_TOKEN_SECRET",
+            bg=self.ui["surface"],
+            fg=self.ui["muted"],
+            font=("Segoe UI", 8),
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         src_row = tk.Frame(setup_card, bg=self.ui["surface"])
         src_row.pack(fill=tk.X, pady=4)
@@ -594,6 +658,13 @@ class LightMigrationUI:
                 self.prep_lineage_only_var.set(False)
                 self.verbose_var.set(True)
                 self.workflow_hint.configure(text="Run a full migration batch and generate Power BI outputs.")
+            elif preset == "Server":
+                self.mode_var.set("server")
+                self.assess_only_var.set(False)
+                self.global_assess_var.set(False)
+                self.prep_lineage_only_var.set(False)
+                self.verbose_var.set(True)
+                self.workflow_hint.configure(text="Download one Tableau Server workbook or a whole project, then migrate it locally.")
             elif preset == "Lineage":
                 self.mode_var.set("batch")
                 self.assess_only_var.set(False)
@@ -624,6 +695,11 @@ class LightMigrationUI:
         self.global_assess_cb.configure(state=tk.NORMAL)
         self.prep_lineage_cb.configure(state=tk.NORMAL)
         self.assess_only_var.set(False)
+        if hasattr(self, "server_card"):
+            if self.preset_var.get() == "Server":
+                self.server_card.pack(fill=tk.X, pady=(0, 6))
+            else:
+                self.server_card.pack_forget()
 
     def _on_assess_toggle(self) -> None:
         if self.assess_only_var.get():
@@ -684,7 +760,14 @@ class LightMigrationUI:
         output = self.output_var.get().strip()
 
         cmd = [sys.executable, str(self.migrate_script)]
-        if self.prep_lineage_only_var.get():
+        if self.preset_var.get() == "Server":
+            cmd += ["--server", self.server_url_var.get().strip(), "--site", self.server_site_var.get().strip()]
+            cmd += ["--token-name", self.server_token_name_var.get().strip()]
+            if self.server_target_mode_var.get() == "project":
+                cmd += ["--server-batch", self.server_target_var.get().strip(), "--server-assets", "all"]
+            else:
+                cmd += ["--workbook", self.server_target_var.get().strip(), "--server-assets", "workbooks"]
+        elif self.prep_lineage_only_var.get():
             cmd += ["--prep-lineage", source]
         else:
             if self.global_assess_var.get():
@@ -707,6 +790,15 @@ class LightMigrationUI:
         if not self.migrate_script.exists():
             messagebox.showerror("Missing script", f"Could not find migrate.py at:\n{self.migrate_script}")
             return False
+        if self.preset_var.get() == "Server":
+            if not self.server_url_var.get().strip() or not self.server_target_var.get().strip():
+                messagebox.showwarning("Missing Server input", "Enter the Server URL and workbook/project target.")
+                return False
+            if not self.server_token_name_var.get().strip() or not os.environ.get("TABLEAU_TOKEN_SECRET"):
+                messagebox.showwarning("Missing PAT secret", "Set TABLEAU_TOKEN_SECRET in the terminal before starting the Server task.")
+                return False
+            return True
+
         if not source:
             messagebox.showwarning("Missing source", "Please choose a source folder.")
             return False

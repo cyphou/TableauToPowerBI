@@ -130,6 +130,20 @@ dashboard links, and the current quality policies: `report`, `enterprise`, and
 underlying engine; Desktop probing and live Fabric execution remain explicit
 runtime steps.
 
+It also provides a **Server** task for downloading and migrating one Tableau
+Server/Cloud workbook or an entire Tableau project. Enter the Server URL, site
+content URL, PAT name, and workbook/project target in the UI. Set the PAT secret
+only in the launching PowerShell session:
+
+```powershell
+$env:TABLEAU_TOKEN_SECRET = "<type-secret-here>"
+powershell -ExecutionPolicy Bypass -File .\run_light_ui.ps1
+```
+
+The UI does not persist or place the PAT secret in command-line arguments. A
+real Server test requires a reachable Tableau URL, a permitted PAT, and
+download permissions for the selected content.
+
 To build a Windows executable launcher:
 
 ```powershell
