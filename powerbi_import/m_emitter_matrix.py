@@ -16,6 +16,11 @@ _SAMPLE_TABLE = {
     ],
 }
 
+_FALLBACK_REMEDIATION = {
+    "owner": "@wiring",
+    "action": "Add a connector-specific M generator and a focused validator test before production use.",
+}
+
 
 def build_m_emitter_matrix() -> List[Dict[str, Any]]:
     """Exercise every registered connector alias and validate its M output.
@@ -40,6 +45,7 @@ def build_m_emitter_matrix() -> List[Dict[str, Any]]:
                 "generator": getattr(generator, "__name__", str(generator)),
                 "status": status,
                 "issues": list(issues),
+                "remediation": _FALLBACK_REMEDIATION if status == "fallback" else {},
             })
         except Exception as exc:  # matrix reports emitter defects as evidence
             rows.append({
@@ -47,6 +53,10 @@ def build_m_emitter_matrix() -> List[Dict[str, Any]]:
                 "generator": getattr(generator, "__name__", str(generator)),
                 "status": "error",
                 "issues": [repr(exc)],
+                "remediation": {
+                    "owner": "@wiring",
+                    "action": "Investigate the emitter exception and add a regression fixture.",
+                },
             })
     fallback_query = m_query_builder.generate_power_query_m(
         {"type": "UnknownConnector", "details": {}}, _SAMPLE_TABLE
@@ -56,6 +66,7 @@ def build_m_emitter_matrix() -> List[Dict[str, Any]]:
         "generator": "_gen_m_fallback",
         "status": "fallback" if not validate_m_query(fallback_query) else "invalid",
         "issues": validate_m_query(fallback_query),
+        "remediation": dict(_FALLBACK_REMEDIATION),
     })
     return rows
 
@@ -76,4 +87,8 @@ def summarize_m_emitter_matrix(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "fallback_connectors": [
             row["connector"] for row in rows if row.get("status") == "fallback"
         ],
+        "remediation": {
+            row["connector"]: row["remediation"]
+            for row in rows if row.get("status") in {"fallback", "invalid", "error"}
+        },
     }

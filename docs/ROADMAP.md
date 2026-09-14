@@ -99,6 +99,10 @@ those foundations into operator-facing migration capabilities.
   connector aliases plus the explicit unknown-connector fallback. The current
   matrix reports 98 valid outputs, zero invalid/error emitters, and a visible
   fallback classification without performing live connectivity.
+- **Fallback governance:** every fallback, invalid, or error row now carries a
+  machine-readable owner and remediation action. The current unknown-connector
+  fallback is assigned to `@wiring` with a connector-specific generator and
+  regression-test requirement.
 
 **Phase status:** 48.1 and 48.2 foundations are delivered locally; their
 operator-complete exit gates remain open. 48.3 is partially delivered through
@@ -107,10 +111,9 @@ authorized-environment work. 48.6 remains portfolio-operations work.
 
 #### v48 Next Implementation Order
 
-1. Build the remaining M fallback/error matrix by connector and emitter, then
-  add generated-M contract validation for every listed path; the baseline
-  matrix is delivered with 98 valid outputs, while connector-specific fallback
-  semantics and remediation ownership remain open.
+1. Extend the delivered M matrix with connector-specific fallback semantics and
+  remediation fixtures; the baseline matrix already validates 98 outputs and
+  assigns ownership to every fallback/error row.
 2. Connect an authorized Power BI/Fabric executor to the semantic runtime
   adapter and capture redacted connection/version evidence.
 3. Add representative semantic value execution checks for relationships,

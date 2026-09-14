@@ -26,6 +26,11 @@ class TestMEmitterMatrix(unittest.TestCase):
             row["status"] == "fallback"
             for row in rows if row["generator"] == "_gen_m_fallback"
         ))
+        fallback = [row for row in rows if row["status"] == "fallback"]
+        self.assertTrue(fallback)
+        self.assertTrue(all(row["remediation"].get("owner") for row in fallback))
+        self.assertTrue(all(row["remediation"].get("action") for row in fallback))
+        self.assertEqual(set(summary["remediation"]), {row["connector"] for row in fallback})
 
 
 if __name__ == "__main__":
