@@ -7426,7 +7426,6 @@ def _run_single_migration(args):
         out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
         existing_dir = os.path.join(out_base, source_basename)
         if os.path.exists(existing_dir):
-            import shutil
             ts = datetime.now().strftime('%Y%m%d_%H%M%S')
             backup_dir = existing_dir + f'.backup_{ts}'
             shutil.copytree(existing_dir, backup_dir)
