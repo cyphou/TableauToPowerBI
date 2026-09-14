@@ -38,5 +38,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE"
 }
 
+Get-ChildItem -Path (Join-Path $repoRoot 'dist\windows\TableauToPowerBI') `
+    -Directory -Filter '__pycache__' -Recurse -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force
+
 Write-Host "Autonomous app created: $repoRoot\dist\windows\TableauToPowerBI\TableauToPowerBI.exe" -ForegroundColor Green
 Write-Host "Copy the complete TableauToPowerBI folder; no Python, PowerShell, or repository checkout is required at runtime." -ForegroundColor Green
