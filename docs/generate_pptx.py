@@ -154,11 +154,11 @@ def slide_title(prs):
 
     # Stats bar
     stats = [
-        ("8,746", "Tests Passed"),
+        ("150", "Focused Tests"),
         ("133+", "DAX Conversions"),
         ("190", "Visual Types"),
-        ("79", "Data Connectors"),
-        ("100%", "Fidelity (27/27 WB)"),
+        ("6", "Reports Migrated"),
+        ("5/6", "Openability Pass"),
     ]
     bar_left = Inches(1.0)
     bar_top = Inches(5.5)
@@ -188,7 +188,7 @@ def slide_executive_summary(prs):
     layers = [
         ("📥 INPUT", "TWB / TWBX / TDS / Prep / Hyper / Server API", TABLEAU_ORANGE),
         ("🔍 EXTRACT", "23 object types → 23 JSON intermediate files", PBI_BLUE),
-        ("🧮 CONVERT", "133+ DAX formulas • 43 M transforms • 49 connectors", PURPLE),
+        ("🧮 CONVERT", "133+ DAX formulas • 43 M transforms • 87 connectors", PURPLE),
         ("⚙️ GENERATE", "TMDL semantic model • PBIR v4.0 report • themes", PBI_BLUE),
         ("🧠 OPTIMIZE", "DAX AST rewriter • Time Intelligence inject • auto-fix", TEAL),
         ("✅ VALIDATE", "QA suite • governance • lineage • comparison report", SUCCESS),
@@ -242,8 +242,8 @@ def slide_executive_summary(prs):
     roi_cards = [
         ("⏱️", "95%+", "Time Saved", "vs. manual rework"),
         ("💰", "~$0", "Tooling Cost", "Python stdlib only"),
-        ("🎯", "100%", "Fidelity", "27/27 workbooks"),
-        ("🔒", "0", "Dependencies", "No 3rd-party risk"),
+        ("🎯", "5/6", "Openability", "one UC80 blocker set"),
+        ("🔒", "0", "Runtime Claims", "without authorized evidence"),
     ]
 
     roi_w = Inches(1.6)
@@ -345,7 +345,7 @@ def slide_features(prs):
         ("🔄 Complete Extraction", "23 object types from .twb/.twbx\nPrep flows, Hyper files, Server API", PBI_BLUE),
         ("🧮 133+ DAX Conversions", "LOD, table calcs, RANK, WINDOW\ncross-table RELATED/LOOKUPVALUE", PURPLE),
         ("📊 190 Visual Types", "Bar, line, map, treemap, Sankey\ncombo, gauge, word cloud, KPI", TEAL),
-        ("🔌 49 Data Connectors", "SQL Server, Snowflake, BigQuery\nDatabricks, Oracle, Excel, CSV…", PBI_BLUE),
+        ("🔌 87 Data Connectors", "SQL Server, Snowflake, BigQuery\nDatabricks, Oracle, Excel, CSV…", PBI_BLUE),
         ("🧠 Smart Semantic Model", "Calendar, hierarchies, calc groups\nfield params, RLS, perspectives\nM identifier auto-quoting", PURPLE),
         ("⚡ DAX Optimizer", "IF→SWITCH, COALESCE, constant\nfolding, Time Intelligence inject", TEAL),
         ("🔗 Shared Semantic Model", "Multi-WB merge, fingerprint match\nJaccard scoring, thin reports", PBI_BLUE),
@@ -353,7 +353,7 @@ def slide_features(prs):
         ("🏭 Fabric-Native Output", "Lakehouse, Dataflow Gen2, PySpark\nDirectLake, Data Pipeline", TEAL),
         ("🚀 Deploy Anywhere", "PBI Service, Fabric, gateway\nbundle deploy, multi-tenant", PBI_BLUE),
         ("📈 Assessment & Strategy", "9-category readiness scoring\nImport/DQ/Composite advisor", PURPLE),
-        ("🔗 Lineage Map", "Object traceability: source→target\nflow diagrams, HTML dashboard", TEAL),
+        ("🧪 Runtime Evidence", "Injected executor boundary\nfixtures, tolerances, mismatch paths", TEAL),
     ]
 
     cols = 4
@@ -528,21 +528,21 @@ def slide_shared_model(prs):
 
 
 def slide_migration_results(prs):
-    """Slide 7: Migration Results (27/27 workbooks)."""
+    """Slide 7: Current portfolio migration results."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     slide.background.fill.solid()
     slide.background.fill.fore_color.rgb = WHITE
 
     _add_text(slide, Inches(0.5), Inches(0.3), Inches(12), Inches(0.7),
-              "Migration Results — 27/27 Workbooks at 100% Fidelity", 32, PBI_DARK, bold=True)
+              "Current Portfolio — 6 Reports Migrated", 32, PBI_DARK, bold=True)
 
     # Stats cards
     cards = [
-        ("27/27", "Workbooks\nSucceeded", SUCCESS),
-        ("0", "Failed", RGBColor(0xA4, 0x26, 0x2C)),
-        ("100%", "Average\nFidelity", PBI_BLUE),
-        ("7,099", "Tests\nPassed", PURPLE),
-        ("0", "Test\nFailures", SUCCESS),
+        ("6/6", "PBIP Projects\nGenerated", SUCCESS),
+        ("5/6", "Openability\nPassed", PBI_BLUE),
+        ("1", "Blocked\n(UC80)", RGBColor(0xA4, 0x26, 0x2C)),
+        ("150", "Focused\nTests", PURPLE),
+        ("v48", "Roadmap\nTrack", TEAL),
     ]
     card_w = Inches(2.2)
     card_h = Inches(1.5)
@@ -555,36 +555,33 @@ def slide_migration_results(prs):
 
     # Tables: Samples + Real World
     _add_text(slide, Inches(0.5), Inches(3.2), Inches(5.5), Inches(0.5),
-              "Tableau Samples (10 workbooks)", 18, PBI_DARK, bold=True)
+              "Migrated reports — openability passed", 18, PBI_DARK, bold=True)
     samples = [
-        "Customer_Analysis", "Financial_Report", "Global_Superstores",
-        "HR_Dashboard", "Marketing_Analytics", "Sales_Dashboard",
-        "Sales_Performance", "Supply_Chain", "Tech_Support", "Ventes_France",
+        "Salesforce", "TDB Maintenance", "nba_player_stats",
+        "superstore_sales_dashboard", "World Indicators",
     ]
     for i, name in enumerate(samples):
-        row = i // 5
-        col = i % 5
-        _add_box(slide, Inches(0.5) + col * Inches(1.2), Inches(3.8) + row * Inches(0.5),
-                 Inches(1.1), Inches(0.4), LIGHT_GRAY, name[:16], 9, SUCCESS, bold=True, border_color=LIGHT_GRAY)
+        row = i // 2
+        col = i % 2
+        _add_box(slide, Inches(0.5) + col * Inches(2.7), Inches(3.8) + row * Inches(0.6),
+             Inches(2.5), Inches(0.45), LIGHT_GRAY, name[:28], 9, SUCCESS, bold=True, border_color=LIGHT_GRAY)
 
     _add_text(slide, Inches(6.5), Inches(3.2), Inches(6.5), Inches(0.5),
-              "Real-World Workbooks (17 workbooks)", 18, PBI_DARK, bold=True)
-    real_world = [
-        "Cache", "RESTAPISample", "SampleDS", "SampleWB", "TABLEAU_10_TWB",
-        "TABLEAU_10_TWBX", "datasource_test", "ephemeral_field",
-        "feedback_dashboard", "filtering", "global_superstores_db",
-        "multiple_connections", "nba_player_stats", "sample-superstore",
-        "shapes_test", "superstore_sales", "vishnu_dashboard",
+              "Blocked but generated: UC80", 18, RGBColor(0xA4, 0x26, 0x2C), bold=True)
+    blockers = [
+        "Missing semantic reference: Surveillance IPE Historique vision_domaine",
+        "Missing visual measure: Show % (Indicateur Nat) - Domaine",
+        "All other static openability checks passed",
     ]
-    for i, name in enumerate(real_world):
-        row = i // 6
-        col = i % 6
-        _add_box(slide, Inches(6.5) + col * Inches(1.15), Inches(3.8) + row * Inches(0.5),
-                 Inches(1.08), Inches(0.4), LIGHT_GRAY, name[:16], 8, SUCCESS, bold=True, border_color=LIGHT_GRAY)
+    for i, item in enumerate(blockers):
+        _add_box(slide, Inches(6.5), Inches(3.8) + i * Inches(0.6),
+                 Inches(6.2), Inches(0.45), LIGHT_GRAY, item[:70], 10,
+                 RGBColor(0xA4, 0x26, 0x2C) if i < 2 else SUCCESS,
+                 bold=True, border_color=LIGHT_GRAY)
 
     _add_text(slide, Inches(0.5), Inches(5.5), Inches(12), Inches(0.5),
-              "All 27 workbooks migrated at 100% fidelity — zero errors, zero manual intervention required.",
-              16, SUCCESS, bold=True, alignment=PP_ALIGN.CENTER)
+              "Six PBIP projects generated. Five pass static openability; live Desktop/Fabric evidence remains not_run.",
+              15, PBI_DARK, bold=True, alignment=PP_ALIGN.CENTER)
 
     # Migration results screenshot
     if os.path.isfile(IMG_MIGRATION_RESULTS):
@@ -651,7 +648,7 @@ def slide_testing(prs):
     # CI steps
     ci_steps = [
         ("🔍 Lint\nflake8 + ruff", PURPLE),
-        ("🧪 Test\n7,099 tests\nPy 3.12–3.14", SUCCESS),
+        ("🧪 Test\n150 focused tests\nPython 3.14", SUCCESS),
         ("✅ Validate\nStrict .twbx\nmigrations", PBI_BLUE),
         ("📦 Staging\nFabric deploy", PBI_YELLOW),
         ("🚀 Production\nManual approval", RGBColor(0xEF, 0x44, 0x44)),
@@ -670,18 +667,16 @@ def slide_testing(prs):
 
     # Test breakdown
     test_data = [
-        ("DAX Coverage", "168 tests", "Edge cases across all DAX categories"),
-        ("Generation", "145 tests", "TMDL/PBIR generation edge cases"),
-        ("M Query", "102 tests", "Power Query M, 40+ transforms"),
-        ("Semantic Model", "92 tests", "Calendar, TMDL, hierarchies"),
-        ("Visual Generator", "65 tests", "118+ types, sync, buttons"),
-        ("Real-World E2E", "63 tests", "End-to-end sample migrations"),
-        ("Automation", "64 tests", "Auto-fix, lineage, QA, governance"),
-        ("+ 134 more files", "6,400 tests", "Sprint, coverage, wizard, telemetry…"),
+        ("Quality report", "31 tests", "Policies, fixtures, runtime evidence"),
+        ("Semantic validation", "6 tests", "LOD, partitions, filter context"),
+        ("M validation", "42 tests", "Power Query syntax and gates"),
+        ("CLI/refactor", "49 tests", "Batch, flags, migration paths"),
+        ("Skill docs", "15 tests", "Flag and workflow documentation"),
+        ("Focused total", "150 tests", "All selected release checks green"),
     ]
 
     _add_text(slide, Inches(0.5), Inches(3.0), Inches(4), Inches(0.5),
-              "Test Suite Breakdown (141 files):", 18, PBI_DARK, bold=True)
+              "Focused release validation:", 18, PBI_DARK, bold=True)
 
     headers = ["Category", "Count", "Coverage"]
     col_ws = [Inches(2.5), Inches(1.5), Inches(4.5)]
@@ -714,12 +709,12 @@ def slide_next_steps(prs):
               "Next Steps", 40, WHITE, bold=True, alignment=PP_ALIGN.CENTER)
 
     steps = [
-        "1.  Open the generated .pbip in Power BI Desktop (Developer Mode)",
-        "2.  Configure data source credentials in Power Query Editor",
-        "3.  Verify DAX measures and relationships in Model view",
-        "4.  Compare visuals side-by-side with original Tableau workbook",
-        "5.  Run --qa for automated quality assurance + auto-fix",
-        "6.  Deploy to Power BI Service or Microsoft Fabric",
+        "1.  Open the five passing .pbip projects in Power BI Desktop",
+        "2.  Review and remediate the two UC80 reference blockers",
+        "3.  Run quality with --quality-policy enterprise or production",
+        "4.  Load sanitized semantic fixtures with expected rows and tolerances",
+        "5.  Connect an authorized Power BI/Fabric semantic executor",
+        "6.  Run Desktop reopen, refresh, and Fabric post-deploy validation",
     ]
     for i, step in enumerate(steps):
         _add_text(slide, Inches(2.0), Inches(2.0) + i * Inches(0.7),
@@ -728,7 +723,7 @@ def slide_next_steps(prs):
     # Command box
     _add_box(slide, Inches(2.0), Inches(6.0), Inches(9), Inches(0.7),
              RGBColor(0x00, 0x35, 0x60),
-             "python migrate.py your_workbook.twbx --qa --deploy WORKSPACE_ID",
+             "python migrate.py quality WORKBOOK --quality-policy production",
              16, PBI_YELLOW, bold=True)
 
 
