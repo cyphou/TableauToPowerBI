@@ -130,6 +130,19 @@ dashboard links, and the current quality policies: `report`, `enterprise`, and
 underlying engine; Desktop probing and live Fabric execution remain explicit
 runtime steps.
 
+To build a Windows executable launcher:
+
+```powershell
+python -m pip install pyinstaller
+powershell -ExecutionPolicy Bypass -File .\scripts\build_light_ui_exe.ps1 -Clean
+```
+
+The output is `dist\TableauToPowerBI.exe`. Keep the `dist` folder beside the
+repository checkout, or set `TTPBI_ENGINE_ROOT` to the checkout path before
+launching the EXE. The launcher starts the same `run_light_ui.ps1` workflow,
+so the Python engine, current repository updates, static openability gate, and
+quality-policy controls remain in one authoritative path.
+
 ---
 
 ## 🎯 Key Features

@@ -65,6 +65,11 @@ The Windows desktop application is `web/light_ui.py`, launched with
 passes the selected `report`, `enterprise`, or `production` policy to the batch
 engine and exposes the generated output and HTML dashboard.
 
+Build the optional Windows launcher EXE with:
+`powershell -ExecutionPolicy Bypass -File .\scripts\build_light_ui_exe.ps1 -Clean`.
+The resulting `dist\TableauToPowerBI.exe` must remain beside the repository or
+use the `TTPBI_ENGINE_ROOT` environment variable to locate the engine checkout.
+
 Desktop probe results are evidence gates: a successful launch can produce
 `DESKTOP_SMOKE_PASS`, while a crash, timeout, or probe error downgrades the
 confidence level to `UNVERIFIED` even when static validation passed. Two
