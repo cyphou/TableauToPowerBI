@@ -147,9 +147,9 @@ def slide_title(prs):
     _add_text(slide, Inches(1.5), Inches(1.5), Inches(10), Inches(1.2),
               "Tableau → Power BI", 48, WHITE, bold=True, alignment=PP_ALIGN.CENTER)
     _add_text(slide, Inches(1.5), Inches(2.7), Inches(10), Inches(0.8),
-              "Automated Migration Tool", 36, PBI_YELLOW, bold=True, alignment=PP_ALIGN.CENTER)
+              "Evidence-Backed Migration Engine", 36, PBI_YELLOW, bold=True, alignment=PP_ALIGN.CENTER)
     _add_text(slide, Inches(1.5), Inches(4.0), Inches(10), Inches(0.6),
-              "Migrate .twb/.twbx workbooks to .pbip projects — fully automated, zero manual rework",
+              "Migrate Tableau workbooks and Prep flows to PBIP and Fabric-ready artifacts",
               18, WHITE, alignment=PP_ALIGN.CENTER)
 
     # Stats bar
@@ -260,8 +260,8 @@ def slide_executive_summary(prs):
 
     # ROI summary line
     _add_text(slide, Inches(0.3), Inches(6.6), Inches(12.5), Inches(0.5),
-              "Zero external dependencies • Zero manual rework on standard workbooks • "
-              "Enterprise-grade security (OWASP Top 10) • Full audit trail & governance",
+              "Static validation is deterministic • Live Desktop/Fabric evidence is explicit • "
+              "Every approximation and blocker remains visible",
               13, GRAY, alignment=PP_ALIGN.CENTER)
 
 
@@ -700,8 +700,41 @@ def slide_testing(prs):
         _add_box(slide, x, y, col_ws[2], rh, bg, desc, 11, GRAY, bold=False, border_color=LIGHT_GRAY)
 
 
+def slide_operational_surfaces(prs):
+    """Slide 10: Developer, agent, governance, and delivery surfaces."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = WHITE
+
+    _add_text(slide, Inches(0.5), Inches(0.3), Inches(12), Inches(0.7),
+              "Operational Surfaces — From Developer Tool to Handoff", 30,
+              PBI_DARK, bold=True)
+
+    surfaces = [
+        ("Developer surfaces", "VS Code extension\nNotebook API v2\nDAX/Tableau syntax grammars\nPlugin SDK + marketplace", PBI_BLUE),
+        ("Agent surfaces", "Copilot skill + flag reference\nMCP tools: assess, migrate, QA, parity\nGrounded remediation and Q&A\nSecret-safe deployment guardrails", PURPLE),
+        ("Enterprise surfaces", "Tableau Server/Cloud download\nPortfolio assessment and lineage\nPrep-flow analysis\nOAuth, gateway, RLS and credentials templates", TEAL),
+        ("Quality surfaces", "Openability and Desktop probe\nSelf-healing and recovery ledger\nVisual/data/interface fidelity\nEvidence manifest and policy profiles", SUCCESS),
+        ("Delivery surfaces", "PBIP/PBIR/TMDL output\nFabric six-artifact scaffold\nPDF/PPTX/report packages\nPower BI Service and Fabric deployment", PBI_DARK),
+        ("Safety boundary", "Local status is static unless runtime evidence exists\nSemantic execution defaults to not_run\nAI suggests; deterministic validators decide\nCredentials and customer data stay out of fixtures", RGBColor(0xA4, 0x26, 0x2C)),
+    ]
+    box_w = Inches(3.95)
+    box_h = Inches(1.7)
+    for i, (title, desc, color) in enumerate(surfaces):
+        col = i % 3
+        row = i // 3
+        x = Inches(0.5) + col * Inches(4.25)
+        y = Inches(1.35) + row * Inches(2.0)
+        _add_box(slide, x, y, box_w, box_h, color,
+                 f"{title}\n\n{desc}", 12, WHITE, bold=False)
+
+    _add_text(slide, Inches(0.5), Inches(5.65), Inches(12), Inches(0.7),
+              "One versioned evidence contract connects CLI, batch, MCP, Notebook, VS Code, and Fabric metadata.",
+              16, PBI_DARK, bold=True, alignment=PP_ALIGN.CENTER)
+
+
 def slide_next_steps(prs):
-    """Slide 10: Next Steps / Call to Action."""
+    """Slide 11: Next Steps / Call to Action."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _add_gradient_bg(slide, PBI_DARK, PBI_BLUE)
 
@@ -747,6 +780,7 @@ def generate_presentation(output_path):
     slide_migration_results(prs)
     slide_qa_automation(prs)
     slide_testing(prs)
+    slide_operational_surfaces(prs)
     slide_next_steps(prs)
 
     prs.save(output_path)
