@@ -1,0 +1,27 @@
+[
+  {
+    "name": "[Action4_34242B03A8294D088B02D2D5774C243F]",
+    "type": "",
+    "source_worksheets": [
+      "Tourism Over Time"
+    ],
+    "target_worksheets": [],
+    "command": ""
+  },
+  {
+    "name": "[Action5_47F6ABBE4E9B49A191C64DD62E3E08D1]",
+    "type": "",
+    "source_worksheets": [
+      "Tourism By Country/Region"
+    ],
+    "target_worksheets": [],
+    "command": ""
+  },
+  {
+    "name": "[Action6_755611AD135D487CA02105BD3EEFB5FD]",
+    "type": "",
+    "source_worksheets": [],
+    "target_worksheets": [],
+    "command": ""
+  }
+]

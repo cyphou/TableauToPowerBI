@@ -1,0 +1,9 @@
+{
+  ":Measure Names": {
+    "\"[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Birth Rate:qk]\"": "Birth Rate ",
+    "\"[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Calculation_638103803600809984:qk]\"": "Life Expectancy",
+    "\"[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Health Exp \\% GDP:qk]\"": "Health Exp % GDP ",
+    "\"[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Infant Mortality Rate:qk]\"": "Infant Mortality",
+    "\"[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[usr:Calculation_1554586357507932164:qk]\"": "GDP per Capita"
+  }
+}

@@ -1,0 +1,888 @@
+[
+  {
+    "name": "Parameters",
+    "caption": "Parameters",
+    "connection": {
+      "type": "Unknown",
+      "details": {}
+    },
+    "connection_map": {},
+    "tables": [],
+    "calculations": [
+      {
+        "name": "[Parameter 1]",
+        "caption": "Health Exp Threshold",
+        "formula": "0.14000000000000001",
+        "class": "tableau",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "description": "",
+        "datasource_name": "Parameters"
+      }
+    ],
+    "columns": [
+      {
+        "name": "[Parameter 1]",
+        "caption": "Health Exp Threshold",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "p0%",
+        "description": "",
+        "calculation": {
+          "class": "tableau",
+          "formula": "0.14000000000000001"
+        }
+      }
+    ],
+    "relationships": [],
+    "col_local_name_map": {},
+    "col_type_map": {}
+  },
+  {
+    "name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
+    "caption": "World Indicators",
+    "connection": {
+      "type": "HYPER",
+      "details": {
+        "authentication": "auth-none",
+        "author-locale": "en_US",
+        "class": "hyper",
+        "dbname": "Data/World Indicators/World Indicators.hyper",
+        "default-settings": "yes",
+        "port": "",
+        "sslmode": "",
+        "username": "tableau_internal_user"
+      }
+    },
+    "connection_map": {
+      "hyper.0o92d8802zffo515xhl160aulmpt": {
+        "type": "HYPER",
+        "details": {
+          "authentication": "auth-none",
+          "author-locale": "en_US",
+          "class": "hyper",
+          "dbname": "Data/World Indicators/World Indicators.hyper",
+          "default-settings": "yes",
+          "port": "",
+          "sslmode": "",
+          "username": "tableau_internal_user"
+        }
+      }
+    },
+    "tables": [
+      {
+        "name": "Extract",
+        "type": "table",
+        "columns": [
+          {
+            "name": "Birth Rate",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 0,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Business Tax Rate",
+            "datatype": "string",
+            "role": "dimension",
+            "ordinal": 1,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "CO2 Emissions",
+            "datatype": "integer",
+            "role": "measure",
+            "ordinal": 2,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Country/Region",
+            "datatype": "string",
+            "role": "dimension",
+            "ordinal": 3,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Days to Start Business",
+            "datatype": "integer",
+            "role": "measure",
+            "ordinal": 4,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Ease of Business",
+            "datatype": "string",
+            "role": "dimension",
+            "ordinal": 5,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Energy Usage",
+            "datatype": "integer",
+            "role": "measure",
+            "ordinal": 6,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "GDP",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 7,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Health Exp % GDP",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 8,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Health Exp/Capita",
+            "datatype": "integer",
+            "role": "measure",
+            "ordinal": 9,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Hours to do Tax",
+            "datatype": "string",
+            "role": "dimension",
+            "ordinal": 10,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Infant Mortality Rate",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 11,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Internet Usage",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 12,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Lending Interest",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 13,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Life Expectancy Female",
+            "datatype": "integer",
+            "role": "measure",
+            "ordinal": 14,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Life Expectancy Male",
+            "datatype": "integer",
+            "role": "measure",
+            "ordinal": 15,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Mobile Phone Usage",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 16,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Population 0-14",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 17,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Population 15-64",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 18,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Population 65+",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 19,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Population Total",
+            "datatype": "integer",
+            "role": "measure",
+            "ordinal": 20,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Population Urban",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 21,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Region",
+            "datatype": "string",
+            "role": "dimension",
+            "ordinal": 22,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Tourism Inbound",
+            "datatype": "real",
+            "role": "measure",
+            "ordinal": 23,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Tourism Outbound",
+            "datatype": "integer",
+            "role": "measure",
+            "ordinal": 24,
+            "length": null,
+            "nullable": true
+          },
+          {
+            "name": "Year",
+            "datatype": "date",
+            "role": "dimension",
+            "ordinal": 25,
+            "length": null,
+            "nullable": true
+          }
+        ],
+        "connection": "hyper.0o92d8802zffo515xhl160aulmpt",
+        "connection_details": {
+          "type": "HYPER",
+          "details": {
+            "authentication": "auth-none",
+            "author-locale": "en_US",
+            "class": "hyper",
+            "dbname": "Data/World Indicators/World Indicators.hyper",
+            "default-settings": "yes",
+            "port": "",
+            "sslmode": "",
+            "username": "tableau_internal_user"
+          }
+        },
+        "caption": "",
+        "source_table": "Extract].[Extract"
+      }
+    ],
+    "calculations": [
+      {
+        "name": "[Calculation_1554586357494272000]",
+        "caption": "Above Threshold?",
+        "formula": "if [Health Exp % GDP]>[Parameters].[Parameter 1] then \"Above Threshold\" else \"Below Threshold\" end",
+        "class": "tableau",
+        "datatype": "string",
+        "role": "dimension",
+        "type": "nominal",
+        "description": "",
+        "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+      },
+      {
+        "name": "[Calculation_1554586357495853057]",
+        "caption": "GDP per Capita",
+        "formula": "[GDP]/[Population Total]",
+        "class": "tableau",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "description": "",
+        "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+      },
+      {
+        "name": "[Calculation_1554586357496451074]",
+        "caption": "Birth Rate Bin",
+        "formula": "if ([Birth Rate])<0.015 then \"Below 1.5%\" elseif\r\n([Birth Rate])<0.03 then \"1.5-3%\" else\r\n\"Above 3%\" end",
+        "class": "tableau",
+        "datatype": "string",
+        "role": "dimension",
+        "type": "nominal",
+        "description": "",
+        "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+      },
+      {
+        "name": "[Calculation_638103803600809984]",
+        "caption": "Life Expectancy",
+        "formula": "([Life Expectancy Female]+[Life Expectancy Male])/2",
+        "class": "tableau",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "description": "",
+        "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+      },
+      {
+        "name": "[GDP per Capita (bin)]",
+        "caption": "GDP per Capita (bin)",
+        "formula": "[Calculation_1554586357495853057]",
+        "class": "bin",
+        "datatype": "integer",
+        "role": "dimension",
+        "type": "ordinal",
+        "description": "",
+        "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+      },
+      {
+        "name": "[Number of Records]",
+        "caption": "[Number of Records]",
+        "formula": "1",
+        "class": "tableau",
+        "datatype": "integer",
+        "role": "measure",
+        "type": "quantitative",
+        "description": "",
+        "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+      },
+      {
+        "name": "[Parameter 1]",
+        "caption": "Health Exp Threshold",
+        "formula": "0.14000000000000001",
+        "class": "tableau",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "description": "",
+        "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+      }
+    ],
+    "columns": [
+      {
+        "name": "[:Measure Names]",
+        "caption": "",
+        "datatype": "string",
+        "role": "dimension",
+        "type": "nominal",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Birth Rate]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "p0.0%",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Business Tax Rate]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "ordinal",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "p0%",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Calculation_1554586357494272000]",
+        "caption": "Above Threshold?",
+        "datatype": "string",
+        "role": "dimension",
+        "type": "nominal",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": {
+          "class": "tableau",
+          "formula": "if [Health Exp % GDP]>[Parameters].[Parameter 1] then \"Above Threshold\" else \"Below Threshold\" end"
+        }
+      },
+      {
+        "name": "[Calculation_1554586357495853057]",
+        "caption": "GDP per Capita",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "c\"$\"#,##0",
+        "description": "",
+        "calculation": {
+          "class": "tableau",
+          "formula": "[GDP]/[Population Total]"
+        }
+      },
+      {
+        "name": "[Calculation_1554586357496451074]",
+        "caption": "Birth Rate Bin",
+        "datatype": "string",
+        "role": "dimension",
+        "type": "nominal",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": {
+          "class": "tableau",
+          "formula": "if ([Birth Rate])<0.015 then \"Below 1.5%\" elseif\r\n([Birth Rate])<0.03 then \"1.5-3%\" else\r\n\"Above 3%\" end"
+        }
+      },
+      {
+        "name": "[Calculation_638103803600809984]",
+        "caption": "Life Expectancy",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "n#,##0",
+        "description": "",
+        "calculation": {
+          "class": "tableau",
+          "formula": "([Life Expectancy Female]+[Life Expectancy Male])/2"
+        }
+      },
+      {
+        "name": "[Country/Region (clusters)]",
+        "caption": "Ease of Business (clusters)",
+        "datatype": "string",
+        "role": "dimension",
+        "type": "nominal",
+        "hidden": false,
+        "semantic_role": "[Country].[ISO3166_2]",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": {
+          "class": "categorical-bin",
+          "formula": ""
+        }
+      },
+      {
+        "name": "[Country/Region]",
+        "caption": "",
+        "datatype": "string",
+        "role": "dimension",
+        "type": "nominal",
+        "hidden": false,
+        "semantic_role": "[Country].[ISO3166_2]",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Days to Start Business]",
+        "caption": "",
+        "datatype": "integer",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "n#,##0;-#,##0",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Ease of Business (clusters)]",
+        "caption": "Ease of Business (clusters)1",
+        "datatype": "string",
+        "role": "dimension",
+        "type": "nominal",
+        "hidden": true,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Ease of Business]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "ordinal",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "n#,##0;-#,##0",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[GDP per Capita (bin)]",
+        "caption": "GDP per Capita (bin)",
+        "datatype": "integer",
+        "role": "dimension",
+        "type": "ordinal",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": {
+          "class": "bin",
+          "formula": "[Calculation_1554586357495853057]"
+        }
+      },
+      {
+        "name": "[GDP]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Health Exp % GDP]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "p0.0%",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Health Exp/Capita]",
+        "caption": "",
+        "datatype": "integer",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "c\"$\"#,##0;(\"$\"#,##0)",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Hours to do Tax]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "ordinal",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "n#,##0",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Infant Mortality Rate]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Internet Usage]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "p0%",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Lending Interest]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Life Expectancy Female]",
+        "caption": "",
+        "datatype": "integer",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Life Expectancy Male]",
+        "caption": "",
+        "datatype": "integer",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Mobile Phone Usage]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "p0%",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Number of Records]",
+        "caption": "",
+        "datatype": "integer",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": {
+          "class": "tableau",
+          "formula": "1"
+        }
+      },
+      {
+        "name": "[Population Total]",
+        "caption": "",
+        "datatype": "integer",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "c#,##0,,.0M;(#,##0,,.0M)",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Population Urban]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "p0.0%",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Region]",
+        "caption": "",
+        "datatype": "string",
+        "role": "dimension",
+        "type": "nominal",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Tourism Inbound]",
+        "caption": "",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Tourism Outbound]",
+        "caption": "",
+        "datatype": "integer",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Year]",
+        "caption": "",
+        "datatype": "date",
+        "role": "dimension",
+        "type": "ordinal",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[__tableau_internal_object_id__].[Migrated Data]",
+        "caption": "Migrated Data",
+        "datatype": "table",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "",
+        "description": "",
+        "calculation": null
+      },
+      {
+        "name": "[Parameter 1]",
+        "caption": "Health Exp Threshold",
+        "datatype": "real",
+        "role": "measure",
+        "type": "quantitative",
+        "hidden": false,
+        "semantic_role": "",
+        "default_aggregation": "",
+        "default_format": "p0%",
+        "description": "",
+        "calculation": {
+          "class": "tableau",
+          "formula": "0.14000000000000001"
+        }
+      }
+    ],
+    "relationships": [],
+    "col_local_name_map": {
+      "Birth Rate": "Extract",
+      "Business Tax Rate": "Extract",
+      "CO2 Emissions": "Extract",
+      "Country/Region": "Extract",
+      "Days to Start Business": "Extract",
+      "Ease of Business": "Extract",
+      "Energy Usage": "Extract",
+      "GDP": "Extract",
+      "Health Exp % GDP": "Extract",
+      "Health Exp/Capita": "Extract",
+      "Hours to do Tax": "Extract",
+      "Infant Mortality Rate": "Extract",
+      "Internet Usage": "Extract",
+      "Lending Interest": "Extract",
+      "Life Expectancy Female": "Extract",
+      "Life Expectancy Male": "Extract",
+      "Mobile Phone Usage": "Extract",
+      "Population 0-14": "Extract",
+      "Population 15-64": "Extract",
+      "Population 65+": "Extract",
+      "Population Total": "Extract",
+      "Population Urban": "Extract",
+      "Region": "Extract",
+      "Tourism Inbound": "Extract",
+      "Tourism Outbound": "Extract",
+      "Year": "Extract"
+    },
+    "col_type_map": {
+      "Birth Rate": "real",
+      "Business Tax Rate": "string",
+      "CO2 Emissions": "integer",
+      "Country/Region": "string",
+      "Days to Start Business": "integer",
+      "Ease of Business": "string",
+      "Energy Usage": "integer",
+      "GDP": "real",
+      "Health Exp % GDP": "real",
+      "Health Exp/Capita": "integer",
+      "Hours to do Tax": "string",
+      "Infant Mortality Rate": "real",
+      "Internet Usage": "real",
+      "Lending Interest": "real",
+      "Life Expectancy Female": "integer",
+      "Life Expectancy Male": "integer",
+      "Mobile Phone Usage": "real",
+      "Population 0-14": "real",
+      "Population 15-64": "real",
+      "Population 65+": "real",
+      "Population Total": "integer",
+      "Population Urban": "real",
+      "Region": "string",
+      "Tourism Inbound": "real",
+      "Tourism Outbound": "integer",
+      "Year": "date"
+    }
+  }
+]

@@ -6,26 +6,37 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $repoRoot
 
-$pyInstaller = Get-Command pyinstaller -ErrorAction SilentlyContinue
-if (-not $pyInstaller) {
-    throw "PyInstaller is required. Install it with: python -m pip install pyinstaller"
+$pythonLauncher = Get-Command py -ErrorAction SilentlyContinue
+if (-not $pythonLauncher) {
+    throw "Python Launcher is required. Install Python 3.13 from python.org or winget."
+}
+
+& py -3.13 -c "import PyInstaller" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller is missing for Python 3.13. Install it with: py -3.13 -m pip install pyinstaller"
 }
 
 if ($Clean) {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build, dist
 }
 
-& pyinstaller `
+& py -3.13 -m PyInstaller `
     --noconfirm `
     --clean `
-    --onefile `
+    --onedir `
     --windowed `
     --name TableauToPowerBI `
+    --distpath dist\windows `
+    --workpath build\windows `
+    --add-data "migrate.py;." `
+    --add-data "tableau_export;tableau_export" `
+    --add-data "powerbi_import;powerbi_import" `
+    --add-data "web;web" `
     desktop_launcher.py
 
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "EXE created: $repoRoot\dist\TableauToPowerBI.exe" -ForegroundColor Green
-Write-Host "The EXE expects the repository checkout beside it or TTPBI_ENGINE_ROOT." -ForegroundColor Yellow
+Write-Host "Autonomous app created: $repoRoot\dist\windows\TableauToPowerBI\TableauToPowerBI.exe" -ForegroundColor Green
+Write-Host "Copy the complete TableauToPowerBI folder; no Python, PowerShell, or repository checkout is required at runtime." -ForegroundColor Green

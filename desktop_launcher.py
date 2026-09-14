@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import migrate as _bundled_engine
+
 
 def _candidate_roots() -> list[Path]:
     executable_dir = Path(sys.executable).resolve().parent
@@ -22,6 +24,8 @@ def _candidate_roots() -> list[Path]:
 
 
 def find_engine_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     for root in _candidate_roots():
         if (root / "run_light_ui.ps1").is_file() and (root / "migrate.py").is_file():
             return root
@@ -32,6 +36,19 @@ def find_engine_root() -> Path:
 
 
 def main() -> int:
+    root = find_engine_root()
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-engine":
+        sys.path.insert(0, str(root))
+        sys.argv = ["migrate.py", *sys.argv[3:]]
+        return int(_bundled_engine.main())
+
+    if getattr(sys, "frozen", False):
+        ui_script = root / "web" / "light_ui.py"
+        sys.path.insert(0, str(root))
+        sys.argv = [str(ui_script)]
+        runpy.run_path(str(ui_script), run_name="__main__")
+        return 0
+
     try:
         root = find_engine_root()
     except FileNotFoundError as exc:

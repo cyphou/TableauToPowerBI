@@ -1,0 +1,38 @@
+{
+  "Parameter 1": [
+    "Health Exp Threshold"
+  ],
+  ":Measure Names": [
+    "Birth Rate ",
+    "GDP per Capita",
+    "Health Exp % GDP ",
+    "Infant Mortality",
+    "Life Expectancy"
+  ],
+  "Calculation_1554586357494272000": [
+    "Above Threshold?",
+    "Calculation 1554586357494272000"
+  ],
+  "Calculation_1554586357495853057": [
+    "Calculation 1554586357495853057",
+    "GDP per Capita"
+  ],
+  "Calculation_1554586357496451074": [
+    "Birth Rate Bin",
+    "Calculation 1554586357496451074"
+  ],
+  "Calculation_638103803600809984": [
+    "Calculation 638103803600809984",
+    "Life Expectancy"
+  ],
+  "Country/Region (clusters)": [
+    "Ease of Business (clusters)"
+  ],
+  "Ease of Business (clusters)": [
+    "Ease of Business (clusters)1"
+  ],
+  "__tableau_internal_object_id__].[Migrated Data": [
+    "  tableau internal object id  ].[Migrated Data",
+    "Migrated Data"
+  ]
+}

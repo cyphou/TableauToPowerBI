@@ -1,0 +1,520 @@
+"""DAX Optimizer — AST-based rewriter for idiomatic Power BI DAX.
+
+Performs post-conversion optimization passes on DAX formulas generated
+from Tableau conversion, improving readability and query performance.
+
+Optimization rules:
+- Nested IF → SWITCH conversion
+- IF(ISBLANK(x), 0, x) → COALESCE(x, 0)
+- Redundant CALCULATE collapse
+- Constant expression folding
+- VAR/RETURN extraction for repeated subexpressions
+- SUMX simplification (single-column)
+- Measure dependency DAG construction
+"""
+
+import re
+import json
+import os
+
+
+# ════════════════════════════════════════════════════════════════════
+#  OPTIMIZATION RULES
+# ════════════════════════════════════════════════════════════════════
+
+def optimize_dax(formula, rule_set=None):
+    """Apply optimization rules to a DAX formula.
+
+    Args:
+        formula: DAX formula string
+        rule_set: Optional list of rule names to apply. If None, applies all.
+
+    Returns:
+        tuple: (optimized_formula, list of applied rule names)
+    """
+    if not formula or not isinstance(formula, str):
+        return formula, []
+
+    rules = [
+        ('isblank_coalesce', _rule_isblank_to_coalesce),
+        ('nested_if_to_switch', _rule_nested_if_to_switch),
+        ('redundant_calculate', _rule_redundant_calculate),
+        ('constant_fold', _rule_constant_fold),
+        ('simplify_sumx', _rule_simplify_sumx),
+        ('trim_whitespace', _rule_trim_whitespace),
+    ]
+
+    applied = []
+    result = formula
+    for name, rule_fn in rules:
+        if rule_set and name not in rule_set:
+            continue
+        new_result = rule_fn(result)
+        if new_result != result:
+            applied.append(name)
+            result = new_result
+
+    return result, applied
+
+
+def _rule_isblank_to_coalesce(formula):
+    """Convert IF(ISBLANK(x), default, x) → COALESCE(x, default).
+
+    Uses balanced-paren extraction to handle nested expressions like
+    ``IF(ISBLANK(SUM(x)), 0, SUM(x))``.
+    """
+    pat = re.compile(r'IF\s*\(\s*ISBLANK\s*\(', re.IGNORECASE)
+    result = formula
+    match = pat.search(result)
+    while match:
+        # Extract the ISBLANK inner expression using balanced parens
+        isblank_start = match.end()
+        depth, i = 1, isblank_start
+        while i < len(result) and depth > 0:
+            if result[i] == '(':
+                depth += 1
+            elif result[i] == ')':
+                depth -= 1
+            i += 1
+        if depth != 0:
+            break
+        blank_expr = result[isblank_start:i - 1].strip()
+
+        # Now we need to parse ", branch_true, branch_false)"
+        # Skip whitespace and comma after ISBLANK closing paren
+        j = i
+        while j < len(result) and result[j] in ' \t':
+            j += 1
+        if j >= len(result) or result[j] != ',':
+            break
+        j += 1  # skip comma
+
+        # Extract branch_true (balanced, comma-delimited at depth 0)
+        depth = 0
+        k = j
+        while k < len(result):
+            if result[k] == '(':
+                depth += 1
+            elif result[k] == ')':
+                if depth == 0:
+                    break
+                depth -= 1
+            elif result[k] == ',' and depth == 0:
+                break
+            k += 1
+        if k >= len(result) or result[k] != ',':
+            break
+        branch_true = result[j:k].strip()
+
+        # Extract branch_false (balanced, paren-delimited at depth 0)
+        k += 1  # skip comma
+        depth = 0
+        end = k
+        while end < len(result):
+            if result[end] == '(':
+                depth += 1
+            elif result[end] == ')':
+                if depth == 0:
+                    break
+                depth -= 1
+            end += 1
+        if end >= len(result):
+            break
+        branch_false = result[k:end].strip()
+
+        # Try the transformation
+        replacement = None
+        if branch_false == blank_expr:
+            replacement = f'COALESCE({blank_expr}, {branch_true})'
+        elif branch_true == blank_expr:
+            replacement = f'COALESCE({blank_expr}, {branch_false})'
+
+        if replacement:
+            result = result[:match.start()] + replacement + result[end + 1:]
+            match = pat.search(result, match.start() + len(replacement))
+        else:
+            match = pat.search(result, match.end())
+    return result
+
+
+def _rule_nested_if_to_switch(formula):
+    """Convert nested IF chains on same field to SWITCH.
+
+    Detects: IF(x = "a", r1, IF(x = "b", r2, IF(x = "c", r3, default)))
+    Converts to: SWITCH(x, "a", r1, "b", r2, "c", r3, default)
+    """
+    # Pattern for nested IFs: IF(field = val, result, IF(field = val2, ...))
+    # We iteratively extract the chain
+    pattern = r'^IF\s*\(\s*(.+?)\s*=\s*(.+?)\s*,\s*(.+?)\s*,\s*(IF\s*\(.+)\)$'
+
+    cases = []
+    remaining = formula.strip()
+
+    # Try to extract IF chain
+    while True:
+        m = re.match(pattern, remaining, re.DOTALL)
+        if not m:
+            break
+        field = m.group(1).strip()
+        value = m.group(2).strip()
+        result = m.group(3).strip()
+        cases.append((field, value, result))
+        remaining = m.group(4).strip()
+
+    # Check the final IF
+    final_pattern = r'^IF\s*\(\s*(.+?)\s*=\s*(.+?)\s*,\s*(.+?)\s*,\s*(.+?)\s*\)$'
+    fm = re.match(final_pattern, remaining, re.DOTALL)
+    if fm and len(cases) >= 2:
+        field = fm.group(1).strip()
+        value = fm.group(2).strip()
+        result = fm.group(3).strip()
+        default = fm.group(4).strip()
+        cases.append((field, value, result))
+
+        # All cases must reference the same field
+        fields = set(c[0] for c in cases)
+        if len(fields) == 1:
+            switch_field = cases[0][0]
+            parts = [f'SWITCH({switch_field}']
+            for _, val, res in cases:
+                parts.append(f', {val}, {res}')
+            parts.append(f', {default})')
+            return ''.join(parts)
+
+    return formula
+
+
+def _rule_redundant_calculate(formula):
+    """Remove CALCULATE wrapping when there are no filters.
+
+    CALCULATE(SUM(x)) → SUM(x)
+
+    Only applies when the ENTIRE formula is a single-argument CALCULATE(...)
+    wrapping a simple aggregation. Using ``re.fullmatch`` prevents silently
+    dropping trailing expressions — e.g. ``CALCULATE(SUM(x)) + 1`` must NOT
+    collapse to ``SUM(x)``.
+    """
+    pattern = r'CALCULATE\s*\(\s*([A-Z]+\s*\([^)]*\))\s*\)'
+    m = re.fullmatch(pattern, formula.strip())
+    if m:
+        return m.group(1).strip()
+    return formula
+
+
+def _protect_string_literals(formula):
+    """Replace DAX double-quoted string literals with placeholders.
+
+    Returns (protected_formula, literals) where placeholders are restored
+    via :func:`_restore_string_literals`. DAX escapes internal quotes as
+    ``""`` — handled by the regex ``"(?:[^"]|"")*"``.
+    """
+    literals = []
+
+    def _capture(match):
+        literals.append(match.group(0))
+        return f'\x00STR{len(literals) - 1}\x00'
+
+    protected = re.sub(r'"(?:[^"]|"")*"', _capture, formula)
+    return protected, literals
+
+
+def _restore_string_literals(formula, literals):
+    """Inverse of :func:`_protect_string_literals`."""
+    for i, lit in enumerate(literals):
+        formula = formula.replace(f'\x00STR{i}\x00', lit)
+    return formula
+
+
+def _rule_constant_fold(formula):
+    """Fold simple constant arithmetic expressions.
+
+    E.g. ``1 + 2`` → ``3``, ``10 * 5`` → ``50`` (only for simple integer
+    expressions). String literals are protected to prevent corruption of
+    date/version strings like ``"2025-01-01"`` whose internal ``2025-01``
+    would otherwise match the arithmetic pattern.
+
+    Multiplication and division are folded before addition and subtraction
+    to respect operator precedence.
+    """
+    mul_div_pattern = r'\b(\d+)\s*([*/])\s*(\d+)\b'
+    add_sub_pattern = r'\b(\d+)\s*([+\-])\s*(\d+)\b'
+
+    def _fold(m):
+        a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
+        try:
+            if op == '+':
+                return str(a + b)
+            elif op == '-':
+                return str(a - b)
+            elif op == '*':
+                return str(a * b)
+            elif op == '/' and b != 0:
+                if a % b == 0:
+                    return str(a // b)
+        except (ValueError, ZeroDivisionError):
+            pass
+        return m.group(0)
+
+    protected, literals = _protect_string_literals(formula)
+    # Fold * and / first (higher precedence)
+    folded = re.sub(mul_div_pattern, _fold, protected)
+    # Then fold + and -
+    folded = re.sub(add_sub_pattern, _fold, folded)
+    return _restore_string_literals(folded, literals)
+
+
+def _rule_simplify_sumx(formula):
+    """Simplify SUMX('Table', 'Table'[Col]) → SUM('Table'[Col])."""
+    pattern = r"SUMX\s*\(\s*'([^']+)'\s*,\s*'(\1)'\[([^\]]+)\]\s*\)"
+
+    def _repl(m):
+        table = m.group(1)
+        col = m.group(3)
+        return f"SUM('{table}'[{col}])"
+
+    return re.sub(pattern, _repl, formula)
+
+
+def _rule_trim_whitespace(formula):
+    """Normalize excessive whitespace in formulas."""
+    result = re.sub(r'  +', ' ', formula)
+    return result.strip()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  TIME INTELLIGENCE AUTO-INJECTION
+# ════════════════════════════════════════════════════════════════════
+
+def generate_time_intelligence_measures(measures, date_column="'Calendar'[Date]"):
+    """Auto-generate Time Intelligence measures for date-based base measures.
+
+    For each measure that uses aggregation functions (SUM, COUNT, AVERAGE, etc.),
+    generates YTD, PY, and YoY% variants.
+
+    Args:
+        measures: List of dicts with 'name' and 'expression' keys
+        date_column: DAX reference to the date column (default: Calendar[Date])
+
+    Returns:
+        list of dicts with 'name', 'expression', 'displayFolder' for new TI measures
+    """
+    ti_measures = []
+    agg_pattern = re.compile(
+        r'\b(SUM|COUNT|COUNTROWS|DISTINCTCOUNT|AVERAGE|MIN|MAX)\s*\(',
+        re.IGNORECASE
+    )
+
+    for measure in measures:
+        name = measure.get('name', '')
+        expr = measure.get('expression', '')
+        if not name or not expr:
+            continue
+        if not agg_pattern.search(expr):
+            continue
+
+        # YTD
+        ti_measures.append({
+            'name': f'{name} YTD',
+            'expression': f'TOTALYTD([{name}], {date_column})',
+            'displayFolder': 'Time Intelligence',
+        })
+
+        # PY (Prior Year)
+        ti_measures.append({
+            'name': f'{name} PY',
+            'expression': f'CALCULATE([{name}], SAMEPERIODLASTYEAR({date_column}))',
+            'displayFolder': 'Time Intelligence',
+        })
+
+        # YoY%
+        ti_measures.append({
+            'name': f'{name} YoY %',
+            'expression': (
+                f'DIVIDE([{name}] - [{name} PY], [{name} PY])'
+            ),
+            'displayFolder': 'Time Intelligence',
+        })
+
+    return ti_measures
+
+
+# ════════════════════════════════════════════════════════════════════
+#  MEASURE DEPENDENCY DAG
+# ════════════════════════════════════════════════════════════════════
+
+def build_measure_dependency_dag(measures):
+    """Build a directed acyclic graph of measure-to-measure references.
+
+    Analyses DAX expressions to find [MeasureName] references pointing
+    to other measures in the same model.
+
+    Args:
+        measures: List of dicts with 'name' and 'expression' keys
+
+    Returns:
+        dict with:
+        - 'edges': list of (from_measure, to_measure) tuples
+        - 'circular': list of circular reference chains detected
+        - 'unused': list of measure names not referenced by any other measure
+        - 'roots': list of measures with no dependencies
+    """
+    measure_names = {m['name'] for m in measures if m.get('name')}
+    ref_pattern = re.compile(r'\[([^\]]+)\]')
+
+    # Build adjacency: measure → set of measures it references
+    graph = {}
+    for m in measures:
+        name = m.get('name', '')
+        expr = m.get('expression', '')
+        if not name:
+            continue
+        refs = set()
+        for match in ref_pattern.finditer(expr):
+            ref_name = match.group(1)
+            if ref_name in measure_names and ref_name != name:
+                refs.add(ref_name)
+        graph[name] = refs
+
+    # Build edges
+    edges = []
+    for src, targets in graph.items():
+        for tgt in targets:
+            edges.append((src, tgt))
+
+    # Detect circular references via DFS
+    circular = []
+    visited = set()
+    rec_stack = set()
+    
+    def _dfs(node, path):
+        visited.add(node)
+        rec_stack.add(node)
+        for neighbor in graph.get(node, set()):
+            if neighbor in rec_stack:
+                cycle_start = path.index(neighbor) if neighbor in path else len(path)
+                cycle = path[cycle_start:] + [neighbor]
+                circular.append(cycle)
+            elif neighbor not in visited:
+                _dfs(neighbor, path + [neighbor])
+        rec_stack.discard(node)
+    
+    for node in graph:
+        if node not in visited:
+            _dfs(node, [node])
+    
+    # Find unused measures (never referenced by others)
+    referenced = {tgt for _, tgt in edges}
+    unused = [m for m in measure_names if m not in referenced]
+    
+    # Find root measures (no dependencies)
+    roots = [m for m in measure_names if not graph.get(m)]
+    
+    return {
+        'edges': edges,
+        'circular': circular,
+        'unused': unused,
+        'roots': roots,
+        'graph': graph,
+    }
+
+
+# ════════════════════════════════════════════════════════════════════
+#  ADVANCED DAX PATTERNS
+# ════════════════════════════════════════════════════════════════════
+
+def detect_lod_patterns(formula):
+    """Detect Level-of-Detail patterns in DAX formulas.
+    
+    Returns dict with:
+    - has_allexcept: True if ALLEXCEPT is used (LOD INCLUDE pattern)
+    - has_removefilters: True if REMOVEFILTERS is used (LOD EXCLUDE pattern)
+    - has_all: True if ALL() is used (simplified LOD EXCLUDE)
+    - has_calculate: True if CALCULATE is used (basic aggregation modification)
+    """
+    return {
+        'has_allexcept': bool(re.search(r'ALLEXCEPT\s*\(', formula, re.IGNORECASE)),
+        'has_removefilters': bool(re.search(r'REMOVEFILTERS\s*\(', formula, re.IGNORECASE)),
+        'has_all': bool(re.search(r'\bALL\s*\(', formula, re.IGNORECASE)),
+        'has_calculate': bool(re.search(r'CALCULATE\s*\(', formula, re.IGNORECASE)),
+        'has_running_sum': bool(re.search(r'RUNNING_SUM|SUMX.*EARLIER', formula, re.IGNORECASE)),
+    }
+
+
+def enhance_lod_exclude_accuracy(formula):
+    """Improve LOD {EXCLUDE} accuracy by detecting multi-field exclusions.
+    
+    {EXCLUDE [Dim1], [Dim2]} → CALCULATE(AGG, REMOVEFILTERS([Dim1], [Dim2]))
+    """
+    # If formula uses ALL() on multiple tables/columns, upgrade to REMOVEFILTERS
+    all_count = len(re.findall(r'\bALL\s*\(', formula, re.IGNORECASE))
+    if all_count > 1:
+        # Multiple ALL() calls suggest LOD EXCLUDE on multiple dimensions
+        # Upgrade pattern is handled case-by-case in conversion
+        return formula.replace('ALL(', 'REMOVEFILTERS(', 1)  # At least improve first one
+    return formula
+
+    for m_name in graph:
+        if m_name not in visited:
+            _dfs(m_name, [m_name])
+
+    # Find unused measures (not referenced by anything)
+    referenced = set()
+    for refs in graph.values():
+        referenced.update(refs)
+    unused = [n for n in measure_names if n not in referenced]
+
+    # Root measures (no dependencies)
+    roots = [n for n in graph if not graph[n]]
+
+    return {
+        'edges': edges,
+        'circular': circular,
+        'unused': sorted(unused),
+        'roots': sorted(roots),
+    }
+
+
+# ════════════════════════════════════════════════════════════════════
+#  OPTIMIZATION REPORT
+# ════════════════════════════════════════════════════════════════════
+
+def generate_optimization_report(measures, output_path=None):
+    """Generate a per-measure optimization report.
+
+    Args:
+        measures: List of dicts with 'name' and 'expression' keys
+        output_path: Optional path to write JSON report
+
+    Returns:
+        dict: Report with per-measure before/after comparisons
+    """
+    report = {
+        'total_measures': len(measures),
+        'optimized_count': 0,
+        'measures': [],
+    }
+
+    for m in measures:
+        name = m.get('name', '')
+        original = m.get('expression', '')
+        if not name or not original:
+            continue
+
+        optimized, rules = optimize_dax(original)
+        entry = {
+            'name': name,
+            'original': original,
+            'optimized': optimized,
+            'rules_applied': rules,
+            'changed': optimized != original,
+        }
+        report['measures'].append(entry)
+        if entry['changed']:
+            report['optimized_count'] += 1
+
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+
+    return report

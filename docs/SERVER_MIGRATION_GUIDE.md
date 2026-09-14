@@ -4,8 +4,8 @@ End-to-end guide for migrating a Tableau Server/Cloud site to Power BI Service.
 
 ## Overview
 
-The Windows desktop application exposes the first safe Server workflow through
-its **Server** task: single-workbook download or project batch download. The
+The autonomous Windows desktop application exposes the first safe Server
+workflow through its **Server** task: single-workbook download or project batch download. The
 full enterprise operations below remain CLI-driven until the UI adds discovery,
 permissions, subscriptions, and cutover controls.
 

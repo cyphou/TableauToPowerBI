@@ -1,0 +1,17 @@
+[
+  {
+    "name": "[Parameter 1]",
+    "caption": "Health Exp Threshold",
+    "datatype": "real",
+    "value": "0.14000000000000001",
+    "domain_type": "range",
+    "allowable_values": [
+      {
+        "type": "range",
+        "min": "0.050000000000000003",
+        "max": "0.14999999999999999",
+        "step": "0.01"
+      }
+    ]
+  }
+]

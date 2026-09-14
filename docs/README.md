@@ -74,10 +74,13 @@ migrating it. Set `TABLEAU_TOKEN_SECRET` in the PowerShell session; the UI only
 stores the Server URL, site, PAT name, and workbook/project target. Server tests
 require content-download permissions and a reachable Tableau endpoint.
 
-Build the optional Windows launcher EXE with:
+Build the autonomous Windows application with Python 3.13 and PyInstaller:
+`py -3.13 -m pip install pyinstaller` followed by
 `powershell -ExecutionPolicy Bypass -File .\scripts\build_light_ui_exe.ps1 -Clean`.
-The resulting `dist\TableauToPowerBI.exe` must remain beside the repository or
-use the `TTPBI_ENGINE_ROOT` environment variable to locate the engine checkout.
+The resulting portable folder `dist\windows\TableauToPowerBI\` contains
+`TableauToPowerBI.exe` and its bundled runtime. Copy the complete folder; it
+does not require Python, PowerShell, a virtual environment, or the repository
+at runtime.
 
 Desktop probe results are evidence gates: a successful launch can produce
 `DESKTOP_SMOKE_PASS`, while a crash, timeout, or probe error downgrades the

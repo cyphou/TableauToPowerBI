@@ -1,0 +1,187 @@
+[
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Business Tax Rate:qk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:ok]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Days to Start Business:qk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[Country/Region (clusters)]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "is_context": true,
+    "filter_mode": "context"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:qk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "min": "2000",
+    "max": "2012",
+    "filter_mode": "range"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[:Measure Names]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Hours to do Tax:qk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:ok]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "is_context": true,
+    "filter_mode": "context"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[Action (Region,YEAR(Year))]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Year:qk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "min": "#2001-12-07#",
+    "max": "#2012-12-01#",
+    "filter_mode": "range"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:qk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "min": "2001",
+    "max": "2012",
+    "filter_mode": "range"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[Action (Country/Region,Region)]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[Action (Region)]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:ok]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:qk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "min": "2001",
+    "max": "2012",
+    "filter_mode": "range"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  },
+  {
+    "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
+    "type": "",
+    "values": [],
+    "exclude": false,
+    "filter_mode": "categorical"
+  }
+]

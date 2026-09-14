@@ -147,18 +147,20 @@ The UI does not persist or place the PAT secret in command-line arguments. A
 real Server test requires a reachable Tableau URL, a permitted PAT, and
 download permissions for the selected content.
 
-To build a Windows executable launcher:
+To build the autonomous Windows executable:
 
 ```powershell
-python -m pip install pyinstaller
+winget install --id Python.Python.3.13 --exact --scope user
+py -3.13 -m pip install pyinstaller
 powershell -ExecutionPolicy Bypass -File .\scripts\build_light_ui_exe.ps1 -Clean
 ```
 
-The output is `dist\TableauToPowerBI.exe`. Keep the `dist` folder beside the
-repository checkout, or set `TTPBI_ENGINE_ROOT` to the checkout path before
-launching the EXE. The launcher starts the same `run_light_ui.ps1` workflow,
-so the Python engine, current repository updates, static openability gate, and
-quality-policy controls remain in one authoritative path.
+The output is the portable folder `dist\windows\TableauToPowerBI\`, launched
+with `TableauToPowerBI.exe` inside it. Copy the complete folder. It is
+self-contained: no Python, PowerShell, virtual environment, or repository
+checkout is required at runtime. The bundled engine includes the current UI, migration pipeline, static
+openability gate, quality policies, M coverage, Server/Cloud task, and Fabric
+output option.
 
 ---
 
