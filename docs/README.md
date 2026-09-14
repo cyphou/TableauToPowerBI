@@ -13,6 +13,7 @@ semantic-runtime evidence hardening (see `../CHANGELOG.md` and `ROADMAP.md`).
 - [TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md) — Complete 165-operation Tableau Prep → Power Query M transformation mapping
 - [FAQ.md](FAQ.md) — Frequently asked questions
 - [ROADMAP.md](ROADMAP.md) — Release gates, verified evidence, and active semantic-validation work
+- [WINDOWS_APP.md](WINDOWS_APP.md) — Portable Windows application, EXE build, and runtime requirements
 
 ## Quick Reference
 

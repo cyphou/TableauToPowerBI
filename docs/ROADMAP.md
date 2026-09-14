@@ -111,6 +111,11 @@ those foundations into operator-facing migration capabilities.
   and PBIP/Fabric output selector, using the same batch engine and quality
   policy path. It reports a locally valid scaffold without claiming live
   deployment, refresh, or post-deployment health.
+- **Autonomous Windows distribution:** the supported runtime package is the
+  Python 3.13-built onedir bundle at `dist/windows/TableauToPowerBI/`. It embeds
+  the UI and migration engine, requires no Python/PowerShell/repository at
+  runtime, and avoids one-file temporary DLL extraction blocked by some Windows
+  Application Control policies. See `docs/WINDOWS_APP.md`.
 
 **Phase status:** 48.1 and 48.2 foundations are delivered locally; their
 operator-complete exit gates remain open. 48.3 is partially delivered through

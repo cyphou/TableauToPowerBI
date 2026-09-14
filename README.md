@@ -122,6 +122,10 @@ The optional Tkinter interface remains available through
 
 ### Windows desktop application
 
+See the complete [Windows Desktop Application guide](docs/WINDOWS_APP.md) for
+the portable distribution layout, build instructions, runtime prerequisites,
+Server/Cloud credentials boundary, and developer fallback.
+
 The Windows migration application is `web/light_ui.py`, launched by
 `run_light_ui.ps1`. It provides folder-based Assess, Migrate, Fabric, Quality, M Coverage, and
 Prep Lineage workflows, output-folder selection, progress/logging, generated
