@@ -107,6 +107,11 @@ those foundations into operator-facing migration capabilities.
   matrix and identify fallback connectors actually used by the source workbook.
   Report policy exposes those paths as warnings; enterprise and production
   policies block delivery until remediation evidence exists.
+- **Connector fixture coverage:** the M matrix now exercises five sanitized
+  representative paths for SQL Server schema/quoting, CSV file/delimiter,
+  Excel source-table navigation, Custom SQL, and Tableau Server published
+  datasource proxy generation. Fixture failures are separate from alias counts
+  and remain offline-only.
 - **Windows Fabric option:** the desktop application now exposes a Fabric task
   and PBIP/Fabric output selector, using the same batch engine and quality
   policy path. It reports a locally valid scaffold without claiming live
