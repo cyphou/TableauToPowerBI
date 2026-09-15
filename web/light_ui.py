@@ -1120,6 +1120,9 @@ class LightMigrationUI:
                 summary_text = f"Output ready: {self._last_output_dir}"
             self.summary_label.configure(text=summary_text)
             self.health_label.configure(text=self._build_health_summary())
+            fabric_summary = self._build_fabric_summary()
+            if fabric_summary:
+                self.health_label.configure(text=f"{self._build_health_summary()} | {fabric_summary}")
             self._update_kpi_panel(self._read_summary_metrics())
             if self.auto_open_report_var.get() and self._last_dashboard and os.path.exists(self._last_dashboard):
                 os.startfile(self._last_dashboard)
@@ -1264,6 +1267,24 @@ class LightMigrationUI:
             except OSError:
                 pass
         return ""
+
+    def _build_fabric_summary(self) -> str:
+        """Summarize local Fabric evidence without implying live deployment."""
+        if not self._last_fabric_evidence or not os.path.exists(self._last_fabric_evidence):
+            return ""
+        try:
+            with open(self._last_fabric_evidence, encoding="utf-8") as handle:
+                evidence = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return "Fabric evidence unavailable"
+        artifacts = evidence.get("artifacts", {})
+        valid = sum(item.get("status") == "locally_valid" for item in artifacts.values())
+        missing = sum(item.get("status") == "missing" for item in artifacts.values())
+        runtime = evidence.get("runtime", {})
+        return (
+            f"Fabric: {evidence.get('status', 'unknown')} "
+            f"({valid} valid, {missing} missing; deployment={runtime.get('deployment', 'not_run')})"
+        )
 
     def _poll_log_queue(self) -> None:
         try:

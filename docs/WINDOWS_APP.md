@@ -82,6 +82,8 @@ After a Fabric run, the Results area exposes **Fabric Evidence** when the
 generated project contains `fabric_evidence.json`. The file records artifact
 presence, dependency order, local validation status, and runtime states without
 claiming live deployment or refresh success.
+The status line also summarizes the local Fabric state, valid/missing artifact
+counts, and deployment state directly in the UI.
 
 ## Developer Fallback
 

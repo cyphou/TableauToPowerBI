@@ -1,7 +1,7 @@
 # Development Roadmap — v22.0.0 → v48.0.0
 
-**Date:** 2026-09-14
-**Baseline:** commit `7887ae1` (`Add semantic runtime quality evidence`), verified through the 2026-09-07 focused release validation. The current baseline covers PBIP manifest coherence, datasource-only projects, openability, Fabric bundle structure, semantic runtime evidence contracts, quality-policy escalation, and real-world migration evidence. The broader live Desktop/Fabric deployment path remains explicit and environment-gated, not inferred from local static checks.
+**Date:** 2026-09-15
+**Baseline:** commit `1f5f9d9` (`Enforce Fabric quality policy states`), with the current Fabric fixture/policy/UI evidence work in progress. The current baseline covers PBIP manifest coherence, datasource-only projects, openability, Fabric bundle structure, semantic runtime evidence contracts, quality-policy escalation, and real-world migration evidence. The broader live Desktop/Fabric deployment path remains explicit and environment-gated, not inferred from local static checks.
 **Current state:** v45/v46 local release-hardening contracts are complete, with release packaging and authorized runtime evidence still open. v47 feature-parity foundations are complete and carried forward into **v48.0.0**, which is now the active operator-capability and runtime-proof track. The migration engine has versioned evidence manifests, resumable checkpoints, unified quality reports, full-fidelity comparison helpers, static openability verification, optional Desktop probing, and Fabric artifact validation.
 
 ### Latest Evolution Verified — 2026-09-07
@@ -124,6 +124,9 @@ those foundations into operator-facing migration capabilities.
   as a warning, `enterprise` blocks invalid local artifacts, and `production`
   additionally blocks until deployment, refresh, semantic execution, and
   post-deploy evidence are all explicitly passed.
+- **Fabric fixture/UI slice:** structural Fabric evidence now reports dependency
+  errors and the Windows Results area summarizes local validity, valid/missing
+  artifacts, and deployment status from `fabric_evidence.json`.
 - **Autonomous Windows distribution:** the supported runtime package is the
   Python 3.13-built onedir bundle at `dist/windows/TableauToPowerBI/`. It embeds
   the UI and migration engine, requires no Python/PowerShell/repository at

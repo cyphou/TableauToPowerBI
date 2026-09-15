@@ -11,7 +11,7 @@
 
 | 🎯 **Capabilities** | 133+ DAX conversions · 190 visual types · 87 connectors · 23 object types |
 
-### Latest verified baseline (2026-09-07)
+### Latest verified baseline (2026-09-15)
 
 This repo is currently validated on the following evidence-backed conditions:
 

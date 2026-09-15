@@ -38,6 +38,10 @@ def build_fabric_evidence(project_dir: str, project_name: str) -> Dict[str, Any]
         project_dir, project_name, include_report=True
     )
     artifacts = {}
+    present_names = {
+        artifact for artifact in _ARTIFACT_DEPENDENCIES
+        if os.path.isdir(os.path.join(project_dir, f"{project_name}.{artifact}"))
+    }
     for artifact, dependencies in _ARTIFACT_DEPENDENCIES.items():
         path = f"{project_name}.{artifact}"
         present = os.path.isdir(os.path.join(project_dir, path))
@@ -49,7 +53,18 @@ def build_fabric_evidence(project_dir: str, project_name: str) -> Dict[str, Any]
             "depends_on": list(dependencies),
             "deployment": "not_run",
             "refresh": "not_run",
+            "dependency_status": "valid" if all(
+                dependency in present_names for dependency in dependencies
+            ) else "missing",
         }
+    dependency_errors = [
+        f"{artifact} depends on missing {dependency}"
+        for artifact, details in artifacts.items()
+        for dependency in details["depends_on"]
+        if dependency not in present_names
+    ]
+    validation = dict(validation)
+    validation["dependency_errors"] = dependency_errors
     return {
         "status": "locally_valid" if validation["valid"] else "invalid",
         "confidence": "FABRIC_STATIC_PASS" if validation["valid"] else "UNVERIFIED",

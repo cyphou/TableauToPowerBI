@@ -22,6 +22,7 @@ class TestFabricEvidence(unittest.TestCase):
         self.assertEqual(evidence["status"], "invalid")
         self.assertEqual(evidence["artifacts"]["Lakehouse"]["status"], "present")
         self.assertEqual(evidence["artifacts"]["Dataflow"]["status"], "missing")
+        self.assertIn("SemanticModel depends on missing Dataflow", evidence["validation"]["dependency_errors"])
         self.assertEqual(evidence["runtime"]["refresh"], "not_run")
 
 
