@@ -68,6 +68,7 @@ class LightMigrationUI:
         self._last_dashboard = ""
         self._last_comparison = ""
         self._last_summary_csv = ""
+        self._last_fabric_evidence = ""
         self._kpi_only = False
         self._compact_mode = False
         self._task_buttons: dict[str, tk.Button] = {}
@@ -538,8 +539,11 @@ class LightMigrationUI:
         self.open_output_btn = tk.Button(results_actions, text="Output Folder", width=13,
                          command=self._open_output_folder, state=tk.DISABLED)
         self.open_output_btn.pack(side=tk.RIGHT, padx=(0, 8))
+        self.open_fabric_btn = tk.Button(results_actions, text="Fabric Evidence", width=14,
+                    command=self._open_fabric_evidence, state=tk.DISABLED)
+        self.open_fabric_btn.pack(side=tk.RIGHT, padx=(0, 8))
 
-        for btn in (self.open_output_btn, self.open_dashboard_btn, self.open_comparison_btn, self.open_summary_btn):
+        for btn in (self.open_output_btn, self.open_fabric_btn, self.open_dashboard_btn, self.open_comparison_btn, self.open_summary_btn):
             btn.configure(relief="flat", bd=0, bg=self.ui["chip_bg"], activebackground=self.ui["chip_hover"], padx=8, pady=4)
             self._bind_hover(btn, self.ui["chip_bg"], self.ui["chip_hover"])
         self.section_frames["results"] = results_actions
@@ -919,6 +923,12 @@ class LightMigrationUI:
         if pbip_match and not self._last_output_dir:
             self._last_output_dir = pbip_match.group(1).strip()
 
+        evidence_match = re.search(r"(?:fabric_evidence|Fabric evidence).*?([^\s]+\.json)", text, re.IGNORECASE)
+        if evidence_match:
+            candidate = evidence_match.group(1).strip().rstrip(".,")
+            if os.path.isfile(candidate):
+                self._last_fabric_evidence = candidate
+
     def _set_progress(self, value: float, label: str | None = None) -> None:
         clamped = max(0.0, min(100.0, value))
         self.progress_var.set(clamped)
@@ -1021,6 +1031,7 @@ class LightMigrationUI:
         self._last_dashboard = ""
         self._last_comparison = ""
         self._last_summary_csv = ""
+        self._last_fabric_evidence = ""
         self.summary_label.configure(text="")
         self.health_label.configure(text="")
         self.stage_label.configure(text="Stage: starting")
@@ -1032,6 +1043,7 @@ class LightMigrationUI:
         self.open_dashboard_btn.configure(state=tk.DISABLED)
         self.open_comparison_btn.configure(state=tk.DISABLED)
         self.open_summary_btn.configure(state=tk.DISABLED)
+        self.open_fabric_btn.configure(state=tk.DISABLED)
         self._set_status("Running...", tone="warn")
         self._start_status_pulse()
 
@@ -1101,6 +1113,8 @@ class LightMigrationUI:
                 self.open_comparison_btn.configure(state=tk.NORMAL)
             if self._last_summary_csv and os.path.exists(self._last_summary_csv):
                 self.open_summary_btn.configure(state=tk.NORMAL)
+            if self._last_fabric_evidence and os.path.exists(self._last_fabric_evidence):
+                self.open_fabric_btn.configure(state=tk.NORMAL)
             summary_text = ""
             if self._last_output_dir:
                 summary_text = f"Output ready: {self._last_output_dir}"
@@ -1225,6 +1239,12 @@ class LightMigrationUI:
             os.startfile(self._last_summary_csv)
         else:
             messagebox.showwarning("Summary CSV not found", "No summary CSV is available yet.")
+
+    def _open_fabric_evidence(self) -> None:
+        if self._last_fabric_evidence and os.path.exists(self._last_fabric_evidence):
+            os.startfile(self._last_fabric_evidence)
+        else:
+            messagebox.showwarning("Fabric evidence not found", "No Fabric evidence manifest is available yet.")
 
     def _build_health_summary(self) -> str:
         if self._last_summary_csv and os.path.exists(self._last_summary_csv):

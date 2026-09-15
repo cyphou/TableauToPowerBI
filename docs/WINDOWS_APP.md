@@ -78,6 +78,11 @@ Fabric generation is a local scaffold result. Desktop reopen, semantic
 execution, refresh, deployment, and post-deployment health remain explicit
 runtime evidence states.
 
+After a Fabric run, the Results area exposes **Fabric Evidence** when the
+generated project contains `fabric_evidence.json`. The file records artifact
+presence, dependency order, local validation status, and runtime states without
+claiming live deployment or refresh success.
+
 ## Developer Fallback
 
 For repository development, the Python/Tkinter path remains available:
