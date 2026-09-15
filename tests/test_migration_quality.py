@@ -117,6 +117,40 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.status, 'FAIL')
         self.assertIn('M fallback emitters are in use', report.blockers[-1])
 
+    def test_report_policy_warns_on_invalid_fabric_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, 'Demo.Lakehouse'))
+            report = self._build(project_dir=tmp, quality_policy='report')
+        self.assertEqual(report.status, 'WARN')
+        self.assertIn('Fabric-native artifact bundle failed validation.', report.warnings)
+
+    def test_enterprise_policy_blocks_invalid_fabric_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, 'Demo.Lakehouse'))
+            report = self._build(project_dir=tmp, quality_policy='enterprise')
+        self.assertEqual(report.status, 'FAIL')
+        self.assertIn('Fabric-native artifact bundle failed validation.', report.blockers)
+
+    def test_production_policy_requires_fabric_runtime_evidence(self):
+        fabric_evidence = {
+            'status': 'locally_valid',
+            'confidence': 'FABRIC_STATIC_PASS',
+            'validation': {'valid': True, 'errors': [], 'warnings': []},
+            'artifacts': {},
+            'runtime': {
+                'deployment': 'not_run',
+                'refresh': 'not_run',
+                'semantic_execution': 'not_run',
+                'post_deploy': 'not_run',
+            },
+        }
+        with patch('powerbi_import.migration_quality.build_fabric_evidence',
+                   return_value=fabric_evidence):
+            report = self._build(quality_policy='production')
+        self.assertEqual(report.status, 'FAIL')
+        self.assertTrue(any('Fabric production evidence is incomplete' in item
+                            for item in report.blockers))
+
     def test_semantic_runtime_executor_passes(self):
         report = self._build(
             semantic_queries=[{'name': 'Sales_total', 'dax': 'EVALUATE ROW("x", 1)'}],
@@ -360,8 +394,8 @@ class TestMigrationQuality(unittest.TestCase):
             os.makedirs(os.path.join(tmp, 'Demo.Lakehouse'))
             with patch('powerbi_import.fabric_validator.FabricProjectValidator', invalid):
                 report = self._build(project_dir=tmp)
-        self.assertEqual(report.status, 'FAIL')
-        self.assertIn('Fabric-native artifact bundle failed validation.', report.blockers)
+        self.assertEqual(report.status, 'WARN')
+        self.assertIn('Fabric-native artifact bundle failed validation.', report.warnings)
 
     def test_openability_failure_is_blocker(self):
         failed = _Openability()

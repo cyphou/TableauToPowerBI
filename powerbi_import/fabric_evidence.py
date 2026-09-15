@@ -22,7 +22,7 @@ def build_fabric_evidence(project_dir: str, project_name: str) -> Dict[str, Any]
 
     has_bundle = any(
         os.path.isdir(os.path.join(project_dir, f"{project_name}.{artifact}"))
-        for artifact in _ARTIFACT_DEPENDENCIES
+        for artifact in ("Lakehouse", "Dataflow", "Notebook", "Pipeline")
     )
     if not has_bundle:
         return {

@@ -120,6 +120,10 @@ those foundations into operator-facing migration capabilities.
   Fabric artifact families, dependency order, per-artifact local status, and
   explicit `deployment`, `refresh`, `semantic_execution`, and `post_deploy`
   states. A local scaffold is never promoted to live Fabric success.
+- **Fabric policy enforcement:** `report` surfaces an invalid local Fabric bundle
+  as a warning, `enterprise` blocks invalid local artifacts, and `production`
+  additionally blocks until deployment, refresh, semantic execution, and
+  post-deploy evidence are all explicitly passed.
 - **Autonomous Windows distribution:** the supported runtime package is the
   Python 3.13-built onedir bundle at `dist/windows/TableauToPowerBI/`. It embeds
   the UI and migration engine, requires no Python/PowerShell/repository at

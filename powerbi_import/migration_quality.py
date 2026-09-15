@@ -374,9 +374,9 @@ def _handoff_status(status: str, openability: Dict[str, Any]) -> str:
 
 
 _QUALITY_POLICIES = {
-    "report": {"unresolved_lineage": "warning", "semantic_diagnostics": "ignore", "m_fallback": "warning"},
-    "enterprise": {"unresolved_lineage": "warning", "semantic_diagnostics": "blocker", "m_fallback": "blocker"},
-    "production": {"unresolved_lineage": "blocker", "semantic_diagnostics": "blocker", "m_fallback": "blocker"},
+    "report": {"unresolved_lineage": "warning", "semantic_diagnostics": "ignore", "m_fallback": "warning", "fabric_bundle": "warning", "fabric_runtime": "ignore"},
+    "enterprise": {"unresolved_lineage": "warning", "semantic_diagnostics": "blocker", "m_fallback": "blocker", "fabric_bundle": "blocker", "fabric_runtime": "ignore"},
+    "production": {"unresolved_lineage": "blocker", "semantic_diagnostics": "blocker", "m_fallback": "blocker", "fabric_bundle": "blocker", "fabric_runtime": "blocker"},
 }
 
 
@@ -551,8 +551,23 @@ def build_quality_report(extracted: Dict, project_dir: str,
     warnings = []
     if not openability.openable:
         blockers.extend(openability.blocking_issues)
-    if fabric.get("present") and not fabric.get("valid", False):
-        blockers.append("Fabric-native artifact bundle failed validation.")
+    fabric_invalid = fabric_evidence.get("status") == "invalid"
+    if fabric_invalid:
+        message = "Fabric-native artifact bundle failed validation."
+        if policy["fabric_bundle"] == "blocker":
+            blockers.append(message)
+        elif policy["fabric_bundle"] == "warning":
+            warnings.append(message)
+    if policy["fabric_runtime"] == "blocker" and fabric_evidence.get("status") == "locally_valid":
+        runtime = fabric_evidence.get("runtime", {})
+        missing_runtime = [name for name in (
+            "deployment", "refresh", "semantic_execution", "post_deploy"
+        ) if runtime.get(name) != "passed"]
+        if missing_runtime:
+            blockers.append(
+                "Fabric production evidence is incomplete: "
+                + ", ".join(missing_runtime) + "."
+            )
     if assessment.overall_score == "RED":
         blockers.append("Pre-migration assessment contains blocking failures.")
     if any(gap.get("status") == "unsupported"
