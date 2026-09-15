@@ -29,6 +29,7 @@ This repo is currently validated on the following evidence-backed conditions:
 - **Safety-first automation**: deployment remains dry-run by default, credentials stay in environment variables, and optional AI assistance only acts on verified findings.
 - **Semantic runtime evidence**: an injected executor boundary records `not_run`, `passed`, or `failed` DAX evidence without requiring credentials in local CI. Use `--quality-policy report|enterprise|production` to control escalation of semantic diagnostics and unresolved lineage.
 - **Visual mapping evidence**: the generator inventory is measured as 129 native mappings, 16 approximations, and 19 custom visual mappings; approximations remain explicit in quality evidence.
+- **Evidence packages**: batch quality runs produce an `evidence_package_<workbook>.zip` containing quality status, lineage, M/visual matrices, Fabric evidence, manifests, priorities, and explicit runtime states.
 
 These checks are part of the current verified baseline and are intended to raise confidence in local migration quality without overstating live Desktop or Fabric deployment readiness.
 

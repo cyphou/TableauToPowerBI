@@ -1480,6 +1480,11 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                 workbook_output_dir, f'migration_quality_{basename}.html')
             quality_report.save_json(quality_json)
             quality_report.save_html(quality_html)
+            from powerbi_import.evidence_package import write_evidence_package
+            evidence_zip = os.path.join(
+                workbook_output_dir, f'evidence_package_{basename}.zip')
+            write_evidence_package(quality_report, evidence_zip)
+            print(f"  Evidence package: {evidence_zip}")
             quality_status = quality_report.status
         except (ImportError, OSError, ValueError) as exc:
             logger.warning("Quality report failed for %s: %s", display_name, exc)

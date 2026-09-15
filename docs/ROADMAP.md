@@ -121,6 +121,10 @@ those foundations into operator-facing migration capabilities.
   `chart_type`. Report policy warns only for approximations actually in use;
   enterprise and production policies block those source-used approximations,
   each carrying `@visual` ownership and remediation guidance.
+- **Evidence package:** batch quality runs now produce a portable
+  `evidence_package_<workbook>.zip` containing quality status, source/target
+  evidence, lineage, M/visual matrices, Fabric evidence, manifests, priorities,
+  and an explicit static/runtime boundary.
 - **Windows Fabric option:** the desktop application now exposes a Fabric task
   and PBIP/Fabric output selector, using the same batch engine and quality
   policy path. It reports a locally valid scaffold without claiming live

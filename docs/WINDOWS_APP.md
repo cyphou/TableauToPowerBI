@@ -85,6 +85,11 @@ claiming live deployment or refresh success.
 The status line also summarizes the local Fabric state, valid/missing artifact
 counts, and deployment state directly in the UI.
 
+Batch quality runs also produce `evidence_package_<workbook>.zip`. The package
+contains the machine-readable quality contract, visual and M mapping evidence,
+Fabric artifact evidence, lineage, priorities, and runtime states. `not_run`
+means runtime proof was unavailable; it is never treated as success.
+
 ## Developer Fallback
 
 For repository development, the Python/Tkinter path remains available:
