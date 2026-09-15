@@ -1,7 +1,7 @@
 # Development Roadmap — v22.0.0 → v48.0.0
 
 **Date:** 2026-09-15
-**Baseline:** commit `1f5f9d9` (`Enforce Fabric quality policy states`), with the current Fabric fixture/policy/UI evidence work in progress. The current baseline covers PBIP manifest coherence, datasource-only projects, openability, Fabric bundle structure, semantic runtime evidence contracts, quality-policy escalation, and real-world migration evidence. The broader live Desktop/Fabric deployment path remains explicit and environment-gated, not inferred from local static checks.
+**Baseline:** commit `c00f3fb` (`Complete Fabric fixture and roadmap documentation slice`), with the current visual mapping inventory work in progress. The current baseline covers PBIP manifest coherence, datasource-only projects, openability, Fabric bundle structure, semantic runtime evidence contracts, quality-policy escalation, and real-world migration evidence. The broader live Desktop/Fabric deployment path remains explicit and environment-gated, not inferred from local static checks.
 **Current state:** v45/v46 local release-hardening contracts are complete, with release packaging and authorized runtime evidence still open. v47 feature-parity foundations are complete and carried forward into **v48.0.0**, which is now the active operator-capability and runtime-proof track. The migration engine has versioned evidence manifests, resumable checkpoints, unified quality reports, full-fidelity comparison helpers, static openability verification, optional Desktop probing, and Fabric artifact validation.
 
 ### Latest Evolution Verified — 2026-09-07
@@ -112,6 +112,10 @@ those foundations into operator-facing migration capabilities.
   Excel source-table navigation, Custom SQL, and Tableau Server published
   datasource proxy generation. Fixture failures are separate from alias counts
   and remain offline-only.
+- **Visual mapping inventory:** the generator now has a machine-readable matrix
+  of 164 records: 129 native mappings, 16 approximations, and 19 custom visual
+  mappings. This separates visual coverage from unsupported/approximate behavior
+  instead of presenting one undifferentiated count.
 - **Windows Fabric option:** the desktop application now exposes a Fabric task
   and PBIP/Fabric output selector, using the same batch engine and quality
   policy path. It reports a locally valid scaffold without claiming live

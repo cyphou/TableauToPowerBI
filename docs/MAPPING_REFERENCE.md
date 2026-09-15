@@ -6,7 +6,11 @@ This document details all mappings between Tableau and Power BI objects to facil
 > - [TABLEAU_TO_DAX_REFERENCE.md](TABLEAU_TO_DAX_REFERENCE.md) — Complete 172-function Tableau→DAX mapping  
 > - [TABLEAU_TO_POWERQUERY_REFERENCE.md](TABLEAU_TO_POWERQUERY_REFERENCE.md) — Complete 108-property Tableau→Power Query M mapping
 
-## 📊 Visual Types (60+ mappings)
+## 📊 Visual Types (164 mapping records)
+The current generator inventory contains **129 native mappings**, **16 explicit
+approximations**, and **19 custom-visual mappings**. Use the machine-readable
+inventory in `powerbi_import/visual_mapping_matrix.py` to inspect the complete
+source-to-target status without treating approximations as native parity.
 
 ### Bar & Column Charts
 
