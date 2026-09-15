@@ -116,6 +116,11 @@ those foundations into operator-facing migration capabilities.
   of 164 records: 129 native mappings, 16 approximations, and 19 custom visual
   mappings. This separates visual coverage from unsupported/approximate behavior
   instead of presenting one undifferentiated count.
+- **Visual approximation governance:** quality reports match approximation
+  mappings against the workbook's extracted `original_mark_class` and
+  `chart_type`. Report policy warns only for approximations actually in use;
+  enterprise and production policies block those source-used approximations,
+  each carrying `@visual` ownership and remediation guidance.
 - **Windows Fabric option:** the desktop application now exposes a Fabric task
   and PBIP/Fabric output selector, using the same batch engine and quality
   policy path. It reports a locally valid scaffold without claiming live

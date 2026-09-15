@@ -100,6 +100,19 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.semantic_context['execution']['status'], 'not_run')
         self.assertIn('summary', report.m_emitters)
         self.assertEqual(report.m_emitters['summary']['aliases'], 98)
+        self.assertIn('summary', report.visual_mappings)
+        self.assertEqual(report.visual_mappings['summary']['status_counts']['approximation'], 16)
+
+    def test_production_policy_blocks_visual_approximations(self):
+        report = self._build(
+            quality_policy='production',
+            extracted={'worksheets': [{
+                'name': 'Demo', 'original_mark_class': 'Gantt Bar'
+            }]},
+        )
+        self.assertEqual(report.status, 'FAIL')
+        self.assertTrue(any('Visual mapping contains 1 explicit approximation' in item
+                            for item in report.blockers))
 
     def test_m_fallback_is_visible_when_source_uses_it(self):
         extracted = {

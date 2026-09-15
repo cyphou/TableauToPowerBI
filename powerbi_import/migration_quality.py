@@ -35,6 +35,11 @@ from powerbi_import.m_emitter_matrix import build_m_emitter_matrix, summarize_m_
 from powerbi_import.evidence_manifest import build_evidence_manifest
 from powerbi_import.strategy_advisor import recommend_strategy
 from powerbi_import.fabric_evidence import build_fabric_evidence
+from powerbi_import.visual_mapping_matrix import (
+    build_visual_mapping_matrix,
+    find_visual_approximations_in_use,
+    summarize_visual_mapping_matrix,
+)
 
 
 @dataclass
@@ -56,6 +61,7 @@ class MigrationQualityReport:
     fabric_evidence: Dict[str, Any] = field(default_factory=dict)
     semantic_context: Dict[str, Any] = field(default_factory=dict)
     m_emitters: Dict[str, Any] = field(default_factory=dict)
+    visual_mappings: Dict[str, Any] = field(default_factory=dict)
     evidence_manifest: Dict[str, Any] = field(default_factory=dict)
     strategy: Dict[str, Any] = field(default_factory=dict)
     lineage: Dict[str, Any] = field(default_factory=dict)
@@ -84,6 +90,7 @@ class MigrationQualityReport:
             "fabric_evidence": self.fabric_evidence,
             "semantic_context": self.semantic_context,
             "m_emitters": self.m_emitters,
+            "visual_mappings": self.visual_mappings,
             "evidence_manifest": self.evidence_manifest,
             "strategy": self.strategy,
             "lineage": self.lineage,
@@ -374,9 +381,9 @@ def _handoff_status(status: str, openability: Dict[str, Any]) -> str:
 
 
 _QUALITY_POLICIES = {
-    "report": {"unresolved_lineage": "warning", "semantic_diagnostics": "ignore", "m_fallback": "warning", "fabric_bundle": "warning", "fabric_runtime": "ignore"},
-    "enterprise": {"unresolved_lineage": "warning", "semantic_diagnostics": "blocker", "m_fallback": "blocker", "fabric_bundle": "blocker", "fabric_runtime": "ignore"},
-    "production": {"unresolved_lineage": "blocker", "semantic_diagnostics": "blocker", "m_fallback": "blocker", "fabric_bundle": "blocker", "fabric_runtime": "blocker"},
+    "report": {"unresolved_lineage": "warning", "semantic_diagnostics": "ignore", "m_fallback": "warning", "fabric_bundle": "warning", "fabric_runtime": "ignore", "visual_approximation": "warning"},
+    "enterprise": {"unresolved_lineage": "warning", "semantic_diagnostics": "blocker", "m_fallback": "blocker", "fabric_bundle": "blocker", "fabric_runtime": "ignore", "visual_approximation": "blocker"},
+    "production": {"unresolved_lineage": "blocker", "semantic_diagnostics": "blocker", "m_fallback": "blocker", "fabric_bundle": "blocker", "fabric_runtime": "blocker", "visual_approximation": "blocker"},
 }
 
 
@@ -509,6 +516,8 @@ def build_quality_report(extracted: Dict, project_dir: str,
     """Run all local quality checks and aggregate their verified results."""
     policy = _quality_policy(quality_policy)
     m_emitters = _m_emitter_evidence(extracted or {})
+    visual_rows = build_visual_mapping_matrix()
+    visual_mappings = {"status": "static_evidence", "summary": summarize_visual_mapping_matrix(visual_rows), "rows": visual_rows}
     assessment = run_assessment(extracted or {}, workbook_name=report_name)
     parity = scan_project(extracted or {}, project_dir, report_name).to_dict()
     data = compare_report_tables(extracted or {}, project_dir, report_name)
@@ -626,6 +635,13 @@ def build_quality_report(extracted: Dict, project_dir: str,
             blockers.append(message)
         elif policy["m_fallback"] == "warning":
             warnings.append(message)
+    visual_approximations = find_visual_approximations_in_use(extracted or {})
+    if visual_approximations:
+        message = f"Visual mapping contains {len(visual_approximations)} explicit approximation(s)."
+        if policy["visual_approximation"] == "blocker":
+            blockers.append(message)
+        elif policy["visual_approximation"] == "warning":
+            warnings.append(message)
 
     status = "FAIL" if blockers else "WARN" if warnings else "PASS"
     priorities = _build_priorities(parity, blockers, warnings)
@@ -652,6 +668,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
             **artifacts,
             "m_emitters": m_emitters.get("summary", {}),
             "fabric": fabric_evidence.get("artifacts", {}),
+            "visual_mappings": visual_mappings.get("summary", {}),
         },
     )
     return MigrationQualityReport(
@@ -666,6 +683,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         fabric_evidence=fabric_evidence,
         semantic_context=semantic_context,
         m_emitters=m_emitters,
+        visual_mappings=visual_mappings,
         status=status,
         blockers=blockers,
         warnings=warnings,
