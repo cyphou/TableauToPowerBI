@@ -2,6 +2,23 @@
 
 ## Unreleased — Verified PBIP Manifest Hardening
 
+## v48.2.0 — Evidence Package & Operator Summary
+
+### Highlights
+- **Portable evidence package summary added**: `powerbi_import/evidence_package.py` now includes a top-level `summary` block with the migration status, handoff status, blocker count, warning count, and priority count for operator triage.
+- **Source-aware visual approximation filtering**: the visual mapping and migration quality logic now only reports an approximation when it is actually used by the extracted workbook metadata, preventing false-positive warnings from the registry-level approximation list.
+- **Quality package remains audit-safe**: the zip payload still contains the related quality artifacts and keeps the runtime boundary explicit instead of implying live Desktop/Fabric success from static validation alone.
+
+### Validation
+- `tests/test_evidence_package.py`
+- `tests/test_migration_quality.py`
+- `tests/test_visual_mapping_matrix.py`
+- `tests/test_desktop_probe.py`
+- Result: `55 passed in 3.54s`
+
+### Notes
+- This release continues the v48 operator-capability track without overstating runtime proof. Desktop, semantic execution, refresh, and deployment are still `not_run` unless a real authorized environment has executed them.
+
 ### Highlights
 - **Semantic runtime evidence boundary added**: `powerbi_import/semantic_runtime.py` accepts an injected Power BI/Fabric executor, normalizes bounded DAX query results to `not_run`, `passed`, or `failed`, and records query evidence without requiring credentials in local CI.
 - **Quality policies added**: unified quality reports and `--quality-policy {report,enterprise,production}` now control escalation of semantic diagnostics and unresolved lineage. The selected policy is retained in the evidence manifest; static results never imply runtime success.

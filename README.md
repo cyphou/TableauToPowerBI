@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| 🏷️ **Package** | 44.0.0 · roadmap track v48 |
-| ✅ **Tests** | 275 focused regression tests passed · 9,500+ repository tests available across the suite |
+| 🏷️ **Package** | 48.0.0 · roadmap track v48 |
+| ✅ **Tests** | 55 evidence-quality tests passed · 275 PBIP/openability tests passed · 9,500+ repository tests available |
 | 🐍 **Python** | 3.12+ · zero external dependencies |
 | 📜 **License** | MIT |
 
@@ -30,26 +30,9 @@ This repo is currently validated on the following evidence-backed conditions:
 - **Semantic runtime evidence**: an injected executor boundary records `not_run`, `passed`, or `failed` DAX evidence without requiring credentials in local CI. Use `--quality-policy report|enterprise|production` to control escalation of semantic diagnostics and unresolved lineage.
 - **Visual mapping evidence**: the generator inventory is measured as 129 native mappings, 16 approximations, and 19 custom visual mappings; approximations remain explicit in quality evidence.
 - **Evidence packages**: batch quality runs produce an `evidence_package_<workbook>.zip` containing quality status, lineage, M/visual matrices, Fabric evidence, manifests, priorities, and explicit runtime states.
+- **Portable Windows EXE**: the supported distribution is the onedir package at `dist\windows\TableauToPowerBI\TableauToPowerBI.exe`; copy the complete folder, not only the executable.
 
 These checks are part of the current verified baseline and are intended to raise confidence in local migration quality without overstating live Desktop or Fabric deployment readiness.
-
-### What was new in v39.0.0
-
-- **Data Blending Engine**: cross-datasource Tableau blends are reconstructed as Power Query merge queries with primary/secondary linking fields preserved.
-- **Enterprise Connector Expansion**: 8 new deep connectors with schema navigation and custom-SQL passthrough — Dremio, ClickHouse, SingleStore/MemSQL, Firebolt, Starburst/Trino, IBM Db2, Teradata, Azure Synapse.
-- **Custom SQL & Native Query Depth**: a stdlib SQL analyzer detects dialect, parameters, joins and subqueries, grades query complexity, and emits parameterised `Value.NativeQuery` M. Surfaced in the migration assessment as a "Custom SQL Depth" check.
-- **OAuth & Authentication Flow Migration**: Tableau auth modes map to Power BI credential types; credential template v2, Azure AD service-principal config and a PowerShell connection-test script are generated for OAuth/SP-capable connectors.
-
-#### Pixel-perfect fidelity (4-axis coverage)
-
-| Axis | What is preserved |
-|------|-------------------|
-| **Fonts** | Run-level font family, size, weight, color, and per-paragraph horizontal alignment |
-| **Chrome** | Per-visual background + border from Tableau format zones |
-| **Sentinel** | Tableau soft line-break sentinel runs (`Ae`/NBSP) cleaned during extraction |
-| **Overlay** | Floating/overlapping zones staggered deterministically by z-order |
-
----
 
 ## ⚡ Quick Start
 
@@ -129,15 +112,10 @@ the portable distribution layout, build instructions, runtime prerequisites,
 Server/Cloud credentials boundary, and developer fallback.
 
 The Windows migration application is `web/light_ui.py`, launched by
-`run_light_ui.ps1`. It provides folder-based Assess, Migrate, Fabric, Quality, M Coverage, and
-Prep Lineage workflows, output-folder selection, progress/logging, generated
-dashboard links, and the current quality policies: `report`, `enterprise`, and
-`production`. The default static openability gate remains enabled by the
-underlying engine; Desktop probing and live Fabric execution remain explicit
-runtime steps. The **M Coverage** task runs the offline connector matrix and
-writes `m_emitter_matrix.json` with generated/fallback/error counts and
-remediation ownership. The Fabric task generates the local six-artifact
-scaffold and does not claim live deployment or refresh success.
+`run_light_ui.ps1`. It provides folder-based Assess, Migrate, Fabric, Quality,
+M Coverage, and Prep Lineage workflows. The default static openability gate
+remains enabled; Desktop probing and live Fabric execution remain explicit
+runtime steps.
 
 It also provides a **Server** task for downloading and migrating one Tableau
 Server/Cloud workbook or an entire Tableau project. Enter the Server URL, site
@@ -153,7 +131,20 @@ The UI does not persist or place the PAT secret in command-line arguments. A
 real Server test requires a reachable Tableau URL, a permitted PAT, and
 download permissions for the selected content.
 
-To build the autonomous Windows executable:
+#### Portable executable
+
+The supported Windows distribution is an onedir package. Launch:
+
+```text
+dist\windows\TableauToPowerBI\TableauToPowerBI.exe
+```
+
+Copy the complete `dist\windows\TableauToPowerBI\` folder with the EXE and
+`_internal\` directory together. The portable application does not require
+Python, PowerShell, a virtual environment, PyInstaller, or the repository at
+runtime. See [docs/WINDOWS_APP.md](docs/WINDOWS_APP.md) for runtime details.
+
+To build the portable Windows executable from source:
 
 ```powershell
 winget install --id Python.Python.3.13 --exact --scope user
@@ -161,12 +152,10 @@ py -3.13 -m pip install pyinstaller
 powershell -ExecutionPolicy Bypass -File .\scripts\build_light_ui_exe.ps1 -Clean
 ```
 
-The output is the portable folder `dist\windows\TableauToPowerBI\`, launched
-with `TableauToPowerBI.exe` inside it. Copy the complete folder. It is
-self-contained: no Python, PowerShell, virtual environment, or repository
-checkout is required at runtime. The bundled engine includes the current UI, migration pipeline, static
-openability gate, quality policies, M coverage, Server/Cloud task, and Fabric
-output option.
+The build writes `dist\windows\TableauToPowerBI\`, including the executable
+and bundled runtime. The bundled engine includes the current UI, migration
+pipeline, static openability gate, quality policies, M coverage, Server/Cloud
+task, and Fabric output option.
 
 ---
 

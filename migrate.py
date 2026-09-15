@@ -1483,7 +1483,12 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
             from powerbi_import.evidence_package import write_evidence_package
             evidence_zip = os.path.join(
                 workbook_output_dir, f'evidence_package_{basename}.zip')
-            write_evidence_package(quality_report, evidence_zip)
+            extra_files = [
+                os.path.join(workbook_output_dir, f'migration_quality_{basename}.json'),
+                os.path.join(workbook_output_dir, f'migration_quality_{basename}.html'),
+                os.path.join(project_dir, 'openability_report.json'),
+            ]
+            write_evidence_package(quality_report, evidence_zip, extra_files=extra_files)
             print(f"  Evidence package: {evidence_zip}")
             quality_status = quality_report.status
         except (ImportError, OSError, ValueError) as exc:

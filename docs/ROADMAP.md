@@ -4,6 +4,14 @@
 **Baseline:** commit `c00f3fb` (`Complete Fabric fixture and roadmap documentation slice`), with the current visual mapping inventory work in progress. The current baseline covers PBIP manifest coherence, datasource-only projects, openability, Fabric bundle structure, semantic runtime evidence contracts, quality-policy escalation, and real-world migration evidence. The broader live Desktop/Fabric deployment path remains explicit and environment-gated, not inferred from local static checks.
 **Current state:** v45/v46 local release-hardening contracts are complete, with release packaging and authorized runtime evidence still open. v47 feature-parity foundations are complete and carried forward into **v48.0.0**, which is now the active operator-capability and runtime-proof track. The migration engine has versioned evidence manifests, resumable checkpoints, unified quality reports, full-fidelity comparison helpers, static openability verification, optional Desktop probing, and Fabric artifact validation.
 
+### Latest Evolution Verified — 2026-09-15
+
+- **Portable evidence package shipped:** the generated quality bundle now exposes a machine-readable summary block with status, handoff status, blocker count, warning count, and priority count before operators open the archive.
+- **Quality package contract hardened:** `powerbi_import/evidence_package.py` now emits a redaction-safe payload that includes the summary and the related quality artifacts in a single portable zip, with the runtime boundary retained as explicit `not_run` / `passed` / `failed` evidence.
+- **Source-aware visual approximation policy:** `visual_mapping_matrix.py` and the quality report now warn only for approximations actually used by the extracted workbook, eliminating over-reporting from the global registry.
+- **Verification gate:** the evidence-package and quality-policy regression suite passed locally: `55 passed in 3.54s`.
+- **Scope boundary:** static local validation remains the reliable release gate; live Desktop/Fabric/refresh/deployment evidence is still environment-gated and must stay explicitly labeled `not_run` unless the authorized executor proves otherwise.
+
 ### Latest Evolution Verified — 2026-09-07
 
 - **Semantic lineage and conversion safety:** generated lineage records now carry source-to-target provenance, normalized matching, coverage, and unresolved records; M emitters escape field names, values, and delimiters across aggregate, join, pivot/unpivot, regex, and core transformation paths.
