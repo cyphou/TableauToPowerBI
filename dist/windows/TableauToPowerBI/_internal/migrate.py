@@ -1480,6 +1480,16 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                 workbook_output_dir, f'migration_quality_{basename}.html')
             quality_report.save_json(quality_json)
             quality_report.save_html(quality_html)
+            from powerbi_import.evidence_package import write_evidence_package
+            evidence_zip = os.path.join(
+                workbook_output_dir, f'evidence_package_{basename}.zip')
+            extra_files = [
+                os.path.join(workbook_output_dir, f'migration_quality_{basename}.json'),
+                os.path.join(workbook_output_dir, f'migration_quality_{basename}.html'),
+                os.path.join(project_dir, 'openability_report.json'),
+            ]
+            write_evidence_package(quality_report, evidence_zip, extra_files=extra_files)
+            print(f"  Evidence package: {evidence_zip}")
             quality_status = quality_report.status
         except (ImportError, OSError, ValueError) as exc:
             logger.warning("Quality report failed for %s: %s", display_name, exc)
@@ -1621,6 +1631,29 @@ def _print_batch_summary(batch_results, batch_duration, migrated_root):
                 if result.get('quality_status')
             },
         }
+        try:
+            from powerbi_import.corpus_certification import certify_quality_files
+            from powerbi_import.release_readiness import build_release_readiness
+            quality_paths = [
+                result.get('quality_json')
+                for result in wb_results.values()
+                if result.get('quality_json')
+            ]
+            quality_summary['certification'] = certify_quality_files(quality_paths)
+            quality_summary['release_readiness'] = build_release_readiness(
+                quality_summary['certification']
+            )
+        except (ImportError, OSError, ValueError) as exc:
+            quality_summary['certification'] = {
+                'status': 'needs_review',
+                'release_claim': 'static_corpus_only',
+                'error': str(exc),
+            }
+            quality_summary['release_readiness'] = {
+                'status': 'needs_review',
+                'release_claim': 'static_corpus_only',
+                'error': str(exc),
+            }
         quality_summary_path = os.path.join(migrated_root, 'batch_quality_summary.json')
         with open(quality_summary_path, 'w', encoding='utf-8') as handle:
             json.dump(quality_summary, handle, indent=2, ensure_ascii=False)

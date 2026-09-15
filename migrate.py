@@ -1631,6 +1631,29 @@ def _print_batch_summary(batch_results, batch_duration, migrated_root):
                 if result.get('quality_status')
             },
         }
+        try:
+            from powerbi_import.corpus_certification import certify_quality_files
+            from powerbi_import.release_readiness import build_release_readiness
+            quality_paths = [
+                result.get('quality_json')
+                for result in wb_results.values()
+                if result.get('quality_json')
+            ]
+            quality_summary['certification'] = certify_quality_files(quality_paths)
+            quality_summary['release_readiness'] = build_release_readiness(
+                quality_summary['certification']
+            )
+        except (ImportError, OSError, ValueError) as exc:
+            quality_summary['certification'] = {
+                'status': 'needs_review',
+                'release_claim': 'static_corpus_only',
+                'error': str(exc),
+            }
+            quality_summary['release_readiness'] = {
+                'status': 'needs_review',
+                'release_claim': 'static_corpus_only',
+                'error': str(exc),
+            }
         quality_summary_path = os.path.join(migrated_root, 'batch_quality_summary.json')
         with open(quality_summary_path, 'w', encoding='utf-8') as handle:
             json.dump(quality_summary, handle, indent=2, ensure_ascii=False)

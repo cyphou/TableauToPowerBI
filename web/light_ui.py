@@ -51,7 +51,7 @@ class LightMigrationUI:
         self.global_assess_var = tk.BooleanVar(value=False)
         self.prep_lineage_only_var = tk.BooleanVar(value=False)
         self.quality_policy_var = tk.StringVar(value="report")
-        self.output_format_var = tk.StringVar(value="pbip")
+        self.output_format_var = tk.StringVar(value="Power BI")
         self.server_url_var = tk.StringVar(value="")
         self.server_site_var = tk.StringVar(value="")
         self.server_token_name_var = tk.StringVar(value="")
@@ -69,6 +69,7 @@ class LightMigrationUI:
         self._last_comparison = ""
         self._last_summary_csv = ""
         self._last_fabric_evidence = ""
+        self._run_log_path = ""
         self._kpi_only = False
         self._compact_mode = False
         self._task_buttons: dict[str, tk.Button] = {}
@@ -170,8 +171,10 @@ class LightMigrationUI:
             self.auto_open_report_var.set(auto_open)
         if quality_policy in {"report", "enterprise", "production"}:
             self.quality_policy_var.set(quality_policy)
-        if output_format in {"pbip", "fabric"}:
-            self.output_format_var.set(output_format)
+        if output_format in {"pbip", "Power BI"}:
+            self.output_format_var.set("Power BI")
+        elif output_format in {"fabric", "Fabric"}:
+            self.output_format_var.set("Fabric")
         for value, variable in (
             (server_url, self.server_url_var),
             (server_site, self.server_site_var),
@@ -297,7 +300,7 @@ class LightMigrationUI:
         self.quick_row = quick_row
         tk.Label(
             quick_row,
-            text="1) Select batch folder   2) Select output   3) Click Run migration",
+            text="① Choose source   ② Choose destination   ③ Run with confidence",
             fg=self.ui["hero_fg"],
             font=("Segoe UI", 11, "bold"),
             anchor="w",
@@ -313,6 +316,19 @@ class LightMigrationUI:
             activeforeground=self.ui["hero_fg"],
             selectcolor=self.ui["hero_bg"],
         ).pack(side=tk.RIGHT)
+        self.help_btn = tk.Button(
+            quick_row,
+            text="? How it works",
+            command=self._show_help,
+            relief="flat",
+            bd=0,
+            bg=self.ui["hero_bg"],
+            fg=self.ui["hero_sub"],
+            activebackground=self.ui["hero_bg"],
+            activeforeground=self.ui["hero_fg"],
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.help_btn.pack(side=tk.RIGHT, padx=(0, 14))
         tk.Frame(hero, bg="#2f78ba", height=2).pack(fill=tk.X, pady=(10, 0))
         tk.Frame(hero, bg="#1c3f6b", height=1).pack(fill=tk.X)
 
@@ -336,10 +352,16 @@ class LightMigrationUI:
         task_chip_row = tk.Frame(setup_card, bg=self.ui["surface"])
         task_chip_row.pack(fill=tk.X, pady=(2, 6))
         tk.Label(task_chip_row, text="Task", width=14, anchor="w", fg=self.ui["muted"], bg=self.ui["surface"]).pack(side=tk.LEFT)
-        for task in ("Assess", "Migrate", "Fabric", "Quality", "M Coverage", "Server", "Lineage"):
+        task_icons = {
+            "Assess": "◉ Assess",
+            "Migrate": "▶ Migrate",
+            "Fabric": "◇ Fabric",
+            "Quality": "✓ Quality",
+        }
+        for task in ("Assess", "Migrate", "Fabric", "Quality"):
             btn = tk.Button(
                 task_chip_row,
-                text=task,
+                text=task_icons[task],
                 command=lambda t=task: self._set_task(t),
                 relief="flat",
                 bd=0,
@@ -352,6 +374,21 @@ class LightMigrationUI:
             btn.pack(side=tk.LEFT, padx=(0, 6))
             self._task_buttons[task] = btn
             self._bind_hover(btn, self.ui["chip_bg"], self.ui["chip_hover"], on_leave=self._refresh_task_chip_states)
+        self.more_tasks_btn = tk.Button(
+            task_chip_row,
+            text="More ▾",
+            command=self._show_more_tasks,
+            relief="flat",
+            bd=0,
+            padx=10,
+            pady=4,
+            bg="#f7f9fc",
+            fg=self.ui["muted"],
+            activebackground=self.ui["chip_hover"],
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.more_tasks_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self._bind_hover(self.more_tasks_btn, "#f7f9fc", self.ui["chip_hover"], normal_fg=self.ui["muted"])
 
         self.workflow_hint = tk.Label(
             setup_card,
@@ -419,6 +456,7 @@ class LightMigrationUI:
         self._bind_hover(self.output_browse_btn, self.ui["chip_bg"], self.ui["chip_hover"])
 
         opts_row = tk.Frame(setup_card, bg=self.ui["surface"])
+        self.opts_row = opts_row
         opts_row.pack(fill=tk.X, pady=4)
         tk.Label(opts_row, text="Options", width=14, anchor="w", bg=self.ui["surface"], fg=self.ui["muted"]).pack(side=tk.LEFT)
         tk.Checkbutton(opts_row, text="Verbose output", variable=self.verbose_var, bg=self.ui["surface"], activebackground=self.ui["surface"]).pack(side=tk.LEFT)
@@ -432,17 +470,18 @@ class LightMigrationUI:
             width=13,
         )
         self.quality_policy_combo.pack(side=tk.LEFT, padx=(4, 0))
-        tk.Label(opts_row, text="Output", width=8, anchor="w", bg=self.ui["surface"], fg=self.ui["muted"]).pack(side=tk.LEFT, padx=(14, 0))
+        tk.Label(opts_row, text="Target", width=8, anchor="w", bg=self.ui["surface"], fg=self.ui["muted"]).pack(side=tk.LEFT, padx=(14, 0))
         self.output_format_combo = ttk.Combobox(
             opts_row,
             textvariable=self.output_format_var,
-            values=("pbip", "fabric"),
+            values=("Power BI", "Fabric"),
             state="readonly",
             width=9,
         )
         self.output_format_combo.pack(side=tk.LEFT, padx=(4, 0))
 
         mode_opts_row = tk.Frame(setup_card, bg=self.ui["surface"])
+        self.mode_opts_row = mode_opts_row
         self.assess_cb = tk.Checkbutton(
             mode_opts_row,
             text="Assessment only (--assess)",
@@ -470,7 +509,23 @@ class LightMigrationUI:
             activebackground=self.ui["surface"],
         )
         self.prep_lineage_cb.pack(side=tk.LEFT, padx=(10, 0))
-        self.mode_opts_row = mode_opts_row
+        opts_row.pack_forget()
+        mode_opts_row.pack_forget()
+        self.advanced_btn = tk.Button(
+            setup_card,
+            text="Advanced options ▸",
+            command=self._toggle_advanced_options,
+            relief="flat",
+            bd=0,
+            bg=self.ui["surface"],
+            fg=self.ui["muted"],
+            activebackground=self.ui["surface"],
+            activeforeground=self.ui["primary"],
+            anchor="w",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.advanced_btn.pack(fill=tk.X, pady=(0, 2))
+        self._advanced_open = False
 
         actions_card = tk.Frame(work_area, padx=12, pady=10, bd=1, relief="solid", bg=self.ui["surface"], highlightthickness=1, highlightbackground=self.ui["border"])
         actions_card.pack(fill=tk.X, pady=(10, 0))
@@ -527,25 +582,41 @@ class LightMigrationUI:
         results_actions = tk.Frame(actions_card, bg=self.ui["surface"])
         results_actions.pack(fill=tk.X, pady=(10, 0))
         tk.Label(results_actions, text="Results", fg=self.ui["primary"], bg=self.ui["surface"], font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
-        self.open_summary_btn = tk.Button(results_actions, text="Summary CSV", width=13,
+        self.open_summary_btn = tk.Button(results_actions, text="▤ Summary", width=12,
                           command=self._open_summary_csv, state=tk.DISABLED)
         self.open_summary_btn.pack(side=tk.RIGHT, padx=(0, 8))
-        self.open_comparison_btn = tk.Button(results_actions, text="Comparison", width=13,
+        self.open_comparison_btn = tk.Button(results_actions, text="⇄ Compare", width=12,
                              command=self._open_comparison, state=tk.DISABLED)
         self.open_comparison_btn.pack(side=tk.RIGHT, padx=(0, 8))
-        self.open_dashboard_btn = tk.Button(results_actions, text="HTML Report", width=13,
+        self.open_dashboard_btn = tk.Button(results_actions, text="↗ Report", width=12,
                             command=self._open_dashboard, state=tk.DISABLED)
         self.open_dashboard_btn.pack(side=tk.RIGHT, padx=(0, 8))
-        self.open_output_btn = tk.Button(results_actions, text="Output Folder", width=13,
+        self.open_output_btn = tk.Button(results_actions, text="▣ Folder", width=12,
                          command=self._open_output_folder, state=tk.DISABLED)
         self.open_output_btn.pack(side=tk.RIGHT, padx=(0, 8))
-        self.open_fabric_btn = tk.Button(results_actions, text="Fabric Evidence", width=14,
+        self.open_fabric_btn = tk.Button(results_actions, text="◇ Fabric", width=12,
                     command=self._open_fabric_evidence, state=tk.DISABLED)
         self.open_fabric_btn.pack(side=tk.RIGHT, padx=(0, 8))
+
+        self.results_menu_btn = tk.Button(
+            results_actions,
+            text="Open results ▾",
+            width=14,
+            command=self._show_results_menu,
+            relief="flat",
+            bd=0,
+            bg=self.ui["chip_bg"],
+            activebackground=self.ui["chip_hover"],
+            padx=8,
+            pady=4,
+        )
+        self.results_menu_btn.pack(side=tk.RIGHT, padx=(0, 8))
 
         for btn in (self.open_output_btn, self.open_fabric_btn, self.open_dashboard_btn, self.open_comparison_btn, self.open_summary_btn):
             btn.configure(relief="flat", bd=0, bg=self.ui["chip_bg"], activebackground=self.ui["chip_hover"], padx=8, pady=4)
             self._bind_hover(btn, self.ui["chip_bg"], self.ui["chip_hover"])
+            btn.pack_forget()
+        self._bind_hover(self.results_menu_btn, self.ui["chip_bg"], self.ui["chip_hover"])
         self.section_frames["results"] = results_actions
 
         kpi_panel = tk.Frame(self.root, padx=12, pady=8, bg=self.ui["page_bg"])
@@ -660,6 +731,66 @@ class LightMigrationUI:
     def _set_task(self, task: str) -> None:
         self.preset_var.set(task)
         self._apply_preset()
+
+    def _toggle_advanced_options(self) -> None:
+        self._advanced_open = not self._advanced_open
+        if self._advanced_open:
+            self.opts_row.pack(fill=tk.X, pady=4, before=self.mode_opts_row)
+            self.mode_opts_row.pack(fill=tk.X, pady=(0, 4), before=self.advanced_btn)
+            self.advanced_btn.configure(text="Advanced options ▾")
+        else:
+            self.opts_row.pack_forget()
+            self.mode_opts_row.pack_forget()
+            self.advanced_btn.configure(text="Advanced options ▸")
+
+    def _show_results_menu(self) -> None:
+        menu = tk.Menu(self.root, tearoff=False, bg="#ffffff", fg=self.ui["text"],
+                       activebackground=self.ui["chip_hover"], activeforeground=self.ui["primary"],
+                       relief="solid", bd=1)
+        actions = (
+            ("▣  Open output folder", self.open_output_btn, self._open_output_folder),
+            ("↗  Open HTML report", self.open_dashboard_btn, self._open_dashboard),
+            ("⇄  Open comparison", self.open_comparison_btn, self._open_comparison),
+            ("▤  Open summary CSV", self.open_summary_btn, self._open_summary_csv),
+            ("◇  Open Fabric evidence", self.open_fabric_btn, self._open_fabric_evidence),
+        )
+        for label, button, command in actions:
+            state = str(button.cget("state"))
+            menu.add_command(label=label, command=command, state=state)
+        try:
+            x = self.results_menu_btn.winfo_rootx()
+            y = self.results_menu_btn.winfo_rooty() + self.results_menu_btn.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _show_more_tasks(self) -> None:
+        menu = tk.Menu(self.root, tearoff=False, bg="#ffffff", fg=self.ui["text"],
+                       activebackground=self.ui["chip_hover"], activeforeground=self.ui["primary"],
+                       relief="solid", bd=1)
+        for task, icon in (("M Coverage", "▦"), ("Server", "☁"), ("Lineage", "⌁")):
+            menu.add_command(label=f"{icon}  {task}", command=lambda t=task: self._set_task(t))
+        try:
+            x = self.more_tasks_btn.winfo_rootx()
+            y = self.more_tasks_btn.winfo_rooty() + self.more_tasks_btn.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _show_help(self) -> None:
+        messagebox.showinfo(
+            "How Tableau to Power BI works",
+            "1. Choose the Tableau folder as Source.\n"
+            "2. Choose an Output folder.\n"
+            "3. Select a Target: Power BI or Fabric.\n"
+            "4. Choose a Task: Assess, Migrate, Quality, or Fabric.\n\n"
+            "Assess checks readiness without generating the final project.\n"
+            "Migrate creates Power BI projects. Fabric creates a local Fabric scaffold.\n"
+            "Quality explains openability, lineage, visual, and semantic evidence.\n\n"
+            "A partial batch can finish with warnings. Open the run log for any\n"
+            "workbooks that need review. Live Desktop, refresh, and deployment\n"
+            "checks are shown as not run until an authorized environment provides proof.",
+        )
 
     def _flash_section(self, widget: tk.Widget) -> None:
         try:
@@ -826,7 +957,8 @@ class LightMigrationUI:
 
         cmd += ["--output-dir", output]
         if self.preset_var.get() != "M Coverage":
-            cmd += ["--output-format", self.output_format_var.get()]
+            target_format = "fabric" if self.output_format_var.get() == "Fabric" else "pbip"
+            cmd += ["--output-format", target_format]
         cmd += ["--quality-policy", self.quality_policy_var.get()]
         if self.verbose_var.get():
             cmd.append("--verbose")
@@ -884,6 +1016,12 @@ class LightMigrationUI:
 
     def _append_log(self, text: str) -> None:
         self._all_logs.append(text)
+        if self._run_log_path:
+            try:
+                with open(self._run_log_path, "a", encoding="utf-8", errors="replace") as handle:
+                    handle.write(text)
+            except OSError:
+                pass
         self._capture_artifact_paths(text)
         self._update_progress_from_log(text)
         self.log_box.configure(state=tk.NORMAL)
@@ -1032,6 +1170,8 @@ class LightMigrationUI:
         self._last_comparison = ""
         self._last_summary_csv = ""
         self._last_fabric_evidence = ""
+        output_dir = str(context.get("output", "")).strip()
+        self._run_log_path = os.path.join(output_dir, "tableau_to_powerbi_run.log") if output_dir else ""
         self.summary_label.configure(text="")
         self.health_label.configure(text="")
         self.stage_label.configure(text="Stage: starting")
@@ -1058,6 +1198,7 @@ class LightMigrationUI:
     def _run_process(self, cmd: object) -> None:
         try:
             assert isinstance(cmd, list)
+            process_lines = []
             self._process = subprocess.Popen(
                 cmd,
                 cwd=str(self.repo_root),
@@ -1071,11 +1212,21 @@ class LightMigrationUI:
 
             assert self._process.stdout is not None
             for line in self._process.stdout:
+                process_lines.append(line)
                 self._log_queue.put(line)
 
             exit_code = self._process.wait()
             self._log_queue.put(f"\nProcess finished with exit code: {exit_code}\n")
-            self._log_queue.put("__RUN_SUCCESS__" if exit_code == 0 else "__RUN_FAILED__")
+            log_text = "".join(process_lines)
+            partial_batch = bool(re.search(r"Succeeded:\s+\d+", log_text)) and bool(
+                re.search(r"Failed:\s+[1-9]\d*", log_text)
+            )
+            if exit_code == 0:
+                self._log_queue.put("__RUN_SUCCESS__")
+            elif partial_batch:
+                self._log_queue.put("__RUN_WARNING__")
+            else:
+                self._log_queue.put("__RUN_FAILED__")
         except Exception as exc:
             self._log_queue.put(f"\nError launching migration: {exc}\n")
             self._log_queue.put("__RUN_FAILED__")
@@ -1088,11 +1239,11 @@ class LightMigrationUI:
             self._process.terminate()
             self._append_log("\nStop requested by user.\n")
 
-    def _finish_run(self, ok: bool) -> None:
+    def _finish_run(self, ok: bool, warning: bool = False) -> None:
         elapsed = 0.0
         if self._run_started_at is not None:
             elapsed = max(0.0, time.monotonic() - self._run_started_at)
-        item_status = "success" if ok else ("stopped" if self._stop_requested else "failed")
+        item_status = "success" if ok else ("warning" if warning else ("stopped" if self._stop_requested else "failed"))
         self._record_session_row(item_status, elapsed)
 
         self._running = False
@@ -1101,9 +1252,9 @@ class LightMigrationUI:
         self.run_btn.configure(state=tk.NORMAL)
         self.stop_btn.configure(state=tk.DISABLED)
 
-        if ok:
+        if ok or warning:
             self._set_progress(100.0)
-            self._set_status("Completed", tone="success")
+            self._set_status("Completed with warnings" if warning else "Completed", tone="warn" if warning else "success")
             self.stage_label.configure(text="Stage: completed")
             if self._last_output_dir:
                 self.open_output_btn.configure(state=tk.NORMAL)
@@ -1126,8 +1277,17 @@ class LightMigrationUI:
             self._update_kpi_panel(self._read_summary_metrics())
             if self.auto_open_report_var.get() and self._last_dashboard and os.path.exists(self._last_dashboard):
                 os.startfile(self._last_dashboard)
-            self._notify("Migration completed successfully")
-            messagebox.showinfo("Migration complete", "Migration finished successfully.")
+            if warning:
+                self._notify("Migration completed with warnings")
+                messagebox.showwarning(
+                    "Migration completed with warnings",
+                    "Some workbooks were skipped or failed validation.\n\n"
+                    "Successful outputs are available in the selected output folder.\n"
+                    "Review the run log for the affected workbooks.",
+                )
+            else:
+                self._notify("Migration completed successfully")
+                messagebox.showinfo("Migration complete", "Migration finished successfully.")
         else:
             if self.progress_var.get() < 1:
                 self._set_progress(0.0)
@@ -1136,6 +1296,11 @@ class LightMigrationUI:
             hint = self._build_error_hint()
             self.health_label.configure(text="")
             msg = "Migration ended with errors. Check logs."
+            error_line = self._first_error_line()
+            if error_line:
+                msg += f"\n\nFirst error:\n{error_line}"
+            if self._run_log_path:
+                msg += f"\n\nRun log:\n{self._run_log_path}"
             if hint:
                 msg += f"\n\nSuggested action:\n- {hint}"
             self._notify("Migration failed")
@@ -1208,6 +1373,10 @@ class LightMigrationUI:
     def _build_error_hint(self) -> str:
         log_text = "\n".join(self._all_logs)
         checks = [
+            ("duplicate_worksheet_name", "Rename duplicate Tableau worksheets (for example Economy or Technology) and rerun. Use TTPBI_FORCE=1 only to bypass preflight knowingly."),
+            ("semantic_validation", "A generated TMDL measure/column reference is missing; open the quality report and repair the named semantic reference before rerunning."),
+            ("visual_bindings", "A PBIR visual references a missing model measure/column; repair the named field mapping and regenerate the workbook."),
+            ("Pre-flight failed", "The workbook was refused before migration. Review the blocker lines above; duplicate worksheet names should be fixed at the Tableau source."),
             ("handleClearSelection", "Regenerate with latest slicer hotfix and reopen the new .pbip output."),
             ("same name already exists", "Name collision detected; ensure latest generator is used and regenerate output from scratch."),
             ("Number of Records", "Use the patched build that removes Number of Records measure/column collisions and regenerate."),
@@ -1218,6 +1387,18 @@ class LightMigrationUI:
             if token in log_text:
                 return hint
         return "Review the first ERROR/Traceback section in logs and rerun after applying that fix."
+
+    def _first_error_line(self) -> str:
+        """Return the first actionable traceback/error line for the failure dialog."""
+        lines = [line.strip() for line in "".join(self._all_logs).splitlines()]
+        for index, line in enumerate(lines):
+            if line.startswith("Traceback (most recent call last):"):
+                for candidate in lines[index + 1:]:
+                    if candidate and not candidate.startswith("File "):
+                        return candidate[:240]
+            if re.search(r"\b(ERROR|Exception|Error|FAILED|failed)\b", line):
+                return line[:240]
+        return ""
 
     def _open_output_folder(self) -> None:
         if self._last_output_dir and os.path.exists(self._last_output_dir):
@@ -1292,6 +1473,8 @@ class LightMigrationUI:
                 msg = self._log_queue.get_nowait()
                 if msg == "__RUN_SUCCESS__":
                     self._finish_run(ok=True)
+                elif msg == "__RUN_WARNING__":
+                    self._finish_run(ok=False, warning=True)
                 elif msg == "__RUN_FAILED__":
                     self._finish_run(ok=False)
                 else:

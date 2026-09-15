@@ -1,9 +1,1 @@
-[
-  {
-    "datasource": "World Indicators",
-    "secondary_datasource": "Parameters",
-    "column": "Parameter 1",
-    "link_expression": "",
-    "link_key": ""
-  }
-]
+[]

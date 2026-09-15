@@ -33,6 +33,11 @@ if ($Clean) {
     --add-data "tableau_export;tableau_export" `
     --add-data "powerbi_import;powerbi_import" `
     --add-data "web;web" `
+    --hidden-import tkinter `
+    --hidden-import tkinter.filedialog `
+    --hidden-import tkinter.messagebox `
+    --hidden-import tkinter.scrolledtext `
+    --hidden-import tkinter.ttk `
     desktop_launcher.py
 
 if ($LASTEXITCODE -ne 0) {

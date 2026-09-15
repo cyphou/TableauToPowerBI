@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from powerbi_import.assessment import run_assessment
+from powerbi_import.assessment_evidence import build_assessment_evidence
 from powerbi_import.html_template import (
     esc,
     html_close,
@@ -35,6 +36,12 @@ from powerbi_import.m_emitter_matrix import build_m_emitter_matrix, summarize_m_
 from powerbi_import.evidence_manifest import build_evidence_manifest
 from powerbi_import.strategy_advisor import recommend_strategy
 from powerbi_import.fabric_evidence import build_fabric_evidence
+from powerbi_import.source_inventory import build_source_inventory
+from powerbi_import.recovery_registry import build_recovery_registry
+from powerbi_import.validation_contract import build_validation_contract
+from powerbi_import.pbir_visual_recovery import scan_pbir_visual_recovery
+from powerbi_import.visual_parity_contract import build_visual_parity_contract
+from powerbi_import.roundtrip_validation import build_roundtrip_validation
 from powerbi_import.visual_mapping_matrix import (
     build_visual_mapping_matrix,
     find_visual_approximations_in_use,
@@ -53,6 +60,12 @@ class MigrationQualityReport:
     interface: Dict[str, Any]
     openability: Dict[str, Any]
     status: str
+    assessment_evidence: Dict[str, Any] = field(default_factory=dict)
+    recovery: Dict[str, Any] = field(default_factory=dict)
+    validation_contract: Dict[str, Any] = field(default_factory=dict)
+    visual_recovery: Dict[str, Any] = field(default_factory=dict)
+    visual_parity: Dict[str, Any] = field(default_factory=dict)
+    roundtrip_validation: Dict[str, Any] = field(default_factory=dict)
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     openability_confidence: Dict[str, Any] = field(default_factory=dict)
@@ -62,6 +75,7 @@ class MigrationQualityReport:
     semantic_context: Dict[str, Any] = field(default_factory=dict)
     m_emitters: Dict[str, Any] = field(default_factory=dict)
     visual_mappings: Dict[str, Any] = field(default_factory=dict)
+    source_inventory: Dict[str, Any] = field(default_factory=dict)
     evidence_manifest: Dict[str, Any] = field(default_factory=dict)
     strategy: Dict[str, Any] = field(default_factory=dict)
     lineage: Dict[str, Any] = field(default_factory=dict)
@@ -80,6 +94,12 @@ class MigrationQualityReport:
             "ai_summary": self.ai_summary,
             "ai_source": self.ai_source,
             "assessment": self.assessment,
+            "assessment_evidence": self.assessment_evidence,
+            "recovery": self.recovery,
+            "validation_contract": self.validation_contract,
+            "visual_recovery": self.visual_recovery,
+            "visual_parity": self.visual_parity,
+            "roundtrip_validation": self.roundtrip_validation,
             "parity": self.parity,
             "data": self.data,
             "interface": self.interface,
@@ -91,6 +111,7 @@ class MigrationQualityReport:
             "semantic_context": self.semantic_context,
             "m_emitters": self.m_emitters,
             "visual_mappings": self.visual_mappings,
+            "source_inventory": self.source_inventory,
             "evidence_manifest": self.evidence_manifest,
             "strategy": self.strategy,
             "lineage": self.lineage,
@@ -416,6 +437,7 @@ def _m_emitter_evidence(extracted: Dict[str, Any]) -> Dict[str, Any]:
 def _lineage_evidence(extracted: Dict[str, Any], data: Dict[str, Any],
                       interface: Dict[str, Any], parity: Dict[str, Any]) -> Dict[str, Any]:
     """Summarize source-to-target coverage without inventing runtime lineage."""
+    inventory = build_source_inventory(extracted)
     datasources = extracted.get("datasources", []) or []
     source_tables = sum(len(ds.get("tables", []) or []) for ds in datasources)
     source_columns = sum(
@@ -444,7 +466,21 @@ def _lineage_evidence(extracted: Dict[str, Any], data: Dict[str, Any],
             },
             "parity_evidence_percent": parity.get("evidence_coverage", {}).get(
                 "coverage_percent", 0.0),
+            "inventory_objects": inventory["object_count"],
+            "inventory_object_types": {
+                object_type: count for object_type, count in inventory["counts"].items()
+                if count
+            },
         },
+        "unresolved": [
+            {
+                "stable_id": row["stable_id"],
+                "object_type": row["object_type"],
+                "name": row["name"],
+                "reason": "missing_parent_reference",
+            }
+            for row in inventory["objects"] if row["orphan"]
+        ],
         "runtime": "not_run",
     }
 
@@ -519,6 +555,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
     visual_rows = build_visual_mapping_matrix()
     visual_mappings = {"status": "static_evidence", "summary": summarize_visual_mapping_matrix(visual_rows), "rows": visual_rows}
     assessment = run_assessment(extracted or {}, workbook_name=report_name)
+    assessment_evidence = build_assessment_evidence(assessment)
     parity = scan_project(extracted or {}, project_dir, report_name).to_dict()
     data = compare_report_tables(extracted or {}, project_dir, report_name)
     interface = compare_report_interface(extracted or {}, project_dir, report_name)
@@ -644,6 +681,20 @@ def build_quality_report(extracted: Dict, project_dir: str,
             warnings.append(message)
 
     status = "FAIL" if blockers else "WARN" if warnings else "PASS"
+    source_inventory = build_source_inventory(extracted or {})
+    recovery = build_recovery_registry(source_inventory)
+    validation_contract = build_validation_contract(
+        semantic_context, m_emitters, recovery
+    )
+    visual_recovery = scan_pbir_visual_recovery(project_dir)
+    visual_parity = build_visual_parity_contract(
+        extracted or {}, visual_mappings, visual_recovery
+    )
+    roundtrip_validation = build_roundtrip_validation(
+        openability_dict,
+        visual_recovery,
+        visual_parity,
+    )
     priorities = _build_priorities(parity, blockers, warnings)
     strategy = recommend_strategy(extracted or {}, prep_flow=prep_flow).to_dict()
     strategy["status"] = "recommended"
@@ -669,11 +720,48 @@ def build_quality_report(extracted: Dict, project_dir: str,
             "m_emitters": m_emitters.get("summary", {}),
             "fabric": fabric_evidence.get("artifacts", {}),
             "visual_mappings": visual_mappings.get("summary", {}),
+            "source_inventory": {
+                "object_count": source_inventory["object_count"],
+                "orphan_count": source_inventory["orphan_count"],
+                "duplicate_name_count": len(source_inventory["duplicate_names"]),
+            },
+            "recovery": {
+                "status": recovery["status"],
+                "object_count": recovery["object_count"],
+                "pending_count": recovery["counts"]["pending_validation"],
+            },
+            "validation": {
+                "release_ready": validation_contract["release_ready"],
+                "semantic_execution": validation_contract["semantic"]["execution_status"],
+                "m_status": validation_contract["m"]["status"],
+            },
+            "visual_recovery": {
+                "status": visual_recovery["status"],
+                "visual_count": visual_recovery["visual_count"],
+                "empty_count": visual_recovery["counts"]["empty"],
+                "orphaned_count": visual_recovery["counts"]["orphaned"],
+            },
+            "visual_parity": {
+                "source_approximation_count": visual_parity["source_used"]["approximation_count"],
+                "target_risk_count": visual_parity["target_recovery"]["risk_count"],
+                "runtime": visual_parity["runtime"],
+            },
+            "roundtrip_validation": {
+                "static_status": roundtrip_validation["static"]["status"],
+                "desktop_status": roundtrip_validation["desktop"]["status"],
+                "visual_risk_count": roundtrip_validation["static"]["visual_risk_count"],
+            },
         },
     )
     return MigrationQualityReport(
         report_name=report_name,
         assessment=_assessment_dict(assessment),
+        assessment_evidence=assessment_evidence,
+        recovery=recovery,
+        validation_contract=validation_contract,
+        visual_recovery=visual_recovery,
+        visual_parity=visual_parity,
+        roundtrip_validation=roundtrip_validation,
         parity=parity,
         data=data,
         interface=interface,
@@ -684,6 +772,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         semantic_context=semantic_context,
         m_emitters=m_emitters,
         visual_mappings=visual_mappings,
+        source_inventory=source_inventory,
         status=status,
         blockers=blockers,
         warnings=warnings,

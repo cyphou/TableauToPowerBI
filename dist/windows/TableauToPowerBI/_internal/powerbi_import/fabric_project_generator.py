@@ -21,6 +21,7 @@ from .dataflow_generator import DataflowGenerator
 from .fabric_item import build_item_registry, logical_id
 from .fabric_semantic_model_generator import FabricSemanticModelGenerator
 from .fabric_validator import FabricProjectValidator
+from .fabric_evidence import build_fabric_evidence
 from .evidence_manifest import build_evidence_manifest
 from .lakehouse_generator import LakehouseGenerator
 from .notebook_generator import NotebookGenerator
@@ -218,14 +219,20 @@ class FabricProjectGenerator:
             validation=results['quality'],
             environment=results['quality'],
         )
+        fabric_evidence = build_fabric_evidence(project_dir, project_name)
+        results['fabric_evidence'] = fabric_evidence
 
         # Write project metadata
         meta_path = os.path.join(project_dir, 'fabric_project_metadata.json')
         with phase_timings.phase('metadata'):
             with open(meta_path, 'w', encoding='utf-8') as f:
                 json.dump(_sanitize_for_json(results), f, indent=2, default=_json_default)
+            evidence_path = os.path.join(project_dir, 'fabric_evidence.json')
+            with open(evidence_path, 'w', encoding='utf-8') as f:
+                json.dump(_sanitize_for_json(fabric_evidence), f, indent=2, default=_json_default)
         self.last_phase_timings = phase_timings.finish()
         results['phase_timings'] = self.last_phase_timings
 
         print(f"\n  [OK] Fabric project created: {project_dir}")
+        print(f"  Fabric evidence: {evidence_path}")
         return results

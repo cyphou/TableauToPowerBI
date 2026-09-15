@@ -1,26 +1,37 @@
 [
   {
-    "name": "[Action4_34242B03A8294D088B02D2D5774C243F]",
+    "name": "[Action1_52815F839BBC4BA9B8D1EBF1318FD16E]",
     "type": "",
     "source_worksheets": [
-      "Tourism Over Time"
+      "Pie chart"
     ],
     "target_worksheets": [],
     "command": ""
   },
   {
-    "name": "[Action5_47F6ABBE4E9B49A191C64DD62E3E08D1]",
+    "name": "[Action2_3737E656047742CD8A04D109A9C079D5]",
     "type": "",
     "source_worksheets": [
-      "Tourism By Country/Region"
+      "Bar Chart"
     ],
     "target_worksheets": [],
     "command": ""
   },
   {
-    "name": "[Action6_755611AD135D487CA02105BD3EEFB5FD]",
+    "name": "[Action3_FC6FF2F5B3F14E8AB7D71C05A281D2F3]",
     "type": "",
-    "source_worksheets": [],
+    "source_worksheets": [
+      "Scatter Plot"
+    ],
+    "target_worksheets": [],
+    "command": ""
+  },
+  {
+    "name": "[Action4_E5EF8E329E244B2DBC5286FDE64ECFC2]",
+    "type": "",
+    "source_worksheets": [
+      "Line chart"
+    ],
     "target_worksheets": [],
     "command": ""
   }

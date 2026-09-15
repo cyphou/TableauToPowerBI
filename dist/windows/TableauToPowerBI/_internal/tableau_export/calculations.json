@@ -1,79 +1,13 @@
 [
   {
-    "name": "[Parameter 1]",
-    "caption": "Health Exp Threshold",
-    "formula": "0.14000000000000001",
-    "class": "tableau",
-    "datatype": "real",
-    "role": "measure",
-    "type": "quantitative",
-    "description": "",
-    "datasource_name": "Parameters"
-  },
-  {
-    "name": "[Calculation_1554586357494272000]",
-    "caption": "Above Threshold?",
-    "formula": "if [Health Exp % GDP]>[Parameters].[Parameter 1] then \"Above Threshold\" else \"Below Threshold\" end",
+    "name": "[Calculation_310466947315806208]",
+    "caption": "Grouping Based on Unit Price",
+    "formula": "IF [Unit Price] <= 2500 then 'A'\r\nELSEIF [Unit Price] <=5000 then 'B'\r\nELSE 'C' END",
     "class": "tableau",
     "datatype": "string",
     "role": "dimension",
     "type": "nominal",
     "description": "",
-    "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-  },
-  {
-    "name": "[Calculation_1554586357495853057]",
-    "caption": "GDP per Capita",
-    "formula": "[GDP]/[Population Total]",
-    "class": "tableau",
-    "datatype": "real",
-    "role": "measure",
-    "type": "quantitative",
-    "description": "",
-    "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-  },
-  {
-    "name": "[Calculation_1554586357496451074]",
-    "caption": "Birth Rate Bin",
-    "formula": "if ([Birth Rate])<0.015 then \"Below 1.5%\" elseif\r\n([Birth Rate])<0.03 then \"1.5-3%\" else\r\n\"Above 3%\" end",
-    "class": "tableau",
-    "datatype": "string",
-    "role": "dimension",
-    "type": "nominal",
-    "description": "",
-    "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-  },
-  {
-    "name": "[Calculation_638103803600809984]",
-    "caption": "Life Expectancy",
-    "formula": "([Life Expectancy Female]+[Life Expectancy Male])/2",
-    "class": "tableau",
-    "datatype": "real",
-    "role": "measure",
-    "type": "quantitative",
-    "description": "",
-    "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-  },
-  {
-    "name": "[GDP per Capita (bin)]",
-    "caption": "GDP per Capita (bin)",
-    "formula": "[Calculation_1554586357495853057]",
-    "class": "bin",
-    "datatype": "integer",
-    "role": "dimension",
-    "type": "ordinal",
-    "description": "",
-    "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-  },
-  {
-    "name": "[Number of Records]",
-    "caption": "[Number of Records]",
-    "formula": "1",
-    "class": "tableau",
-    "datatype": "integer",
-    "role": "measure",
-    "type": "quantitative",
-    "description": "",
-    "datasource_name": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+    "datasource_name": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
   }
 ]

@@ -1,316 +1,125 @@
 [
   {
-    "name": "Business",
-    "title": "\n          ",
+    "name": "Dashboard 1",
+    "title": "",
     "size": {
-      "width": 1000,
-      "height": 620
+      "width": 1550,
+      "height": 860
     },
     "objects": [
       {
+        "type": "worksheetReference",
+        "name": "Line chart",
+        "worksheetName": "Line chart",
+        "position": {
+          "x": 452,
+          "y": 71945,
+          "w": 99161,
+          "h": 27057
+        },
+        "layout": "tiled",
+        "padding": {
+          "border_color": "#000000",
+          "border_style": "solid",
+          "border_width": "1"
+        }
+      },
+      {
         "type": "filter_control",
-        "name": "Ease of Biz Correlation Sheet",
-        "field": "Ease of Biz Correlation Sheet",
-        "param": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
-        "calc_column_id": "Region",
+        "name": "Line chart",
+        "field": "Line chart",
+        "param": "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[none:Calculation_310466947315806208:nk]",
+        "calc_column_id": "Calculation_310466947315806208",
         "position": {
-          "x": 42575,
-          "y": 945,
-          "w": 16000,
-          "h": 9582
+          "x": 452,
+          "y": 873,
+          "w": 10323,
+          "h": 37656
         },
         "layout": "tiled"
       },
       {
         "type": "worksheetReference",
-        "name": "Ease of Biz Correlation Sheet",
-        "worksheetName": "Ease of Biz Correlation Sheet",
+        "name": "Pie chart",
+        "worksheetName": "Pie chart",
         "position": {
-          "x": 58575,
-          "y": 945,
-          "w": 16000,
-          "h": 9582
+          "x": 71548,
+          "y": 873,
+          "w": 27419,
+          "h": 38155
         },
         "layout": "tiled",
         "padding": {
           "border_color": "#000000",
-          "border_style": "none",
-          "border_width": "0"
+          "border_style": "solid",
+          "border_width": "1"
         }
       },
       {
         "type": "worksheetReference",
-        "name": "Biz Tax rate",
-        "worksheetName": "Biz Tax rate",
+        "name": "Bar Chart",
+        "worksheetName": "Bar Chart",
         "position": {
-          "x": 74589,
-          "y": 10527,
-          "w": 8103,
-          "h": 88528
+          "x": 11226,
+          "y": 748,
+          "w": 59871,
+          "h": 37905
         },
         "layout": "tiled",
         "padding": {
           "border_color": "#000000",
-          "border_style": "none",
-          "border_width": "0",
-          "margin-bottom": 50
+          "border_style": "solid",
+          "border_width": "1"
         }
       },
       {
         "type": "worksheetReference",
-        "name": "Days to Start Biz",
-        "worksheetName": "Days to Start Biz",
+        "name": "Scatter Plot",
+        "worksheetName": "Scatter Plot",
         "position": {
-          "x": 82692,
-          "y": 10527,
-          "w": 8503,
-          "h": 88528
+          "x": 258,
+          "y": 39277,
+          "w": 99032,
+          "h": 31796
         },
-        "layout": "tiled"
-      },
-      {
-        "type": "worksheetReference",
-        "name": "Hours to do Taxes",
-        "worksheetName": "Hours to do Taxes",
-        "position": {
-          "x": 91195,
-          "y": 10527,
-          "w": 8103,
-          "h": 88528
-        },
-        "layout": "tiled"
-      },
-      {
-        "type": "text",
-        "name": "text_19",
-        "content": "Correlation to GDP per Capita",
-        "text_runs": [
-          {
-            "text": "Correlation to GDP per Capita",
-            "font_size": "10"
-          }
-        ],
-        "text_align": "",
-        "vertical_align": "",
-        "position": {
-          "x": 0,
-          "y": 94107,
-          "w": 100000,
-          "h": 5893
-        },
-        "layout": "tiled"
+        "layout": "tiled",
+        "padding": {
+          "border_color": "#000000",
+          "border_style": "solid",
+          "border_width": "1"
+        }
       }
     ],
     "filters": [],
     "parameters": [
       {
-        "name": "vert",
-        "zone_name": "",
+        "name": "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[none:Calculation_310466947315806208:nk]",
+        "zone_name": "Line chart",
         "position": {
-          "x": 0,
-          "y": 0,
-          "w": 100000,
-          "h": 100000
-        }
-      },
-      {
-        "name": "horz",
-        "zone_name": "",
-        "position": {
-          "x": 700,
-          "y": 945,
-          "w": 73875,
-          "h": 9582
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "position": {
-          "x": 42575,
-          "y": 945,
-          "w": 16000,
-          "h": 9582
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "position": {
-          "x": 58575,
-          "y": 945,
-          "w": 16000,
-          "h": 9582
-        }
-      },
-      {
-        "name": "horz",
-        "zone_name": "",
-        "position": {
-          "x": 74575,
-          "y": 945,
-          "w": 24725,
-          "h": 9582
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[Country/Region (clusters)]",
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "position": {
-          "x": 74575,
-          "y": 945,
-          "w": 24725,
-          "h": 9582
-        }
-      },
-      {
-        "name": "horz",
-        "zone_name": "",
-        "position": {
-          "x": 700,
-          "y": 10527,
-          "w": 73889,
-          "h": 88528
-        }
-      },
-      {
-        "name": "horz",
-        "zone_name": "",
-        "position": {
-          "x": 74589,
-          "y": 10527,
-          "w": 24711,
-          "h": 88528
+          "x": 452,
+          "y": 873,
+          "w": 10323,
+          "h": 37656
         }
       },
       {
         "name": "vert",
         "zone_name": "",
         "position": {
-          "x": 0,
-          "y": 0,
-          "w": 100000,
-          "h": 100000
+          "x": 516,
+          "y": 998,
+          "w": 98968,
+          "h": 98004
         }
       },
       {
-        "name": "horz",
-        "zone_name": "",
+        "name": "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[none:Calculation_310466947315806208:nk]",
+        "zone_name": "Line chart",
         "position": {
-          "x": 195,
-          "y": 311,
-          "w": 72195,
-          "h": 11180
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "position": {
-          "x": 41140,
-          "y": 311,
-          "w": 15625,
-          "h": 11180
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "position": {
-          "x": 56765,
-          "y": 311,
-          "w": 15625,
-          "h": 11180
-        }
-      },
-      {
-        "name": "horz",
-        "zone_name": "",
-        "position": {
-          "x": 72390,
-          "y": 311,
-          "w": 27415,
-          "h": 11180
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[Country/Region (clusters)]",
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "position": {
-          "x": 72390,
-          "y": 311,
-          "w": 27415,
-          "h": 11180
-        }
-      },
-      {
-        "name": "horz",
-        "zone_name": "",
-        "position": {
-          "x": 195,
-          "y": 11491,
-          "w": 72178,
-          "h": 88198
-        }
-      },
-      {
-        "name": "horz",
-        "zone_name": "",
-        "position": {
-          "x": 72373,
-          "y": 11491,
-          "w": 27432,
-          "h": 88198
-        }
-      },
-      {
-        "name": "vert",
-        "zone_name": "",
-        "position": {
-          "x": 72363,
-          "y": 11491,
-          "w": 9180,
-          "h": 88198
-        }
-      },
-      {
-        "name": "vert",
-        "zone_name": "",
-        "position": {
-          "x": 0,
-          "y": 0,
-          "w": 100000,
-          "h": 94107
-        }
-      },
-      {
-        "name": "horz",
-        "zone_name": "",
-        "position": {
-          "x": 0,
-          "y": 0,
-          "w": 100000,
-          "h": 9761
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "position": {
-          "x": 0,
-          "y": 9761,
-          "w": 100000,
-          "h": 8103
-        }
-      },
-      {
-        "name": "horz",
-        "zone_name": "",
-        "position": {
-          "x": 0,
-          "y": 17864,
-          "w": 100000,
-          "h": 76243
+          "x": 452,
+          "y": 873,
+          "w": 10323,
+          "h": 37656
         }
       }
     ],
@@ -322,1162 +131,53 @@
     "dynamic_zone_visibility": [],
     "floating_tiled": [
       {
-        "zone_name": "",
-        "zone_id": "2",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 100000
-      },
-      {
-        "zone_name": "",
-        "zone_id": "12",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 100000
-      },
-      {
-        "zone_name": "",
-        "zone_id": "17",
-        "is_floating": false,
-        "x": 700,
-        "y": 945,
-        "w": 98600,
-        "h": 9582
-      },
-      {
-        "zone_name": "",
-        "zone_id": "14",
-        "is_floating": false,
-        "x": 700,
-        "y": 945,
-        "w": 73875,
-        "h": 9582
-      },
-      {
-        "zone_name": "",
-        "zone_id": "11",
-        "is_floating": false,
-        "x": 700,
-        "y": 945,
-        "w": 41875,
-        "h": 9582
-      },
-      {
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "zone_id": "13",
-        "is_floating": false,
-        "x": 42575,
-        "y": 945,
-        "w": 16000,
-        "h": 9582
-      },
-      {
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "zone_id": "7",
-        "is_floating": false,
-        "x": 58575,
-        "y": 945,
-        "w": 16000,
-        "h": 9582
-      },
-      {
-        "zone_name": "",
-        "zone_id": "18",
-        "is_floating": false,
-        "x": 74575,
-        "y": 945,
-        "w": 24725,
-        "h": 9582
-      },
-      {
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "zone_id": "6",
-        "is_floating": false,
-        "x": 74575,
-        "y": 945,
-        "w": 24725,
-        "h": 9582
-      },
-      {
-        "zone_name": "",
-        "zone_id": "24",
-        "is_floating": false,
-        "x": 700,
-        "y": 10527,
-        "w": 98600,
-        "h": 88528
-      },
-      {
-        "zone_name": "",
-        "zone_id": "5",
-        "is_floating": false,
-        "x": 700,
-        "y": 10527,
-        "w": 73889,
-        "h": 88528
-      },
-      {
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "zone_id": "1",
-        "is_floating": false,
-        "x": 700,
-        "y": 10527,
-        "w": 73889,
-        "h": 88528
-      },
-      {
-        "zone_name": "",
-        "zone_id": "28",
-        "is_floating": false,
-        "x": 74589,
-        "y": 10527,
-        "w": 24711,
-        "h": 88528
-      },
-      {
-        "zone_name": "Biz Tax rate",
-        "zone_id": "8",
-        "is_floating": false,
-        "x": 74589,
-        "y": 10527,
-        "w": 8103,
-        "h": 88528
-      },
-      {
-        "zone_name": "Days to Start Biz",
-        "zone_id": "9",
-        "is_floating": false,
-        "x": 82692,
-        "y": 10527,
-        "w": 8503,
-        "h": 88528
-      },
-      {
-        "zone_name": "Hours to do Taxes",
-        "zone_id": "10",
-        "is_floating": false,
-        "x": 91195,
-        "y": 10527,
-        "w": 8103,
-        "h": 88528
-      },
-      {
-        "zone_name": "",
-        "zone_id": "2",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 100000
-      },
-      {
-        "zone_name": "",
-        "zone_id": "12",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 100000
-      },
-      {
-        "zone_name": "",
-        "zone_id": "17",
-        "is_floating": false,
-        "x": 195,
-        "y": 311,
-        "w": 99610,
-        "h": 11180
-      },
-      {
-        "zone_name": "",
-        "zone_id": "14",
-        "is_floating": false,
-        "x": 195,
-        "y": 311,
-        "w": 72195,
-        "h": 11180
-      },
-      {
-        "zone_name": "",
-        "zone_id": "11",
-        "is_floating": false,
-        "x": 195,
-        "y": 311,
-        "w": 40945,
-        "h": 11180
-      },
-      {
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "zone_id": "13",
-        "is_floating": false,
-        "x": 41140,
-        "y": 311,
-        "w": 15625,
-        "h": 11180
-      },
-      {
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "zone_id": "7",
-        "is_floating": false,
-        "x": 56765,
-        "y": 311,
-        "w": 15625,
-        "h": 11180
-      },
-      {
-        "zone_name": "",
-        "zone_id": "18",
-        "is_floating": false,
-        "x": 72390,
-        "y": 311,
-        "w": 27415,
-        "h": 11180
-      },
-      {
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "zone_id": "6",
-        "is_floating": false,
-        "x": 72390,
-        "y": 311,
-        "w": 27415,
-        "h": 11180
-      },
-      {
-        "zone_name": "",
-        "zone_id": "20",
-        "is_floating": false,
-        "x": 195,
-        "y": 11491,
-        "w": 99610,
-        "h": 88198
-      },
-      {
-        "zone_name": "",
-        "zone_id": "5",
-        "is_floating": false,
-        "x": 195,
-        "y": 11491,
-        "w": 72178,
-        "h": 88198
-      },
-      {
-        "zone_name": "",
+        "zone_name": "Line chart",
         "zone_id": "3",
         "is_floating": false,
-        "x": 195,
-        "y": 11491,
-        "w": 72178,
-        "h": 88198
+        "x": 452,
+        "y": 71945,
+        "w": 99161,
+        "h": 27057
       },
       {
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "zone_id": "1",
-        "is_floating": false,
-        "x": 195,
-        "y": 11491,
-        "w": 72178,
-        "h": 88198
-      },
-      {
-        "zone_name": "",
-        "zone_id": "21",
-        "is_floating": false,
-        "x": 72373,
-        "y": 11491,
-        "w": 27432,
-        "h": 88198
-      },
-      {
-        "zone_name": "",
-        "zone_id": "15",
-        "is_floating": false,
-        "x": 72363,
-        "y": 11491,
-        "w": 9180,
-        "h": 88198
-      },
-      {
-        "zone_name": "Biz Tax rate",
-        "zone_id": "8",
-        "is_floating": false,
-        "x": 72363,
-        "y": 11491,
-        "w": 9180,
-        "h": 88198
-      },
-      {
-        "zone_name": "Days to Start Biz",
-        "zone_id": "9",
-        "is_floating": false,
-        "x": 81543,
-        "y": 11491,
-        "w": 9180,
-        "h": 88198
-      },
-      {
-        "zone_name": "Hours to do Taxes",
-        "zone_id": "10",
-        "is_floating": false,
-        "x": 90723,
-        "y": 11491,
-        "w": 9082,
-        "h": 88198
-      },
-      {
-        "zone_name": "",
-        "zone_id": "2",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 100000
-      },
-      {
-        "zone_name": "",
-        "zone_id": "12",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 94107
-      },
-      {
-        "zone_name": "",
-        "zone_id": "17",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 9761
-      },
-      {
-        "zone_name": "",
-        "zone_id": "14",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 9761
-      },
-      {
-        "zone_name": "",
-        "zone_id": "11",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 9761
-      },
-      {
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "zone_id": "7",
-        "is_floating": false,
-        "x": 0,
-        "y": 9761,
-        "w": 100000,
-        "h": 8103
-      },
-      {
-        "zone_name": "",
-        "zone_id": "5",
-        "is_floating": false,
-        "x": 0,
-        "y": 17864,
-        "w": 100000,
-        "h": 76243
-      },
-      {
-        "zone_name": "",
-        "zone_id": "3",
-        "is_floating": false,
-        "x": 0,
-        "y": 17864,
-        "w": 100000,
-        "h": 76243
-      },
-      {
-        "zone_name": "Ease of Biz Correlation Sheet",
-        "zone_id": "1",
-        "is_floating": false,
-        "x": 0,
-        "y": 17864,
-        "w": 100000,
-        "h": 76243
-      },
-      {
-        "zone_name": "",
-        "zone_id": "19",
-        "is_floating": false,
-        "x": 0,
-        "y": 94107,
-        "w": 100000,
-        "h": 5893
-      }
-    ],
-    "zone_hierarchy": {
-      "id": "2",
-      "name": "",
-      "zone_type": "layout-basic",
-      "orientation": "",
-      "position": {
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 100000
-      },
-      "is_floating": false,
-      "is_fixed": false,
-      "children": [
-        {
-          "id": "12",
-          "name": "",
-          "zone_type": "layout-flow",
-          "orientation": "vert",
-          "position": {
-            "x": 0,
-            "y": 0,
-            "w": 100000,
-            "h": 100000
-          },
-          "is_floating": false,
-          "is_fixed": false,
-          "children": [
-            {
-              "id": "17",
-              "name": "",
-              "zone_type": "layout-basic",
-              "orientation": "",
-              "position": {
-                "x": 700,
-                "y": 945,
-                "w": 98600,
-                "h": 9582
-              },
-              "is_floating": false,
-              "is_fixed": true,
-              "children": [
-                {
-                  "id": "14",
-                  "name": "",
-                  "zone_type": "layout-flow",
-                  "orientation": "horz",
-                  "position": {
-                    "x": 700,
-                    "y": 945,
-                    "w": 73875,
-                    "h": 9582
-                  },
-                  "is_floating": false,
-                  "is_fixed": false,
-                  "children": [
-                    {
-                      "id": "11",
-                      "name": "",
-                      "zone_type": "title",
-                      "orientation": "",
-                      "position": {
-                        "x": 700,
-                        "y": 945,
-                        "w": 41875,
-                        "h": 9582
-                      },
-                      "is_floating": false,
-                      "is_fixed": false,
-                      "children": []
-                    },
-                    {
-                      "id": "13",
-                      "name": "Ease of Biz Correlation Sheet",
-                      "zone_type": "filter",
-                      "orientation": "",
-                      "position": {
-                        "x": 42575,
-                        "y": 945,
-                        "w": 16000,
-                        "h": 9582
-                      },
-                      "is_floating": false,
-                      "is_fixed": false,
-                      "children": []
-                    },
-                    {
-                      "id": "7",
-                      "name": "Ease of Biz Correlation Sheet",
-                      "zone_type": "highlighter",
-                      "orientation": "",
-                      "position": {
-                        "x": 58575,
-                        "y": 945,
-                        "w": 16000,
-                        "h": 9582
-                      },
-                      "is_floating": false,
-                      "is_fixed": false,
-                      "children": []
-                    }
-                  ]
-                },
-                {
-                  "id": "18",
-                  "name": "",
-                  "zone_type": "layout-flow",
-                  "orientation": "horz",
-                  "position": {
-                    "x": 74575,
-                    "y": 945,
-                    "w": 24725,
-                    "h": 9582
-                  },
-                  "is_floating": false,
-                  "is_fixed": false,
-                  "children": [
-                    {
-                      "id": "6",
-                      "name": "Ease of Biz Correlation Sheet",
-                      "zone_type": "color",
-                      "orientation": "",
-                      "position": {
-                        "x": 74575,
-                        "y": 945,
-                        "w": 24725,
-                        "h": 9582
-                      },
-                      "is_floating": false,
-                      "is_fixed": false,
-                      "children": []
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "id": "24",
-              "name": "",
-              "zone_type": "layout-basic",
-              "orientation": "",
-              "position": {
-                "x": 700,
-                "y": 10527,
-                "w": 98600,
-                "h": 88528
-              },
-              "is_floating": false,
-              "is_fixed": false,
-              "children": [
-                {
-                  "id": "5",
-                  "name": "",
-                  "zone_type": "layout-flow",
-                  "orientation": "horz",
-                  "position": {
-                    "x": 700,
-                    "y": 10527,
-                    "w": 73889,
-                    "h": 88528
-                  },
-                  "is_floating": false,
-                  "is_fixed": false,
-                  "children": [
-                    {
-                      "id": "1",
-                      "name": "Ease of Biz Correlation Sheet",
-                      "zone_type": "worksheet",
-                      "orientation": "",
-                      "position": {
-                        "x": 700,
-                        "y": 10527,
-                        "w": 73889,
-                        "h": 88528
-                      },
-                      "is_floating": false,
-                      "is_fixed": false,
-                      "children": [],
-                      "padding": {
-                        "right": 4
-                      }
-                    }
-                  ]
-                },
-                {
-                  "id": "28",
-                  "name": "",
-                  "zone_type": "layout-flow",
-                  "orientation": "horz",
-                  "position": {
-                    "x": 74589,
-                    "y": 10527,
-                    "w": 24711,
-                    "h": 88528
-                  },
-                  "is_floating": false,
-                  "is_fixed": false,
-                  "children": [
-                    {
-                      "id": "8",
-                      "name": "Biz Tax rate",
-                      "zone_type": "worksheet",
-                      "orientation": "",
-                      "position": {
-                        "x": 74589,
-                        "y": 10527,
-                        "w": 8103,
-                        "h": 88528
-                      },
-                      "is_floating": false,
-                      "is_fixed": false,
-                      "children": [],
-                      "padding": {
-                        "bottom": 50
-                      }
-                    },
-                    {
-                      "id": "9",
-                      "name": "Days to Start Biz",
-                      "zone_type": "worksheet",
-                      "orientation": "",
-                      "position": {
-                        "x": 82692,
-                        "y": 10527,
-                        "w": 8503,
-                        "h": 88528
-                      },
-                      "is_floating": false,
-                      "is_fixed": false,
-                      "children": []
-                    },
-                    {
-                      "id": "10",
-                      "name": "Hours to do Taxes",
-                      "zone_type": "worksheet",
-                      "orientation": "",
-                      "position": {
-                        "x": 91195,
-                        "y": 10527,
-                        "w": 8103,
-                        "h": 88528
-                      },
-                      "is_floating": false,
-                      "is_fixed": false,
-                      "children": []
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    }
-  },
-  {
-    "name": "Global Indicators",
-    "title": "\n          ",
-    "size": {
-      "width": 1000,
-      "height": 620
-    },
-    "objects": [],
-    "filters": [
-      {
-        "field": "Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "values": []
-      },
-      {
-        "field": "Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "values": []
-      }
-    ],
-    "parameters": [
-      {
-        "name": "vert",
-        "zone_name": "",
-        "position": {
-          "x": 0,
-          "y": 0,
-          "w": 100000,
-          "h": 100000
-        }
-      }
-    ],
-    "theme": {
-      "styles": {
-        "story-point-caption": {
-          "attr": "background-color",
-          "value": "#c0c0c0"
-        }
-      }
-    },
-    "layout_containers": [],
-    "device_layouts": [],
-    "containers": [],
-    "show_hide_containers": [],
-    "dynamic_zone_visibility": [],
-    "floating_tiled": [
-      {
-        "zone_name": "",
-        "zone_id": "2",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 100000
-      },
-      {
-        "zone_name": "",
-        "zone_id": "1",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 100000
-      },
-      {
-        "zone_name": "",
-        "zone_id": "3",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 4453
-      },
-      {
-        "zone_name": "",
+        "zone_name": "Line chart",
         "zone_id": "4",
         "is_floating": false,
-        "x": 0,
-        "y": 4453,
-        "w": 100000,
-        "h": 16869
+        "x": 452,
+        "y": 873,
+        "w": 10323,
+        "h": 37656
       },
       {
-        "zone_name": "",
+        "zone_name": "Pie chart",
         "zone_id": "5",
         "is_floating": false,
-        "x": 0,
-        "y": 21322,
-        "w": 100000,
-        "h": 78678
-      }
-    ],
-    "zone_hierarchy": {
-      "id": "2",
-      "name": "",
-      "zone_type": "layout-basic",
-      "orientation": "",
-      "position": {
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 100000
-      },
-      "is_floating": false,
-      "is_fixed": false,
-      "children": [
-        {
-          "id": "1",
-          "name": "",
-          "zone_type": "layout-flow",
-          "orientation": "vert",
-          "position": {
-            "x": 0,
-            "y": 0,
-            "w": 100000,
-            "h": 100000
-          },
-          "is_floating": false,
-          "is_fixed": false,
-          "children": [
-            {
-              "id": "3",
-              "name": "",
-              "zone_type": "title",
-              "orientation": "",
-              "position": {
-                "x": 0,
-                "y": 0,
-                "w": 100000,
-                "h": 4453
-              },
-              "is_floating": false,
-              "is_fixed": false,
-              "children": []
-            },
-            {
-              "id": "4",
-              "name": "",
-              "zone_type": "flipboard-nav",
-              "orientation": "",
-              "position": {
-                "x": 0,
-                "y": 4453,
-                "w": 100000,
-                "h": 16869
-              },
-              "is_floating": false,
-              "is_fixed": true,
-              "children": []
-            },
-            {
-              "id": "5",
-              "name": "",
-              "zone_type": "flipboard",
-              "orientation": "",
-              "position": {
-                "x": 0,
-                "y": 21322,
-                "w": 100000,
-                "h": 78678
-              },
-              "is_floating": false,
-              "is_fixed": false,
-              "children": []
-            }
-          ]
-        }
-      ]
-    }
-  },
-  {
-    "name": "Tourism",
-    "title": "\n          ",
-    "size": {
-      "width": 1000,
-      "height": 620
-    },
-    "objects": [
-      {
-        "type": "worksheetReference",
-        "name": "Tourism Over Time",
-        "worksheetName": "Tourism Over Time",
-        "position": {
-          "x": 700,
-          "y": 9142,
-          "w": 78600,
-          "h": 44957
-        },
-        "layout": "tiled"
+        "x": 71548,
+        "y": 873,
+        "w": 27419,
+        "h": 38155
       },
       {
-        "type": "worksheetReference",
-        "name": "Tourism By Country/Region",
-        "worksheetName": "Tourism By Country/Region",
-        "position": {
-          "x": 700,
-          "y": 54099,
-          "w": 78600,
-          "h": 44956
-        },
-        "layout": "tiled",
-        "padding": {
-          "border_color": "#000000",
-          "border_style": "none",
-          "border_width": "0",
-          "margin-top": 4
-        }
-      },
-      {
-        "type": "filter_control",
-        "name": "Tourism Over Time",
-        "field": "Tourism Over Time",
-        "param": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:qk]",
-        "calc_column_id": "",
-        "position": {
-          "x": 80800,
-          "y": 9277,
-          "w": 18400,
-          "h": 9312
-        },
-        "layout": "tiled"
-      },
-      {
-        "type": "filter_control",
-        "name": "Tourism Over Time",
-        "field": "Tourism Over Time",
-        "param": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
-        "calc_column_id": "Region",
-        "position": {
-          "x": 80800,
-          "y": 18589,
-          "w": 18400,
-          "h": 22268
-        },
-        "layout": "tiled"
-      }
-    ],
-    "filters": [],
-    "parameters": [
-      {
-        "name": "horz",
-        "zone_name": "",
-        "position": {
-          "x": 0,
-          "y": 8197,
-          "w": 100000,
-          "h": 91803
-        }
-      },
-      {
-        "name": "vert",
-        "zone_name": "",
-        "position": {
-          "x": 0,
-          "y": 8197,
-          "w": 80000,
-          "h": 91803
-        }
-      },
-      {
-        "name": "vert",
-        "zone_name": "",
-        "position": {
-          "x": 80000,
-          "y": 8197,
-          "w": 20000,
-          "h": 91803
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:qk]",
-        "zone_name": "Tourism Over Time",
-        "position": {
-          "x": 80800,
-          "y": 9277,
-          "w": 18400,
-          "h": 9312
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
-        "zone_name": "Tourism Over Time",
-        "position": {
-          "x": 80800,
-          "y": 18589,
-          "w": 18400,
-          "h": 22268
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
-        "zone_name": "Tourism By Country/Region",
-        "position": {
-          "x": 80800,
-          "y": 40857,
-          "w": 18400,
-          "h": 7018
-        }
-      },
-      {
-        "name": "vert",
-        "zone_name": "",
-        "position": {
-          "x": 0,
-          "y": 0,
-          "w": 100000,
-          "h": 8197
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
-        "zone_name": "Tourism Over Time",
-        "position": {
-          "x": 0,
-          "y": 4588,
-          "w": 100000,
-          "h": 2699
-        }
-      },
-      {
-        "name": "vert",
-        "zone_name": "",
-        "position": {
-          "x": 8000,
-          "y": 8000,
-          "w": 84000,
-          "h": 84000
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:qk]",
-        "zone_name": "Tourism Over Time",
-        "position": {
-          "x": 80800,
-          "y": 9277,
-          "w": 18400,
-          "h": 9312
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
-        "zone_name": "Tourism Over Time",
-        "position": {
-          "x": 80800,
-          "y": 18589,
-          "w": 18400,
-          "h": 22268
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
-        "zone_name": "Tourism Over Time",
-        "position": {
-          "x": 0,
-          "y": 4588,
-          "w": 100000,
-          "h": 2699
-        }
-      },
-      {
-        "name": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
-        "zone_name": "Tourism By Country/Region",
-        "position": {
-          "x": 80800,
-          "y": 40857,
-          "w": 18400,
-          "h": 7018
-        }
-      }
-    ],
-    "theme": {
-      "styles": {
-        "dash-container": {
-          "attr": "background-color",
-          "id": "dash-zone_13",
-          "value": "#f5f5f5"
-        }
-      }
-    },
-    "layout_containers": [],
-    "device_layouts": [],
-    "containers": [],
-    "show_hide_containers": [],
-    "dynamic_zone_visibility": [],
-    "floating_tiled": [
-      {
-        "zone_name": "",
-        "zone_id": "2",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 100000
-      },
-      {
-        "zone_name": "",
-        "zone_id": "8",
-        "is_floating": false,
-        "x": 0,
-        "y": 8197,
-        "w": 100000,
-        "h": 91803
-      },
-      {
-        "zone_name": "",
+        "zone_name": "Bar Chart",
         "zone_id": "6",
         "is_floating": false,
-        "x": 0,
-        "y": 8197,
-        "w": 80000,
-        "h": 91803
+        "x": 11226,
+        "y": 748,
+        "w": 59871,
+        "h": 37905
+      },
+      {
+        "zone_name": "Scatter Plot",
+        "zone_id": "7",
+        "is_floating": false,
+        "x": 258,
+        "y": 39277,
+        "w": 99032,
+        "h": 31796
       },
       {
         "zone_name": "",
-        "zone_id": "4",
-        "is_floating": false,
-        "x": 700,
-        "y": 9142,
-        "w": 78600,
-        "h": 89913
-      },
-      {
-        "zone_name": "Tourism Over Time",
-        "zone_id": "1",
-        "is_floating": false,
-        "x": 700,
-        "y": 9142,
-        "w": 78600,
-        "h": 44957
-      },
-      {
-        "zone_name": "Tourism By Country/Region",
-        "zone_id": "3",
-        "is_floating": false,
-        "x": 700,
-        "y": 54099,
-        "w": 78600,
-        "h": 44956
-      },
-      {
-        "zone_name": "",
-        "zone_id": "23",
-        "is_floating": false,
-        "x": 80000,
-        "y": 8197,
-        "w": 20000,
-        "h": 91803
-      },
-      {
-        "zone_name": "Tourism Over Time",
-        "zone_id": "22",
-        "is_floating": false,
-        "x": 80800,
-        "y": 9277,
-        "w": 18400,
-        "h": 9312
-      },
-      {
-        "zone_name": "Tourism Over Time",
-        "zone_id": "24",
-        "is_floating": false,
-        "x": 80800,
-        "y": 18589,
-        "w": 18400,
-        "h": 22268
-      },
-      {
-        "zone_name": "Tourism By Country/Region",
-        "zone_id": "25",
-        "is_floating": false,
-        "x": 80800,
-        "y": 40857,
-        "w": 18400,
-        "h": 7018
-      },
-      {
-        "zone_name": "",
-        "zone_id": "26",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 8197
-      },
-      {
-        "zone_name": "",
-        "zone_id": "5",
-        "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 4588
-      },
-      {
-        "zone_name": "Tourism Over Time",
-        "zone_id": "9",
-        "is_floating": false,
-        "x": 0,
-        "y": 4588,
-        "w": 100000,
-        "h": 2699
-      },
-      {
-        "zone_name": "",
-        "zone_id": "61",
+        "zone_id": "11",
         "is_floating": false,
         "x": 0,
         "y": 0,
@@ -1486,278 +186,147 @@
       },
       {
         "zone_name": "",
-        "zone_id": "60",
+        "zone_id": "10",
         "is_floating": false,
-        "x": 8000,
-        "y": 8000,
-        "w": 84000,
-        "h": 84000
+        "x": 516,
+        "y": 998,
+        "w": 98968,
+        "h": 98004
       },
       {
-        "zone_name": "",
+        "zone_name": "Bar Chart",
+        "zone_id": "6",
+        "is_floating": false,
+        "x": 11226,
+        "y": 748,
+        "w": 59871,
+        "h": 37905
+      },
+      {
+        "zone_name": "Pie chart",
         "zone_id": "5",
         "is_floating": false,
-        "x": 0,
-        "y": 0,
-        "w": 100000,
-        "h": 4588
+        "x": 71548,
+        "y": 873,
+        "w": 27419,
+        "h": 38155
       },
       {
-        "zone_name": "Tourism Over Time",
-        "zone_id": "22",
+        "zone_name": "Scatter Plot",
+        "zone_id": "7",
         "is_floating": false,
-        "x": 80800,
-        "y": 9277,
-        "w": 18400,
-        "h": 9312
+        "x": 258,
+        "y": 39277,
+        "w": 99032,
+        "h": 31796
       },
       {
-        "zone_name": "Tourism Over Time",
-        "zone_id": "24",
+        "zone_name": "Line chart",
+        "zone_id": "4",
         "is_floating": false,
-        "x": 80800,
-        "y": 18589,
-        "w": 18400,
-        "h": 22268
+        "x": 452,
+        "y": 873,
+        "w": 10323,
+        "h": 37656
       },
       {
-        "zone_name": "Tourism Over Time",
-        "zone_id": "1",
-        "is_floating": false,
-        "x": 700,
-        "y": 9142,
-        "w": 78600,
-        "h": 44957
-      },
-      {
-        "zone_name": "Tourism Over Time",
-        "zone_id": "9",
-        "is_floating": false,
-        "x": 0,
-        "y": 4588,
-        "w": 100000,
-        "h": 2699
-      },
-      {
-        "zone_name": "Tourism By Country/Region",
-        "zone_id": "25",
-        "is_floating": false,
-        "x": 80800,
-        "y": 40857,
-        "w": 18400,
-        "h": 7018
-      },
-      {
-        "zone_name": "Tourism By Country/Region",
+        "zone_name": "Line chart",
         "zone_id": "3",
         "is_floating": false,
-        "x": 700,
-        "y": 54099,
-        "w": 78600,
-        "h": 44956
+        "x": 452,
+        "y": 71945,
+        "w": 99161,
+        "h": 27057
       }
     ],
     "zone_hierarchy": {
-      "id": "2",
+      "id": "_root",
       "name": "",
       "zone_type": "layout-basic",
       "orientation": "",
       "position": {
         "x": 0,
         "y": 0,
-        "w": 100000,
-        "h": 100000
+        "w": 99613,
+        "h": 99002
       },
       "is_floating": false,
       "is_fixed": false,
       "children": [
         {
-          "id": "8",
-          "name": "",
-          "zone_type": "layout-flow",
-          "orientation": "horz",
+          "id": "3",
+          "name": "Line chart",
+          "zone_type": "worksheet",
+          "orientation": "",
           "position": {
-            "x": 0,
-            "y": 8197,
-            "w": 100000,
-            "h": 91803
+            "x": 452,
+            "y": 71945,
+            "w": 99161,
+            "h": 27057
           },
           "is_floating": false,
           "is_fixed": false,
-          "children": [
-            {
-              "id": "6",
-              "name": "",
-              "zone_type": "layout-flow",
-              "orientation": "vert",
-              "position": {
-                "x": 0,
-                "y": 8197,
-                "w": 80000,
-                "h": 91803
-              },
-              "is_floating": false,
-              "is_fixed": true,
-              "children": [
-                {
-                  "id": "4",
-                  "name": "",
-                  "zone_type": "layout-basic",
-                  "orientation": "",
-                  "position": {
-                    "x": 700,
-                    "y": 9142,
-                    "w": 78600,
-                    "h": 89913
-                  },
-                  "is_floating": false,
-                  "is_fixed": false,
-                  "children": [
-                    {
-                      "id": "1",
-                      "name": "Tourism Over Time",
-                      "zone_type": "worksheet",
-                      "orientation": "",
-                      "position": {
-                        "x": 700,
-                        "y": 9142,
-                        "w": 78600,
-                        "h": 44957
-                      },
-                      "is_floating": false,
-                      "is_fixed": false,
-                      "children": []
-                    },
-                    {
-                      "id": "3",
-                      "name": "Tourism By Country/Region",
-                      "zone_type": "worksheet",
-                      "orientation": "",
-                      "position": {
-                        "x": 700,
-                        "y": 54099,
-                        "w": 78600,
-                        "h": 44956
-                      },
-                      "is_floating": false,
-                      "is_fixed": false,
-                      "children": [],
-                      "padding": {
-                        "top": 4
-                      }
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "id": "23",
-              "name": "",
-              "zone_type": "layout-flow",
-              "orientation": "vert",
-              "position": {
-                "x": 80000,
-                "y": 8197,
-                "w": 20000,
-                "h": 91803
-              },
-              "is_floating": false,
-              "is_fixed": true,
-              "children": [
-                {
-                  "id": "22",
-                  "name": "Tourism Over Time",
-                  "zone_type": "filter",
-                  "orientation": "",
-                  "position": {
-                    "x": 80800,
-                    "y": 9277,
-                    "w": 18400,
-                    "h": 9312
-                  },
-                  "is_floating": false,
-                  "is_fixed": false,
-                  "children": []
-                },
-                {
-                  "id": "24",
-                  "name": "Tourism Over Time",
-                  "zone_type": "filter",
-                  "orientation": "",
-                  "position": {
-                    "x": 80800,
-                    "y": 18589,
-                    "w": 18400,
-                    "h": 22268
-                  },
-                  "is_floating": false,
-                  "is_fixed": false,
-                  "children": []
-                },
-                {
-                  "id": "25",
-                  "name": "Tourism By Country/Region",
-                  "zone_type": "highlighter",
-                  "orientation": "",
-                  "position": {
-                    "x": 80800,
-                    "y": 40857,
-                    "w": 18400,
-                    "h": 7018
-                  },
-                  "is_floating": false,
-                  "is_fixed": false,
-                  "children": []
-                }
-              ]
-            }
-          ]
+          "children": []
         },
         {
-          "id": "26",
-          "name": "",
-          "zone_type": "layout-flow",
-          "orientation": "vert",
+          "id": "4",
+          "name": "Line chart",
+          "zone_type": "filter",
+          "orientation": "",
           "position": {
-            "x": 0,
-            "y": 0,
-            "w": 100000,
-            "h": 8197
+            "x": 452,
+            "y": 873,
+            "w": 10323,
+            "h": 37656
           },
           "is_floating": false,
           "is_fixed": false,
-          "children": [
-            {
-              "id": "5",
-              "name": "",
-              "zone_type": "title",
-              "orientation": "",
-              "position": {
-                "x": 0,
-                "y": 0,
-                "w": 100000,
-                "h": 4588
-              },
-              "is_floating": false,
-              "is_fixed": false,
-              "children": []
-            },
-            {
-              "id": "9",
-              "name": "Tourism Over Time",
-              "zone_type": "color",
-              "orientation": "",
-              "position": {
-                "x": 0,
-                "y": 4588,
-                "w": 100000,
-                "h": 2699
-              },
-              "is_floating": false,
-              "is_fixed": false,
-              "children": []
-            }
-          ]
+          "children": []
+        },
+        {
+          "id": "5",
+          "name": "Pie chart",
+          "zone_type": "worksheet",
+          "orientation": "",
+          "position": {
+            "x": 71548,
+            "y": 873,
+            "w": 27419,
+            "h": 38155
+          },
+          "is_floating": false,
+          "is_fixed": false,
+          "children": []
+        },
+        {
+          "id": "6",
+          "name": "Bar Chart",
+          "zone_type": "worksheet",
+          "orientation": "",
+          "position": {
+            "x": 11226,
+            "y": 748,
+            "w": 59871,
+            "h": 37905
+          },
+          "is_floating": false,
+          "is_fixed": false,
+          "children": []
+        },
+        {
+          "id": "7",
+          "name": "Scatter Plot",
+          "zone_type": "worksheet",
+          "orientation": "",
+          "position": {
+            "x": 258,
+            "y": 39277,
+            "w": 99032,
+            "h": 31796
+          },
+          "is_floating": false,
+          "is_fixed": false,
+          "children": []
         }
       ]
     }

@@ -191,6 +191,44 @@ authorized-environment work. 48.6 remains portfolio-operations work.
 - Desktop confidence remains `STATIC_PASS` or `UNVERIFIED` unless live smoke/reopen evidence exists.
 - Fabric outputs remain `locally_valid` until authorized deployment, refresh, and post-deployment checks succeed.
 
+## Next Development Track — Migration Truth & Visual Fidelity
+
+The next ten phases turn the existing v48 foundations into a complete,
+evidence-driven migration workflow. The priority is to account for every
+source object, explain every assessment result, validate generated behavior,
+and make Power BI visual output inspectable and recoverable. These phases are
+ordered; later visual and runtime claims depend on the lineage and recovery
+contracts established first.
+
+| Phase | Focus | Deliverable | Exit gate |
+|---|---|---|---|
+| **N1** | **Canonical source inventory** | Versioned inventory for all extracted objects: worksheets, dashboards, datasources, calculations, parameters, filters, stories, actions, sets, groups, bins, hierarchies, relationships, sort orders, aliases, custom SQL, user filters, extracts, datasource filters, geocoding, published datasources, blending, table extensions, and linguistic metadata. | Every source object has a stable ID, source location, type, parent, extraction status, and redaction-safe evidence row; duplicate and orphan objects are reported. |
+| **N2** | **End-to-end lineage graph** | Workbook-to-dashboard-to-worksheet-to-field-to-datasource-to-table-to-column lineage, extended with calculations, parameters, filters, actions, relationships, Prep flows, generated M, TMDL, PBIR visuals, and Fabric artifacts. | Lineage coverage is measurable by object type; unresolved edges are explicit, owned, and never inferred from a previous workbook run. |
+| **N3** | **Assessment explainability** | Evidence-first assessment model with `pass`, `warn`, `fail`, and `not_run` at workbook, object, datasource, visual, semantic, and deployment levels. | Every score and blocker links to source evidence, target evidence, policy, owner, and next action; changing policy does not erase findings. |
+| **N4** | **Complete object recovery** | Recovery registry and repair handlers for unsupported or partially extracted objects, including stories, actions, sets, groups, bins, aliases, custom geocoding, table extensions, published sources, blending, and Prep outputs. | A recovery report accounts for 100% of extracted objects as generated, intentionally omitted, approximated, or blocked; no object disappears silently. |
+| **N5** | **Semantic and M validation** | Cross-artifact checks for DAX formulas, calculated columns, M partitions, connector fallbacks, relationships, RLS, parameters, date logic, LOD grain, blanks, filters, and table calculations. | Static validation catches broken references and unsafe fallbacks; representative runtime fixtures compare typed values with tolerances while unavailable executors remain `not_run`. |
+| **N6** | **PBIR visual recovery** | Visual binding recovery for every worksheet and dashboard zone, including fields on marks shelves, controls, filters, actions, bookmarks, tooltips, drill-through, themes, formatting, and layout geometry. | No generated visual is empty or orphaned without an explicit reason; every visual has a mapped source worksheet, valid model bindings, and a recoverable diagnostic. |
+| **N7** | **Power BI visual parity** | Measured Tableau-to-Power BI mapping for native, approximate, custom, and unsupported visual types, with query roles, axes, legends, labels, conditional formatting, reference lines, and interaction behavior. | Visual mapping matrix is source-aware; every approximation has confidence, owner, remediation, and screenshot/structure evidence where available. |
+| **N8** | **Round-trip and visual validation** | PBIR schema validation, deterministic project diffs, Desktop smoke/reopen hooks, geometry comparison, screenshot comparison, and post-repair revalidation. | Static validation passes for every generated project; authorized Desktop evidence is separately captured and can promote only the documented confidence level. |
+| **N9** | **Unified migration evidence** | One report and portable package joining inventory, lineage, assessment, recovery, semantic validation, visual parity, openability, strategy, checkpoints, and runtime boundaries. | A reviewer can identify what migrated, what did not, why, and the next action from one package; package contents are deterministic, redacted, and self-contained. |
+| **N10** | **Corpus certification and release** | Full demo-corpus and real-world validation campaign, compatibility matrix, migration scorecard, known-limitations update, and operator runbook. | Every workbook completes extract -> assess -> migrate -> validate -> package; all residual risks have owners, and release claims distinguish static, Desktop, semantic, refresh, and deployment evidence. |
+
+### Next-Track Operating Rules
+
+1. **Lineage before scoring:** an assessment cannot claim completeness until its
+  source and target evidence can be traced through the lineage graph.
+2. **Recovery before visual polish:** visual fidelity work must first prove that
+  the source worksheet, fields, controls, and dependencies were not dropped.
+3. **No silent success:** unsupported, approximate, omitted, and `not_run`
+  states remain visible in reports, packages, and machine-readable output.
+4. **One object, one disposition:** every extracted object receives exactly one
+  primary disposition and may also carry repair attempts and validation results.
+5. **Static and live evidence stay separate:** local checks may prove structure;
+  only authorized Desktop, semantic, refresh, or deployment runs may prove
+  runtime behavior.
+6. **Every phase ships three things:** an operator-visible capability, a
+  machine-readable artifact, and a focused executable release gate.
+
 ### Historical Verified Baseline — 2026-09-03
 
 The following capabilities are implemented and verified locally:
@@ -316,6 +354,108 @@ measurable exit gate before the next phase is marked complete.
 | **10** | Release gates and compatibility policy | Publish supported Tableau, Power BI, PBIR, and Fabric ranges with release gates, deprecation policy, known limitations, and traceable reports. | Unit/integration, corpus, semantic, PBIR, resume, privacy, performance, and authorized Fabric gates are green or explicitly waived. |
 
 #### Current Execution Status
+
+- **N1 — Canonical source inventory:** first implementation slice delivered in
+  `powerbi_import/source_inventory.py`. Unified quality reports now expose a
+  versioned inventory covering all 23 extracted object families, deterministic
+  stable IDs, duplicate-name diagnostics, orphan counts, and an explicit
+  `extracted` disposition. Focused validation: 3 inventory tests plus the
+  37-test migration-quality suite passed. Full recovery dispositions and
+  source-location enrichment continue in N4.
+- **N2 — End-to-end lineage graph:** first implementation slice delivered in
+  the unified lineage evidence. Lineage coverage now includes canonical
+  inventory object counts by type, and orphan inventory rows become explicit
+  unresolved records with stable IDs and reasons. Full worksheet-field,
+  calculation, parameter, action/filter, generated-artifact, and Prep-flow
+  edge resolution remains the next N2 increment.
+- **N3 — Assessment explainability:** first implementation slice delivered in
+  `powerbi_import/assessment_evidence.py`. Unified quality reports now expose
+  normalized `pass`, `warn`, `fail`, and `not_run` findings with category
+  scope, target scope, owner, stable evidence ID, detail, and next action.
+  The existing assessment score and severity behavior remain unchanged; direct
+  source/object evidence links and policy-level remediation queues remain open.
+- **N4 — Complete object recovery:** first implementation slice delivered in
+  `powerbi_import/recovery_registry.py`. Every inventory object now receives a
+  fail-closed disposition, owner, and remediation action; unverified objects
+  remain `pending_validation` and keep the registry status `pending`. Invalid
+  IDs and guessed dispositions are rejected. Target-backed generated,
+  approximated, unsupported, omitted, and blocked dispositions remain open for
+  the recovery handlers and generation evidence.
+- **N5 — Semantic and M validation:** first implementation slice delivered in
+  `powerbi_import/validation_contract.py`. Unified quality reports now combine
+  semantic static issues, typed runtime status, M fallback/error evidence, and
+  pending recovery into one versioned contract. `release_ready` stays false
+  when runtime is unavailable, validation fails, emitters error, or recovery is
+  incomplete; policy-specific blockers and warnings remain controlled by the
+  existing quality policy.
+- **N6 — PBIR visual recovery:** first implementation slice delivered in
+  `powerbi_import/pbir_visual_recovery.py`. Generated `visual.json` files are
+  now scanned into `valid`, `empty`, `orphaned`, and `unvalidated` evidence
+  with page, visual ID, type, path, and reasons. Unified quality reports and
+  evidence manifests expose visual counts without claiming Desktop rendering;
+  source worksheet mapping, field-level repair, and authorized round-trip
+  validation remain open.
+- **N7 — Power BI visual parity:** first implementation slice delivered in
+  `powerbi_import/visual_parity_contract.py`. Unified reports now separate
+  registry coverage (native, approximation, custom), approximations actually
+  used by extracted worksheets, and target PBIR recovery risk. Every source-used
+  approximation or target visual risk is assigned to `@visual`; screenshot,
+  query-role, interaction, and Desktop-rendering proof remain open.
+- **N8 — Round-trip and visual validation:** first implementation slice
+  delivered in `powerbi_import/roundtrip_validation.py`. Unified reports now
+  distinguish static openability, visual recovery risk, Desktop reopen state,
+  screenshot comparison state, and post-repair revalidation requirements.
+  Static pass evidence never promotes `desktop` or screenshot validation beyond
+  `not_run`; the authorized Desktop smoke/reopen harness remains open.
+- **N9 — Unified migration evidence:** first implementation slice delivered in
+  `powerbi_import/evidence_summary.py` and `evidence_package.py`. Portable
+  evidence packages now provide one compact reviewer summary across inventory,
+  recovery, semantic/M validation, visual parity, PBIR recovery, and round-trip
+  status while retaining the detailed contracts. Runtime and screenshot states
+  remain explicit `not_run` until authorized evidence is supplied.
+- **N10 — Corpus certification and release:** first implementation slice
+  delivered in `powerbi_import/corpus_certification.py`. Evidence packages now
+  classify each workbook as `certified_static`, `needs_review`, or `blocked`,
+  with per-item reasons and an aggregate corpus status. The release claim is
+  explicitly `static_corpus_only`; Desktop, semantic execution, refresh, and
+  deployment remain separate `not_run` boundaries until authorized proof exists.
+
+### Devnext — Executable Corpus Certification
+
+- Batch migration now enriches `batch_quality_summary.json` with the N10
+  certification result by loading each per-workbook quality JSON.
+- Missing or malformed quality files are recorded as `load_errors` and force
+  corpus status to `needs_review`; they are never silently excluded.
+- The batch artifact preserves `static_corpus_only` and the explicit runtime
+  boundary for Desktop, semantic execution, refresh, and deployment.
+- Focused validation: 46 tests passed across corpus certification, evidence
+  packaging, evidence summaries, and migration quality.
+
+### Devnext — Release Readiness Scorecard
+
+- `batch_quality_summary.json` now includes `release_readiness` with explicit
+  corpus, blocked-workbook, review-workbook, static-claim, Desktop, semantic,
+  refresh, and deployment gates.
+- The scorecard may report `ready_for_static_release`, but it never promotes
+  `not_run` runtime gates to production evidence.
+- Compatibility metadata and known limitations are supported as structured
+  fields so release claims remain bounded and reviewable.
+- Portable single-workbook evidence packages now carry the same
+  `release_readiness` scorecard as batch summaries, keeping operator handoff
+  behavior consistent across CLI and batch paths.
+- The package `README.txt` now prints the release-readiness state and bounded
+  `static_corpus_only` claim so reviewers see the runtime boundary before
+  opening the machine-readable JSON.
+
+### Devnext — Semantic Executor Evidence
+
+- `semantic_runtime.py` now records a redacted executor descriptor with
+  provider, version, capabilities, and endpoint presence.
+- No executor remains explicitly `not_run`; an injected executor records
+  configuration evidence without exporting tokens, passwords, keys, or raw
+  credentials.
+- Focused validation: 42 tests passed across semantic runtime, validation
+  contracts, and migration quality.
 
 - **Phase 5/7 — Continuity and handoff evidence:** the versioned evidence
   manifest, source/configuration-aware checkpoints, unified quality report, and

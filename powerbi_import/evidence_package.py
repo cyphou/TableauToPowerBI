@@ -8,6 +8,10 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from powerbi_import.evidence_summary import build_evidence_summary
+from powerbi_import.corpus_certification import certify_corpus
+from powerbi_import.release_readiness import build_release_readiness
+
 
 def build_evidence_package(report: Any) -> Dict[str, Any]:
     """Build a redaction-friendly package payload from a quality report."""
@@ -15,28 +19,35 @@ def build_evidence_package(report: Any) -> Dict[str, Any]:
     blockers = payload.get("blockers", [])
     warnings = payload.get("warnings", [])
     priorities = payload.get("priorities", [])
+    summary = build_evidence_summary(payload)
+    payload_for_certification = {**payload, "summary": summary}
+    certification = certify_corpus([payload_for_certification])
+    release_readiness = build_release_readiness(certification)
     return {
         "schema_version": "1.0",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "report_name": payload.get("report_name"),
         "status": payload.get("status", "UNVERIFIED"),
         "handoff_status": payload.get("handoff_status", "UNVERIFIED"),
-        "summary": {
-            "status": payload.get("status", "UNVERIFIED"),
-            "handoff_status": payload.get("handoff_status", "UNVERIFIED"),
-            "blocker_count": len(blockers),
-            "warning_count": len(warnings),
-            "priority_count": len(priorities),
-        },
+        "summary": summary,
+        "certification": certification,
+        "release_readiness": release_readiness,
         "blockers": blockers,
         "warnings": warnings,
         "priorities": priorities,
         "openability_confidence": payload.get("openability_confidence", {}),
         "assessment": payload.get("assessment", {}),
+        "assessment_evidence": payload.get("assessment_evidence", {}),
         "parity": payload.get("parity", {}),
         "lineage": payload.get("lineage", {}),
         "m_emitters": payload.get("m_emitters", {}),
+        "recovery": payload.get("recovery", {}),
+        "validation_contract": payload.get("validation_contract", {}),
         "visual_mappings": payload.get("visual_mappings", {}),
+        "visual_recovery": payload.get("visual_recovery", {}),
+        "visual_parity": payload.get("visual_parity", {}),
+        "roundtrip_validation": payload.get("roundtrip_validation", {}),
+        "source_inventory": payload.get("source_inventory", {}),
         "fabric_evidence": payload.get("fabric_evidence", {}),
         "semantic_context": payload.get("semantic_context", {}),
         "evidence_manifest": payload.get("evidence_manifest", {}),
@@ -66,6 +77,8 @@ def write_evidence_package(report: Any, output_path: str, extra_files: list[str]
         f"Report: {payload['report_name']}\n"
         f"Status: {payload['status']}\n"
         f"Handoff: {payload['handoff_status']}\n\n"
+        f"Release readiness: {payload['release_readiness']['status']}\n"
+        f"Release claim: {payload['release_readiness']['release_claim']}\n\n"
         "Static evidence and runtime evidence are intentionally separated.\n"
         "A not_run runtime state is not a deployment or refresh success.\n"
         "This archive also includes the generated quality artifacts for direct review.\n"

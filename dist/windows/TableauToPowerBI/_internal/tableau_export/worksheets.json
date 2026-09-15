@@ -1,47 +1,59 @@
 [
   {
-    "name": "Biz Tax rate",
-    "title": "Biz Tax \nRate",
+    "name": "Bar Chart",
+    "title": "Profit By Region & Customer Segment",
     "title_format": {
-      "font_size": "9",
-      "font_family": "Tableau Medium",
-      "bold": true
+      "font_size": "20",
+      "bold": true,
+      "italic": true,
+      "underline": true,
+      "alignment": "1"
     },
-    "chart_type": "scatterChart",
-    "original_mark_class": "Circle",
+    "chart_type": "clusteredBarChart",
+    "original_mark_class": "Automatic",
     "fields": [
       {
-        "name": "Business Tax Rate",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
-      },
-      {
-        "name": "Country/Region (clusters)",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Ease of Business",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Country/Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+        "name": "Sales",
+        "shelf": "columns",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm",
+        "aggregation": "sum"
       },
       {
         "name": "Region",
+        "shelf": "rows",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
+      },
+      {
+        "name": "Customer Segment",
+        "shelf": "color",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
+      },
+      {
+        "name": "Sales",
+        "shelf": "text",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
+      },
+      {
+        "name": "Customer Segment",
+        "shelf": "text",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
+      },
+      {
+        "name": "Calculation_310466947315806208",
         "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
+      },
+      {
+        "name": "Action (Region)",
+        "shelf": "detail",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
       }
     ],
     "filters": [
       {
-        "field": "Business Tax Rate",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "",
+        "field": "Action (Region)",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm",
+        "type": "all",
         "values": [],
         "min": null,
         "max": null,
@@ -53,160 +65,26 @@
     ],
     "formatting": {
       "axis": {
-        "attr": "title",
+        "attr": "display",
         "class": "0",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Business Tax Rate:qk]",
-        "scope": "rows",
-        "value": "",
-        "auto-subtitle": "true"
+        "field": "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[sum:Sales:qk]",
+        "scope": "cols",
+        "value": "false",
+        "display": "false"
       },
       "header": {
-        "attr": "height-header",
-        "value": "10",
-        "height-header": "10"
+        "attr": "width",
+        "field": "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[none:Region:nk]",
+        "value": "124",
+        "width": "124"
       },
       "label": {
-        "attr": "text-format",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Business Tax Rate:qk]",
-        "value": "p0%",
-        "text-format": "p0%"
-      },
-      "mark": {
-        "attr": "has-stroke",
-        "value": "true",
-        "has-stroke": "true",
-        "stroke-color": "#f5f5f5"
-      },
-      "field_formats": {
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Business Tax Rate:qk]": "p0%"
-      }
-    },
-    "tooltips": [],
-    "actions": [],
-    "sort_orders": [],
-    "mark_encoding": {
-      "color": {
-        "field": "Country/Region (clusters)",
-        "palette": "",
-        "type": ""
-      }
-    },
-    "axes": {
-      "dual_axis": false,
-      "dual_axis_sync": false
-    },
-    "reference_lines": [],
-    "annotations": [],
-    "trend_lines": [],
-    "pages_shelf": {},
-    "table_calcs": [],
-    "forecasting": [],
-    "map_options": {},
-    "clustering": [],
-    "dual_axis": {},
-    "totals": {
-      "grand_totals": [],
-      "subtotals": []
-    },
-    "description": "",
-    "show_hide_headers": {
-      "rows": true,
-      "columns": true
-    },
-    "dynamic_title": {
-      "is_dynamic": false,
-      "parts": [
-        {
-          "type": "text",
-          "value": "Biz Tax \nRate"
-        }
-      ]
-    },
-    "analytics_stats": []
-  },
-  {
-    "name": "Care Spend",
-    "title": "Which Countries Spend More Than <[Parameters].[Parameter 1]> of GDP on Healthcare?",
-    "title_format": {},
-    "chart_type": "clusteredBarChart",
-    "original_mark_class": "Automatic",
-    "fields": [
-      {
-        "name": "Health Exp % GDP",
-        "shelf": "columns",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
-      },
-      {
-        "name": "Health Exp/Capita",
-        "shelf": "columns",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
-      },
-      {
-        "name": "Country/Region",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Calculation_1554586357494272000",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Calculation_1554586357494272000",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Calculation_1554586357494272000",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Year",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      }
-    ],
-    "filters": [
-      {
-        "field": "Year",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "categorical",
-        "values": [
-          "2012"
-        ],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": "yr"
-      }
-    ],
-    "formatting": {
-      "axis": {
-        "attr": "title",
-        "class": "0",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Health Exp % GDP:qk]",
-        "scope": "cols",
-        "value": "Health Expenditure (% of GDP)",
-        "title": "Health Expenditure (per capita)",
-        "auto-subtitle": "true"
-      },
-      "table": {
-        "attr": "omit-on-special",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Health Exp % GDP:qk]",
-        "value": "false",
-        "omit-on-special": "false",
-        "break-on-special": "false",
-        "show-null-value-warning": "false"
+        "attr": "color",
+        "scope": "rows",
+        "value": "#000000",
+        "color": "#000000",
+        "font-weight": "bold",
+        "font-size": "11"
       },
       "worksheet": {
         "attr": "display-field-labels",
@@ -214,38 +92,24 @@
         "value": "false",
         "display-field-labels": "false"
       },
-      "refline": {
-        "attr": "fill-above",
-        "id": "refline0",
-        "value": "#00000000",
-        "fill-above": "#00000000",
-        "fill-below": "#00000000",
-        "stroke-size": "1",
-        "stroke-color": "#b4b4b4"
+      "gridline": {
+        "attr": "stroke-size",
+        "value": "0",
+        "stroke-size": "0"
       },
-      "table-div": {
-        "attr": "line-pattern-only",
-        "scope": "cols",
-        "value": "solid",
-        "line-pattern-only": "solid",
-        "line-visibility": "on"
-      },
-      "header-div": {
-        "attr": "line-visibility",
-        "scope": "cols",
-        "value": "off",
-        "line-visibility": "off"
-      },
-      "parameter-ctrl": {
-        "attr": "title",
-        "field": "[Parameters].[Parameter 1]",
-        "value": "Health Exp Threshold % GDP",
-        "title": "Health Exp Threshold % GDP"
+      "mark": {
+        "attr": "mark-labels-show",
+        "value": "true",
+        "mark-labels-show": "true",
+        "mark-labels-cull": "true"
       },
       "field_formats": {
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Health Exp % GDP:qk]": "false",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Health Exp/Capita:qk]": "true",
-        "[Parameters].[Parameter 1]": "Health Exp Threshold % GDP"
+        "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[sum:Sales:qk]": "false",
+        "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[none:Region:nk]": "124"
+      },
+      "rows_style": {
+        "font-size": "11",
+        "font-weight": "bold"
       }
     },
     "tooltips": [],
@@ -253,7 +117,7 @@
     "sort_orders": [],
     "mark_encoding": {
       "color": {
-        "field": "Calculation_1554586357494272000",
+        "field": "Customer Segment",
         "palette": "",
         "type": "categorical"
       }
@@ -262,22 +126,7 @@
       "dual_axis": false,
       "dual_axis_sync": false
     },
-    "reference_lines": [
-      {
-        "type": "line",
-        "value": "",
-        "label": "",
-        "label_type": "none",
-        "scope": "per-pane",
-        "axis": "y",
-        "color": "#666666",
-        "line_color": "#666666",
-        "style": "solid",
-        "computation": "constant",
-        "field": "",
-        "is_band": false
-      }
-    ],
+    "reference_lines": [],
     "annotations": [],
     "trend_lines": [],
     "pages_shelf": {},
@@ -296,75 +145,65 @@
       "columns": true
     },
     "dynamic_title": {
-      "is_dynamic": true,
+      "is_dynamic": false,
       "parts": [
         {
           "type": "text",
-          "value": "Which Countries Spend More Than "
+          "value": "Profit By Region & Customer Segment"
         },
         {
           "type": "text",
-          "value": "<"
-        },
-        {
-          "type": "text",
-          "value": "[Parameters].[Parameter 1]"
-        },
-        {
-          "type": "text",
-          "value": ">"
-        },
-        {
-          "type": "text",
-          "value": " of GDP on Healthcare?"
+          "value": "Æ\n"
         }
       ]
     },
     "analytics_stats": []
   },
   {
-    "name": "Days to Start Biz",
-    "title": "Days to Start Biz",
+    "name": "Line chart",
+    "title": "Order Quality by Month",
     "title_format": {
-      "font_size": "9",
-      "font_family": "Tableau Medium",
-      "bold": true
+      "font_size": "20",
+      "bold": true,
+      "italic": true,
+      "underline": true,
+      "alignment": "1"
     },
-    "chart_type": "scatterChart",
-    "original_mark_class": "Circle",
+    "chart_type": "lineChart",
+    "original_mark_class": "Automatic",
     "fields": [
       {
-        "name": "Days to Start Business",
+        "name": "Order Date",
+        "shelf": "columns",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
+      },
+      {
+        "name": "Order Quantity",
         "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm",
+        "aggregation": "sum"
       },
       {
-        "name": "Country/Region (clusters)",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+        "name": "Sales",
+        "shelf": "text",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
       },
       {
-        "name": "Ease of Business",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Country/Region",
+        "name": "Calculation_310466947315806208",
         "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
       },
       {
-        "name": "Region",
+        "name": "Action (Region)",
         "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
       }
     ],
     "filters": [
       {
-        "field": "Days to Start Business",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "",
+        "field": "Action (Region)",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm",
+        "type": "all",
         "values": [],
         "min": null,
         "max": null,
@@ -376,40 +215,59 @@
     ],
     "formatting": {
       "axis": {
-        "attr": "title",
+        "attr": "display",
         "class": "0",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Days to Start Business:qk]",
+        "field": "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[sum:Order Quantity:qk]",
         "scope": "rows",
-        "value": "",
-        "auto-subtitle": "true",
-        "width": "44"
+        "value": "false",
+        "display": "false"
       },
-      "zeroline": {
-        "attr": "line-visibility",
+      "label": {
+        "attr": "color",
         "scope": "cols",
-        "value": "off",
-        "line-visibility": "off"
+        "value": "#000000",
+        "color": "#000000",
+        "font-size": "10",
+        "font-weight": "bold"
+      },
+      "worksheet": {
+        "attr": "display-field-labels",
+        "scope": "cols",
+        "value": "false",
+        "display-field-labels": "false"
+      },
+      "gridline": {
+        "attr": "stroke-size",
+        "value": "0",
+        "stroke-size": "0"
+      },
+      "quick-filter": {
+        "attr": "title",
+        "field": "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[none:Calculation_310466947315806208:nk]",
+        "value": "Unit Price Group",
+        "title": "Unit Price Group"
       },
       "mark": {
-        "attr": "has-stroke",
+        "attr": "mark-labels-show",
         "value": "true",
-        "has-stroke": "true",
-        "stroke-color": "#f5f5f5"
+        "mark-labels-show": "true",
+        "mark-labels-cull": "true"
       },
       "field_formats": {
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Days to Start Business:qk]": "44"
+        "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[sum:Order Quantity:qk]": "false",
+        "[federated.1oojzyi1k8irfh101qtoq07jz0mm].[none:Calculation_310466947315806208:nk]": "Unit Price Group"
+      },
+      "cols_style": {
+        "font-size": "10"
+      },
+      "worksheet_style": {
+        "font-weight": "bold"
       }
     },
     "tooltips": [],
     "actions": [],
     "sort_orders": [],
-    "mark_encoding": {
-      "color": {
-        "field": "Country/Region (clusters)",
-        "palette": "",
-        "type": ""
-      }
-    },
+    "mark_encoding": {},
     "axes": {
       "dual_axis": false,
       "dual_axis_sync": false
@@ -437,136 +295,59 @@
       "parts": [
         {
           "type": "text",
-          "value": "Days to Start Biz"
+          "value": "Order Quality by Month"
         }
       ]
     },
     "analytics_stats": []
   },
   {
-    "name": "Ease of Biz Correlation Sheet",
-    "title": "Correlation to GDP Per Capita",
-    "title_format": {},
-    "chart_type": "scatterChart",
-    "original_mark_class": "Circle",
+    "name": "Pie chart",
+    "title": "%Sales Contribution & Sales by each Region",
+    "title_format": {
+      "font_size": "20",
+      "bold": true,
+      "italic": true,
+      "underline": true,
+      "alignment": "1"
+    },
+    "chart_type": "pieChart",
+    "original_mark_class": "Pie",
     "fields": [
       {
-        "name": "Ease of Business",
-        "shelf": "columns",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
-      },
-      {
-        "name": "Calculation_1554586357495853057",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
-      },
-      {
-        "name": "Country/Region (clusters)",
+        "name": "Region",
         "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Population Total",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Population Urban",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Country/Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
       },
       {
         "name": "Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      }
-    ],
-    "filters": [
+        "shelf": "text",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
+      },
       {
-        "field": "Country/Region (clusters)",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "categorical",
-        "values": [
-          "\"Not Clustered\""
-        ],
-        "min": null,
-        "max": null,
-        "exclude": true,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
+        "name": "Sales",
+        "shelf": "text",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
+      },
+      {
+        "name": "pcto:sum:Sales",
+        "shelf": "text",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
+      },
+      {
+        "name": "Calculation_310466947315806208",
+        "shelf": "detail",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
       }
     ],
+    "filters": [],
     "formatting": {
-      "axis": {
-        "attr": "title",
-        "class": "0",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Calculation_1554586357495853057:qk]",
-        "scope": "rows",
-        "value": "GDP per Capita",
-        "title": "Ease of biz index (1=most business-friendly regulations)",
-        "auto-subtitle": "true",
-        "width": "76"
-      },
-      "label": {
-        "attr": "text-format",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Calculation_1554586357495853057:qk]",
-        "value": "c\"$\"#,##0,K;(\"$\"#,##0,K)",
-        "text-format": "n#,##0;-#,##0"
-      },
-      "table": {
-        "attr": "show-null-value-warning",
-        "value": "false",
-        "show-null-value-warning": "false"
-      },
-      "refline": {
-        "attr": "text-orientation",
-        "id": "refline0",
-        "value": "-90",
-        "text-orientation": "-90",
-        "vertical-align": "top"
-      },
-      "refband": {
-        "attr": "reverse-palette",
-        "id": "refline0",
+      "mark": {
+        "attr": "mark-labels-show",
         "value": "true",
-        "reverse-palette": "true",
-        "line-pattern-only": "solid",
-        "stroke-color": "#d4d4d4",
-        "fill-color": "#00000000",
-        "line-visibility": "on"
-      },
-      "legend-title-text": {
-        "attr": "color",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[Country/Region (clusters)]",
-        "value": "Ease of Business",
-        "color": "Ease of Business"
-      },
-      "mark": {
-        "attr": "size",
-        "value": "1.1534254550933838",
-        "size": "1.1534254550933838",
-        "has-stroke": "true",
-        "stroke-color": "#f5f5f5"
-      },
-      "trendline": {
-        "attr": "line-pattern-only",
-        "value": "dashed",
-        "line-pattern-only": "dashed",
-        "line-visibility": "on"
-      },
-      "field_formats": {
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Calculation_1554586357495853057:qk]": "c\"$\"#,##0,K;(\"$\"#,##0,K)",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Ease of Business:qk]": "n#,##0;-#,##0",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Population Total:qk]": "n#,##0;-#,##0",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[Country/Region (clusters)]": "Ease of Business"
+        "mark-labels-show": "true",
+        "mark-labels-cull": "true",
+        "size": "1.4612706899642944"
       }
     },
     "tooltips": [],
@@ -574,272 +355,9 @@
     "sort_orders": [],
     "mark_encoding": {
       "color": {
-        "field": "Country/Region (clusters)",
-        "palette": "",
-        "type": ""
-      }
-    },
-    "axes": {
-      "dual_axis": false,
-      "dual_axis_sync": false
-    },
-    "reference_lines": [
-      {
-        "type": "line",
-        "value": "",
-        "label": "",
-        "label_type": "automatic",
-        "scope": "per-pane",
-        "axis": "y",
-        "color": "#666666",
-        "line_color": "#666666",
-        "style": "solid",
-        "computation": "constant",
-        "field": "",
-        "is_band": false
-      }
-    ],
-    "annotations": [],
-    "trend_lines": [],
-    "pages_shelf": {},
-    "table_calcs": [],
-    "forecasting": [],
-    "map_options": {},
-    "clustering": [],
-    "dual_axis": {},
-    "totals": {
-      "grand_totals": [],
-      "subtotals": []
-    },
-    "description": "",
-    "show_hide_headers": {
-      "rows": true,
-      "columns": true
-    },
-    "dynamic_title": {
-      "is_dynamic": false,
-      "parts": [
-        {
-          "type": "text",
-          "value": "Correlation to GDP Per Capita "
-        }
-      ]
-    },
-    "analytics_stats": []
-  },
-  {
-    "name": "Economy",
-    "title": "Lending Interest Among Five Largest Economic Countries (by GDP)",
-    "title_format": {},
-    "chart_type": "lineChart",
-    "original_mark_class": "Automatic",
-    "fields": [
-      {
-        "name": "Country/Region",
-        "shelf": "columns",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Year",
-        "shelf": "columns",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "pcdf:sum:GDP:qk:3",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Lending Interest",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "sum"
-      },
-      {
-        "name": "Lending Interest",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "pcdf:sum:GDP",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Lending Interest",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": ":Measure Names",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Lending Interest",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "pcdf:sum:GDP:qk:3",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "GDP",
-        "shelf": "measure_value",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
-      }
-    ],
-    "filters": [
-      {
-        "field": "Country/Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      },
-      {
         "field": "Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "all",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": true,
-        "date_part": null
-      },
-      {
-        "field": "Year",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": "yr"
-      }
-    ],
-    "formatting": {
-      "axis": {
-        "attr": "title",
-        "class": "0",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[pcdf:sum:GDP:qk:3]",
-        "scope": "rows",
-        "value": "GDP Growth",
-        "title": "GDP Growth",
-        "width": "68"
-      },
-      "cell": {
-        "attr": "text-format",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[sum:Lending Interest:qk]",
-        "value": "p0.0%",
-        "text-format": "p0.0%"
-      },
-      "label": {
-        "attr": "text-format",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:GDP:qk]",
-        "value": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)",
-        "text-format": "p0%"
-      },
-      "table": {
-        "attr": "show-null-value-warning",
-        "value": "false",
-        "show-null-value-warning": "false"
-      },
-      "worksheet": {
-        "attr": "display-field-labels",
-        "scope": "cols",
-        "value": "false",
-        "display-field-labels": "false"
-      },
-      "gridline": {
-        "attr": "stroke-color",
-        "scope": "rows",
-        "value": "#f5f5f5",
-        "stroke-color": "#f5f5f5"
-      },
-      "zeroline": {
-        "attr": "line-pattern-only",
-        "value": "dotted",
-        "line-pattern-only": "dotted",
-        "stroke-color": "#898989",
-        "line-visibility": "on"
-      },
-      "table-div": {
-        "attr": "stroke-color",
-        "scope": "rows",
-        "value": "#c0c0c0",
-        "stroke-color": "#c0c0c0"
-      },
-      "header-div": {
-        "attr": "line-visibility",
-        "scope": "cols",
-        "value": "off",
-        "line-visibility": "off"
-      },
-      "legend-title-text": {
-        "attr": "color",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[:Measure Names]",
-        "value": "Legend",
-        "color": "GDP Growth"
-      },
-      "quick-filter": {
-        "attr": "title",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:qk]",
-        "value": "Year",
-        "title": "Year"
-      },
-      "mark": {
-        "attr": "mark-labels-cull",
-        "value": "false",
-        "mark-labels-cull": "false",
-        "mark-labels-mode": "line-ends",
-        "line-interpolation": "step",
-        "size": "0.86756908893585205",
-        "mark-transparency": "231"
-      },
-      "pane": {
-        "attr": "minwidth",
-        "value": "129",
-        "minwidth": "129",
-        "maxwidth": "129",
-        "minheight": "295",
-        "maxheight": "295",
-        "aspect": "0"
-      },
-      "field_formats": {
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[pcdf:sum:GDP:qk:3]": "68",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[sum:Lending Interest:qk]": "p0%",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:GDP:qk]": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[pcdf:sum:GDP:qk]": "GDP Growth",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[:Measure Names]": "Legend",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:qk]": "Year"
-      }
-    },
-    "tooltips": [],
-    "actions": [],
-    "sort_orders": [],
-    "mark_encoding": {
-      "color": {
-        "field": ":Measure Names",
         "palette": "",
-        "type": ""
+        "type": "categorical"
       }
     },
     "axes": {
@@ -853,15 +371,7 @@
     "table_calcs": [
       {
         "field": "",
-        "type": "PctDiff",
-        "ordering_type": "Field",
-        "compute_using": [],
-        "direction": "",
-        "at_level": ""
-      },
-      {
-        "field": "",
-        "type": "PctDiff",
+        "type": "PctTotal",
         "ordering_type": "Rows",
         "compute_using": [],
         "direction": "",
@@ -886,995 +396,57 @@
       "parts": [
         {
           "type": "text",
-          "value": "Lending Interest Among Five Largest Economic Countries (by GDP)"
+          "value": "%Sales Contribution & Sales by each Region"
         }
       ]
     },
     "analytics_stats": []
   },
   {
-    "name": "Health Indicators",
-    "title": "",
-    "title_format": {},
-    "chart_type": "treemap",
-    "original_mark_class": "Square",
-    "fields": [
-      {
-        "name": ":Measure Names",
-        "shelf": "columns",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Country/Region",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Multiple Values",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Multiple Values",
-        "shelf": "text",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Birth Rate",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Infant Mortality Rate",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Health Exp % GDP",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Calculation_638103803600809984",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Calculation_1554586357495853057",
-        "shelf": "measure_value",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
-      }
-    ],
-    "filters": [
-      {
-        "field": ":Measure Names",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "categorical",
-        "values": [
-          "\"[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Birth Rate:qk]\"",
-          "\"[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Infant Mortality Rate:qk]\"",
-          "\"[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Health Exp \\% GDP:qk]\"",
-          "\"[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Calculation_638103803600809984:qk]\""
-        ],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      },
-      {
-        "field": "Country/Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "categorical",
-        "values": [
-          "\"American Samoa\"",
-          "\"Cayman Islands\"",
-          "\"Curacao\"",
-          "\"Guam\"",
-          "\"North Korea\"",
-          "\"Myanmar\"",
-          "\"Sint Maarten (Dutch part)\"",
-          "\"Somalia\"",
-          "\"St. Martin (French part)\"",
-          "\"Turks and Caicos Islands\""
-        ],
-        "min": null,
-        "max": null,
-        "exclude": true,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      }
-    ],
-    "formatting": {
-      "cell": {
-        "attr": "width",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[:Measure Names]",
-        "value": "156",
-        "width": "156",
-        "text-format": "n#,##0.00;-#,##0.00"
-      },
-      "header": {
-        "attr": "width",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
-        "value": "148",
-        "width": "148"
-      },
-      "worksheet": {
-        "attr": "display-field-labels",
-        "scope": "rows",
-        "value": "false",
-        "display-field-labels": "false"
-      },
-      "gridline": {
-        "attr": "stroke-color",
-        "scope": "rows",
-        "value": "#ffffff",
-        "stroke-color": "#ffffff",
-        "line-visibility": "on",
-        "line-pattern-only": "solid"
-      },
-      "table-div": {
-        "attr": "div-level",
-        "scope": "rows",
-        "value": "1",
-        "div-level": "1",
-        "stroke-color": "#ffffff"
-      },
-      "legend-title-text": {
-        "attr": "color",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Birth Rate:qk]",
-        "value": "Birth Rate",
-        "color": "Life Expectancy"
-      },
-      "mark": {
-        "attr": "mark-labels-show",
-        "value": "true",
-        "mark-labels-show": "true",
-        "mark-labels-cull": "true",
-        "mark-transparency": "255"
-      },
-      "pane": {
-        "attr": "minwidth",
-        "value": "-1",
-        "minwidth": "-1",
-        "maxwidth": "-1"
-      },
-      "field_formats": {
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[:Measure Names]": "156",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Infant Mortality Rate:qk]": "Infant Mortality Rate",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]": "148",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Birth Rate:qk]": "Birth Rate",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Health Exp % GDP:qk]": "Health Exp % GDP",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Calculation_638103803600809984:qk]": "Life Expectancy"
-      }
-    },
-    "tooltips": [],
-    "actions": [],
-    "sort_orders": [],
-    "mark_encoding": {
-      "color": {
-        "field": "Multiple Values",
-        "palette": "",
-        "type": "",
-        "palette_colors": [
-          "#ffffff",
-          "#f8f8f8",
-          "#f2f2f2",
-          "#ececec",
-          "#e5e5e5",
-          "#dfdfdf",
-          "#d9d9d9",
-          "#d7c7b9",
-          "#d6b69b",
-          "#d5a57c",
-          "#d4945e",
-          "#d38340",
-          "#d27323",
-          "#ffffff",
-          "#f8f8f8",
-          "#f2f2f2",
-          "#ececec",
-          "#e5e5e5",
-          "#dfdfdf",
-          "#d9d9d9",
-          "#b0bcc4",
-          "#8ba1af",
-          "#6b879b",
-          "#4f7086",
-          "#375a71",
-          "#24465d",
-          "#ffffff",
-          "#f8f8f8",
-          "#f2f2f2",
-          "#ececec",
-          "#e5e5e5",
-          "#dfdfdf",
-          "#d9d9d9",
-          "#c3bec8",
-          "#aea6b8",
-          "#9b8fa8",
-          "#887998",
-          "#766688",
-          "#655478",
-          "#ffffff",
-          "#fbfbfb",
-          "#f8f8f8",
-          "#f4f4f4",
-          "#f1f1f1",
-          "#ededed",
-          "#eaeaea",
-          "#e6e6e6",
-          "#e3e3e3",
-          "#dfdfdf",
-          "#dcdcdc",
-          "#d9d9d9",
-          "#d6d5c8",
-          "#d4d1b9",
-          "#d2cda9",
-          "#cfc99a",
-          "#cdc58b",
-          "#cbc27c",
-          "#c9be6e",
-          "#c6ba60",
-          "#c4b752",
-          "#c2b345",
-          "#c0b038"
-        ]
-      }
-    },
-    "axes": {
-      "dual_axis": false,
-      "dual_axis_sync": false
-    },
-    "reference_lines": [],
-    "annotations": [],
-    "trend_lines": [],
-    "pages_shelf": {},
-    "table_calcs": [],
-    "forecasting": [],
-    "map_options": {},
-    "clustering": [],
-    "dual_axis": {},
-    "totals": {
-      "grand_totals": [],
-      "subtotals": []
-    },
-    "description": "",
-    "show_hide_headers": {
-      "rows": true,
-      "columns": true
-    },
-    "dynamic_title": null,
-    "analytics_stats": []
-  },
-  {
-    "name": "Hours to do Taxes",
-    "title": "Hours to do Taxes",
+    "name": "Scatter Plot",
+    "title": "Profit V/s Sales",
     "title_format": {
-      "font_size": "9",
-      "font_family": "Tableau Medium",
-      "bold": true
+      "font_size": "20",
+      "bold": true,
+      "italic": true,
+      "underline": true,
+      "alignment": "1"
     },
     "chart_type": "scatterChart",
-    "original_mark_class": "Circle",
-    "fields": [
-      {
-        "name": "Hours to do Tax",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
-      },
-      {
-        "name": "Country/Region (clusters)",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Ease of Business",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Country/Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      }
-    ],
-    "filters": [
-      {
-        "field": "Hours to do Tax",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      }
-    ],
-    "formatting": {
-      "axis": {
-        "attr": "title",
-        "class": "0",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Hours to do Tax:qk]",
-        "scope": "rows",
-        "value": "",
-        "auto-subtitle": "true",
-        "width": "40"
-      },
-      "zeroline": {
-        "attr": "line-visibility",
-        "scope": "rows",
-        "value": "off",
-        "line-visibility": "off"
-      },
-      "mark": {
-        "attr": "has-stroke",
-        "value": "true",
-        "has-stroke": "true",
-        "stroke-color": "#f5f5f5"
-      },
-      "field_formats": {
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Hours to do Tax:qk]": "40"
-      }
-    },
-    "tooltips": [],
-    "actions": [],
-    "sort_orders": [],
-    "mark_encoding": {
-      "color": {
-        "field": "Country/Region (clusters)",
-        "palette": "",
-        "type": ""
-      }
-    },
-    "axes": {
-      "dual_axis": false,
-      "dual_axis_sync": false
-    },
-    "reference_lines": [],
-    "annotations": [],
-    "trend_lines": [],
-    "pages_shelf": {},
-    "table_calcs": [],
-    "forecasting": [],
-    "map_options": {},
-    "clustering": [],
-    "dual_axis": {},
-    "totals": {
-      "grand_totals": [],
-      "subtotals": []
-    },
-    "description": "",
-    "show_hide_headers": {
-      "rows": true,
-      "columns": true
-    },
-    "dynamic_title": {
-      "is_dynamic": false,
-      "parts": [
-        {
-          "type": "text",
-          "value": "Hours to do Taxes"
-        }
-      ]
-    },
-    "analytics_stats": []
-  },
-  {
-    "name": "Population",
-    "title": "Population and Birth Rate (<[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:ok]>)",
-    "title_format": {},
-    "chart_type": "map",
     "original_mark_class": "Automatic",
     "fields": [
       {
-        "name": "Longitude (generated)",
+        "name": "Sales",
         "shelf": "columns",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Latitude (generated)",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Calculation_1554586357496451074",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Population Total",
-        "shelf": "size",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Birth Rate",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Year",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Country/Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Country/Region (clusters)",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      }
-    ],
-    "filters": [
-      {
-        "field": "Year",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "categorical",
-        "values": [
-          "2012"
-        ],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": "yr"
-      }
-    ],
-    "formatting": {
-      "map-layer": {
-        "attr": "enabled",
-        "id": "9-dash-line",
-        "value": "false",
-        "enabled": "false"
-      },
-      "map": {
-        "attr": "washout",
-        "value": "0.0",
-        "washout": "0.0",
-        "map-style": "normal",
-        "wrap": "true",
-        "map-snap-zoom": "true"
-      },
-      "map-data-layer": {
-        "attr": "palette",
-        "value": "tableau-map-blue-green-light",
-        "palette": "tableau-map-blue-green-light"
-      },
-      "mark": {
-        "attr": "size",
-        "value": "2.1546962261199951",
-        "size": "2.1546962261199951"
-      }
-    },
-    "tooltips": [],
-    "actions": [],
-    "sort_orders": [],
-    "mark_encoding": {
-      "color": {
-        "field": "Calculation_1554586357496451074",
-        "palette": "",
-        "type": "categorical"
-      },
-      "size": {
-        "field": "Population Total"
-      }
-    },
-    "axes": {
-      "dual_axis": false,
-      "dual_axis_sync": false
-    },
-    "reference_lines": [],
-    "annotations": [],
-    "trend_lines": [],
-    "pages_shelf": {},
-    "table_calcs": [],
-    "forecasting": [],
-    "map_options": {
-      "provider": "mapbox"
-    },
-    "clustering": [],
-    "dual_axis": {},
-    "totals": {
-      "grand_totals": [],
-      "subtotals": []
-    },
-    "description": "",
-    "show_hide_headers": {
-      "rows": true,
-      "columns": true
-    },
-    "dynamic_title": {
-      "is_dynamic": true,
-      "parts": [
-        {
-          "type": "text",
-          "value": "Population and Birth Rate ("
-        },
-        {
-          "type": "text",
-          "value": "<"
-        },
-        {
-          "type": "text",
-          "value": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:ok]"
-        },
-        {
-          "type": "text",
-          "value": ">"
-        },
-        {
-          "type": "text",
-          "value": ")"
-        }
-      ]
-    },
-    "analytics_stats": []
-  },
-  {
-    "name": "Technology",
-    "title": "Internet and Mobile Phone Usage per Capita",
-    "title_format": {},
-    "chart_type": "clusteredColumnChart",
-    "original_mark_class": "Bar",
-    "fields": [
-      {
-        "name": "Year",
-        "shelf": "columns",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Mobile Phone Usage",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
-      },
-      {
-        "name": "Internet Usage",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "aggregation": "avg"
-      },
-      {
-        "name": ":Measure Names",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": ":Measure Names",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Mobile Phone Usage",
-        "shelf": "text",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": ":Measure Names",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Internet Usage",
-        "shelf": "text",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Country/Region",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      }
-    ],
-    "filters": [
-      {
-        "field": "Country/Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "all",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      },
-      {
-        "field": "Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "all",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": true,
-        "date_part": null
-      }
-    ],
-    "formatting": {
-      "axis": {
-        "attr": "display",
-        "class": "0",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Internet Usage:qk]",
-        "scope": "rows",
-        "value": "false",
-        "display": "false",
-        "title": "Use as Percentage of Population",
-        "auto-subtitle": "true"
-      },
-      "label": {
-        "attr": "text-format",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Mobile Phone Usage:qk]",
-        "value": "p0%",
-        "text-format": "p0%",
-        "text-orientation": "0"
-      },
-      "worksheet": {
-        "attr": "display-field-labels",
-        "scope": "cols",
-        "value": "false",
-        "display-field-labels": "false"
-      },
-      "gridline": {
-        "attr": "line-pattern-only",
-        "scope": "rows",
-        "value": "solid",
-        "line-pattern-only": "solid",
-        "line-visibility": "on"
-      },
-      "table-div": {
-        "attr": "div-level",
-        "scope": "rows",
-        "value": "2",
-        "div-level": "2",
-        "line-visibility": "off"
-      },
-      "header-div": {
-        "attr": "line-visibility",
-        "scope": "rows",
-        "value": "off",
-        "line-visibility": "off"
-      },
-      "legend-title-text": {
-        "attr": "color",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[:Measure Names]",
-        "value": "Usage Type",
-        "color": "Usage Type"
-      },
-      "mark": {
-        "attr": "mark-labels-cull",
-        "value": "true",
-        "mark-labels-cull": "true",
-        "mark-labels-show": "false",
-        "size": "1.8350828886032104",
-        "mark-markers-mode": "all"
-      },
-      "field_formats": {
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Internet Usage:qk]": "false",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Mobile Phone Usage:qk]": "p0%",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:ok]": "0",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[:Measure Names]": "Usage Type"
-      }
-    },
-    "tooltips": [],
-    "actions": [],
-    "sort_orders": [],
-    "mark_encoding": {
-      "color": {
-        "field": ":Measure Names",
-        "palette": "",
-        "type": ""
-      }
-    },
-    "axes": {
-      "dual_axis": false,
-      "dual_axis_sync": false
-    },
-    "reference_lines": [],
-    "annotations": [],
-    "trend_lines": [],
-    "pages_shelf": {},
-    "table_calcs": [],
-    "forecasting": [],
-    "map_options": {},
-    "clustering": [],
-    "dual_axis": {},
-    "totals": {
-      "grand_totals": [],
-      "subtotals": []
-    },
-    "description": "",
-    "show_hide_headers": {
-      "rows": true,
-      "columns": true
-    },
-    "dynamic_title": {
-      "is_dynamic": false,
-      "parts": [
-        {
-          "type": "text",
-          "value": "Internet and Mobile Phone Usage per Capita"
-        }
-      ]
-    },
-    "analytics_stats": []
-  },
-  {
-    "name": "Tourism By Country/Region",
-    "title": "Income by Region and Country/Region",
-    "title_format": {},
-    "chart_type": "table",
-    "original_mark_class": "Automatic",
-    "fields": [
-      {
-        "name": "Region",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Tourism Inbound",
-        "shelf": "size",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "GDP",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Tourism Outbound",
-        "shelf": "tooltip",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Country/Region",
-        "shelf": "text",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Tourism Inbound",
-        "shelf": "text",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Year",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Action (Region,YEAR(Year))",
-        "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      }
-    ],
-    "filters": [
-      {
-        "field": "Action (Region,YEAR(Year))",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "all",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      },
-      {
-        "field": "Country/Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "all",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      },
-      {
-        "field": "Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "all",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      },
-      {
-        "field": "Year",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      },
-      {
-        "field": "Year",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": "yr"
-      }
-    ],
-    "formatting": {
-      "cell": {
-        "attr": "text-format",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Tourism Inbound:qk]",
-        "value": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)",
-        "text-format": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)"
-      },
-      "table": {
-        "attr": "show-null-value-warning",
-        "value": "false",
-        "show-null-value-warning": "false"
-      },
-      "data-highlighter": {
-        "attr": "border-color",
-        "value": "#e6e6e6",
-        "border-color": "#e6e6e6",
-        "background-color": "#f5f5f5",
-        "border-style": "none"
-      },
-      "data-highlighter-title": {
-        "attr": "title",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]",
-        "value": "Country/Region",
-        "title": "Country/Region"
-      },
-      "mark": {
-        "attr": "mark-labels-show",
-        "value": "true",
-        "mark-labels-show": "true",
-        "mark-labels-cull": "true"
-      },
-      "field_formats": {
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[avg:Tourism Inbound:qk]": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Country/Region:nk]": "Country/Region"
-      },
-      "worksheet_style": {
-        "border-style": "none",
-        "border-color": "#e6e6e6"
-      }
-    },
-    "tooltips": [],
-    "actions": [],
-    "sort_orders": [],
-    "mark_encoding": {
-      "color": {
-        "field": "Region",
-        "palette": "",
-        "type": "categorical"
-      },
-      "size": {
-        "field": "Tourism Inbound"
-      }
-    },
-    "axes": {
-      "dual_axis": false,
-      "dual_axis_sync": false
-    },
-    "reference_lines": [],
-    "annotations": [],
-    "trend_lines": [],
-    "pages_shelf": {},
-    "table_calcs": [],
-    "forecasting": [],
-    "map_options": {},
-    "clustering": [],
-    "dual_axis": {},
-    "totals": {
-      "grand_totals": [],
-      "subtotals": []
-    },
-    "description": "",
-    "show_hide_headers": {
-      "rows": true,
-      "columns": true
-    },
-    "dynamic_title": {
-      "is_dynamic": false,
-      "parts": [
-        {
-          "type": "text",
-          "value": "Income by Region and Country/Region"
-        }
-      ]
-    },
-    "analytics_stats": []
-  },
-  {
-    "name": "Tourism Over Time",
-    "title": "Income By Region",
-    "title_format": {},
-    "chart_type": "clusteredColumnChart",
-    "original_mark_class": "Bar",
-    "fields": [
-      {
-        "name": "Year",
-        "shelf": "columns",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
-      },
-      {
-        "name": "Tourism Inbound",
-        "shelf": "rows",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm",
         "aggregation": "sum"
       },
       {
-        "name": "Region",
-        "shelf": "color",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+        "name": "Profit",
+        "shelf": "rows",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm",
+        "aggregation": "sum"
       },
       {
-        "name": "Action (Country/Region,Region)",
+        "name": "Calculation_310466947315806208",
         "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
       },
       {
         "name": "Action (Region)",
         "shelf": "detail",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu"
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
+      },
+      {
+        "name": "Customer Name",
+        "shelf": "detail",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm"
       }
     ],
     "filters": [
       {
-        "field": "Action (Country/Region,Region)",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "all",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      },
-      {
         "field": "Action (Region)",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
+        "datasource": "federated.1oojzyi1k8irfh101qtoq07jz0mm",
         "type": "all",
         "values": [],
         "min": null,
@@ -1883,101 +455,30 @@
         "include_null": false,
         "is_context": false,
         "date_part": null
-      },
-      {
-        "field": "Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "all",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      },
-      {
-        "field": "Year",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "all",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": "yr"
-      },
-      {
-        "field": "Year",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "",
-        "values": [],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": "yr"
       }
     ],
     "formatting": {
-      "axis": {
-        "attr": "title",
-        "class": "0",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[sum:Tourism Inbound:qk]",
-        "scope": "rows",
-        "value": "",
-        "auto-subtitle": "true",
-        "width": "60"
-      },
       "label": {
-        "attr": "text-format",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[sum:Tourism Inbound:qk]",
-        "value": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)",
-        "text-format": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)"
+        "attr": "color",
+        "scope": "rows",
+        "value": "#000000",
+        "color": "#000000",
+        "font-weight": "bold",
+        "font-size": "10"
       },
-      "worksheet": {
-        "attr": "display-field-labels",
-        "scope": "cols",
-        "value": "false",
-        "display-field-labels": "false"
+      "rows_style": {
+        "font-size": "10",
+        "font-weight": "bold"
       },
-      "legend": {
-        "attr": "col-width",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]",
-        "value": "100",
-        "col-width": "100"
-      },
-      "quick-filter": {
-        "attr": "title",
-        "field": "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:qk]",
-        "value": "Year Range\n",
-        "title": "Year Range\n",
-        "border-color": "#d4d4d4",
-        "background-color": "#f5f5f5",
-        "border-style": "none"
-      },
-      "field_formats": {
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[sum:Tourism Inbound:qk]": "c\"$\"#,##0,,,B;(\"$\"#,##0,,,B)",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[none:Region:nk]": "100",
-        "[federated.0nwrb8b1xoqnsf1dnja360y7cceu].[yr:Year:qk]": "Year Range\n"
-      },
-      "worksheet_style": {
-        "border-style": "none",
-        "border-color": "#d4d4d4"
+      "cols_style": {
+        "font-size": "10",
+        "font-weight": "bold"
       }
     },
     "tooltips": [],
     "actions": [],
     "sort_orders": [],
-    "mark_encoding": {
-      "color": {
-        "field": "Region",
-        "palette": "",
-        "type": "categorical"
-      }
-    },
+    "mark_encoding": {},
     "axes": {
       "dual_axis": false,
       "dual_axis_sync": false
@@ -2005,116 +506,10 @@
       "parts": [
         {
           "type": "text",
-          "value": "Income By Region"
+          "value": "Profit V/s Sales"
         }
       ]
     },
-    "analytics_stats": []
-  },
-  {
-    "name": "Technology",
-    "title": "",
-    "title_format": {},
-    "chart_type": "clusteredBarChart",
-    "original_mark_class": null,
-    "fields": [],
-    "filters": [
-      {
-        "field": "Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "categorical",
-        "values": [
-          "\"The Americas\""
-        ],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      }
-    ],
-    "formatting": {},
-    "tooltips": [],
-    "actions": [],
-    "sort_orders": [],
-    "mark_encoding": {},
-    "axes": {
-      "dual_axis": false,
-      "dual_axis_sync": false
-    },
-    "reference_lines": [],
-    "annotations": [],
-    "trend_lines": [],
-    "pages_shelf": {},
-    "table_calcs": [],
-    "forecasting": [],
-    "map_options": {},
-    "clustering": [],
-    "dual_axis": {},
-    "totals": {
-      "grand_totals": [],
-      "subtotals": []
-    },
-    "description": "",
-    "show_hide_headers": {
-      "rows": true,
-      "columns": true
-    },
-    "dynamic_title": null,
-    "analytics_stats": []
-  },
-  {
-    "name": "Economy",
-    "title": "",
-    "title_format": {},
-    "chart_type": "clusteredBarChart",
-    "original_mark_class": null,
-    "fields": [],
-    "filters": [
-      {
-        "field": "Region",
-        "datasource": "federated.0nwrb8b1xoqnsf1dnja360y7cceu",
-        "type": "categorical",
-        "values": [
-          "\"Africa\""
-        ],
-        "min": null,
-        "max": null,
-        "exclude": false,
-        "include_null": false,
-        "is_context": false,
-        "date_part": null
-      }
-    ],
-    "formatting": {},
-    "tooltips": [],
-    "actions": [],
-    "sort_orders": [],
-    "mark_encoding": {},
-    "axes": {
-      "dual_axis": false,
-      "dual_axis_sync": false
-    },
-    "reference_lines": [],
-    "annotations": [],
-    "trend_lines": [],
-    "pages_shelf": {},
-    "table_calcs": [],
-    "forecasting": [],
-    "map_options": {},
-    "clustering": [],
-    "dual_axis": {},
-    "totals": {
-      "grand_totals": [],
-      "subtotals": []
-    },
-    "description": "",
-    "show_hide_headers": {
-      "rows": true,
-      "columns": true
-    },
-    "dynamic_title": null,
     "analytics_stats": []
   }
 ]

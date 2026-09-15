@@ -8,6 +8,7 @@ without one, validation is explicitly reported as ``not_run``.
 from __future__ import annotations
 
 import time
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -43,6 +44,34 @@ def _execute(executor: Any, query: str) -> Any:
     if callable(method):
         return method(query)
     raise TypeError("semantic executor must be callable or expose execute(query)")
+
+
+def describe_executor(executor: Any) -> Dict[str, Any]:
+    """Return redacted executor capability evidence without exposing credentials."""
+    if executor is None:
+        return {"status": "not_run", "provider": None, "version": None}
+    metadata = getattr(executor, "metadata", {})
+    if callable(metadata):
+        metadata = metadata()
+    metadata = metadata if isinstance(metadata, dict) else {}
+    provider = metadata.get("provider", getattr(executor, "provider", None))
+    version = metadata.get("version", getattr(executor, "version", None))
+    return {
+        "status": "configured",
+        "provider": _redact_value(provider),
+        "version": _redact_value(version),
+        "capabilities": sorted(str(item) for item in metadata.get("capabilities", []) or []),
+        "endpoint_present": bool(metadata.get("endpoint") or getattr(executor, "endpoint", None)),
+    }
+
+
+def _redact_value(value: Any) -> Any:
+    if value is None:
+        return None
+    text = str(value)
+    if re.search(r"secret|token|password|key|credential", text, re.IGNORECASE):
+        return "[REDACTED]"
+    return text[:128]
 
 
 def _normalize_response(response: Any) -> tuple[str, Any, str, Dict[str, Any]]:
@@ -100,9 +129,11 @@ def validate_semantic_execution(
     does not hide the remaining evidence.
     """
     selected = list(queries or [])[:max(0, max_queries)]
+    executor_evidence = describe_executor(executor)
     if executor is None:
         return {
             "status": "not_run",
+            "executor": executor_evidence,
             "queries_requested": len(selected),
             "queries_run": 0,
             "passed": 0,
@@ -149,6 +180,7 @@ def validate_semantic_execution(
     failed = len(results) - passed
     return {
         "status": "failed" if failed else "passed",
+        "executor": executor_evidence,
         "queries_requested": len(selected),
         "queries_run": len(results),
         "passed": passed,
