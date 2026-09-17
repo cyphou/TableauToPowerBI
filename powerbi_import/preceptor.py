@@ -3,7 +3,7 @@ Preceptorship loop engine for migration artifact quality review.
 
 Implements the DRAFT → REVIEW → APPROVE/COACH cycle that validates
 generated Power BI artifacts against the source Tableau extraction,
-scoring 5 quality dimensions and providing structured coaching
+scoring 6 quality dimensions and providing structured coaching
 feedback when artifacts fall below the 4-star threshold.
 
 Usage:
@@ -99,7 +99,7 @@ class CoachingItem:
 
 
 class ReviewScorecard:
-    """Scores across the 5 review dimensions."""
+    """Scores across the 6 review dimensions."""
 
     def __init__(self):
         self.scores = {}       # dimension → int (1-5)

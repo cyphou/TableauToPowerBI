@@ -459,7 +459,7 @@ All schema URLs and theme identifiers are defined as constants in `pbip_generato
 10. **Single-line DAX formulas** — multi-line formulas are condensed
 11. **Parameters** — two XML formats handled:
     - Old: `<column[@param-domain-type]>` (Tableau Desktop classic)
-    - New: `<parameters><parameter>` (Tableau Desktop modern, e.g., Financial_Report)
+    - New: `<parameters><parameter>` (Tableau Desktop modern)
     - `param_map` populated from both sources for DAX reference resolution
     - `[Parameters].[X]` → `[Caption]` (measure) or inlined literal (calc column)
 

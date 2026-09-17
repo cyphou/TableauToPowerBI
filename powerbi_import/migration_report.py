@@ -5,7 +5,7 @@ Produces a structured JSON report listing every converted item with
 its conversion status (exact, approximate, placeholder, unsupported).
 
 Usage:
-    report = MigrationReport("Superstore_Sales")
+    report = MigrationReport("my_workbook")
     report.add_item("calculation", "Profit Ratio", "exact", dax="DIVIDE([Profit],[Sales])")
     report.add_item("calculation", "MAKEPOINT field", "unsupported", note="No DAX spatial equivalent")
     report.save("artifacts/powerbi_projects/reports/")

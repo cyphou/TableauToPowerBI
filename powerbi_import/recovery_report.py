@@ -10,7 +10,7 @@ The report integrates with MigrationReport via ``merge_into()``.
 Usage:
     from powerbi_import.recovery_report import RecoveryReport
 
-    recovery = RecoveryReport("Superstore_Sales")
+    recovery = RecoveryReport("my_workbook")
     recovery.record("tmdl", "broken_column_ref",
                     description="Measure 'Profit YoY' references non-existent column [Region2]",
                     action="Removed column reference, measure hidden with MigrationNote",

@@ -35,6 +35,10 @@ from powerbi_import.regression_suite import (
     compare_snapshots,
 )
 
+# Snapshots are keyed by a derived id: workbook names are only legal under
+# examples/, so they must not appear as tracked filenames under tests/.
+from tests.fixture_corpus import baseline_path, fixture_id
+
 # ── Paths ────────────────────────────────────────────────────────────
 
 SAMPLE_DIR = os.path.join(ROOT, 'examples', 'tableau_samples')
@@ -160,7 +164,7 @@ def _load_report_state(project_dir, name):
 # ── Baseline snapshot management ─────────────────────────────────────
 
 def _baseline_path(wb_name):
-    return os.path.join(BASELINES_DIR, f'{wb_name}.snapshot.json')
+    return baseline_path(fixture_id(wb_name))
 
 
 def _save_baseline(wb_name, snapshot):

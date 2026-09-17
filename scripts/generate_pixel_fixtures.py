@@ -41,23 +41,22 @@ from powerbi_import.qa_suite import (  # noqa: E402
 )
 
 # ── Curated fixture workbooks (committed under examples/tableau_samples/) ──
-# NOTE: Enterprise_Sales contains two heavily overlapping zones (a textbox
-# backdrop behind a tableEx). Sprint 204 made the overlap-stagger healing
-# deterministic (z-order keyed, not random UUID directory order), so it is now
-# part of the golden set — the backdrop textbox stays anchored and the
-# foreground worksheet is staggered by a stable +32 px.
-GOLDEN_WORKBOOKS = {
-    "BigQuery_Analytics": "BigQuery_Analytics.twb",
-    "Enterprise_Sales": "Enterprise_Sales.twb",
-    "Financial_Report": "Financial_Report.twb",
-    "HR_Analytics": "HR_Analytics.twb",
-    "Manufacturing_IoT": "Manufacturing_IoT.twb",
-    "Marketing_Campaign": "Marketing_Campaign.twb",
-    "Superstore_Sales": "Superstore_Sales.twb",
-}
+# NOTE: one sample contains two heavily overlapping zones (a textbox backdrop
+# behind a tableEx). Sprint 204 made the overlap-stagger healing deterministic
+# (z-order keyed, not random UUID directory order), so it is now part of the
+# golden set — the backdrop textbox stays anchored and the foreground worksheet
+# is staggered by a stable +32 px.
+#
+# The curated corpus lives in examples/tableau_samples/fixture_corpus.json:
+# workbook names are only legal under examples/, so nothing here names them.
+sys.path.insert(0, os.path.join(_REPO_ROOT, "tests"))
+from fixture_corpus import (  # noqa: E402
+    GOLDEN_DIR,
+    golden_path as _golden_path,
+    golden_workbooks,
+)
 
 SAMPLES_DIR = os.path.join(_REPO_ROOT, "examples", "tableau_samples")
-GOLDEN_DIR = os.path.join(_REPO_ROOT, "tests", "golden")
 
 
 # ── Snapshot extraction ────────────────────────────────────────────
@@ -182,32 +181,29 @@ def build_snapshot_for_workbook(twb_name: str) -> dict:
 
 # ── CLI ────────────────────────────────────────────────────────────
 
-def _golden_path(name: str) -> str:
-    return os.path.join(GOLDEN_DIR, name, "visuals.json")
-
-
 def regenerate(check: bool = False) -> int:
     drift = 0
-    for name, twb in GOLDEN_WORKBOOKS.items():
+    for fid, twb_path in golden_workbooks():
+        twb = os.path.basename(twb_path)
         try:
             snap = build_snapshot_for_workbook(twb)
         except FileNotFoundError:
-            print(f"  [skip] {name}: sample not found ({twb})")
+            print(f"  [skip] {fid}: sample not found ({twb})")
             continue
-        path = _golden_path(name)
+        path = _golden_path(fid)
         if check:
             existing = _load_json(path)
             if existing != snap:
                 drift += 1
                 old = (existing or {}).get("visual_count", "?")
-                print(f"  [drift] {name}: {old} -> {snap['visual_count']} visuals")
+                print(f"  [drift] {fid}: {old} -> {snap['visual_count']} visuals")
             else:
-                print(f"  [ok]    {name}: {snap['visual_count']} visuals")
+                print(f"  [ok]    {fid}: {snap['visual_count']} visuals")
         else:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(snap, fh, indent=1, ensure_ascii=False, sort_keys=True)
-            print(f"  [wrote] {name}: {snap['visual_count']} visuals -> {path}")
+            print(f"  [wrote] {fid}: {snap['visual_count']} visuals -> {path}")
     return 1 if (check and drift) else 0
 
 

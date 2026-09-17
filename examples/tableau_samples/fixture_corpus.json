@@ -1,0 +1,17 @@
+{
+  "_comment": "Curated fixture corpus. Workbook names are only legal under examples/, so tests and scripts read this manifest instead of hardcoding them. Fixture directories and snapshots on disk are keyed by the derived id in tests/fixture_corpus.py.",
+  "golden": [
+    "BigQuery_Analytics.twb",
+    "Enterprise_Sales.twb",
+    "Financial_Report.twb",
+    "HR_Analytics.twb",
+    "Manufacturing_IoT.twb",
+    "Marketing_Campaign.twb",
+    "Superstore_Sales.twb"
+  ],
+  "golden_excluded": {
+    "Complex_Enterprise.twb": "layout not pixel-stable across runs",
+    "Security_Test.twb": "adversarial input fixture, not a layout reference",
+    "Ventes_France.twb": "locale-dependent formatting"
+  }
+}

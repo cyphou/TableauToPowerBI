@@ -31,6 +31,7 @@ from powerbi_import.interface_diff import compare_report_interface
 from powerbi_import.openability import check_openability
 from powerbi_import.parity_registry import scan_project
 from powerbi_import.powerquery_diff import compare_report_tables
+from powerbi_import.quality_grades import color as grade_color
 from powerbi_import.semantic_execution_validator import SemanticExecutionValidator
 from powerbi_import.semantic_runtime import validate_semantic_execution
 from powerbi_import.semantic_fixtures import load_semantic_fixture
@@ -229,16 +230,8 @@ class MigrationQualityReport:
         if v is None or v == "":
             return badge("n/a", "gray")
         s = str(v)
-        up = s.upper()
-        if "PASS" in up or up in ("GREEN", "OK", "TRUE"):
-            return badge(s, "green")
-        if up in ("WARN", "YELLOW"):
-            return badge(s, "yellow")
-        if "FAIL" in up or up in ("RED", "ERROR", "CRASHED", "TIMED_OUT"):
-            return badge(s, "red")
-        if up in ("NOT_RUN", "UNVERIFIED", "SKIPPED", "NONE"):
-            return badge(s, "gray")
-        return esc(s)
+        tone = grade_color(s)
+        return badge(s, tone) if tone else esc(s)
 
     @classmethod
     def _render_list_of_dicts(cls, items: list) -> str:

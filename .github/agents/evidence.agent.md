@@ -11,6 +11,7 @@ You are the **Evidence** agent for the Tableau to Power BI migration project. Yo
 
 ### Unified quality & evidence
 - `powerbi_import/migration_quality.py` — unified deterministic quality report (+ consolidated HTML)
+- `powerbi_import/quality_grades.py` — canonical grade vocabulary shared by every scoring model
 - `powerbi_import/evidence_manifest.py`, `evidence_package.py`, `evidence_summary.py`, `assessment_evidence.py`
 - `powerbi_import/validation_contract.py` — validation contract surface
 - `powerbi_import/qa_suite.py` — real-world QA report card

@@ -6,6 +6,12 @@ committed sample workbook in `examples/tableau_samples/` and contains a single
 `visuals.json` capturing the pixel-relevant attributes of every generated
 visual.
 
+Folders are named by the fixture id from `tests/fixture_corpus.py` (a hash of
+the workbook stem) rather than by workbook name, which is only legal under
+`examples/`. Use `fixture_corpus.describe(fid)` to resolve an id back to a
+filename; the curated corpus itself lives in
+`examples/tableau_samples/fixture_corpus.json`.
+
 ## Snapshot schema
 
 `visuals.json`:
