@@ -36,12 +36,19 @@ OBJECT_TYPES = (
 )
 
 
-_NAME_KEYS = ("name", "caption", "title", "id", "key")
+#: Identity of an extracted object, most explicit first. Several types have no
+#: `name` at all — a filter is identified by its field, a Hyper extract by its
+#: filename — and without these they were listed as "item-0" in the inventory
+#: and in the quality report's unresolved records.
+_NAME_KEYS = ("name", "caption", "title", "field", "column", "filename", "id", "key")
 #: Extractors name the owning object differently per type — actions carry
 #: `source_worksheets`, filters carry `worksheet`. Reading only the generic
 #: names reported every action in the corpus as an orphan.
 _PARENT_KEYS = ("parent", "parent_id", "dashboard", "worksheet", "datasource",
                 "source_worksheets", "source_worksheet", "sheet")
+
+#: Types that belong to something else, so a missing parent is worth reporting.
+ORPHANABLE_TYPES = frozenset({"actions", "filters", "relationships", "sort_orders"})
 
 
 def _parent_value(item_dict: Dict[str, Any]) -> Any:
@@ -109,7 +116,7 @@ def _inventory_row(object_type: str, item: Any, index: int) -> Dict[str, Any]:
         "name": name,
         "source_location": source_location,
         "parent": parent,
-        "orphan": int(parent is None and object_type in {"actions", "filters", "relationships", "sort_orders"}),
+        "orphan": int(parent is None and object_type in ORPHANABLE_TYPES),
         "disposition": "extracted",
     }
 
