@@ -17,6 +17,10 @@ import re
 import logging
 from pathlib import Path
 
+# Single source of truth for Tableau→DAX leak repairs, shared with the healer
+# and the preceptor so the three quality gates stay consistent.
+from powerbi_import.dax_validator import TABLEAU_LEAK_REPLACEMENTS
+
 logger = logging.getLogger(__name__)
 
 
@@ -321,29 +325,12 @@ class ArtifactValidator:
     ]
 
     # ── Auto-fix replacements for Tableau function leaks ──────────
-    # Each entry: (search_regex, replacement_function_or_string)
-    # These are applied sequentially to a DAX formula string.
+    # Derived from the canonical repair table so the validator, the healer and
+    # the preceptor cannot drift apart. Order is preserved; the validator
+    # applies every rule regardless of confidence.
     _AUTO_FIX_RULES = [
-        # COUNTD(expr) → DISTINCTCOUNT(expr)
-        (re.compile(r'\bCOUNTD\s*\(', re.IGNORECASE), 'DISTINCTCOUNT('),
-        # ATTR(expr) → VALUES(expr) — aggregation collapse
-        (re.compile(r'\bATTR\s*\(', re.IGNORECASE), 'VALUES('),
-        # == → = (equality operator)
-        (re.compile(r'(?<![<>!])={2}(?!=)'), '='),
-        # ELSEIF → ,  (DAX uses nested IF with comma separation)
-        (re.compile(r'\bELSEIF\b', re.IGNORECASE), ','),
-        # DATETRUNC('month', expr) → STARTOFMONTH(expr) — best-effort
-        (re.compile(r"\bDATETRUNC\s*\(\s*'month'\s*,\s*", re.IGNORECASE), 'STARTOFMONTH('),
-        (re.compile(r"\bDATETRUNC\s*\(\s*'quarter'\s*,\s*", re.IGNORECASE), 'STARTOFQUARTER('),
-        (re.compile(r"\bDATETRUNC\s*\(\s*'year'\s*,\s*", re.IGNORECASE), 'STARTOFYEAR('),
-        # DATEPART('year', expr) → YEAR(expr) — best-effort
-        (re.compile(r"\bDATEPART\s*\(\s*'year'\s*,\s*", re.IGNORECASE), 'YEAR('),
-        (re.compile(r"\bDATEPART\s*\(\s*'month'\s*,\s*", re.IGNORECASE), 'MONTH('),
-        (re.compile(r"\bDATEPART\s*\(\s*'day'\s*,\s*", re.IGNORECASE), 'DAY('),
-        (re.compile(r"\bDATEPART\s*\(\s*'quarter'\s*,\s*", re.IGNORECASE), 'QUARTER('),
-        (re.compile(r"\bDATEPART\s*\(\s*'hour'\s*,\s*", re.IGNORECASE), 'HOUR('),
-        (re.compile(r"\bDATEPART\s*\(\s*'minute'\s*,\s*", re.IGNORECASE), 'MINUTE('),
-        (re.compile(r"\bDATEPART\s*\(\s*'second'\s*,\s*", re.IGNORECASE), 'SECOND('),
+        (re.compile(pattern, re.IGNORECASE), replacement)
+        for pattern, replacement, _confidence in TABLEAU_LEAK_REPLACEMENTS
     ]
 
     @classmethod

@@ -15,7 +15,8 @@ Design principles:
 Public API:
     heal_dax(dax, measure_names=None) -> HealReport
     heal_balance_parens / heal_trailing_comma / heal_double_equals /
-    heal_sum_of_measure / heal_balance_brackets  (individual healers)
+    heal_sum_of_measure / heal_balance_brackets / heal_tableau_leaks
+    (individual healers)
 """
 
 from __future__ import annotations
@@ -23,10 +24,24 @@ from __future__ import annotations
 import re
 from typing import List, Optional, Set, Tuple
 
+# Canonical Tableau→DAX repair table, shared with the validator and preceptor so
+# the healer cannot declare success on an expression they would still reject.
+from powerbi_import.dax_validator import TABLEAU_LEAK_REPLACEMENTS
+
 # Shared healing contract (canonical home is healing_core). Re-exported here for
 # backward compatibility — existing code imports these from dax_healing.
 from powerbi_import.healing_core import (  # noqa: F401
     HealAction, HealReport, HIGH, MEDIUM, LOW,
+)
+
+
+#: Only unambiguous, semantics-preserving rewrites are auto-applied here.
+#: MEDIUM/LOW rules stay with the validator's explicit auto-fix, which the user
+#: opts into; a healer must never silently change meaning.
+_SAFE_LEAK_RULES = tuple(
+    (re.compile(pattern, re.IGNORECASE), replacement)
+    for pattern, replacement, confidence in TABLEAU_LEAK_REPLACEMENTS
+    if confidence == HIGH
 )
 
 
@@ -276,6 +291,41 @@ def heal_sum_of_measure(dax: str, measure_names: Optional[Set[str]] = None
 # ════════════════════════════════════════════════════════════════════
 
 # Order matters: fix operators/commas first, then balance delimiters last.
+def heal_tableau_leaks(dax: str) -> Tuple[str, Optional[HealAction]]:
+    """Replace Tableau functions that survived conversion with their DAX equals.
+
+    Only HIGH-confidence rewrites from the canonical repair table are applied,
+    and only outside opaque spans so a literal such as ``"COUNTD("`` is never
+    rewritten. Leaks that need structural conversion — LOD expressions, table
+    calculations, MAKEPOINT, SCRIPT_* — are intentionally left for the validator
+    to report rather than guessed at here.
+    """
+    healed = dax
+    fixed: List[str] = []
+
+    for pattern, replacement in _SAFE_LEAK_RULES:
+        while True:
+            spans = _spans(healed)
+            match = next(
+                (m for m in pattern.finditer(healed)
+                 if not _in_span(m.start(), spans)),
+                None,
+            )
+            if match is None:
+                break
+            healed = healed[:match.start()] + replacement + healed[match.end():]
+            label = replacement.rstrip('(') or replacement
+            if label not in fixed:
+                fixed.append(label)
+
+    if healed == dax:
+        return dax, None
+
+    return healed, HealAction(
+        "tableau_leaks", "conversion", HIGH, dax, healed,
+        f"replaced Tableau function(s) with {', '.join(fixed)}")
+
+
 def heal_dax(dax: str, measure_names: Optional[Set[str]] = None) -> HealReport:
     """Apply all healers idempotently and return a :class:`HealReport`."""
     original = dax
@@ -293,6 +343,7 @@ def heal_dax(dax: str, measure_names: Optional[Set[str]] = None) -> HealReport:
             current = new
 
     _apply(heal_double_equals)
+    _apply(heal_tableau_leaks)
     _apply(heal_sum_of_measure, measure_names)
     _apply(heal_trailing_comma)
     _apply(heal_balance_brackets)

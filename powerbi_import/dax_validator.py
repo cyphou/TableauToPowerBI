@@ -28,6 +28,33 @@ _TABLEAU_FUNC_LEAK = re.compile(
     re.IGNORECASE,
 )
 
+#: Canonical Tableau→DAX repair table: (pattern, replacement, confidence).
+#:
+#: Order is significant and callers must preserve it. Confidence uses the same
+#: vocabulary as healing_core ('high' / 'medium' / 'low') and drives policy: the
+#: validator's auto-fix applies every rule, while the conservative healer applies
+#: only 'high' — rules whose rewrite is local and semantics-preserving. 'medium'
+#: rules change meaning in edge cases (ATTR collapses differently from VALUES;
+#: STARTOF* needs a date context), 'low' rules are structural guesses.
+#: Leaks needing real structural conversion (LOD, MAKEPOINT, SCRIPT_*, table
+#: calculations) are deliberately absent: they are reported, never auto-repaired.
+TABLEAU_LEAK_REPLACEMENTS = (
+    (r'\bCOUNTD\s*\(', 'DISTINCTCOUNT(', 'high'),
+    (r'\bATTR\s*\(', 'VALUES(', 'medium'),
+    (r'(?<![<>!])={2}(?!=)', '=', 'high'),
+    (r'\bELSEIF\b', ',', 'low'),
+    (r"\bDATETRUNC\s*\(\s*'month'\s*,\s*", 'STARTOFMONTH(', 'medium'),
+    (r"\bDATETRUNC\s*\(\s*'quarter'\s*,\s*", 'STARTOFQUARTER(', 'medium'),
+    (r"\bDATETRUNC\s*\(\s*'year'\s*,\s*", 'STARTOFYEAR(', 'medium'),
+    (r"\bDATEPART\s*\(\s*'year'\s*,\s*", 'YEAR(', 'high'),
+    (r"\bDATEPART\s*\(\s*'month'\s*,\s*", 'MONTH(', 'high'),
+    (r"\bDATEPART\s*\(\s*'day'\s*,\s*", 'DAY(', 'high'),
+    (r"\bDATEPART\s*\(\s*'quarter'\s*,\s*", 'QUARTER(', 'high'),
+    (r"\bDATEPART\s*\(\s*'hour'\s*,\s*", 'HOUR(', 'high'),
+    (r"\bDATEPART\s*\(\s*'minute'\s*,\s*", 'MINUTE(', 'high'),
+    (r"\bDATEPART\s*\(\s*'second'\s*,\s*", 'SECOND(', 'high'),
+)
+
 
 def _check_balanced(expr: str) -> List[str]:
     issues = []
