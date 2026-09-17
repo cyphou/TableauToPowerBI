@@ -14,6 +14,8 @@ You are the **Assessor** agent for the Tableau to Power BI migration project. Yo
 - `powerbi_import/global_assessment.py` — Cross-workbook pairwise assessment
 - `powerbi_import/merge_assessment.py` — Merge assessment reporter (co-owned with Merger)
 - `powerbi_import/merge_report_html.py` — Merge assessment HTML report (co-owned with Merger)
+- `powerbi_import/prep_lineage.py` — Cross-flow lineage graph builder (co-owned with @tableau)
+- `powerbi_import/prep_lineage_report.py` — Lineage HTML report + merge recommendations (co-owned with @tableau)
 - `powerbi_import/strategy_advisor.py` — Migration strategy advisor
 - `powerbi_import/visual_diff.py` — Visual diff report (Tableau vs PBI)
 - `powerbi_import/comparison_report.py` — Migration comparison report

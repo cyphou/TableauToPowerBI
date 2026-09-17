@@ -24,7 +24,15 @@ MAX_OWNERS = {'tmdl_generator.py': 2}
 class TestAgentOwnership(unittest.TestCase):
     def setUp(self):
         (self.mods, self.owners, self.shared,
-         self.unowned, self.multi) = analyse()
+         self.unowned, self.multi, self.asymmetric) = analyse()
+
+    def test_co_ownership_is_declared_on_both_sides(self):
+        """Half-declared sharing leaves one agent's file claiming exclusivity."""
+        self.assertEqual(
+            self.asymmetric, {},
+            "co-ownership declared by only one side:\n  "
+            + "\n  ".join(f"{m} -> {', '.join(a)}"
+                          for m, a in sorted(self.asymmetric.items())))
 
     def test_every_module_has_an_owner(self):
         self.assertEqual(
