@@ -1,0 +1,304 @@
+{
+  "total": 47,
+  "passed": 47,
+  "failed": 0,
+  "warned": 0,
+  "fidelity_percent": 100.0,
+  "status": "pass",
+  "details": [
+    {
+      "test": "row_count:federated.global",
+      "passed": true,
+      "severity": "info",
+      "message": "federated.global: 0 rows in Tableau"
+    },
+    {
+      "test": "row_count:federated.budget",
+      "passed": true,
+      "severity": "info",
+      "message": "federated.budget: 0 rows in Tableau"
+    },
+    {
+      "test": "calc:[C_GrossRev]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_GrossRev]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_NetRev]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_NetRev]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_COGS]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_COGS]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_GrossProfit]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_GrossProfit]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_GrossMargin]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_GrossMargin]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_TaxAmt]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_TaxAmt]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_TotalRevTax]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_TotalRevTax]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_ReturnRate]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_ReturnRate]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_RevPerCust]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_RevPerCust]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_RevPerProd]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_RevPerProd]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_RevRegChan]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_RevRegChan]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_RevExclTerr]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_RevExclTerr]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_RevInclSub]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_RevInclSub]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_RunTotal]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_RunTotal]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_RunAvg]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_RunAvg]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_RunCount]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_RunCount]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_Rank]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_Rank]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_RankDense]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_RankDense]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_MovAvg3]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_MovAvg3]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_WinMax]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_WinMax]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_StdDev]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_StdDev]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_OrderCount]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_OrderCount]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_UniqueCust]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_UniqueCust]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_UniqueProd]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_UniqueProd]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_DaysSinceFirst]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_DaysSinceFirst]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_FullLoc]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_FullLoc]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_CustTier]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_CustTier]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_DiscCat]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_DiscCat]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_SafeDisc]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_SafeDisc]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_YTDRev]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_YTDRev]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_IsMyAcct]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_IsMyAcct]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_MgrAccess]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_MgrAccess]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[C_TargetAchieve]",
+      "passed": true,
+      "severity": "info",
+      "message": "[C_TargetAchieve]: Formula present in Tableau"
+    },
+    {
+      "test": "visual_coverage:Executive KPIs",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Executive KPIs: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Revenue by Region",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Revenue by Region: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Revenue Trend",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Revenue Trend: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Sales Map",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Sales Map: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Category Mix",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Category Mix: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Customer Analysis",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Customer Analysis: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Profit Waterfall",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Profit Waterfall: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Monthly Heatmap",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Monthly Heatmap: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Payment Distribution",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Payment Distribution: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Order Funnel",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Order Funnel: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Discount Distribution",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Discount Distribution: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Customer Detail Tooltip",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Customer Detail Tooltip: 100.0% field coverage"
+    }
+  ]
+}

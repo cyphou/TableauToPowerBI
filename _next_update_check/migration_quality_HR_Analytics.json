@@ -1,0 +1,3843 @@
+{
+  "report_name": "HR_Analytics",
+  "status": "PASS",
+  "blockers": [],
+  "warnings": [],
+  "priorities": [],
+  "ai_summary": "",
+  "ai_source": "none",
+  "assessment": {
+    "workbook_name": "HR_Analytics",
+    "timestamp": "2026-09-16T07:11:04Z",
+    "overall_score": "GREEN",
+    "summary": {
+      "workbook": "HR_Analytics",
+      "overall_score": "GREEN",
+      "total_checks": 40,
+      "passed": 26,
+      "warnings": 0,
+      "failures": 0
+    },
+    "evidence": {
+      "scope": "source_assessment",
+      "validation": "static",
+      "desktop": "not_run",
+      "fabric": "not_run",
+      "source_objects": 10
+    },
+    "totals": {
+      "checks": 40,
+      "pass": 26,
+      "warn": 0,
+      "fail": 0
+    },
+    "categories": [
+      {
+        "name": "Datasource Compatibility",
+        "worst_severity": "info",
+        "checks": [
+          {
+            "name": "Datasource count",
+            "severity": "info",
+            "detail": "1 datasource(s) detected.",
+            "recommendation": ""
+          },
+          {
+            "name": "Connector: SQL Server",
+            "severity": "pass",
+            "detail": "Fully supported in Power BI. Used by: federated.1.",
+            "recommendation": ""
+          },
+          {
+            "name": "Data blending",
+            "severity": "pass",
+            "detail": "No cross-datasource data blending detected.",
+            "recommendation": ""
+          },
+          {
+            "name": "Published datasources",
+            "severity": "pass",
+            "detail": "No published datasource references.",
+            "recommendation": ""
+          },
+          {
+            "name": "Custom SQL",
+            "severity": "pass",
+            "detail": "No custom SQL queries.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Calculation Readiness",
+        "worst_severity": "info",
+        "checks": [
+          {
+            "name": "Calculation count",
+            "severity": "info",
+            "detail": "4 calculated field(s) detected.",
+            "recommendation": ""
+          },
+          {
+            "name": "Unsupported functions",
+            "severity": "pass",
+            "detail": "No calculations use unsupported functions.",
+            "recommendation": ""
+          },
+          {
+            "name": "SCRIPT_* analytics extensions",
+            "severity": "pass",
+            "detail": "No calculations use R/Python analytics extensions.",
+            "recommendation": ""
+          },
+          {
+            "name": "Partially-supported functions",
+            "severity": "pass",
+            "detail": "No calculations use partially-supported functions.",
+            "recommendation": ""
+          },
+          {
+            "name": "LOD expressions",
+            "severity": "pass",
+            "detail": "No LOD expressions detected.",
+            "recommendation": ""
+          },
+          {
+            "name": "Table calculations",
+            "severity": "pass",
+            "detail": "No table calculations detected.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Visual & Dashboard Coverage",
+        "worst_severity": "info",
+        "checks": [
+          {
+            "name": "Worksheet count",
+            "severity": "info",
+            "detail": "4 worksheet(s) detected.",
+            "recommendation": ""
+          },
+          {
+            "name": "Dashboard count",
+            "severity": "info",
+            "detail": "1 dashboard(s) detected.",
+            "recommendation": ""
+          },
+          {
+            "name": "Chart type coverage",
+            "severity": "pass",
+            "detail": "All 4 chart type(s) have Power BI equivalents.",
+            "recommendation": ""
+          },
+          {
+            "name": "Formatting coverage",
+            "severity": "info",
+            "detail": "3 color-encoded field(s), 0 conditional formatting rule(s), 0 custom font worksheet(s).",
+            "recommendation": "Color encoding migrates as gradient/categorical rules. Custom fonts map to web-safe equivalents."
+          }
+        ]
+      },
+      {
+        "name": "Filter & Parameter Complexity",
+        "worst_severity": "info",
+        "checks": [
+          {
+            "name": "Filter count",
+            "severity": "info",
+            "detail": "0 top-level filter(s) detected.",
+            "recommendation": ""
+          },
+          {
+            "name": "Parameter count",
+            "severity": "info",
+            "detail": "0 parameter(s) detected.",
+            "recommendation": ""
+          },
+          {
+            "name": "User filters (RLS)",
+            "severity": "pass",
+            "detail": "No user filters — no RLS configuration needed.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Data Model Complexity",
+        "worst_severity": "info",
+        "checks": [
+          {
+            "name": "Table count",
+            "severity": "info",
+            "detail": "1 table(s) across all datasources.",
+            "recommendation": ""
+          },
+          {
+            "name": "Column count",
+            "severity": "info",
+            "detail": "26 column(s) total.",
+            "recommendation": ""
+          },
+          {
+            "name": "Relationship count",
+            "severity": "info",
+            "detail": "0 relationship(s) detected.",
+            "recommendation": ""
+          },
+          {
+            "name": "Hierarchies",
+            "severity": "info",
+            "detail": "No hierarchies.",
+            "recommendation": ""
+          },
+          {
+            "name": "Sets / Groups / Bins",
+            "severity": "pass",
+            "detail": "No sets, groups, or bins.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Interactivity & Actions",
+        "worst_severity": "pass",
+        "checks": [
+          {
+            "name": "No actions or stories",
+            "severity": "pass",
+            "detail": "No interactivity features detected.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Data Extracts & Packaging",
+        "worst_severity": "pass",
+        "checks": [
+          {
+            "name": "Hyper extract files",
+            "severity": "pass",
+            "detail": "No .hyper extract files (live connection or datasource files).",
+            "recommendation": ""
+          },
+          {
+            "name": "Custom shapes",
+            "severity": "pass",
+            "detail": "No custom shapes.",
+            "recommendation": ""
+          },
+          {
+            "name": "Embedded fonts",
+            "severity": "pass",
+            "detail": "No embedded fonts.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Migration Scope & Effort",
+        "worst_severity": "info",
+        "checks": [
+          {
+            "name": "Complexity score",
+            "severity": "info",
+            "detail": "Complexity score: 12 (Low).",
+            "recommendation": ""
+          },
+          {
+            "name": "Estimated effort",
+            "severity": "info",
+            "detail": "Estimated post-migration review effort: < 1 hour of post-migration review.",
+            "recommendation": ""
+          },
+          {
+            "name": "Object inventory",
+            "severity": "info",
+            "detail": "Objects: Datasources: 1 | Worksheets: 4 | Dashboards: 1 | Calculations: 4",
+            "recommendation": ""
+          },
+          {
+            "name": "Modern Tableau features",
+            "severity": "pass",
+            "detail": "No Tableau 2024.3+ specific features detected.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Connection String Security",
+        "worst_severity": "pass",
+        "checks": [
+          {
+            "name": "Connection string audit",
+            "severity": "pass",
+            "detail": "No sensitive credentials detected in connection strings.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Performance",
+        "worst_severity": "pass",
+        "checks": [
+          {
+            "name": "Query complexity",
+            "severity": "pass",
+            "detail": "Low complexity score (0).",
+            "recommendation": ""
+          },
+          {
+            "name": "DAX expression count",
+            "severity": "pass",
+            "detail": "4 calculations — within typical range.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Data Volume",
+        "worst_severity": "pass",
+        "checks": [
+          {
+            "name": "Table sizes",
+            "severity": "pass",
+            "detail": "1 tables — no excessively large tables detected.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Prep Complexity",
+        "worst_severity": "pass",
+        "checks": [
+          {
+            "name": "Prep flow",
+            "severity": "pass",
+            "detail": "No Tableau Prep flow provided.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Licensing",
+        "worst_severity": "pass",
+        "checks": [
+          {
+            "name": "License tier",
+            "severity": "pass",
+            "detail": "Standard Power BI Pro license should be sufficient.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Multi-Datasource",
+        "worst_severity": "pass",
+        "checks": [
+          {
+            "name": "Single datasource",
+            "severity": "pass",
+            "detail": "All worksheets use a single datasource.",
+            "recommendation": ""
+          }
+        ]
+      },
+      {
+        "name": "Functionality Parity",
+        "worst_severity": "pass",
+        "checks": [
+          {
+            "name": "Parity score",
+            "severity": "pass",
+            "detail": "Functionality parity 100.0% (FULL); registry v1.1.0.",
+            "recommendation": ""
+          },
+          {
+            "name": "No parity gaps",
+            "severity": "pass",
+            "detail": "Every in-use feature maps exactly or is auto-healed.",
+            "recommendation": ""
+          }
+        ]
+      }
+    ]
+  },
+  "assessment_evidence": {
+    "schema_version": "1.0",
+    "status": "static_evidence",
+    "overall_score": "GREEN",
+    "counts": {
+      "pass": 40,
+      "warn": 0,
+      "fail": 0,
+      "not_run": 0
+    },
+    "findings": [
+      {
+        "evidence_id": "assessment.datasource_compatibility.0",
+        "category": "Datasource Compatibility",
+        "name": "Datasource count",
+        "state": "pass",
+        "source_scope": "Datasource Compatibility",
+        "target_scope": "Power Query M",
+        "owner": "@wiring",
+        "detail": "1 datasource(s) detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.datasource_compatibility.1",
+        "category": "Datasource Compatibility",
+        "name": "Connector: SQL Server",
+        "state": "pass",
+        "source_scope": "Datasource Compatibility",
+        "target_scope": "Power Query M",
+        "owner": "@wiring",
+        "detail": "Fully supported in Power BI. Used by: federated.1.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.datasource_compatibility.2",
+        "category": "Datasource Compatibility",
+        "name": "Data blending",
+        "state": "pass",
+        "source_scope": "Datasource Compatibility",
+        "target_scope": "Power Query M",
+        "owner": "@wiring",
+        "detail": "No cross-datasource data blending detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.datasource_compatibility.3",
+        "category": "Datasource Compatibility",
+        "name": "Published datasources",
+        "state": "pass",
+        "source_scope": "Datasource Compatibility",
+        "target_scope": "Power Query M",
+        "owner": "@wiring",
+        "detail": "No published datasource references.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.datasource_compatibility.4",
+        "category": "Datasource Compatibility",
+        "name": "Custom SQL",
+        "state": "pass",
+        "source_scope": "Datasource Compatibility",
+        "target_scope": "Power Query M",
+        "owner": "@wiring",
+        "detail": "No custom SQL queries.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.calculation_readiness.0",
+        "category": "Calculation Readiness",
+        "name": "Calculation count",
+        "state": "pass",
+        "source_scope": "Calculation Readiness",
+        "target_scope": "TMDL/DAX",
+        "owner": "@dax",
+        "detail": "4 calculated field(s) detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.calculation_readiness.1",
+        "category": "Calculation Readiness",
+        "name": "Unsupported functions",
+        "state": "pass",
+        "source_scope": "Calculation Readiness",
+        "target_scope": "TMDL/DAX",
+        "owner": "@dax",
+        "detail": "No calculations use unsupported functions.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.calculation_readiness.2",
+        "category": "Calculation Readiness",
+        "name": "SCRIPT_* analytics extensions",
+        "state": "pass",
+        "source_scope": "Calculation Readiness",
+        "target_scope": "TMDL/DAX",
+        "owner": "@dax",
+        "detail": "No calculations use R/Python analytics extensions.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.calculation_readiness.3",
+        "category": "Calculation Readiness",
+        "name": "Partially-supported functions",
+        "state": "pass",
+        "source_scope": "Calculation Readiness",
+        "target_scope": "TMDL/DAX",
+        "owner": "@dax",
+        "detail": "No calculations use partially-supported functions.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.calculation_readiness.4",
+        "category": "Calculation Readiness",
+        "name": "LOD expressions",
+        "state": "pass",
+        "source_scope": "Calculation Readiness",
+        "target_scope": "TMDL/DAX",
+        "owner": "@dax",
+        "detail": "No LOD expressions detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.calculation_readiness.5",
+        "category": "Calculation Readiness",
+        "name": "Table calculations",
+        "state": "pass",
+        "source_scope": "Calculation Readiness",
+        "target_scope": "TMDL/DAX",
+        "owner": "@dax",
+        "detail": "No table calculations detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.visual___dashboard_coverage.0",
+        "category": "Visual & Dashboard Coverage",
+        "name": "Worksheet count",
+        "state": "pass",
+        "source_scope": "Visual & Dashboard Coverage",
+        "target_scope": "PBIR",
+        "owner": "@visual",
+        "detail": "4 worksheet(s) detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.visual___dashboard_coverage.1",
+        "category": "Visual & Dashboard Coverage",
+        "name": "Dashboard count",
+        "state": "pass",
+        "source_scope": "Visual & Dashboard Coverage",
+        "target_scope": "PBIR",
+        "owner": "@visual",
+        "detail": "1 dashboard(s) detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.visual___dashboard_coverage.2",
+        "category": "Visual & Dashboard Coverage",
+        "name": "Chart type coverage",
+        "state": "pass",
+        "source_scope": "Visual & Dashboard Coverage",
+        "target_scope": "PBIR",
+        "owner": "@visual",
+        "detail": "All 4 chart type(s) have Power BI equivalents.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.visual___dashboard_coverage.3",
+        "category": "Visual & Dashboard Coverage",
+        "name": "Formatting coverage",
+        "state": "pass",
+        "source_scope": "Visual & Dashboard Coverage",
+        "target_scope": "PBIR",
+        "owner": "@visual",
+        "detail": "3 color-encoded field(s), 0 conditional formatting rule(s), 0 custom font worksheet(s).",
+        "next_action": "Color encoding migrates as gradient/categorical rules. Custom fonts map to web-safe equivalents."
+      },
+      {
+        "evidence_id": "assessment.filter___parameter_complexity.0",
+        "category": "Filter & Parameter Complexity",
+        "name": "Filter count",
+        "state": "pass",
+        "source_scope": "Filter & Parameter Complexity",
+        "target_scope": "migration",
+        "owner": "@visual",
+        "detail": "0 top-level filter(s) detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.filter___parameter_complexity.1",
+        "category": "Filter & Parameter Complexity",
+        "name": "Parameter count",
+        "state": "pass",
+        "source_scope": "Filter & Parameter Complexity",
+        "target_scope": "migration",
+        "owner": "@visual",
+        "detail": "0 parameter(s) detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.filter___parameter_complexity.2",
+        "category": "Filter & Parameter Complexity",
+        "name": "User filters (RLS)",
+        "state": "pass",
+        "source_scope": "Filter & Parameter Complexity",
+        "target_scope": "migration",
+        "owner": "@visual",
+        "detail": "No user filters — no RLS configuration needed.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.data_model_complexity.0",
+        "category": "Data Model Complexity",
+        "name": "Table count",
+        "state": "pass",
+        "source_scope": "Data Model Complexity",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "1 table(s) across all datasources.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.data_model_complexity.1",
+        "category": "Data Model Complexity",
+        "name": "Column count",
+        "state": "pass",
+        "source_scope": "Data Model Complexity",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "26 column(s) total.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.data_model_complexity.2",
+        "category": "Data Model Complexity",
+        "name": "Relationship count",
+        "state": "pass",
+        "source_scope": "Data Model Complexity",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "0 relationship(s) detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.data_model_complexity.3",
+        "category": "Data Model Complexity",
+        "name": "Hierarchies",
+        "state": "pass",
+        "source_scope": "Data Model Complexity",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "No hierarchies.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.data_model_complexity.4",
+        "category": "Data Model Complexity",
+        "name": "Sets / Groups / Bins",
+        "state": "pass",
+        "source_scope": "Data Model Complexity",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "No sets, groups, or bins.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.interactivity___actions.0",
+        "category": "Interactivity & Actions",
+        "name": "No actions or stories",
+        "state": "pass",
+        "source_scope": "Interactivity & Actions",
+        "target_scope": "PBIR",
+        "owner": "@visual",
+        "detail": "No interactivity features detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.data_extracts___packaging.0",
+        "category": "Data Extracts & Packaging",
+        "name": "Hyper extract files",
+        "state": "pass",
+        "source_scope": "Data Extracts & Packaging",
+        "target_scope": "Power Query M",
+        "owner": "@extractor",
+        "detail": "No .hyper extract files (live connection or datasource files).",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.data_extracts___packaging.1",
+        "category": "Data Extracts & Packaging",
+        "name": "Custom shapes",
+        "state": "pass",
+        "source_scope": "Data Extracts & Packaging",
+        "target_scope": "Power Query M",
+        "owner": "@extractor",
+        "detail": "No custom shapes.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.data_extracts___packaging.2",
+        "category": "Data Extracts & Packaging",
+        "name": "Embedded fonts",
+        "state": "pass",
+        "source_scope": "Data Extracts & Packaging",
+        "target_scope": "Power Query M",
+        "owner": "@extractor",
+        "detail": "No embedded fonts.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.migration_scope___effort.0",
+        "category": "Migration Scope & Effort",
+        "name": "Complexity score",
+        "state": "pass",
+        "source_scope": "Migration Scope & Effort",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "Complexity score: 12 (Low).",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.migration_scope___effort.1",
+        "category": "Migration Scope & Effort",
+        "name": "Estimated effort",
+        "state": "pass",
+        "source_scope": "Migration Scope & Effort",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "Estimated post-migration review effort: < 1 hour of post-migration review.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.migration_scope___effort.2",
+        "category": "Migration Scope & Effort",
+        "name": "Object inventory",
+        "state": "pass",
+        "source_scope": "Migration Scope & Effort",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "Objects: Datasources: 1 | Worksheets: 4 | Dashboards: 1 | Calculations: 4",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.migration_scope___effort.3",
+        "category": "Migration Scope & Effort",
+        "name": "Modern Tableau features",
+        "state": "pass",
+        "source_scope": "Migration Scope & Effort",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "No Tableau 2024.3+ specific features detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.connection_string_security.0",
+        "category": "Connection String Security",
+        "name": "Connection string audit",
+        "state": "pass",
+        "source_scope": "Connection String Security",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "No sensitive credentials detected in connection strings.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.performance.0",
+        "category": "Performance",
+        "name": "Query complexity",
+        "state": "pass",
+        "source_scope": "Performance",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "Low complexity score (0).",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.performance.1",
+        "category": "Performance",
+        "name": "DAX expression count",
+        "state": "pass",
+        "source_scope": "Performance",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "4 calculations — within typical range.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.data_volume.0",
+        "category": "Data Volume",
+        "name": "Table sizes",
+        "state": "pass",
+        "source_scope": "Data Volume",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "1 tables — no excessively large tables detected.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.prep_complexity.0",
+        "category": "Prep Complexity",
+        "name": "Prep flow",
+        "state": "pass",
+        "source_scope": "Prep Complexity",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "No Tableau Prep flow provided.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.licensing.0",
+        "category": "Licensing",
+        "name": "License tier",
+        "state": "pass",
+        "source_scope": "Licensing",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "Standard Power BI Pro license should be sufficient.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.multi_datasource.0",
+        "category": "Multi-Datasource",
+        "name": "Single datasource",
+        "state": "pass",
+        "source_scope": "Multi-Datasource",
+        "target_scope": "Power Query M",
+        "owner": "@wiring",
+        "detail": "All worksheets use a single datasource.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.functionality_parity.0",
+        "category": "Functionality Parity",
+        "name": "Parity score",
+        "state": "pass",
+        "source_scope": "Functionality Parity",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "Functionality parity 100.0% (FULL); registry v1.1.0.",
+        "next_action": "Retain evidence and continue migration."
+      },
+      {
+        "evidence_id": "assessment.functionality_parity.1",
+        "category": "Functionality Parity",
+        "name": "No parity gaps",
+        "state": "pass",
+        "source_scope": "Functionality Parity",
+        "target_scope": "migration",
+        "owner": "@assessor",
+        "detail": "Every in-use feature maps exactly or is auto-healed.",
+        "next_action": "Retain evidence and continue migration."
+      }
+    ]
+  },
+  "recovery": {
+    "schema_version": "1.0",
+    "status": "pending",
+    "object_count": 10,
+    "counts": {
+      "generated": 0,
+      "approximated": 0,
+      "unsupported": 0,
+      "intentionally_omitted": 0,
+      "blocked": 0,
+      "pending_validation": 10
+    },
+    "objects": [
+      {
+        "stable_id": "src-1f3848179f625d5f",
+        "object_type": "calculations",
+        "name": "[AVG_Salary]",
+        "disposition": "pending_validation",
+        "owner": "@dax",
+        "remediation": "Validate the generated target artifact before release."
+      },
+      {
+        "stable_id": "src-510074531541846e",
+        "object_type": "calculations",
+        "name": "[Tenure_Category]",
+        "disposition": "pending_validation",
+        "owner": "@dax",
+        "remediation": "Validate the generated target artifact before release."
+      },
+      {
+        "stable_id": "src-54c556a5d67d3c47",
+        "object_type": "calculations",
+        "name": "[Total_Comp]",
+        "disposition": "pending_validation",
+        "owner": "@dax",
+        "remediation": "Validate the generated target artifact before release."
+      },
+      {
+        "stable_id": "src-61143387397e49dd",
+        "object_type": "calculations",
+        "name": "[Employee_Count]",
+        "disposition": "pending_validation",
+        "owner": "@dax",
+        "remediation": "Validate the generated target artifact before release."
+      },
+      {
+        "stable_id": "src-3cd39d56c1b0bb38",
+        "object_type": "dashboards",
+        "name": "HR Executive Dashboard",
+        "disposition": "pending_validation",
+        "owner": "@visual",
+        "remediation": "Validate the generated target artifact before release."
+      },
+      {
+        "stable_id": "src-ea6c621bf5150206",
+        "object_type": "datasources",
+        "name": "federated.1",
+        "disposition": "pending_validation",
+        "owner": "@wiring",
+        "remediation": "Validate the generated target artifact before release."
+      },
+      {
+        "stable_id": "src-5496ad1482c003c4",
+        "object_type": "worksheets",
+        "name": "Headcount by Department",
+        "disposition": "pending_validation",
+        "owner": "@visual",
+        "remediation": "Validate the generated target artifact before release."
+      },
+      {
+        "stable_id": "src-99401b4edaa8e872",
+        "object_type": "worksheets",
+        "name": "Salary Analysis",
+        "disposition": "pending_validation",
+        "owner": "@visual",
+        "remediation": "Validate the generated target artifact before release."
+      },
+      {
+        "stable_id": "src-b08b81f691dd72f0",
+        "object_type": "worksheets",
+        "name": "Performance Matrix",
+        "disposition": "pending_validation",
+        "owner": "@visual",
+        "remediation": "Validate the generated target artifact before release."
+      },
+      {
+        "stable_id": "src-bf046632a42f2f98",
+        "object_type": "worksheets",
+        "name": "Hiring Trend",
+        "disposition": "pending_validation",
+        "owner": "@visual",
+        "remediation": "Validate the generated target artifact before release."
+      }
+    ]
+  },
+  "validation_contract": {
+    "schema_version": "1.0",
+    "status": "static_evidence",
+    "semantic": {
+      "static_status": "passed",
+      "static_issue_count": 0,
+      "execution_status": "not_run",
+      "runtime": "not_run"
+    },
+    "m": {
+      "status": "passed",
+      "fallback_in_use": 0,
+      "emitter_errors": 0
+    },
+    "recovery": {
+      "status": "pending",
+      "pending_validation": 10
+    },
+    "release_ready": false
+  },
+  "visual_recovery": {
+    "schema_version": "1.0",
+    "status": "not_available",
+    "visual_count": 0,
+    "counts": {
+      "valid": 0,
+      "empty": 0,
+      "orphaned": 0,
+      "unvalidated": 0
+    },
+    "visuals": []
+  },
+  "visual_parity": {
+    "schema_version": "1.0",
+    "status": "static_evidence",
+    "registry": {
+      "native": 129,
+      "approximation": 16,
+      "custom_visual": 19
+    },
+    "source_used": {
+      "approximation_count": 0,
+      "approximations": []
+    },
+    "target_recovery": {
+      "visual_count": 0,
+      "valid": 0,
+      "empty": 0,
+      "orphaned": 0,
+      "risk_count": 0
+    },
+    "runtime": "not_run",
+    "remediation_owner": null
+  },
+  "roundtrip_validation": {
+    "schema_version": "1.0",
+    "status": "static_evidence",
+    "static": {
+      "status": "static_pass",
+      "openability": "passed",
+      "blocking_issue_count": 0,
+      "visual_risk_count": 0,
+      "issues": []
+    },
+    "desktop": {
+      "status": "not_run",
+      "reopen": "not_run",
+      "required_for": "DESKTOP_REOPEN_PASS"
+    },
+    "visual": {
+      "runtime": "not_run",
+      "parity_runtime": "not_run",
+      "screenshot_comparison": "not_run"
+    },
+    "post_repair_revalidation": "not_required"
+  },
+  "parity": {
+    "workbook": "HR_Analytics",
+    "registry_version": "1.1.0",
+    "parity_score": 100.0,
+    "grade": "FULL",
+    "status_counts": {
+      "exact": 4,
+      "healed": 1,
+      "approximated": 0,
+      "unsupported": 0
+    },
+    "usages": [
+      {
+        "key": "calc_basic",
+        "label": "Basic calculated field",
+        "category": "Calculations",
+        "status": "exact",
+        "count": 4,
+        "target": "DAX measure/column",
+        "remediation": "Verify aggregation context in Power BI.",
+        "evidence": [],
+        "evidence_status": "source_only"
+      },
+      {
+        "key": "dashboard",
+        "label": "Dashboard",
+        "category": "Report",
+        "status": "healed",
+        "count": 1,
+        "target": "PBIR report page",
+        "remediation": "Review page composition and dashboard-level interactions.",
+        "evidence": [
+          "HR_Analytics.Report/definition/pages/ReportSection/page.json"
+        ],
+        "evidence_status": "evidenced"
+      }
+    ],
+    "gaps": [],
+    "untracked_features": [],
+    "evidence_coverage": {
+      "tracked_features": 2,
+      "evidenced_features": 1,
+      "untracked_features": 0,
+      "coverage_percent": 50.0
+    }
+  },
+  "data": {
+    "report_name": "HR_Analytics",
+    "tables": [
+      {
+        "table": "Employees",
+        "found": true,
+        "column_coverage_percent": 100.0,
+        "missing_columns": [],
+        "has_source": true
+      }
+    ],
+    "summary": {
+      "source_tables": 1,
+      "tables_found": 1,
+      "table_match_percent": 100.0,
+      "avg_column_coverage_percent": 100.0,
+      "sourceless_tables": []
+    }
+  },
+  "interface": {
+    "report_name": "HR_Analytics",
+    "filters": {
+      "expected": 0,
+      "generated_filter_configs": {
+        "report": 0,
+        "page": 0,
+        "visual": 0
+      },
+      "generated_slicers": 0,
+      "generated_total": 0,
+      "covered": true
+    },
+    "actions": {
+      "expected_buttons": 0,
+      "generated_buttons": 0,
+      "covered": true
+    },
+    "parameters": {
+      "expected": 0,
+      "generated_coverage": 0,
+      "covered": true
+    },
+    "rls": {
+      "expected_at_least": 0,
+      "generated_roles": 0,
+      "covered": true
+    }
+  },
+  "openability": {
+    "project_dir": ".\\_next_update_check\\HR_Analytics",
+    "openable": true,
+    "blocking_count": 0,
+    "warning_count": 0,
+    "blocking_issues": [],
+    "warnings": [],
+    "checks": [
+      {
+        "name": "structure",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "pbip_contract",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "generated_content",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "manifest_coherence",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "report_content",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "json_parse",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "tmdl_present",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "tmdl_partitions",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "power_query",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "dax",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "semantic_validation",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "executable_dax",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "visual_bindings",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "references",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "report_structure",
+        "ok": true,
+        "severity": "error",
+        "issues": []
+      },
+      {
+        "name": "schema",
+        "ok": true,
+        "severity": "warning",
+        "issues": []
+      }
+    ]
+  },
+  "openability_confidence": {
+    "level": "STATIC_PASS",
+    "static_checks": {
+      "passed": 16,
+      "failed": 0
+    },
+    "desktop": {
+      "status": "not_run",
+      "version": null,
+      "signals": []
+    },
+    "semantic_execution": "not_run",
+    "refresh": "not_run",
+    "deployment": "not_run"
+  },
+  "desktop": {},
+  "fabric": {
+    "present": false,
+    "valid": true,
+    "errors": [],
+    "warnings": []
+  },
+  "fabric_evidence": {
+    "status": "not_present",
+    "confidence": "UNVERIFIED",
+    "validation": {
+      "valid": true,
+      "errors": [],
+      "warnings": [],
+      "artifacts_checked": 0
+    },
+    "artifacts": {},
+    "runtime": {
+      "deployment": "not_run",
+      "refresh": "not_run",
+      "semantic_execution": "not_run",
+      "post_deploy": "not_run"
+    }
+  },
+  "semantic_context": {
+    "status": "static_diagnostics",
+    "calculations_scanned": 8,
+    "lod_issues": [],
+    "issue_count": 0,
+    "execution": {
+      "status": "not_run",
+      "executor": {
+        "status": "not_run",
+        "provider": null,
+        "version": null
+      },
+      "queries_requested": 0,
+      "queries_run": 0,
+      "passed": 0,
+      "failed": 0,
+      "results": []
+    },
+    "measure_context": {
+      "status": "static_diagnostics",
+      "issues": [],
+      "issue_count": 0
+    },
+    "filter_context": {
+      "status": "static_diagnostics",
+      "issues": [],
+      "issue_count": 0
+    }
+  },
+  "m_emitters": {
+    "status": "static_evidence",
+    "summary": {
+      "aliases": 98,
+      "status_counts": {
+        "generated": 97,
+        "fallback": 1
+      },
+      "invalid_connectors": [],
+      "fallback_connectors": [
+        "UnknownConnector"
+      ],
+      "remediation": {
+        "UnknownConnector": {
+          "owner": "@wiring",
+          "action": "Add a connector-specific M generator and a focused validator test before production use."
+        }
+      },
+      "fixtures": {
+        "count": 5,
+        "status_counts": {
+          "generated": 5
+        },
+        "invalid_fixtures": []
+      }
+    },
+    "fallback_in_use": [],
+    "rows": [
+      {
+        "connector": "ADLS",
+        "generator": "_gen_m_azure_blob",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Amazon Athena",
+        "generator": "_gen_m_athena",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Amazon Redshift",
+        "generator": "_gen_m_redshift",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Athena",
+        "generator": "_gen_m_athena",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Azure Blob",
+        "generator": "_gen_m_azure_blob",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Azure Blob Storage",
+        "generator": "_gen_m_azure_blob",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Azure Cosmos DB",
+        "generator": "_gen_m_cosmosdb",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Azure Data Lake",
+        "generator": "_gen_m_azure_blob",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Azure SQL",
+        "generator": "_gen_m_azure_sql",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Azure Synapse",
+        "generator": "_gen_m_synapse",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Azure Synapse Deep",
+        "generator": "_gen_m_synapse_depth",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "BigQuery",
+        "generator": "_gen_m_bigquery",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "CDS",
+        "generator": "_gen_m_dataverse",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "CSV",
+        "generator": "_gen_m_csv",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "ClickHouse",
+        "generator": "_gen_m_clickhouse",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Common Data Service",
+        "generator": "_gen_m_dataverse",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Cosmos DB",
+        "generator": "_gen_m_cosmosdb",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Custom SQL",
+        "generator": "_gen_m_custom_sql",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "DB2",
+        "generator": "_gen_m_db2",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Databricks",
+        "generator": "_gen_m_databricks",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Databricks Unity",
+        "generator": "_gen_m_databricks_unity",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Dataverse",
+        "generator": "_gen_m_dataverse",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Db2 Deep",
+        "generator": "_gen_m_db2_depth",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Denodo",
+        "generator": "_gen_m_denodo",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "DocumentDB",
+        "generator": "_gen_m_cosmosdb",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Dremio",
+        "generator": "_gen_m_dremio",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Essbase",
+        "generator": "_gen_m_essbase",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Excel",
+        "generator": "_gen_m_excel",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Fabric Lakehouse",
+        "generator": "_gen_m_fabric_lakehouse",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Firebolt",
+        "generator": "_gen_m_firebolt",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "GeoJSON",
+        "generator": "_gen_m_geojson",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Google Analytics",
+        "generator": "_gen_m_google_analytics",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Google Sheets",
+        "generator": "_gen_m_google_sheets",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "HDInsight",
+        "generator": "_gen_m_hadoop_hive",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Hadoop Hive",
+        "generator": "_gen_m_hadoop_hive",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Hive",
+        "generator": "_gen_m_hadoop_hive",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Hyper",
+        "generator": "_gen_m_hyper",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Hyperion",
+        "generator": "_gen_m_essbase",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "IBM DB2",
+        "generator": "_gen_m_db2",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "IBM Db2 Deep",
+        "generator": "_gen_m_db2_depth",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Impala",
+        "generator": "_gen_m_impala",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "JSON",
+        "generator": "_gen_m_json",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Lakehouse",
+        "generator": "_gen_m_fabric_lakehouse",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "MemSQL",
+        "generator": "_gen_m_singlestore",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "MongoDB",
+        "generator": "_gen_m_mongodb",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "MongoDB Atlas",
+        "generator": "_gen_m_mongodb",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "MySQL",
+        "generator": "_gen_m_mysql",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "OData",
+        "generator": "_gen_m_odata",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Oracle",
+        "generator": "_gen_m_oracle",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Oracle Essbase",
+        "generator": "_gen_m_essbase",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "PDF",
+        "generator": "_gen_m_pdf",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "PostgreSQL",
+        "generator": "_gen_m_postgresql",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Presto",
+        "generator": "_gen_m_presto",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Redshift",
+        "generator": "_gen_m_redshift",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Redshift Deep",
+        "generator": "_gen_m_redshift_depth",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "SAP BW",
+        "generator": "_gen_m_sap_bw",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "SAP HANA",
+        "generator": "_gen_m_sap_hana",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "SAP HANA Deep",
+        "generator": "_gen_m_sap_hana_depth",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "SQL Server",
+        "generator": "_gen_m_sql_server",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "SQLPROXY",
+        "generator": "_gen_m_sqlproxy",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Salesforce",
+        "generator": "_gen_m_salesforce",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "ServiceNow",
+        "generator": "_gen_m_servicenow",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "SharePoint",
+        "generator": "_gen_m_sharepoint",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "SingleStore",
+        "generator": "_gen_m_singlestore",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Snowflake",
+        "generator": "_gen_m_snowflake",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Spark",
+        "generator": "_gen_m_spark",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Spark SQL",
+        "generator": "_gen_m_spark",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Splunk",
+        "generator": "_gen_m_splunk",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Starburst",
+        "generator": "_gen_m_starburst",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Starburst Galaxy",
+        "generator": "_gen_m_starburst",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Synapse",
+        "generator": "_gen_m_synapse",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Synapse Deep",
+        "generator": "_gen_m_synapse_depth",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Tableau Server",
+        "generator": "_gen_m_sqlproxy",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Teradata",
+        "generator": "_gen_m_teradata",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Teradata Deep",
+        "generator": "_gen_m_teradata_depth",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Trino",
+        "generator": "_gen_m_presto",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Trino Enterprise",
+        "generator": "_gen_m_starburst",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Vertica",
+        "generator": "_gen_m_vertica",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "Web",
+        "generator": "_gen_m_web",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "XML",
+        "generator": "_gen_m_xml",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "athena",
+        "generator": "_gen_m_athena",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "clickhouse",
+        "generator": "_gen_m_clickhouse",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "cosmosdb",
+        "generator": "_gen_m_cosmosdb",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "databricks-unity-catalog",
+        "generator": "_gen_m_databricks_unity",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "db2",
+        "generator": "_gen_m_db2",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "denodo",
+        "generator": "_gen_m_denodo",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "dremio",
+        "generator": "_gen_m_dremio",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "essbase",
+        "generator": "_gen_m_essbase",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "extract",
+        "generator": "_gen_m_hyper",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "firebolt",
+        "generator": "_gen_m_firebolt",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "hyper",
+        "generator": "_gen_m_hyper",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "mongodb",
+        "generator": "_gen_m_mongodb",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "servicenow",
+        "generator": "_gen_m_servicenow",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "singlestore",
+        "generator": "_gen_m_singlestore",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "splunk",
+        "generator": "_gen_m_splunk",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "sqlproxy",
+        "generator": "_gen_m_sqlproxy",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "starburst",
+        "generator": "_gen_m_starburst",
+        "status": "generated",
+        "issues": [],
+        "remediation": {}
+      },
+      {
+        "connector": "UnknownConnector",
+        "generator": "_gen_m_fallback",
+        "status": "fallback",
+        "issues": [],
+        "remediation": {
+          "owner": "@wiring",
+          "action": "Add a connector-specific M generator and a focused validator test before production use."
+        }
+      },
+      {
+        "connector_fixture": {
+          "fixture": "sql_server_schema_and_quotes",
+          "connector": "SQL Server",
+          "status": "generated",
+          "issues": []
+        }
+      },
+      {
+        "connector_fixture": {
+          "fixture": "csv_file_and_delimiter",
+          "connector": "CSV",
+          "status": "generated",
+          "issues": []
+        }
+      },
+      {
+        "connector_fixture": {
+          "fixture": "excel_source_table_navigation",
+          "connector": "Excel",
+          "status": "generated",
+          "issues": []
+        }
+      },
+      {
+        "connector_fixture": {
+          "fixture": "custom_sql_parameter_safe",
+          "connector": "Custom SQL",
+          "status": "generated",
+          "issues": []
+        }
+      },
+      {
+        "connector_fixture": {
+          "fixture": "tableau_server_published_datasource",
+          "connector": "Tableau Server",
+          "status": "generated",
+          "issues": []
+        }
+      }
+    ]
+  },
+  "visual_mappings": {
+    "status": "static_evidence",
+    "summary": {
+      "mappings": 164,
+      "status_counts": {
+        "native": 129,
+        "approximation": 16,
+        "custom_visual": 19
+      },
+      "sources": [
+        "100-stacked-bar",
+        "100-stacked-column",
+        "100stackedareachart",
+        "100stackedbarchart",
+        "100stackedcolumnchart",
+        "actionbutton",
+        "area",
+        "area-sparkline",
+        "areachart",
+        "areasparkline",
+        "automatic",
+        "bar",
+        "bar-sparkline",
+        "barchart",
+        "barsparkline",
+        "box-and-whisker",
+        "boxplot",
+        "bubble",
+        "bubblechart",
+        "bullet",
+        "bulletchart",
+        "bumpchart",
+        "butterfly",
+        "button",
+        "calendar",
+        "calendarheatmap",
+        "card",
+        "chord",
+        "circle",
+        "clusteredbarchart",
+        "clusteredcolumnchart",
+        "column",
+        "column-sparkline",
+        "columnchart",
+        "columnsparkline",
+        "combo",
+        "combochart",
+        "container",
+        "decompositiontree",
+        "dendogram",
+        "density",
+        "donut",
+        "donutchart",
+        "dot",
+        "dotplot",
+        "dualaxis",
+        "filledmap",
+        "filter_control",
+        "filterpane",
+        "funnel",
+        "funnelchart",
+        "ganttbar",
+        "gauge",
+        "geomap",
+        "heatmap",
+        "hex",
+        "highlighttable",
+        "histogram",
+        "image",
+        "kpi",
+        "line",
+        "lineStackedColumnComboChart",
+        "linechart",
+        "lineclusteredcolumncombochart",
+        "linecolumnchart",
+        "listbox",
+        "lollipop",
+        "makepoint",
+        "map",
+        "matrix",
+        "mekko",
+        "meter",
+        "multi-kpi",
+        "multipolygon",
+        "multirowcard",
+        "network",
+        "orgchart",
+        "packedbubble",
+        "parallel-coordinates",
+        "parallelcoordinates",
+        "pareto",
+        "pie",
+        "piechart",
+        "pivot",
+        "pivot-table",
+        "pivottable",
+        "polygon",
+        "radarChart",
+        "radial",
+        "ribbon",
+        "ribbonchart",
+        "ring",
+        "sankey",
+        "scatter",
+        "scatterchart",
+        "scatterplot",
+        "semicircle",
+        "shape",
+        "shapemap",
+        "showme_more",
+        "slicer",
+        "slopechart",
+        "sparkline",
+        "spatial",
+        "square",
+        "stacked-area",
+        "stacked-bar",
+        "stacked-column",
+        "stackedareachart",
+        "stackedbarchart",
+        "stackedcolumnchart",
+        "straight-table",
+        "straighttable",
+        "stripplot",
+        "sunburst",
+        "tabcontainer",
+        "table",
+        "tableex",
+        "text",
+        "text-image",
+        "textbox",
+        "timeline",
+        "treemap",
+        "violin",
+        "violinplot",
+        "waffle",
+        "waterfall",
+        "waterfallchart",
+        "winloss",
+        "winloss-sparkline",
+        "winlosssparkline",
+        "word-cloud",
+        "wordcloud",
+        "writeback"
+      ],
+      "targets": [
+        "actionButton",
+        "areaChart",
+        "azureMap",
+        "boxAndWhisker",
+        "boxplot",
+        "bullet",
+        "bulletChart",
+        "calendar",
+        "card",
+        "chord",
+        "chordChart",
+        "clusteredBarChart",
+        "clusteredColumnChart",
+        "decompositionTree",
+        "dendogram",
+        "donutChart",
+        "filledMap",
+        "funnel",
+        "ganttChart",
+        "ganttbar",
+        "gauge",
+        "histogram",
+        "hundredPercentStackedAreaChart",
+        "hundredPercentStackedBarChart",
+        "hundredPercentStackedColumnChart",
+        "image",
+        "lineChart",
+        "lineClusteredColumnComboChart",
+        "lineStackedColumnComboChart",
+        "map",
+        "matrix",
+        "multiRowCard",
+        "network",
+        "networkNavigator",
+        "orgchart",
+        "parallelcoordinates",
+        "pieChart",
+        "pivotTable",
+        "radarChart",
+        "radial",
+        "ribbonChart",
+        "sankey",
+        "sankeyDiagram",
+        "scatterChart",
+        "shapeMap",
+        "showme_more",
+        "slicer",
+        "stackedAreaChart",
+        "stackedBarChart",
+        "stackedColumnChart",
+        "sunburst",
+        "tableEx",
+        "textbox",
+        "timeline",
+        "treemap",
+        "violin",
+        "waterfallChart",
+        "wordCloud",
+        "wordcloud",
+        "writeback"
+      ]
+    },
+    "rows": [
+      {
+        "source": "100-stacked-bar",
+        "target": "hundredPercentStackedBarChart",
+        "status": "native"
+      },
+      {
+        "source": "100-stacked-column",
+        "target": "hundredPercentStackedColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "100stackedareachart",
+        "target": "hundredPercentStackedAreaChart",
+        "status": "native"
+      },
+      {
+        "source": "100stackedbarchart",
+        "target": "hundredPercentStackedBarChart",
+        "status": "native"
+      },
+      {
+        "source": "100stackedcolumnchart",
+        "target": "hundredPercentStackedColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "actionbutton",
+        "target": "actionButton",
+        "status": "native"
+      },
+      {
+        "source": "area",
+        "target": "areaChart",
+        "status": "native"
+      },
+      {
+        "source": "area-sparkline",
+        "target": "areaChart",
+        "status": "native"
+      },
+      {
+        "source": "areachart",
+        "target": "areaChart",
+        "status": "native"
+      },
+      {
+        "source": "areasparkline",
+        "target": "areaChart",
+        "status": "native"
+      },
+      {
+        "source": "automatic",
+        "target": "tableEx",
+        "status": "native"
+      },
+      {
+        "source": "bar",
+        "target": "clusteredBarChart",
+        "status": "native"
+      },
+      {
+        "source": "bar-sparkline",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "barchart",
+        "target": "clusteredBarChart",
+        "status": "native"
+      },
+      {
+        "source": "barsparkline",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "box-and-whisker",
+        "target": "boxAndWhisker",
+        "status": "native"
+      },
+      {
+        "source": "boxplot",
+        "target": "boxAndWhisker",
+        "status": "native"
+      },
+      {
+        "source": "bubble",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "bubblechart",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "bullet",
+        "target": "gauge",
+        "status": "native"
+      },
+      {
+        "source": "bulletchart",
+        "target": "bulletChart",
+        "status": "native"
+      },
+      {
+        "source": "bumpchart",
+        "target": "lineChart",
+        "status": "native"
+      },
+      {
+        "source": "butterfly",
+        "target": "hundredPercentStackedBarChart",
+        "status": "native"
+      },
+      {
+        "source": "button",
+        "target": "actionButton",
+        "status": "native"
+      },
+      {
+        "source": "calendar",
+        "target": "matrix",
+        "status": "native"
+      },
+      {
+        "source": "calendarheatmap",
+        "target": "matrix",
+        "status": "native"
+      },
+      {
+        "source": "card",
+        "target": "card",
+        "status": "native"
+      },
+      {
+        "source": "chord",
+        "target": "chordChart",
+        "status": "native"
+      },
+      {
+        "source": "circle",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "clusteredbarchart",
+        "target": "clusteredBarChart",
+        "status": "native"
+      },
+      {
+        "source": "clusteredcolumnchart",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "column",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "column-sparkline",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "columnchart",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "columnsparkline",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "combo",
+        "target": "lineStackedColumnComboChart",
+        "status": "native"
+      },
+      {
+        "source": "combochart",
+        "target": "lineStackedColumnComboChart",
+        "status": "native"
+      },
+      {
+        "source": "container",
+        "target": "actionButton",
+        "status": "native"
+      },
+      {
+        "source": "decompositiontree",
+        "target": "decompositionTree",
+        "status": "native"
+      },
+      {
+        "source": "density",
+        "target": "map",
+        "status": "native"
+      },
+      {
+        "source": "donut",
+        "target": "donutChart",
+        "status": "native"
+      },
+      {
+        "source": "donutchart",
+        "target": "donutChart",
+        "status": "native"
+      },
+      {
+        "source": "dot",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "dotplot",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "dualaxis",
+        "target": "lineClusteredColumnComboChart",
+        "status": "native"
+      },
+      {
+        "source": "filledmap",
+        "target": "filledMap",
+        "status": "native"
+      },
+      {
+        "source": "filter_control",
+        "target": "slicer",
+        "status": "native"
+      },
+      {
+        "source": "filterpane",
+        "target": "slicer",
+        "status": "native"
+      },
+      {
+        "source": "funnel",
+        "target": "funnel",
+        "status": "native"
+      },
+      {
+        "source": "funnelchart",
+        "target": "funnel",
+        "status": "native"
+      },
+      {
+        "source": "ganttbar",
+        "target": "ganttChart",
+        "status": "native"
+      },
+      {
+        "source": "gauge",
+        "target": "gauge",
+        "status": "native"
+      },
+      {
+        "source": "geomap",
+        "target": "map",
+        "status": "native"
+      },
+      {
+        "source": "heatmap",
+        "target": "matrix",
+        "status": "native"
+      },
+      {
+        "source": "hex",
+        "target": "treemap",
+        "status": "native"
+      },
+      {
+        "source": "highlighttable",
+        "target": "matrix",
+        "status": "native"
+      },
+      {
+        "source": "histogram",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "image",
+        "target": "image",
+        "status": "native"
+      },
+      {
+        "source": "kpi",
+        "target": "card",
+        "status": "native"
+      },
+      {
+        "source": "line",
+        "target": "lineChart",
+        "status": "native"
+      },
+      {
+        "source": "lineStackedColumnComboChart",
+        "target": "lineStackedColumnComboChart",
+        "status": "native"
+      },
+      {
+        "source": "linechart",
+        "target": "lineChart",
+        "status": "native"
+      },
+      {
+        "source": "lineclusteredcolumncombochart",
+        "target": "lineClusteredColumnComboChart",
+        "status": "native"
+      },
+      {
+        "source": "linecolumnchart",
+        "target": "lineStackedColumnComboChart",
+        "status": "native"
+      },
+      {
+        "source": "listbox",
+        "target": "slicer",
+        "status": "native"
+      },
+      {
+        "source": "lollipop",
+        "target": "clusteredBarChart",
+        "status": "native"
+      },
+      {
+        "source": "makepoint",
+        "target": "azureMap",
+        "status": "native"
+      },
+      {
+        "source": "map",
+        "target": "map",
+        "status": "native"
+      },
+      {
+        "source": "matrix",
+        "target": "matrix",
+        "status": "native"
+      },
+      {
+        "source": "mekko",
+        "target": "stackedBarChart",
+        "status": "native"
+      },
+      {
+        "source": "meter",
+        "target": "gauge",
+        "status": "native"
+      },
+      {
+        "source": "multi-kpi",
+        "target": "multiRowCard",
+        "status": "native"
+      },
+      {
+        "source": "multipolygon",
+        "target": "map",
+        "status": "native"
+      },
+      {
+        "source": "multirowcard",
+        "target": "multiRowCard",
+        "status": "native"
+      },
+      {
+        "source": "network",
+        "target": "networkNavigator",
+        "status": "native"
+      },
+      {
+        "source": "packedbubble",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "parallel-coordinates",
+        "target": "lineChart",
+        "status": "native"
+      },
+      {
+        "source": "parallelcoordinates",
+        "target": "lineChart",
+        "status": "native"
+      },
+      {
+        "source": "pareto",
+        "target": "lineClusteredColumnComboChart",
+        "status": "native"
+      },
+      {
+        "source": "pie",
+        "target": "pieChart",
+        "status": "native"
+      },
+      {
+        "source": "piechart",
+        "target": "pieChart",
+        "status": "native"
+      },
+      {
+        "source": "pivot",
+        "target": "pivotTable",
+        "status": "native"
+      },
+      {
+        "source": "pivot-table",
+        "target": "pivotTable",
+        "status": "native"
+      },
+      {
+        "source": "pivottable",
+        "target": "pivotTable",
+        "status": "native"
+      },
+      {
+        "source": "polygon",
+        "target": "map",
+        "status": "native"
+      },
+      {
+        "source": "radial",
+        "target": "gauge",
+        "status": "native"
+      },
+      {
+        "source": "ribbon",
+        "target": "ribbonChart",
+        "status": "native"
+      },
+      {
+        "source": "ribbonchart",
+        "target": "ribbonChart",
+        "status": "native"
+      },
+      {
+        "source": "ring",
+        "target": "donutChart",
+        "status": "native"
+      },
+      {
+        "source": "sankey",
+        "target": "sankeyDiagram",
+        "status": "native"
+      },
+      {
+        "source": "scatter",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "scatterchart",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "scatterplot",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "semicircle",
+        "target": "donutChart",
+        "status": "native"
+      },
+      {
+        "source": "shape",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "shapemap",
+        "target": "shapeMap",
+        "status": "native"
+      },
+      {
+        "source": "slicer",
+        "target": "slicer",
+        "status": "native"
+      },
+      {
+        "source": "slopechart",
+        "target": "lineChart",
+        "status": "native"
+      },
+      {
+        "source": "sparkline",
+        "target": "lineChart",
+        "status": "native"
+      },
+      {
+        "source": "spatial",
+        "target": "azureMap",
+        "status": "native"
+      },
+      {
+        "source": "square",
+        "target": "treemap",
+        "status": "native"
+      },
+      {
+        "source": "stacked-area",
+        "target": "stackedAreaChart",
+        "status": "native"
+      },
+      {
+        "source": "stacked-bar",
+        "target": "stackedBarChart",
+        "status": "native"
+      },
+      {
+        "source": "stacked-column",
+        "target": "stackedColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "stackedareachart",
+        "target": "stackedAreaChart",
+        "status": "native"
+      },
+      {
+        "source": "stackedbarchart",
+        "target": "stackedBarChart",
+        "status": "native"
+      },
+      {
+        "source": "stackedcolumnchart",
+        "target": "stackedColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "straight-table",
+        "target": "tableEx",
+        "status": "native"
+      },
+      {
+        "source": "straighttable",
+        "target": "tableEx",
+        "status": "native"
+      },
+      {
+        "source": "stripplot",
+        "target": "scatterChart",
+        "status": "native"
+      },
+      {
+        "source": "sunburst",
+        "target": "sunburst",
+        "status": "native"
+      },
+      {
+        "source": "tabcontainer",
+        "target": "actionButton",
+        "status": "native"
+      },
+      {
+        "source": "table",
+        "target": "tableEx",
+        "status": "native"
+      },
+      {
+        "source": "tableex",
+        "target": "tableEx",
+        "status": "native"
+      },
+      {
+        "source": "text",
+        "target": "tableEx",
+        "status": "native"
+      },
+      {
+        "source": "text-image",
+        "target": "textbox",
+        "status": "native"
+      },
+      {
+        "source": "textbox",
+        "target": "textbox",
+        "status": "native"
+      },
+      {
+        "source": "timeline",
+        "target": "lineChart",
+        "status": "native"
+      },
+      {
+        "source": "treemap",
+        "target": "treemap",
+        "status": "native"
+      },
+      {
+        "source": "violin",
+        "target": "boxAndWhisker",
+        "status": "native"
+      },
+      {
+        "source": "violinplot",
+        "target": "boxAndWhisker",
+        "status": "native"
+      },
+      {
+        "source": "waffle",
+        "target": "multiRowCard",
+        "status": "native"
+      },
+      {
+        "source": "waterfall",
+        "target": "waterfallChart",
+        "status": "native"
+      },
+      {
+        "source": "waterfallchart",
+        "target": "waterfallChart",
+        "status": "native"
+      },
+      {
+        "source": "winloss",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "winloss-sparkline",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "winlosssparkline",
+        "target": "clusteredColumnChart",
+        "status": "native"
+      },
+      {
+        "source": "word-cloud",
+        "target": "wordCloud",
+        "status": "native"
+      },
+      {
+        "source": "wordcloud",
+        "target": "wordCloud",
+        "status": "native"
+      },
+      {
+        "source": "bumpchart",
+        "target": "lineChart",
+        "status": "approximation",
+        "note": "Bump chart mapped to Line Chart with auto-generated RANKX measure for ranking",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "butterfly",
+        "target": "hundredPercentStackedBarChart",
+        "status": "approximation",
+        "note": "Butterfly chart mapped to 100% Stacked Bar — auto-generated NEGATE measure for symmetry",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "calendarheatmap",
+        "target": "matrix",
+        "status": "approximation",
+        "note": "Calendar heat map mapped to Matrix — auto-configured with background color conditional formatting gradient",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "chord",
+        "target": "chordChart",
+        "status": "approximation",
+        "note": "Chord diagram mapped to custom visual (ChicagoITChord1.0.0) — install from AppSource",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "dualaxis",
+        "target": "lineClusteredColumnComboChart",
+        "status": "approximation",
+        "note": "Dual axis mapped to Line+Column Combo",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "ganttbar",
+        "target": "ganttChart",
+        "status": "approximation",
+        "note": "Gantt bar mapped to custom visual (GanttByMAQSoftware1.0.0) — install from AppSource",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "lollipop",
+        "target": "clusteredBarChart",
+        "status": "approximation",
+        "note": "Lollipop chart mapped to Clustered Bar — thin bars with data labels styled as circle markers",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "mekko",
+        "target": "stackedBarChart",
+        "status": "approximation",
+        "note": "Mekko chart mapped to Stacked Bar — variable-width bars are not supported",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "network",
+        "target": "networkNavigator",
+        "status": "approximation",
+        "note": "Network graph mapped to custom visual (NetworkNavigator1.0.0) — install from AppSource",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "parallelcoordinates",
+        "target": "lineChart",
+        "status": "approximation",
+        "note": "Parallel coordinates mapped to Line Chart — multi-axis layout lost, use custom visual from AppSource (ParallelCoordinates1.0.0)",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "pareto",
+        "target": "lineClusteredColumnComboChart",
+        "status": "approximation",
+        "note": "Pareto mapped to Line+Column Combo — cumulative line may need adjustment",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "sankey",
+        "target": "sankeyDiagram",
+        "status": "approximation",
+        "note": "Sankey diagram mapped to custom visual (ChicagoITSankey1.1.0) — install from AppSource",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "slopechart",
+        "target": "lineChart",
+        "status": "approximation",
+        "note": "Slope chart mapped to Line Chart with markers — represents period comparison between two data points",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "timeline",
+        "target": "lineChart",
+        "status": "approximation",
+        "note": "Timeline mapped to Line Chart with shape markers — event milestones rendered as data point markers",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "violin",
+        "target": "boxAndWhisker",
+        "status": "approximation",
+        "note": "Violin plot mapped to Box and Whisker — distribution shape lost, use custom visual from AppSource (ViolinPlot1.0.0)",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "waffle",
+        "target": "multiRowCard",
+        "status": "approximation",
+        "note": "Waffle chart mapped to Multi-Row Card with percentage computation — grid layout approximated as card display",
+        "owner": "@visual",
+        "remediation": "Review target behavior and accept, improve, or replace the approximation."
+      },
+      {
+        "source": "boxplot",
+        "target": "boxplot",
+        "status": "custom_visual",
+        "guid": "BoxAndWhisker1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "bullet",
+        "target": "bullet",
+        "status": "custom_visual",
+        "guid": "BulletChart1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "calendar",
+        "target": "calendar",
+        "status": "custom_visual",
+        "guid": "Calendar1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "chord",
+        "target": "chord",
+        "status": "custom_visual",
+        "guid": "ChicagoITChord1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "dendogram",
+        "target": "dendogram",
+        "status": "custom_visual",
+        "guid": "Dendrogram1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "ganttbar",
+        "target": "ganttbar",
+        "status": "custom_visual",
+        "guid": "GanttByMAQSoftware1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "histogram",
+        "target": "histogram",
+        "status": "custom_visual",
+        "guid": "Histogram1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "network",
+        "target": "network",
+        "status": "custom_visual",
+        "guid": "NetworkNavigator1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "orgchart",
+        "target": "orgchart",
+        "status": "custom_visual",
+        "guid": "OrgChart1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "parallelcoordinates",
+        "target": "parallelcoordinates",
+        "status": "custom_visual",
+        "guid": "ParallelCoordinates1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "radarChart",
+        "target": "radarChart",
+        "status": "custom_visual",
+        "guid": "RadarChart1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "radial",
+        "target": "radial",
+        "status": "custom_visual",
+        "guid": "RadialGauge1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "sankey",
+        "target": "sankey",
+        "status": "custom_visual",
+        "guid": "ChicagoITSankey1.1.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "showme_more",
+        "target": "showme_more",
+        "status": "custom_visual",
+        "guid": "ShowMeMore1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "sunburst",
+        "target": "sunburst",
+        "status": "custom_visual",
+        "guid": "Sunburst1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "timeline",
+        "target": "timeline",
+        "status": "custom_visual",
+        "guid": "Timeline1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "violin",
+        "target": "violin",
+        "status": "custom_visual",
+        "guid": "ViolinPlot1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "wordcloud",
+        "target": "wordcloud",
+        "status": "custom_visual",
+        "guid": "WordCloud1633006498960",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      },
+      {
+        "source": "writeback",
+        "target": "writeback",
+        "status": "custom_visual",
+        "guid": "DataWriteback1.0.0",
+        "owner": "@visual",
+        "remediation": "Verify AppSource/custom visual availability in the target tenant."
+      }
+    ]
+  },
+  "source_inventory": {
+    "schema_version": "1.0",
+    "object_types": [
+      "worksheets",
+      "dashboards",
+      "datasources",
+      "calculations",
+      "parameters",
+      "filters",
+      "stories",
+      "actions",
+      "sets",
+      "groups",
+      "bins",
+      "hierarchies",
+      "relationships",
+      "sort_orders",
+      "aliases",
+      "custom_sql",
+      "user_filters",
+      "hyper_files",
+      "datasource_filters",
+      "custom_geocoding",
+      "published_datasources",
+      "data_blending",
+      "table_extensions",
+      "linguistic_schema"
+    ],
+    "object_count": 10,
+    "counts": {
+      "worksheets": 4,
+      "dashboards": 1,
+      "datasources": 1,
+      "calculations": 4,
+      "parameters": 0,
+      "filters": 0,
+      "stories": 0,
+      "actions": 0,
+      "sets": 0,
+      "groups": 0,
+      "bins": 0,
+      "hierarchies": 0,
+      "relationships": 0,
+      "sort_orders": 0,
+      "aliases": 0,
+      "custom_sql": 0,
+      "user_filters": 0,
+      "hyper_files": 0,
+      "datasource_filters": 0,
+      "custom_geocoding": 0,
+      "published_datasources": 0,
+      "data_blending": 0,
+      "table_extensions": 0,
+      "linguistic_schema": 0
+    },
+    "duplicate_names": [],
+    "orphan_count": 0,
+    "objects": [
+      {
+        "stable_id": "src-1f3848179f625d5f",
+        "object_type": "calculations",
+        "name": "[AVG_Salary]",
+        "source_location": "extracted",
+        "parent": null,
+        "orphan": 0,
+        "disposition": "extracted"
+      },
+      {
+        "stable_id": "src-510074531541846e",
+        "object_type": "calculations",
+        "name": "[Tenure_Category]",
+        "source_location": "extracted",
+        "parent": null,
+        "orphan": 0,
+        "disposition": "extracted"
+      },
+      {
+        "stable_id": "src-54c556a5d67d3c47",
+        "object_type": "calculations",
+        "name": "[Total_Comp]",
+        "source_location": "extracted",
+        "parent": null,
+        "orphan": 0,
+        "disposition": "extracted"
+      },
+      {
+        "stable_id": "src-61143387397e49dd",
+        "object_type": "calculations",
+        "name": "[Employee_Count]",
+        "source_location": "extracted",
+        "parent": null,
+        "orphan": 0,
+        "disposition": "extracted"
+      },
+      {
+        "stable_id": "src-3cd39d56c1b0bb38",
+        "object_type": "dashboards",
+        "name": "HR Executive Dashboard",
+        "source_location": "extracted",
+        "parent": null,
+        "orphan": 0,
+        "disposition": "extracted"
+      },
+      {
+        "stable_id": "src-ea6c621bf5150206",
+        "object_type": "datasources",
+        "name": "federated.1",
+        "source_location": "extracted",
+        "parent": null,
+        "orphan": 0,
+        "disposition": "extracted"
+      },
+      {
+        "stable_id": "src-5496ad1482c003c4",
+        "object_type": "worksheets",
+        "name": "Headcount by Department",
+        "source_location": "extracted",
+        "parent": null,
+        "orphan": 0,
+        "disposition": "extracted"
+      },
+      {
+        "stable_id": "src-99401b4edaa8e872",
+        "object_type": "worksheets",
+        "name": "Salary Analysis",
+        "source_location": "extracted",
+        "parent": null,
+        "orphan": 0,
+        "disposition": "extracted"
+      },
+      {
+        "stable_id": "src-b08b81f691dd72f0",
+        "object_type": "worksheets",
+        "name": "Performance Matrix",
+        "source_location": "extracted",
+        "parent": null,
+        "orphan": 0,
+        "disposition": "extracted"
+      },
+      {
+        "stable_id": "src-bf046632a42f2f98",
+        "object_type": "worksheets",
+        "name": "Hiring Trend",
+        "source_location": "extracted",
+        "parent": null,
+        "orphan": 0,
+        "disposition": "extracted"
+      }
+    ]
+  },
+  "evidence_manifest": {
+    "manifest_version": "1.0",
+    "generated_at": "2026-09-16T07:11:04.901433+00:00",
+    "source": {
+      "name": "HR_Analytics.twb",
+      "sha256": "e2c4f9fc02313a6e9cc2e2c6f311c2f88571bba308f9ece064bde37aa664b452"
+    },
+    "target": {
+      "path": "C:\\GitHub Project\\TableauToPowerBI\\_next_update_check\\HR_Analytics"
+    },
+    "validation": {
+      "status": "PASS",
+      "handoff_status": "PASS",
+      "blockers": [],
+      "warnings": [],
+      "next_action": "Run authorized Desktop/Fabric checks",
+      "quality_policy": "report"
+    },
+    "repairs": [],
+    "environment": {
+      "level": "STATIC_PASS",
+      "static_checks": {
+        "passed": 16,
+        "failed": 0
+      },
+      "desktop": {
+        "status": "not_run",
+        "version": null,
+        "signals": []
+      },
+      "semantic_execution": "not_run",
+      "refresh": "not_run",
+      "deployment": "not_run"
+    },
+    "checkpoints": {
+      "status": "not_found",
+      "stages": {}
+    },
+    "strategy": {
+      "strategy": "import",
+      "connection_mode": "Import",
+      "import_score": 7,
+      "directquery_score": 0,
+      "signals": [
+        {
+          "name": "connectors_simple",
+          "description": "All connectors Power Query-friendly (SQL Server)",
+          "favours": "import",
+          "weight": 2
+        },
+        {
+          "name": "few_tables",
+          "description": "1 table(s) — small dataset",
+          "favours": "import",
+          "weight": 1
+        },
+        {
+          "name": "few_columns",
+          "description": "26 column(s) — manageable schema",
+          "favours": "import",
+          "weight": 1
+        },
+        {
+          "name": "no_custom_sql",
+          "description": "No custom SQL",
+          "favours": "import",
+          "weight": 1
+        },
+        {
+          "name": "simple_calcs",
+          "description": "All calculations are simple (no LOD/table calcs/REGEX)",
+          "favours": "import",
+          "weight": 1
+        },
+        {
+          "name": "few_calc_cols",
+          "description": "1 calculated column(s)",
+          "favours": "import",
+          "weight": 1
+        }
+      ],
+      "summary": "Recommended strategy: Import Mode (Power Query M)\n  Import score: 7   DirectQuery score: 0\n\n  Signals:\n    [       → Import] All connectors Power Query-friendly (SQL Server) (weight=2)\n    [       → Import] 1 table(s) — small dataset (weight=1)\n    [       → Import] 26 column(s) — manageable schema (weight=1)\n    [       → Import] No custom SQL (weight=1)\n    [       → Import] All calculations are simple (no LOD/table calcs/REGEX) (weight=1)\n    [       → Import] 1 calculated column(s) (weight=1)",
+      "status": "recommended"
+    },
+    "lineage": {
+      "status": "static_evidence",
+      "source": {
+        "datasources": 1,
+        "tables": 1,
+        "columns": 11,
+        "worksheets": 4,
+        "calculations": 4
+      },
+      "target": {
+        "tables": 1,
+        "visuals": 0,
+        "calculation_features": {
+          "exact": 4,
+          "healed": 1,
+          "approximated": 0,
+          "unsupported": 0
+        }
+      },
+      "coverage": {
+        "tables": {
+          "source": 1,
+          "target": 1,
+          "complete": true
+        },
+        "parity_evidence_percent": 50.0,
+        "inventory_objects": 10,
+        "inventory_object_types": {
+          "worksheets": 4,
+          "dashboards": 1,
+          "datasources": 1,
+          "calculations": 4
+        }
+      },
+      "unresolved": [],
+      "runtime": "not_run",
+      "contract": {
+        "version": "1.1",
+        "source": "tableau_extraction",
+        "target": "powerbi_tmdl",
+        "status": "complete",
+        "coverage": {
+          "tables": {
+            "target_count": 2,
+            "resolved_count": 1,
+            "percent": 50.0
+          },
+          "columns": {
+            "target_count": 20,
+            "resolved_count": 12,
+            "percent": 60.0
+          },
+          "calculations": {
+            "target_count": 7,
+            "resolved_count": 7,
+            "percent": 100.0
+          },
+          "relationships": {
+            "target_count": 1,
+            "resolved_count": 1,
+            "percent": 100.0
+          }
+        },
+        "unresolved": []
+      }
+    },
+    "artifacts": {
+      "status": "generated",
+      "families": {
+        "pbip": true,
+        "report": true,
+        "semantic_model": true,
+        "fabric": false
+      },
+      "m_emitters": {
+        "aliases": 98,
+        "status_counts": {
+          "generated": 97,
+          "fallback": 1
+        },
+        "invalid_connectors": [],
+        "fallback_connectors": [
+          "UnknownConnector"
+        ],
+        "remediation": {
+          "UnknownConnector": {
+            "owner": "@wiring",
+            "action": "Add a connector-specific M generator and a focused validator test before production use."
+          }
+        },
+        "fixtures": {
+          "count": 5,
+          "status_counts": {
+            "generated": 5
+          },
+          "invalid_fixtures": []
+        }
+      },
+      "fabric": {},
+      "visual_mappings": {
+        "mappings": 164,
+        "status_counts": {
+          "native": 129,
+          "approximation": 16,
+          "custom_visual": 19
+        },
+        "sources": [
+          "100-stacked-bar",
+          "100-stacked-column",
+          "100stackedareachart",
+          "100stackedbarchart",
+          "100stackedcolumnchart",
+          "actionbutton",
+          "area",
+          "area-sparkline",
+          "areachart",
+          "areasparkline",
+          "automatic",
+          "bar",
+          "bar-sparkline",
+          "barchart",
+          "barsparkline",
+          "box-and-whisker",
+          "boxplot",
+          "bubble",
+          "bubblechart",
+          "bullet",
+          "bulletchart",
+          "bumpchart",
+          "butterfly",
+          "button",
+          "calendar",
+          "calendarheatmap",
+          "card",
+          "chord",
+          "circle",
+          "clusteredbarchart",
+          "clusteredcolumnchart",
+          "column",
+          "column-sparkline",
+          "columnchart",
+          "columnsparkline",
+          "combo",
+          "combochart",
+          "container",
+          "decompositiontree",
+          "dendogram",
+          "density",
+          "donut",
+          "donutchart",
+          "dot",
+          "dotplot",
+          "dualaxis",
+          "filledmap",
+          "filter_control",
+          "filterpane",
+          "funnel",
+          "funnelchart",
+          "ganttbar",
+          "gauge",
+          "geomap",
+          "heatmap",
+          "hex",
+          "highlighttable",
+          "histogram",
+          "image",
+          "kpi",
+          "line",
+          "lineStackedColumnComboChart",
+          "linechart",
+          "lineclusteredcolumncombochart",
+          "linecolumnchart",
+          "listbox",
+          "lollipop",
+          "makepoint",
+          "map",
+          "matrix",
+          "mekko",
+          "meter",
+          "multi-kpi",
+          "multipolygon",
+          "multirowcard",
+          "network",
+          "orgchart",
+          "packedbubble",
+          "parallel-coordinates",
+          "parallelcoordinates",
+          "pareto",
+          "pie",
+          "piechart",
+          "pivot",
+          "pivot-table",
+          "pivottable",
+          "polygon",
+          "radarChart",
+          "radial",
+          "ribbon",
+          "ribbonchart",
+          "ring",
+          "sankey",
+          "scatter",
+          "scatterchart",
+          "scatterplot",
+          "semicircle",
+          "shape",
+          "shapemap",
+          "showme_more",
+          "slicer",
+          "slopechart",
+          "sparkline",
+          "spatial",
+          "square",
+          "stacked-area",
+          "stacked-bar",
+          "stacked-column",
+          "stackedareachart",
+          "stackedbarchart",
+          "stackedcolumnchart",
+          "straight-table",
+          "straighttable",
+          "stripplot",
+          "sunburst",
+          "tabcontainer",
+          "table",
+          "tableex",
+          "text",
+          "text-image",
+          "textbox",
+          "timeline",
+          "treemap",
+          "violin",
+          "violinplot",
+          "waffle",
+          "waterfall",
+          "waterfallchart",
+          "winloss",
+          "winloss-sparkline",
+          "winlosssparkline",
+          "word-cloud",
+          "wordcloud",
+          "writeback"
+        ],
+        "targets": [
+          "actionButton",
+          "areaChart",
+          "azureMap",
+          "boxAndWhisker",
+          "boxplot",
+          "bullet",
+          "bulletChart",
+          "calendar",
+          "card",
+          "chord",
+          "chordChart",
+          "clusteredBarChart",
+          "clusteredColumnChart",
+          "decompositionTree",
+          "dendogram",
+          "donutChart",
+          "filledMap",
+          "funnel",
+          "ganttChart",
+          "ganttbar",
+          "gauge",
+          "histogram",
+          "hundredPercentStackedAreaChart",
+          "hundredPercentStackedBarChart",
+          "hundredPercentStackedColumnChart",
+          "image",
+          "lineChart",
+          "lineClusteredColumnComboChart",
+          "lineStackedColumnComboChart",
+          "map",
+          "matrix",
+          "multiRowCard",
+          "network",
+          "networkNavigator",
+          "orgchart",
+          "parallelcoordinates",
+          "pieChart",
+          "pivotTable",
+          "radarChart",
+          "radial",
+          "ribbonChart",
+          "sankey",
+          "sankeyDiagram",
+          "scatterChart",
+          "shapeMap",
+          "showme_more",
+          "slicer",
+          "stackedAreaChart",
+          "stackedBarChart",
+          "stackedColumnChart",
+          "sunburst",
+          "tableEx",
+          "textbox",
+          "timeline",
+          "treemap",
+          "violin",
+          "waterfallChart",
+          "wordCloud",
+          "wordcloud",
+          "writeback"
+        ]
+      },
+      "source_inventory": {
+        "object_count": 10,
+        "orphan_count": 0,
+        "duplicate_name_count": 0
+      },
+      "recovery": {
+        "status": "pending",
+        "object_count": 10,
+        "pending_count": 10
+      },
+      "validation": {
+        "release_ready": false,
+        "semantic_execution": "not_run",
+        "m_status": "passed"
+      },
+      "visual_recovery": {
+        "status": "not_available",
+        "visual_count": 0,
+        "empty_count": 0,
+        "orphaned_count": 0
+      },
+      "visual_parity": {
+        "source_approximation_count": 0,
+        "target_risk_count": 0,
+        "runtime": "not_run"
+      },
+      "roundtrip_validation": {
+        "static_status": "static_pass",
+        "desktop_status": "not_run",
+        "visual_risk_count": 0
+      }
+    },
+    "handoff": {
+      "status": "PASS",
+      "next_action": "Run authorized Desktop/Fabric checks"
+    }
+  },
+  "strategy": {
+    "strategy": "import",
+    "connection_mode": "Import",
+    "import_score": 7,
+    "directquery_score": 0,
+    "signals": [
+      {
+        "name": "connectors_simple",
+        "description": "All connectors Power Query-friendly (SQL Server)",
+        "favours": "import",
+        "weight": 2
+      },
+      {
+        "name": "few_tables",
+        "description": "1 table(s) — small dataset",
+        "favours": "import",
+        "weight": 1
+      },
+      {
+        "name": "few_columns",
+        "description": "26 column(s) — manageable schema",
+        "favours": "import",
+        "weight": 1
+      },
+      {
+        "name": "no_custom_sql",
+        "description": "No custom SQL",
+        "favours": "import",
+        "weight": 1
+      },
+      {
+        "name": "simple_calcs",
+        "description": "All calculations are simple (no LOD/table calcs/REGEX)",
+        "favours": "import",
+        "weight": 1
+      },
+      {
+        "name": "few_calc_cols",
+        "description": "1 calculated column(s)",
+        "favours": "import",
+        "weight": 1
+      }
+    ],
+    "summary": "Recommended strategy: Import Mode (Power Query M)\n  Import score: 7   DirectQuery score: 0\n\n  Signals:\n    [       → Import] All connectors Power Query-friendly (SQL Server) (weight=2)\n    [       → Import] 1 table(s) — small dataset (weight=1)\n    [       → Import] 26 column(s) — manageable schema (weight=1)\n    [       → Import] No custom SQL (weight=1)\n    [       → Import] All calculations are simple (no LOD/table calcs/REGEX) (weight=1)\n    [       → Import] 1 calculated column(s) (weight=1)",
+    "status": "recommended"
+  },
+  "lineage": {
+    "status": "static_evidence",
+    "source": {
+      "datasources": 1,
+      "tables": 1,
+      "columns": 11,
+      "worksheets": 4,
+      "calculations": 4
+    },
+    "target": {
+      "tables": 1,
+      "visuals": 0,
+      "calculation_features": {
+        "exact": 4,
+        "healed": 1,
+        "approximated": 0,
+        "unsupported": 0
+      }
+    },
+    "coverage": {
+      "tables": {
+        "source": 1,
+        "target": 1,
+        "complete": true
+      },
+      "parity_evidence_percent": 50.0,
+      "inventory_objects": 10,
+      "inventory_object_types": {
+        "worksheets": 4,
+        "dashboards": 1,
+        "datasources": 1,
+        "calculations": 4
+      }
+    },
+    "unresolved": [],
+    "runtime": "not_run",
+    "contract": {
+      "version": "1.1",
+      "source": "tableau_extraction",
+      "target": "powerbi_tmdl",
+      "status": "complete",
+      "coverage": {
+        "tables": {
+          "target_count": 2,
+          "resolved_count": 1,
+          "percent": 50.0
+        },
+        "columns": {
+          "target_count": 20,
+          "resolved_count": 12,
+          "percent": 60.0
+        },
+        "calculations": {
+          "target_count": 7,
+          "resolved_count": 7,
+          "percent": 100.0
+        },
+        "relationships": {
+          "target_count": 1,
+          "resolved_count": 1,
+          "percent": 100.0
+        }
+      },
+      "unresolved": []
+    }
+  },
+  "handoff_status": "PASS"
+}

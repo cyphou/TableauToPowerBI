@@ -1,0 +1,208 @@
+{
+  "total": 32,
+  "passed": 32,
+  "failed": 0,
+  "warned": 0,
+  "fidelity_percent": 100.0,
+  "status": "pass",
+  "details": [
+    {
+      "test": "row_count:federated.iot",
+      "passed": true,
+      "severity": "info",
+      "message": "federated.iot: 0 rows in Tableau"
+    },
+    {
+      "test": "calc:[Calc_AbsDev]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_AbsDev]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_CeilVal]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_CeilVal]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_FloorVal]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_FloorVal]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RoundVal]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RoundVal]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_EnergyIdx]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_EnergyIdx]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_LogScale]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_LogScale]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_VibX]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_VibX]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_VibY]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_VibY]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_ScoreLabel]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_ScoreLabel]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_MedianVal]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_MedianVal]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_P95]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_P95]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_Variance]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_Variance]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_VariancePop]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_VariancePop]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_AvgBySensorMachine]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_AvgBySensorMachine]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_ReadingMonth]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_ReadingMonth]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_ReadingQtr]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_ReadingQtr]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_ReadingHour]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_ReadingHour]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_Weekday]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_Weekday]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RunAvg]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RunAvg]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RunCount]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RunCount]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RunMax]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RunMax]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RunMin]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RunMin]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_DenseRank]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_DenseRank]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_UniqueRank]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_UniqueRank]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_WinTotal]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_WinTotal]: Formula present in Tableau"
+    },
+    {
+      "test": "visual_coverage:Sensor Monitor",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Sensor Monitor: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Machine Health",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Machine Health: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Maintenance Costs",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Maintenance Costs: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Value Distribution",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Value Distribution: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Vibration Analysis",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Vibration Analysis: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Machine Rankings",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Machine Rankings: 100.0% field coverage"
+    }
+  ]
+}

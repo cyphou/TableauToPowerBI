@@ -1,0 +1,220 @@
+{
+  "total_reports": 10,
+  "pass_count": 3,
+  "warn_count": 7,
+  "fail_count": 0,
+  "workbooks": {
+    "BigQuery_Analytics": {
+      "status": "WARN",
+      "json_path": ".\\_next_update_check\\migration_quality_BigQuery_Analytics.json"
+    },
+    "Complex_Enterprise": {
+      "status": "WARN",
+      "json_path": ".\\_next_update_check\\migration_quality_Complex_Enterprise.json"
+    },
+    "Enterprise_Sales": {
+      "status": "WARN",
+      "json_path": ".\\_next_update_check\\migration_quality_Enterprise_Sales.json"
+    },
+    "Financial_Report": {
+      "status": "WARN",
+      "json_path": ".\\_next_update_check\\migration_quality_Financial_Report.json"
+    },
+    "HR_Analytics": {
+      "status": "PASS",
+      "json_path": ".\\_next_update_check\\migration_quality_HR_Analytics.json"
+    },
+    "Manufacturing_IoT": {
+      "status": "WARN",
+      "json_path": ".\\_next_update_check\\migration_quality_Manufacturing_IoT.json"
+    },
+    "Marketing_Campaign": {
+      "status": "WARN",
+      "json_path": ".\\_next_update_check\\migration_quality_Marketing_Campaign.json"
+    },
+    "Security_Test": {
+      "status": "PASS",
+      "json_path": ".\\_next_update_check\\migration_quality_Security_Test.json"
+    },
+    "Superstore_Sales": {
+      "status": "PASS",
+      "json_path": ".\\_next_update_check\\migration_quality_Superstore_Sales.json"
+    },
+    "Ventes_France": {
+      "status": "WARN",
+      "json_path": ".\\_next_update_check\\migration_quality_Ventes_France.json"
+    }
+  },
+  "certification": {
+    "schema_version": "1.0",
+    "status": "certified",
+    "corpus_count": 10,
+    "counts": {
+      "certified_static": 0,
+      "needs_review": 10,
+      "blocked": 0
+    },
+    "runtime_boundary": {
+      "desktop": "not_run",
+      "semantic_execution": "not_run",
+      "refresh": "not_run",
+      "deployment": "not_run"
+    },
+    "release_claim": "static_corpus_only",
+    "reports": [
+      {
+        "report_name": "BigQuery_Analytics",
+        "state": "needs_review",
+        "reasons": [
+          "semantic execution is not_run",
+          "recovery is incomplete",
+          "static round-trip validation did not pass"
+        ],
+        "desktop": "not_run",
+        "semantic_execution": "not_run"
+      },
+      {
+        "report_name": "Complex_Enterprise",
+        "state": "needs_review",
+        "reasons": [
+          "semantic execution is not_run",
+          "recovery is incomplete",
+          "static round-trip validation did not pass"
+        ],
+        "desktop": "not_run",
+        "semantic_execution": "not_run"
+      },
+      {
+        "report_name": "Enterprise_Sales",
+        "state": "needs_review",
+        "reasons": [
+          "semantic execution is not_run",
+          "recovery is incomplete",
+          "static round-trip validation did not pass"
+        ],
+        "desktop": "not_run",
+        "semantic_execution": "not_run"
+      },
+      {
+        "report_name": "Financial_Report",
+        "state": "needs_review",
+        "reasons": [
+          "semantic execution is not_run",
+          "recovery is incomplete",
+          "static round-trip validation did not pass"
+        ],
+        "desktop": "not_run",
+        "semantic_execution": "not_run"
+      },
+      {
+        "report_name": "HR_Analytics",
+        "state": "needs_review",
+        "reasons": [
+          "semantic execution is not_run",
+          "recovery is incomplete",
+          "static round-trip validation did not pass"
+        ],
+        "desktop": "not_run",
+        "semantic_execution": "not_run"
+      },
+      {
+        "report_name": "Manufacturing_IoT",
+        "state": "needs_review",
+        "reasons": [
+          "semantic execution is not_run",
+          "recovery is incomplete",
+          "static round-trip validation did not pass"
+        ],
+        "desktop": "not_run",
+        "semantic_execution": "not_run"
+      },
+      {
+        "report_name": "Marketing_Campaign",
+        "state": "needs_review",
+        "reasons": [
+          "semantic execution is not_run",
+          "recovery is incomplete",
+          "static round-trip validation did not pass"
+        ],
+        "desktop": "not_run",
+        "semantic_execution": "not_run"
+      },
+      {
+        "report_name": "Security_Test",
+        "state": "needs_review",
+        "reasons": [
+          "semantic execution is not_run",
+          "recovery is incomplete",
+          "static round-trip validation did not pass"
+        ],
+        "desktop": "not_run",
+        "semantic_execution": "not_run"
+      },
+      {
+        "report_name": "Superstore_Sales",
+        "state": "needs_review",
+        "reasons": [
+          "semantic execution is not_run",
+          "recovery is incomplete",
+          "static round-trip validation did not pass"
+        ],
+        "desktop": "not_run",
+        "semantic_execution": "not_run"
+      },
+      {
+        "report_name": "Ventes_France",
+        "state": "needs_review",
+        "reasons": [
+          "semantic execution is not_run",
+          "recovery is incomplete",
+          "static round-trip validation did not pass"
+        ],
+        "desktop": "not_run",
+        "semantic_execution": "not_run"
+      }
+    ],
+    "quality_files": 10,
+    "load_errors": []
+  },
+  "release_readiness": {
+    "schema_version": "1.0",
+    "status": "needs_review",
+    "release_claim": "static_corpus_only",
+    "gates": {
+      "corpus_present": {
+        "status": "passed"
+      },
+      "no_blocked_workbooks": {
+        "status": "passed",
+        "count": 0
+      },
+      "no_review_workbooks": {
+        "status": "warning",
+        "count": 10
+      },
+      "static_only_claim": {
+        "status": "passed"
+      },
+      "runtime_desktop": {
+        "status": "not_run"
+      },
+      "runtime_semantic_execution": {
+        "status": "not_run"
+      },
+      "runtime_refresh": {
+        "status": "not_run"
+      },
+      "runtime_deployment": {
+        "status": "not_run"
+      }
+    },
+    "compatibility": {},
+    "known_limitations": [],
+    "corpus": {
+      "count": 10,
+      "certified_static": 0,
+      "needs_review": 10,
+      "blocked": 0
+    }
+  }
+}

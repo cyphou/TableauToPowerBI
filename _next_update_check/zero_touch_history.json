@@ -1,0 +1,92 @@
+{
+  "updated_at": "2026-09-16T09:11:10.782303",
+  "summary": {
+    "total": 10,
+    "success": 10,
+    "failed": 0,
+    "zero_touch_rate": 100.0,
+    "top_failure_modes": []
+  },
+  "records": [
+    {
+      "workbook": "BigQuery_Analytics",
+      "timestamp": "2026-09-16T09:11:10.781958",
+      "success": true,
+      "failure_mode": "",
+      "verdict_severity": "",
+      "issues_count": 0
+    },
+    {
+      "workbook": "Complex_Enterprise",
+      "timestamp": "2026-09-16T09:11:10.781981",
+      "success": true,
+      "failure_mode": "",
+      "verdict_severity": "",
+      "issues_count": 0
+    },
+    {
+      "workbook": "Enterprise_Sales",
+      "timestamp": "2026-09-16T09:11:10.781986",
+      "success": true,
+      "failure_mode": "",
+      "verdict_severity": "",
+      "issues_count": 0
+    },
+    {
+      "workbook": "Financial_Report",
+      "timestamp": "2026-09-16T09:11:10.781990",
+      "success": true,
+      "failure_mode": "",
+      "verdict_severity": "",
+      "issues_count": 0
+    },
+    {
+      "workbook": "HR_Analytics",
+      "timestamp": "2026-09-16T09:11:10.781993",
+      "success": true,
+      "failure_mode": "",
+      "verdict_severity": "",
+      "issues_count": 0
+    },
+    {
+      "workbook": "Manufacturing_IoT",
+      "timestamp": "2026-09-16T09:11:10.781997",
+      "success": true,
+      "failure_mode": "",
+      "verdict_severity": "",
+      "issues_count": 0
+    },
+    {
+      "workbook": "Marketing_Campaign",
+      "timestamp": "2026-09-16T09:11:10.782000",
+      "success": true,
+      "failure_mode": "",
+      "verdict_severity": "",
+      "issues_count": 0
+    },
+    {
+      "workbook": "Security_Test",
+      "timestamp": "2026-09-16T09:11:10.782003",
+      "success": true,
+      "failure_mode": "",
+      "verdict_severity": "",
+      "issues_count": 0
+    },
+    {
+      "workbook": "Superstore_Sales",
+      "timestamp": "2026-09-16T09:11:10.782006",
+      "success": true,
+      "failure_mode": "",
+      "verdict_severity": "",
+      "issues_count": 0
+    },
+    {
+      "workbook": "Ventes_France",
+      "timestamp": "2026-09-16T09:11:10.782009",
+      "success": true,
+      "failure_mode": "",
+      "verdict_severity": "",
+      "issues_count": 0
+    }
+  ]
+}

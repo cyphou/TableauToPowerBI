@@ -1,0 +1,190 @@
+{
+  "total": 29,
+  "passed": 29,
+  "failed": 0,
+  "warned": 0,
+  "fidelity_percent": 100.0,
+  "status": "pass",
+  "details": [
+    {
+      "test": "row_count:federated.ventes",
+      "passed": true,
+      "severity": "info",
+      "message": "federated.ventes: 0 rows in Tableau"
+    },
+    {
+      "test": "calc:[Calc_CA_Brut]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_CA_Brut]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_CA_Net]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_CA_Net]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_Marge]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_Marge]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_TauxMarge]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_TauxMarge]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_MontantRemises]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_MontantRemises]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_NbCommandes]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_NbCommandes]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_ClientsUniques]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_ClientsUniques]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_PanierMoyen]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_PanierMoyen]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_CAParClient]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_CAParClient]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_CARegionCategorie]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_CARegionCategorie]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_CAExclProduit]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_CAExclProduit]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_DelaiLivraison]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_DelaiLivraison]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_Anciennete]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_Anciennete]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_ClassifClient]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_ClassifClient]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_NomComplet]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_NomComplet]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_Localisation]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_Localisation]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_CumulCA]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_CumulCA]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_MoyMobile]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_MoyMobile]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_ClassementCA]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_ClassementCA]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_CategorieRemise]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_CategorieRemise]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_CAYTD]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_CAYTD]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_Trimestre]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_Trimestre]: Formula present in Tableau"
+    },
+    {
+      "test": "visual_coverage:Indicateurs Clés",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Indicateurs Clés: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:CA par Région",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "CA par Région: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Évolution du CA",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Évolution du CA: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Carte des Ventes",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Carte des Ventes: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Top Produits",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Top Produits: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Modes de Paiement",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Modes de Paiement: 100.0% field coverage"
+    }
+  ]
+}

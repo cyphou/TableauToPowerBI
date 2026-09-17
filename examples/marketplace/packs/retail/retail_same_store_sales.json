@@ -1,0 +1,18 @@
+{
+  "metadata": {
+    "name": "retail_same_store_sales",
+    "version": "1.0.0",
+    "author": "Migration Marketplace",
+    "description": "Same-store (comparable) sales growth KPI for retail.",
+    "tags": ["retail", "kpi", "industry-pack"],
+    "category": "dax_recipe",
+    "dependencies": ["retail_core_model>=1.0.0"],
+    "created": "2026-04-01"
+  },
+  "payload": {
+    "inject": {
+      "name": "Same-Store Sales Growth %",
+      "dax": "VAR CurrentSales = CALCULATE(SUM('Sales'[Amount]), 'Stores'[IsComparable] = TRUE()) VAR PriorSales = CALCULATE(SUM('Sales'[Amount]), 'Stores'[IsComparable] = TRUE(), DATEADD('Calendar'[Date], -1, YEAR)) RETURN DIVIDE(CurrentSales - PriorSales, PriorSales)"
+    }
+  }
+}

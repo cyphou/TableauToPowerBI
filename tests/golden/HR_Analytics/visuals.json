@@ -1,0 +1,57 @@
+{
+ "visual_count": 4,
+ "visuals": [
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 170,
+   "page": "HR Executive Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "areaChart",
+   "width": 840,
+   "x": 0,
+   "y": 550,
+   "z": 2000
+  },
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 450,
+   "page": "HR Executive Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredBarChart",
+   "width": 720,
+   "x": 560,
+   "y": 100,
+   "z": 1000
+  },
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 450,
+   "page": "HR Executive Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "pieChart",
+   "width": 560,
+   "x": 0,
+   "y": 100,
+   "z": 0
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 170,
+   "page": "HR Executive Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "treemap",
+   "width": 440,
+   "x": 840,
+   "y": 550,
+   "z": 3000
+  }
+ ]
+}

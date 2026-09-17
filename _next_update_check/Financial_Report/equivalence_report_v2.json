@@ -1,0 +1,80 @@
+{
+  "total": 11,
+  "passed": 11,
+  "failed": 0,
+  "warned": 0,
+  "fidelity_percent": 100.0,
+  "status": "pass",
+  "details": [
+    {
+      "test": "row_count:federated.1",
+      "passed": true,
+      "severity": "info",
+      "message": "federated.1: 0 rows in Tableau"
+    },
+    {
+      "test": "calc:[Revenue]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Revenue]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Expenses]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Expenses]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Net_Income]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Net_Income]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Profit_Margin]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Profit_Margin]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[YTD_Revenue]",
+      "passed": true,
+      "severity": "info",
+      "message": "[YTD_Revenue]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Budget_Variance]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Budget_Variance]: Formula present in Tableau"
+    },
+    {
+      "test": "visual_coverage:Revenue vs Expenses",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Revenue vs Expenses: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Category Breakdown",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Category Breakdown: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Business Unit Performance",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Business Unit Performance: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Top 10 Accounts",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Top 10 Accounts: 100.0% field coverage"
+    }
+  ]
+}

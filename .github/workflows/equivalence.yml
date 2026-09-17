@@ -1,0 +1,46 @@
+name: Equivalence Tests
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # nightly at 03:00 UTC
+  workflow_dispatch:
+  push:
+    paths:
+      - 'powerbi_import/**'
+      - 'tableau_export/**'
+      - 'tests/test_equivalence_ci.py'
+      - 'tests/baselines/**'
+
+permissions:
+  contents: read
+
+jobs:
+  equivalence:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install pytest pytest-cov
+
+      - name: Run equivalence tests
+        run: |
+          python -m pytest tests/test_equivalence_ci.py -v --tb=short \
+            --junitxml=equivalence-results.xml \
+            -x  # stop on first failure
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: equivalence-results-py${{ matrix.python-version }}
+          path: equivalence-results.xml
+          retention-days: 30

@@ -1,0 +1,156 @@
+table transactions
+	lineageTag: ad5fadc9-9a65-4577-bc86-901657f0b830
+
+	measure Revenue = SUMX('transactions', IF('transactions'[type] = "Revenue", 'transactions'[amount], 0))
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: e23ffd46-993a-4c77-adef-64c736da233f
+		annotation Copilot_Description = Migrated from Tableau: SUM(IF [type] = "Revenue" THEN [amount] ELSE 0 END) | DAX: SUMX('transactions', IF('transactions'[type] = "Revenue", 'transactions'[amount], 0))
+
+	measure Expenses = SUMX('transactions', IF('transactions'[type] = "Expense", 'transactions'[amount], 0))
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: 761eb3b7-f394-494f-80bb-89805a33b5b1
+		annotation Copilot_Description = Migrated from Tableau: SUM(IF [type] = "Expense" THEN [amount] ELSE 0 END) | DAX: SUMX('transactions', IF('transactions'[type] = "Expense", 'transactions'[amount], 0))
+
+	measure 'Net Income' = SUMX('transactions', IF('transactions'[type] = "Revenue", 'transactions'[amount], -'transactions'[amount]))
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: 1d6b2444-c43e-484b-897b-30c017f394de
+		annotation Copilot_Description = Migrated from Tableau: SUM(IF [type] = "Revenue" THEN [amount] ELSE -[amount] END) | DAX: SUMX('transactions', IF('transactions'[type] = "Revenue", 'transactions'[amount], -'transactions'[amount]))
+
+	measure 'Profit Margin %' = ([Revenue] - [Expenses]) / [Revenue]
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: 6ac8bfe7-11fc-4c02-89d6-4feab648b2a6
+		annotation Copilot_Description = Migrated from Tableau: ([Revenue] - [Expenses]) / [Revenue] | DAX: ([Revenue] - [Expenses]) / [Revenue]
+
+	measure 'YTD Revenue' = CALCULATE(SUMX('transactions', IF(YEAR('transactions'[transaction_date]) = YEAR(TODAY()), 'transactions'[amount], 0)), ALL('transactions'))
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: cc5ed504-15c6-4794-9635-ac9960e50728
+		annotation Copilot_Description = Migrated from Tableau: {FIXED : SUM(IF YEAR([transaction_date]) = YEAR(TODAY()) THEN [amount] ELSE 0 END)} | DAX: CALCULATE(SUMX('transactions', IF(YEAR('transactions'[transaction_date]) = YEAR(TODAY()), 'transactions'[amount], 0)), ALL('transactions'))
+
+	measure 'Budget Variance' = SUM('transactions'[amount]) - CALCULATE(SUM('transactions'[amount]), ALL('transactions'))
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: 1ec7de18-ec48-4e32-b5ae-7dcd92a544fd
+		annotation Copilot_Description = Migrated from Tableau: SUM([amount]) - WINDOW_AVG(SUM([amount])) | DAX: SUM('transactions'[amount]) - CALCULATE(SUM('transactions'[amount]), ALL('transactions'))
+
+	measure 'Revenue Formatted' = VAR _val = [Revenue] RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", FORMAT(_val, "#,0.00"))))
+		displayFolder: Formatted
+		lineageTag: 08662087-4417-4425-ba64-950ac196a1c0
+		annotation Copilot_Description = Dynamic numeric abbreviation for Revenue (K/M/B)
+
+	measure 'Expenses Formatted' = VAR _val = [Expenses] RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", FORMAT(_val, "#,0.00"))))
+		displayFolder: Formatted
+		lineageTag: 674e9f8d-65fe-4edb-9f1f-eb6c64a805c2
+		annotation Copilot_Description = Dynamic numeric abbreviation for Expenses (K/M/B)
+
+	measure 'Net Income Formatted' = VAR _val = [Net Income] RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", FORMAT(_val, "#,0.00"))))
+		displayFolder: Formatted
+		lineageTag: b7442283-a8fc-470b-9747-725d9754281d
+		annotation Copilot_Description = Dynamic numeric abbreviation for Net Income (K/M/B)
+
+	measure 'YTD Revenue Formatted' = VAR _val = [YTD Revenue] RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", FORMAT(_val, "#,0.00"))))
+		displayFolder: Formatted
+		lineageTag: 5b0681df-990f-40cf-a579-8fd2bc6773d8
+		annotation Copilot_Description = Dynamic numeric abbreviation for YTD Revenue (K/M/B)
+
+	measure 'Budget Variance Formatted' = VAR _val = [Budget Variance] RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", FORMAT(_val, "#,0.00"))))
+		displayFolder: Formatted
+		lineageTag: af6a1b74-d8ff-440c-b946-5c8d97a45c7c
+		annotation Copilot_Description = Dynamic numeric abbreviation for Budget Variance (K/M/B)
+
+	column transaction_id
+		dataType: int64
+		lineageTag: e28b244d-8327-4d59-a02a-e3159734bd45
+		summarizeBy: sum
+		sourceColumn: transaction_id
+		annotation Copilot_Hidden = true
+
+		annotation SummarizationSetBy = Automatic
+
+	column transaction_date
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 242db8c5-3dca-4bf3-a323-946dc235a2f9
+		summarizeBy: none
+		sourceColumn: transaction_date
+
+		annotation SummarizationSetBy = Automatic
+
+	column account
+		dataType: string
+		lineageTag: e2f194f8-a9fa-4d33-b582-d61ed8ae98be
+		summarizeBy: none
+		sourceColumn: account
+
+		annotation SummarizationSetBy = Automatic
+
+	column category
+		dataType: string
+		lineageTag: e3f7fe8f-145a-415d-ae02-d4ec69c831e1
+		summarizeBy: none
+		sourceColumn: category
+
+		annotation SummarizationSetBy = Automatic
+
+	column amount
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 9fc349ba-9427-4ff1-945f-ac3578de57b9
+		summarizeBy: sum
+		sourceColumn: amount
+
+		annotation SummarizationSetBy = Automatic
+
+	column type
+		dataType: string
+		lineageTag: 30adb6cd-e795-4d72-bd98-a2f38a286688
+		summarizeBy: none
+		sourceColumn: type
+
+		annotation SummarizationSetBy = Automatic
+
+	column business_unit
+		dataType: string
+		lineageTag: 4f3a0380-c292-4c22-ad9c-1a68bcb1fc90
+		summarizeBy: none
+		sourceColumn: business_unit
+
+		annotation SummarizationSetBy = Automatic
+
+	column cost_center
+		dataType: string
+		lineageTag: 4ae324c4-9aa3-4287-a635-0d0c56d2509e
+		summarizeBy: none
+		sourceColumn: cost_center
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'transactions-db76af8d-03d1-4d95-9628-6d1c8943a41e' = m
+		mode: import
+		source =
+				let
+				    
+				    Source = try
+				
+				        let
+				
+				            _src = PostgreSQL.Database("db.company.com:5432", "finance"),
+				
+				            _nav = _src{[Schema="public", Item="transactions"]}[Data]
+				
+				        in _nav
+				
+				    otherwise
+				
+				        #table({"transaction_id", "transaction_date", "account", "category", "amount", "type", "business_unit", "cost_center"}, {}),
+				    Result = Source
+				in
+				    Result
+
+	annotation PBI_ResultType = Table
+	annotation Copilot_TableDescription = Contains 8 columns and 11 measures: transaction_id, transaction_date, account, category, amount, type, business_unit, cost_center.
+

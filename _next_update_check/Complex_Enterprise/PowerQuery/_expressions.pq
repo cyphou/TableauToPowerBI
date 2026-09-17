@@ -1,0 +1,3 @@
+expression DataFolder = "C:\\GitHub Project\\TableauToPowerBI\\_next_update_check\\Complex_Enterprise\\Data" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
+
+expression ServerName = "analytics.snowflakecomputing.com" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]

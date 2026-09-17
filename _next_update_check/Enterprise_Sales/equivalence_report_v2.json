@@ -1,0 +1,183 @@
+{
+  "total": 28,
+  "passed": 28,
+  "failed": 0,
+  "warned": 0,
+  "fidelity_percent": 100.0,
+  "status": "pass",
+  "details": [
+    {
+      "test": "row_count:federated.enterprise",
+      "passed": true,
+      "severity": "info",
+      "message": "federated.enterprise: 0 rows in Tableau"
+    },
+    {
+      "test": "calc:[Calc_GrossRevenue]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_GrossRevenue]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_NetRevenue]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_NetRevenue]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_TotalDiscount]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_TotalDiscount]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_Profit]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_Profit]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_ProfitMargin]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_ProfitMargin]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RevPerCustomer]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RevPerCustomer]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RegionalChannelRev]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RegionalChannelRev]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RevExclCategory]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RevExclCategory]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_MovAvgRev]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_MovAvgRev]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RunTotal]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RunTotal]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RevenueRank]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RevenueRank]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_YTDRevenue]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_YTDRevenue]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_TenureDays]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_TenureDays]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_CustomerTier]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_CustomerTier]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_SafeDiscount]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_SafeDiscount]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_FullLocation]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_FullLocation]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_UniqueCustomers]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_UniqueCustomers]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_AOVCompleted]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_AOVCompleted]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_SegmentLabel]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_SegmentLabel]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_DiscountCategory]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_DiscountCategory]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_RevStdDev]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_RevStdDev]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calc_IsMyAccount]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calc_IsMyAccount]: Formula present in Tableau"
+    },
+    {
+      "test": "visual_coverage:Executive KPIs",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Executive KPIs: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Revenue by Region",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Revenue by Region: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Profit Trend",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Profit Trend: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Customer Analysis",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Customer Analysis: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Sales Map",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Sales Map: 100.0% field coverage"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "filters": 0,
+  "measures": {
+    "[Calculation_ManagerAccess]": {
+      "formula_hash": "3603d5fe76be4600"
+    },
+    "[Calculation_ProfitRatio]": {
+      "formula_hash": "ba9f8b2ad1246a43"
+    },
+    "[Calculation_RegionMatch]": {
+      "formula_hash": "6c09f1f1060a0691"
+    },
+    "[Calculation_SecurityUser]": {
+      "formula_hash": "4e5fe2ee90695278"
+    },
+    "[Calculation_TotalSales]": {
+      "formula_hash": "03100e278c0d6350"
+    }
+  },
+  "pages": {
+    "Profit Analysis": {
+      "field_count": 0
+    },
+    "Sales Overview": {
+      "field_count": 0
+    }
+  },
+  "relationships": 0,
+  "tables": {
+    "Orders": {
+      "column_count": 7
+    },
+    "Regions": {
+      "column_count": 2
+    }
+  },
+  "version": "1.0"
+}

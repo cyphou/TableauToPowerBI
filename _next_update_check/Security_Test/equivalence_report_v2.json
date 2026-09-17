@@ -1,0 +1,60 @@
+{
+  "total": 8,
+  "passed": 8,
+  "failed": 0,
+  "warned": 0,
+  "fidelity_percent": 100.0,
+  "status": "pass",
+  "details": [
+    {
+      "test": "row_count:federated.sales",
+      "passed": true,
+      "severity": "info",
+      "message": "federated.sales: 0 rows in Tableau"
+    },
+    {
+      "test": "calc:[Calculation_SecurityUser]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calculation_SecurityUser]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calculation_ManagerAccess]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calculation_ManagerAccess]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calculation_RegionMatch]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calculation_RegionMatch]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calculation_TotalSales]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calculation_TotalSales]: Formula present in Tableau"
+    },
+    {
+      "test": "calc:[Calculation_ProfitRatio]",
+      "passed": true,
+      "severity": "info",
+      "message": "[Calculation_ProfitRatio]: Formula present in Tableau"
+    },
+    {
+      "test": "visual_coverage:Sales Overview",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Sales Overview: 100.0% field coverage"
+    },
+    {
+      "test": "visual_coverage:Profit Analysis",
+      "passed": true,
+      "severity": "pass",
+      "coverage_percent": 100.0,
+      "message": "Profit Analysis: 100.0% field coverage"
+    }
+  ]
+}

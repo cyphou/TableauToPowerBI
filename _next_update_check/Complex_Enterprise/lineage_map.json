@@ -1,0 +1,1288 @@
+{
+  "contract": {
+    "version": "1.1",
+    "source": "tableau_extraction",
+    "target": "powerbi_tmdl",
+    "status": "partial",
+    "coverage": {
+      "tables": {
+        "target_count": 6,
+        "resolved_count": 4,
+        "percent": 66.67
+      },
+      "columns": {
+        "target_count": 68,
+        "resolved_count": 64,
+        "percent": 94.12
+      },
+      "calculations": {
+        "target_count": 49,
+        "resolved_count": 49,
+        "percent": 100.0
+      },
+      "relationships": {
+        "target_count": 6,
+        "resolved_count": 6,
+        "percent": 100.0
+      }
+    },
+    "unresolved": [
+      {
+        "type": "tables",
+        "target": "Target Margin %"
+      },
+      {
+        "type": "tables",
+        "target": "Top N Items"
+      },
+      {
+        "type": "columns",
+        "target": "Days Since First Order"
+      },
+      {
+        "type": "columns",
+        "target": "Full Location"
+      },
+      {
+        "type": "columns",
+        "target": "-2,0"
+      },
+      {
+        "type": "columns",
+        "target": "first_order_date"
+      }
+    ]
+  },
+  "tables": [
+    {
+      "tableau_datasource": "federated.global",
+      "tableau_table": "fact_sales",
+      "pbi_table": "fact_sales",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "federated.global",
+      "tableau_table": "dim_date",
+      "pbi_table": "dim_date",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "federated.global",
+      "tableau_table": "dim_customer",
+      "pbi_table": "dim_customer",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "federated.global",
+      "tableau_table": "dim_product",
+      "pbi_table": "dim_product",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Target Margin %",
+      "pbi_table": "Target Margin %",
+      "source_status": "unresolved"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Top N Items",
+      "pbi_table": "Top N Items",
+      "source_status": "unresolved"
+    }
+  ],
+  "columns": [
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "sale_id",
+      "pbi_table": "fact_sales",
+      "pbi_column": "sale_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "date_key",
+      "pbi_table": "fact_sales",
+      "pbi_column": "date_key",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "customer_key",
+      "pbi_table": "fact_sales",
+      "pbi_column": "customer_key",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "product_key",
+      "pbi_table": "fact_sales",
+      "pbi_column": "product_key",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "store_key",
+      "pbi_table": "fact_sales",
+      "pbi_column": "store_key",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "channel",
+      "pbi_table": "fact_sales",
+      "pbi_column": "channel",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "region",
+      "pbi_table": "fact_sales",
+      "pbi_column": "region",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "territory",
+      "pbi_table": "fact_sales",
+      "pbi_column": "territory",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "country",
+      "pbi_table": "fact_sales",
+      "pbi_column": "country",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "state",
+      "pbi_table": "fact_sales",
+      "pbi_column": "state",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "city",
+      "pbi_table": "fact_sales",
+      "pbi_column": "city",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "postal_code",
+      "pbi_table": "fact_sales",
+      "pbi_column": "postal_code",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "latitude",
+      "pbi_table": "fact_sales",
+      "pbi_column": "latitude",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "longitude",
+      "pbi_table": "fact_sales",
+      "pbi_column": "longitude",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "quantity",
+      "pbi_table": "fact_sales",
+      "pbi_column": "quantity",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "unit_price",
+      "pbi_table": "fact_sales",
+      "pbi_column": "unit_price",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "unit_cost",
+      "pbi_table": "fact_sales",
+      "pbi_column": "unit_cost",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "discount_pct",
+      "pbi_table": "fact_sales",
+      "pbi_column": "discount_pct",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "tax_rate",
+      "pbi_table": "fact_sales",
+      "pbi_column": "tax_rate",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "shipping_cost",
+      "pbi_table": "fact_sales",
+      "pbi_column": "shipping_cost",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "currency_code",
+      "pbi_table": "fact_sales",
+      "pbi_column": "currency_code",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "order_status",
+      "pbi_table": "fact_sales",
+      "pbi_column": "order_status",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "payment_method",
+      "pbi_table": "fact_sales",
+      "pbi_column": "payment_method",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "sales_rep",
+      "pbi_table": "fact_sales",
+      "pbi_column": "sales_rep",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "promotion_code",
+      "pbi_table": "fact_sales",
+      "pbi_column": "promotion_code",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "is_returned",
+      "pbi_table": "fact_sales",
+      "pbi_column": "is_returned",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "Days Since First Order",
+      "pbi_table": "fact_sales",
+      "pbi_column": "Days Since First Order",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "Full Location",
+      "pbi_table": "fact_sales",
+      "pbi_column": "Full Location",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "Discount Category",
+      "pbi_table": "fact_sales",
+      "pbi_column": "Discount Category",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "Safe Discount",
+      "pbi_table": "fact_sales",
+      "pbi_column": "Safe Discount",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "-2,0",
+      "pbi_table": "fact_sales",
+      "pbi_column": "-2,0",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "fact_sales",
+      "tableau_column": "first_order_date",
+      "pbi_table": "fact_sales",
+      "pbi_column": "first_order_date",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "date_key",
+      "pbi_table": "dim_date",
+      "pbi_column": "date_key",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "full_date",
+      "pbi_table": "dim_date",
+      "pbi_column": "full_date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "year",
+      "pbi_table": "dim_date",
+      "pbi_column": "year",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "quarter",
+      "pbi_table": "dim_date",
+      "pbi_column": "quarter",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "month_num",
+      "pbi_table": "dim_date",
+      "pbi_column": "month_num",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "month_name",
+      "pbi_table": "dim_date",
+      "pbi_column": "month_name",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "week_num",
+      "pbi_table": "dim_date",
+      "pbi_column": "week_num",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "day_name",
+      "pbi_table": "dim_date",
+      "pbi_column": "day_name",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "is_weekend",
+      "pbi_table": "dim_date",
+      "pbi_column": "is_weekend",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "is_holiday",
+      "pbi_table": "dim_date",
+      "pbi_column": "is_holiday",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "fiscal_quarter",
+      "pbi_table": "dim_date",
+      "pbi_column": "fiscal_quarter",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_date",
+      "tableau_column": "fiscal_year",
+      "pbi_table": "dim_date",
+      "pbi_column": "fiscal_year",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "customer_key",
+      "pbi_table": "dim_customer",
+      "pbi_column": "customer_key",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "customer_id",
+      "pbi_table": "dim_customer",
+      "pbi_column": "customer_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "customer_name",
+      "pbi_table": "dim_customer",
+      "pbi_column": "customer_name",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "email",
+      "pbi_table": "dim_customer",
+      "pbi_column": "email",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "phone",
+      "pbi_table": "dim_customer",
+      "pbi_column": "phone",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "segment",
+      "pbi_table": "dim_customer",
+      "pbi_column": "segment",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "industry",
+      "pbi_table": "dim_customer",
+      "pbi_column": "industry",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "company_size",
+      "pbi_table": "dim_customer",
+      "pbi_column": "company_size",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "first_order_date",
+      "pbi_table": "dim_customer",
+      "pbi_column": "first_order_date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "credit_limit",
+      "pbi_table": "dim_customer",
+      "pbi_column": "credit_limit",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "account_manager",
+      "pbi_table": "dim_customer",
+      "pbi_column": "account_manager",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_customer",
+      "tableau_column": "is_active",
+      "pbi_table": "dim_customer",
+      "pbi_column": "is_active",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_product",
+      "tableau_column": "product_key",
+      "pbi_table": "dim_product",
+      "pbi_column": "product_key",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_product",
+      "tableau_column": "product_id",
+      "pbi_table": "dim_product",
+      "pbi_column": "product_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_product",
+      "tableau_column": "product_name",
+      "pbi_table": "dim_product",
+      "pbi_column": "product_name",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_product",
+      "tableau_column": "category",
+      "pbi_table": "dim_product",
+      "pbi_column": "category",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_product",
+      "tableau_column": "subcategory",
+      "pbi_table": "dim_product",
+      "pbi_column": "subcategory",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_product",
+      "tableau_column": "brand",
+      "pbi_table": "dim_product",
+      "pbi_column": "brand",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_product",
+      "tableau_column": "supplier",
+      "pbi_table": "dim_product",
+      "pbi_column": "supplier",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_product",
+      "tableau_column": "weight_kg",
+      "pbi_table": "dim_product",
+      "pbi_column": "weight_kg",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_product",
+      "tableau_column": "is_perishable",
+      "pbi_table": "dim_product",
+      "pbi_column": "is_perishable",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "dim_product",
+      "tableau_column": "launch_date",
+      "pbi_table": "dim_product",
+      "pbi_column": "launch_date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Target Margin %",
+      "tableau_column": "Value",
+      "pbi_table": "Target Margin %",
+      "pbi_column": "Value",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Top N Items",
+      "tableau_column": "Value",
+      "pbi_table": "Top N Items",
+      "pbi_column": "Value",
+      "source_status": "declared",
+      "source_kind": "physical"
+    }
+  ],
+  "calculations": [
+    {
+      "tableau_calculation": "Gross Revenue",
+      "source_formula": "SUM([quantity] * [unit_price])",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Gross Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Net Revenue",
+      "source_formula": "SUM(IF [order_status] != \"Cancelled\" AND [is_returned] = FALSE THEN [quantity] * [unit_price] * (1 - [discount_pct]) ELSE 0 END)",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Net Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "COGS",
+      "source_formula": "SUM([quantity] * [unit_cost])",
+      "pbi_table": "fact_sales",
+      "pbi_object": "COGS",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Gross Profit",
+      "source_formula": "[C_NetRev] - [C_COGS] - SUM([shipping_cost])",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Gross Profit",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Gross Margin %",
+      "source_formula": "ZN([C_GrossProfit] / [C_NetRev])",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Gross Margin %",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Tax Amount",
+      "source_formula": "SUM([quantity] * [unit_price] * (1 - [discount_pct]) * [tax_rate])",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Tax Amount",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Total Revenue incl Tax",
+      "source_formula": "[C_NetRev] + [C_TaxAmt]",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Total Revenue incl Tax",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Return Rate",
+      "source_formula": "SUM(IF [is_returned] = TRUE THEN 1 ELSE 0 END) / COUNT([sale_id])",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Return Rate",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue per Customer",
+      "source_formula": "{FIXED [customer_id] : SUM([quantity] * [unit_price])}",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue per Customer",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue per Product",
+      "source_formula": "{FIXED [product_id] : SUM([quantity] * [unit_price])}",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue per Product",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue by Region-Channel",
+      "source_formula": "{FIXED [region], [channel] : SUM([quantity] * [unit_price])}",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue by Region-Channel",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue excl Territory",
+      "source_formula": "{EXCLUDE [territory] : SUM([quantity] * [unit_price])}",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue excl Territory",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue incl Subcategory",
+      "source_formula": "{INCLUDE [subcategory] : SUM([quantity] * [unit_price])}",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue incl Subcategory",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Running Total Revenue",
+      "source_formula": "RUNNING_SUM(SUM([quantity] * [unit_price]))",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Running Total Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Running Avg Revenue",
+      "source_formula": "RUNNING_AVG(SUM([quantity] * [unit_price]))",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Running Avg Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Running Count",
+      "source_formula": "RUNNING_COUNT(SUM([quantity]))",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Running Count",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue Rank",
+      "source_formula": "RANK(SUM([quantity] * [unit_price]))",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue Rank",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue Rank Dense",
+      "source_formula": "RANK_DENSE(SUM([quantity] * [unit_price]))",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue Rank Dense",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Moving Avg 3-Period",
+      "source_formula": "WINDOW_AVG(SUM([quantity] * [unit_price]), -2, 0)",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Moving Avg 3-Period",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Window Max Revenue",
+      "source_formula": "WINDOW_MAX(SUM([quantity] * [unit_price]))",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Window Max Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue StdDev",
+      "source_formula": "STDEV(SUM([quantity] * [unit_price]))",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue StdDev",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Order Count",
+      "source_formula": "COUNTD([sale_id])",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Order Count",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Unique Customers",
+      "source_formula": "COUNTD([customer_id])",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Unique Customers",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Unique Products Sold",
+      "source_formula": "COUNTD([product_id])",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Unique Products Sold",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Customer Tier",
+      "source_formula": "IF [C_RevPerCust] > 100000 THEN \"Enterprise\" ELSEIF [C_RevPerCust] > 50000 THEN \"Mid-Market\" ELSEIF [C_RevPerCust] > 10000 THEN \"SMB\" ELSE \"Startup\" END",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Customer Tier",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "YTD Revenue",
+      "source_formula": "{FIXED : SUM(IF [year] = YEAR(TODAY()) AND [is_returned] = FALSE THEN [quantity] * [unit_price] ELSE 0 END)}",
+      "pbi_table": "fact_sales",
+      "pbi_object": "YTD Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Is My Account",
+      "source_formula": "[email] = USERNAME()",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Is My Account",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Manager Access",
+      "source_formula": "ISMEMBEROF(\"Regional Managers\")",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Manager Access",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Analysis Start Date",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Analysis Start Date",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Metric Selector",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Metric Selector",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Display Currency",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Display Currency",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Gross Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Gross Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Net Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Net Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "COGS Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "COGS Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Gross Profit Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Gross Profit Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Tax Amount Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Tax Amount Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Return Rate Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Return Rate Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Revenue per Customer Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue per Customer Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Revenue per Product Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue per Product Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Revenue by Region-Channel Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue by Region-Channel Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Revenue excl Territory Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue excl Territory Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Revenue incl Subcategory Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue incl Subcategory Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Revenue Rank Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue Rank Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Revenue Rank Dense Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Revenue Rank Dense Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Moving Avg 3-Period Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Moving Avg 3-Period Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Window Max Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "Window Max Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "YTD Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "fact_sales",
+      "pbi_object": "YTD Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Target Margin %",
+      "source_formula": "",
+      "pbi_table": "Target Margin %",
+      "pbi_object": "Target Margin %",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Top N Items",
+      "source_formula": "",
+      "pbi_table": "Top N Items",
+      "pbi_object": "Top N Items",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    }
+  ],
+  "relationships": [
+    {
+      "from": "fact_sales[product_key]",
+      "to": "dim_product[product_key]",
+      "cardinality": "oneDirection",
+      "tableau_from": "fact_sales[product_key]",
+      "tableau_to": "dim_product[product_key]",
+      "source_status": "exact"
+    },
+    {
+      "from": "fact_sales[customer_key]",
+      "to": "dim_customer[customer_key]",
+      "cardinality": "oneDirection",
+      "tableau_from": "fact_sales[customer_key]",
+      "tableau_to": "dim_customer[customer_key]",
+      "source_status": "exact"
+    },
+    {
+      "from": "fact_sales[date_key]",
+      "to": "dim_date[date_key]",
+      "cardinality": "oneDirection",
+      "tableau_from": "fact_sales[date_key]",
+      "tableau_to": "dim_date[date_key]",
+      "source_status": "exact"
+    },
+    {
+      "from": "dim_date[date_key]",
+      "to": "dim_customer[customer_key]",
+      "cardinality": "oneDirection",
+      "tableau_from": "dim_date[date_key]",
+      "tableau_to": "dim_customer[customer_key]",
+      "source_status": "exact"
+    },
+    {
+      "from": "dim_date[date_key]",
+      "to": "dim_product[product_key]",
+      "cardinality": "oneDirection",
+      "tableau_from": "dim_date[date_key]",
+      "tableau_to": "dim_product[product_key]",
+      "source_status": "exact"
+    },
+    {
+      "from": "dim_customer[customer_key]",
+      "to": "dim_product[product_key]",
+      "cardinality": "oneDirection",
+      "tableau_from": "dim_customer[customer_key]",
+      "tableau_to": "dim_product[product_key]",
+      "source_status": "exact"
+    }
+  ],
+  "worksheets": [
+    {
+      "tableau_worksheet": "Executive KPIs",
+      "pbi_page": "Executive KPIs"
+    },
+    {
+      "tableau_worksheet": "Revenue by Region",
+      "pbi_page": "Revenue by Region"
+    },
+    {
+      "tableau_worksheet": "Revenue Trend",
+      "pbi_page": "Revenue Trend"
+    },
+    {
+      "tableau_worksheet": "Sales Map",
+      "pbi_page": "Sales Map"
+    },
+    {
+      "tableau_worksheet": "Category Mix",
+      "pbi_page": "Category Mix"
+    },
+    {
+      "tableau_worksheet": "Customer Analysis",
+      "pbi_page": "Customer Analysis"
+    },
+    {
+      "tableau_worksheet": "Profit Waterfall",
+      "pbi_page": "Profit Waterfall"
+    },
+    {
+      "tableau_worksheet": "Monthly Heatmap",
+      "pbi_page": "Monthly Heatmap"
+    },
+    {
+      "tableau_worksheet": "Payment Distribution",
+      "pbi_page": "Payment Distribution"
+    },
+    {
+      "tableau_worksheet": "Order Funnel",
+      "pbi_page": "Order Funnel"
+    },
+    {
+      "tableau_worksheet": "Discount Distribution",
+      "pbi_page": "Discount Distribution"
+    },
+    {
+      "tableau_worksheet": "Customer Detail Tooltip",
+      "pbi_page": "Customer Detail Tooltip"
+    }
+  ],
+  "filters": [
+    {
+      "tableau_object": "[federated.global].[order_status]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[federated.global].[order_status]",
+        "field": "[federated.global].[order_status]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[federated.global].[year]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[federated.global].[year]",
+        "field": "[federated.global].[year]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[is_active]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[is_active]",
+        "field": "[is_active]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[federated.global].[region]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[federated.global].[region]",
+        "field": "[federated.global].[region]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[federated.global].[year]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[federated.global].[year]",
+        "field": "[federated.global].[year]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[federated.global].[segment]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[federated.global].[segment]",
+        "field": "[federated.global].[segment]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[federated.global].[category]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[federated.global].[category]",
+        "field": "[federated.global].[category]"
+      },
+      "source_status": "exact"
+    }
+  ],
+  "parameters": [
+    {
+      "tableau_object": "[Parameters].[Target Margin]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Target Margin]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[Parameters].[Top N]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Top N]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[Parameters].[Analysis Start]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Analysis Start]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[Parameters].[Metric Selector]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Metric Selector]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[Parameters].[Currency]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Currency]"
+      },
+      "source_status": "exact"
+    }
+  ],
+  "actions": [
+    {
+      "tableau_object": "Filter by Region",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Filter by Region",
+        "type": "filter"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "Highlight Channel",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Highlight Channel",
+        "type": "highlight"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "Navigate to Detail",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Navigate to Detail",
+        "type": "filter"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "Open Customer CRM",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Open Customer CRM",
+        "type": "url"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "Cross-filter Segment",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Cross-filter Segment",
+        "type": "filter"
+      },
+      "source_status": "exact"
+    }
+  ]
+}

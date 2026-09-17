@@ -1,0 +1,210 @@
+table sessions
+	lineageTag: 5156c6fe-2497-435f-8c88-9197cd2470c8
+
+	measure 'Total Sessions' = COUNT('sessions'[session_id])
+		displayFolder: Measures
+		lineageTag: 6bbea33a-ea7f-4806-82d7-ec89bf84e0c3
+		annotation Copilot_Description = Migrated from Tableau: COUNT([session_id]) | DAX: COUNT('sessions'[session_id])
+
+	measure 'Unique Visitors' = DISTINCTCOUNT('sessions'[user_id])
+		displayFolder: Measures
+		lineageTag: 4f579d69-8f68-4234-b01a-0aad9d4ae604
+		annotation Copilot_Description = Migrated from Tableau: COUNTD([user_id]) | DAX: DISTINCTCOUNT('sessions'[user_id])
+
+	measure 'Conversion Rate' = SUMX('sessions', IF('sessions'[converted], 1, 0)) / COUNT('sessions'[session_id])
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: 51a41a96-3075-471d-93de-743ef185095e
+		annotation Copilot_Description = Migrated from Tableau: SUM(IF [converted] THEN 1 ELSE 0 END) / COUNT([session_id]) | DAX: SUMX('sessions', IF('sessions'[converted], 1, 0)) / COUNT('sessions'[session_id])
+
+	measure 'Avg Session Duration' = AVERAGE('sessions'[session_duration])
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: 9edf0b31-d7c9-46cf-9f6c-25b6d114765b
+		annotation Copilot_Description = Migrated from Tableau: AVG([session_duration]) | DAX: AVERAGE('sessions'[session_duration])
+
+	measure 'Total Revenue' = SUM('sessions'[revenue])
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: 2386af62-7093-4268-a5b8-885ea9c449ef
+		annotation Copilot_Description = Migrated from Tableau: SUM([revenue]) | DAX: SUM('sessions'[revenue])
+
+	measure 'Revenue per Session' = SUM('sessions'[revenue]) / COUNT('sessions'[session_id])
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: 3af870a1-1973-4f36-b83a-48079fbc83ff
+		annotation Copilot_Description = Migrated from Tableau: SUM([revenue]) / COUNT([session_id]) | DAX: SUM('sessions'[revenue]) / COUNT('sessions'[session_id])
+
+	measure 'Revenue by Channel' = CALCULATE(SUM('sessions'[revenue]), ALLEXCEPT('sessions', 'sessions'[channel]))
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: fdc64475-96b2-459f-ae53-f51a911e9079
+		annotation Copilot_Description = Migrated from Tableau: {FIXED [channel] : SUM([revenue])} | DAX: CALCULATE(SUM('sessions'[revenue]), ALLEXCEPT('sessions', 'sessions'[channel]))
+
+	measure 'Conversion Rate Formatted' = VAR _val = [Conversion Rate] RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", FORMAT(_val, "#,0.00"))))
+		displayFolder: Formatted
+		lineageTag: 11a700f4-451d-4002-aa65-7dc800554785
+		annotation Copilot_Description = Dynamic numeric abbreviation for Conversion Rate (K/M/B)
+
+	measure 'Total Revenue Formatted' = VAR _val = [Total Revenue] RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", FORMAT(_val, "#,0.00"))))
+		displayFolder: Formatted
+		lineageTag: d04256b9-264a-4e37-8ecc-4017303dcfe7
+		annotation Copilot_Description = Dynamic numeric abbreviation for Total Revenue (K/M/B)
+
+	measure 'Revenue per Session Formatted' = VAR _val = [Revenue per Session] RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", FORMAT(_val, "#,0.00"))))
+		displayFolder: Formatted
+		lineageTag: 9cef44ff-dd25-4385-a642-93c692d543f2
+		annotation Copilot_Description = Dynamic numeric abbreviation for Revenue per Session (K/M/B)
+
+	measure 'Revenue by Channel Formatted' = VAR _val = [Revenue by Channel] RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", FORMAT(_val, "#,0.00"))))
+		displayFolder: Formatted
+		lineageTag: fbb67055-0e36-487f-ab07-ff6b0a1d7da1
+		annotation Copilot_Description = Dynamic numeric abbreviation for Revenue by Channel (K/M/B)
+
+	column session_id
+		dataType: string
+		lineageTag: 82024f54-014f-43fa-b03f-5a4c3c9ac43a
+		summarizeBy: none
+		sourceColumn: session_id
+		annotation Copilot_Hidden = true
+
+		annotation SummarizationSetBy = Automatic
+
+	column session_date
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: f912a106-e123-4e2b-9d49-72e21a0cc934
+		summarizeBy: none
+		sourceColumn: session_date
+
+		annotation SummarizationSetBy = Automatic
+
+	column user_id
+		dataType: string
+		lineageTag: cf8b2597-f5e0-44b8-9895-65453fe15c8d
+		summarizeBy: none
+		sourceColumn: user_id
+		annotation Copilot_Hidden = true
+
+		annotation SummarizationSetBy = Automatic
+
+	column channel
+		dataType: string
+		lineageTag: 1b4f1478-6267-4cfd-9e64-f8609a6b26fc
+		summarizeBy: none
+		sourceColumn: channel
+
+		annotation SummarizationSetBy = Automatic
+
+	column device_type
+		dataType: string
+		lineageTag: 55ad98e1-1c4e-4363-b24f-34c82a7c19bc
+		summarizeBy: none
+		sourceColumn: device_type
+
+		annotation SummarizationSetBy = Automatic
+
+	column country
+		dataType: string
+		lineageTag: 2848795f-7014-4634-a248-91fbbcb0d651
+		summarizeBy: none
+		sourceColumn: country
+		dataCategory: Country
+
+		annotation SummarizationSetBy = Automatic
+
+	column page_views
+		dataType: int64
+		lineageTag: c62d3c14-dff9-4463-b33b-bae3a729bbb2
+		summarizeBy: sum
+		sourceColumn: page_views
+
+		annotation SummarizationSetBy = Automatic
+
+	column session_duration
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 5cc05d87-5364-4e2b-8ae7-01dd8efb37c2
+		summarizeBy: sum
+		sourceColumn: session_duration
+
+		annotation SummarizationSetBy = Automatic
+
+	column converted
+		dataType: boolean
+		lineageTag: bfc50874-c0f6-48b1-8a40-b370c17651b5
+		summarizeBy: none
+		sourceColumn: converted
+
+		annotation SummarizationSetBy = Automatic
+
+	column revenue
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 6c8663ee-919b-4a8b-a0b5-6f0b6c738d2b
+		summarizeBy: sum
+		sourceColumn: revenue
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Channel Category'
+		dataType: string
+		lineageTag: 0f6678bc-0eda-431d-9214-7961c3601229
+		summarizeBy: none
+		sourceColumn: 'Channel Category'
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Engagement Level'
+		dataType: string
+		lineageTag: 74b62360-f0db-4f30-a0a8-2f18fae8e782
+		summarizeBy: none
+		sourceColumn: 'Engagement Level'
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Days Since Signup' = DATEDIFF(LOOKUPVALUE(users[signup_date], users[user_id], sessions[user_id]), TODAY(), DAY)
+		dataType: int64
+		lineageTag: 36fbc3df-58d9-48a3-8c38-554eb06a2c41
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column signup_date
+		dataType: string
+		lineageTag: ff88e840-97e5-48c8-b5b0-c969189d9910
+		summarizeBy: none
+		sourceColumn: signup_date
+		isHidden
+		annotation MigrationNote = Self-heal: placeholder column created to satisfy missing reference [signup_date] in calculated column 'Days Since Signup'.
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'sessions-acaa5391-aa25-4d76-81f4-99e1b5e04052' = m
+		mode: import
+		source =
+				let
+				    
+				    Source = try
+				
+				        let
+				
+				            _src = GoogleBigQuery.Database([BillingProject="example-analytics-project"]),
+				
+				            _nav = _src{[Name="web_data"]}[Data]
+				
+				        in _nav
+				
+				    otherwise
+				
+				        #table({"session_id", "session_date", "user_id", "channel", "device_type", "country", "page_views", "session_duration", "converted", "revenue"}, {}),
+				    #"sessions Table" = Source{[Name="sessions"]}[Data],
+				    #"Added Channel Category" = Table.AddColumn(#"sessions Table", "Channel Category", each if [channel] = "Organic Search" or [channel] = "Paid Search" then "Search" else if [channel] = "Social" or [channel] = "Referral" then "Social/Referral" else if [channel] = "Direct" then "Direct" else "Other", type text),
+				    #"Added Engagement Level" = Table.AddColumn(#"Added Channel Category", "Engagement Level", each if [page_views] >= 10 then "High" else if [page_views] >= 5 then "Medium" else "Low", type text),
+				    Result = #"Added Engagement Level"
+				in
+				    Result
+
+	annotation PBI_ResultType = Table
+	annotation Copilot_TableDescription = Contains 14 columns and 11 measures: session_id, session_date, user_id, channel, device_type, country, page_views, session_duration, ... (14 columns total).
+

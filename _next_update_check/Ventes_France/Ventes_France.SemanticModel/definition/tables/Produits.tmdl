@@ -1,0 +1,79 @@
+table Produits
+	lineageTag: 680cc498-a34d-4694-9b6f-1ff07a127377
+
+	column produit_id
+		dataType: int64
+		lineageTag: f4cdf5c8-c6e2-434d-90ee-094ea2caf124
+		summarizeBy: sum
+		sourceColumn: produit_id
+		annotation Copilot_Hidden = true
+
+		annotation SummarizationSetBy = Automatic
+
+	column nom_produit
+		dataType: string
+		lineageTag: 15245dd7-5e5d-49bb-880e-4f05bb024ad8
+		summarizeBy: none
+		sourceColumn: nom_produit
+
+		annotation SummarizationSetBy = Automatic
+
+	column categorie
+		dataType: string
+		lineageTag: 59507055-1ad1-44d8-8bb5-ed95315b4c2d
+		summarizeBy: none
+		sourceColumn: categorie
+
+		annotation SummarizationSetBy = Automatic
+
+	column sous_categorie
+		dataType: string
+		lineageTag: f304ea08-6220-49a2-a1d7-8b5115c9a811
+		summarizeBy: none
+		sourceColumn: sous_categorie
+
+		annotation SummarizationSetBy = Automatic
+
+	column marque
+		dataType: string
+		lineageTag: 0c2856c4-67df-4609-8e0a-3ef26a9d12e6
+		summarizeBy: none
+		sourceColumn: marque
+
+		annotation SummarizationSetBy = Automatic
+
+	column cout_achat
+		dataType: double
+		formatString: #,0.00
+		lineageTag: ea258726-897b-48e5-83c6-ddd53dd5a0fc
+		summarizeBy: sum
+		sourceColumn: cout_achat
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Produits-302b6638-37f6-478f-afc8-ec23013927e3' = m
+		mode: import
+		source =
+				let
+				    
+				    Source = try
+				
+				        let
+				
+				            _src = PostgreSQL.Database("db.entreprise.fr:5432", "ventes_db"),
+				
+				            _nav = _src{[Schema="public", Item="Produits"]}[Data]
+				
+				        in _nav
+				
+				    otherwise
+				
+				        #table({"produit_id", "nom_produit", "categorie", "sous_categorie", "marque", "cout_achat"}, {}),
+				    #"Renamed Columns" = Table.RenameColumns(Source, {{"produit_id", "ID Produit"}, {"nom_produit", "Nom du Produit"}, {"categorie", "Catégorie"}, {"sous_categorie", "Sous-Catégorie"}, {"marque", "Marque"}, {"cout_achat", "Coût d'Achat"}}),
+				    Result = #"Renamed Columns"
+				in
+				    Result
+
+	annotation PBI_ResultType = Table
+	annotation Copilot_TableDescription = Contains 6 columns: produit_id, nom_produit, categorie, sous_categorie, marque, cout_achat.
+

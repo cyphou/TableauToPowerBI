@@ -1,0 +1,158 @@
+{
+  "filters": 7,
+  "measures": {
+    "[C_COGS]": {
+      "formula_hash": "6a6e3d31b4c08ef1"
+    },
+    "[C_CustTier]": {
+      "formula_hash": "ec759ba749918803"
+    },
+    "[C_DaysSinceFirst]": {
+      "formula_hash": "a53605e16161687d"
+    },
+    "[C_DiscCat]": {
+      "formula_hash": "261712c4bb659467"
+    },
+    "[C_FullLoc]": {
+      "formula_hash": "652046a23578b94b"
+    },
+    "[C_GrossMargin]": {
+      "formula_hash": "103c29237cc4a3f9"
+    },
+    "[C_GrossProfit]": {
+      "formula_hash": "934f7cb6881d1c8e"
+    },
+    "[C_GrossRev]": {
+      "formula_hash": "dc5ba62578890ab6"
+    },
+    "[C_IsMyAcct]": {
+      "formula_hash": "9e22422fc7f6d652"
+    },
+    "[C_MgrAccess]": {
+      "formula_hash": "c6b31b4979fe6643"
+    },
+    "[C_MovAvg3]": {
+      "formula_hash": "2aab6e381ab98335"
+    },
+    "[C_NetRev]": {
+      "formula_hash": "898ba5b6d3d4d317"
+    },
+    "[C_OrderCount]": {
+      "formula_hash": "04be9b4f00ad9f2c"
+    },
+    "[C_RankDense]": {
+      "formula_hash": "492a3a3ddb333e56"
+    },
+    "[C_Rank]": {
+      "formula_hash": "5e285a947a2d353b"
+    },
+    "[C_ReturnRate]": {
+      "formula_hash": "31e729391e1bb241"
+    },
+    "[C_RevExclTerr]": {
+      "formula_hash": "2e45df7023dd84a7"
+    },
+    "[C_RevInclSub]": {
+      "formula_hash": "80381a5da4771600"
+    },
+    "[C_RevPerCust]": {
+      "formula_hash": "20b9e535da672f88"
+    },
+    "[C_RevPerProd]": {
+      "formula_hash": "0573927241ecfc94"
+    },
+    "[C_RevRegChan]": {
+      "formula_hash": "93d06b5fe8d1f680"
+    },
+    "[C_RunAvg]": {
+      "formula_hash": "db6813563d4ae21a"
+    },
+    "[C_RunCount]": {
+      "formula_hash": "eed2bf849ea3eefb"
+    },
+    "[C_RunTotal]": {
+      "formula_hash": "1bde43b561959d53"
+    },
+    "[C_SafeDisc]": {
+      "formula_hash": "61622794aa969a8b"
+    },
+    "[C_StdDev]": {
+      "formula_hash": "b83c00a6b66512b5"
+    },
+    "[C_TargetAchieve]": {
+      "formula_hash": "77304db708b8162e"
+    },
+    "[C_TaxAmt]": {
+      "formula_hash": "d0322934d711a4a1"
+    },
+    "[C_TotalRevTax]": {
+      "formula_hash": "8b0438c90790f124"
+    },
+    "[C_UniqueCust]": {
+      "formula_hash": "061a8dfb1badb104"
+    },
+    "[C_UniqueProd]": {
+      "formula_hash": "e82e2e8dc36e1358"
+    },
+    "[C_WinMax]": {
+      "formula_hash": "f3f483e2cf71faa1"
+    },
+    "[C_YTDRev]": {
+      "formula_hash": "7e6ce5a4adaac082"
+    }
+  },
+  "pages": {
+    "Category Mix": {
+      "field_count": 3
+    },
+    "Customer Analysis": {
+      "field_count": 5
+    },
+    "Customer Detail Tooltip": {
+      "field_count": 2
+    },
+    "Discount Distribution": {
+      "field_count": 2
+    },
+    "Executive KPIs": {
+      "field_count": 2
+    },
+    "Monthly Heatmap": {
+      "field_count": 3
+    },
+    "Order Funnel": {
+      "field_count": 2
+    },
+    "Payment Distribution": {
+      "field_count": 2
+    },
+    "Profit Waterfall": {
+      "field_count": 2
+    },
+    "Revenue Trend": {
+      "field_count": 2
+    },
+    "Revenue by Region": {
+      "field_count": 4
+    },
+    "Sales Map": {
+      "field_count": 3
+    }
+  },
+  "relationships": 3,
+  "tables": {
+    "dim_customer": {
+      "column_count": 12
+    },
+    "dim_date": {
+      "column_count": 12
+    },
+    "dim_product": {
+      "column_count": 10
+    },
+    "fact_sales": {
+      "column_count": 26
+    }
+  },
+  "version": "1.0"
+}

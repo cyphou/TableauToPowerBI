@@ -1,0 +1,113 @@
+{
+  "filters": 0,
+  "measures": {
+    "[Calc_AbsDev]": {
+      "formula_hash": "006262f51f575274"
+    },
+    "[Calc_AvgBySensorMachine]": {
+      "formula_hash": "7f852acfdaeff465"
+    },
+    "[Calc_CeilVal]": {
+      "formula_hash": "0b6758be689c11dc"
+    },
+    "[Calc_DenseRank]": {
+      "formula_hash": "43c805ddb61e3a06"
+    },
+    "[Calc_EnergyIdx]": {
+      "formula_hash": "7c69099585512d00"
+    },
+    "[Calc_FloorVal]": {
+      "formula_hash": "fd9909fcbfbee172"
+    },
+    "[Calc_LogScale]": {
+      "formula_hash": "ca03e16d4f511b7c"
+    },
+    "[Calc_MedianVal]": {
+      "formula_hash": "bdfa555d121246a2"
+    },
+    "[Calc_P95]": {
+      "formula_hash": "bca64217cbd3f8d9"
+    },
+    "[Calc_ReadingHour]": {
+      "formula_hash": "27accf8ebdd78bc9"
+    },
+    "[Calc_ReadingMonth]": {
+      "formula_hash": "1d6b4dab9719578f"
+    },
+    "[Calc_ReadingQtr]": {
+      "formula_hash": "9ab186617cdfc514"
+    },
+    "[Calc_RoundVal]": {
+      "formula_hash": "f127ff20c0eb36cc"
+    },
+    "[Calc_RunAvg]": {
+      "formula_hash": "184eb9cddb8ac610"
+    },
+    "[Calc_RunCount]": {
+      "formula_hash": "59deb9349776ee07"
+    },
+    "[Calc_RunMax]": {
+      "formula_hash": "8d7367b6bf8cffff"
+    },
+    "[Calc_RunMin]": {
+      "formula_hash": "ff34e13037b4d0de"
+    },
+    "[Calc_ScoreLabel]": {
+      "formula_hash": "63de11b91be29e15"
+    },
+    "[Calc_UniqueRank]": {
+      "formula_hash": "7a9643ee4adc3a13"
+    },
+    "[Calc_VariancePop]": {
+      "formula_hash": "dd7fad344e48f25e"
+    },
+    "[Calc_Variance]": {
+      "formula_hash": "d7db3a23923d2a31"
+    },
+    "[Calc_VibX]": {
+      "formula_hash": "1c6d848a4ee45347"
+    },
+    "[Calc_VibY]": {
+      "formula_hash": "222ea14f53edd548"
+    },
+    "[Calc_Weekday]": {
+      "formula_hash": "117c50446768896f"
+    },
+    "[Calc_WinTotal]": {
+      "formula_hash": "f0a75065c68ea946"
+    }
+  },
+  "pages": {
+    "Machine Health": {
+      "field_count": 4
+    },
+    "Machine Rankings": {
+      "field_count": 3
+    },
+    "Maintenance Costs": {
+      "field_count": 4
+    },
+    "Sensor Monitor": {
+      "field_count": 3
+    },
+    "Value Distribution": {
+      "field_count": 3
+    },
+    "Vibration Analysis": {
+      "field_count": 4
+    }
+  },
+  "relationships": 2,
+  "tables": {
+    "Machines": {
+      "column_count": 7
+    },
+    "Maintenance": {
+      "column_count": 8
+    },
+    "Sensors": {
+      "column_count": 13
+    }
+  },
+  "version": "1.0"
+}

@@ -1,0 +1,742 @@
+"""
+Server-Level Assessment Pipeline — Portfolio Assessment for Tableau Server
+or local folder of workbooks.
+
+Produces enterprise-grade readiness reports including:
+- Per-workbook RED/YELLOW/GREEN classification
+- Connector census (histogram of datasource types)
+- Complexity heatmap (5 axes)
+- Migration wave planning (grouping by shared data + complexity)
+- Effort estimation (hours per workbook)
+- Executive HTML dashboard report
+
+Usage (CLI)::
+
+    python migrate.py --bulk-assess folder_of_twbx/
+    python migrate.py --server https://tableau.example.com --server-assess
+
+Usage (programmatic)::
+
+    from powerbi_import.server_assessment import (
+        ServerAssessment, run_server_assessment, generate_server_html_report
+    )
+
+    result = run_server_assessment(all_extracted_list, workbook_names)
+    generate_server_html_report(result, "server_assessment.html")
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+try:
+    from powerbi_import.assessment import run_assessment, AssessmentReport
+except ImportError:
+    from assessment import run_assessment, AssessmentReport
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Constants
+# ═══════════════════════════════════════════════════════════════════
+
+PBI_BLUE = "#0078d4"
+PBI_DARK = "#323130"
+PBI_GRAY = "#605e5c"
+PBI_BG = "#f5f5f5"
+GREEN = "#107c10"
+YELLOW = "#ffb900"
+RED = "#d13438"
+
+# Effort estimation weights (hours per unit)
+_EFFORT_PER_VISUAL = 0.15
+_EFFORT_PER_CALC = 0.2
+_EFFORT_PER_LOD = 0.5
+_EFFORT_PER_TABLE_CALC = 0.4
+_EFFORT_PER_DATASOURCE = 0.3
+_EFFORT_PER_TABLE = 0.1
+_EFFORT_BASE_HOURS = 1.0  # Base overhead per workbook
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Data classes
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class WorkbookReadiness:
+    """Per-workbook readiness result."""
+    name: str
+    status: str  # "GREEN", "YELLOW", "RED"
+    pass_count: int = 0
+    warn_count: int = 0
+    fail_count: int = 0
+    info_count: int = 0
+    complexity: Dict[str, int] = field(default_factory=dict)
+    effort_hours: float = 0.0
+    connector_types: List[str] = field(default_factory=list)
+    visual_count: int = 0
+    calc_count: int = 0
+    table_count: int = 0
+    lineage: Dict[str, object] = field(default_factory=dict)
+    server_evidence: Dict[str, object] = field(default_factory=dict)
+    assessment_report: Optional[object] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "status": self.status,
+            "pass_count": self.pass_count,
+            "warn_count": self.warn_count,
+            "fail_count": self.fail_count,
+            "info_count": self.info_count,
+            "complexity": self.complexity,
+            "effort_hours": round(self.effort_hours, 1),
+            "connector_types": self.connector_types,
+            "visual_count": self.visual_count,
+            "calc_count": self.calc_count,
+            "table_count": self.table_count,
+            "lineage": self.lineage,
+            "server_evidence": self.server_evidence,
+        }
+
+
+@dataclass
+class MigrationWave:
+    """A group of workbooks to migrate together."""
+    wave_number: int
+    label: str  # "Easy", "Medium", "Complex"
+    workbooks: List[str] = field(default_factory=list)
+    total_effort: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "wave_number": self.wave_number,
+            "label": self.label,
+            "workbooks": self.workbooks,
+            "total_effort": round(self.total_effort, 1),
+        }
+
+
+@dataclass
+class ServerAssessment:
+    """Complete server-level assessment result."""
+    workbook_results: List[WorkbookReadiness] = field(default_factory=list)
+    connector_census: Dict[str, int] = field(default_factory=dict)
+    waves: List[MigrationWave] = field(default_factory=list)
+    total_workbooks: int = 0
+    green_count: int = 0
+    yellow_count: int = 0
+    red_count: int = 0
+    total_effort_hours: float = 0.0
+    timestamp: str = ""
+    dependency_hotspots: List[Dict[str, object]] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "timestamp": self.timestamp,
+            "total_workbooks": self.total_workbooks,
+            "green_count": self.green_count,
+            "yellow_count": self.yellow_count,
+            "red_count": self.red_count,
+            "total_effort_hours": round(self.total_effort_hours, 1),
+            "workbook_results": [r.to_dict() for r in self.workbook_results],
+            "connector_census": self.connector_census,
+            "waves": [w.to_dict() for w in self.waves],
+            "dependency_hotspots": self.dependency_hotspots,
+        }
+
+    @property
+    def readiness_pct(self) -> int:
+        if self.total_workbooks == 0:
+            return 0
+        return int(self.green_count / self.total_workbooks * 100)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Core pipeline
+# ═══════════════════════════════════════════════════════════════════
+
+def run_server_assessment(
+    all_extracted: List[dict],
+    workbook_names: List[str],
+) -> ServerAssessment:
+    """Run portfolio-level assessment across multiple workbooks.
+
+    Args:
+        all_extracted: List of extracted workbook dicts.
+        workbook_names: Parallel list of workbook names.
+
+    Returns:
+        ServerAssessment with per-workbook scoring and aggregated analysis.
+    """
+    result = ServerAssessment(
+        total_workbooks=len(workbook_names),
+        timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+
+    connector_counter: Dict[str, int] = {}
+
+    for wb_name, extracted in zip(workbook_names, all_extracted):
+        readiness = _assess_single_workbook(wb_name, extracted)
+        result.workbook_results.append(readiness)
+
+        # Accumulate connector census
+        for conn in readiness.connector_types:
+            connector_counter[conn] = connector_counter.get(conn, 0) + 1
+
+        # Accumulate totals
+        if readiness.status == "GREEN":
+            result.green_count += 1
+        elif readiness.status == "YELLOW":
+            result.yellow_count += 1
+        else:
+            result.red_count += 1
+        result.total_effort_hours += readiness.effort_hours
+
+    result.connector_census = dict(
+        sorted(connector_counter.items(), key=lambda x: x[1], reverse=True)
+    )
+
+    # Build migration waves
+    result.waves = _build_migration_waves(result.workbook_results)
+    result.dependency_hotspots = _build_dependency_hotspots(result.workbook_results)
+
+    return result
+
+
+def _assess_single_workbook(wb_name: str, extracted: dict) -> WorkbookReadiness:
+    """Run assessment on a single workbook and produce readiness result."""
+    report = run_assessment(extracted)
+
+    pass_c = warn_c = fail_c = info_c = 0
+    for cat in report.categories:
+        for check in cat.checks:
+            if check.severity == "pass":
+                pass_c += 1
+            elif check.severity == "warn":
+                warn_c += 1
+            elif check.severity == "fail":
+                fail_c += 1
+            else:
+                info_c += 1
+
+    # Classify status
+    if fail_c == 0 and warn_c <= 2:
+        status = "GREEN"
+    elif fail_c <= 2:
+        status = "YELLOW"
+    else:
+        status = "RED"
+
+    # Extract complexity metrics
+    complexity = _compute_complexity(extracted)
+
+    # Extract connector types
+    connectors = []
+    for ds in extracted.get('datasources', []):
+        conn = ds.get('connection', {})
+        ctype = conn.get('type', 'unknown')
+        if ctype and ctype not in connectors:
+            connectors.append(ctype)
+
+    # Estimate effort
+    effort = _estimate_effort(extracted, complexity)
+    lineage = _compute_lineage_evidence(extracted)
+
+    return WorkbookReadiness(
+        name=wb_name,
+        status=status,
+        pass_count=pass_c,
+        warn_count=warn_c,
+        fail_count=fail_c,
+        info_count=info_c,
+        complexity=complexity,
+        effort_hours=effort,
+        connector_types=connectors,
+        visual_count=complexity.get('visuals', 0),
+        calc_count=complexity.get('calculations', 0),
+        table_count=complexity.get('tables', 0),
+        lineage=lineage,
+        assessment_report=report,
+    )
+
+
+def _compute_complexity(extracted: dict) -> Dict[str, int]:
+    """Compute complexity metrics for a workbook."""
+    visuals = len(extracted.get('worksheets', []))
+    dashboards = len(extracted.get('dashboards', []))
+
+    calc_count = len(extracted.get('calculations', []))
+    for ds in extracted.get('datasources', []):
+        calc_count += len(ds.get('calculations', []))
+
+    table_count = 0
+    for ds in extracted.get('datasources', []):
+        table_count += sum(
+            1 for t in ds.get('tables', [])
+            if t.get('type', 'table') == 'table'
+        )
+
+    lod_count = 0
+    table_calc_count = 0
+    all_calcs = list(extracted.get('calculations', []))
+    for ds in extracted.get('datasources', []):
+        all_calcs.extend(ds.get('calculations', []))
+    for calc in all_calcs:
+        formula = calc.get('formula', '')
+        if '{' in formula and any(
+            kw in formula.upper() for kw in ('FIXED', 'INCLUDE', 'EXCLUDE')
+        ):
+            lod_count += 1
+        if any(kw in formula.upper() for kw in (
+            'RUNNING_', 'WINDOW_', 'RANK(', 'RANK_', 'INDEX(', 'FIRST(', 'LAST(',
+        )):
+            table_calc_count += 1
+
+    filters = len(extracted.get('filters', []))
+    actions = len(extracted.get('actions', []))
+
+    return {
+        'visuals': visuals,
+        'dashboards': dashboards,
+        'calculations': calc_count,
+        'tables': table_count,
+        'lod_expressions': lod_count,
+        'table_calcs': table_calc_count,
+        'filters': filters,
+        'actions': actions,
+        'parameters': len(extracted.get('parameters', [])),
+        'rls_rules': len(extracted.get('user_filters', [])),
+        'custom_sql': len(extracted.get('custom_sql', [])),
+    }
+
+
+def _estimate_effort(extracted: dict, complexity: Dict[str, int]) -> float:
+    """Estimate migration effort in hours."""
+    hours = _EFFORT_BASE_HOURS
+    hours += complexity.get('visuals', 0) * _EFFORT_PER_VISUAL
+    hours += complexity.get('calculations', 0) * _EFFORT_PER_CALC
+    hours += complexity.get('lod_expressions', 0) * _EFFORT_PER_LOD
+    hours += complexity.get('table_calcs', 0) * _EFFORT_PER_TABLE_CALC
+    hours += complexity.get('tables', 0) * _EFFORT_PER_TABLE
+
+    ds_count = len(extracted.get('datasources', []))
+    hours += ds_count * _EFFORT_PER_DATASOURCE
+
+    return round(hours, 1)
+
+
+def _compute_lineage_evidence(extracted: dict) -> Dict[str, object]:
+    """Summarize locally observable workbook lineage and its completeness."""
+    datasources = extracted.get('datasources', []) or []
+    tables = [table for ds in datasources for table in ds.get('tables', []) or []]
+    relationships = [rel for ds in datasources
+                     for rel in ds.get('relationships', []) or []]
+    table_names = {table.get('name', '') for table in tables}
+    unresolved = 0
+    for relationship in relationships:
+        for side in ('left', 'right'):
+            endpoint = relationship.get(side, {})
+            if isinstance(endpoint, dict) and endpoint.get('table') not in table_names:
+                unresolved += 1
+    if not datasources:
+        status = 'not_available'
+    elif unresolved:
+        status = 'incomplete'
+    elif len(tables) <= 1 or relationships:
+        status = 'complete'
+    else:
+        status = 'partial'
+    return {
+        'status': status,
+        'datasources': len(datasources),
+        'tables': len(tables),
+        'relationships': len(relationships),
+        'unresolved_endpoints': unresolved,
+    }
+
+
+def _build_dependency_hotspots(
+    workbook_results: List[WorkbookReadiness],
+) -> List[Dict[str, object]]:
+    """Rank workbooks with the largest locally observed lineage surface."""
+    hotspots = []
+    for result in workbook_results:
+        lineage = result.lineage
+        surface = (int(lineage.get('datasources', 0)) +
+                   int(lineage.get('relationships', 0)) +
+                   int(lineage.get('unresolved_endpoints', 0)) * 2)
+        if surface:
+            hotspots.append({
+                'workbook': result.name,
+                'dependency_surface': surface,
+                'lineage_status': lineage.get('status', 'not_available'),
+            })
+    return sorted(hotspots, key=lambda item: (-int(item['dependency_surface']),
+                                                str(item['workbook'])))
+
+
+def collect_server_workbook_evidence(client: object, workbook_id: str) -> Dict[str, object]:
+    """Collect optional authenticated Server metadata for one workbook.
+
+    Each endpoint is isolated so a permission or API-version limitation is
+    recorded as unavailable instead of invalidating the whole assessment.
+    """
+    evidence: Dict[str, object] = {'workbook_id': workbook_id, 'status': 'partial'}
+    available = []
+
+    def call(name: str, default):
+        try:
+            method = getattr(client, name)
+            value = method(workbook_id)
+            available.append(name)
+            return value
+        except (AttributeError, OSError, ValueError, KeyError, RuntimeError, TypeError):
+            return default
+
+    dependencies = call('get_workbook_dependencies', {}) or {}
+    usage = call('get_usage_stats', {}) or {}
+    permissions = call('get_permissions', []) or []
+    upstream = call('get_lineage_upstream', {}) or {}
+    extract_tasks = call('get_workbook_extract_tasks', []) or []
+    subscriptions = call('get_workbook_subscriptions', []) or []
+    evidence.update({
+        'dependencies': {
+            'datasources': len(dependencies.get('datasources', []) or []),
+            'views': len(dependencies.get('views', []) or []),
+            'downstream_workbooks': len(dependencies.get('downstream_workbooks', []) or []),
+        },
+        'usage': {
+            'total_views': usage.get('totalViews', 0),
+            'last_accessed': usage.get('lastAccessed', ''),
+        },
+        'permissions': {
+            'entries': len(permissions),
+            'groups': sum(1 for item in permissions if item.get('granteeType') == 'group'),
+        },
+        'upstream_lineage': {
+            'datasources': len(upstream.get('datasources', []) or []),
+            'tables': len(upstream.get('tables', []) or []),
+            'databases': len(upstream.get('databases', []) or []),
+        },
+        'refresh_delivery': {
+            'extract_tasks': len(extract_tasks),
+            'subscriptions': len(subscriptions),
+        },
+    })
+    evidence['status'] = ('complete' if len(available) == 6 else
+                          'partial' if available else 'unavailable')
+    evidence['risk'] = _server_evidence_risk(evidence)
+    return evidence
+
+
+def _server_evidence_risk(evidence: Dict[str, object]) -> Dict[str, object]:
+    """Classify operational migration risk from normalized Server evidence."""
+    reasons = []
+    if evidence.get('status') == 'unavailable':
+        reasons.append('Server metadata unavailable')
+    elif evidence.get('status') == 'partial':
+        reasons.append('Server metadata is incomplete')
+    dependencies = evidence.get('dependencies', {})
+    if isinstance(dependencies, dict) and dependencies.get('downstream_workbooks', 0):
+        reasons.append('Shared datasource has downstream workbook dependencies')
+    refresh = evidence.get('refresh_delivery', {})
+    if isinstance(refresh, dict) and refresh.get('subscriptions', 0):
+        reasons.append('Subscriptions require delivery migration')
+    if isinstance(refresh, dict) and refresh.get('extract_tasks', 0):
+        reasons.append('Extract refresh tasks require schedule migration')
+    permissions = evidence.get('permissions', {})
+    if isinstance(permissions, dict) and permissions.get('entries', 0) == 0:
+        reasons.append('No workbook permission evidence returned')
+    level = 'high' if evidence.get('status') == 'unavailable' or len(reasons) >= 3 else (
+        'medium' if reasons else 'low')
+    return {'level': level, 'reasons': reasons}
+
+
+def enrich_with_server_evidence(
+    assessment: ServerAssessment,
+    client: object,
+    workbook_ids: Dict[str, str],
+) -> ServerAssessment:
+    """Attach authenticated Server evidence to matching readiness records."""
+    for readiness in assessment.workbook_results:
+        workbook_id = workbook_ids.get(readiness.name)
+        if workbook_id:
+            readiness.server_evidence = collect_server_workbook_evidence(client, workbook_id)
+    return assessment
+
+
+def build_server_lineage_graph(assessment: ServerAssessment) -> Dict[str, object]:
+    """Build a normalized portfolio graph from available assessment evidence."""
+    nodes = []
+    edges = []
+    for result in assessment.workbook_results:
+        workbook_id = f"workbook:{result.name}"
+        nodes.append({'id': workbook_id, 'type': 'workbook', 'name': result.name})
+        for index in range(int(result.lineage.get('datasources', 0))):
+            datasource_id = f"datasource:{result.name}:{index}"
+            nodes.append({'id': datasource_id, 'type': 'datasource',
+                          'name': f"Datasource {index + 1}"})
+            edges.append({'source': datasource_id, 'target': workbook_id,
+                          'type': 'feeds'})
+        evidence = result.server_evidence
+        dependencies = evidence.get('dependencies', {})
+        for index in range(int(dependencies.get('downstream_workbooks', 0))):
+            downstream_id = f"downstream:{result.name}:{index}"
+            nodes.append({'id': downstream_id, 'type': 'workbook',
+                          'name': f"Downstream workbook {index + 1}"})
+            edges.append({'source': workbook_id, 'target': downstream_id,
+                          'type': 'dependency'})
+    return {'nodes': nodes, 'edges': edges,
+            'workbooks': len(assessment.workbook_results),
+            'edge_count': len(edges)}
+
+
+def _build_migration_waves(
+    workbook_results: List[WorkbookReadiness],
+) -> List[MigrationWave]:
+    """Group workbooks into migration waves based on complexity."""
+    easy = []
+    medium = []
+    hard = []
+
+    for r in workbook_results:
+        score = (
+            r.complexity.get('calculations', 0) +
+            r.complexity.get('lod_expressions', 0) * 3 +
+            r.complexity.get('table_calcs', 0) * 2
+        )
+        if r.status == "GREEN" and score <= 5:
+            easy.append(r)
+        elif r.status == "RED" or score > 20:
+            hard.append(r)
+        else:
+            medium.append(r)
+
+    waves = []
+    wave_num = 1
+    if easy:
+        waves.append(MigrationWave(
+            wave_number=wave_num,
+            label="Easy (quick wins)",
+            workbooks=[r.name for r in easy],
+            total_effort=sum(r.effort_hours for r in easy),
+        ))
+        wave_num += 1
+    if medium:
+        waves.append(MigrationWave(
+            wave_number=wave_num,
+            label="Medium (standard migration)",
+            workbooks=[r.name for r in medium],
+            total_effort=sum(r.effort_hours for r in medium),
+        ))
+        wave_num += 1
+    if hard:
+        waves.append(MigrationWave(
+            wave_number=wave_num,
+            label="Complex (manual review recommended)",
+            workbooks=[r.name for r in hard],
+            total_effort=sum(r.effort_hours for r in hard),
+        ))
+
+    return waves
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  JSON output
+# ═══════════════════════════════════════════════════════════════════
+
+def save_server_assessment_json(
+    assessment: ServerAssessment, output_path: str
+) -> dict:
+    """Save server assessment to JSON file."""
+    report = assessment.to_dict()
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    logger.info("Server assessment saved to %s", output_path)
+    return report
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Console summary
+# ═══════════════════════════════════════════════════════════════════
+
+def print_server_summary(assessment: ServerAssessment):
+    """Print a formatted console summary of the server assessment."""
+    w = 70
+    print()
+    print("=" * w)
+    print("  Tableau Server — Portfolio Assessment".center(w))
+    print("=" * w)
+
+    print(f"  Total workbooks:    {assessment.total_workbooks}")
+    print(f"  GREEN (ready):      {assessment.green_count}")
+    print(f"  YELLOW (review):    {assessment.yellow_count}")
+    print(f"  RED (complex):      {assessment.red_count}")
+    print(f"  Readiness:          {assessment.readiness_pct}%")
+    print(f"  Est. total effort:  {assessment.total_effort_hours:.1f} hours")
+    print("-" * w)
+
+    # Connector census
+    if assessment.connector_census:
+        print("  CONNECTOR CENSUS:")
+        for conn, count in assessment.connector_census.items():
+            bar = "#" * min(count, 30)
+            print(f"    {conn:<20} {bar} ({count})")
+        print()
+
+    # Waves
+    for wave in assessment.waves:
+        print(f"  WAVE {wave.wave_number}: {wave.label}")
+        for wb in wave.workbooks:
+            print(f"    - {wb}")
+        print(f"    Est. effort: {wave.total_effort:.1f} hours")
+        print()
+
+    if assessment.dependency_hotspots:
+        print("  DEPENDENCY HOTSPOTS:")
+        for hotspot in assessment.dependency_hotspots[:10]:
+            print(f"    {hotspot['workbook']}: "
+                  f"{hotspot['dependency_surface']} "
+                  f"({hotspot['lineage_status']})")
+        print()
+
+    print("=" * w)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  HTML report generator
+# ═══════════════════════════════════════════════════════════════════
+
+def generate_server_html_report(
+    assessment: ServerAssessment,
+    output_path: str = "server_assessment.html",
+) -> str:
+    """Generate an executive HTML dashboard report for the server assessment."""
+    try:
+        from powerbi_import.html_template import (
+            html_open, html_close, stat_card, stat_grid, section_open,
+            section_close, badge, fidelity_bar, donut_chart, bar_chart,
+            data_table, esc, SUCCESS, FAIL,
+        )
+    except ImportError:
+        from html_template import (
+            html_open, html_close, stat_card, stat_grid, section_open,
+            section_close, badge, fidelity_bar, donut_chart, bar_chart,
+            data_table, esc, SUCCESS, FAIL,
+        )
+
+    html = html_open(
+        title="Tableau Server \u2014 Portfolio Assessment",
+        subtitle=f"{assessment.total_workbooks} workbooks analyzed",
+        timestamp=assessment.timestamp,
+    )
+
+    # ── Executive Summary ──────────────────────────────────────
+    html += section_open("summary", "Executive Summary", "&#128200;")
+    html += stat_grid([
+        stat_card(assessment.total_workbooks, "Total Workbooks", accent="blue"),
+        stat_card(assessment.green_count, "GREEN (Ready)", accent="success"),
+        stat_card(assessment.yellow_count, "YELLOW (Review)", accent="warn"),
+        stat_card(assessment.red_count, "RED (Complex)", accent="fail"),
+        stat_card(f"{assessment.readiness_pct}%", "Readiness", accent="blue"),
+        stat_card(f"{assessment.total_effort_hours:.1f}h", "Est. Total Effort", accent="purple"),
+    ])
+
+    # Readiness donut
+    html += '<div class="chart-row">'
+    html += '<div class="chart-card"><h4>&#127919; Readiness Distribution</h4>'
+    html += donut_chart([
+        ("GREEN", assessment.green_count, SUCCESS),
+        ("YELLOW", assessment.yellow_count, "#c19c00"),
+        ("RED", assessment.red_count, FAIL),
+    ], center_text=f"{assessment.readiness_pct}%")
+    html += '</div>'
+
+    # Connector distribution
+    if assessment.connector_census:
+        conn_items = [(conn, count, "#0078d4")
+                      for conn, count in assessment.connector_census.items()]
+        html += '<div class="chart-card"><h4>&#128268; Connector Census</h4>'
+        html += bar_chart(conn_items)
+        html += '</div>'
+
+    html += '</div>'  # chart-row
+    html += section_close()
+
+    if assessment.dependency_hotspots:
+        html += section_open("dependencies", "Dependency Hotspots", "&#128279;")
+        hotspot_rows = []
+        for hotspot in assessment.dependency_hotspots:
+            hotspot_rows.append([
+                esc(str(hotspot['workbook'])),
+                str(hotspot['dependency_surface']),
+                esc(str(hotspot['lineage_status'])),
+            ])
+        html += '<div class="card">'
+        html += data_table(
+            ["Workbook", "Dependency Surface", "Lineage Status"],
+            hotspot_rows, "dependency-hotspots-tbl", sortable=True)
+        html += '</div>'
+        html += section_close()
+
+    # ── Migration Waves ──────────────────────────────────────────
+    if assessment.waves:
+        html += section_open("waves", "Migration Waves", "&#128640;")
+        wave_rows = []
+        for wave in assessment.waves:
+            members = ', '.join(wave.workbooks[:5])
+            if len(wave.workbooks) > 5:
+                members += '...'
+            wave_rows.append([
+                f'<strong>Wave {wave.wave_number}</strong>',
+                esc(wave.label),
+                str(len(wave.workbooks)),
+                f'{wave.total_effort:.1f}h',
+                esc(members),
+            ])
+        html += '<div class="card">'
+        html += data_table(
+            ["Wave", "Classification", "Workbooks", "Effort", "Members"],
+            wave_rows, "wave-tbl", sortable=True)
+        html += '</div>'
+        html += section_close()
+
+    # ── Workbook Detail ──────────────────────────────────────────
+    html += section_open("detail", "Workbook Detail", "&#128221;")
+    wb_rows = []
+    for r in sorted(assessment.workbook_results, key=lambda x: x.effort_hours, reverse=True):
+        wb_rows.append([
+            badge(r.status),
+            f'<strong>{esc(r.name)}</strong>',
+            str(r.visual_count),
+            str(r.calc_count),
+            str(r.table_count),
+            str(r.complexity.get('lod_expressions', 0)),
+            esc(str(r.lineage.get('status', 'not_available'))),
+            str(r.lineage.get('relationships', 0)),
+            esc(str(r.server_evidence.get('risk', {}).get('level', 'not_run'))),
+            f'{r.effort_hours:.1f}h',
+            ', '.join(esc(c) for c in r.connector_types) or 'N/A',
+        ])
+    html += '<div class="card">'
+    html += data_table(
+        ["Status", "Workbook", "Visuals", "Calcs", "Tables", "LOD", "Lineage", "Relationships", "Server Risk", "Effort", "Connectors"],
+        wb_rows, "wb-detail-tbl", sortable=True, searchable=True)
+    html += '</div>'
+    html += section_close()
+
+    html += html_close()
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    logger.info("Server assessment HTML report saved to %s", output_path)
+    return output_path

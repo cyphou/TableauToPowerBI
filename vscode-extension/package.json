@@ -1,0 +1,152 @@
+{
+  "name": "tableau-to-powerbi",
+  "displayName": "Tableau to Power BI Migration",
+  "description": "Assess, preview, and migrate Tableau workbooks (.twb/.twbx) to Power BI (.pbip) directly inside VS Code.",
+  "version": "40.0.0",
+  "publisher": "tableau-to-powerbi",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Data Science",
+    "Visualization"
+  ],
+  "keywords": [
+    "tableau",
+    "power bi",
+    "migration",
+    "twbx",
+    "pbip",
+    "dax"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cyphou/Tableau-To-PowerBI.git"
+  },
+  "activationEvents": [
+    "onLanguage:tableau",
+    "workspaceContains:**/*.twb",
+    "workspaceContains:**/*.twbx"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tableauToPowerBI.assess",
+        "title": "Tableau: Assess Migration Readiness",
+        "category": "Tableau to Power BI"
+      },
+      {
+        "command": "tableauToPowerBI.migrate",
+        "title": "Tableau: Migrate to Power BI",
+        "category": "Tableau to Power BI"
+      },
+      {
+        "command": "tableauToPowerBI.previewDax",
+        "title": "Tableau: Preview DAX Conversions",
+        "category": "Tableau to Power BI"
+      },
+      {
+        "command": "tableauToPowerBI.refreshTree",
+        "title": "Tableau: Refresh Workbook Tree",
+        "category": "Tableau to Power BI",
+        "icon": "$(refresh)"
+      }
+    ],
+    "languages": [
+      {
+        "id": "dax",
+        "aliases": ["DAX", "dax"],
+        "extensions": [".dax"],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "tableau",
+        "aliases": ["Tableau Calculation", "tableau"],
+        "extensions": [".twb", ".tableau-calc"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "dax",
+        "scopeName": "source.dax",
+        "path": "./syntaxes/dax.tmLanguage.json"
+      },
+      {
+        "language": "tableau",
+        "scopeName": "source.tableau",
+        "path": "./syntaxes/tableau.tmLanguage.json"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "tableauToPowerBI.workbookTree",
+          "name": "Tableau Workbook",
+          "icon": "$(table)",
+          "contextualTitle": "Tableau Workbook"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "tableauToPowerBI.refreshTree",
+          "when": "view == tableauToPowerBI.workbookTree",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "tableauToPowerBI.assess",
+          "when": "resourceExtname == .twbx || resourceExtname == .twb",
+          "group": "tableauToPowerBI"
+        },
+        {
+          "command": "tableauToPowerBI.migrate",
+          "when": "resourceExtname == .twbx || resourceExtname == .twb",
+          "group": "tableauToPowerBI"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Tableau to Power BI",
+      "properties": {
+        "tableauToPowerBI.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Path to the Python interpreter used to run the migration engine."
+        },
+        "tableauToPowerBI.outputDirectory": {
+          "type": "string",
+          "default": "",
+          "description": "Output directory for generated .pbip projects. Empty uses the engine default (artifacts/)."
+        },
+        "tableauToPowerBI.engineRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Tableau-to-PowerBI repository root (where migrate.py lives). Empty auto-detects from the workspace."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node ./out/test/run-unit.js",
+    "lint": "tsc --noEmit -p ./"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.3.9",
+    "mocha": "^10.3.0",
+    "typescript": "^5.4.0"
+  }
+}

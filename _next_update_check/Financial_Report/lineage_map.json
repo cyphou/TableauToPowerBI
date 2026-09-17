@@ -1,0 +1,427 @@
+{
+  "contract": {
+    "version": "1.1",
+    "source": "tableau_extraction",
+    "target": "powerbi_tmdl",
+    "status": "partial",
+    "coverage": {
+      "tables": {
+        "target_count": 4,
+        "resolved_count": 1,
+        "percent": 25.0
+      },
+      "columns": {
+        "target_count": 18,
+        "resolved_count": 10,
+        "percent": 55.56
+      },
+      "calculations": {
+        "target_count": 16,
+        "resolved_count": 16,
+        "percent": 100.0
+      },
+      "relationships": {
+        "target_count": 1,
+        "resolved_count": 1,
+        "percent": 100.0
+      }
+    },
+    "unresolved": [
+      {
+        "type": "tables",
+        "target": "Fiscal Year"
+      },
+      {
+        "type": "tables",
+        "target": "Business Unit"
+      }
+    ]
+  },
+  "tables": [
+    {
+      "tableau_datasource": "federated.1",
+      "tableau_table": "transactions",
+      "pbi_table": "transactions",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Calendar",
+      "pbi_table": "Calendar",
+      "source_status": "generated"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Fiscal Year",
+      "pbi_table": "Fiscal Year",
+      "source_status": "unresolved"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Business Unit",
+      "pbi_table": "Business Unit",
+      "source_status": "unresolved"
+    }
+  ],
+  "columns": [
+    {
+      "tableau_table": "transactions",
+      "tableau_column": "transaction_id",
+      "pbi_table": "transactions",
+      "pbi_column": "transaction_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "transactions",
+      "tableau_column": "transaction_date",
+      "pbi_table": "transactions",
+      "pbi_column": "transaction_date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "transactions",
+      "tableau_column": "account",
+      "pbi_table": "transactions",
+      "pbi_column": "account",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "transactions",
+      "tableau_column": "category",
+      "pbi_table": "transactions",
+      "pbi_column": "category",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "transactions",
+      "tableau_column": "amount",
+      "pbi_table": "transactions",
+      "pbi_column": "amount",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "transactions",
+      "tableau_column": "type",
+      "pbi_table": "transactions",
+      "pbi_column": "type",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "transactions",
+      "tableau_column": "business_unit",
+      "pbi_table": "transactions",
+      "pbi_column": "business_unit",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "transactions",
+      "tableau_column": "cost_center",
+      "pbi_table": "transactions",
+      "pbi_column": "cost_center",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Date",
+      "pbi_table": "Calendar",
+      "pbi_column": "Date",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Year",
+      "pbi_table": "Calendar",
+      "pbi_column": "Year",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Quarter",
+      "pbi_table": "Calendar",
+      "pbi_column": "Quarter",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Month",
+      "pbi_table": "Calendar",
+      "pbi_column": "Month",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "MonthName",
+      "pbi_table": "Calendar",
+      "pbi_column": "MonthName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Day",
+      "pbi_table": "Calendar",
+      "pbi_column": "Day",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayOfWeek",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayOfWeek",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayName",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Fiscal Year",
+      "tableau_column": "Value",
+      "pbi_table": "Fiscal Year",
+      "pbi_column": "Value",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Business Unit",
+      "tableau_column": "Value",
+      "pbi_table": "Business Unit",
+      "pbi_column": "Value",
+      "source_status": "declared",
+      "source_kind": "physical"
+    }
+  ],
+  "calculations": [
+    {
+      "tableau_calculation": "Revenue",
+      "source_formula": "SUM(IF [type] = \"Revenue\" THEN [amount] ELSE 0 END)",
+      "pbi_table": "transactions",
+      "pbi_object": "Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Expenses",
+      "source_formula": "SUM(IF [type] = \"Expense\" THEN [amount] ELSE 0 END)",
+      "pbi_table": "transactions",
+      "pbi_object": "Expenses",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Net Income",
+      "source_formula": "SUM(IF [type] = \"Revenue\" THEN [amount] ELSE -[amount] END)",
+      "pbi_table": "transactions",
+      "pbi_object": "Net Income",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Profit Margin %",
+      "source_formula": "([Revenue] - [Expenses]) / [Revenue]",
+      "pbi_table": "transactions",
+      "pbi_object": "Profit Margin %",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "YTD Revenue",
+      "source_formula": "{FIXED : SUM(IF YEAR([transaction_date]) = YEAR(TODAY()) THEN [amount] ELSE 0 END)}",
+      "pbi_table": "transactions",
+      "pbi_object": "YTD Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Budget Variance",
+      "source_formula": "SUM([amount]) - WINDOW_AVG(SUM([amount]))",
+      "pbi_table": "transactions",
+      "pbi_object": "Budget Variance",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "transactions",
+      "pbi_object": "Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Expenses Formatted",
+      "source_formula": "",
+      "pbi_table": "transactions",
+      "pbi_object": "Expenses Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Net Income Formatted",
+      "source_formula": "",
+      "pbi_table": "transactions",
+      "pbi_object": "Net Income Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "YTD Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "transactions",
+      "pbi_object": "YTD Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Budget Variance Formatted",
+      "source_formula": "",
+      "pbi_table": "transactions",
+      "pbi_object": "Budget Variance Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Year To Date",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Year To Date",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Previous Year",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Previous Year",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Year Over Year %",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Year Over Year %",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Fiscal Year",
+      "source_formula": "",
+      "pbi_table": "Fiscal Year",
+      "pbi_object": "Fiscal Year",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Business Unit",
+      "source_formula": "",
+      "pbi_table": "Business Unit",
+      "pbi_object": "Business Unit",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    }
+  ],
+  "relationships": [
+    {
+      "from": "transactions[transaction_date]",
+      "to": "Calendar[Date]",
+      "cardinality": "oneDirection",
+      "tableau_from": "transactions[transaction_date]",
+      "tableau_to": "Calendar[Date]",
+      "source_status": "exact"
+    }
+  ],
+  "worksheets": [
+    {
+      "tableau_worksheet": "Revenue vs Expenses",
+      "pbi_page": "Revenue vs Expenses"
+    },
+    {
+      "tableau_worksheet": "Category Breakdown",
+      "pbi_page": "Category Breakdown"
+    },
+    {
+      "tableau_worksheet": "Business Unit Performance",
+      "pbi_page": "Business Unit Performance"
+    },
+    {
+      "tableau_worksheet": "Top 10 Accounts",
+      "pbi_page": "Top 10 Accounts"
+    }
+  ],
+  "filters": [
+    {
+      "tableau_object": "[Parameters].[Business Unit Filter]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[Parameters].[Business Unit Filter]",
+        "field": "[Parameters].[Business Unit Filter]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[federated.1].[sum:amount:qk]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[federated.1].[sum:amount:qk]",
+        "field": "[federated.1].[sum:amount:qk]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[federated.1].[transaction_date]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[federated.1].[transaction_date]",
+        "field": "[federated.1].[transaction_date]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[federated.1].[transaction_date]",
+      "object_type": "filter",
+      "source_identity": {
+        "name": "[federated.1].[transaction_date]",
+        "field": "[federated.1].[transaction_date]"
+      },
+      "source_status": "exact"
+    }
+  ],
+  "parameters": [
+    {
+      "tableau_object": "[Parameters].[Fiscal Year]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Fiscal Year]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[Parameters].[Business Unit Filter]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Business Unit Filter]"
+      },
+      "source_status": "exact"
+    }
+  ],
+  "actions": []
+}

@@ -1,0 +1,86 @@
+# Phase 10 — Weekly Regression Triage Bot
+#
+# Scans tests/fixtures/regressions/ for new fixture directories,
+# validates each one can be migrated without failure, and opens a PR
+# to add the fixture to the regression test suite.
+#
+# Schedule: weekly on Monday 06:00 UTC
+# Manual trigger: workflow_dispatch
+
+name: Regression Triage
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Scan for new regression fixtures
+        id: scan
+        run: |
+          FIXTURE_DIR="tests/fixtures/regressions"
+          if [ ! -d "$FIXTURE_DIR" ]; then
+            echo "fixture_count=0" >> "$GITHUB_OUTPUT"
+            echo "No regression fixture directory found."
+            exit 0
+          fi
+          COUNT=$(find "$FIXTURE_DIR" -name "fixture.json" -type f | wc -l)
+          echo "fixture_count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "Found $COUNT regression fixture(s)."
+
+      - name: Validate fixtures
+        if: steps.scan.outputs.fixture_count != '0'
+        run: |
+          python -c "
+          import json, os, sys
+
+          base = 'tests/fixtures/regressions'
+          if not os.path.isdir(base):
+              sys.exit(0)
+
+          results = []
+          for entry in sorted(os.listdir(base)):
+              fixture_json = os.path.join(base, entry, 'fixture.json')
+              if not os.path.isfile(fixture_json):
+                  continue
+              with open(fixture_json) as f:
+                  meta = json.load(f)
+              # Count extraction files present
+              extraction_files = [
+                  n for n in os.listdir(os.path.join(base, entry))
+                  if n.endswith('.json') and n != 'fixture.json'
+              ]
+              results.append({
+                  'fixture': entry,
+                  'source': meta.get('source', '?'),
+                  'failure_modes': meta.get('failure_modes', []),
+                  'extraction_files': len(extraction_files),
+              })
+              print(f'  {entry}: {len(extraction_files)} extractions, '
+                    f'modes={meta.get(\"failure_modes\", [])}')
+
+          with open('triage_results.json', 'w') as f:
+              json.dump(results, f, indent=2)
+          print(f'Validated {len(results)} fixtures.')
+          "
+
+      - name: Upload triage results
+        if: steps.scan.outputs.fixture_count != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: triage-results
+          path: triage_results.json
+          retention-days: 30

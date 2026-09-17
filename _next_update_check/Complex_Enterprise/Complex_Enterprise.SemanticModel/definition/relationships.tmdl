@@ -1,0 +1,45 @@
+relationship 26e32227-4891-494f-9b7d-8e1024ae90e2
+	fromColumn: fact_sales.product_key
+	toColumn: dim_product.product_key
+	fromCardinality: many
+	toCardinality: many
+	crossFilteringBehavior: oneDirection
+
+relationship 85999c98-7766-4e78-9961-8f216bfd31d4
+	fromColumn: fact_sales.customer_key
+	toColumn: dim_customer.customer_key
+	fromCardinality: many
+	toCardinality: many
+	crossFilteringBehavior: oneDirection
+
+relationship 18b4140d-03fa-44ef-9286-febc5d78af86
+	fromColumn: fact_sales.date_key
+	toColumn: dim_date.date_key
+	fromCardinality: many
+	toCardinality: many
+	crossFilteringBehavior: oneDirection
+
+relationship 7f0124fc-a7f5-4be5-a519-22c5707c0d7a
+	fromColumn: dim_date.date_key
+	toColumn: dim_customer.customer_key
+	fromCardinality: many
+	toCardinality: many
+	crossFilteringBehavior: oneDirection
+	isActive: false
+
+relationship 563cbdaf-3c5e-4d2f-942e-83f3aa0ddb38
+	fromColumn: dim_date.date_key
+	toColumn: dim_product.product_key
+	fromCardinality: many
+	toCardinality: many
+	crossFilteringBehavior: oneDirection
+	isActive: false
+
+relationship 51798240-71b0-4d24-a7b3-e1c33ac382d3
+	fromColumn: dim_customer.customer_key
+	toColumn: dim_product.product_key
+	fromCardinality: many
+	toCardinality: many
+	crossFilteringBehavior: oneDirection
+	isActive: false
+

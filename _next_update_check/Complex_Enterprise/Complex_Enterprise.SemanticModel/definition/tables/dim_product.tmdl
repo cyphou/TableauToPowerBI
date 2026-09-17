@@ -1,0 +1,115 @@
+table dim_product
+	lineageTag: 8d311d10-04f0-44cb-8212-af36dd657b15
+
+	column product_key
+		dataType: int64
+		lineageTag: cdb2eeec-4c2b-441c-8606-ed02539bc5e7
+		summarizeBy: sum
+		sourceColumn: product_key
+		annotation Copilot_Hidden = true
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_id
+		dataType: string
+		lineageTag: bfb85f0e-a389-4a97-bb5f-71f6be769af5
+		summarizeBy: none
+		sourceColumn: product_id
+		annotation Copilot_Hidden = true
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_name
+		dataType: string
+		lineageTag: 0e405962-e737-4bf9-a8c0-ca7981b5a2bc
+		summarizeBy: none
+		sourceColumn: product_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column category
+		dataType: string
+		lineageTag: 288046c6-9a84-4d9e-856e-792697f57495
+		summarizeBy: none
+		sourceColumn: category
+
+		annotation SummarizationSetBy = Automatic
+
+	column subcategory
+		dataType: string
+		lineageTag: b56e8080-f220-4452-b5ab-3a3dce5f0fd9
+		summarizeBy: none
+		sourceColumn: subcategory
+
+		annotation SummarizationSetBy = Automatic
+
+	column brand
+		dataType: string
+		lineageTag: 9b1dd487-92e8-41e1-af9b-79f9fb8ba7a9
+		summarizeBy: none
+		sourceColumn: brand
+
+		annotation SummarizationSetBy = Automatic
+
+	column supplier
+		dataType: string
+		lineageTag: 26feecd0-0615-4159-826c-253cb5a3b0e5
+		summarizeBy: none
+		sourceColumn: supplier
+
+		annotation SummarizationSetBy = Automatic
+
+	column weight_kg
+		dataType: double
+		formatString: #,0.00
+		lineageTag: f86c9e83-e85c-4ca4-9845-71d86ef7cd5b
+		summarizeBy: sum
+		sourceColumn: weight_kg
+
+		annotation SummarizationSetBy = Automatic
+
+	column is_perishable
+		dataType: boolean
+		lineageTag: 0db7c7e9-fcf0-40f0-82aa-54fac68a2687
+		summarizeBy: none
+		sourceColumn: is_perishable
+
+		annotation SummarizationSetBy = Automatic
+
+	column launch_date
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 9bfa76a7-6347-40ef-a0b5-87f65b9e7d59
+		summarizeBy: none
+		sourceColumn: launch_date
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'dim_product-00c6e541-2ba7-41e7-b3b0-027f52248564' = m
+		mode: import
+		source =
+				let
+				    
+				    Source = try
+				
+				        let
+				
+				            _src = Snowflake.Databases("analytics.snowflakecomputing.com", "ANALYTICS_WH"),
+				
+				            _nav = _src{[Name="ENTERPRISE_DW"]}[Data]
+				
+				        in _nav
+				
+				    otherwise
+				
+				        #table({"product_key", "product_id", "product_name", "category", "subcategory", "brand", "supplier", "weight_kg", "is_perishable", "launch_date"}, {}),
+				    #"SALES" = Source{[Name="SALES"]}[Data],
+				    #"dim_product Table" = #"SALES"{[Name="dim_product"]}[Data],
+				    #"Renamed Columns" = Table.RenameColumns(#"dim_product Table", {{"product_id", "Product ID"}, {"product_name", "Product Name"}, {"category", "Category"}, {"subcategory", "Subcategory"}, {"brand", "Brand"}, {"supplier", "Supplier"}, {"weight_kg", "Weight (kg)"}, {"is_perishable", "Perishable?"}, {"launch_date", "Launch Date"}}),
+				    Result = #"Renamed Columns"
+				in
+				    Result
+
+	annotation PBI_ResultType = Table
+	annotation Copilot_TableDescription = Contains 10 columns: product_key, product_id, product_name, category, subcategory, brand, supplier, weight_kg, ... (10 columns total).
+

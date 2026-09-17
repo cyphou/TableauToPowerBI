@@ -1,0 +1,849 @@
+{
+  "contract": {
+    "version": "1.1",
+    "source": "tableau_extraction",
+    "target": "powerbi_tmdl",
+    "status": "partial",
+    "coverage": {
+      "tables": {
+        "target_count": 6,
+        "resolved_count": 3,
+        "percent": 50.0
+      },
+      "columns": {
+        "target_count": 49,
+        "resolved_count": 34,
+        "percent": 69.39
+      },
+      "calculations": {
+        "target_count": 29,
+        "resolved_count": 29,
+        "percent": 100.0
+      },
+      "relationships": {
+        "target_count": 5,
+        "resolved_count": 5,
+        "percent": 100.0
+      }
+    },
+    "unresolved": [
+      {
+        "type": "tables",
+        "target": "Objectif Marge"
+      },
+      {
+        "type": "tables",
+        "target": "Top N Produits"
+      },
+      {
+        "type": "columns",
+        "target": "Anciennet\u00e9 Client"
+      },
+      {
+        "type": "columns",
+        "target": "Nom Complet"
+      },
+      {
+        "type": "columns",
+        "target": "Trimestre"
+      },
+      {
+        "type": "columns",
+        "target": "-2,0"
+      },
+      {
+        "type": "columns",
+        "target": "date_inscription"
+      },
+      {
+        "type": "columns",
+        "target": "prenom_client"
+      },
+      {
+        "type": "columns",
+        "target": "nom_client"
+      }
+    ]
+  },
+  "tables": [
+    {
+      "tableau_datasource": "federated.ventes",
+      "tableau_table": "Commandes",
+      "pbi_table": "Commandes",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "federated.ventes",
+      "tableau_table": "Produits",
+      "pbi_table": "Produits",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "federated.ventes",
+      "tableau_table": "Clients",
+      "pbi_table": "Clients",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Calendar",
+      "pbi_table": "Calendar",
+      "source_status": "generated"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Objectif Marge",
+      "pbi_table": "Objectif Marge",
+      "source_status": "unresolved"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Top N Produits",
+      "pbi_table": "Top N Produits",
+      "source_status": "unresolved"
+    }
+  ],
+  "columns": [
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "commande_id",
+      "pbi_table": "Commandes",
+      "pbi_column": "commande_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "date_commande",
+      "pbi_table": "Commandes",
+      "pbi_column": "date_commande",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "date_livraison",
+      "pbi_table": "Commandes",
+      "pbi_column": "date_livraison",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "client_id",
+      "pbi_table": "Commandes",
+      "pbi_column": "client_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "produit_id",
+      "pbi_table": "Commandes",
+      "pbi_column": "produit_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "region",
+      "pbi_table": "Commandes",
+      "pbi_column": "region",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "departement",
+      "pbi_table": "Commandes",
+      "pbi_column": "departement",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "ville",
+      "pbi_table": "Commandes",
+      "pbi_column": "ville",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "code_postal",
+      "pbi_table": "Commandes",
+      "pbi_column": "code_postal",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "quantite",
+      "pbi_table": "Commandes",
+      "pbi_column": "quantite",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "prix_unitaire",
+      "pbi_table": "Commandes",
+      "pbi_column": "prix_unitaire",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "remise",
+      "pbi_table": "Commandes",
+      "pbi_column": "remise",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "frais_port",
+      "pbi_table": "Commandes",
+      "pbi_column": "frais_port",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "mode_paiement",
+      "pbi_table": "Commandes",
+      "pbi_column": "mode_paiement",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "statut",
+      "pbi_table": "Commandes",
+      "pbi_column": "statut",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "commercial",
+      "pbi_table": "Commandes",
+      "pbi_column": "commercial",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "D\u00e9lai de Livraison",
+      "pbi_table": "Commandes",
+      "pbi_column": "D\u00e9lai de Livraison",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "Anciennet\u00e9 Client",
+      "pbi_table": "Commandes",
+      "pbi_column": "Anciennet\u00e9 Client",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "Nom Complet",
+      "pbi_table": "Commandes",
+      "pbi_column": "Nom Complet",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "Localisation",
+      "pbi_table": "Commandes",
+      "pbi_column": "Localisation",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "Cat\u00e9gorie de Remise",
+      "pbi_table": "Commandes",
+      "pbi_column": "Cat\u00e9gorie de Remise",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "Trimestre",
+      "pbi_table": "Commandes",
+      "pbi_column": "Trimestre",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "-2,0",
+      "pbi_table": "Commandes",
+      "pbi_column": "-2,0",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "date_inscription",
+      "pbi_table": "Commandes",
+      "pbi_column": "date_inscription",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "prenom_client",
+      "pbi_table": "Commandes",
+      "pbi_column": "prenom_client",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Commandes",
+      "tableau_column": "nom_client",
+      "pbi_table": "Commandes",
+      "pbi_column": "nom_client",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Produits",
+      "tableau_column": "produit_id",
+      "pbi_table": "Produits",
+      "pbi_column": "produit_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Produits",
+      "tableau_column": "nom_produit",
+      "pbi_table": "Produits",
+      "pbi_column": "nom_produit",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Produits",
+      "tableau_column": "categorie",
+      "pbi_table": "Produits",
+      "pbi_column": "categorie",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Produits",
+      "tableau_column": "sous_categorie",
+      "pbi_table": "Produits",
+      "pbi_column": "sous_categorie",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Produits",
+      "tableau_column": "marque",
+      "pbi_table": "Produits",
+      "pbi_column": "marque",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Produits",
+      "tableau_column": "cout_achat",
+      "pbi_table": "Produits",
+      "pbi_column": "cout_achat",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Clients",
+      "tableau_column": "client_id",
+      "pbi_table": "Clients",
+      "pbi_column": "client_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Clients",
+      "tableau_column": "nom_client",
+      "pbi_table": "Clients",
+      "pbi_column": "nom_client",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Clients",
+      "tableau_column": "prenom_client",
+      "pbi_table": "Clients",
+      "pbi_column": "prenom_client",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Clients",
+      "tableau_column": "email",
+      "pbi_table": "Clients",
+      "pbi_column": "email",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Clients",
+      "tableau_column": "segment",
+      "pbi_table": "Clients",
+      "pbi_column": "segment",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Clients",
+      "tableau_column": "type_client",
+      "pbi_table": "Clients",
+      "pbi_column": "type_client",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Clients",
+      "tableau_column": "date_inscription",
+      "pbi_table": "Clients",
+      "pbi_column": "date_inscription",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Date",
+      "pbi_table": "Calendar",
+      "pbi_column": "Date",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Year",
+      "pbi_table": "Calendar",
+      "pbi_column": "Year",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Quarter",
+      "pbi_table": "Calendar",
+      "pbi_column": "Quarter",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Month",
+      "pbi_table": "Calendar",
+      "pbi_column": "Month",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "MonthName",
+      "pbi_table": "Calendar",
+      "pbi_column": "MonthName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Day",
+      "pbi_table": "Calendar",
+      "pbi_column": "Day",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayOfWeek",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayOfWeek",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayName",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Objectif Marge",
+      "tableau_column": "Value",
+      "pbi_table": "Objectif Marge",
+      "pbi_column": "Value",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Top N Produits",
+      "tableau_column": "Value",
+      "pbi_table": "Top N Produits",
+      "pbi_column": "Value",
+      "source_status": "declared",
+      "source_kind": "physical"
+    }
+  ],
+  "calculations": [
+    {
+      "tableau_calculation": "Chiffre d'Affaires Brut",
+      "source_formula": "SUM([quantite] * [prix_unitaire])",
+      "pbi_table": "Commandes",
+      "pbi_object": "Chiffre d'Affaires Brut",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Chiffre d'Affaires Net",
+      "source_formula": "SUM(IF [statut] != \"Annul\u00e9e\" THEN [quantite] * [prix_unitaire] * (1 - [remise]) ELSE 0 END)",
+      "pbi_table": "Commandes",
+      "pbi_object": "Chiffre d'Affaires Net",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Marge Brute",
+      "source_formula": "SUM(IF [statut] != \"Annul\u00e9e\" THEN ([quantite] * [prix_unitaire] * (1 - [remise])) - ([quantite] * [cout_achat]) - [frais_port] ELSE 0 END)",
+      "pbi_table": "Commandes",
+      "pbi_object": "Marge Brute",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Taux de Marge (%)",
+      "source_formula": "ZN([Calc_Marge] / [Calc_CA_Net])",
+      "pbi_table": "Commandes",
+      "pbi_object": "Taux de Marge (%)",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Montant Remises",
+      "source_formula": "SUM([quantite] * [prix_unitaire] * [remise])",
+      "pbi_table": "Commandes",
+      "pbi_object": "Montant Remises",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Nombre de Commandes",
+      "source_formula": "COUNTD([commande_id])",
+      "pbi_table": "Commandes",
+      "pbi_object": "Nombre de Commandes",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Clients Uniques",
+      "source_formula": "COUNTD([client_id])",
+      "pbi_table": "Commandes",
+      "pbi_object": "Clients Uniques",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Panier Moyen",
+      "source_formula": "[Calc_CA_Net] / [Calc_NbCommandes]",
+      "pbi_table": "Commandes",
+      "pbi_object": "Panier Moyen",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "CA par Client",
+      "source_formula": "{FIXED [client_id] : SUM([quantite] * [prix_unitaire])}",
+      "pbi_table": "Commandes",
+      "pbi_object": "CA par Client",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "CA R\u00e9gional par Cat\u00e9gorie",
+      "source_formula": "{FIXED [region], [categorie] : SUM([quantite] * [prix_unitaire])}",
+      "pbi_table": "Commandes",
+      "pbi_object": "CA R\u00e9gional par Cat\u00e9gorie",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "CA hors Produit",
+      "source_formula": "{EXCLUDE [nom_produit] : SUM([quantite] * [prix_unitaire])}",
+      "pbi_table": "Commandes",
+      "pbi_object": "CA hors Produit",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Classification Client",
+      "source_formula": "IF [Calc_CAParClient] > 50000 THEN \"Platine\" ELSEIF [Calc_CAParClient] > 20000 THEN \"Or\" ELSEIF [Calc_CAParClient] > 5000 THEN \"Argent\" ELSE \"Bronze\" END",
+      "pbi_table": "Commandes",
+      "pbi_object": "Classification Client",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Cumul Mobile CA",
+      "source_formula": "RUNNING_SUM(SUM([quantite] * [prix_unitaire]))",
+      "pbi_table": "Commandes",
+      "pbi_object": "Cumul Mobile CA",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Moyenne Mobile 3M",
+      "source_formula": "WINDOW_AVG(SUM([quantite] * [prix_unitaire]), -2, 0)",
+      "pbi_table": "Commandes",
+      "pbi_object": "Moyenne Mobile 3M",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Classement CA",
+      "source_formula": "RANK(SUM([quantite] * [prix_unitaire]))",
+      "pbi_table": "Commandes",
+      "pbi_object": "Classement CA",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "CA Ann\u00e9e en Cours",
+      "source_formula": "{FIXED : SUM(IF YEAR([date_commande]) = YEAR(TODAY()) THEN [quantite] * [prix_unitaire] ELSE 0 END)}",
+      "pbi_table": "Commandes",
+      "pbi_object": "CA Ann\u00e9e en Cours",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "P\u00e9riode d'Analyse",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "P\u00e9riode d'Analyse",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Chiffre d'Affaires Brut Formatted",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "Chiffre d'Affaires Brut Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Chiffre d'Affaires Net Formatted",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "Chiffre d'Affaires Net Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Marge Brute Formatted",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "Marge Brute Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Montant Remises Formatted",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "Montant Remises Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "CA par Client Formatted",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "CA par Client Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "CA R\u00e9gional par Cat\u00e9gorie Formatted",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "CA R\u00e9gional par Cat\u00e9gorie Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "CA hors Produit Formatted",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "CA hors Produit Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Moyenne Mobile 3M Formatted",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "Moyenne Mobile 3M Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Classement CA Formatted",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "Classement CA Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "CA Ann\u00e9e en Cours Formatted",
+      "source_formula": "",
+      "pbi_table": "Commandes",
+      "pbi_object": "CA Ann\u00e9e en Cours Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Objectif Marge",
+      "source_formula": "",
+      "pbi_table": "Objectif Marge",
+      "pbi_object": "Objectif Marge",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Top N Produits",
+      "source_formula": "",
+      "pbi_table": "Top N Produits",
+      "pbi_object": "Top N Produits",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    }
+  ],
+  "relationships": [
+    {
+      "from": "Commandes[client_id]",
+      "to": "Clients[client_id]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Commandes[client_id]",
+      "tableau_to": "Clients[client_id]",
+      "source_status": "exact"
+    },
+    {
+      "from": "Commandes[produit_id]",
+      "to": "Produits[produit_id]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Commandes[produit_id]",
+      "tableau_to": "Produits[produit_id]",
+      "source_status": "exact"
+    },
+    {
+      "from": "Produits[produit_id]",
+      "to": "Clients[client_id]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Produits[produit_id]",
+      "tableau_to": "Clients[client_id]",
+      "source_status": "exact"
+    },
+    {
+      "from": "Commandes[date_commande]",
+      "to": "Calendar[Date]",
+      "cardinality": "bothDirections",
+      "tableau_from": "Commandes[date_commande]",
+      "tableau_to": "Calendar[Date]",
+      "source_status": "exact"
+    },
+    {
+      "from": "Clients[date_inscription]",
+      "to": "Calendar[Date]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Clients[date_inscription]",
+      "tableau_to": "Calendar[Date]",
+      "source_status": "exact"
+    }
+  ],
+  "worksheets": [
+    {
+      "tableau_worksheet": "Indicateurs Cl\u00e9s",
+      "pbi_page": "Indicateurs Cl\u00e9s"
+    },
+    {
+      "tableau_worksheet": "CA par R\u00e9gion",
+      "pbi_page": "CA par R\u00e9gion"
+    },
+    {
+      "tableau_worksheet": "\u00c9volution du CA",
+      "pbi_page": "\u00c9volution du CA"
+    },
+    {
+      "tableau_worksheet": "Carte des Ventes",
+      "pbi_page": "Carte des Ventes"
+    },
+    {
+      "tableau_worksheet": "Top Produits",
+      "pbi_page": "Top Produits"
+    },
+    {
+      "tableau_worksheet": "Modes de Paiement",
+      "pbi_page": "Modes de Paiement"
+    }
+  ],
+  "filters": [],
+  "parameters": [
+    {
+      "tableau_object": "[Parameters].[Objectif Marge]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Objectif Marge]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[Parameters].[Top N Produits]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Top N Produits]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[Parameters].[P\u00e9riode]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[P\u00e9riode]"
+      },
+      "source_status": "exact"
+    }
+  ],
+  "actions": [
+    {
+      "tableau_object": "Filtrer par R\u00e9gion",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Filtrer par R\u00e9gion",
+        "type": "filter"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "Naviguer vers Produits",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Naviguer vers Produits",
+        "type": "filter"
+      },
+      "source_status": "exact"
+    }
+  ]
+}

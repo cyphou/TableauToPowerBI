@@ -1,0 +1,150 @@
+table Employees
+	lineageTag: 892d9b21-fd54-40d1-a5a3-e55333ec37d4
+
+	measure 'Average Salary' = AVERAGE('Employees'[Salary])
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: 5ccdc7e2-6a22-4114-bfe8-fe40602c3e7d
+		annotation Copilot_Description = Migrated from Tableau: AVG([Salary]) | DAX: AVERAGE('Employees'[Salary])
+
+	measure 'Employee Count' = COUNT('Employees'[EmployeeID])
+		displayFolder: Measures
+		lineageTag: 6a2f8099-85e9-4d6b-8839-d896d05728d2
+		annotation Copilot_Description = Migrated from Tableau: COUNT([EmployeeID]) | DAX: COUNT('Employees'[EmployeeID])
+
+	measure 'Total Compensation' = SUM('Employees'[Salary]) * 1.25
+		formatString: #,0.00
+		displayFolder: Measures
+		lineageTag: 167328ef-a8ff-4083-9424-87470f80b5f9
+		annotation Copilot_Description = Migrated from Tableau: SUM([Salary]) * 1.25 | DAX: SUM('Employees'[Salary]) * 1.25
+
+	measure 'Total Compensation Formatted' = VAR _val = [Total Compensation] RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", FORMAT(_val, "#,0.00"))))
+		displayFolder: Formatted
+		lineageTag: a3cefed8-a9e4-403b-984d-19a0fb2c465e
+		annotation Copilot_Description = Dynamic numeric abbreviation for Total Compensation (K/M/B)
+
+	column EmployeeID
+		dataType: int64
+		lineageTag: 96031edd-fd9d-4e97-aaa9-eeee812c12ad
+		summarizeBy: sum
+		sourceColumn: EmployeeID
+		annotation Copilot_Hidden = true
+
+		annotation SummarizationSetBy = Automatic
+
+	column FirstName
+		dataType: string
+		lineageTag: 99324ed6-c299-462c-98c4-44c7b4899993
+		summarizeBy: none
+		sourceColumn: FirstName
+
+		annotation SummarizationSetBy = Automatic
+
+	column LastName
+		dataType: string
+		lineageTag: fa99e310-2323-41d3-bf6c-d7d22bb035af
+		summarizeBy: none
+		sourceColumn: LastName
+
+		annotation SummarizationSetBy = Automatic
+
+	column HireDate
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 5dac0027-790b-4f84-8de4-001f46a6d6f9
+		summarizeBy: none
+		sourceColumn: HireDate
+
+		annotation SummarizationSetBy = Automatic
+
+	column Department
+		dataType: string
+		lineageTag: c567d677-12a8-401d-8c2f-38cc681ace0c
+		summarizeBy: none
+		sourceColumn: Department
+
+		annotation SummarizationSetBy = Automatic
+
+	column JobTitle
+		dataType: string
+		lineageTag: 4e6b6bab-12a9-4d2a-b8de-36f47faf6dcc
+		summarizeBy: none
+		sourceColumn: JobTitle
+
+		annotation SummarizationSetBy = Automatic
+
+	column Salary
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 69059e3d-70f0-4b21-9672-009d80fb140a
+		summarizeBy: sum
+		sourceColumn: Salary
+
+		annotation SummarizationSetBy = Automatic
+
+	column Location
+		dataType: string
+		lineageTag: 12c28a05-9841-4f63-a273-35b5abb4d51e
+		summarizeBy: none
+		sourceColumn: Location
+
+		annotation SummarizationSetBy = Automatic
+
+	column Age
+		dataType: int64
+		lineageTag: e350c7ce-cb12-47f6-ac81-3d222dc01e9b
+		summarizeBy: sum
+		sourceColumn: Age
+
+		annotation SummarizationSetBy = Automatic
+
+	column YearsOfService
+		dataType: int64
+		lineageTag: 155f13b6-e17e-435c-a05f-4857d269cf87
+		summarizeBy: sum
+		sourceColumn: YearsOfService
+
+		annotation SummarizationSetBy = Automatic
+
+	column PerformanceRating
+		dataType: string
+		lineageTag: 912c7b6c-5ad5-40ed-978b-38cfe762a2ab
+		summarizeBy: none
+		sourceColumn: PerformanceRating
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Tenure Category'
+		dataType: string
+		lineageTag: 3be0e9a6-2565-4175-8271-0dd91e76d480
+		summarizeBy: none
+		sourceColumn: 'Tenure Category'
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Employees-cd1168c3-8e95-4d66-85fb-9246e81efd9a' = m
+		mode: import
+		source =
+				let
+				    
+				    Source = try
+				
+				        let
+				
+				            _src = Sql.Database("localhost", "HRDatabase"),
+				
+				            _nav = _src{[Schema="dbo", Item="Employees"]}[Data]
+				
+				        in _nav
+				
+				    otherwise
+				
+				        #table({"EmployeeID", "FirstName", "LastName", "HireDate", "Department", "JobTitle", "Salary", "Location", "Age", "YearsOfService", "PerformanceRating"}, {}),
+				    #"Added Tenure Category" = Table.AddColumn(_nav, "Tenure Category", each if [YearsOfService] < 2 then "New" else if [YearsOfService] < 5 then "Mid" else "Senior", type text),
+				    Result = #"Added Tenure Category"
+				in
+				    Result
+
+	annotation PBI_ResultType = Table
+	annotation Copilot_TableDescription = Contains 12 columns and 4 measures: EmployeeID, FirstName, LastName, HireDate, Department, JobTitle, Salary, Location, ... (12 columns total).
+

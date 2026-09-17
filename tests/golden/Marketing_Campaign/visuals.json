@@ -1,0 +1,83 @@
+{
+ "visual_count": 6,
+ "visuals": [
+  {
+   "fields": 0,
+   "has_format": false,
+   "height": 126,
+   "page": "Marketing Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredBarChart",
+   "width": 384,
+   "x": 0,
+   "y": 594,
+   "z": 3000
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 486,
+   "page": "Marketing Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredColumnChart",
+   "width": 1152,
+   "x": 0,
+   "y": 108,
+   "z": 1000
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 486,
+   "page": "Marketing Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredColumnChart",
+   "width": 128,
+   "x": 1152,
+   "y": 108,
+   "z": 2000
+  },
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 126,
+   "page": "Marketing Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "lineChart",
+   "width": 768,
+   "x": 384,
+   "y": 594,
+   "z": 4000
+  },
+  {
+   "fields": 4,
+   "has_format": true,
+   "height": 126,
+   "page": "Marketing Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "scatterChart",
+   "width": 128,
+   "x": 1152,
+   "y": 594,
+   "z": 5000
+  },
+  {
+   "fields": 0,
+   "has_format": true,
+   "height": 720,
+   "page": "Marketing Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "textbox",
+   "width": 1280,
+   "x": 0,
+   "y": 0,
+   "z": 0
+  }
+ ]
+}

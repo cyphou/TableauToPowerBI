@@ -1,0 +1,130 @@
+table Leads
+	lineageTag: 5ba73189-fe52-453f-ae54-17edf8c5a5e4
+
+	column lead_id
+		dataType: int64
+		lineageTag: d2544212-252a-4171-9c83-94fcf068ceb3
+		summarizeBy: sum
+		sourceColumn: lead_id
+		annotation Copilot_Hidden = true
+
+		annotation SummarizationSetBy = Automatic
+
+	column campaign_id
+		dataType: int64
+		lineageTag: bef6a1fc-d3ae-4203-84eb-f36c45441961
+		summarizeBy: sum
+		sourceColumn: campaign_id
+		annotation Copilot_Hidden = true
+
+		annotation SummarizationSetBy = Automatic
+
+	column lead_name
+		dataType: string
+		lineageTag: d77ff2c3-5328-4633-b5de-e44f30751421
+		summarizeBy: none
+		sourceColumn: lead_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column email
+		dataType: string
+		lineageTag: de28b506-e976-4ec0-9106-ff6239b52025
+		summarizeBy: none
+		sourceColumn: email
+
+		annotation SummarizationSetBy = Automatic
+
+	column phone
+		dataType: string
+		lineageTag: c5ddc7d2-c8c5-4b31-9e3e-ba0bf7316e87
+		summarizeBy: none
+		sourceColumn: phone
+
+		annotation SummarizationSetBy = Automatic
+
+	column company
+		dataType: string
+		lineageTag: 47dead58-a4be-424f-93c7-9344cb8ff27c
+		summarizeBy: none
+		sourceColumn: company
+
+		annotation SummarizationSetBy = Automatic
+
+	column job_title
+		dataType: string
+		lineageTag: 200c1da5-12c7-4718-b5c8-5e7e583838ad
+		summarizeBy: none
+		sourceColumn: job_title
+
+		annotation SummarizationSetBy = Automatic
+
+	column created_date
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 789ee272-6f46-40f7-82f8-63715a5b31a7
+		summarizeBy: none
+		sourceColumn: created_date
+
+		annotation SummarizationSetBy = Automatic
+
+	column deal_value
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 36cc86ba-cdd7-4ffa-a640-60d91e27d628
+		summarizeBy: sum
+		sourceColumn: deal_value
+
+		annotation SummarizationSetBy = Automatic
+
+	column lead_source
+		dataType: string
+		lineageTag: 8478f231-39cd-4d37-89d1-b8dca2dded6e
+		summarizeBy: none
+		sourceColumn: lead_source
+
+		annotation SummarizationSetBy = Automatic
+
+	column lead_status
+		dataType: string
+		lineageTag: b2f38635-65f7-4da6-8510-6e0718b1070e
+		summarizeBy: none
+		sourceColumn: lead_status
+
+		annotation SummarizationSetBy = Automatic
+
+	column engagement_score
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 342898b3-57e0-45b8-8d91-ef1a71bccb31
+		summarizeBy: sum
+		sourceColumn: engagement_score
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Leads-e9e66b21-46fa-4d24-a0c6-61b3ffcaeeba' = m
+		mode: import
+		source =
+				let
+				    
+				    Source = try
+				
+				        let
+				
+				            _src = MySQL.Database("mysql.example.com:3306", "marketing_db"),
+				
+				            _nav = _src{[Schema="marketing_db", Item="Leads"]}[Data]
+				
+				        in _nav
+				
+				    otherwise
+				
+				        #table({"lead_id", "campaign_id", "lead_name", "email", "phone", "company", "job_title", "created_date", "deal_value", "lead_source", "lead_status", "engagement_score"}, {}),
+				    #"Renamed Columns" = Table.RenameColumns(Source, {{"lead_id", "Lead ID"}, {"campaign_id", "Campaign ID"}, {"lead_name", "Lead Name"}, {"email", "Email"}, {"phone", "Phone"}, {"company", "Company"}, {"job_title", "Job Title"}, {"created_date", "Created Date"}, {"deal_value", "Deal Value"}, {"lead_source", "Lead Source"}, {"lead_status", "Lead Status"}, {"engagement_score", "Engagement Score"}}),
+				    Result = #"Renamed Columns"
+				in
+				    Result
+
+	annotation PBI_ResultType = Table
+	annotation Copilot_TableDescription = Contains 12 columns: lead_id, campaign_id, lead_name, email, phone, company, job_title, created_date, ... (12 columns total).
+

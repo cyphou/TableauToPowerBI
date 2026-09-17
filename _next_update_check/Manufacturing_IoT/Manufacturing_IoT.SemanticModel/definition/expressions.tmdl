@@ -1,0 +1,2 @@
+expression DataFolder = "C:\\GitHub Project\\TableauToPowerBI\\_next_update_check\\Manufacturing_IoT\\Data" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
+

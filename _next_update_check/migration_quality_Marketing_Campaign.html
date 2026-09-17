@@ -1,0 +1,1642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Migration quality — Marketing_Campaign</title>
+<style>
+    :root {
+        --pbi-blue: #0078d4;
+        --pbi-dark-blue: #004578;
+        --pbi-light-blue: #deecf9;
+        --pbi-dark: #323130;
+        --pbi-gray: #605e5c;
+        --pbi-light-gray: #a19f9d;
+        --pbi-bg: #faf9f8;
+        --pbi-surface: #ffffff;
+        --success: #107c10;
+        --success-bg: #dff6dd;
+        --warn: #797600;
+        --warn-bg: #fff4ce;
+        --fail: #a4262c;
+        --fail-bg: #fde7e9;
+        --purple: #8764b8;
+        --teal: #038387;
+        --orange: #ca5010;
+        --shadow-sm: 0 1.6px 3.6px rgba(0,0,0,0.13), 0 0.3px 0.9px rgba(0,0,0,0.11);
+        --shadow-md: 0 3.2px 7.2px rgba(0,0,0,0.13), 0 0.6px 1.8px rgba(0,0,0,0.11);
+        --shadow-lg: 0 6.4px 14.4px rgba(0,0,0,0.13), 0 1.2px 3.6px rgba(0,0,0,0.11);
+        --radius: 8px;
+        --radius-sm: 4px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+        font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+        background: var(--pbi-bg);
+        color: var(--pbi-dark);
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    .report-header {
+        background: linear-gradient(135deg, #0078d4 0%, #004578 100%);
+        color: #fff;
+        padding: 32px 40px 28px;
+        margin-bottom: 24px;
+    }
+    .report-header h1 {
+        font-size: 1.75em;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        margin-bottom: 6px;
+    }
+    .report-header .subtitle {
+        font-size: 0.9em;
+        opacity: 0.85;
+        font-weight: 400;
+    }
+    .report-header .meta {
+        display: flex;
+        gap: 16px;
+        margin-top: 12px;
+        font-size: 0.82em;
+        opacity: 0.7;
+    }
+    .report-header .meta span {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    /* ── Container ──────────────────────────────────────────── */
+    .container {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 0 24px 40px;
+    }
+
+    /* ── Section headers ────────────────────────────────────── */
+    .section-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 0 10px;
+        margin-top: 28px;
+        border-bottom: 2px solid #edebe9;
+        cursor: pointer;
+        user-select: none;
+        transition: border-color 0.2s;
+    }
+    .section-header:hover {
+        border-bottom-color: var(--pbi-blue);
+    }
+    .section-header h2 {
+        font-size: 1.15em;
+        font-weight: 600;
+        color: var(--pbi-dark);
+        flex: 1;
+    }
+    .section-header .section-icon {
+        font-size: 1.2em;
+        width: 28px;
+        text-align: center;
+    }
+    .section-header .toggle-arrow {
+        font-size: 0.7em;
+        color: var(--pbi-light-gray);
+        transition: transform 0.3s ease;
+    }
+    .section-header .toggle-arrow.collapsed {
+        transform: rotate(-90deg);
+    }
+
+    /* ── Collapsible sections ───────────────────────────────── */
+    .section-body {
+        overflow: hidden;
+        transition: max-height 0.35s ease, opacity 0.25s ease;
+        max-height: 8000px;
+        opacity: 1;
+    }
+    .section-body.collapsed {
+        max-height: 0 !important;
+        opacity: 0;
+    }
+
+    /* ── Stat cards ─────────────────────────────────────────── */
+    .stat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+        gap: 14px;
+        margin: 16px 0;
+    }
+    .stat-card {
+        background: var(--pbi-surface);
+        border-radius: var(--radius);
+        padding: 20px 16px;
+        text-align: center;
+        box-shadow: var(--shadow-sm);
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+        border-top: 3px solid transparent;
+    }
+    .stat-card:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-md);
+    }
+    .stat-card .stat-value {
+        font-size: 2em;
+        font-weight: 700;
+        line-height: 1.1;
+        color: var(--pbi-blue);
+    }
+    .stat-card .stat-label {
+        font-size: 0.8em;
+        color: var(--pbi-gray);
+        margin-top: 6px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    .stat-card.accent-success { border-top-color: var(--success); }
+    .stat-card.accent-success .stat-value { color: var(--success); }
+    .stat-card.accent-warn { border-top-color: #c19c00; }
+    .stat-card.accent-warn .stat-value { color: #c19c00; }
+    .stat-card.accent-fail { border-top-color: var(--fail); }
+    .stat-card.accent-fail .stat-value { color: var(--fail); }
+    .stat-card.accent-purple { border-top-color: var(--purple); }
+    .stat-card.accent-purple .stat-value { color: var(--purple); }
+    .stat-card.accent-teal { border-top-color: var(--teal); }
+    .stat-card.accent-teal .stat-value { color: var(--teal); }
+    .stat-card.accent-blue { border-top-color: var(--pbi-blue); }
+
+    /* ── Cards ──────────────────────────────────────────────── */
+    .card {
+        background: var(--pbi-surface);
+        border-radius: var(--radius);
+        padding: 20px 24px;
+        margin: 14px 0;
+        box-shadow: var(--shadow-sm);
+    }
+    .card h3 {
+        font-size: 1em;
+        font-weight: 600;
+        color: var(--pbi-dark);
+        margin-bottom: 14px;
+    }
+    .card h4 {
+        font-size: 0.92em;
+        font-weight: 600;
+        color: var(--pbi-gray);
+        margin: 18px 0 10px;
+    }
+
+    /* ── Tables ─────────────────────────────────────────────── */
+    .table-container {
+        overflow-x: auto;
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-sm);
+        margin: 14px 0;
+    }
+    table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 0.85em;
+        background: var(--pbi-surface);
+    }
+    thead th {
+        background: var(--pbi-blue);
+        color: #fff;
+        padding: 11px 14px;
+        text-align: left;
+        font-weight: 600;
+        font-size: 0.82em;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        white-space: nowrap;
+    }
+    thead th.sortable {
+        cursor: pointer;
+        user-select: none;
+    }
+    thead th.sortable:hover {
+        background: #106ebe;
+    }
+    thead th .sort-icon {
+        display: inline-block;
+        margin-left: 4px;
+        opacity: 0.5;
+        font-size: 0.9em;
+    }
+    thead th.sort-asc .sort-icon,
+    thead th.sort-desc .sort-icon {
+        opacity: 1;
+    }
+    .detail-table thead th {
+        background: var(--pbi-gray);
+    }
+    tbody td {
+        padding: 9px 14px;
+        border-bottom: 1px solid #edebe9;
+        vertical-align: middle;
+    }
+    tbody tr:hover {
+        background: #f3f2f1;
+    }
+    tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    /* ── Search input for tables ─────────────────────────────── */
+    .table-search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+    .table-search input {
+        font-family: inherit;
+        font-size: 0.85em;
+        padding: 7px 12px;
+        border: 1px solid #d2d0ce;
+        border-radius: var(--radius-sm);
+        width: 260px;
+        outline: none;
+        transition: border-color 0.2s;
+    }
+    .table-search input:focus {
+        border-color: var(--pbi-blue);
+        box-shadow: 0 0 0 2px rgba(0,120,212,0.2);
+    }
+    .table-search label {
+        font-size: 0.82em;
+        color: var(--pbi-gray);
+    }
+
+    /* ── Badges ─────────────────────────────────────────────── */
+    .badge {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-weight: 600;
+        font-size: 0.78em;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+    }
+    .badge-green  { background: var(--success-bg); color: var(--success); }
+    .badge-yellow { background: var(--warn-bg); color: var(--warn); }
+    .badge-red    { background: var(--fail-bg); color: var(--fail); }
+    .badge-blue   { background: var(--pbi-light-blue); color: var(--pbi-dark-blue); }
+    .badge-gray   { background: #edebe9; color: var(--pbi-gray); }
+    .badge-purple { background: #f3e8fd; color: #5c2d91; }
+    .badge-teal   { background: #d4f4f4; color: #005b5e; }
+
+    /* ── Tags ───────────────────────────────────────────────── */
+    .tag {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: var(--radius-sm);
+        font-size: 0.78em;
+        font-weight: 500;
+        white-space: nowrap;
+    }
+    .tag-connector { background: #e8f0fe; color: #1a73e8; }
+    .tag-success   { background: var(--success-bg); color: var(--success); }
+    .tag-warn      { background: var(--warn-bg); color: #856404; }
+    .tag-danger    { background: var(--fail-bg); color: var(--fail); }
+    .tag-dim       { background: #e8eaf6; color: #283593; }
+    .tag-measure   { background: #fce4ec; color: #b71c1c; }
+
+    /* Legacy tag aliases (used in body HTML across reports) */
+    .connector-tag { display: inline-block; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 0.78em; font-weight: 500; white-space: nowrap; background: #e8f0fe; color: #1a73e8; }
+    .success-tag   { display: inline-block; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 0.78em; font-weight: 500; white-space: nowrap; background: var(--success-bg); color: var(--success); }
+    .warn-tag      { display: inline-block; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 0.78em; font-weight: 500; white-space: nowrap; background: var(--warn-bg); color: #856404; }
+    .danger-tag    { display: inline-block; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 0.78em; font-weight: 500; white-space: nowrap; background: var(--fail-bg); color: var(--fail); }
+    .isolated-tag  { display: inline-block; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 0.78em; font-weight: 500; white-space: nowrap; background: #edebe9; color: var(--pbi-gray); }
+
+    /* ── Fidelity bar ───────────────────────────────────────── */
+    .fidelity-bar {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        vertical-align: middle;
+    }
+    .fidelity-track {
+        width: 120px;
+        height: 8px;
+        background: #edebe9;
+        border-radius: 4px;
+        overflow: hidden;
+    }
+    .fidelity-fill {
+        height: 100%;
+        border-radius: 4px;
+        transition: width 0.5s ease;
+    }
+    .fidelity-label {
+        font-size: 0.82em;
+        font-weight: 600;
+        min-width: 46px;
+    }
+
+    /* ── Charts row ─────────────────────────────────────────── */
+    .chart-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 16px;
+        margin: 16px 0;
+    }
+    .chart-card {
+        background: var(--pbi-surface);
+        border-radius: var(--radius);
+        padding: 20px 24px;
+        box-shadow: var(--shadow-sm);
+    }
+    .chart-card h4 {
+        font-size: 0.9em;
+        font-weight: 600;
+        color: var(--pbi-dark);
+        margin-bottom: 14px;
+    }
+
+    /* ── Donut chart ────────────────────────────────────────── */
+    .donut-container {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 28px;
+    }
+    .donut { width: 150px; height: 150px; }
+    .donut circle {
+        transition: stroke-dasharray 0.8s ease;
+    }
+    .donut-legend {
+        font-size: 0.85em;
+        line-height: 2;
+    }
+    .legend-dot {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        margin-right: 8px;
+        vertical-align: middle;
+    }
+
+    /* ── Bar chart ──────────────────────────────────────────── */
+    .bar-chart { display: flex; flex-direction: column; gap: 8px; }
+    .bar-row { display: flex; align-items: center; gap: 10px; }
+    .bar-label {
+        width: 110px;
+        text-align: right;
+        font-size: 0.82em;
+        color: var(--pbi-gray);
+        flex-shrink: 0;
+        font-weight: 500;
+    }
+    .bar-track {
+        flex: 1;
+        height: 24px;
+        background: #edebe9;
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+        position: relative;
+    }
+    .bar-fill {
+        height: 100%;
+        border-radius: var(--radius-sm);
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        padding-right: 8px;
+        color: #fff;
+        font-size: 0.75em;
+        font-weight: 600;
+        transition: width 0.5s ease;
+        min-width: 0;
+    }
+    .bar-value {
+        font-size: 0.82em;
+        color: var(--pbi-gray);
+        width: 36px;
+        text-align: right;
+        font-weight: 600;
+    }
+
+    /* ── Tabs ───────────────────────────────────────────────── */
+    .tab-bar {
+        display: flex;
+        gap: 4px;
+        border-bottom: 2px solid #edebe9;
+        margin-bottom: 14px;
+        overflow-x: auto;
+    }
+    .tab {
+        padding: 8px 18px;
+        cursor: pointer;
+        font-size: 0.85em;
+        font-weight: 500;
+        border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+        transition: all 0.2s;
+        color: var(--pbi-gray);
+        white-space: nowrap;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+    }
+    .tab:hover {
+        background: var(--pbi-light-blue);
+        color: var(--pbi-blue);
+    }
+    .tab.active {
+        color: var(--pbi-blue);
+        font-weight: 600;
+        border-bottom-color: var(--pbi-blue);
+        background: transparent;
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ── Heatmap ────────────────────────────────────────────── */
+    .heatmap td {
+        text-align: center;
+        font-weight: 600;
+        font-size: 0.82em;
+        transition: background 0.2s;
+    }
+    .heatmap td.heat-label {
+        text-align: left;
+        font-weight: 600;
+        color: var(--pbi-dark);
+        background: transparent !important;
+    }
+
+    /* ── Flow diagram ───────────────────────────────────────── */
+    .flow-container {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0;
+        padding: 20px 0;
+        overflow-x: auto;
+    }
+    .flow-box {
+        background: var(--pbi-surface);
+        border: 2px solid var(--pbi-blue);
+        border-radius: var(--radius);
+        padding: 12px 20px;
+        text-align: center;
+        font-size: 0.85em;
+        font-weight: 600;
+        min-width: 120px;
+        box-shadow: var(--shadow-sm);
+    }
+    .flow-box.accent { background: var(--pbi-light-blue); }
+    .flow-arrow {
+        color: var(--pbi-blue);
+        font-size: 1.5em;
+        padding: 0 8px;
+        flex-shrink: 0;
+    }
+
+    /* ── Command box (terminal style) ───────────────────────── */
+    .cmd-box {
+        background: #1e1e1e;
+        color: #d4d4d4;
+        font-family: 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+        font-size: 0.82em;
+        padding: 14px 18px;
+        border-radius: var(--radius);
+        overflow-x: auto;
+        margin: 8px 0;
+        line-height: 1.6;
+    }
+    .cmd-box .prompt { color: #569cd6; }
+    .cmd-box .flag { color: #ce9178; }
+
+    /* ── Mono / code ────────────────────────────────────────── */
+    .mono {
+        font-family: 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+        font-size: 0.85em;
+    }
+    code {
+        background: #f3f2f1;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+        font-size: 0.88em;
+    }
+
+    /* ── Utility ─────────────────────────────────────────────── */
+    .text-success { color: var(--success); }
+    .text-warn    { color: #c19c00; }
+    .text-fail    { color: var(--fail); }
+    .text-blue    { color: var(--pbi-blue); }
+    .text-gray    { color: var(--pbi-gray); }
+    .text-muted   { color: var(--pbi-light-gray); }
+    .fw-bold      { font-weight: 600; }
+    .fs-sm        { font-size: 0.85em; }
+    .mt-0         { margin-top: 0; }
+    .mb-0         { margin-bottom: 0; }
+    .nowrap       { white-space: nowrap; }
+
+    /* ── Theme toggle ─────────────────────────────────────────── */
+    .theme-toggle {
+        position: fixed;
+        top: 14px;
+        right: 18px;
+        z-index: 1000;
+        background: rgba(255,255,255,0.18);
+        border: 1px solid rgba(255,255,255,0.25);
+        color: #fff;
+        border-radius: 20px;
+        padding: 5px 14px;
+        font-size: 0.82em;
+        font-weight: 500;
+        cursor: pointer;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        transition: background 0.2s, color 0.2s, border-color 0.2s;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-family: inherit;
+    }
+    .theme-toggle:hover {
+        background: rgba(255,255,255,0.3);
+    }
+    .dark .theme-toggle {
+        background: rgba(255,255,255,0.1);
+        border-color: rgba(255,255,255,0.15);
+        color: #e0e0e0;
+    }
+    .dark .theme-toggle:hover {
+        background: rgba(255,255,255,0.18);
+    }
+
+    /* ── Footer ──────────────────────────────────────────────── */
+    .report-footer {
+        text-align: center;
+        padding: 28px 20px;
+        margin-top: 40px;
+        border-top: 1px solid #edebe9;
+        color: var(--pbi-light-gray);
+        font-size: 0.82em;
+    }
+    .report-footer a {
+        color: var(--pbi-blue);
+        text-decoration: none;
+    }
+
+    /* ── Cluster cards ───────────────────────────────────────── */
+    .cluster-card {
+        border-left: 4px solid var(--pbi-blue);
+        margin: 12px 0;
+        padding: 16px 20px;
+        background: var(--pbi-surface);
+        border-radius: 0 var(--radius) var(--radius) 0;
+        box-shadow: var(--shadow-sm);
+    }
+    .cluster-card.merge   { border-left-color: var(--success); }
+    .cluster-card.partial { border-left-color: #c19c00; }
+    .cluster-card.separate { border-left-color: var(--fail); }
+
+    /* ── Matrix cell ─────────────────────────────────────────── */
+    .matrix-cell {
+        font-weight: 600;
+        font-size: 0.82em;
+        min-width: 50px;
+        text-align: center;
+    }
+
+    /* ── Print ───────────────────────────────────────────────── */
+    @media print {
+        @page { size: A4 portrait; margin: 18mm 15mm; }
+        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        body { background: #fff; font-size: 10pt; line-height: 1.45; }
+        .report-header { background: #0078d4 !important; padding: 20px 24px 16px; }
+        .container { padding: 0 8px 20px; }
+        .section-body { max-height: none !important; opacity: 1 !important; overflow: visible !important; }
+        .section-body.collapsed { max-height: none !important; opacity: 1 !important; }
+        .section-header { cursor: default; pointer-events: none; }
+        .toggle-arrow { display: none; }
+        .theme-toggle { display: none !important; }
+        .table-search { display: none; }
+        .tab-bar { display: none; }
+        .tab-content { display: block !important; }
+        .stat-card { break-inside: avoid; }
+        .card { break-inside: avoid; }
+        .table-container { break-inside: avoid; }
+        .chart-card { break-inside: avoid; }
+        .donut-container { break-inside: avoid; }
+        .bar-chart { break-inside: avoid; }
+        thead th { background: #0078d4 !important; color: #fff !important; font-size: 0.78em; }
+        tbody td { font-size: 0.8em; padding: 5px 8px; }
+        .badge { border: 1px solid currentColor; }
+        .report-footer { page-break-before: avoid; margin-top: 20px; }
+    }
+
+    /* ── Responsive ──────────────────────────────────────────── */
+    @media (max-width: 768px) {
+        .report-header { padding: 20px; }
+        .report-header h1 { font-size: 1.3em; }
+        .container { padding: 0 12px 20px; }
+        .stat-grid { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+        .chart-row { grid-template-columns: 1fr; }
+        .bar-label { width: 80px; }
+        .donut-container { flex-direction: column; }
+    }
+
+    /* ── Dark mode (class-based, toggled by JS) ──────────────── */
+    html.dark {
+        --pbi-bg: #1b1a19;
+        --pbi-surface: #252423;
+        --pbi-dark: #f3f2f1;
+        --pbi-gray: #b3b0ad;
+        --pbi-light-gray: #8a8886;
+    }
+    html.dark body { background: var(--pbi-bg); color: var(--pbi-dark); }
+    html.dark .report-header { background: linear-gradient(135deg, #004578 0%, #001d33 100%); }
+    html.dark .stat-card { background: var(--pbi-surface); box-shadow: 0 1.6px 3.6px rgba(0,0,0,0.4); }
+    html.dark .card { background: var(--pbi-surface); box-shadow: 0 1.6px 3.6px rgba(0,0,0,0.4); }
+    html.dark table { background: var(--pbi-surface); }
+    html.dark thead th { background: #004578; }
+    html.dark thead th.sortable:hover { background: #005a9e; }
+    html.dark .detail-table thead th { background: #3b3a39; }
+    html.dark tbody td { border-bottom-color: #3b3a39; }
+    html.dark tbody tr:hover { background: #323130; }
+    html.dark .section-header:hover { border-bottom-color: #2b88d8; }
+    html.dark .section-header { border-bottom-color: #3b3a39; }
+    html.dark .tab-bar { border-bottom-color: #3b3a39; }
+    html.dark .tab:hover { background: rgba(0,120,212,0.15); }
+    html.dark .fidelity-track { background: #3b3a39; }
+    html.dark .bar-track { background: #3b3a39; }
+    html.dark .badge-gray { background: #3b3a39; color: #b3b0ad; }
+    html.dark .connector-tag { background: #1a3a5c; color: #6cb8f6; }
+    html.dark .success-tag { background: #1a3a1a; color: #6ccb5f; }
+    html.dark .warn-tag { background: #3a3500; color: #d4c75f; }
+    html.dark .danger-tag { background: #4a1a1d; color: #f5707a; }
+    html.dark .isolated-tag { background: #3b3a39; color: #b3b0ad; }
+    html.dark .tag-connector { background: #1a3a5c; color: #6cb8f6; }
+    html.dark .tag-success { background: #1a3a1a; color: #6ccb5f; }
+    html.dark .tag-warn { background: #3a3500; color: #d4c75f; }
+    html.dark .tag-danger { background: #4a1a1d; color: #f5707a; }
+    html.dark code { background: #3b3a39; }
+    html.dark .cmd-box { background: #0d0d0d; }
+    html.dark .report-footer { border-top-color: #3b3a39; }
+    html.dark .table-search input { background: #323130; border-color: #3b3a39; color: var(--pbi-dark); }
+    html.dark .table-search input:focus { border-color: #2b88d8; }
+    html.dark .cluster-card { background: var(--pbi-surface); box-shadow: 0 1.6px 3.6px rgba(0,0,0,0.4); }
+    html.dark .flow-box { background: var(--pbi-surface); border-color: #2b88d8; box-shadow: 0 1.6px 3.6px rgba(0,0,0,0.4); }
+
+    @media print {
+        html.dark {
+            --pbi-bg: #fff;
+            --pbi-surface: #fff;
+            --pbi-dark: #323130;
+            --pbi-gray: #605e5c;
+            --pbi-light-gray: #a19f9d;
+        }
+        html.dark body { background: #fff; color: #323130; }
+        html.dark .report-header { background: #0078d4 !important; }
+    }
+</style>
+<script>(function(){var s=null;try{s=localStorage.getItem('pbi-theme')}catch(e){}if(s==='dark')document.documentElement.classList.add('dark')})();</script>
+</head>
+<body>
+<button id="theme-toggle-btn" class="theme-toggle" onclick="toggleTheme()">&#9790; Dark</button>
+<div class="report-header">
+    <h1>Migration quality — Marketing_Campaign</h1>
+    <div class='subtitle'>Deterministic validation with optional grounded AI summary</div>
+    <div class="meta">
+        <span>&#128197; 2026-09-16 09:11</span>
+    </div>
+</div>
+<div class="container">
+<div class="stat-grid">
+<div class="stat-card accent-warn">
+    <div class="stat-value">WARN</div>
+    <div class="stat-label">Overall status</div>
+</div>
+<div class="stat-card">
+    <div class="stat-value">100.0</div>
+    <div class="stat-label">Parity score</div>
+</div>
+<div class="stat-card accent-fail">
+    <div class="stat-value">0</div>
+    <div class="stat-label">Blockers</div>
+</div>
+<div class="stat-card accent-warn">
+    <div class="stat-value">2</div>
+    <div class="stat-label">Warnings</div>
+</div>
+</div>
+<div class="section-header" onclick="toggleSection('quality-confidence')">
+    <span class="section-icon">OK</span>
+    <h2>Openability confidence</h2>
+    <span class="toggle-arrow" id="quality-confidence-arrow">&#9660;</span>
+</div>
+<div class="section-body" id="quality-confidence">
+<pre>{
+  &quot;level&quot;: &quot;STATIC_PASS&quot;,
+  &quot;static_checks&quot;: {
+    &quot;passed&quot;: 15,
+    &quot;failed&quot;: 1
+  },
+  &quot;desktop&quot;: {
+    &quot;status&quot;: &quot;not_run&quot;,
+    &quot;version&quot;: null,
+    &quot;signals&quot;: []
+  },
+  &quot;semantic_execution&quot;: &quot;not_run&quot;,
+  &quot;refresh&quot;: &quot;not_run&quot;,
+  &quot;deployment&quot;: &quot;not_run&quot;
+}</pre>
+</div> <!-- /section -->
+
+<div class="section-header" onclick="toggleSection('quality-handoff')">
+    <span class="section-icon">-></span>
+    <h2>Operator handoff</h2>
+    <span class="toggle-arrow" id="quality-handoff-arrow">&#9660;</span>
+</div>
+<div class="section-body" id="quality-handoff">
+<pre>{
+  &quot;handoff_status&quot;: &quot;WARN&quot;,
+  &quot;strategy&quot;: {
+    &quot;strategy&quot;: &quot;composite&quot;,
+    &quot;connection_mode&quot;: &quot;Composite (Import + DirectQuery)&quot;,
+    &quot;import_score&quot;: 4,
+    &quot;directquery_score&quot;: 4,
+    &quot;signals&quot;: [
+      {
+        &quot;name&quot;: &quot;connectors_simple&quot;,
+        &quot;description&quot;: &quot;All connectors Power Query-friendly (MySQL)&quot;,
+        &quot;favours&quot;: &quot;import&quot;,
+        &quot;weight&quot;: 2
+      },
+      {
+        &quot;name&quot;: &quot;few_tables&quot;,
+        &quot;description&quot;: &quot;2 table(s) — small dataset&quot;,
+        &quot;favours&quot;: &quot;import&quot;,
+        &quot;weight&quot;: 1
+      },
+      {
+        &quot;name&quot;: &quot;many_columns&quot;,
+        &quot;description&quot;: &quot;102 column(s) — wide schema&quot;,
+        &quot;favours&quot;: &quot;directquery&quot;,
+        &quot;weight&quot;: 1
+      },
+      {
+        &quot;name&quot;: &quot;no_custom_sql&quot;,
+        &quot;description&quot;: &quot;No custom SQL&quot;,
+        &quot;favours&quot;: &quot;import&quot;,
+        &quot;weight&quot;: 1
+      },
+      {
+        &quot;name&quot;: &quot;complex_calcs&quot;,
+        &quot;description&quot;: &quot;Complex calculations: 4 LOD/table calc(s), 2 REGEX calc(s)&quot;,
+        &quot;favours&quot;: &quot;directquery&quot;,
+        &quot;weight&quot;: 2
+      },
+      {
+        &quot;name&quot;: &quot;many_calc_cols&quot;,
+        &quot;description&quot;: &quot;15 calculated column(s) — heavy materialisation&quot;,
+        &quot;favours&quot;: &quot;directquery&quot;,
+        &quot;weight&quot;: 1
+      }
+    ],
+    &quot;summary&quot;: &quot;Recommended strategy: Composite Model (Import + DirectQuery)\n  Import score: 4   DirectQuery score: 4\n\n  Signals:\n    [       → Import] All connectors Power Query-friendly (MySQL) (weight=2)\n    [       → Import] 2 table(s) — small dataset (weight=1)\n    [  → DirectQuery] 102 column(s) — wide schema (weight=1)\n    [       → Import] No custom SQL (weight=1)\n    [  → DirectQuery] Complex calculations: 4 LOD/table calc(s), 2 REGEX calc(s) (weight=2)\n    [  → DirectQuery] 15 calculated column(s) — heavy materialisation (weight=1)&quot;,
+    &quot;status&quot;: &quot;recommended&quot;
+  },
+  &quot;lineage&quot;: {
+    &quot;status&quot;: &quot;static_evidence&quot;,
+    &quot;source&quot;: {
+      &quot;datasources&quot;: 1,
+      &quot;tables&quot;: 2,
+      &quot;columns&quot;: 26,
+      &quot;worksheets&quot;: 5,
+      &quot;calculations&quot;: 25
+    },
+    &quot;target&quot;: {
+      &quot;tables&quot;: 2,
+      &quot;visuals&quot;: 0,
+      &quot;calculation_features&quot;: {
+        &quot;exact&quot;: 26,
+        &quot;healed&quot;: 10,
+        &quot;approximated&quot;: 0,
+        &quot;unsupported&quot;: 0
+      }
+    },
+    &quot;coverage&quot;: {
+      &quot;tables&quot;: {
+        &quot;source&quot;: 2,
+        &quot;target&quot;: 2,
+        &quot;complete&quot;: true
+      },
+      &quot;parity_evidence_percent&quot;: 37.5,
+      &quot;inventory_objects&quot;: 40,
+      &quot;inventory_object_types&quot;: {
+        &quot;worksheets&quot;: 5,
+        &quot;dashboards&quot;: 1,
+        &quot;datasources&quot;: 1,
+        &quot;calculations&quot;: 25,
+        &quot;parameters&quot;: 2,
+        &quot;stories&quot;: 1,
+        &quot;actions&quot;: 3,
+        &quot;sort_orders&quot;: 2
+      }
+    },
+    &quot;unresolved&quot;: [
+      {
+        &quot;stable_id&quot;: &quot;src-99940819d92a550f&quot;,
+        &quot;object_type&quot;: &quot;actions&quot;,
+        &quot;name&quot;: &quot;Campaign Highlight&quot;,
+        &quot;reason&quot;: &quot;missing_parent_reference&quot;
+      },
+      {
+        &quot;stable_id&quot;: &quot;src-e200fca4eb111d96&quot;,
+        &quot;object_type&quot;: &quot;actions&quot;,
+        &quot;name&quot;: &quot;Channel Filter&quot;,
+        &quot;reason&quot;: &quot;missing_parent_reference&quot;
+      },
+      {
+        &quot;stable_id&quot;: &quot;src-fc4193cc1cdc7643&quot;,
+        &quot;object_type&quot;: &quot;actions&quot;,
+        &quot;name&quot;: &quot;Status Filter&quot;,
+        &quot;reason&quot;: &quot;missing_parent_reference&quot;
+      },
+      {
+        &quot;stable_id&quot;: &quot;src-55e41f39f7091f0c&quot;,
+        &quot;object_type&quot;: &quot;sort_orders&quot;,
+        &quot;name&quot;: &quot;item-1&quot;,
+        &quot;reason&quot;: &quot;missing_parent_reference&quot;
+      },
+      {
+        &quot;stable_id&quot;: &quot;src-8ecd19edb83ee1a8&quot;,
+        &quot;object_type&quot;: &quot;sort_orders&quot;,
+        &quot;name&quot;: &quot;item-0&quot;,
+        &quot;reason&quot;: &quot;missing_parent_reference&quot;
+      }
+    ],
+    &quot;runtime&quot;: &quot;not_run&quot;,
+    &quot;contract&quot;: {
+      &quot;version&quot;: &quot;1.1&quot;,
+      &quot;source&quot;: &quot;tableau_extraction&quot;,
+      &quot;target&quot;: &quot;powerbi_tmdl&quot;,
+      &quot;status&quot;: &quot;partial&quot;,
+      &quot;coverage&quot;: {
+        &quot;tables&quot;: {
+          &quot;target_count&quot;: 4,
+          &quot;resolved_count&quot;: 2,
+          &quot;percent&quot;: 50.0
+        },
+        &quot;columns&quot;: {
+          &quot;target_count&quot;: 54,
+          &quot;resolved_count&quot;: 31,
+          &quot;percent&quot;: 57.41
+        },
+        &quot;calculations&quot;: {
+          &quot;target_count&quot;: 22,
+          &quot;resolved_count&quot;: 22,
+          &quot;percent&quot;: 100.0
+        },
+        &quot;relationships&quot;: {
+          &quot;target_count&quot;: 3,
+          &quot;resolved_count&quot;: 3,
+          &quot;percent&quot;: 100.0
+        }
+      },
+      &quot;unresolved&quot;: [
+        {
+          &quot;type&quot;: &quot;tables&quot;,
+          &quot;target&quot;: &quot;Min Budget&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Email Domain&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;First Name&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Last Name&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Name Length&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Clean Phone&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Phone Last 4&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Campaign Code&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Has Valid UTM&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Clean URL&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Month Name&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Budget Band&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;email&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;lead_name&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;phone&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;a-z0-9_-&quot;
+        }
+      ]
+    }
+  },
+  &quot;checkpoints&quot;: {
+    &quot;status&quot;: &quot;not_found&quot;,
+    &quot;stages&quot;: {}
+  }
+}</pre>
+</div> <!-- /section -->
+
+<div class="section-header" onclick="toggleSection('quality-blockers')">
+    <span class="section-icon">!</span>
+    <h2>Blockers</h2>
+    <span class="toggle-arrow" id="quality-blockers-arrow">&#9660;</span>
+</div>
+<div class="section-body" id="quality-blockers">
+<p>No blockers.</p>
+</div> <!-- /section -->
+
+<div class="section-header" onclick="toggleSection('quality-warnings')">
+    <span class="section-icon">!</span>
+    <h2>Warnings</h2>
+    <span class="toggle-arrow" id="quality-warnings-arrow">&#9660;</span>
+</div>
+<div class="section-body" id="quality-warnings">
+<ul><li>Pre-migration assessment contains warnings.</li><li>Semantic lineage has 16 unresolved source-to-target record(s).</li></ul>
+</div> <!-- /section -->
+
+<div class="section-header" onclick="toggleSection('quality-priorities')">
+    <span class="section-icon">-></span>
+    <h2>Remediation priorities</h2>
+    <span class="toggle-arrow" id="quality-priorities-arrow">&#9660;</span>
+</div>
+<div class="section-body" id="quality-priorities">
+<ol><li><strong>P2</strong> Pre-migration assessment contains warnings. <em>(owner: Assessor)</em></li><li><strong>P2</strong> Semantic lineage has 16 unresolved source-to-target record(s). <em>(owner: Assessor)</em></li></ol>
+</div> <!-- /section -->
+
+<div class="section-header" onclick="toggleSection('quality-ai')">
+    <span class="section-icon">AI</span>
+    <h2>AI summary</h2>
+    <span class="toggle-arrow" id="quality-ai-arrow">&#9660;</span>
+</div>
+<div class="section-body" id="quality-ai">
+<p>No AI summary was requested or available.</p>
+</div> <!-- /section -->
+
+<div class="section-header" onclick="toggleSection('quality-details')">
+    <span class="section-icon">i</span>
+    <h2>Validation details</h2>
+    <span class="toggle-arrow" id="quality-details-arrow">&#9660;</span>
+</div>
+<div class="section-body" id="quality-details">
+<pre>{
+  &quot;parity&quot;: {
+    &quot;workbook&quot;: &quot;Marketing_Campaign&quot;,
+    &quot;registry_version&quot;: &quot;1.1.0&quot;,
+    &quot;parity_score&quot;: 100.0,
+    &quot;grade&quot;: &quot;FULL&quot;,
+    &quot;status_counts&quot;: {
+      &quot;exact&quot;: 26,
+      &quot;healed&quot;: 10,
+      &quot;approximated&quot;: 0,
+      &quot;unsupported&quot;: 0
+    },
+    &quot;usages&quot;: [
+      {
+        &quot;key&quot;: &quot;calc_basic&quot;,
+        &quot;label&quot;: &quot;Basic calculated field&quot;,
+        &quot;category&quot;: &quot;Calculations&quot;,
+        &quot;status&quot;: &quot;exact&quot;,
+        &quot;count&quot;: 21,
+        &quot;target&quot;: &quot;DAX measure/column&quot;,
+        &quot;remediation&quot;: &quot;Verify aggregation context in Power BI.&quot;,
+        &quot;evidence&quot;: [],
+        &quot;evidence_status&quot;: &quot;source_only&quot;
+      },
+      {
+        &quot;key&quot;: &quot;calc_lod&quot;,
+        &quot;label&quot;: &quot;Level-of-Detail (LOD) expression&quot;,
+        &quot;category&quot;: &quot;Calculations&quot;,
+        &quot;status&quot;: &quot;healed&quot;,
+        &quot;count&quot;: 1,
+        &quot;target&quot;: &quot;CALCULATE + ALLEXCEPT/REMOVEFILTERS&quot;,
+        &quot;remediation&quot;: &quot;Confirm grain matches the FIXED/INCLUDE/EXCLUDE dimensions.&quot;,
+        &quot;evidence&quot;: [],
+        &quot;evidence_status&quot;: &quot;source_only&quot;
+      },
+      {
+        &quot;key&quot;: &quot;calc_table&quot;,
+        &quot;label&quot;: &quot;Table calculation&quot;,
+        &quot;category&quot;: &quot;Calculations&quot;,
+        &quot;status&quot;: &quot;healed&quot;,
+        &quot;count&quot;: 3,
+        &quot;target&quot;: &quot;Windowed CALCULATE / RANKX / OFFSET&quot;,
+        &quot;remediation&quot;: &quot;Confirm partition/addressing direction on the visual.&quot;,
+        &quot;evidence&quot;: [],
+        &quot;evidence_status&quot;: &quot;source_only&quot;
+      },
+      {
+        &quot;key&quot;: &quot;parameters&quot;,
+        &quot;label&quot;: &quot;Parameter&quot;,
+        &quot;category&quot;: &quot;Interactivity&quot;,
+        &quot;status&quot;: &quot;exact&quot;,
+        &quot;count&quot;: 2,
+        &quot;target&quot;: &quot;What-If parameter / field parameter&quot;,
+        &quot;remediation&quot;: &quot;&quot;,
+        &quot;evidence&quot;: [
+          &quot;Marketing_Campaign.SemanticModel/definition/tables/Calendar.tmdl&quot;,
+          &quot;Marketing_Campaign.SemanticModel/definition/tables/Campaigns.tmdl&quot;,
+          &quot;Marketing_Campaign.SemanticModel/definition/tables/Min Budget.tmdl&quot;
+        ],
+        &quot;evidence_status&quot;: &quot;evidenced&quot;
+      },
+      {
+        &quot;key&quot;: &quot;action_filter&quot;,
+        &quot;label&quot;: &quot;Filter/highlight action&quot;,
+        &quot;category&quot;: &quot;Interactivity&quot;,
+        &quot;status&quot;: &quot;exact&quot;,
+        &quot;count&quot;: 3,
+        &quot;target&quot;: &quot;Cross-filtering / cross-highlighting&quot;,
+        &quot;remediation&quot;: &quot;&quot;,
+        &quot;evidence&quot;: [],
+        &quot;evidence_status&quot;: &quot;source_only&quot;
+      },
+      {
+        &quot;key&quot;: &quot;dashboard&quot;,
+        &quot;label&quot;: &quot;Dashboard&quot;,
+        &quot;category&quot;: &quot;Report&quot;,
+        &quot;status&quot;: &quot;healed&quot;,
+        &quot;count&quot;: 1,
+        &quot;target&quot;: &quot;PBIR report page&quot;,
+        &quot;remediation&quot;: &quot;Review page composition and dashboard-level interactions.&quot;,
+        &quot;evidence&quot;: [
+          &quot;Marketing_Campaign.Report/definition/pages/ReportSection/page.json&quot;
+        ],
+        &quot;evidence_status&quot;: &quot;evidenced&quot;
+      },
+      {
+        &quot;key&quot;: &quot;sort_order&quot;,
+        &quot;label&quot;: &quot;Sort order&quot;,
+        &quot;category&quot;: &quot;Semantic Model&quot;,
+        &quot;status&quot;: &quot;healed&quot;,
+        &quot;count&quot;: 2,
+        &quot;target&quot;: &quot;Sort-by-column or visual sort state&quot;,
+        &quot;remediation&quot;: &quot;Verify custom sort direction and sort-by-column behavior.&quot;,
+        &quot;evidence&quot;: [],
+        &quot;evidence_status&quot;: &quot;source_only&quot;
+      },
+      {
+        &quot;key&quot;: &quot;story_bookmarks&quot;,
+        &quot;label&quot;: &quot;Story point&quot;,
+        &quot;category&quot;: &quot;Interactivity&quot;,
+        &quot;status&quot;: &quot;healed&quot;,
+        &quot;count&quot;: 3,
+        &quot;target&quot;: &quot;PBIR bookmark&quot;,
+        &quot;remediation&quot;: &quot;Review bookmark state and navigation in Power BI.&quot;,
+        &quot;evidence&quot;: [
+          &quot;Marketing_Campaign.Report/definition/bookmarks/Bookmark_1c37946b7d86/bookmark.json&quot;,
+          &quot;Marketing_Campaign.Report/definition/bookmarks/Bookmark_5f36e54c4737/bookmark.json&quot;,
+          &quot;Marketing_Campaign.Report/definition/bookmarks/Bookmark_6dc414281dae/bookmark.json&quot;
+        ],
+        &quot;evidence_status&quot;: &quot;evidenced&quot;
+      }
+    ],
+    &quot;gaps&quot;: [],
+    &quot;untracked_features&quot;: [],
+    &quot;evidence_coverage&quot;: {
+      &quot;tracked_features&quot;: 8,
+      &quot;evidenced_features&quot;: 3,
+      &quot;untracked_features&quot;: 0,
+      &quot;coverage_percent&quot;: 37.5
+    }
+  },
+  &quot;data&quot;: {
+    &quot;report_name&quot;: &quot;Marketing_Campaign&quot;,
+    &quot;tables&quot;: [
+      {
+        &quot;table&quot;: &quot;Campaigns&quot;,
+        &quot;found&quot;: true,
+        &quot;column_coverage_percent&quot;: 100.0,
+        &quot;missing_columns&quot;: [],
+        &quot;has_source&quot;: true
+      },
+      {
+        &quot;table&quot;: &quot;Leads&quot;,
+        &quot;found&quot;: true,
+        &quot;column_coverage_percent&quot;: 100.0,
+        &quot;missing_columns&quot;: [],
+        &quot;has_source&quot;: true
+      }
+    ],
+    &quot;summary&quot;: {
+      &quot;source_tables&quot;: 2,
+      &quot;tables_found&quot;: 2,
+      &quot;table_match_percent&quot;: 100.0,
+      &quot;avg_column_coverage_percent&quot;: 100.0,
+      &quot;sourceless_tables&quot;: []
+    }
+  },
+  &quot;interface&quot;: {
+    &quot;report_name&quot;: &quot;Marketing_Campaign&quot;,
+    &quot;filters&quot;: {
+      &quot;expected&quot;: 0,
+      &quot;generated_filter_configs&quot;: {
+        &quot;report&quot;: 0,
+        &quot;page&quot;: 0,
+        &quot;visual&quot;: 0
+      },
+      &quot;generated_slicers&quot;: 0,
+      &quot;generated_total&quot;: 0,
+      &quot;covered&quot;: true
+    },
+    &quot;actions&quot;: {
+      &quot;expected_buttons&quot;: 0,
+      &quot;generated_buttons&quot;: 0,
+      &quot;covered&quot;: true
+    },
+    &quot;parameters&quot;: {
+      &quot;expected&quot;: 2,
+      &quot;generated_coverage&quot;: 2,
+      &quot;covered&quot;: true
+    },
+    &quot;rls&quot;: {
+      &quot;expected_at_least&quot;: 0,
+      &quot;generated_roles&quot;: 0,
+      &quot;covered&quot;: true
+    }
+  },
+  &quot;openability&quot;: {
+    &quot;project_dir&quot;: &quot;.\\_next_update_check\\Marketing_Campaign&quot;,
+    &quot;openable&quot;: true,
+    &quot;blocking_count&quot;: 0,
+    &quot;warning_count&quot;: 6,
+    &quot;blocking_issues&quot;: [],
+    &quot;warnings&quot;: [
+      &quot;[schema] Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_1c37946b7d86\\bookmark.json: displayName: Bookmark displayName is empty&quot;,
+      &quot;[schema] Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_1c37946b7d86\\bookmark.json: explorationState.activeSection: activeSection is empty&quot;,
+      &quot;[schema] Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_5f36e54c4737\\bookmark.json: displayName: Bookmark displayName is empty&quot;,
+      &quot;[schema] Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_5f36e54c4737\\bookmark.json: explorationState.activeSection: activeSection is empty&quot;,
+      &quot;[schema] Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_6dc414281dae\\bookmark.json: displayName: Bookmark displayName is empty&quot;,
+      &quot;[schema] Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_6dc414281dae\\bookmark.json: explorationState.activeSection: activeSection is empty&quot;
+    ],
+    &quot;checks&quot;: [
+      {
+        &quot;name&quot;: &quot;structure&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;pbip_contract&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;generated_content&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;manifest_coherence&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;report_content&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;json_parse&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;tmdl_present&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;tmdl_partitions&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;power_query&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;dax&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;semantic_validation&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;executable_dax&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;visual_bindings&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;references&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;report_structure&quot;,
+        &quot;ok&quot;: true,
+        &quot;severity&quot;: &quot;error&quot;,
+        &quot;issues&quot;: []
+      },
+      {
+        &quot;name&quot;: &quot;schema&quot;,
+        &quot;ok&quot;: false,
+        &quot;severity&quot;: &quot;warning&quot;,
+        &quot;issues&quot;: [
+          &quot;Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_1c37946b7d86\\bookmark.json: displayName: Bookmark displayName is empty&quot;,
+          &quot;Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_1c37946b7d86\\bookmark.json: explorationState.activeSection: activeSection is empty&quot;,
+          &quot;Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_5f36e54c4737\\bookmark.json: displayName: Bookmark displayName is empty&quot;,
+          &quot;Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_5f36e54c4737\\bookmark.json: explorationState.activeSection: activeSection is empty&quot;,
+          &quot;Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_6dc414281dae\\bookmark.json: displayName: Bookmark displayName is empty&quot;,
+          &quot;Marketing_Campaign.Report\\definition\\bookmarks\\Bookmark_6dc414281dae\\bookmark.json: explorationState.activeSection: activeSection is empty&quot;
+        ]
+      }
+    ]
+  },
+  &quot;fabric&quot;: {
+    &quot;present&quot;: false,
+    &quot;valid&quot;: true,
+    &quot;errors&quot;: [],
+    &quot;warnings&quot;: []
+  },
+  &quot;strategy&quot;: {
+    &quot;strategy&quot;: &quot;composite&quot;,
+    &quot;connection_mode&quot;: &quot;Composite (Import + DirectQuery)&quot;,
+    &quot;import_score&quot;: 4,
+    &quot;directquery_score&quot;: 4,
+    &quot;signals&quot;: [
+      {
+        &quot;name&quot;: &quot;connectors_simple&quot;,
+        &quot;description&quot;: &quot;All connectors Power Query-friendly (MySQL)&quot;,
+        &quot;favours&quot;: &quot;import&quot;,
+        &quot;weight&quot;: 2
+      },
+      {
+        &quot;name&quot;: &quot;few_tables&quot;,
+        &quot;description&quot;: &quot;2 table(s) — small dataset&quot;,
+        &quot;favours&quot;: &quot;import&quot;,
+        &quot;weight&quot;: 1
+      },
+      {
+        &quot;name&quot;: &quot;many_columns&quot;,
+        &quot;description&quot;: &quot;102 column(s) — wide schema&quot;,
+        &quot;favours&quot;: &quot;directquery&quot;,
+        &quot;weight&quot;: 1
+      },
+      {
+        &quot;name&quot;: &quot;no_custom_sql&quot;,
+        &quot;description&quot;: &quot;No custom SQL&quot;,
+        &quot;favours&quot;: &quot;import&quot;,
+        &quot;weight&quot;: 1
+      },
+      {
+        &quot;name&quot;: &quot;complex_calcs&quot;,
+        &quot;description&quot;: &quot;Complex calculations: 4 LOD/table calc(s), 2 REGEX calc(s)&quot;,
+        &quot;favours&quot;: &quot;directquery&quot;,
+        &quot;weight&quot;: 2
+      },
+      {
+        &quot;name&quot;: &quot;many_calc_cols&quot;,
+        &quot;description&quot;: &quot;15 calculated column(s) — heavy materialisation&quot;,
+        &quot;favours&quot;: &quot;directquery&quot;,
+        &quot;weight&quot;: 1
+      }
+    ],
+    &quot;summary&quot;: &quot;Recommended strategy: Composite Model (Import + DirectQuery)\n  Import score: 4   DirectQuery score: 4\n\n  Signals:\n    [       → Import] All connectors Power Query-friendly (MySQL) (weight=2)\n    [       → Import] 2 table(s) — small dataset (weight=1)\n    [  → DirectQuery] 102 column(s) — wide schema (weight=1)\n    [       → Import] No custom SQL (weight=1)\n    [  → DirectQuery] Complex calculations: 4 LOD/table calc(s), 2 REGEX calc(s) (weight=2)\n    [  → DirectQuery] 15 calculated column(s) — heavy materialisation (weight=1)&quot;,
+    &quot;status&quot;: &quot;recommended&quot;
+  },
+  &quot;lineage&quot;: {
+    &quot;status&quot;: &quot;static_evidence&quot;,
+    &quot;source&quot;: {
+      &quot;datasources&quot;: 1,
+      &quot;tables&quot;: 2,
+      &quot;columns&quot;: 26,
+      &quot;worksheets&quot;: 5,
+      &quot;calculations&quot;: 25
+    },
+    &quot;target&quot;: {
+      &quot;tables&quot;: 2,
+      &quot;visuals&quot;: 0,
+      &quot;calculation_features&quot;: {
+        &quot;exact&quot;: 26,
+        &quot;healed&quot;: 10,
+        &quot;approximated&quot;: 0,
+        &quot;unsupported&quot;: 0
+      }
+    },
+    &quot;coverage&quot;: {
+      &quot;tables&quot;: {
+        &quot;source&quot;: 2,
+        &quot;target&quot;: 2,
+        &quot;complete&quot;: true
+      },
+      &quot;parity_evidence_percent&quot;: 37.5,
+      &quot;inventory_objects&quot;: 40,
+      &quot;inventory_object_types&quot;: {
+        &quot;worksheets&quot;: 5,
+        &quot;dashboards&quot;: 1,
+        &quot;datasources&quot;: 1,
+        &quot;calculations&quot;: 25,
+        &quot;parameters&quot;: 2,
+        &quot;stories&quot;: 1,
+        &quot;actions&quot;: 3,
+        &quot;sort_orders&quot;: 2
+      }
+    },
+    &quot;unresolved&quot;: [
+      {
+        &quot;stable_id&quot;: &quot;src-99940819d92a550f&quot;,
+        &quot;object_type&quot;: &quot;actions&quot;,
+        &quot;name&quot;: &quot;Campaign Highlight&quot;,
+        &quot;reason&quot;: &quot;missing_parent_reference&quot;
+      },
+      {
+        &quot;stable_id&quot;: &quot;src-e200fca4eb111d96&quot;,
+        &quot;object_type&quot;: &quot;actions&quot;,
+        &quot;name&quot;: &quot;Channel Filter&quot;,
+        &quot;reason&quot;: &quot;missing_parent_reference&quot;
+      },
+      {
+        &quot;stable_id&quot;: &quot;src-fc4193cc1cdc7643&quot;,
+        &quot;object_type&quot;: &quot;actions&quot;,
+        &quot;name&quot;: &quot;Status Filter&quot;,
+        &quot;reason&quot;: &quot;missing_parent_reference&quot;
+      },
+      {
+        &quot;stable_id&quot;: &quot;src-55e41f39f7091f0c&quot;,
+        &quot;object_type&quot;: &quot;sort_orders&quot;,
+        &quot;name&quot;: &quot;item-1&quot;,
+        &quot;reason&quot;: &quot;missing_parent_reference&quot;
+      },
+      {
+        &quot;stable_id&quot;: &quot;src-8ecd19edb83ee1a8&quot;,
+        &quot;object_type&quot;: &quot;sort_orders&quot;,
+        &quot;name&quot;: &quot;item-0&quot;,
+        &quot;reason&quot;: &quot;missing_parent_reference&quot;
+      }
+    ],
+    &quot;runtime&quot;: &quot;not_run&quot;,
+    &quot;contract&quot;: {
+      &quot;version&quot;: &quot;1.1&quot;,
+      &quot;source&quot;: &quot;tableau_extraction&quot;,
+      &quot;target&quot;: &quot;powerbi_tmdl&quot;,
+      &quot;status&quot;: &quot;partial&quot;,
+      &quot;coverage&quot;: {
+        &quot;tables&quot;: {
+          &quot;target_count&quot;: 4,
+          &quot;resolved_count&quot;: 2,
+          &quot;percent&quot;: 50.0
+        },
+        &quot;columns&quot;: {
+          &quot;target_count&quot;: 54,
+          &quot;resolved_count&quot;: 31,
+          &quot;percent&quot;: 57.41
+        },
+        &quot;calculations&quot;: {
+          &quot;target_count&quot;: 22,
+          &quot;resolved_count&quot;: 22,
+          &quot;percent&quot;: 100.0
+        },
+        &quot;relationships&quot;: {
+          &quot;target_count&quot;: 3,
+          &quot;resolved_count&quot;: 3,
+          &quot;percent&quot;: 100.0
+        }
+      },
+      &quot;unresolved&quot;: [
+        {
+          &quot;type&quot;: &quot;tables&quot;,
+          &quot;target&quot;: &quot;Min Budget&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Email Domain&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;First Name&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Last Name&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Name Length&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Clean Phone&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Phone Last 4&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Campaign Code&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Has Valid UTM&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Clean URL&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Month Name&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;Budget Band&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;email&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;lead_name&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;phone&quot;
+        },
+        {
+          &quot;type&quot;: &quot;columns&quot;,
+          &quot;target&quot;: &quot;a-z0-9_-&quot;
+        }
+      ]
+    }
+  }
+}</pre>
+</div> <!-- /section -->
+
+</div> <!-- /container -->
+<div class="report-footer">
+    <p>Tableau &#8594; Power BI Migration Tool &nbsp;|&nbsp; Report generated 2026-09-16 09:11</p>
+    <p>Open .pbip files in Power BI Desktop (Developer Mode) to validate</p>
+</div>
+<script>
+
+function toggleSection(id) {
+    var body = document.getElementById(id);
+    var arrow = document.getElementById(id + '-arrow');
+    if (!body) return;
+    body.classList.toggle('collapsed');
+    if (arrow) arrow.classList.toggle('collapsed');
+}
+
+function switchTab(groupId, tabName) {
+    // Find the tab bar by looking for tabs with matching group
+    var allTabs = document.querySelectorAll('[data-tab-group="' + groupId + '"]');
+    allTabs.forEach(function(t) { t.classList.remove('active'); });
+    var allContents = document.querySelectorAll('[data-tab-content-group="' + groupId + '"]');
+    allContents.forEach(function(c) { c.classList.remove('active'); });
+    // Activate clicked tab
+    var targetTab = document.querySelector('[data-tab-group="' + groupId + '"][data-tab-name="' + tabName + '"]');
+    if (targetTab) targetTab.classList.add('active');
+    var targetContent = document.getElementById(groupId + '-' + tabName);
+    if (targetContent) targetContent.classList.add('active');
+}
+
+function filterTable(inputId, tableId) {
+    var input = document.getElementById(inputId);
+    var table = document.getElementById(tableId);
+    if (!input || !table) return;
+    var filter = input.value.toLowerCase();
+    var rows = table.querySelectorAll('tbody tr');
+    rows.forEach(function(row) {
+        var text = row.textContent.toLowerCase();
+        row.style.display = text.indexOf(filter) > -1 ? '' : 'none';
+    });
+}
+
+function sortTable(tableId, colIndex) {
+    var table = document.getElementById(tableId);
+    if (!table) return;
+    var th = table.querySelectorAll('thead th')[colIndex];
+    var tbody = table.querySelector('tbody');
+    var rows = Array.from(tbody.querySelectorAll('tr'));
+    var isAsc = th.classList.contains('sort-asc');
+
+    // Clear sort state from all headers
+    table.querySelectorAll('thead th').forEach(function(h) {
+        h.classList.remove('sort-asc', 'sort-desc');
+    });
+
+    th.classList.add(isAsc ? 'sort-desc' : 'sort-asc');
+    var direction = isAsc ? -1 : 1;
+
+    rows.sort(function(a, b) {
+        var aVal = a.cells[colIndex].getAttribute('data-sort') || a.cells[colIndex].textContent.trim();
+        var bVal = b.cells[colIndex].getAttribute('data-sort') || b.cells[colIndex].textContent.trim();
+        var aNum = parseFloat(aVal.replace(/[^0-9.-]/g, ''));
+        var bNum = parseFloat(bVal.replace(/[^0-9.-]/g, ''));
+        if (!isNaN(aNum) && !isNaN(bNum)) return (aNum - bNum) * direction;
+        return aVal.localeCompare(bVal) * direction;
+    });
+
+    rows.forEach(function(row) { tbody.appendChild(row); });
+}
+
+/* ── Theme toggle (dark / light) ──────────────────────── */
+function toggleTheme() {
+    var html = document.documentElement;
+    var isDark = html.classList.toggle('dark');
+    var btn = document.getElementById('theme-toggle-btn');
+    if (btn) {
+        btn.innerHTML = isDark ? '&#9788; Light' : '&#9790; Dark';
+    }
+    try { localStorage.setItem('pbi-theme', isDark ? 'dark' : 'light'); } catch(e) {}
+}
+
+(function initTheme() {
+    var saved = null;
+    try { saved = localStorage.getItem('pbi-theme'); } catch(e) {}
+    if (saved === 'dark') {
+        document.documentElement.classList.add('dark');
+    }
+    // Update button label once DOM is ready
+    document.addEventListener('DOMContentLoaded', function() {
+        var btn = document.getElementById('theme-toggle-btn');
+        if (btn && document.documentElement.classList.contains('dark')) {
+            btn.innerHTML = '&#9788; Light';
+        }
+    });
+})();
+
+</script>
+</body>
+</html>

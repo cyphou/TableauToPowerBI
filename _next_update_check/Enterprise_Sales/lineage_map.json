@@ -1,0 +1,828 @@
+{
+  "contract": {
+    "version": "1.1",
+    "source": "tableau_extraction",
+    "target": "powerbi_tmdl",
+    "status": "partial",
+    "coverage": {
+      "tables": {
+        "target_count": 5,
+        "resolved_count": 2,
+        "percent": 40.0
+      },
+      "columns": {
+        "target_count": 44,
+        "resolved_count": 28,
+        "percent": 63.64
+      },
+      "calculations": {
+        "target_count": 33,
+        "resolved_count": 33,
+        "percent": 100.0
+      },
+      "relationships": {
+        "target_count": 3,
+        "resolved_count": 3,
+        "percent": 100.0
+      }
+    },
+    "unresolved": [
+      {
+        "type": "tables",
+        "target": "Target Margin"
+      },
+      {
+        "type": "tables",
+        "target": "Top N"
+      },
+      {
+        "type": "columns",
+        "target": "Customer Tenure Days"
+      },
+      {
+        "type": "columns",
+        "target": "Full Location"
+      },
+      {
+        "type": "columns",
+        "target": "Customer Segment Label"
+      },
+      {
+        "type": "columns",
+        "target": "first_purchase_date"
+      },
+      {
+        "type": "columns",
+        "target": "city"
+      },
+      {
+        "type": "columns",
+        "target": "state"
+      },
+      {
+        "type": "columns",
+        "target": "country"
+      },
+      {
+        "type": "columns",
+        "target": "segment"
+      }
+    ]
+  },
+  "tables": [
+    {
+      "tableau_datasource": "federated.enterprise",
+      "tableau_table": "Orders",
+      "pbi_table": "Orders",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "federated.enterprise",
+      "tableau_table": "Customers",
+      "pbi_table": "Customers",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Calendar",
+      "pbi_table": "Calendar",
+      "source_status": "generated"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Target Margin",
+      "pbi_table": "Target Margin",
+      "source_status": "unresolved"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Top N",
+      "pbi_table": "Top N",
+      "source_status": "unresolved"
+    }
+  ],
+  "columns": [
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "order_id",
+      "pbi_table": "Orders",
+      "pbi_column": "order_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "order_date",
+      "pbi_table": "Orders",
+      "pbi_column": "order_date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "customer_id",
+      "pbi_table": "Orders",
+      "pbi_column": "customer_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "product_id",
+      "pbi_table": "Orders",
+      "pbi_column": "product_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "region",
+      "pbi_table": "Orders",
+      "pbi_column": "region",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "channel",
+      "pbi_table": "Orders",
+      "pbi_column": "channel",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "quantity",
+      "pbi_table": "Orders",
+      "pbi_column": "quantity",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "unit_price",
+      "pbi_table": "Orders",
+      "pbi_column": "unit_price",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "discount",
+      "pbi_table": "Orders",
+      "pbi_column": "discount",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "shipping_cost",
+      "pbi_table": "Orders",
+      "pbi_column": "shipping_cost",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "order_status",
+      "pbi_table": "Orders",
+      "pbi_column": "order_status",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "sales_rep",
+      "pbi_table": "Orders",
+      "pbi_column": "sales_rep",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "territory",
+      "pbi_table": "Orders",
+      "pbi_column": "territory",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Customer Tenure Days",
+      "pbi_table": "Orders",
+      "pbi_column": "Customer Tenure Days",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Safe Discount Rate",
+      "pbi_table": "Orders",
+      "pbi_column": "Safe Discount Rate",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Full Location",
+      "pbi_table": "Orders",
+      "pbi_column": "Full Location",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Customer Segment Label",
+      "pbi_table": "Orders",
+      "pbi_column": "Customer Segment Label",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Discount Category",
+      "pbi_table": "Orders",
+      "pbi_column": "Discount Category",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "first_purchase_date",
+      "pbi_table": "Orders",
+      "pbi_column": "first_purchase_date",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "city",
+      "pbi_table": "Orders",
+      "pbi_column": "city",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "state",
+      "pbi_table": "Orders",
+      "pbi_column": "state",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "country",
+      "pbi_table": "Orders",
+      "pbi_column": "country",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "segment",
+      "pbi_table": "Orders",
+      "pbi_column": "segment",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "customer_id",
+      "pbi_table": "Customers",
+      "pbi_column": "customer_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "customer_name",
+      "pbi_table": "Customers",
+      "pbi_column": "customer_name",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "segment",
+      "pbi_table": "Customers",
+      "pbi_column": "segment",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "city",
+      "pbi_table": "Customers",
+      "pbi_column": "city",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "state",
+      "pbi_table": "Customers",
+      "pbi_column": "state",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "country",
+      "pbi_table": "Customers",
+      "pbi_column": "country",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "postal_code",
+      "pbi_table": "Customers",
+      "pbi_column": "postal_code",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "latitude",
+      "pbi_table": "Customers",
+      "pbi_column": "latitude",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "longitude",
+      "pbi_table": "Customers",
+      "pbi_column": "longitude",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "customer_email",
+      "pbi_table": "Customers",
+      "pbi_column": "customer_email",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Customers",
+      "tableau_column": "first_purchase_date",
+      "pbi_table": "Customers",
+      "pbi_column": "first_purchase_date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Date",
+      "pbi_table": "Calendar",
+      "pbi_column": "Date",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Year",
+      "pbi_table": "Calendar",
+      "pbi_column": "Year",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Quarter",
+      "pbi_table": "Calendar",
+      "pbi_column": "Quarter",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Month",
+      "pbi_table": "Calendar",
+      "pbi_column": "Month",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "MonthName",
+      "pbi_table": "Calendar",
+      "pbi_column": "MonthName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Day",
+      "pbi_table": "Calendar",
+      "pbi_column": "Day",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayOfWeek",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayOfWeek",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayName",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Target Margin",
+      "tableau_column": "Value",
+      "pbi_table": "Target Margin",
+      "pbi_column": "Value",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Top N",
+      "tableau_column": "Value",
+      "pbi_table": "Top N",
+      "pbi_column": "Value",
+      "source_status": "declared",
+      "source_kind": "physical"
+    }
+  ],
+  "calculations": [
+    {
+      "tableau_calculation": "Gross Revenue",
+      "source_formula": "SUM([quantity] * [unit_price])",
+      "pbi_table": "Orders",
+      "pbi_object": "Gross Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Net Revenue",
+      "source_formula": "SUM(IF [order_status] != \"Cancelled\" THEN [quantity] * [unit_price] * (1 - [discount]) ELSE 0 END)",
+      "pbi_table": "Orders",
+      "pbi_object": "Net Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Total Discount",
+      "source_formula": "SUM([quantity] * [unit_price] * [discount])",
+      "pbi_table": "Orders",
+      "pbi_object": "Total Discount",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Profit",
+      "source_formula": "SUM(IF [order_status] != \"Cancelled\" THEN ([quantity] * [unit_price] * (1 - [discount])) - [shipping_cost] ELSE 0 END)",
+      "pbi_table": "Orders",
+      "pbi_object": "Profit",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Profit Margin %",
+      "source_formula": "[Calc_Profit] / [Calc_NetRevenue]",
+      "pbi_table": "Orders",
+      "pbi_object": "Profit Margin %",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue per Customer",
+      "source_formula": "{FIXED [customer_id] : SUM([quantity] * [unit_price])}",
+      "pbi_table": "Orders",
+      "pbi_object": "Revenue per Customer",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Regional Channel Revenue",
+      "source_formula": "{FIXED [region], [channel] : SUM([quantity] * [unit_price])}",
+      "pbi_table": "Orders",
+      "pbi_object": "Regional Channel Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue Excl Category",
+      "source_formula": "{EXCLUDE [channel] : SUM([quantity] * [unit_price])}",
+      "pbi_table": "Orders",
+      "pbi_object": "Revenue Excl Category",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Moving Avg Revenue",
+      "source_formula": "WINDOW_AVG(SUM([quantity] * [unit_price]))",
+      "pbi_table": "Orders",
+      "pbi_object": "Moving Avg Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Running Total Revenue",
+      "source_formula": "RUNNING_SUM(SUM([quantity] * [unit_price]))",
+      "pbi_table": "Orders",
+      "pbi_object": "Running Total Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue Rank",
+      "source_formula": "RANK(SUM([quantity] * [unit_price]))",
+      "pbi_table": "Orders",
+      "pbi_object": "Revenue Rank",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "YTD Revenue",
+      "source_formula": "{FIXED : SUM(IF YEAR([order_date]) = YEAR(TODAY()) THEN [quantity] * [unit_price] ELSE 0 END)}",
+      "pbi_table": "Orders",
+      "pbi_object": "YTD Revenue",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Customer Tier",
+      "source_formula": "IF [Calc_RevPerCustomer] > 10000 THEN \"Platinum\" ELSEIF [Calc_RevPerCustomer] > 5000 THEN \"Gold\" ELSEIF [Calc_RevPerCustomer] > 1000 THEN \"Silver\" ELSE \"Bronze\" END",
+      "pbi_table": "Orders",
+      "pbi_object": "Customer Tier",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Unique Customers",
+      "source_formula": "COUNTD([customer_id])",
+      "pbi_table": "Orders",
+      "pbi_object": "Unique Customers",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "AOV Completed",
+      "source_formula": "AVG(IF [order_status] = \"Completed\" THEN [quantity] * [unit_price] ELSE 0 END)",
+      "pbi_table": "Orders",
+      "pbi_object": "AOV Completed",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Revenue StdDev",
+      "source_formula": "STDEV(SUM([quantity] * [unit_price]))",
+      "pbi_table": "Orders",
+      "pbi_object": "Revenue StdDev",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Is My Account",
+      "source_formula": "[customer_email] = USERNAME()",
+      "pbi_table": "Orders",
+      "pbi_object": "Is My Account",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Date Range Start",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Date Range Start",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Gross Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Gross Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Net Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Net Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Total Discount Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Total Discount Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Profit Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Profit Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Revenue per Customer Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Revenue per Customer Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Regional Channel Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Regional Channel Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Revenue Excl Category Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Revenue Excl Category Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Moving Avg Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Moving Avg Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Revenue Rank Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Revenue Rank Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "YTD Revenue Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "YTD Revenue Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Year To Date",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Year To Date",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Previous Year",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Previous Year",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Year Over Year %",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Year Over Year %",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Target Margin",
+      "source_formula": "",
+      "pbi_table": "Target Margin",
+      "pbi_object": "Target Margin",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Top N",
+      "source_formula": "",
+      "pbi_table": "Top N",
+      "pbi_object": "Top N",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    }
+  ],
+  "relationships": [
+    {
+      "from": "Orders[customer_id]",
+      "to": "Customers[customer_id]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Orders[customer_id]",
+      "tableau_to": "Customers[customer_id]",
+      "source_status": "exact"
+    },
+    {
+      "from": "Orders[order_date]",
+      "to": "Calendar[Date]",
+      "cardinality": "bothDirections",
+      "tableau_from": "Orders[order_date]",
+      "tableau_to": "Calendar[Date]",
+      "source_status": "exact"
+    },
+    {
+      "from": "Customers[first_purchase_date]",
+      "to": "Calendar[Date]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Customers[first_purchase_date]",
+      "tableau_to": "Calendar[Date]",
+      "source_status": "exact"
+    }
+  ],
+  "worksheets": [
+    {
+      "tableau_worksheet": "Executive KPIs",
+      "pbi_page": "Executive KPIs"
+    },
+    {
+      "tableau_worksheet": "Revenue by Region",
+      "pbi_page": "Revenue by Region"
+    },
+    {
+      "tableau_worksheet": "Profit Trend",
+      "pbi_page": "Profit Trend"
+    },
+    {
+      "tableau_worksheet": "Customer Analysis",
+      "pbi_page": "Customer Analysis"
+    },
+    {
+      "tableau_worksheet": "Sales Map",
+      "pbi_page": "Sales Map"
+    }
+  ],
+  "filters": [],
+  "parameters": [
+    {
+      "tableau_object": "[Parameters].[Target Margin]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Target Margin]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[Parameters].[Date Range Start]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Date Range Start]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[Parameters].[Top N]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Top N]"
+      },
+      "source_status": "exact"
+    }
+  ],
+  "actions": [
+    {
+      "tableau_object": "Region Filter",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Region Filter",
+        "type": "filter"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "Customer Highlight",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Customer Highlight",
+        "type": "highlight"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "Company Website",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Company Website",
+        "type": "url"
+      },
+      "source_status": "exact"
+    }
+  ]
+}

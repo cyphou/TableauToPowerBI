@@ -1,0 +1,830 @@
+{
+  "contract": {
+    "version": "1.1",
+    "source": "tableau_extraction",
+    "target": "powerbi_tmdl",
+    "status": "partial",
+    "coverage": {
+      "tables": {
+        "target_count": 4,
+        "resolved_count": 2,
+        "percent": 50.0
+      },
+      "columns": {
+        "target_count": 54,
+        "resolved_count": 31,
+        "percent": 57.41
+      },
+      "calculations": {
+        "target_count": 22,
+        "resolved_count": 22,
+        "percent": 100.0
+      },
+      "relationships": {
+        "target_count": 3,
+        "resolved_count": 3,
+        "percent": 100.0
+      }
+    },
+    "unresolved": [
+      {
+        "type": "tables",
+        "target": "Min Budget"
+      },
+      {
+        "type": "columns",
+        "target": "Email Domain"
+      },
+      {
+        "type": "columns",
+        "target": "First Name"
+      },
+      {
+        "type": "columns",
+        "target": "Last Name"
+      },
+      {
+        "type": "columns",
+        "target": "Name Length"
+      },
+      {
+        "type": "columns",
+        "target": "Clean Phone"
+      },
+      {
+        "type": "columns",
+        "target": "Phone Last 4"
+      },
+      {
+        "type": "columns",
+        "target": "Campaign Code"
+      },
+      {
+        "type": "columns",
+        "target": "Has Valid UTM"
+      },
+      {
+        "type": "columns",
+        "target": "Clean URL"
+      },
+      {
+        "type": "columns",
+        "target": "Month Name"
+      },
+      {
+        "type": "columns",
+        "target": "Budget Band"
+      },
+      {
+        "type": "columns",
+        "target": "email"
+      },
+      {
+        "type": "columns",
+        "target": "lead_name"
+      },
+      {
+        "type": "columns",
+        "target": "phone"
+      },
+      {
+        "type": "columns",
+        "target": "a-z0-9_-"
+      }
+    ]
+  },
+  "tables": [
+    {
+      "tableau_datasource": "federated.marketing",
+      "tableau_table": "Campaigns",
+      "pbi_table": "Campaigns",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "federated.marketing",
+      "tableau_table": "Leads",
+      "pbi_table": "Leads",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Calendar",
+      "pbi_table": "Calendar",
+      "source_status": "generated"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Min Budget",
+      "pbi_table": "Min Budget",
+      "source_status": "unresolved"
+    }
+  ],
+  "columns": [
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "campaign_id",
+      "pbi_table": "Campaigns",
+      "pbi_column": "campaign_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "campaign_name",
+      "pbi_table": "Campaigns",
+      "pbi_column": "campaign_name",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "channel",
+      "pbi_table": "Campaigns",
+      "pbi_column": "channel",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "start_date",
+      "pbi_table": "Campaigns",
+      "pbi_column": "start_date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "end_date",
+      "pbi_table": "Campaigns",
+      "pbi_column": "end_date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "budget",
+      "pbi_table": "Campaigns",
+      "pbi_column": "budget",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "spend",
+      "pbi_table": "Campaigns",
+      "pbi_column": "spend",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "target_audience",
+      "pbi_table": "Campaigns",
+      "pbi_column": "target_audience",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "creative_url",
+      "pbi_table": "Campaigns",
+      "pbi_column": "creative_url",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "utm_source",
+      "pbi_table": "Campaigns",
+      "pbi_column": "utm_source",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "utm_medium",
+      "pbi_table": "Campaigns",
+      "pbi_column": "utm_medium",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "utm_campaign",
+      "pbi_table": "Campaigns",
+      "pbi_column": "utm_campaign",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "region",
+      "pbi_table": "Campaigns",
+      "pbi_column": "region",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "status",
+      "pbi_table": "Campaigns",
+      "pbi_column": "status",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Email Domain",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Email Domain",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "First Name",
+      "pbi_table": "Campaigns",
+      "pbi_column": "First Name",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Last Name",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Last Name",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Name Length",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Name Length",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Clean Phone",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Clean Phone",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Phone Last 4",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Phone Last 4",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Campaign Code",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Campaign Code",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Is Enterprise",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Is Enterprise",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Has Valid UTM",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Has Valid UTM",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Clean URL",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Clean URL",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Campaign Year",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Campaign Year",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Start Month",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Start Month",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Month Name",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Month Name",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Campaign Days",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Campaign Days",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "Budget Band",
+      "pbi_table": "Campaigns",
+      "pbi_column": "Budget Band",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "email",
+      "pbi_table": "Campaigns",
+      "pbi_column": "email",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "lead_name",
+      "pbi_table": "Campaigns",
+      "pbi_column": "lead_name",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "phone",
+      "pbi_table": "Campaigns",
+      "pbi_column": "phone",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Campaigns",
+      "tableau_column": "a-z0-9_-",
+      "pbi_table": "Campaigns",
+      "pbi_column": "a-z0-9_-",
+      "source_status": "unresolved",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "lead_id",
+      "pbi_table": "Leads",
+      "pbi_column": "lead_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "campaign_id",
+      "pbi_table": "Leads",
+      "pbi_column": "campaign_id",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "lead_name",
+      "pbi_table": "Leads",
+      "pbi_column": "lead_name",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "email",
+      "pbi_table": "Leads",
+      "pbi_column": "email",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "phone",
+      "pbi_table": "Leads",
+      "pbi_column": "phone",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "company",
+      "pbi_table": "Leads",
+      "pbi_column": "company",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "job_title",
+      "pbi_table": "Leads",
+      "pbi_column": "job_title",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "created_date",
+      "pbi_table": "Leads",
+      "pbi_column": "created_date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "deal_value",
+      "pbi_table": "Leads",
+      "pbi_column": "deal_value",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "lead_source",
+      "pbi_table": "Leads",
+      "pbi_column": "lead_source",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "lead_status",
+      "pbi_table": "Leads",
+      "pbi_column": "lead_status",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Leads",
+      "tableau_column": "engagement_score",
+      "pbi_table": "Leads",
+      "pbi_column": "engagement_score",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Date",
+      "pbi_table": "Calendar",
+      "pbi_column": "Date",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Year",
+      "pbi_table": "Calendar",
+      "pbi_column": "Year",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Quarter",
+      "pbi_table": "Calendar",
+      "pbi_column": "Quarter",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Month",
+      "pbi_table": "Calendar",
+      "pbi_column": "Month",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "MonthName",
+      "pbi_table": "Calendar",
+      "pbi_column": "MonthName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Day",
+      "pbi_table": "Calendar",
+      "pbi_column": "Day",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayOfWeek",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayOfWeek",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayName",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Min Budget",
+      "tableau_column": "Value",
+      "pbi_table": "Min Budget",
+      "pbi_column": "Value",
+      "source_status": "declared",
+      "source_kind": "physical"
+    }
+  ],
+  "calculations": [
+    {
+      "tableau_calculation": "Non-Blank Leads",
+      "source_formula": "COUNTA([lead_name])",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Non-Blank Leads",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Budget Deal Correlation",
+      "source_formula": "CORR([budget], [deal_value])",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Budget Deal Correlation",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Spend Engagement Covar",
+      "source_formula": "COVAR([spend], [engagement_score])",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Spend Engagement Covar",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Avg Deal by Channel",
+      "source_formula": "{INCLUDE [channel] : AVG([deal_value])}",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Avg Deal by Channel",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Campaign ROI",
+      "source_formula": "(SUM([deal_value]) - SUM([spend])) / SUM([spend])",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Campaign ROI",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Cost Per Lead",
+      "source_formula": "SUM([spend]) / COUNTD([lead_id])",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Cost Per Lead",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Window Best ROI",
+      "source_formula": "WINDOW_MAX((SUM([deal_value]) - SUM([spend])) / SUM([spend]))",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Window Best ROI",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Window Worst ROI",
+      "source_formula": "WINDOW_MIN((SUM([deal_value]) - SUM([spend])) / SUM([spend]))",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Window Worst ROI",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Cumulative Leads",
+      "source_formula": "RUNNING_COUNT(COUNTD([lead_id]))",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Cumulative Leads",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Conversion Rate",
+      "source_formula": "SUM(IF [lead_status] = \"Won\" THEN 1 ELSE 0 END) / COUNT([lead_id])",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Conversion Rate",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Target Channel",
+      "source_formula": "",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Target Channel",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Budget Deal Correlation Formatted",
+      "source_formula": "",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Budget Deal Correlation Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Spend Engagement Covar Formatted",
+      "source_formula": "",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Spend Engagement Covar Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Campaign ROI Formatted",
+      "source_formula": "",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Campaign ROI Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Cost Per Lead Formatted",
+      "source_formula": "",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Cost Per Lead Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Window Best ROI Formatted",
+      "source_formula": "",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Window Best ROI Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Window Worst ROI Formatted",
+      "source_formula": "",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Window Worst ROI Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Conversion Rate Formatted",
+      "source_formula": "",
+      "pbi_table": "Campaigns",
+      "pbi_object": "Conversion Rate Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Year To Date",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Year To Date",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Previous Year",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Previous Year",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Year Over Year %",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Year Over Year %",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Min Budget",
+      "source_formula": "",
+      "pbi_table": "Min Budget",
+      "pbi_object": "Min Budget",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    }
+  ],
+  "relationships": [
+    {
+      "from": "Campaigns[campaign_id]",
+      "to": "Leads[campaign_id]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Campaigns[campaign_id]",
+      "tableau_to": "Leads[campaign_id]",
+      "source_status": "exact"
+    },
+    {
+      "from": "Campaigns[start_date]",
+      "to": "Calendar[Date]",
+      "cardinality": "bothDirections",
+      "tableau_from": "Campaigns[start_date]",
+      "tableau_to": "Calendar[Date]",
+      "source_status": "exact"
+    },
+    {
+      "from": "Leads[created_date]",
+      "to": "Calendar[Date]",
+      "cardinality": "bothDirections",
+      "tableau_from": "Leads[created_date]",
+      "tableau_to": "Calendar[Date]",
+      "source_status": "exact"
+    }
+  ],
+  "worksheets": [
+    {
+      "tableau_worksheet": "Campaign Performance",
+      "pbi_page": "Campaign Performance"
+    },
+    {
+      "tableau_worksheet": "Lead Funnel",
+      "pbi_page": "Lead Funnel"
+    },
+    {
+      "tableau_worksheet": "Conversion Trend",
+      "pbi_page": "Conversion Trend"
+    },
+    {
+      "tableau_worksheet": "Budget Analysis",
+      "pbi_page": "Budget Analysis"
+    },
+    {
+      "tableau_worksheet": "Lead Details",
+      "pbi_page": "Lead Details"
+    }
+  ],
+  "filters": [],
+  "parameters": [
+    {
+      "tableau_object": "[Parameters].[Min Budget]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Min Budget]"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "[Parameters].[Target Channel]",
+      "object_type": "parameter",
+      "source_identity": {
+        "name": "[Parameters].[Target Channel]"
+      },
+      "source_status": "exact"
+    }
+  ],
+  "actions": [
+    {
+      "tableau_object": "Channel Filter",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Channel Filter",
+        "type": "filter"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "Status Filter",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Status Filter",
+        "type": "filter"
+      },
+      "source_status": "exact"
+    },
+    {
+      "tableau_object": "Campaign Highlight",
+      "object_type": "action",
+      "source_identity": {
+        "name": "Campaign Highlight",
+        "type": "highlight"
+      },
+      "source_status": "exact"
+    }
+  ]
+}

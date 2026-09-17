@@ -1,0 +1,130 @@
+{
+  "project_dir": ".\\_next_update_check\\Complex_Enterprise",
+  "openable": true,
+  "blocking_count": 0,
+  "warning_count": 11,
+  "blocking_issues": [],
+  "warnings": [
+    "[schema] Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_37f121d8ef4c\\bookmark.json: displayName: Bookmark displayName is empty",
+    "[schema] Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_37f121d8ef4c\\bookmark.json: explorationState.activeSection: activeSection is empty",
+    "[schema] Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_4afef1a35d9e\\bookmark.json: displayName: Bookmark displayName is empty",
+    "[schema] Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_4afef1a35d9e\\bookmark.json: explorationState.activeSection: activeSection is empty",
+    "[schema] Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_56a725a783e2\\bookmark.json: displayName: Bookmark displayName is empty",
+    "[schema] Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_56a725a783e2\\bookmark.json: explorationState.activeSection: activeSection is empty",
+    "[schema] Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_acb41eb8fb83\\bookmark.json: displayName: Bookmark displayName is empty",
+    "[schema] Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_acb41eb8fb83\\bookmark.json: explorationState.activeSection: activeSection is empty",
+    "[schema] Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_f1ff2881718e\\bookmark.json: displayName: Bookmark displayName is empty",
+    "[schema] Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_f1ff2881718e\\bookmark.json: explorationState.activeSection: activeSection is empty",
+    "[schema] Complex_Enterprise.Report\\definition\\pages\\ReportSection92886ad83c05469fba70\\visuals\\fdac33f2a1e144739acd\\visual.json: visual.visualType: Unknown visual type: ganttChart"
+  ],
+  "checks": [
+    {
+      "name": "structure",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "pbip_contract",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "generated_content",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "manifest_coherence",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "report_content",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "json_parse",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "tmdl_present",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "tmdl_partitions",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "power_query",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "dax",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "semantic_validation",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "executable_dax",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "visual_bindings",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "references",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "report_structure",
+      "ok": true,
+      "severity": "error",
+      "issues": []
+    },
+    {
+      "name": "schema",
+      "ok": false,
+      "severity": "warning",
+      "issues": [
+        "Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_37f121d8ef4c\\bookmark.json: displayName: Bookmark displayName is empty",
+        "Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_37f121d8ef4c\\bookmark.json: explorationState.activeSection: activeSection is empty",
+        "Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_4afef1a35d9e\\bookmark.json: displayName: Bookmark displayName is empty",
+        "Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_4afef1a35d9e\\bookmark.json: explorationState.activeSection: activeSection is empty",
+        "Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_56a725a783e2\\bookmark.json: displayName: Bookmark displayName is empty",
+        "Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_56a725a783e2\\bookmark.json: explorationState.activeSection: activeSection is empty",
+        "Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_acb41eb8fb83\\bookmark.json: displayName: Bookmark displayName is empty",
+        "Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_acb41eb8fb83\\bookmark.json: explorationState.activeSection: activeSection is empty",
+        "Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_f1ff2881718e\\bookmark.json: displayName: Bookmark displayName is empty",
+        "Complex_Enterprise.Report\\definition\\bookmarks\\Bookmark_f1ff2881718e\\bookmark.json: explorationState.activeSection: activeSection is empty",
+        "Complex_Enterprise.Report\\definition\\pages\\ReportSection92886ad83c05469fba70\\visuals\\fdac33f2a1e144739acd\\visual.json: visual.visualType: Unknown visual type: ganttChart"
+      ]
+    }
+  ]
+}

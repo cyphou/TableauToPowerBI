@@ -1,0 +1,104 @@
+{
+  "filters": 0,
+  "measures": {
+    "[Calc_Anciennete]": {
+      "formula_hash": "8277ad02513c0e38"
+    },
+    "[Calc_CAExclProduit]": {
+      "formula_hash": "06263b1a37a27f34"
+    },
+    "[Calc_CAParClient]": {
+      "formula_hash": "ed65169483627e0f"
+    },
+    "[Calc_CARegionCategorie]": {
+      "formula_hash": "e766bf9a92447a6a"
+    },
+    "[Calc_CAYTD]": {
+      "formula_hash": "8ea02c54e05f49ba"
+    },
+    "[Calc_CA_Brut]": {
+      "formula_hash": "4ca6a322bcaef1b1"
+    },
+    "[Calc_CA_Net]": {
+      "formula_hash": "6ab62aba1daf3192"
+    },
+    "[Calc_CategorieRemise]": {
+      "formula_hash": "ffd595885326950f"
+    },
+    "[Calc_ClassementCA]": {
+      "formula_hash": "00124f2f64613883"
+    },
+    "[Calc_ClassifClient]": {
+      "formula_hash": "9c709a6464382392"
+    },
+    "[Calc_ClientsUniques]": {
+      "formula_hash": "f8576ee9132bc6f1"
+    },
+    "[Calc_CumulCA]": {
+      "formula_hash": "8beed0e1fa74192d"
+    },
+    "[Calc_DelaiLivraison]": {
+      "formula_hash": "80902dc9d597ae44"
+    },
+    "[Calc_Localisation]": {
+      "formula_hash": "9328c9dabe57b82b"
+    },
+    "[Calc_Marge]": {
+      "formula_hash": "1a82cac827225c3a"
+    },
+    "[Calc_MontantRemises]": {
+      "formula_hash": "7c56b835961a50c7"
+    },
+    "[Calc_MoyMobile]": {
+      "formula_hash": "31ef2541ee035d09"
+    },
+    "[Calc_NbCommandes]": {
+      "formula_hash": "e291b34e2b814a51"
+    },
+    "[Calc_NomComplet]": {
+      "formula_hash": "ff4f9d49c6dcc18b"
+    },
+    "[Calc_PanierMoyen]": {
+      "formula_hash": "3caccaa57b721be3"
+    },
+    "[Calc_TauxMarge]": {
+      "formula_hash": "54b802c858215f31"
+    },
+    "[Calc_Trimestre]": {
+      "formula_hash": "d266d66841a1de65"
+    }
+  },
+  "pages": {
+    "CA par R\u00e9gion": {
+      "field_count": 4
+    },
+    "Carte des Ventes": {
+      "field_count": 4
+    },
+    "Indicateurs Cl\u00e9s": {
+      "field_count": 4
+    },
+    "Modes de Paiement": {
+      "field_count": 2
+    },
+    "Top Produits": {
+      "field_count": 3
+    },
+    "\u00c9volution du CA": {
+      "field_count": 2
+    }
+  },
+  "relationships": 2,
+  "tables": {
+    "Clients": {
+      "column_count": 7
+    },
+    "Commandes": {
+      "column_count": 16
+    },
+    "Produits": {
+      "column_count": 6
+    }
+  },
+  "version": "1.0"
+}

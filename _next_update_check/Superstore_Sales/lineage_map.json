@@ -1,0 +1,448 @@
+{
+  "contract": {
+    "version": "1.1",
+    "source": "tableau_extraction",
+    "target": "powerbi_tmdl",
+    "status": "complete",
+    "coverage": {
+      "tables": {
+        "target_count": 4,
+        "resolved_count": 3,
+        "percent": 75.0
+      },
+      "columns": {
+        "target_count": 33,
+        "resolved_count": 25,
+        "percent": 75.76
+      },
+      "calculations": {
+        "target_count": 10,
+        "resolved_count": 10,
+        "percent": 100.0
+      },
+      "relationships": {
+        "target_count": 3,
+        "resolved_count": 3,
+        "percent": 100.0
+      }
+    },
+    "unresolved": []
+  },
+  "tables": [
+    {
+      "tableau_datasource": "federated.1",
+      "tableau_table": "Orders",
+      "pbi_table": "Orders",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "federated.1",
+      "tableau_table": "Returns",
+      "pbi_table": "Returns",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "federated.1",
+      "tableau_table": "People",
+      "pbi_table": "People",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Calendar",
+      "pbi_table": "Calendar",
+      "source_status": "generated"
+    }
+  ],
+  "columns": [
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Row ID",
+      "pbi_table": "Orders",
+      "pbi_column": "Row ID",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Order ID",
+      "pbi_table": "Orders",
+      "pbi_column": "Order ID",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Order Date",
+      "pbi_table": "Orders",
+      "pbi_column": "Order Date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Ship Date",
+      "pbi_table": "Orders",
+      "pbi_column": "Ship Date",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Ship Mode",
+      "pbi_table": "Orders",
+      "pbi_column": "Ship Mode",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Customer ID",
+      "pbi_table": "Orders",
+      "pbi_column": "Customer ID",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Customer Name",
+      "pbi_table": "Orders",
+      "pbi_column": "Customer Name",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Segment",
+      "pbi_table": "Orders",
+      "pbi_column": "Segment",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Country",
+      "pbi_table": "Orders",
+      "pbi_column": "Country",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "City",
+      "pbi_table": "Orders",
+      "pbi_column": "City",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "State",
+      "pbi_table": "Orders",
+      "pbi_column": "State",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Postal Code",
+      "pbi_table": "Orders",
+      "pbi_column": "Postal Code",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Region",
+      "pbi_table": "Orders",
+      "pbi_column": "Region",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Product ID",
+      "pbi_table": "Orders",
+      "pbi_column": "Product ID",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Category",
+      "pbi_table": "Orders",
+      "pbi_column": "Category",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Sub-Category",
+      "pbi_table": "Orders",
+      "pbi_column": "Sub-Category",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Product Name",
+      "pbi_table": "Orders",
+      "pbi_column": "Product Name",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Sales",
+      "pbi_table": "Orders",
+      "pbi_column": "Sales",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Quantity",
+      "pbi_table": "Orders",
+      "pbi_column": "Quantity",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Discount",
+      "pbi_table": "Orders",
+      "pbi_column": "Discount",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Orders",
+      "tableau_column": "Profit",
+      "pbi_table": "Orders",
+      "pbi_column": "Profit",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Returns",
+      "tableau_column": "Returned",
+      "pbi_table": "Returns",
+      "pbi_column": "Returned",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Returns",
+      "tableau_column": "Order ID",
+      "pbi_table": "Returns",
+      "pbi_column": "Order ID",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "People",
+      "tableau_column": "Regional Manager",
+      "pbi_table": "People",
+      "pbi_column": "Regional Manager",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "People",
+      "tableau_column": "Region",
+      "pbi_table": "People",
+      "pbi_column": "Region",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Date",
+      "pbi_table": "Calendar",
+      "pbi_column": "Date",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Year",
+      "pbi_table": "Calendar",
+      "pbi_column": "Year",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Quarter",
+      "pbi_table": "Calendar",
+      "pbi_column": "Quarter",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Month",
+      "pbi_table": "Calendar",
+      "pbi_column": "Month",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "MonthName",
+      "pbi_table": "Calendar",
+      "pbi_column": "MonthName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Day",
+      "pbi_table": "Calendar",
+      "pbi_column": "Day",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayOfWeek",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayOfWeek",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayName",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    }
+  ],
+  "calculations": [
+    {
+      "tableau_calculation": "Total Sales",
+      "source_formula": "SUM([Sales])",
+      "pbi_table": "Orders",
+      "pbi_object": "Total Sales",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Total Profit",
+      "source_formula": "SUM([Profit])",
+      "pbi_table": "Orders",
+      "pbi_object": "Total Profit",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Profit Ratio",
+      "source_formula": "SUM([Profit]) / SUM([Sales])",
+      "pbi_table": "Orders",
+      "pbi_object": "Profit Ratio",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Number of Orders",
+      "source_formula": "COUNTD([Order ID])",
+      "pbi_table": "Orders",
+      "pbi_object": "Number of Orders",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Total Sales Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Total Sales Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Total Profit Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Total Profit Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Profit Ratio Formatted",
+      "source_formula": "",
+      "pbi_table": "Orders",
+      "pbi_object": "Profit Ratio Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Year To Date",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Year To Date",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Previous Year",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Previous Year",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Year Over Year %",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Year Over Year %",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    }
+  ],
+  "relationships": [
+    {
+      "from": "Orders[Region]",
+      "to": "People[Region]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Orders[Region]",
+      "tableau_to": "People[Region]",
+      "source_status": "exact"
+    },
+    {
+      "from": "Orders[Order ID]",
+      "to": "Returns[Order ID]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Orders[Order ID]",
+      "tableau_to": "Returns[Order ID]",
+      "source_status": "exact"
+    },
+    {
+      "from": "Orders[Order Date]",
+      "to": "Calendar[Date]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Orders[Order Date]",
+      "tableau_to": "Calendar[Date]",
+      "source_status": "exact"
+    }
+  ],
+  "worksheets": [
+    {
+      "tableau_worksheet": "Sales by Region",
+      "pbi_page": "Sales by Region"
+    },
+    {
+      "tableau_worksheet": "Profit by Category",
+      "pbi_page": "Profit by Category"
+    },
+    {
+      "tableau_worksheet": "Sales Trend",
+      "pbi_page": "Sales Trend"
+    }
+  ],
+  "filters": [],
+  "parameters": [],
+  "actions": []
+}

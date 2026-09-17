@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" width="1200" height="520">
+  <defs>
+    <linearGradient id="a-bg" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#0A0E27"/>
+      <stop offset="100%" stop-color="#122550"/>
+    </linearGradient>
+    <linearGradient id="a-card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.07)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0.015)"/>
+    </linearGradient>
+    <linearGradient id="a-border" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.14)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0.03)"/>
+    </linearGradient>
+    <linearGradient id="a-accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E97627"/>
+      <stop offset="50%" stop-color="#F2C811"/>
+      <stop offset="100%" stop-color="#0078D4"/>
+    </linearGradient>
+    <linearGradient id="a-flow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F2C811" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#F2C811" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="a-glow"><feGaussianBlur in="SourceGraphic" stdDeviation="4"/></filter>
+    <radialGradient id="a-orb-tab" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#E97627" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#E97627" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="a-orb-gen" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#0078D4" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#0078D4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="520" rx="12" fill="url(#a-bg)"/>
+
+  <!-- Particles -->
+  <circle cx="80" cy="40" r="1" fill="rgba(255,255,255,0.08)"/>
+  <circle cx="200" cy="480" r="0.8" fill="rgba(255,255,255,0.06)"/>
+  <circle cx="400" cy="30" r="1.2" fill="rgba(255,255,255,0.1)"/>
+  <circle cx="600" cy="500" r="0.7" fill="rgba(255,255,255,0.07)"/>
+  <circle cx="800" cy="25" r="0.9" fill="rgba(255,255,255,0.08)"/>
+  <circle cx="1000" cy="490" r="1" fill="rgba(255,255,255,0.06)"/>
+  <circle cx="1150" cy="50" r="0.6" fill="rgba(255,255,255,0.09)"/>
+
+  <!-- Title -->
+  <text x="600" y="38" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#F2C811" text-anchor="middle" letter-spacing="3">SYSTEM ARCHITECTURE</text>
+  <rect x="200" y="48" width="800" height="1" fill="url(#a-accent)" opacity="0.3"/>
+
+  <!-- ═══════ EXTRACTION LAYER (Left) ═══════ -->
+  <g transform="translate(24, 70)">
+    <circle cx="260" cy="110" r="100" fill="url(#a-orb-tab)"/>
+    <rect width="520" height="420" rx="10" fill="url(#a-card)" stroke="url(#a-border)" stroke-width="0.8"/>
+    <rect x="0" y="0" width="520" height="38" rx="10 10 0 0" fill="#E97627" opacity="0.1"/>
+    <rect x="0" y="36" width="520" height="1" fill="#E97627" opacity="0.2"/>
+    <text x="260" y="26" font-family="Segoe UI, sans-serif" font-size="13" font-weight="bold" fill="#E97627" text-anchor="middle">📦  EXTRACTION  (tableau_export/)</text>
+
+    <!-- Modules -->
+    <g transform="translate(16, 50)">
+      <rect width="232" height="48" rx="6" fill="rgba(233,118,39,0.06)" stroke="rgba(233,118,39,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#E97627">extract_tableau_data.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">Main parser · 23 object types</text>
+    </g>
+    <g transform="translate(262, 50)">
+      <rect width="242" height="48" rx="6" fill="rgba(233,118,39,0.06)" stroke="rgba(233,118,39,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#E97627">datasource_extractor.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">Tables · Columns · Relations</text>
+    </g>
+
+    <g transform="translate(16, 110)">
+      <rect width="232" height="48" rx="6" fill="rgba(233,118,39,0.06)" stroke="rgba(233,118,39,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#E97627">dax_converter.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">180+ formula conversions</text>
+    </g>
+    <g transform="translate(262, 110)">
+      <rect width="242" height="48" rx="6" fill="rgba(233,118,39,0.06)" stroke="rgba(233,118,39,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#E97627">m_query_builder.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">49 connectors · 43 transforms</text>
+    </g>
+
+    <g transform="translate(16, 170)">
+      <rect width="232" height="48" rx="6" fill="rgba(233,118,39,0.06)" stroke="rgba(233,118,39,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#E97627">prep_flow_parser.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">Tableau Prep flows → M</text>
+    </g>
+    <g transform="translate(262, 170)">
+      <rect width="242" height="48" rx="6" fill="rgba(233,118,39,0.06)" stroke="rgba(233,118,39,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#E97627">hyper_reader.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">3-tier data extraction</text>
+    </g>
+
+    <g transform="translate(16, 230)">
+      <rect width="232" height="48" rx="6" fill="rgba(233,118,39,0.06)" stroke="rgba(233,118,39,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#E97627">server_client.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">Tableau Server REST API</text>
+    </g>
+    <g transform="translate(262, 230)">
+      <rect width="242" height="48" rx="6" fill="rgba(233,118,39,0.06)" stroke="rgba(233,118,39,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#E97627">pulse_extractor.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">Tableau Pulse metrics</text>
+    </g>
+
+    <!-- Output -->
+    <rect x="16" y="300" width="488" height="46" rx="6" fill="rgba(242,200,17,0.06)" stroke="rgba(242,200,17,0.2)" stroke-width="0.8"/>
+    <text x="260" y="326" font-family="Consolas, monospace" font-size="11" fill="#F2C811" text-anchor="middle">→  23 JSON files  (worksheets, dashboards, datasources, ...)</text>
+
+    <!-- Security note -->
+    <rect x="16" y="358" width="488" height="36" rx="6" fill="rgba(74,222,128,0.04)" stroke="rgba(74,222,128,0.12)" stroke-width="0.6"/>
+    <text x="260" y="381" font-family="Segoe UI, sans-serif" font-size="10" fill="#4ADE80" text-anchor="middle">🛡️  security_validator.py  —  XXE · ZIP slip · path traversal · credential scan</text>
+  </g>
+
+  <!-- ═══════ GENERATION LAYER (Right) ═══════ -->
+  <g transform="translate(656, 70)">
+    <circle cx="260" cy="110" r="100" fill="url(#a-orb-gen)"/>
+    <rect width="520" height="420" rx="10" fill="url(#a-card)" stroke="url(#a-border)" stroke-width="0.8"/>
+    <rect x="0" y="0" width="520" height="38" rx="10 10 0 0" fill="#0078D4" opacity="0.1"/>
+    <rect x="0" y="36" width="520" height="1" fill="#0078D4" opacity="0.2"/>
+    <text x="260" y="26" font-family="Segoe UI, sans-serif" font-size="13" font-weight="bold" fill="#0078D4" text-anchor="middle">⚡  GENERATION  (powerbi_import/)</text>
+
+    <!-- Core generators -->
+    <g transform="translate(16, 50)">
+      <rect width="232" height="48" rx="6" fill="rgba(0,120,212,0.06)" stroke="rgba(0,120,212,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#0078D4">tmdl_generator.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">Semantic model · TMDL</text>
+    </g>
+    <g transform="translate(262, 50)">
+      <rect width="242" height="48" rx="6" fill="rgba(0,120,212,0.06)" stroke="rgba(0,120,212,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#0078D4">pbip_generator.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">PBIR v4.0 report</text>
+    </g>
+
+    <g transform="translate(16, 110)">
+      <rect width="232" height="48" rx="6" fill="rgba(0,120,212,0.06)" stroke="rgba(0,120,212,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#0078D4">visual_generator.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">190 visual types</text>
+    </g>
+    <g transform="translate(262, 110)">
+      <rect width="242" height="48" rx="6" fill="rgba(0,120,212,0.06)" stroke="rgba(0,120,212,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#0078D4">dax_optimizer.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">AST rewriter · Time Intel</text>
+    </g>
+
+    <!-- Merge & Fabric -->
+    <g transform="translate(16, 170)">
+      <rect width="232" height="48" rx="6" fill="rgba(135,100,184,0.08)" stroke="rgba(135,100,184,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#8764B8">shared_model.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">Multi-workbook merge</text>
+    </g>
+    <g transform="translate(262, 170)">
+      <rect width="242" height="48" rx="6" fill="rgba(135,100,184,0.08)" stroke="rgba(135,100,184,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#8764B8">fabric_project_generator.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">Fabric-native output</text>
+    </g>
+
+    <!-- Assessment -->
+    <g transform="translate(16, 230)">
+      <rect width="232" height="48" rx="6" fill="rgba(3,131,135,0.08)" stroke="rgba(3,131,135,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#038387">assessment.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">Readiness scoring · 9 axes</text>
+    </g>
+    <g transform="translate(262, 230)">
+      <rect width="242" height="48" rx="6" fill="rgba(3,131,135,0.08)" stroke="rgba(3,131,135,0.15)" stroke-width="0.6"/>
+      <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#038387">validator.py</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">JSON · TMDL · structure</text>
+    </g>
+
+    <!-- Outputs -->
+    <rect x="16" y="300" width="234" height="46" rx="6" fill="rgba(0,120,212,0.06)" stroke="rgba(0,120,212,0.2)" stroke-width="0.8"/>
+    <text x="133" y="320" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#0078D4" text-anchor="middle">.pbip Project</text>
+    <text x="133" y="336" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)" text-anchor="middle">PBIR + TMDL + M Queries</text>
+
+    <rect x="270" y="300" width="234" height="46" rx="6" fill="rgba(135,100,184,0.06)" stroke="rgba(135,100,184,0.2)" stroke-width="0.8"/>
+    <text x="387" y="320" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#8764B8" text-anchor="middle">Fabric Native</text>
+    <text x="387" y="336" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)" text-anchor="middle">Lakehouse + Dataflow + Notebook</text>
+
+    <!-- Deploy -->
+    <rect x="16" y="358" width="488" height="36" rx="6" fill="rgba(0,120,212,0.04)" stroke="rgba(0,120,212,0.12)" stroke-width="0.6"/>
+    <text x="260" y="381" font-family="Segoe UI, sans-serif" font-size="10" fill="#0078D4" text-anchor="middle">🚀  deploy/  —  Fabric REST · PBI Service · Bundle · Multi-tenant · Blue/Green</text>
+  </g>
+
+  <!-- Bottom accent -->
+  <rect y="514" width="1200" height="6" fill="url(#a-accent)" opacity="0.4"/>
+</svg>

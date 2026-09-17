@@ -1,0 +1,109 @@
+{
+ "visual_count": 8,
+ "visuals": [
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 486,
+   "page": "Analytics Deep Dive",
+   "title_font": "",
+   "title_size": "",
+   "type": "areaChart",
+   "width": 960,
+   "x": 0,
+   "y": 108,
+   "z": 1000
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 126,
+   "page": "Analytics Deep Dive",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredColumnChart",
+   "width": 1280,
+   "x": 0,
+   "y": 594,
+   "z": 3000
+  },
+  {
+   "fields": 4,
+   "has_format": true,
+   "height": 486,
+   "page": "Analytics Deep Dive",
+   "title_font": "",
+   "title_size": "",
+   "type": "scatterChart",
+   "width": 320,
+   "x": 960,
+   "y": 108,
+   "z": 2000
+  },
+  {
+   "fields": 0,
+   "has_format": true,
+   "height": 720,
+   "page": "Analytics Deep Dive",
+   "title_font": "",
+   "title_size": "",
+   "type": "textbox",
+   "width": 1280,
+   "x": 0,
+   "y": 0,
+   "z": 0
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 126,
+   "page": "Operations Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "clusteredColumnChart",
+   "width": 1280,
+   "x": 0,
+   "y": 594,
+   "z": 3000
+  },
+  {
+   "fields": 3,
+   "has_format": true,
+   "height": 486,
+   "page": "Operations Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "lineChart",
+   "width": 1152,
+   "x": 0,
+   "y": 108,
+   "z": 1000
+  },
+  {
+   "fields": 0,
+   "has_format": true,
+   "height": 720,
+   "page": "Operations Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "textbox",
+   "width": 1280,
+   "x": 0,
+   "y": 0,
+   "z": 0
+  },
+  {
+   "fields": 4,
+   "has_format": true,
+   "height": 486,
+   "page": "Operations Overview",
+   "title_font": "",
+   "title_size": "",
+   "type": "treemap",
+   "width": 128,
+   "x": 1152,
+   "y": 108,
+   "z": 2000
+  }
+ ]
+}

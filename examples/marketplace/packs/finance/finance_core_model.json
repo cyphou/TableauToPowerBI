@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "name": "finance_core_model",
+    "version": "1.0.0",
+    "author": "Migration Marketplace",
+    "description": "Finance base semantic model template: Financials, Accounts, CostCenters, AR.",
+    "tags": ["finance", "model", "industry-pack"],
+    "category": "model_template",
+    "created": "2026-04-01"
+  },
+  "payload": {
+    "tables": ["Financials", "Accounts", "CostCenters", "AR"],
+    "fact": "Financials",
+    "date_table": "Calendar"
+  }
+}

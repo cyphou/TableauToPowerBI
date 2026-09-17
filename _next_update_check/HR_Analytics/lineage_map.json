@@ -1,0 +1,296 @@
+{
+  "contract": {
+    "version": "1.1",
+    "source": "tableau_extraction",
+    "target": "powerbi_tmdl",
+    "status": "complete",
+    "coverage": {
+      "tables": {
+        "target_count": 2,
+        "resolved_count": 1,
+        "percent": 50.0
+      },
+      "columns": {
+        "target_count": 20,
+        "resolved_count": 12,
+        "percent": 60.0
+      },
+      "calculations": {
+        "target_count": 7,
+        "resolved_count": 7,
+        "percent": 100.0
+      },
+      "relationships": {
+        "target_count": 1,
+        "resolved_count": 1,
+        "percent": 100.0
+      }
+    },
+    "unresolved": []
+  },
+  "tables": [
+    {
+      "tableau_datasource": "federated.1",
+      "tableau_table": "Employees",
+      "pbi_table": "Employees",
+      "source_status": "exact"
+    },
+    {
+      "tableau_datasource": "",
+      "tableau_table": "Calendar",
+      "pbi_table": "Calendar",
+      "source_status": "generated"
+    }
+  ],
+  "columns": [
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "EmployeeID",
+      "pbi_table": "Employees",
+      "pbi_column": "EmployeeID",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "FirstName",
+      "pbi_table": "Employees",
+      "pbi_column": "FirstName",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "LastName",
+      "pbi_table": "Employees",
+      "pbi_column": "LastName",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "HireDate",
+      "pbi_table": "Employees",
+      "pbi_column": "HireDate",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "Department",
+      "pbi_table": "Employees",
+      "pbi_column": "Department",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "JobTitle",
+      "pbi_table": "Employees",
+      "pbi_column": "JobTitle",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "Salary",
+      "pbi_table": "Employees",
+      "pbi_column": "Salary",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "Location",
+      "pbi_table": "Employees",
+      "pbi_column": "Location",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "Age",
+      "pbi_table": "Employees",
+      "pbi_column": "Age",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "YearsOfService",
+      "pbi_table": "Employees",
+      "pbi_column": "YearsOfService",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "PerformanceRating",
+      "pbi_table": "Employees",
+      "pbi_column": "PerformanceRating",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Employees",
+      "tableau_column": "Tenure Category",
+      "pbi_table": "Employees",
+      "pbi_column": "Tenure Category",
+      "source_status": "declared",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Date",
+      "pbi_table": "Calendar",
+      "pbi_column": "Date",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Year",
+      "pbi_table": "Calendar",
+      "pbi_column": "Year",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Quarter",
+      "pbi_table": "Calendar",
+      "pbi_column": "Quarter",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Month",
+      "pbi_table": "Calendar",
+      "pbi_column": "Month",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "MonthName",
+      "pbi_table": "Calendar",
+      "pbi_column": "MonthName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "Day",
+      "pbi_table": "Calendar",
+      "pbi_column": "Day",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayOfWeek",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayOfWeek",
+      "source_status": "generated",
+      "source_kind": "physical"
+    },
+    {
+      "tableau_table": "Calendar",
+      "tableau_column": "DayName",
+      "pbi_table": "Calendar",
+      "pbi_column": "DayName",
+      "source_status": "generated",
+      "source_kind": "physical"
+    }
+  ],
+  "calculations": [
+    {
+      "tableau_calculation": "Average Salary",
+      "source_formula": "AVG([Salary])",
+      "pbi_table": "Employees",
+      "pbi_object": "Average Salary",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Employee Count",
+      "source_formula": "COUNT([EmployeeID])",
+      "pbi_table": "Employees",
+      "pbi_object": "Employee Count",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Total Compensation",
+      "source_formula": "SUM([Salary]) * 1.25",
+      "pbi_table": "Employees",
+      "pbi_object": "Total Compensation",
+      "pbi_type": "measure",
+      "source_status": "exact"
+    },
+    {
+      "tableau_calculation": "Total Compensation Formatted",
+      "source_formula": "",
+      "pbi_table": "Employees",
+      "pbi_object": "Total Compensation Formatted",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Year To Date",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Year To Date",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Previous Year",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Previous Year",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    },
+    {
+      "tableau_calculation": "Year Over Year %",
+      "source_formula": "",
+      "pbi_table": "Calendar",
+      "pbi_object": "Year Over Year %",
+      "pbi_type": "measure",
+      "source_status": "generated"
+    }
+  ],
+  "relationships": [
+    {
+      "from": "Employees[HireDate]",
+      "to": "Calendar[Date]",
+      "cardinality": "oneDirection",
+      "tableau_from": "Employees[HireDate]",
+      "tableau_to": "Calendar[Date]",
+      "source_status": "exact"
+    }
+  ],
+  "worksheets": [
+    {
+      "tableau_worksheet": "Headcount by Department",
+      "pbi_page": "Headcount by Department"
+    },
+    {
+      "tableau_worksheet": "Salary Analysis",
+      "pbi_page": "Salary Analysis"
+    },
+    {
+      "tableau_worksheet": "Hiring Trend",
+      "pbi_page": "Hiring Trend"
+    },
+    {
+      "tableau_worksheet": "Performance Matrix",
+      "pbi_page": "Performance Matrix"
+    }
+  ],
+  "filters": [],
+  "parameters": [],
+  "actions": []
+}

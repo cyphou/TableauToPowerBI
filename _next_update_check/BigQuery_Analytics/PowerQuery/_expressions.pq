@@ -1,0 +1,1 @@
+expression DataFolder = "C:\\GitHub Project\\TableauToPowerBI\\_next_update_check\\BigQuery_Analytics\\Data" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]

@@ -1,0 +1,98 @@
+{
+  "filters": 0,
+  "measures": {
+    "[Calc_AOVCompleted]": {
+      "formula_hash": "64538a393b8679ee"
+    },
+    "[Calc_CustomerTier]": {
+      "formula_hash": "cfbce5afaec235ae"
+    },
+    "[Calc_DiscountCategory]": {
+      "formula_hash": "e3c4afb22531edd1"
+    },
+    "[Calc_FullLocation]": {
+      "formula_hash": "652046a23578b94b"
+    },
+    "[Calc_GrossRevenue]": {
+      "formula_hash": "dc5ba62578890ab6"
+    },
+    "[Calc_IsMyAccount]": {
+      "formula_hash": "d856f481ff053033"
+    },
+    "[Calc_MovAvgRev]": {
+      "formula_hash": "13984444815c6078"
+    },
+    "[Calc_NetRevenue]": {
+      "formula_hash": "ec66f47ce13c7489"
+    },
+    "[Calc_ProfitMargin]": {
+      "formula_hash": "46bf3f5c6a5daa18"
+    },
+    "[Calc_Profit]": {
+      "formula_hash": "600269c231e9f2ca"
+    },
+    "[Calc_RegionalChannelRev]": {
+      "formula_hash": "93d06b5fe8d1f680"
+    },
+    "[Calc_RevExclCategory]": {
+      "formula_hash": "1839ccb8366bdf93"
+    },
+    "[Calc_RevPerCustomer]": {
+      "formula_hash": "20b9e535da672f88"
+    },
+    "[Calc_RevStdDev]": {
+      "formula_hash": "b83c00a6b66512b5"
+    },
+    "[Calc_RevenueRank]": {
+      "formula_hash": "5e285a947a2d353b"
+    },
+    "[Calc_RunTotal]": {
+      "formula_hash": "1bde43b561959d53"
+    },
+    "[Calc_SafeDiscount]": {
+      "formula_hash": "4b198d8e0d891b99"
+    },
+    "[Calc_SegmentLabel]": {
+      "formula_hash": "c9e9dfe3d3d7e010"
+    },
+    "[Calc_TenureDays]": {
+      "formula_hash": "1a3ffc03059c9eff"
+    },
+    "[Calc_TotalDiscount]": {
+      "formula_hash": "7bbbefbb1927ecf5"
+    },
+    "[Calc_UniqueCustomers]": {
+      "formula_hash": "061a8dfb1badb104"
+    },
+    "[Calc_YTDRevenue]": {
+      "formula_hash": "978951e9fada01ae"
+    }
+  },
+  "pages": {
+    "Customer Analysis": {
+      "field_count": 4
+    },
+    "Executive KPIs": {
+      "field_count": 5
+    },
+    "Profit Trend": {
+      "field_count": 3
+    },
+    "Revenue by Region": {
+      "field_count": 4
+    },
+    "Sales Map": {
+      "field_count": 2
+    }
+  },
+  "relationships": 1,
+  "tables": {
+    "Customers": {
+      "column_count": 11
+    },
+    "Orders": {
+      "column_count": 13
+    }
+  },
+  "version": "1.0"
+}
