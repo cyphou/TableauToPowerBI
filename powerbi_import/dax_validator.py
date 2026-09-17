@@ -11,12 +11,20 @@ from typing import List
 __all__ = ['validate_dax_expression', 'DaxExpressionValidator']
 
 
+#: Canonical set of Tableau function names that must never survive into DAX.
+#: Every leak detector derives from this so the preceptor cannot approve an
+#: expression the validator would reject. Tableau's scalar DATEADD is handled
+#: separately because DAX has a legitimate DATEADD of its own.
+TABLEAU_LEAK_FUNCTIONS = frozenset({
+    'ATTR', 'COUNTD', 'DATEPART', 'DATETRUNC', 'IFNULL', 'ISNULL',
+    'LOOKUP', 'PREVIOUS_VALUE', 'ZN',
+    'RANK_DENSE', 'RANK_MODIFIED', 'RANK_PERCENTILE', 'RANK_UNIQUE',
+    'RUNNING_AVG', 'RUNNING_COUNT', 'RUNNING_MAX', 'RUNNING_MIN', 'RUNNING_SUM',
+    'WINDOW_AVG', 'WINDOW_COUNT', 'WINDOW_MAX', 'WINDOW_MIN', 'WINDOW_SUM',
+})
+
 _TABLEAU_FUNC_LEAK = re.compile(
-    r'\b(DATETRUNC|DATEPART|IFNULL|ISNULL|COUNTD'
-    r'|WINDOW_SUM|WINDOW_AVG|WINDOW_MAX|WINDOW_MIN|WINDOW_COUNT'
-    r'|RUNNING_SUM|RUNNING_AVG|RUNNING_COUNT|RUNNING_MAX|RUNNING_MIN'
-    r'|RANK_UNIQUE|RANK_DENSE|RANK_MODIFIED|RANK_PERCENTILE'
-    r'|LOOKUP|PREVIOUS_VALUE)\b',
+    r'\b(' + '|'.join(sorted(TABLEAU_LEAK_FUNCTIONS)) + r')\b',
     re.IGNORECASE,
 )
 

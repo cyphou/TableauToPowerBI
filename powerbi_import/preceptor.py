@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Balance checking is span-aware there: parens inside "strings", 'table quotes'
 # and [bracketed identifiers] are literal, not grouping.
-from powerbi_import.dax_validator import _check_balanced
+from powerbi_import.dax_validator import TABLEAU_LEAK_FUNCTIONS, _check_balanced
 
 logger = logging.getLogger(__name__)
 
@@ -48,19 +48,17 @@ MIN_PASS_SCORE = 4.0   # Minimum average to approve (out of 5)
 MAX_CYCLES = 3          # Default maximum review cycles before escalation
 SSIM_THRESHOLD = 0.85   # Minimum SSIM to consider a visual pair "equivalent"
 
-# Tableau functions that must NOT appear in DAX output
+# Tableau functions that must NOT appear in DAX output. Derived from the
+# canonical registry so this review cannot approve an expression that
+# dax_validator would reject.
 _TABLEAU_LEAK_RE = [
-    re.compile(r'\bCOUNTD\s*\(', re.IGNORECASE),
-    re.compile(r'\bZN\s*\(', re.IGNORECASE),
-    re.compile(r'\bIFNULL\s*\(', re.IGNORECASE),
-    re.compile(r'\bATTR\s*\(', re.IGNORECASE),
-    re.compile(r'\bDATETRUNC\s*\(', re.IGNORECASE),
-    re.compile(r'\bDATEPART\s*\(', re.IGNORECASE),
+    re.compile(r'\b' + name + r'\s*\(', re.IGNORECASE)
+    for name in sorted(TABLEAU_LEAK_FUNCTIONS)
+] + [
     # DAX has its own DATEADD(<dates>, <n>, <interval>) and the converter emits
     # it deliberately. Only Tableau's scalar form takes a quoted date-part as
     # its first argument, so match that shape instead of the bare name.
     re.compile(r'\bDATEADD\s*\(\s*[\'"]', re.IGNORECASE),
-    re.compile(r'\bISNULL\s*\(', re.IGNORECASE),
 ]
 
 # Unbalanced M if/then/else detection
