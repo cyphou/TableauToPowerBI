@@ -54,6 +54,25 @@ class TestFilterModeClassification(unittest.TestCase):
         self.assertEqual(filters[0]['filter_mode'], 'categorical')
         self.assertEqual(filters[0]['values'], ['A', 'B'])
 
+    def test_owning_worksheet_is_recorded(self):
+        """The flat scan used to drop the owner, so the quality report counted
+        every filter in the corpus as having no parent."""
+        filters = self._extract(
+            '<worksheet name="Sales Overview">'
+            '<filter column="[Category]" type="categorical"/></worksheet>')
+        self.assertEqual(filters[0]['worksheet'], 'Sales Overview')
+
+    def test_filter_outside_a_worksheet_has_no_owner(self):
+        filters = self._extract('<filter column="[Category]" type="categorical"/>')
+        self.assertEqual(filters[0]['worksheet'], '')
+
+    def test_owner_does_not_change_the_flat_count(self):
+        filters = self._extract(
+            '<worksheet name="A"><filter column="[X]"/></worksheet>'
+            '<filter column="[Y]"/>')
+        self.assertEqual(len(filters), 2)
+        self.assertEqual([f['worksheet'] for f in filters], ['A', ''])
+
     def test_range_min_max(self):
         filters = self._extract(
             '<filter column="[Amount]" type="range" min="10" max="100" />')

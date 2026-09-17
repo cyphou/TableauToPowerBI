@@ -43,5 +43,47 @@ class TestSourceInventory(unittest.TestCase):
         self.assertTrue(inventory["objects"][0]["orphan"])
 
 
+class TestParentAttribution(unittest.TestCase):
+    """Extractors name the owner per type; reading only the generic names
+    reported every action and filter in the corpus as an orphan."""
+
+    def test_action_source_worksheets_counts_as_a_parent(self):
+        inventory = build_source_inventory({
+            "actions": [{"name": "Region Filter", "source_worksheets": ["Revenue by Region"]}]
+        })
+
+        self.assertEqual(inventory["orphan_count"], 0)
+        self.assertEqual(inventory["objects"][0]["parent"], "Revenue by Region")
+
+    def test_action_without_any_source_stays_an_orphan(self):
+        inventory = build_source_inventory({
+            "actions": [{"name": "Company Website", "source_worksheets": []}]
+        })
+
+        self.assertEqual(inventory["orphan_count"], 1)
+
+    def test_filter_worksheet_counts_as_a_parent(self):
+        inventory = build_source_inventory({
+            "filters": [{"field": "Region", "worksheet": "Sales Overview"}]
+        })
+
+        self.assertEqual(inventory["orphan_count"], 0)
+        self.assertEqual(inventory["objects"][0]["parent"], "Sales Overview")
+
+    def test_empty_list_is_not_mistaken_for_a_parent(self):
+        inventory = build_source_inventory({
+            "actions": [{"name": "A", "source_worksheets": [], "target_worksheets": [""]}]
+        })
+
+        self.assertIsNone(inventory["objects"][0]["parent"])
+
+    def test_first_named_owner_wins_for_multi_source_actions(self):
+        inventory = build_source_inventory({
+            "actions": [{"name": "A", "source_worksheets": ["", "Sheet B"]}]
+        })
+
+        self.assertEqual(inventory["objects"][0]["parent"], "Sheet B")
+
+
 if __name__ == "__main__":
     unittest.main()

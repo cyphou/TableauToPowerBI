@@ -37,7 +37,22 @@ OBJECT_TYPES = (
 
 
 _NAME_KEYS = ("name", "caption", "title", "id", "key")
-_PARENT_KEYS = ("parent", "parent_id", "dashboard", "worksheet", "datasource")
+#: Extractors name the owning object differently per type — actions carry
+#: `source_worksheets`, filters carry `worksheet`. Reading only the generic
+#: names reported every action in the corpus as an orphan.
+_PARENT_KEYS = ("parent", "parent_id", "dashboard", "worksheet", "datasource",
+                "source_worksheets", "source_worksheet", "sheet")
+
+
+def _parent_value(item_dict: Dict[str, Any]) -> Any:
+    """First non-empty parent reference, unwrapping single-owner lists."""
+    for key in _PARENT_KEYS:
+        value = item_dict.get(key)
+        if isinstance(value, (list, tuple)):
+            value = next((v for v in value if v not in (None, "")), None)
+        if value not in (None, ""):
+            return str(value)
+    return None
 
 
 def build_source_inventory(extracted: Dict[str, Any]) -> Dict[str, Any]:
@@ -79,7 +94,7 @@ def _iter_items(value: Any) -> Iterable[Any]:
 def _inventory_row(object_type: str, item: Any, index: int) -> Dict[str, Any]:
     item_dict = item if isinstance(item, dict) else {"value": item}
     name = next((str(item_dict[key]) for key in _NAME_KEYS if item_dict.get(key) not in (None, "")), f"item-{index}")
-    parent = next((str(item_dict[key]) for key in _PARENT_KEYS if item_dict.get(key) not in (None, "")), None)
+    parent = _parent_value(item_dict)
     source_location = _source_location(item_dict)
     stable_input = json.dumps(
         {"type": object_type, "name": name, "parent": parent, "source": source_location},

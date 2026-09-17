@@ -751,11 +751,23 @@ class TableauExtractor:
         """
         
         filters = []
-        
+
+        # Filters are collected in one flat pass below; pre-map each element to
+        # its owning worksheet so the record can name a parent without changing
+        # that pass's order or count.
+        owner_by_element = {}
+        for worksheet in self._findall_root_cached(root, './/worksheet'):
+            ws_name = worksheet.get('name', '')
+            if not ws_name:
+                continue
+            for owned in worksheet.findall('.//filter'):
+                owner_by_element.setdefault(id(owned), ws_name)
+
         for filt in self._findall_root_cached(root, './/filter'):
             filter_data = {
                 'field': filt.get('column', ''),
                 'type': filt.get('type', ''),
+                'worksheet': owner_by_element.get(id(filt), ''),
                 'values': [v.text for v in filt.findall('.//value') if v.text is not None],
             }
 
