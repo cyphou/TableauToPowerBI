@@ -26,16 +26,11 @@ import re
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Tuple
 
-try:
-    from powerbi_import.dax_validator import validate_dax_expression
-except Exception:  # noqa: BLE001
-    def validate_dax_expression(expr):  # type: ignore
-        return []
-try:
-    from powerbi_import.m_validator import validate_m_query
-except Exception:  # noqa: BLE001
-    def validate_m_query(text):  # type: ignore
-        return []
+# In-package, stdlib-only validators. A failed import is a broken install, not a
+# missing optional dependency: swallowing it would make every DAX/M expression
+# look valid and let this gate declare an unopenable project openable.
+from powerbi_import.dax_validator import validate_dax_expression
+from powerbi_import.m_validator import validate_m_query
 
 # TMDL partition of type ``m`` and its ``source =`` block (M lines are indented
 # with exactly 4 tabs by the generator; see tmdl_generator._write_partition).

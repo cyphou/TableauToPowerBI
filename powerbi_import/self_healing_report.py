@@ -1162,6 +1162,9 @@ def _heal_invalid_visualtype(state, recovery=None) -> int:
             resolve_visual_type,
         )
     except ImportError:
+        # Resolved via sys.path rather than the package, so surface the miss
+        # instead of reporting "0 repairs" as if the healer had run.
+        logger.error("visual_generator unavailable; invalid-visual-type healing skipped")
         return 0
 
     # Build the set of valid PBI visual types from both maps + a few

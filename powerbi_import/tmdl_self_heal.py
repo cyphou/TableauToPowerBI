@@ -36,10 +36,9 @@ def _validate_m_partitions(model, recovery=None):
         int: total count of M partitions that produced at least one
         validation issue.
     """
-    try:
-        from powerbi_import.m_validator import validate_m_query
-    except Exception:
-        return 0
+    # In-package, stdlib-only import: a failure is a broken install. Returning 0
+    # here would silently report "no M problems" and disable the gate.
+    from powerbi_import.m_validator import validate_m_query
 
     # Best-effort telemetry hook — never block on telemetry errors.
     telemetry = None

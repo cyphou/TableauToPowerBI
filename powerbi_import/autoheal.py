@@ -41,17 +41,12 @@ from powerbi_import.m_healing import heal_m
 from powerbi_import.visual_healing import heal_visual
 from powerbi_import.openability import extract_m_partitions as _extract_m_partitions
 
-# Validators (issue lists; empty == valid)
-try:
-    from powerbi_import.dax_validator import validate_dax_expression
-except Exception:  # noqa: BLE001
-    def validate_dax_expression(expr):  # type: ignore
-        return []
-try:
-    from powerbi_import.m_validator import validate_m_query
-except Exception:  # noqa: BLE001
-    def validate_m_query(expr):  # type: ignore
-        return []
+# Validators (issue lists; empty == valid). These are in-package and stdlib-only,
+# so a failed import is a broken install, not a missing optional dependency:
+# swallowing it here would make every expression look valid and silently
+# disable healing.
+from powerbi_import.dax_validator import validate_dax_expression
+from powerbi_import.m_validator import validate_m_query
 
 # TMDL measure assignment: `measure 'Name' = <expr>` (single-line; the generator
 # condenses multi-line DAX). Captures the prefix and the expression separately.
