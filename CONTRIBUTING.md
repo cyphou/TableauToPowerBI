@@ -42,7 +42,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a detailed architecture ove
 ```
 tableau_export/   → Extraction layer (Tableau XML → JSON)
 powerbi_import/   → Generation layer (JSON → .pbip project)
-tests/            → Unit and integration tests (7,072 tests across 141+ files)
+tests/            → Unit and integration tests (9,875 tests across 266 files)
 docs/             → Documentation
 examples/         → Sample Tableau workbooks
 artifacts/        → Migration output
@@ -112,7 +112,7 @@ python -m pytest tests/test_dax_converter.py::TestDaxConverter::test_isnull_to_i
 | `test_non_regression.py` | Per-sample project regression |
 | `test_integration.py` | End-to-end pipeline tests |
 | `test_assessment.py` | Pre-migration assessment |
-| ... | 141 test files total — see [README](README.md) for full list |
+| ... | 266 test files total — see [README](README.md) for full list |
 
 ### Writing Tests
 
@@ -120,6 +120,22 @@ python -m pytest tests/test_dax_converter.py::TestDaxConverter::test_isnull_to_i
 - Tests write to `tempfile.mkdtemp()` and clean up in `tearDown`
 - No mocking of file I/O — tests use real temp directories
 - Each test should be independent and self-contained
+
+### Committed Fixtures
+
+Golden snapshots under `tests/golden/` and `tests/baselines/` are addressed by
+a fixture id, never by workbook name — report and workbook names are only
+permitted under `examples/`. The id is a hash of the workbook stem, so adding a
+workbook never renumbers the others and invalidates their snapshots.
+
+- Resolve ids with `tests/fixture_corpus.py` (`fixture_id`, `golden_path`,
+  `baseline_path`, `describe`); call `describe(fid)` in assertion messages so a
+  drift report still names a real file.
+- The curated corpus lives in `examples/tableau_samples/fixture_corpus.json`,
+  where names belong. Excluded workbooks must carry a reason.
+- Regenerate with `python scripts/generate_pixel_fixtures.py`, and only after
+  confirming the change is intentional.
+- `tests/test_fixture_naming.py` fails the build if a workbook name reappears.
 
 ## Contribution Workflow
 

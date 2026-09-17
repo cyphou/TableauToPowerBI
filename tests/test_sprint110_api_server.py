@@ -24,13 +24,6 @@ from api_server import (
 from http.server import HTTPServer
 
 
-def _find_free_port():
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
-
-
 class TestServerBindingSecurity(unittest.TestCase):
     def test_non_loopback_requires_api_key(self):
         with self.assertRaisesRegex(ValueError, 'api_key is required'):
@@ -42,12 +35,27 @@ class _ServerTestBase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.port = _find_free_port()
+        # Bind to port 0 and read back what the OS assigned: picking a free port
+        # first and binding after leaves a window where another test class in
+        # the same run can take it.
+        cls.server = HTTPServer(('127.0.0.1', 0), MigrationHandler)
+        cls.port = cls.server.server_address[1]
         cls.base_url = f'http://127.0.0.1:{cls.port}'
-        cls.server = HTTPServer(('127.0.0.1', cls.port), MigrationHandler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
-        time.sleep(0.1)  # Let server start
+        cls._wait_until_listening()
+
+    @classmethod
+    def _wait_until_listening(cls, timeout=5.0):
+        import socket
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(('127.0.0.1', cls.port), 0.25):
+                    return
+            except OSError:
+                time.sleep(0.02)
+        raise RuntimeError(f'test server never listened on port {cls.port}')
 
     @classmethod
     def tearDownClass(cls):

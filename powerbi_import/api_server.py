@@ -400,6 +400,24 @@ class MigrationHandler(BaseHTTPRequestHandler):
     def _send_error(self, status, message):
         self._send_json({'error': message}, status=status)
 
+    def _drain_request_body(self):
+        """Discard an unread request body before replying.
+
+        Closing the connection while the client's body is still unread makes the
+        stack send RST, which discards the response we already wrote — the client
+        sees a reset instead of our status code. Only call this on paths that
+        never read the body.
+        """
+        try:
+            remaining = int(self.headers.get('Content-Length', 0) or 0)
+        except (TypeError, ValueError):
+            return
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+
     def _get_path(self):
         parsed = urlparse(self.path)
         return parsed.path.rstrip('/')
@@ -831,6 +849,7 @@ class MigrationHandler(BaseHTTPRequestHandler):
             }, status=202)
             return
 
+        self._drain_request_body()
         self._send_error(404, 'Not found')
 
     def log_message(self, format, *args):

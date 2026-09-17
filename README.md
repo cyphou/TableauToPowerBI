@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | 🏷️ **Package** | 48.0.0 · roadmap track v48 |
-| ✅ **Tests** | 55 evidence-quality tests passed · 275 PBIP/openability tests passed · 9,500+ repository tests available |
+| ✅ **Tests** | 55 evidence-quality tests passed · 275 PBIP/openability tests passed · 9,875 repository tests available |
 | 🐍 **Python** | 3.12+ · zero external dependencies |
 | 📜 **License** | MIT |
 
@@ -700,7 +700,7 @@ TableauToPowerBI/
 │   ├── schema_drift.py                        #   Schema drift detection (v28)
 │   └── deploy/                                #   Deploy to PBI Service / Fabric
 ├── Dockerfile                                 # Docker image for API server
-├── tests/                                     # 9,500+ tests in latest full run
+├── tests/                                     # 9,875 tests in latest full run
 ├── docs/                                      # 18 documentation files
 └── examples/                                  # Sample Tableau workbooks
 ```
@@ -902,7 +902,7 @@ python -m pytest tests/test_openability.py -v         # Static PBIP openability 
 
 ```mermaid
 flowchart LR
-    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\n9,500+ tests\nPy 3.12–3.14"]
+    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\n9,875 tests\nPy 3.12–3.14"]
     T --> V["✅ Validate\nStrict .twbx\nmigrations"]
     V --> S["📦 Staging\nFabric deploy"]
     S --> P["🚀 Production\nManual approval"]

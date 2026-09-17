@@ -52,7 +52,8 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
   - `global_assessment.py`: Global cross-workbook assessment — pairwise merge scoring, BFS clustering, HTML heatmap report
   - `merge_config.py`: Merge configuration — per-table merge rules, conflict resolution settings
   - `merge_report_html.py`: Merge assessment HTML report generator
-  - `html_template.py`: Shared HTML report template — centralized CSS/JS for all 9 HTML generators. Fluent/PBI design with CSS custom properties, gradient headers, stat cards, collapsible sections, sortable tables, badges, fidelity bars, charts, tabs, flow diagrams. Reusable components: `html_open/close`, `stat_grid/card`, `section_open/close`, `badge`, `fidelity_bar`, `donut_chart`, `bar_chart`, `data_table`, `tab_bar/content`, `heatmap_table`, `flow_diagram`, `cmd_box`, `card`, `esc`
+  - `html_template.py`: Shared HTML report template — centralized CSS/JS for all 9 HTML generators. Fluent/PBI design with CSS custom properties, gradient headers, stat cards, collapsible sections, sortable tables, badges, fidelity bars, charts, tabs, flow diagrams. Reusable components: `html_open/close`, `stat_grid/card`, `section_open/close`, `badge`, `fidelity_bar`, `donut_chart`, `bar_chart`, `data_table`, `tab_bar/content`, `heatmap_table`, `flow_diagram`, `cmd_box`, `card`, `esc`. `badge()` infers its colour from `quality_grades`.
+  - `quality_grades.py`: Canonical grade vocabulary shared by every scoring model — `normalize(value, key=None)` → pass/warn/fail/neutral and `color(value, default, key=None)`. Translates PASS/WARN/FAIL, GREEN/YELLOW/RED, FULL/PARTIAL, exact/healed/approximated/unsupported and approved/coaching/escalated_*. Context-dependent tokens (`HIGH`, `medium`) resolve only via `key` (`grade`/`confidence` → good, `severity` → bad); descriptive categories such as `native` or `generated` stay unmapped so a category is never coloured as a verdict.
   - `telemetry.py`: Migration telemetry collector (v2) — timing, counts, version, `record_event()` for granular per-workbook/visual/measure event logging, opt-in reporting
   - `telemetry_dashboard.py`: Interactive observability dashboard — 4-tab layout (Overview/Portfolio/Bottlenecks/Telemetry), JS interactivity (sort/search/date filter), JSONL telemetry, portfolio progress tracker, bottleneck analyzer
   - `notebook_api.py`: Interactive Jupyter migration API — `MigrationSession` class with load/assess/preview_dax/preview_m/preview_visuals/edit_dax/override_visual_type/configure/generate/validate/deploy, notebook .ipynb generation
@@ -125,7 +126,7 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
     - `credential_vault.py`: Credential vault — secure credential storage and retrieval for deployment authentication
   - `config/`: Configuration subpackage
     - `migration_config.py`: Migration configuration — typed config objects for migration settings and feature flags
-  - **tests/**: Unit and integration tests (9,500+ tests in latest full run)
+  - **tests/**: Unit and integration tests (9,875 tests across 266 files in latest full run)
 - **docs/**: FAQ, PBI project guide, mapping reference, **ROADMAP.md** (v45/v46 release roadmap and agent assignments)
 - **.github/workflows/ci.yml**: CI/CD pipeline (lint → test → validate → deploy)
 - **.github/workflows/publish.yml**: PyPI auto-publish workflow (tag-triggered, OIDC trusted publisher)
@@ -488,7 +489,7 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 | **@semantic** | TMDL model, relationships, Calendar, RLS, hierarchies, parameters | `tmdl_generator.py` (structural), `fabric_semantic_model_generator.py` |
 | **@visual** | PBIR v4.0, visual containers, slicers, filters, bookmarks, themes | `pbip_generator.py`, `visual_generator.py` |
 | **@healing** | Self-repair subsystem, openability preflight, recovery ledger, rollback gate | `healing.py`, `healing_core.py`, `autoheal.py`, `dax_healing.py`, `m_healing.py`, `visual_healing.py`, `openability.py`, `self_healing_v3.py`, `self_healing_report.py`, `rollback_engine.py` |
-| **@evidence** | Quality reports, evidence packages, parity scoring, diff/coverage tooling, lineage | `migration_quality.py`, `evidence_*.py`, `parity_registry.py`, `*_diff.py`, `html_template.py`, `qa_suite.py` |
+| **@evidence** | Quality reports, evidence packages, parity scoring, diff/coverage tooling, lineage | `migration_quality.py`, `evidence_*.py`, `parity_registry.py`, `*_diff.py`, `html_template.py`, `quality_grades.py`, `qa_suite.py` |
 | **@fabric** | Fabric-native artifacts (Lakehouse, Dataflow Gen2, Notebook, DirectLake, Pipeline) | `fabric_*.py`, `lakehouse_generator.py`, `dataflow_generator.py`, `notebook_generator.py`, `pipeline_generator.py` |
 | **@ai** | MCP server, LLM gateway, conversational Q&A, remediation, plugin SDK, marketplace | `mcp_server.py`, `llm_gateway.py`, `llm_client.py`, `conversational.py`, `remediation.py`, `plugin_sdk.py`, `marketplace.py` |
 | **@assessor** | Readiness scoring, strategy, diff reports, prep lineage | `assessment.py`, `server_assessment.py`, `strategy_advisor.py`, `schema_drift.py`, `prep_lineage.py`, `prep_lineage_report.py` |
@@ -496,7 +497,7 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 | **@deployer** | Fabric/PBI deployment, auth, gateway | `deploy/*.py`, `gateway_config.py`, `telemetry.py` |
 | **@reviewer** | Artifact quality review, preceptorship loop, coaching feedback | `preceptor.py` (CLI: `--preceptor`) |
 | **@web-designer** | End-user UI/UX, Tkinter light UI, layout/presentation | `web/light_ui.py` |
-| **@tester** | Tests (9,500+ latest collection), coverage, public fixtures, regression | `tests/*.py` |
+| **@tester** | Tests (9,875 across 266 files), coverage, public fixtures, regression | `tests/*.py` |
 
 ### Rules
 
