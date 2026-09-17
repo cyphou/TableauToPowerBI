@@ -27,8 +27,8 @@ from powerbi_import.quality_grades import (
 )
 
 
-def _badge_color(value):
-    rendered = MigrationQualityReport._fmt_scalar(value)
+def _badge_color(value, key=''):
+    rendered = MigrationQualityReport._fmt_scalar(value, key)
     match = re.search(r'badge badge-(\w+)', rendered)
     return match.group(1) if match else None
 
@@ -64,10 +64,34 @@ class TestNormalize(unittest.TestCase):
         self.assertEqual(normalize('  approved  '), PASS)
         self.assertEqual(normalize('Full'), PASS)
 
-    def test_ambiguous_tokens_are_not_guessed(self):
+    def test_ambiguous_tokens_are_not_guessed_without_a_key(self):
         """HIGH means good for parity but severe for a severity."""
         self.assertIsNone(normalize('HIGH'))
         self.assertIsNone(normalize('medium'))
+
+    def test_key_disambiguates_the_same_token(self):
+        self.assertEqual(normalize('HIGH', key='grade'), PASS)
+        self.assertEqual(normalize('HIGH', key='severity'), FAIL)
+        self.assertEqual(normalize('HIGH', key='confidence'), PASS)
+
+    def test_severity_scale(self):
+        self.assertEqual(normalize('critical', key='severity'), FAIL)
+        self.assertEqual(normalize('medium', key='severity'), WARN)
+        self.assertEqual(normalize('info', key='severity'), NEUTRAL)
+
+    def test_parity_feature_statuses(self):
+        self.assertEqual(normalize('exact'), PASS)
+        self.assertEqual(normalize('healed'), PASS)
+        self.assertEqual(normalize('approximated'), WARN)
+        self.assertEqual(normalize('unsupported'), FAIL)
+
+    def test_descriptive_categories_are_not_treated_as_verdicts(self):
+        """`status` also carries visual-mapping kinds and provenance markers."""
+        for value in ('native', 'generated', 'custom_visual', 'approximation',
+                      'static_evidence', 'static_diagnostics', 'scanned',
+                      'recommended', 'not_present', 'available'):
+            with self.subTest(value=value):
+                self.assertIsNone(normalize(value, key='status'))
 
     def test_unknown_value_is_unmapped(self):
         self.assertIsNone(normalize('clusteredBarChart'))
@@ -101,6 +125,15 @@ class TestReportRendersEveryDialect(unittest.TestCase):
 
     def test_non_status_values_stay_plain_text(self):
         self.assertIsNone(_badge_color('clusteredBarChart'))
+
+    def test_grade_and_severity_render_the_same_token_differently(self):
+        self.assertEqual(_badge_color('HIGH', 'grade'), 'green')
+        self.assertEqual(_badge_color('HIGH', 'severity'), 'red')
+
+    def test_visual_mapping_kinds_are_not_coloured_as_verdicts(self):
+        for value in ('native', 'generated', 'custom_visual', 'approximation'):
+            with self.subTest(value=value):
+                self.assertIsNone(_badge_color(value, 'status'))
 
 
 class TestGradesProducedByTheScoringModels(unittest.TestCase):

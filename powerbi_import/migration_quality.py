@@ -223,14 +223,14 @@ class MigrationQualityReport:
         return "<ul>" + "".join(f"<li>{esc(item)}</li>" for item in items) + "</ul>"
 
     @staticmethod
-    def _fmt_scalar(v: Any) -> str:
+    def _fmt_scalar(v: Any, key: str = "") -> str:
         """Render a leaf value as a badge for status-like values, else text."""
         if isinstance(v, bool):
             return badge("PASS" if v else "FAIL")
         if v is None or v == "":
             return badge("n/a", "gray")
         s = str(v)
-        tone = grade_color(s)
+        tone = grade_color(s, key=key)
         return badge(s, tone) if tone else esc(s)
 
     @classmethod
@@ -240,7 +240,7 @@ class MigrationQualityReport:
             for k in it.keys():
                 if k not in keys:
                     keys.append(k)
-        rows = [[cls._fmt_scalar(it.get(k, "")) for k in keys] for it in items]
+        rows = [[cls._fmt_scalar(it.get(k, ""), k) for k in keys] for it in items]
         return data_table([str(k) for k in keys], rows, detail=True)
 
     @classmethod
@@ -261,7 +261,7 @@ class MigrationQualityReport:
                     joined = ", ".join(str(i) for i in v) if v else "\u2014"
                     rows.append([esc(str(k)), esc(joined)])
                 else:
-                    rows.append([esc(str(k)), cls._fmt_scalar(v)])
+                    rows.append([esc(str(k)), cls._fmt_scalar(v, str(k))])
             table = data_table(["Field", "Value"], rows, detail=True) if rows else ""
             return table + "".join(blocks)
         if isinstance(obj, list):

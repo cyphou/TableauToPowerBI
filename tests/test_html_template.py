@@ -321,6 +321,26 @@ class TestBadge(unittest.TestCase):
         html = badge('UNKNOWN')
         self.assertIn('badge-gray', html)
 
+    def test_badge_colours_every_parity_status(self):
+        """badge() knew APPROXIMATE but parity emits APPROXIMATED, so two of
+        the four statuses used to render as neutral gray in every report."""
+        for value, expected in (('exact', 'green'), ('healed', 'green'),
+                                ('approximated', 'yellow'),
+                                ('unsupported', 'red')):
+            with self.subTest(value=value):
+                self.assertIn(f'badge-{expected}', badge(value))
+
+    def test_badge_colours_preceptor_statuses(self):
+        self.assertIn('badge-green', badge('approved'))
+        self.assertIn('badge-yellow', badge('coaching'))
+        self.assertIn('badge-red', badge('escalated_block'))
+
+    def test_badge_legacy_approximate_spelling_still_yellow(self):
+        self.assertIn('badge-yellow', badge('APPROXIMATE'))
+
+    def test_badge_explicit_level_overrides_inference(self):
+        self.assertIn('badge-blue', badge('FAIL', 'blue'))
+
     def test_badge_escapes_content(self):
         html = badge('<script>')
         self.assertNotIn('<script>', html)

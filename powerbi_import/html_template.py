@@ -19,6 +19,8 @@ from __future__ import annotations
 import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from powerbi_import.quality_grades import color as _grade_color
+
 # ═══════════════════════════════════════════════════════════════════════
 #  Design tokens — Fluent / Power BI design language
 # ═══════════════════════════════════════════════════════════════════════
@@ -982,24 +984,27 @@ def card(content: str = "", title: str = "") -> str:
     return f'<div class="card">{h}\n{content}\n</div>'
 
 
+#: Tokens that carry presentation meaning rather than a verdict, plus the
+#: legacy "APPROXIMATE" spelling kept for reports that still emit it.
+_PRESENTATION_BADGE = {"INFO": "blue", "APPROXIMATE": "yellow"}
+
+
 def badge(score: str, level: str = "") -> str:
-    """Return a colored badge for GREEN/YELLOW/RED/pass/warn/fail/info scores.
+    """Return a colored badge for a score or status value.
 
     Args:
         score: Display text for the badge.
         level: Optional explicit color level (green/yellow/red/blue/gray).
-               If omitted, inferred from *score*.
+               If omitted, resolved through the shared grade vocabulary so
+               every report colours the same verdict the same way.
     """
-    mapping = {
-        "GREEN": "green", "YELLOW": "yellow", "RED": "red",
-        "PASS": "green", "WARN": "yellow", "FAIL": "red",
-        "INFO": "blue", "EXACT": "green", "APPROXIMATE": "yellow",
-        "UNSUPPORTED": "red",
-    }
     if level:
         cls = level
     else:
-        cls = mapping.get(score.upper() if hasattr(score, 'upper') else score, "gray")
+        text = str(score)
+        cls = (_PRESENTATION_BADGE.get(text.upper())
+               or _grade_color(text)
+               or "gray")
     return f'<span class="badge badge-{cls}">{esc(str(score))}</span>'
 
 
