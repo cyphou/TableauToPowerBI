@@ -183,6 +183,8 @@ python migrate.py path/to/workbook.twbx --output-format fabric
 python migrate.py path/to/workbook.twbx --output-format fabric --output-dir /tmp/fabric_output
 python migrate.py path/to/workbook.twbx --check-drift /path/to/snapshot_dir
 python migrate.py path/to/workbook.twbx --qa
+python migrate.py path/to/workbook.twbx --preceptor
+python migrate.py path/to/workbook.twbx --preceptor --preceptor-block
 python migrate.py path/to/workbook.twbx --no-optimize-dax --no-compare
 python migrate.py --prep-lineage examples/prep_portfolio/ flow1.tfl flow2.tfl
 python migrate.py --batch examples/prep_portfolio/ --output-dir /tmp/prep_output
@@ -492,7 +494,7 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 | **@assessor** | Readiness scoring, strategy, diff reports, prep lineage | `assessment.py`, `server_assessment.py`, `strategy_advisor.py`, `schema_drift.py`, `prep_lineage.py`, `prep_lineage_report.py` |
 | **@merger** | Shared semantic model, fingerprint matching | `shared_model.py`, `merge_config.py` |
 | **@deployer** | Fabric/PBI deployment, auth, gateway | `deploy/*.py`, `gateway_config.py`, `telemetry.py` |
-| **@reviewer** | Artifact quality review, preceptorship loop, coaching feedback | `preceptor.py` |
+| **@reviewer** | Artifact quality review, preceptorship loop, coaching feedback | `preceptor.py` (CLI: `--preceptor`) |
 | **@web-designer** | End-user UI/UX, Tkinter light UI, layout/presentation | `web/light_ui.py` |
 | **@tester** | Tests (9,500+ latest collection), coverage, public fixtures, regression | `tests/*.py` |
 

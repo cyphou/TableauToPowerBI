@@ -2688,6 +2688,24 @@ def _add_ai_args(parser):
     )
 
     parser.add_argument(
+        '--preceptor',
+        action='store_true',
+        default=False,
+        help='After generation, run the preceptorship review loop: score the output '
+             'on 6 dimensions (completeness, DAX correctness, M validity, TMDL '
+             'structure, PBIR fidelity, visual equivalence) and emit structured '
+             'coaching feedback for anything below the pass mark.'
+    )
+
+    parser.add_argument(
+        '--preceptor-block',
+        action='store_true',
+        default=False,
+        help='Make --preceptor a hard gate: exit with a validation failure when the '
+             'review still falls short after the final cycle (default is to warn).'
+    )
+
+    parser.add_argument(
         '--llm-autofix',
         action='store_true',
         default=False,
@@ -6195,6 +6213,47 @@ def _run_verify_open(args, source_basename):
     return _run_openability_gate(project_dir)
 
 
+def _run_preceptor(args, source_basename):
+    """Preceptorship review loop: score the generated project and coach on gaps.
+
+    Returns True when the review passed (or was skipped), False when it
+    escalated as a hard block.
+    """
+    out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    project_dir = os.path.join(out_base, source_basename)
+
+    if not os.path.isdir(project_dir):
+        print("  ⚠ Preceptor review skipped: project directory not found")
+        return True
+
+    on_escalate = 'block' if getattr(args, 'preceptor_block', False) else 'warn'
+
+    try:
+        from powerbi_import.preceptor import run_preceptor_review
+    except ImportError:
+        from preceptor import run_preceptor_review
+
+    try:
+        report = run_preceptor_review(
+            project_dir,
+            _get_extract_dir(),
+            on_escalate=on_escalate,
+            output_path=os.path.join(project_dir, 'preceptor_report.json'),
+            quiet=getattr(args, 'quiet', False),
+        )
+    except Exception as exc:
+        # A review is advisory instrumentation; never fail a migration over it.
+        print(f"  ⚠ Preceptor review error: {exc}")
+        logger.warning("Preceptor review failed: %s", exc)
+        return True
+
+    score = report.final_scorecard.average()
+    print(f"\n  Preceptor: {report.status} — score {score:.1f}/5 "
+          f"after {report.total_cycles} cycle(s)")
+
+    return report.status != report.ESCALATED_BLOCK
+
+
 def _run_qa_suite(args, source_basename):
     """Unified QA suite: validate → auto-fix → governance (warn) → comparison → QA report JSON."""
     out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
@@ -7629,6 +7688,14 @@ def _run_single_migration(args):
     # Step 3f2: Closed-loop autoheal (--autoheal flag)
     if getattr(args, 'autoheal', False) and results.get('generation') and not args.dry_run:
         _run_autoheal(args, source_basename)
+
+    # Step 3f2b: Preceptorship review loop (--preceptor flag)
+    if getattr(args, 'preceptor', False) and results.get('generation') and not args.dry_run:
+        if not _run_preceptor(args, source_basename):
+            checkpoint.mark('validation', 'failed', check='preceptor')
+            progress.fail("Preceptor review: quality below the pass mark")
+            return ExitCode.VALIDATION_FAILED
+        checkpoint.mark('validation', check='preceptor')
 
     # Step 3f3: Static openability gate (enabled by default; --no-verify-open to skip)
     if (getattr(args, 'verify_open', True)
