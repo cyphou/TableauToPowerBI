@@ -163,19 +163,17 @@ class EquivalenceTester:
         }
 
 
-class SSIMComparator:
-    """Structural Similarity Index Measure for visual comparison.
-    
-    Compares screenshot hashes and structural properties.
+class VisualStructureComparator:
+    """Compare the *structure* of two visual configurations.
+
+    This is a structural (field roles, aggregations, sorting) comparison, not
+    the image SSIM algorithm — pixel SSIM lives in ``equivalence_tester``.
     """
-    
+
     @staticmethod
-    def compute_structural_hash(visual_config: Dict) -> str:
-        """Compute hash of visual structure (field roles, aggregations, sorting).
-        
-        Ignores styling to focus on data/structure equivalence.
-        """
-        structural = {
+    def _structural_signature(visual_config: Dict) -> Dict:
+        """Return the styling-independent structure used for comparison."""
+        return {
             'fields': sorted(visual_config.get('dataRoles', {}).keys()),
             'aggregations': [
                 f.get('aggregationFunction', 'None')
@@ -183,6 +181,14 @@ class SSIMComparator:
             ],
             'sorting': visual_config.get('sorting'),
         }
+
+    @staticmethod
+    def compute_structural_hash(visual_config: Dict) -> str:
+        """Compute hash of visual structure (field roles, aggregations, sorting).
+        
+        Ignores styling to focus on data/structure equivalence.
+        """
+        structural = VisualStructureComparator._structural_signature(visual_config)
         content = json.dumps(structural, sort_keys=True)
         return hashlib.sha256(content.encode()).hexdigest()[:16]
     
@@ -193,12 +199,25 @@ class SSIMComparator:
         Returns:
             Dict with similarity score (0.0-1.0) and structural matches/mismatches
         """
-        tableau_hash = SSIMComparator.compute_structural_hash(tableau_config)
-        pbi_hash = SSIMComparator.compute_structural_hash(pbi_config)
-        
-        matches = sum(1 for a, b in zip(tableau_hash, pbi_hash) if a == b)
-        similarity = matches / len(tableau_hash) if tableau_hash else 0.0
-        
+        tableau_hash = VisualStructureComparator.compute_structural_hash(tableau_config)
+        pbi_hash = VisualStructureComparator.compute_structural_hash(pbi_config)
+
+        # Similarity is computed on the structure itself. Comparing hash
+        # characters would be meaningless: SHA-256 avalanches, so any two
+        # different configs would score ~1/16 regardless of how close they are.
+        left = VisualStructureComparator._structural_signature(tableau_config)
+        right = VisualStructureComparator._structural_signature(pbi_config)
+
+        scores = []
+        for key in ('fields', 'aggregations'):
+            a, b = set(left[key]), set(right[key])
+            if not a and not b:
+                scores.append(1.0)
+            else:
+                scores.append(len(a & b) / len(a | b))
+        scores.append(1.0 if left['sorting'] == right['sorting'] else 0.0)
+        similarity = sum(scores) / len(scores)
+
         return {
             'tableau_hash': tableau_hash,
             'pbi_hash': pbi_hash,

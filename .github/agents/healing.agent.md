@@ -25,6 +25,7 @@ You are the **Healing** agent for the Tableau to Power BI migration project. You
 - `powerbi_import/desktop_probe.py` — best-effort real Desktop launch smoke test (Windows, never raises)
 
 ### Pre/post-write repair passes
+- `powerbi_import/tmdl_self_heal.py` — stage-1 pre-write healing extracted from `tmdl_generator` (`_self_heal_model`, `_validate_m_partitions`, `_categorize_m_issue`); `tmdl_generator` re-exports these names
 - `powerbi_import/self_healing_v3.py` — TMDL healers applied before write
 - `powerbi_import/self_healing_report.py` — PBIR JSON healers applied after write
 - `powerbi_import/recovery_registry.py` — recovery record registry

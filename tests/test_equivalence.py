@@ -291,5 +291,54 @@ class TestCLIValidationFlags(unittest.TestCase):
         self.assertFalse(args.validate_data)
 
 
+class TestVisualStructureComparator(unittest.TestCase):
+    """Structural (not pixel-SSIM) visual config comparison."""
+
+    def _cfg(self, roles, aggs, sorting=None):
+        return {
+            'dataRoles': {r: {} for r in roles},
+            'fields': [{'aggregationFunction': a} for a in aggs],
+            'sorting': sorting,
+        }
+
+    def setUp(self):
+        from powerbi_import.equivalence_tester_v2 import VisualStructureComparator
+        self.cmp = VisualStructureComparator
+
+    def test_identical_configs_match_fully(self):
+        cfg = self._cfg(['Category', 'Y'], ['Sum'], 'asc')
+        result = self.cmp.compare_visual_configs(cfg, dict(cfg))
+        self.assertTrue(result['match'])
+        self.assertEqual(result['similarity'], 1.0)
+
+    def test_partial_overlap_scores_between_zero_and_one(self):
+        a = self._cfg(['Category', 'Y'], ['Sum'], 'asc')
+        b = self._cfg(['Category', 'Series'], ['Sum'], 'asc')
+        result = self.cmp.compare_visual_configs(a, b)
+        self.assertFalse(result['match'])
+        self.assertGreater(result['similarity'], 0.0)
+        self.assertLess(result['similarity'], 1.0)
+
+    def test_closer_config_scores_higher(self):
+        base = self._cfg(['Category', 'Y'], ['Sum'], 'asc')
+        near = self._cfg(['Category', 'Y'], ['Average'], 'asc')
+        far = self._cfg(['Other'], ['Average'], 'desc')
+        near_score = self.cmp.compare_visual_configs(base, near)['similarity']
+        far_score = self.cmp.compare_visual_configs(base, far)['similarity']
+        self.assertGreater(near_score, far_score)
+
+    def test_totally_different_configs_score_zero(self):
+        a = self._cfg(['Category'], ['Sum'], 'asc')
+        b = self._cfg(['Other'], ['Average'], 'desc')
+        self.assertEqual(self.cmp.compare_visual_configs(a, b)['similarity'], 0.0)
+
+    def test_hash_ignores_styling(self):
+        a = self._cfg(['Category'], ['Sum'])
+        b = self._cfg(['Category'], ['Sum'])
+        b['backgroundColor'] = '#FF0000'
+        self.assertEqual(self.cmp.compute_structural_hash(a),
+                         self.cmp.compute_structural_hash(b))
+
+
 if __name__ == '__main__':
     unittest.main()
