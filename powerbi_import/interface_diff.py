@@ -130,6 +130,22 @@ def _dashboard_worksheet_names(extracted: Dict) -> set:
     return names
 
 
+def _is_non_restrictive(f: Dict) -> bool:
+    """True when a Filters-shelf entry selects everything, so PBI needs nothing.
+
+    The shelf records an entry as soon as a field is dropped on it. Until a
+    domain is chosen it holds no values and no bounds, and its ``type`` is
+    ``"all"`` or empty depending on how the entry was created. A date part only
+    says which grain the field was dropped at, so it does not make the entry
+    restrictive on its own.
+    """
+    if f.get('type') not in ('all', '', None):
+        return False
+    return (not f.get('values')
+            and f.get('min') is None
+            and f.get('max') is None)
+
+
 def _expected_filter_count(extracted: Dict) -> int:
     """Sum per-worksheet filters for worksheets actually shown on a dashboard.
 
@@ -157,9 +173,10 @@ def _expected_filter_count(extracted: Dict) -> int:
     expected for it either.
 
     Also excludes non-restrictive filter-shelf placeholders: Tableau
-    records a filter entry for any field dragged onto the Filters shelf
-    even when its domain is left at "All values" (``type == "all"``) with
-    no explicit values/min/max. Such an entry restricts nothing, so it has
+    records a filter entry for any field dragged onto the Filters shelf even
+    when its domain restricts nothing. Those entries carry no values, no
+    min/max and no date part, and their ``type`` is either ``"all"`` or left
+    empty depending on how the shelf entry was created. Either way there is
     no PBI counterpart to check for.
     """
     worksheets = extracted.get('worksheets', [])
@@ -181,8 +198,7 @@ def _expected_filter_count(extracted: Dict) -> int:
             normalized_values = {str(value).strip().strip('"').lower() for value in values}
             if normalized_values and normalized_values <= {'true', 'false', 'vrai', 'faux'}:
                 continue
-            if (f.get('type') == 'all' and not f.get('values')
-                    and f.get('min') is None and f.get('max') is None):
+            if _is_non_restrictive(f):
                 continue
             total += 1
     return total

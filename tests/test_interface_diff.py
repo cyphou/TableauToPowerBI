@@ -109,6 +109,52 @@ class TestExpectedFilterCount(unittest.TestCase):
         }
         self.assertEqual(_expected_filter_count(extracted), 1)
 
+    def test_excludes_untyped_placeholder(self):
+        """A shelf entry created without choosing a domain has an empty type,
+        not 'all'; counting it reported a coverage gap PBI cannot close."""
+        extracted = {
+            **_dashboard(['Sales']),
+            'worksheets': [{'name': 'Sales', 'filters': [
+                {'field': 'Business Tax Rate', 'datasource': 'federated.1',
+                 'type': '', 'values': [], 'min': None, 'max': None},
+            ]}],
+        }
+        self.assertEqual(_expected_filter_count(extracted), 0)
+
+    def test_restrictive_untyped_filter_still_counts(self):
+        extracted = {
+            **_dashboard(['Sales']),
+            'worksheets': [{'name': 'Sales', 'filters': [
+                {'field': 'Year', 'datasource': 'federated.1', 'type': '',
+                 'values': [], 'min': '2001', 'max': '2012'},
+            ]}],
+        }
+        self.assertEqual(_expected_filter_count(extracted), 1)
+
+    def test_date_part_alone_does_not_make_a_placeholder_restrictive(self):
+        """Grain says how the field was dropped, not which rows survive."""
+        extracted = {
+            **_dashboard(['Sales']),
+            'worksheets': [{'name': 'Sales', 'filters': [
+                {'field': 'Year', 'datasource': 'federated.1', 'type': 'all',
+                 'values': [], 'min': None, 'max': None, 'date_part': 'yr'},
+                {'field': 'Year', 'datasource': 'federated.1', 'type': '',
+                 'values': [], 'min': None, 'max': None, 'date_part': 'yr'},
+            ]}],
+        }
+        self.assertEqual(_expected_filter_count(extracted), 0)
+
+    def test_typed_filter_without_values_still_counts(self):
+        """Only 'all' and empty are placeholder types; a real mode is a filter."""
+        extracted = {
+            **_dashboard(['Sales']),
+            'worksheets': [{'name': 'Sales', 'filters': [
+                {'field': 'Region', 'datasource': 'federated.1',
+                 'type': 'categorical', 'values': [], 'min': None, 'max': None},
+            ]}],
+        }
+        self.assertEqual(_expected_filter_count(extracted), 1)
+
     def test_excludes_boolean_column_filter_not_emitted_to_pbir(self):
         extracted = {
             **_dashboard(['Sales']),
