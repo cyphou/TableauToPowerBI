@@ -11,6 +11,7 @@ You are the **Orchestrator** agent for the Tableau to Power BI migration project
 
 ### Also owned
 - `powerbi_import/errors.py` — domain exception hierarchy (`MigrationError` and stage subclasses)
+- `powerbi_import/security_validator.py` — centralized security utilities (path validation, ZIP slip defense, XXE protection, credential redaction)
 - `powerbi_import/migration_config.py` — typed migration configuration
 - `powerbi_import/migration_planner.py` — migration planning and effort estimates
 - `powerbi_import/preflight.py` — pre-migration source compatibility checks

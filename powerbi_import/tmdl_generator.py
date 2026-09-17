@@ -91,6 +91,8 @@ from powerbi_import.tmdl_m_conversion import (  # noqa: F401
     _split_dax_args,
     _split_top_level_binop,
     _strip_m_inline_comments,
+    _build_m_transform_steps,
+    _fix_m_if_else_balance,
     _wrap_date_subtraction_in_duration_days,
 )
 
@@ -1681,38 +1683,6 @@ def _inject_dynamic_format_measures(model):
                 })
 
 
-def _build_m_transform_steps(columns, col_metadata_map):
-    """
-    Build M transformation steps from TWB-embedded column metadata.
-
-    Detects:
-    - Column renames: caption ≠ raw name → Table.RenameColumns
-    - Hidden columns: hidden=true → Table.RemoveColumns (at query level)
-
-    Args:
-        columns: list of column dicts from the table
-        col_metadata_map: dict {col_name: {caption, hidden, ...}}
-
-    Returns:
-        list of (step_name, step_expression) tuples for inject_m_steps()
-    """
-    steps = []
-
-    # 1. Collect column renames from caption metadata
-    renames = {}
-    for col in columns:
-        col_name = col.get('name', '')
-        meta = col_metadata_map.get(col_name, {})
-        caption = meta.get('caption', '')
-        # Clean bracket notation: [col_name] → col_name
-        clean_name = col_name.strip('[]')
-        if caption and caption != clean_name and caption != col_name:
-            renames[clean_name] = caption
-
-    if renames:
-        steps.append(m_transform_rename(renames))
-
-    return steps
 
 
 def _build_table(table, connection, calculations, columns_metadata, dax_context=None,
@@ -6681,25 +6651,6 @@ def apply_incremental_refresh(model, datasources=None, rolling_months=12,
     }
 
 
-def _fix_m_if_else_balance(m_expr):
-    """Ensure every M ``if...then`` has a matching ``else`` clause.
-
-    Power Query M requires ``if cond then val else fallback`` — an ``if``
-    without ``else`` is a parse error.  This function counts ``if`` vs
-    ``else`` tokens (outside string literals) and appends ``else null`` for
-    each missing ``else``.
-    """
-    if not m_expr or 'if' not in m_expr:
-        return m_expr
-    stripped = re.sub(r'"([^"]|"")*"', '""', m_expr)
-    if_count = len(re.findall(r'\bif\b', stripped))
-    else_count = len(re.findall(r'\belse\b', stripped))
-    if if_count > else_count:
-        deficit = if_count - else_count
-        logger.warning("M if/else imbalance (if=%d, else=%d) — auto-appending %d × 'else null'",
-                        if_count, else_count, deficit)
-        m_expr = m_expr.rstrip() + ' else null' * deficit
-    return m_expr
 
 
 def _write_direct_lake_expression(def_dir, direct_lake):

@@ -20,8 +20,9 @@ You are the **Wiring** agent for the Tableau to Power BI migration project. You 
 ### DAX↔M Bridge & Classification
 - `powerbi_import/calc_column_utils.py` — Calculation classification (calc columns vs measures), Tableau→M formula conversion, Tableau→PySpark conversion, M `Table.AddColumn` step builder, `_quote_m_ids()`
 
-### M Functions in `tmdl_generator.py` (Shared Ownership with @semantic)
-You co-own these M-specific functions in `powerbi_import/tmdl_generator.py`:
+### M Functions in `tmdl_m_conversion.py`
+All M conversion helpers now live in your own module. The semantic-model
+generator only re-exports them, so you no longer edit it:
 - `_dax_to_m_expression()` — Converts DAX calc column expressions to Power Query M `Table.AddColumn` steps (supports IF, SWITCH, UPPER/LOWER/TRIM/LEN, ISBLANK, INT/VALUE, IN, &, arithmetic)
 - `_quote_m_identifiers()` — Auto-quotes `[field]` references containing special characters as `[#"field"]`
 - `_inject_m_steps_into_partition()` — Injects accumulated M calc steps into a table's M partition

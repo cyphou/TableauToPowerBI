@@ -59,7 +59,7 @@ All TMDL serialization functions in `tmdl_generator.py`:
 - `_quote_name()`, `_tmdl_datatype()`, `_tmdl_summarize()`, `_safe_filename()`
 
 ### Fabric Semantic Model
-- `powerbi_import/fabric_semantic_model_generator.py` — DirectLake semantic model for Fabric output
+- `powerbi_import/fabric_semantic_model_generator.py` — owned by **@fabric** (it wraps your TMDL output into a Fabric item)
 
 ### Shared Model Semantic Layer
 - `powerbi_import/shared_model.py` — Co-owned with @merger (you own the semantic model merge logic)
