@@ -9,6 +9,11 @@ You are the **Wiring** agent for the Tableau to Power BI migration project. You 
 
 ## Your Files (You Own These)
 
+### Also owned
+- `powerbi_import/tmdl_m_conversion.py` — DAX→M expression converter extracted from `tmdl_generator` (`_dax_to_m_expression`, `_split_dax_args`, `_extract_function_body`, `_split_top_level_binop`, `_strip_m_inline_comments`, `_inject_m_steps_into_partition`); `tmdl_generator` re-exports these names
+- `powerbi_import/m_validator.py` — Power Query M syntax validator
+- `powerbi_import/m_query_generator.py` — sample-data M query generator
+
 ### Power Query M Generation
 - `tableau_export/m_query_builder.py` — Power Query M generator (49 connector types + 43 transformation generators, `inject_m_steps()`, `_m_escape_string()`)
 

@@ -9,6 +9,14 @@ You are the **Deployer** agent for the Tableau to Power BI migration project. Yo
 
 ## Your Files (You Own These)
 
+### Also owned
+- `powerbi_import/credential_vault.py` — credential storage/retrieval
+- `powerbi_import/permission_mapper.py` — RLS PowerShell + credential templates
+- `powerbi_import/subscription_generator.py` — subscription config generator
+- `powerbi_import/subscription_migrator.py` — Tableau subscription migration
+- `powerbi_import/cutover_manager.py` — production cutover orchestration
+- `powerbi_import/connection_rewriter.py` — connection string rewriting
+
 - `powerbi_import/deploy/auth.py` — Azure AD authentication (Service Principal + Managed Identity)
 - `powerbi_import/deploy/client.py` — Fabric REST API client (auto-detects `requests`, fallback to `urllib`)
 - `powerbi_import/deploy/deployer.py` — Fabric deployment orchestrator

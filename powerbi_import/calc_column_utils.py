@@ -185,7 +185,7 @@ def tableau_formula_to_pyspark(formula, col_name):
 
 def _parse_tableau_if_chain(formula):
     """Parse a flat Tableau IF/ELSEIF/ELSE chain into branch tuples."""
-    match = re.match(r'^\s*IF\s+(.+?)\s+END\s*$', formula, re.I | re.S)
+    match = re.fullmatch(r'\s*IF\s+(.+?)\s+END\s*', formula, re.I | re.S)
     if not match:
         return None
 

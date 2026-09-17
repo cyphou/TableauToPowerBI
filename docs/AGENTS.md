@@ -1,6 +1,6 @@
 # Multi-Agent Architecture — Tableau to Power BI Migration
 
-This project uses a **15-agent specialization model**. Each agent has scoped domain knowledge, file ownership, and clear boundaries. Four specialist agents (@dax, @wiring, @semantic, @visual) provide deep expertise, @converter and @generator remain as coordination layers, **@tableau** handles Tableau Server/Cloud interaction, **@reviewer** enforces a preceptorship quality loop on all generated artifacts, and **@web-designer** owns the end-user UI surfaces.
+This project uses a **17-agent specialization model**. Each agent has scoped domain knowledge, file ownership, and clear boundaries. Four specialist agents (@dax, @wiring, @semantic, @visual) provide deep expertise, @converter and @generator remain as coordination layers, **@tableau** handles Tableau Server/Cloud interaction, **@reviewer** enforces a preceptorship quality loop on all generated artifacts, and **@web-designer** owns the end-user UI surfaces.
 
 All agents should use [ROADMAP.md](ROADMAP.md) as the source of truth for the
 next work. Do not describe the Fabric-native output as production-ready until
@@ -206,11 +206,13 @@ All agent definitions are in `.github/agents/`:
 - `dax.agent.md` — DAX formula specialist (NEW)
 - `wiring.agent.md` — DAX↔M bridge specialist (NEW)
 - `semantic.agent.md` — Semantic model specialist (NEW)
-- `visual.agent.md` — Report visual specialist (NEW)
-- `converter.agent.md` — Formula coordination layer (delegates to @dax + @wiring)
-- `generator.agent.md` — Generation coordination layer (delegates to @semantic + @visual, owns Fabric)
+- `visual.agent.md` — Report visual specialist
+- `healing.agent.md` — Self-repair subsystem, openability preflight, rollback gate
+- `evidence.agent.md` — Quality reports, evidence packages, parity and diff tooling
+- `fabric.agent.md` — Fabric-native artifact generation
+- `ai.agent.md` — MCP server, LLM gateway, conversational Q&A, plugin SDK
 - `assessor.agent.md` — Migration analysis + validation
 - `merger.agent.md` — Multi-workbook merge (PBIP + Fabric)
 - `deployer.agent.md` — Fabric/PBI deployment + multi-tenant
-- `reviewer.agent.md` — Artifact quality review + preceptorship loop (NEW)
+- `reviewer.agent.md` — Artifact quality review + preceptorship loop
 - `tester.agent.md` — Test creation and validation

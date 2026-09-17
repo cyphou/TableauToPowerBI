@@ -9,6 +9,12 @@ You are the **Visual** agent for the Tableau to Power BI migration project. You 
 
 ## Your Files (You Own These)
 
+### Also owned
+- `powerbi_import/dual_axis_and_reference_lines.py` — dual-axis and reference-line preprocessing
+- `powerbi_import/goals_generator.py` — PBI Goals/Scorecard generator
+- `powerbi_import/alerts_generator.py` — data-driven alert rule generator
+- `powerbi_import/paginated_generator.py` — paginated report generator
+
 ### Core Report Generation
 - `powerbi_import/pbip_generator.py` — .pbip project generator (4000+ lines). You own the **report** parts:
   - `PBIPGenerator` class — main generator

@@ -22,7 +22,7 @@
    "title_font": "",
    "title_size": "",
    "type": "clusteredColumnChart",
-   "width": 320,
+   "width": 960,
    "x": 960,
    "y": 108,
    "z": 2000
@@ -30,7 +30,7 @@
   {
    "fields": 3,
    "has_format": true,
-   "height": 72,
+   "height": 432,
    "page": "Enterprise Sales Dashboard",
    "title_font": "",
    "title_size": "",
@@ -43,12 +43,12 @@
   {
    "fields": 4,
    "has_format": true,
-   "height": 72,
+   "height": 432,
    "page": "Enterprise Sales Dashboard",
    "title_font": "",
    "title_size": "",
    "type": "scatterChart",
-   "width": 128,
+   "width": 768,
    "x": 1152,
    "y": 648,
    "z": 4000

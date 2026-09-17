@@ -4,7 +4,7 @@
   {
    "fields": 2,
    "has_format": true,
-   "height": 198,
+   "height": 378,
    "page": "Financial Overview",
    "title_font": "",
    "title_size": "",
@@ -17,12 +17,12 @@
   {
    "fields": 2,
    "has_format": true,
-   "height": 198,
+   "height": 378,
    "page": "Financial Overview",
    "title_font": "",
    "title_size": "",
    "type": "clusteredBarChart",
-   "width": 480,
+   "width": 800,
    "x": 800,
    "y": 522,
    "z": 3000
@@ -48,7 +48,7 @@
    "title_font": "",
    "title_size": "",
    "type": "scatterChart",
-   "width": 240,
+   "width": 560,
    "x": 1040,
    "y": 144,
    "z": 1000

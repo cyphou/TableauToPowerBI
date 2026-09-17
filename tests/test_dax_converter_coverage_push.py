@@ -1072,12 +1072,14 @@ class TestRunningAndTotal(unittest.TestCase):
     def test_running_max(self):
         result = _convert_running_functions('RUNNING_MAX(MAX([Val]))', 'T')
         self.assertIn('CALCULATE', result)
-        self.assertIn('RUNNING_MAX', result)  # comment
+        self.assertIn('MAX([Val])', result)
+        self.assertNotIn('RUNNING_MAX', result)
 
     def test_running_min(self):
         result = _convert_running_functions('RUNNING_MIN(MIN([Val]))', 'T')
         self.assertIn('CALCULATE', result)
-        self.assertIn('RUNNING_MIN', result)
+        self.assertIn('MIN([Val])', result)
+        self.assertNotIn('RUNNING_MIN', result)
 
     def test_total_function(self):
         result = _convert_total_function('TOTAL(SUM([Revenue]))', 'Sales')

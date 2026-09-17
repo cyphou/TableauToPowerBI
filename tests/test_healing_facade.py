@@ -100,21 +100,11 @@ class TestFacade(unittest.TestCase):
 
     def test_heal_and_verify_returns_pair(self):
         from powerbi_import.healing import heal_and_verify, AutoHealReport, OpenabilityReport
+        from tests.test_openability import _write_project
         with tempfile.TemporaryDirectory() as d:
-            sm = os.path.join(d, "P.SemanticModel", "definition", "tables")
-            os.makedirs(sm, exist_ok=True)
-            with open(os.path.join(sm, "T.tmdl"), "w", encoding="utf-8") as f:
-                f.write("table 'T'\n\tpartition 'T-g' = m\n\t\tmode: import\n"
-                        "\t\tsource =\n\t\t\t\tlet x = 1 in x\n")
-            rep = os.path.join(d, "P.Report", "definition")
-            os.makedirs(rep, exist_ok=True)
-            with open(os.path.join(rep, "report.json"), "w",
-                      encoding="utf-8") as f:
-                f.write('{"$schema": "https://schemas.powerbi.com/report/v2"}')
-            with open(os.path.join(d, "P.Report", "definition.pbir"), "w",
-                      encoding="utf-8") as f:
-                f.write('{"version": "4.0", "datasetReference": '
-                        '{"byPath": {"path": "../P.SemanticModel"}}}')
+            _write_project(d, tmdl_text=(
+                "table 'T'\n\tpartition 'T-g' = m\n\t\tmode: import\n"
+                "\t\tsource =\n\t\t\t\tlet x = 1 in x\n"))
             heal_report, open_report = heal_and_verify(d)
             self.assertIsInstance(heal_report, AutoHealReport)
             self.assertIsInstance(open_report, OpenabilityReport)

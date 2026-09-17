@@ -9,6 +9,9 @@ You are the **Merger** agent for the Tableau to Power BI migration project. You 
 
 ## Your Files (You Own These)
 
+### Also owned
+- `powerbi_import/thin_report_generator.py` — thin report generator for shared models
+
 - `powerbi_import/shared_model.py` — Multi-workbook merge engine (core)
 - `powerbi_import/merge_config.py` — Merge configuration and rules
 

@@ -9,6 +9,12 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 
 ## Your Files (You Own These)
 
+### Also owned
+- `powerbi_import/safe_xml.py` — XXE-protected XML parsing
+- `powerbi_import/sql_analyzer.py` — custom SQL analysis
+- `powerbi_import/blend_graph.py` — data blending graph
+- `powerbi_import/geo_passthrough.py` — shapefile/GeoJSON passthrough
+
 - `tableau_export/extract_tableau_data.py` — Main orchestrator, TWB/TWBX parser
 - `tableau_export/datasource_extractor.py` — Datasource extraction (connections, tables, columns, calculations, relationships)
 - `tableau_export/hyper_reader.py` — Hyper file data loader (SQLite interface)

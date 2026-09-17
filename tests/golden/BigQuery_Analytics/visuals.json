@@ -17,7 +17,7 @@
   {
    "fields": 2,
    "has_format": true,
-   "height": 270,
+   "height": 450,
    "page": "Web Analytics Dashboard",
    "title_font": "",
    "title_size": "",
@@ -30,12 +30,12 @@
   {
    "fields": 2,
    "has_format": true,
-   "height": 270,
+   "height": 450,
    "page": "Web Analytics Dashboard",
    "title_font": "",
    "title_size": "",
    "type": "clusteredBarChart",
-   "width": 580,
+   "width": 700,
    "x": 700,
    "y": 450,
    "z": 3000
@@ -48,7 +48,7 @@
    "title_font": "",
    "title_size": "",
    "type": "lineChart",
-   "width": 580,
+   "width": 700,
    "x": 700,
    "y": 0,
    "z": 1000

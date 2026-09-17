@@ -2572,7 +2572,8 @@ def _convert_running_functions(dax, table_name):
                     depth -= 1
                 i += 1
             inner = dax[start_pos:i - 1].strip()
-            # Generate cumulative DAX pattern
+            # No Tableau function name is emitted: a leftover RUNNING_* token
+            # would make conversion validation report a failed conversion.
             replacement = (
                 f"CALCULATE({inner}, "
                 f"FILTER(ALLSELECTED('{table_name}'), TRUE()))"

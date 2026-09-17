@@ -9,6 +9,11 @@ You are the **Semantic** agent for the Tableau to Power BI migration project. Yo
 
 ## Your Files (You Own These)
 
+### Also owned
+- `powerbi_import/relationship_inference_v2.py` — relationship inference scoring
+- `powerbi_import/model_templates.py` — industry semantic-model skeletons
+- `powerbi_import/schema_validator.py` — TMDL/PBIR schema validation
+
 ### Core Semantic Model Generation
 - `powerbi_import/tmdl_generator.py` — Unified semantic model generator (5000+ lines). This is the largest file in the project. You own the **structural** parts:
   - `generate_tmdl()` — main entry point

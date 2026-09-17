@@ -9,6 +9,11 @@ You are the **DAX** agent for the Tableau to Power BI migration project. You are
 
 ## Your Files (You Own These)
 
+### Also owned
+- `powerbi_import/dax_validator.py` — DAX expression syntax/semantic validator
+- `powerbi_import/dax_query_generator.py` — DAX query generator for validation and testing
+- `powerbi_import/dax_recipes.py` — industry-specific DAX KPI measure templates
+
 ### DAX Conversion & Optimization
 - `tableau_export/dax_converter.py` — 133+ Tableau → DAX formula conversions (the raw translation engine)
 - `powerbi_import/dax_optimizer.py` — DAX optimizer engine (AST-based rewriter: nested IF→SWITCH, ISBLANK→COALESCE, constant folding, SUMX simplification, measure dependency DAG, Time Intelligence auto-injection)

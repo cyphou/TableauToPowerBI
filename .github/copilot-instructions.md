@@ -29,6 +29,8 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
 - **powerbi_import/**: Power BI project generation
   - `pbip_generator.py`: .pbip generator (PBIR v4.0, visuals, filters, bookmarks, slicers, textbox, image, pages shelf, number format conversion, drill-through pages)
   - `tmdl_generator.py`: Unified semantic model generator — direct Tableau → TMDL (tables, columns, measures, relationships, hierarchies, sets/groups/bins, parameters, RLS, dataCategory, isHidden, calculation groups, field parameters, M-based calculated columns)
+  - `tmdl_m_conversion.py`: DAX → Power Query M expression converter extracted from `tmdl_generator` (`_dax_to_m_expression`, `_split_dax_args`, `_extract_function_body`, `_split_top_level_binop`, `_strip_m_inline_comments`, `_inject_m_steps_into_partition`) — re-exported by `tmdl_generator` for backward compatibility
+  - `errors.py`: Domain exception hierarchy — `MigrationError` plus `ExtractionError`, `ConversionError`, `GenerationError`, `ValidationError`, `ConfigurationError`, `DeploymentError` (each carries `item`/`source` context and `to_dict()`)
   - `visual_generator.py`: Visual container generator — 190 visual type mappings (136 VISUAL_TYPE_MAP + 16 APPROXIMATION_MAP + 38 CUSTOM_VISUAL_GUIDS), PBIR-native config templates, data role definitions, query state builder, slicer sync groups, cross-filtering disable, action button navigation, TopN filters, sort state, reference lines, conditional formatting
   - `import_to_powerbi.py`: Generation pipeline orchestrator (supports `--output-dir`, `--output-format fabric` for shared models)
   - `m_query_generator.py`: Sample data M query generator
@@ -95,7 +97,6 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
   - `pdf_renderer.py`: PDF report renderer — generates PDF migration reports and visual comparisons
   - `pptx_report.py`: PowerPoint report generator — creates .pptx migration summary presentations
   - `preflight.py`: Preflight checks — pre-migration validation of source workbook compatibility
-  - `repair_strategies.py`: Self-healing repair strategies — automated fix patterns for common migration issues
   - `report_packager.py`: Report packager — bundles migration artifacts and reports into distributable packages
   - `rollback_engine.py`: Rollback engine — reverts migration changes when errors are detected
   - `schema_validator.py`: Schema validator — validates generated TMDL/PBIR against expected schemas
@@ -466,9 +467,9 @@ All schema URLs and theme identifiers are defined as constants in `pbip_generato
 - Compare Tableau visuals vs Power BI
 - Refer to `docs/FAQ.md` for frequently asked questions
 
-## Agent Architecture — 15-Agent Specialization Model
+## Agent Architecture — 17-Agent Specialization Model
 
-This project uses a **15-agent specialization model** with scoped domain knowledge and file ownership. Four specialist agents (@dax, @wiring, @semantic, @visual) provide deep expertise, @converter and @generator remain as coordination layers, @tableau handles Tableau Server/Cloud interaction, and @web-designer owns the end-user UI surfaces.
+This project uses a **17-agent specialization model** with scoped domain knowledge and file ownership. Specialist agents (@dax, @wiring, @semantic, @visual) provide deep conversion expertise; @healing, @evidence, @fabric, and @ai own the self-repair, quality-evidence, Fabric-native, and agent-facing surfaces; @tableau handles Tableau Server/Cloud interaction; @web-designer owns the end-user UI surfaces.
 
 See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff protocol.
 
@@ -483,8 +484,10 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 | **@wiring** | DAX↔M bridge, classification, M generation (43 transforms), M step injection | `m_query_builder.py`, `calc_column_utils.py` + M functions in `tmdl_generator.py` |
 | **@semantic** | TMDL model, relationships, Calendar, RLS, hierarchies, parameters | `tmdl_generator.py` (structural), `fabric_semantic_model_generator.py` |
 | **@visual** | PBIR v4.0, visual containers, slicers, filters, bookmarks, themes | `pbip_generator.py`, `visual_generator.py` |
-| **@converter** | _(Coordination)_ Cross-cutting DAX+M tasks | Delegates to @dax and @wiring |
-| **@generator** | _(Coordination)_ Fabric-native generation | `fabric_project_generator.py`, `lakehouse_generator.py`, `dataflow_generator.py`, `notebook_generator.py`, `pipeline_generator.py` |
+| **@healing** | Self-repair subsystem, openability preflight, recovery ledger, rollback gate | `healing.py`, `healing_core.py`, `autoheal.py`, `dax_healing.py`, `m_healing.py`, `visual_healing.py`, `openability.py`, `self_healing_v3.py`, `self_healing_report.py`, `rollback_engine.py` |
+| **@evidence** | Quality reports, evidence packages, parity scoring, diff/coverage tooling, lineage | `migration_quality.py`, `evidence_*.py`, `parity_registry.py`, `*_diff.py`, `html_template.py`, `qa_suite.py` |
+| **@fabric** | Fabric-native artifacts (Lakehouse, Dataflow Gen2, Notebook, DirectLake, Pipeline) | `fabric_*.py`, `lakehouse_generator.py`, `dataflow_generator.py`, `notebook_generator.py`, `pipeline_generator.py` |
+| **@ai** | MCP server, LLM gateway, conversational Q&A, remediation, plugin SDK, marketplace | `mcp_server.py`, `llm_gateway.py`, `llm_client.py`, `conversational.py`, `remediation.py`, `plugin_sdk.py`, `marketplace.py` |
 | **@assessor** | Readiness scoring, strategy, diff reports, prep lineage | `assessment.py`, `server_assessment.py`, `strategy_advisor.py`, `schema_drift.py`, `prep_lineage.py`, `prep_lineage_report.py` |
 | **@merger** | Shared semantic model, fingerprint matching | `shared_model.py`, `merge_config.py` |
 | **@deployer** | Fabric/PBI deployment, auth, gateway | `deploy/*.py`, `gateway_config.py`, `telemetry.py` |

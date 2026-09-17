@@ -405,8 +405,8 @@ class TestFallbackPageScatterNoMeasure(unittest.TestCase):
         vid = os.listdir(vis_root)[0]
         with open(os.path.join(vis_root, vid, 'visual.json')) as f:
             vj = json.load(f)
-        # Should be table, not scatterChart
-        self.assertEqual(vj['visual']['visualType'], 'table')
+        # Scatter without measures degrades to the modern table visual
+        self.assertEqual(vj['visual']['visualType'], 'tableEx')
 
 
 class TestScatterStringMeasureDowngrade(unittest.TestCase):

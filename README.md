@@ -945,7 +945,7 @@ The report shows for each migrated workbook:
 | 📝 [Changelog](CHANGELOG.md) | Change notes |
 | � [Enterprise Guide](docs/ENTERPRISE_GUIDE.md) | 8-phase enterprise migration guide |
 | 📈 [Roadmap](docs/ROADMAP.md) | Development roadmap |
-| 🤖 [Agents](docs/AGENTS.md) | 15-agent specialization model |
+| 🤖 [Agents](docs/AGENTS.md) | 17-agent specialization model |
 | �🌐 Global Assessment | Cross-workbook merge analysis with HTML heatmap (`--global-assess`) |
 | 🚀 Bundle Deployment | Deploy shared model + reports to Fabric (`--deploy-bundle`) |
 

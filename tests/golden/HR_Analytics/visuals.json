@@ -4,7 +4,7 @@
   {
    "fields": 2,
    "has_format": true,
-   "height": 170,
+   "height": 450,
    "page": "HR Executive Dashboard",
    "title_font": "",
    "title_size": "",
@@ -22,7 +22,7 @@
    "title_font": "",
    "title_size": "",
    "type": "clusteredBarChart",
-   "width": 720,
+   "width": 840,
    "x": 560,
    "y": 100,
    "z": 1000
@@ -43,12 +43,12 @@
   {
    "fields": 3,
    "has_format": true,
-   "height": 170,
+   "height": 450,
    "page": "HR Executive Dashboard",
    "title_font": "",
    "title_size": "",
    "type": "treemap",
-   "width": 440,
+   "width": 560,
    "x": 840,
    "y": 550,
    "z": 3000

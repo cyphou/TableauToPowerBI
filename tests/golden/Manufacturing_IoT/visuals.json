@@ -17,12 +17,12 @@
   {
    "fields": 3,
    "has_format": true,
-   "height": 126,
+   "height": 486,
    "page": "Analytics Deep Dive",
    "title_font": "",
    "title_size": "",
    "type": "clusteredColumnChart",
-   "width": 1280,
+   "width": 1920,
    "x": 0,
    "y": 594,
    "z": 3000
@@ -35,7 +35,7 @@
    "title_font": "",
    "title_size": "",
    "type": "scatterChart",
-   "width": 320,
+   "width": 960,
    "x": 960,
    "y": 108,
    "z": 2000
@@ -43,12 +43,12 @@
   {
    "fields": 0,
    "has_format": true,
-   "height": 720,
+   "height": 1080,
    "page": "Analytics Deep Dive",
    "title_font": "",
    "title_size": "",
    "type": "textbox",
-   "width": 1280,
+   "width": 1920,
    "x": 0,
    "y": 0,
    "z": 0
@@ -56,12 +56,12 @@
   {
    "fields": 3,
    "has_format": true,
-   "height": 126,
+   "height": 486,
    "page": "Operations Overview",
    "title_font": "",
    "title_size": "",
    "type": "clusteredColumnChart",
-   "width": 1280,
+   "width": 1920,
    "x": 0,
    "y": 594,
    "z": 3000
@@ -82,12 +82,12 @@
   {
    "fields": 0,
    "has_format": true,
-   "height": 720,
+   "height": 1080,
    "page": "Operations Overview",
    "title_font": "",
    "title_size": "",
    "type": "textbox",
-   "width": 1280,
+   "width": 1920,
    "x": 0,
    "y": 0,
    "z": 0
@@ -100,7 +100,7 @@
    "title_font": "",
    "title_size": "",
    "type": "treemap",
-   "width": 128,
+   "width": 768,
    "x": 1152,
    "y": 108,
    "z": 2000

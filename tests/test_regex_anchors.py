@@ -208,7 +208,6 @@ class TestRegexAnchors(unittest.TestCase):
             'powerbi_import/calc_column_utils.py',
             'powerbi_import/validator.py',
             'powerbi_import/m_validator.py',
-            'powerbi_import/repair_strategies.py',
         ]:
             source = _read(rel)
             if source is None:

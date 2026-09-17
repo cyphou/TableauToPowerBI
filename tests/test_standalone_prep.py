@@ -191,6 +191,7 @@ class TestMigrateSingleWorkbookTFL(unittest.TestCase):
                  patch('migrate.run_extraction', return_value=True) as mock_extract, \
                  patch('migrate.run_generation', return_value=True), \
                  patch('migrate.run_migration_report', return_value={'fidelity_score': 90}), \
+                 patch('migrate._run_openability_gate', return_value=True), \
                  patch('migrate._process_twbx_post_generation'):
                 result = _migrate_single_workbook(
                     tableau_file='workbook.twbx',

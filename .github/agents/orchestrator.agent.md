@@ -9,6 +9,16 @@ You are the **Orchestrator** agent for the Tableau to Power BI migration project
 
 ## Your Files (You Own These)
 
+### Also owned
+- `powerbi_import/errors.py` — domain exception hierarchy (`MigrationError` and stage subclasses)
+- `powerbi_import/migration_config.py` — typed migration configuration
+- `powerbi_import/migration_planner.py` — migration planning and effort estimates
+- `powerbi_import/preflight.py` — pre-migration source compatibility checks
+- `powerbi_import/report_packager.py` — artifact bundling
+- `powerbi_import/pdf_renderer.py` — PDF report rendering
+- `powerbi_import/pptx_report.py` — PowerPoint summary generator
+- `powerbi_import/governance.py` — naming/PII/audit governance engine
+
 - `migrate.py` — CLI entry point, argument parsing, dispatch logic
 - `powerbi_import/import_to_powerbi.py` — Generation pipeline orchestrator (PBIP + Fabric routing)
 - `powerbi_import/wizard.py` — Interactive migration wizard

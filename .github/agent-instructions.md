@@ -2,7 +2,7 @@
 
 Rules for AI coding agents working in this codebase. Read `.github/copilot-instructions.md` for full project context (architecture, file map, DAX/M/PBIR specs, visual mappings).
 
-**Multi-agent architecture**: This project uses a 15-agent specialization model. See `docs/AGENTS.md` for the full architecture diagram, and `.github/agents/` for per-agent definitions.
+**Multi-agent architecture**: This project uses a 17-agent specialization model. See `docs/AGENTS.md` for the full architecture diagram, and `.github/agents/` for per-agent definitions.
 
 ---
 

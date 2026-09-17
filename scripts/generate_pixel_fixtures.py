@@ -149,11 +149,20 @@ def migrate_workbook(twb_path: str, out_dir: str) -> str:
     ]
     subprocess.run(cmd, cwd=_REPO_ROOT, check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # migrate.py creates <out_dir>/<name>/<name>.pbip alongside .Report/.SemanticModel
-    for entry in sorted(os.listdir(out_dir)):
+    # migrate.py creates <out_dir>/<name>/<name>.pbip alongside .Report/.SemanticModel.
+    # Dot-prefixed checkpoint/extract dirs also live in out_dir and sort first,
+    # so select the directory that actually holds the .pbip manifest.
+    candidates = [
+        entry for entry in sorted(os.listdir(out_dir))
+        if not entry.startswith(".")
+        and os.path.isdir(os.path.join(out_dir, entry))
+    ]
+    for entry in candidates:
         full = os.path.join(out_dir, entry)
-        if os.path.isdir(full):
+        if any(f.endswith(".pbip") for f in os.listdir(full)):
             return full
+    if candidates:
+        return os.path.join(out_dir, candidates[0])
     return out_dir
 
 
