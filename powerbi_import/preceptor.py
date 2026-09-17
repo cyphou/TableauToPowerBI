@@ -27,6 +27,10 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+# Balance checking is span-aware there: parens inside "strings", 'table quotes'
+# and [bracketed identifiers] are literal, not grouping.
+from powerbi_import.dax_validator import _check_balanced
+
 logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────
@@ -52,7 +56,10 @@ _TABLEAU_LEAK_RE = [
     re.compile(r'\bATTR\s*\(', re.IGNORECASE),
     re.compile(r'\bDATETRUNC\s*\(', re.IGNORECASE),
     re.compile(r'\bDATEPART\s*\(', re.IGNORECASE),
-    re.compile(r'\bDATEADD\s*\((?!.*DATEADD)', re.IGNORECASE),
+    # DAX has its own DATEADD(<dates>, <n>, <interval>) and the converter emits
+    # it deliberately. Only Tableau's scalar form takes a quoted date-part as
+    # its first argument, so match that shape instead of the bare name.
+    re.compile(r'\bDATEADD\s*\(\s*[\'"]', re.IGNORECASE),
     re.compile(r'\bISNULL\s*\(', re.IGNORECASE),
 ]
 
@@ -60,11 +67,6 @@ _TABLEAU_LEAK_RE = [
 _M_IF_RE = re.compile(r'\bif\b', re.IGNORECASE)
 _M_THEN_RE = re.compile(r'\bthen\b', re.IGNORECASE)
 _M_ELSE_RE = re.compile(r'\belse\b', re.IGNORECASE)
-
-# Unmatched parens in DAX
-_OPEN_PAREN_RE = re.compile(r'\(')
-_CLOSE_PAREN_RE = re.compile(r'\)')
-
 
 # ── Data classes ─────────────────────────────────────────────────
 
@@ -417,15 +419,15 @@ def _review_dax_correctness(pbip_path, extraction_data):
                         ))
                         break  # One leak per expression is enough
 
-                # Check paren balance
-                opens = len(_OPEN_PAREN_RE.findall(expr))
-                closes = len(_CLOSE_PAREN_RE.findall(expr))
-                if opens != closes:
+                # Check paren balance (span-aware: ignores parens inside
+                # strings and bracketed identifiers)
+                balance_issues = _check_balanced(expr)
+                if balance_issues:
                     paren_errors += 1
                     coaching.append(CoachingItem(
                         dimension='dax_correctness',
                         score=0,
-                        issue=f"Unbalanced parentheses: {opens} open vs {closes} close",
+                        issue=f"Unbalanced parentheses — {balance_issues[0]}",
                         location=str(tmdl_file),
                         fix="Fix parenthesis balance in the DAX expression",
                     ))
