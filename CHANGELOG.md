@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Tableau KPI cards no longer arrive as data tables. A sheet that leaves Rows
+  and Columns empty and puts its measure on the Text shelf is Tableau's
+  "big number" card, but both the `Text` and `Automatic` marks fell through to
+  a grid — 28 of the 181 example worksheets became a table, 16 of them named
+  "KPI Card", "Ranking" or "Card". Such a sheet now becomes a Power BI `card`,
+  or a `multiRowCard` when several measures share the Text shelf. Sheets with a
+  real field on Rows or Columns are untouched, and a Size encoding still marks a
+  packed-bubble plot rather than a card. Corpus: 28 table-like worksheets → 12.
+
 - Parity evidence now distinguishes "we looked and found nothing" from "nothing
   looked". Both were reported as `source_only`, and only 8 of the 32 tracked
   features had a probe at all, so the headline read 36% coverage when three

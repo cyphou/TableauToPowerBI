@@ -103,6 +103,14 @@ _DS_PREFIXED_FIELD = re.compile(r'^\[[^\]]+\]\.(\[.+\])$')
 #: Tableau's colour-ramp kinds, in the vocabulary the rest of the code uses.
 _COLOR_RAMP_KINDS = {'palette': 'categorical', 'interpolated': 'quantitative'}
 
+#: Marks-card encodings. Shared so the field extractor and the chart-type
+#: inference cannot disagree about which shelves exist.
+_MARK_ENCODINGS = ('color', 'size', 'shape', 'detail', 'tooltip', 'label', 'text')
+
+#: Marks that draw their value as text, so an empty Rows/Columns pair means a
+#: KPI card rather than an unrecognised chart.
+_CARD_MARK_CLASSES = {'automatic', 'text'}
+
 
 def _strip_datasource_prefix(column):
     """``[federated.x].[none:Region:nk]`` -> ``[none:Region:nk]``."""
@@ -927,7 +935,11 @@ class TableauExtractor:
             if worksheet.find('.//encoding/map') is not None:
                 return 'map'
             return 'clusteredBarChart'
-        
+
+        card_type = self._shelfless_card_type(worksheet, mark_class)
+        if card_type:
+            return card_type
+
         # For explicit mark types, use the mapping directly
         if mark_class.lower() != 'automatic':
             pbi_type = self._map_tableau_mark_to_type(mark_class)
@@ -938,6 +950,37 @@ class TableauExtractor:
         
         # Automatic: infer from field shelf assignments
         return self._infer_automatic_chart_type(worksheet)
+
+    def _shelfless_card_type(self, worksheet, mark_class):
+        """Power BI card type for a sheet that draws only on the Marks card.
+
+        Tableau renders a Text encoding with empty Rows and Columns as a KPI
+        figure, not a text table; mapping it to a grid loses the point of the
+        sheet. Returns None for a genuine table or a sized plot.
+        """
+        if (mark_class or 'automatic').lower() not in _CARD_MARK_CLASSES:
+            return None
+        for shelf_tag in ('cols', 'rows'):
+            shelf = worksheet.find(f'./table/{shelf_tag}')
+            if shelf is not None and shelf.text and shelf.text.strip():
+                return None
+        for shelf_elem in ('shelf-columns', 'shelf-rows'):
+            if worksheet.find(f'.//{shelf_elem}') is not None:
+                return None
+
+        counts = {}
+        for encoding in worksheet.findall('.//encodings'):
+            for enc_type in _MARK_ENCODINGS:
+                for elem in encoding.findall(f'./{enc_type}'):
+                    if elem.get('column'):
+                        counts[enc_type] = counts.get(enc_type, 0) + 1
+        text_fields = counts.get('text', 0)
+        if not text_fields:
+            return None
+        # A measure on Size with no shelves is a packed-bubble plot, not a card.
+        if counts.get('size'):
+            return None
+        return 'card' if text_fields == 1 else 'multiRowCard'
     
     def _detect_bar_orientation(self, worksheet, default):
         """Detects bar chart orientation from shelf assignments.
@@ -1245,7 +1288,7 @@ class TableauExtractor:
         
         # Extract from encodings (color, size, shape, detail, tooltip, label, text)
         for encoding in worksheet.findall('.//encodings'):
-            for enc_type in ['color', 'size', 'shape', 'detail', 'tooltip', 'label', 'text']:
+            for enc_type in _MARK_ENCODINGS:
                 for enc_elem in encoding.findall(f'./{enc_type}'):
                     column = enc_elem.get('column', '')
                     if column:

@@ -156,6 +156,27 @@ Every workbook sits at `STATIC_PASS` and nothing in the engine can raise it.
   workspace and credentials exist, or the roadmap should say plainly that these
   signals will stay `not_run` and stop listing them as pending.
 
+### Visual fidelity — sheets that arrive as tables
+
+Raised from reading the generated reports rather than from a report figure: a
+large share of visuals were plain tables.
+
+- **Marks-card KPI sheets.** *Done — 28 table-like worksheets, now 12.* A sheet
+  that leaves Rows and Columns empty and puts its measure on the Text shelf is
+  Tableau's "big number" card. Both the `Text` mark (mapped straight to
+  `tableEx`) and the `Automatic` mark (whose inference returns `table` when it
+  finds nothing on either shelf) sent them to a grid. They now become a `card`,
+  or a `multiRowCard` when several measures share the Text shelf.
+
+- **Still tables, each for its own reason:** four sheets have a genuine
+  dimension on Rows and a measure on Columns, so a text table is right; two
+  Salesforce sheets mix Text and Columns; one is empty. Four more
+  (`Share of World GDP` ×2, `Tourism By Country/Region`, `avg fdbck score`)
+  carry a Size *and* a Colour encoding with empty shelves — that is Tableau's
+  packed-bubble plot, not a card. They are deliberately excluded from the card
+  rule and are the next candidate, but a bubble chart with no axes may read
+  worse than a table, so it needs measuring before it is changed.
+
 ### P4 — The last two parity gaps
 
 Both are genuine limits rather than measurement errors — the first real feature
