@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Parameter usage is no longer counted as data blending. Tableau exposes its
+  parameter container as a pseudo-datasource, so referencing a parameter looked
+  like a cross-datasource blend: all 15 blend records in the example corpus
+  named it, and none was a genuine blend. The parity detector now reuses the
+  distinction `blend_graph` already made, lifting the lowest corpus parity
+  score from 90.9% to 96.4% and the mean to 99.7%.
+
 - Tableau field aliases that rename an aggregated field now survive migration.
   Tableau aggregates implicitly, so an author renaming `sum:F: GDP (curr $)` to
   "GDP (US $'s)" had no named object to carry the caption and it was dropped —

@@ -27,6 +27,11 @@ import re
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Dict, List, Optional
 
+# Tableau exposes its parameter container as a pseudo-datasource, so parameter
+# usage looks like a cross-datasource blend. blend_graph already owns that
+# distinction; reuse it rather than restating it here.
+from tableau_export.blend_graph import VIRTUAL_SECONDARIES
+
 REGISTRY_VERSION = "1.2.0"
 
 EXACT = "exact"
@@ -245,6 +250,28 @@ def _count_actions(kind: str) -> Callable[[Dict], int]:
     return detector
 
 
+def _count_real_blends(converted: Dict) -> int:
+    """Blend links that join two real datasources.
+
+    A worksheet referencing a parameter emits a dependency on Tableau's
+    ``Parameters`` pseudo-datasource; that is not a blend, and the parameter
+    tables already carry it.
+    """
+    count = 0
+    for entry in converted.get("data_blending", []) or []:
+        if not isinstance(entry, dict):
+            count += 1
+            continue
+        primary = (entry.get("datasource") or "").strip()
+        secondary = (entry.get("secondary_datasource") or "").strip()
+        if not secondary or secondary.lower() in VIRTUAL_SECONDARIES:
+            continue
+        if secondary == primary:
+            continue
+        count += 1
+    return count
+
+
 #: The key Tableau uses for aliases that rename an aggregated measure.
 _MEASURE_NAMES_KEY = ":Measure Names"
 
@@ -300,7 +327,7 @@ _DETECTORS: Dict[str, Callable[[Dict], int]] = {
     "action_url": _count_actions("url"),
     "action_nav": _count_actions("nav"),
     "custom_sql": _len("custom_sql"),
-    "data_blending": _len("data_blending"),
+    "data_blending": _count_real_blends,
     "extract_hyper": _len("hyper_files"),
     "datasource_filter": _len("datasource_filters"),
     "story_bookmarks": _count_story_points,

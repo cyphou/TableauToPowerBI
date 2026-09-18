@@ -187,9 +187,23 @@ refresh, deployment. Static validation has taken the corpus as far as it can.
   96.7% → 98.6%, `World Indicators` 97.8% → 99.0%. Corpus mean 98.4% → 98.9%,
   workbooks at full parity 16 → 17 of 26. Corpus gate unchanged.
 
-- **The remaining floor is data blending**, not aliases: `shapes_test` 90.9%,
-  `nba_player_stats` 93.3%, `vishnu_dashboard` 94.7%. Two `URL action` gaps
-  (`Enterprise_Sales`, `Complex_Enterprise`) are the only other family left.
+- **The remaining floor was not data blending either — it was parameter usage
+  counted as one.** *Done.* Tableau exposes its parameter container as a
+  pseudo-datasource, so every worksheet referencing a parameter emits a
+  dependency on `Parameters`. All **15 of 15** extracted blend records across
+  the corpus named `Parameters` as the secondary: **not one genuine blend
+  existed**, yet five workbooks were docked for the feature.
+
+  `blend_graph` already owned this distinction (`VIRTUAL_SECONDARIES`, honoured
+  by the assessment); the parity detector counted the raw list instead. It now
+  reuses that vocabulary. `shapes_test` 90.9% → **100%**, `vishnu_dashboard`
+  94.7% → **100%**, `World Indicators` 99.0% → **100%**, `nba_player_stats`
+  93.3% → 96.4%, `Salesforce` 98.5% → 99.7%. Corpus mean 98.9% → **99.7%**,
+  lowest score 90.9% → **96.4%**, full parity 17 → **20 of 26**.
+
+- **What is genuinely left**: four `Field alias (per value)` gaps, which Power
+  BI cannot express, and two `URL action` gaps. Both are real limits rather
+  than measurement errors.
 
 ## Open decisions
 
