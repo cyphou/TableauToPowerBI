@@ -56,12 +56,23 @@ reintroduce silently.
   filters, Hyper extracts and blending links exposed no name-like key, so the
   inventory listed them as `item-0`. Extend the same shape to the remaining
   hand-offs (parity → renderer, validator → preceptor → healer).
-- **A key-name lint.** Every consumer that reads a field by name from extracted
-  JSON should be checked against the extractor's actual output on the corpus.
-  `source_worksheets` vs `worksheet` was invisible for as long as nobody
-  compared the two. Note one known inconsistency left alone so far:
-  `calculations` emits `datasource_name` where every other type emits
-  `datasource`.
+- **A key-name lint.** *Done.* `scripts/check_field_names.py` tracks which
+  variables hold extracted objects of which type, groups fallback chains into
+  one logical value, and compares against both the vocabulary a real extraction
+  produces and the keys the extractor assigns anywhere. Observation proves a key
+  is emitted but never that it is absent, so the declared-key cross-check
+  matters: `hyper_files['tables']` is set on a branch the sample corpus does not
+  take. It reported 50 candidates before those refinements and 3 after.
+
+  It surfaced a blind spot worth naming: **tests fabricate keys the extractor
+  never produces**. `test_conditional_formatting` builds a worksheet carrying
+  `conditionalFormatting` and `test_v51_features` one carrying
+  `dynamic_visibility`; both pass, while on a real workbook neither code path
+  fires. Fixed where the data exists — dynamic zone visibility is now read from
+  the dashboard, where the extractor records it, and the comparison report now
+  reads `chart_type` rather than falling through to the mark-encoding type.
+  Conditional formatting is genuinely not extracted, so counting it reports zero
+  on every workbook; extracting it is a feature, left open deliberately.
 - **Corpus assertion in CI.** *Done.* `scripts/check_corpus_gate.py` migrates
   all three batches and enforces the floors static validation can prove — every
   artefact migrates, every project passes the openability preflight, no

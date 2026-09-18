@@ -1085,11 +1085,18 @@ def _check_migration_scope(extracted: Dict) -> CategoryResult:
     # ── Tableau 2024.3+ feature detection ──
     _modern_features = []
 
-    # Dynamic zone visibility (worksheets with visibility rules)
-    for ws in worksheets:
-        if ws.get('dynamic_visibility') or ws.get('zone_visibility'):
+    # Dynamic zone visibility. The extractor records it on the DASHBOARD as
+    # `dynamic_zone_visibility`; the worksheet keys below are never produced by
+    # a real extraction and are kept only for callers that pass their own data.
+    for db in dashboards:
+        if db.get('dynamic_zone_visibility'):
             _modern_features.append('Dynamic Zone Visibility')
             break
+    else:
+        for ws in worksheets:
+            if ws.get('dynamic_visibility') or ws.get('zone_visibility'):
+                _modern_features.append('Dynamic Zone Visibility')
+                break
 
     # Dynamic parameters with DB queries
     for param in parameters:

@@ -123,7 +123,12 @@ def _compare_worksheets(extracted, pbip_data):
 
     for ws in worksheets:
         name = ws.get('name', 'Unknown')
-        tab_type = ws.get('mark_type', ws.get('mark_encoding', {}).get('type', 'auto'))
+        # `chart_type` is what the extractor writes; `mark_type` never appears in
+        # a real extraction and stayed here as the primary, so every worksheet
+        # fell through to the mark-encoding type.
+        tab_type = (ws.get('chart_type')
+                    or ws.get('mark_type')
+                    or ws.get('mark_encoding', {}).get('type', 'auto'))
         tab_fields = ws.get('fields', [])
         tab_filters = ws.get('filters', [])
 
