@@ -179,6 +179,7 @@ class MigrationQualityReport:
         if self.priorities:
             html += "<ol>" + "".join(
                 f"<li><strong>{esc(item['priority'])}</strong> "
+                f"{badge(_ACTION_LABEL.get(item.get('action_kind', ''), 'review'), _ACTION_TONE.get(item.get('action_kind', ''), 'gray'))} "
                 f"{esc(item['action'])} "
                 f"<em>(owner: {esc(item['owner'])})</em></li>"
                 for item in self.priorities
@@ -415,41 +416,108 @@ def _openability_confidence(openability: Dict[str, Any], fabric: Dict[str, Any],
     }
 
 
-def _build_priorities(parity: Dict[str, Any], blockers: list[str],
-                      warnings: list[str]) -> list[Dict[str, Any]]:
-    """Create a stable, deterministic remediation queue from verified findings."""
-    priorities = []
-    for blocker in blockers:
-        owner = "Orchestrator"
-        if "DAX" in blocker or "feature" in blocker:
-            owner = "DAX / Semantic"
-        elif "table" in blocker or "model" in blocker:
-            owner = "Semantic / Wiring"
-        elif "open" in blocker.lower() or "reference" in blocker.lower():
-            owner = "Visual / Orchestrator"
-        priorities.append({
-            "priority": "P0",
+#: What the reader must actually do about a finding, and who owns it.
+#:
+#: Keyed by a stable id recorded where the finding is raised, because the owner
+#: used to be guessed by searching the message text for "DAX" or "table" — the
+#: same brittle pattern that let a producer and a consumer drift apart elsewhere.
+#:
+#: repair  something is measurably wrong and the pipeline can fix it
+#: decide  a human judgement is required before anything can be done
+#: verify  we produced an approximation; confirm it matches intent
+#: note    evidence or coverage information; nothing to act on
+_FINDING_ACTIONS = {
+    "openability": ("repair", "Visual / Orchestrator"),
+    "fabric_bundle": ("repair", "Fabric"),
+    "fabric_runtime": ("note", "Deployer"),
+    "tables_missing": ("repair", "Semantic / Wiring"),
+    "parameter_coverage": ("repair", "Semantic"),
+    "semantic_static": ("repair", "Semantic / DAX"),
+    "semantic_runtime": ("repair", "Semantic / DAX"),
+    "assessment_failures": ("decide", "Assessor"),
+    "assessment_red": ("decide", "Assessor"),
+    "assessment_warnings": ("decide", "Assessor"),
+    "parity_unsupported": ("decide", "Assessor / domain owner"),
+    "filter_coverage": ("verify", "Visual"),
+    "m_fallback": ("verify", "Wiring"),
+    "visual_approximation": ("verify", "Visual"),
+    "parity_untracked": ("note", "Evidence"),
+    "unresolved_lineage": ("note", "Evidence"),
+}
+
+#: Fix what is broken before deciding what to do about what is merely different.
+_ACTION_RANK = {"repair": 0, "decide": 1, "verify": 2, "note": 3}
+
+#: P0 must be fixed to ship, P1 needs someone to act, P2 is advisory.
+_ACTION_TIER = {"repair": "P1", "decide": "P1", "verify": "P2", "note": "P2"}
+
+#: How the queue reads to a human, and how it is coloured.
+_ACTION_LABEL = {"repair": "fix", "decide": "decide", "verify": "verify",
+                 "note": "informational"}
+_ACTION_TONE = {"repair": "red", "decide": "yellow", "verify": "blue",
+                "note": "gray"}
+
+
+class _Findings:
+    """Collect findings with the action they require, not just their text."""
+
+    def __init__(self):
+        self.blockers: list[str] = []
+        self.warnings: list[str] = []
+        self.records: list[Dict[str, Any]] = []
+
+    def add(self, finding_id: str, message: str, *, blocker: bool) -> None:
+        (self.blockers if blocker else self.warnings).append(message)
+        action, owner = _FINDING_ACTIONS.get(finding_id, ("decide", "Assessor"))
+        self.records.append({
+            "id": finding_id,
+            "message": message,
+            "blocker": blocker,
+            "action_kind": action,
             "owner": owner,
-            "action": blocker,
-            "evidence": [],
         })
+
+    def by_policy(self, finding_id: str, message: str, verdict: str) -> None:
+        """Record according to a configured blocker/warning/ignore verdict."""
+        if verdict == "blocker":
+            self.add(finding_id, message, blocker=True)
+        elif verdict == "warning":
+            self.add(finding_id, message, blocker=False)
+
+
+def _build_priorities(parity: Dict[str, Any], findings: "_Findings"
+                      ) -> list[Dict[str, Any]]:
+    """Order the remediation queue by what the reader must do about each finding.
+
+    Blockers first, then repair before decide before verify before note. Ties
+    keep discovery order, so the queue is stable across runs.
+    """
+    entries = []
+    for order, record in enumerate(findings.records):
+        entries.append((
+            record["blocker"], record["action_kind"], order,
+            record["message"], record["owner"], [],
+        ))
+
     for gap in parity.get("gaps", []):
         if gap.get("status") != "unsupported":
             continue
-        priorities.append({
-            "priority": "P1",
-            "owner": "Assessor / domain owner",
-            "action": f"Resolve unsupported feature: {gap.get('label', gap.get('key', 'unknown'))}",
-            "evidence": list(gap.get("evidence", [])),
-        })
-    for warning in warnings:
-        priorities.append({
-            "priority": "P2",
-            "owner": "Assessor",
-            "action": warning,
-            "evidence": [],
-        })
-    return priorities
+        entries.append((
+            False, "decide", len(entries),
+            f"Resolve unsupported feature: {gap.get('label', gap.get('key', 'unknown'))}",
+            "Assessor / domain owner", list(gap.get("evidence", [])),
+        ))
+
+    entries.sort(key=lambda e: (not e[0], _ACTION_RANK.get(e[1], 9), e[2]))
+
+    return [{
+        "priority": "P0" if blocker else _ACTION_TIER.get(action, "P2"),
+        "action_kind": action,
+        "owner": owner,
+        "action": message,
+        "evidence": evidence,
+    } for blocker, action, _order, message, owner, evidence in entries]
+
 
 
 def _semantic_context_validation(extracted: Dict[str, Any]) -> Dict[str, Any]:
@@ -795,48 +863,68 @@ def build_quality_report(extracted: Dict, project_dir: str,
     openability_dict = _openability_dict(openability)
     confidence = _openability_confidence(openability_dict, fabric)
 
-    blockers = []
-    warnings = []
+    findings = _Findings()
+    blockers = findings.blockers
+    warnings = findings.warnings
     if not openability.openable:
-        blockers.extend(openability.blocking_issues)
+        for issue in openability.blocking_issues:
+            findings.add("openability", issue, blocker=True)
     fabric_invalid = fabric_evidence.get("status") == "invalid"
     if fabric_invalid:
-        message = "Fabric-native artifact bundle failed validation."
-        if policy["fabric_bundle"] == "blocker":
-            blockers.append(message)
-        elif policy["fabric_bundle"] == "warning":
-            warnings.append(message)
+        findings.by_policy("fabric_bundle",
+                           "Fabric-native artifact bundle failed validation.",
+                           policy["fabric_bundle"])
     if policy["fabric_runtime"] == "blocker" and fabric_evidence.get("status") == "locally_valid":
         runtime = fabric_evidence.get("runtime", {})
         missing_runtime = [name for name in (
             "deployment", "refresh", "semantic_execution", "post_deploy"
         ) if runtime.get(name) != "passed"]
         if missing_runtime:
-            blockers.append(
+            findings.add(
+                "fabric_runtime",
                 "Fabric production evidence is incomplete: "
-                + ", ".join(missing_runtime) + "."
+                + ", ".join(missing_runtime) + ".",
+                blocker=True,
             )
     assessment_blocking_failures = _assessment_has_blocking_failures(assessment)
     if assessment_blocking_failures:
-        blockers.append("Pre-migration assessment contains blocking failures.")
+        findings.add("assessment_failures",
+                     "Pre-migration assessment contains blocking failures.",
+                     blocker=True)
     elif assessment.overall_score == "RED":
-        warnings.append(
-            "Pre-migration assessment is RED due to performance risk; review before production."
+        findings.add(
+            "assessment_red",
+            "Pre-migration assessment is RED due to performance risk; review before production.",
+            blocker=False,
         )
     if any(gap.get("status") == "unsupported"
            for gap in parity.get("gaps", [])):
-        blockers.append("Unsupported Tableau features remain in use.")
+        findings.add("parity_unsupported",
+                     "Unsupported Tableau features remain in use.", blocker=True)
     if parity.get("untracked_features"):
         names = ", ".join(parity["untracked_features"])
-        warnings.append(f"Feature families lack parity mappings: {names}.")
+        findings.add("parity_untracked",
+                     f"Feature families lack parity mappings: {names}.",
+                     blocker=False)
     if data.get("summary", {}).get("tables_found", 0) < data.get("summary", {}).get("source_tables", 0):
-        blockers.append("One or more extracted source tables are missing from the target model.")
+        findings.add(
+            "tables_missing",
+            "One or more extracted source tables are missing from the target model.",
+            blocker=True,
+        )
     if not interface.get("filters", {}).get("covered", True):
-        warnings.append("Interface filter coverage is below the extracted source count.")
+        findings.add(
+            "filter_coverage",
+            "Interface filter coverage is below the extracted source count.",
+            blocker=False,
+        )
     if not interface.get("parameters", {}).get("covered", True):
-        warnings.append("One or more extracted parameters lack a target symbol.")
+        findings.add("parameter_coverage",
+                     "One or more extracted parameters lack a target symbol.",
+                     blocker=False)
     if assessment.overall_score == "YELLOW":
-        warnings.append("Pre-migration assessment contains warnings.")
+        findings.add("assessment_warnings",
+                     "Pre-migration assessment contains warnings.", blocker=False)
 
     lineage = _lineage_evidence(extracted or {}, data, interface, parity)
     lineage_contract = _load_lineage_contract(project_dir)
@@ -844,49 +932,41 @@ def build_quality_report(extracted: Dict, project_dir: str,
     unresolved_lineage = _source_lineage_unresolved(lineage_contract, extracted or {})
     lineage_contract["unresolved_source"] = unresolved_lineage
     if unresolved_lineage:
-        message = (
+        findings.by_policy(
+            "unresolved_lineage",
             f"Semantic lineage has {len(unresolved_lineage)} unresolved "
-            "source-to-target record(s)."
+            "source-to-target record(s).",
+            policy["unresolved_lineage"],
         )
-        if policy["unresolved_lineage"] == "blocker":
-            blockers.append(message)
-        else:
-            warnings.append(message)
     if semantic_issue_count:
-        message = (
+        findings.by_policy(
+            "semantic_static",
             f"Semantic validation found {semantic_issue_count} static "
-            "context issue(s)."
+            "context issue(s).",
+            policy["semantic_diagnostics"],
         )
-        if policy["semantic_diagnostics"] == "blocker":
-            blockers.append(message)
-        elif policy["semantic_diagnostics"] == "warning":
-            warnings.append(message)
     if semantic_runtime_failures:
-        message = (
+        findings.by_policy(
+            "semantic_runtime",
             f"Semantic runtime validation failed for {semantic_runtime_failures} "
-            "query(ies)."
+            "query(ies).",
+            policy["semantic_diagnostics"],
         )
-        if policy["semantic_diagnostics"] == "blocker":
-            blockers.append(message)
-        elif policy["semantic_diagnostics"] == "warning":
-            warnings.append(message)
     fallback_in_use = m_emitters.get("fallback_in_use", [])
     if fallback_in_use:
-        message = (
+        findings.by_policy(
+            "m_fallback",
             f"M fallback emitters are in use for {len(fallback_in_use)} "
-            "connector path(s)."
+            "connector path(s).",
+            policy["m_fallback"],
         )
-        if policy["m_fallback"] == "blocker":
-            blockers.append(message)
-        elif policy["m_fallback"] == "warning":
-            warnings.append(message)
     visual_approximations = find_visual_approximations_in_use(extracted or {})
     if visual_approximations:
-        message = f"Visual mapping contains {len(visual_approximations)} explicit approximation(s)."
-        if policy["visual_approximation"] == "blocker":
-            blockers.append(message)
-        elif policy["visual_approximation"] == "warning":
-            warnings.append(message)
+        findings.by_policy(
+            "visual_approximation",
+            f"Visual mapping contains {len(visual_approximations)} explicit approximation(s).",
+            policy["visual_approximation"],
+        )
 
     status = "FAIL" if blockers else "WARN" if warnings else "PASS"
     source_inventory = build_source_inventory(extracted or {})
@@ -909,7 +989,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         visual_recovery,
         visual_parity,
     )
-    priorities = _build_priorities(parity, blockers, warnings)
+    priorities = _build_priorities(parity, findings)
     strategy = recommend_strategy(extracted or {}, prep_flow=prep_flow).to_dict()
     strategy["status"] = "recommended"
     checkpoints = _checkpoint_evidence(project_dir, checkpoint_path)

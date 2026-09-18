@@ -486,6 +486,38 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertIn('aliases', report.warnings[0])
         self.assertEqual(report.priorities[0]['priority'], 'P2')
 
+    def test_each_priority_says_what_to_do_about_it(self):
+        """The queue answers "what do I fix first", not just "what is wrong"."""
+        report = self._build(
+            interface={'filters': {'covered': False}, 'parameters': {'covered': False}},
+        )
+        kinds = {item['action_kind'] for item in report.priorities}
+        self.assertTrue(kinds <= {'repair', 'decide', 'verify', 'note'}, kinds)
+
+    def test_something_broken_outranks_something_merely_different(self):
+        """A missing parameter is repairable; an approximate filter needs a look."""
+        report = self._build(
+            interface={'filters': {'covered': False}, 'parameters': {'covered': False}},
+        )
+        kinds = [item['action_kind'] for item in report.priorities]
+        self.assertLess(kinds.index('repair'), kinds.index('verify'))
+
+    def test_owner_comes_from_the_finding_not_from_its_wording(self):
+        """Owners used to be guessed by searching the message for 'table'."""
+        report = self._build(data={'summary': {'source_tables': 2, 'tables_found': 1}})
+        top = report.priorities[0]
+        self.assertEqual(top['priority'], 'P0')
+        self.assertEqual(top['action_kind'], 'repair')
+        self.assertEqual(top['owner'], 'Semantic / Wiring')
+
+    def test_advisory_findings_never_outrank_actionable_ones(self):
+        report = self._build(
+            parity={'gaps': [], 'untracked_features': ['aliases']},
+            interface={'filters': {'covered': True}, 'parameters': {'covered': False}},
+        )
+        kinds = [item['action_kind'] for item in report.priorities]
+        self.assertLess(kinds.index('repair'), kinds.index('note'))
+
     def test_ai_prompt_contains_verified_facts_and_guardrails(self):
         report = self._build()
         prompt = build_quality_prompt(report)

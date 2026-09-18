@@ -85,12 +85,20 @@ reintroduce silently.
 The report is now accurate — every verdict is coloured and no category is
 mistaken for one — but it still lists findings rather than ranking them.
 
-- Rank warnings by remediation cost and blast radius, not by category.
-- Distinguish "needs a human decision" (unrecognised connector) from "we could
-  not convert this" (unsupported table calculation). Today they read alike.
-- Carry the preceptor's coaching feedback into the consolidated report; it is
-  the only surface that says *how* to fix something, and it is currently
+- **Rank warnings by what they require.** *Done.* Every finding records the
+  action it needs — `repair` (measurably wrong, the pipeline can fix it),
+  `decide` (a human judgement is required first), `verify` (we approximated;
+  confirm it matches intent) or `note` (evidence, nothing to act on) — at the
+  point it is raised. The queue sorts blockers first, then repair before decide
+  before verify before note. Owners come from the same record; they used to be
+  guessed by searching the message text for "DAX" or "table", the same brittle
+  pattern that let producers and consumers drift apart elsewhere.
+- **Carry the preceptor's coaching feedback into the consolidated report.** It
+  is the only surface that says *how* to fix something, and it is currently
   reachable only via `--preceptor`.
+- **Extract conditional formatting.** Assessment counts it, but the extractor
+  never produces it, so every workbook reports zero rules. Either extract it or
+  stop claiming a count.
 
 ### P3 — Runtime evidence
 
