@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Tableau actions are read again. A real `<action>` carries no `type`
+  attribute: the kind is a child — `<command command="tsc:brush">` for
+  highlighting, `tsc:tsl-filter` for filtering, `<link>` for a URL. The reader
+  looked only at `@type`, which is the dialect the hand-written sample files
+  use, so **29 of the 45 actions in the example corpus — every action in every
+  genuine workbook — were dropped**. All 45 are now typed.
+
+- A URL action's target is read from where Tableau puts it: the `<url>`
+  element's text, or `link/@expression`. Reading the `@url` attribute returned
+  nothing, so URL buttons shipped pointing at an empty string. A button is now
+  created only when the target is a static link; Tableau usually interpolates a
+  field (`https://crm/customer/<customer_id>`, `<[ds].[Link]>`), which is a
+  per-row value a button cannot hold. Those report as unmigrated rather than as
+  a button that goes nowhere — there were 24 such buttons on one workbook.
+
 - The generation path's dependency on `visual_generator` is now pinned. The
   module reads as the visual builder, but production imports ten names from it —
   three lookup maps and seven helpers — and builds its visuals in

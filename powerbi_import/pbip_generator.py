@@ -99,6 +99,26 @@ def _L(v):
     return {"expr": {"Literal": {"Value": v}}}
 
 
+#: Schemes a Power BI action button will actually navigate to.
+_STATIC_URL_SCHEMES = ('http://', 'https://', 'mailto:', '//')
+
+#: A Tableau URL action interpolates fields as ``<field>`` or ``<[ds].[col]>``.
+_URL_FIELD_PLACEHOLDER = re.compile(r'<[^>]+>')
+
+
+def _is_static_url(value):
+    """True when a Tableau URL action target is a literal a button can hold.
+
+    Tableau usually builds the target from a field — on its own or embedded in
+    a query string — which is a per-row value, not a button target. Writing it
+    as a literal would ship a link that goes nowhere.
+    """
+    url = (value or '').strip()
+    if not url or _URL_FIELD_PLACEHOLDER.search(url):
+        return False
+    return url.lower().startswith(_STATIC_URL_SCHEMES)
+
+
 def _pbi_literal(v, column_type=None):
     """Convert a filter value to a PBI literal string.
 
@@ -1586,10 +1606,14 @@ class PowerBIProjectGenerator:
             action_type = action.get('type', '')
             
             if action_type == 'url':
+                url = action.get('url', '')
+                if not _is_static_url(url):
+                    # Tableau URL actions are usually built from a field, which
+                    # a button cannot hold; a data-bound URL column carries it.
+                    continue
                 visual_id = uuid.uuid4().hex[:20]
                 visual_dir = os.path.join(visuals_dir, visual_id)
-                
-                url = action.get('url', '')
+
                 action_name = action.get('name', 'URL Action')
                 
                 btn_json = {

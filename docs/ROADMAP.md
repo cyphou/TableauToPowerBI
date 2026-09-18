@@ -236,6 +236,29 @@ Found by the P2 evidence work, once `not_found` became distinguishable from
   Names`, a Tableau virtual field with no Power BI column. Both are reported
   rather than hidden, which is the point.
 
+### Actions — every real one was invisible
+
+- **A real `<action>` has no `type` attribute.** *Done — 29 of 45 corpus
+  actions were dropped, now 0.* The kind is a child: `<command>` names brushing
+  or filtering, `<link>` is a URL unless its expression is an internal `tsl:`
+  link. The reader matched only `@type`, which is the dialect the hand-written
+  sample files use — so the 16 typed actions it saw were all synthetic, and
+  every action in every genuine workbook was invisible.
+
+- **URL targets were read from the wrong place, then written anyway.** The
+  target is the `<url>` element's *text* or `link/@expression`; `@url` returned
+  nothing, so buttons shipped with `webUrl: ''`. Reading it correctly then
+  exposed the real problem: Tableau interpolates a field
+  (`https://crm/customer/<customer_id>`), which a button cannot hold. A button
+  is now created only for a static link, so the corpus emits none — an honest
+  zero, where before there were 24 buttons pointing at a field reference and
+  4 pointing at nothing.
+
+- **Open:** `_create_action_visuals` is called per page with the whole workbook
+  action list, so one action becomes one button per page. Binding an action to
+  its source dashboard needs `source/@dashboard`, which the extractor does not
+  capture yet. Invisible until now because so few actions survived.
+
 ### P4 — The last two parity gaps
 
 Both are genuine limits rather than measurement errors — the first real feature

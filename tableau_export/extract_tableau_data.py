@@ -111,11 +111,39 @@ _MARK_ENCODINGS = ('color', 'size', 'shape', 'detail', 'tooltip', 'label', 'text
 #: KPI card rather than an unrecognised chart.
 _CARD_MARK_CLASSES = {'automatic', 'text'}
 
+#: What Tableau's action commands mean, in the vocabulary the pipeline uses.
+_TABLEAU_ACTION_COMMANDS = {
+    'tsc:brush': 'highlight',
+    'tsc:tsl-filter': 'filter',
+    'tsc:filter': 'filter',
+    'tsc:goto-sheet': 'sheet-navigate',
+    'tsc:set-parameter': 'param',
+    'tsc:set-value': 'set-value',
+}
+
 
 def _strip_datasource_prefix(column):
     """``[federated.x].[none:Region:nk]`` -> ``[none:Region:nk]``."""
     match = _DS_PREFIXED_FIELD.match(column or '')
     return match.group(1) if match else (column or '')
+
+
+def _read_action_kind(action):
+    """Name an ``<action>`` from its children when it carries no ``type``.
+
+    Tableau writes the kind as a child, not an attribute: a ``<command>``
+    names brushing or filtering, and a ``<link>`` is a URL action unless its
+    expression is an internal ``tsl:`` filter link. Every action in the real
+    example workbooks is untyped, so reading only ``@type`` saw none of them.
+    """
+    link = action.find('./link')
+    if link is not None:
+        expression = link.get('expression', '') or ''
+        return 'filter' if expression.startswith('tsl:') else 'url'
+    command = action.find('./command')
+    if command is not None:
+        return _TABLEAU_ACTION_COMMANDS.get(command.get('command', ''), '')
+    return ''
 
 
 def _read_filter_condition(filt):
@@ -2553,7 +2581,7 @@ class TableauExtractor:
         actions = []
         
         for action in root.findall('.//action'):
-            action_type = action.get('type', '')  # filter, highlight, url, sheet-navigate, param, set-value
+            action_type = action.get('type', '') or _read_action_kind(action)
             action_name = action.get('name', '')
             
             action_data = {
@@ -2578,7 +2606,17 @@ class TableauExtractor:
             
             # URL action
             if action_type == 'url':
-                action_data['url'] = action.get('url', '')
+                # The target is the <url> element's text or link/@expression;
+                # @url is the sample dialect, not one Tableau writes.
+                url_elem = action.find('./url')
+                link = action.find('./link')
+                candidates = [
+                    action.get('url', ''),
+                    (url_elem.text or '') if url_elem is not None else '',
+                    link.get('expression', '') if link is not None else '',
+                ]
+                action_data['url'] = next(
+                    (c.strip() for c in candidates if c and c.strip()), '')
             
             # Clearing behavior (what happens when selection is cleared)
             clearing = action.get('clearing', '')

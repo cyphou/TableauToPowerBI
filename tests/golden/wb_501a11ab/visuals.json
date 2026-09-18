@@ -1,19 +1,6 @@
 {
- "visual_count": 6,
+ "visual_count": 5,
  "visuals": [
-  {
-   "fields": 0,
-   "has_format": true,
-   "height": 40,
-   "page": "Enterprise Sales Dashboard",
-   "title_font": "",
-   "title_size": "",
-   "type": "actionButton",
-   "width": 200,
-   "x": 10,
-   "y": 10,
-   "z": 5000
-  },
   {
    "fields": 3,
    "has_format": true,
