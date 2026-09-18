@@ -1,243 +1,146 @@
 # Development Roadmap
 
 The engine migrates Tableau workbooks to Power BI (PBIP/PBIR v4.0 + TMDL) or
-Fabric-native artifacts. Static local validation is the release gate; Desktop,
-semantic execution, refresh, and deployment evidence remain `not_run` unless an
+Fabric-native artifacts. Static local validation is the release gate. Semantic
+execution, refresh and deployment evidence remain `not_run` unless an
 authorized environment proves otherwise.
 
 ## Where we stand
 
-Measured on the committed example corpus (44 artefacts: 27 workbooks, 17 prep
-flows), not estimated:
+Measured on the committed example corpus, not estimated:
 
 | Signal | Value |
 |---|---|
-| Migration success | 44/44, 0 failures |
-| Opens in PBI Desktop (static gate) | 27/27 |
-| Quality verdicts | 13 PASS, 14 WARN, 0 FAIL, 0 blockers |
-| Functional parity | 18 workbooks FULL (≥99%), 9 HIGH (≥90%), lowest 91.7% |
-| Test suite | 9,979 passed, 67 skipped, 1 xfailed |
-| Agent ownership | 132 modules, 0 unowned, 0 asymmetric declarations |
+| Migration success | 44/44 artefacts, 0 failures |
+| Static openability gate | 27/27 projects, 0 blockers |
+| Quality verdicts | 13 PASS, 14 WARN, 0 FAIL |
+| Outstanding repairs | **0** — nothing measurably broken remains |
+| Functional parity | mean **99.7%**, lowest **96.4%**, 20 of 26 at full parity |
+| Evidence level | `STATIC_PASS` on 26/26 |
+| Test suite | 9,988 passed, 67 skipped, 1 xfailed, across 274 files |
+| Agent ownership | 0 unowned modules, 0 asymmetric declarations |
 
-Residual warnings are legitimate and documented: unrecognised connectors to
-verify by hand, wide schemas, LOD complexity, and explicit visual
-approximations. They are advisory, not defects.
+The remediation queue now contains **no `repair` actions at all**: 10 `decide`,
+12 `note`, 2 `verify`. Everything left either needs a human judgement or is
+evidence with nothing to act on. That is the milestone this cycle reached, and
+it changes what the next one should be about.
 
 ## What the last cycle proved about method
 
-Four defects were found by **probing generated output**, not by reading code,
-and each was a vocabulary mismatch between a producer and a consumer:
+Nine defects were found, and **not one was a missing feature**. Every single
+one was a detector that counted something other than what it claimed:
 
-- the preceptor scored DAX clean that the validator rejected, because the two
-  kept separate lists of Tableau functions;
-- the healer repaired syntax but left `COUNTD` in place, so autoheal could
-  report success on DAX that will not load;
-- the shared badge helper knew `APPROXIMATE` while the parity registry emits
-  `APPROXIMATED`, so two of four parity statuses rendered as neutral grey in
-  all nine HTML reports;
-- the lineage inventory looked for `worksheet` while the extractor emits
-  `source_worksheets`, reporting 216 healthy objects as orphans.
+- the preceptorship reviewer failed six checks against shapes the generator
+  never writes — it read documentation annotations as DAX, and its M dimension
+  scanned fenced blocks that hold *calculated-table DAX*, so it scored every
+  workbook 5/5 while reading no M at all;
+- `conditionalFormatting` was a key no extractor could ever fill, and beneath
+  it sat a real loss: **72 colour-encoded worksheets produced 0 coloured
+  visuals**, because a colour encoding is stored in two places and only one was
+  read;
+- the `alias` parity status was **hardcoded**, not measured, so every workbook
+  using aliases was docked — while 0 of 17 measure-name aliases actually
+  reached the model;
+- all 15 "data blending" records in the corpus were **parameter usage**; not
+  one genuine blend existed, yet five workbooks were penalised;
+- the Desktop probe reported `opened` for a project whose **semantic model had
+  been deleted**.
 
-The lesson drives the next phase: the same value must mean the same thing at
-every hop, and the only reliable way to find out is to run the pipeline and
-read what it wrote.
+Three rules earned their place, and the next phase is built on them:
+
+1. **Measure before building.** Twice, measuring changed what the work was: the
+   "conditional formatting" item was really colour loss, and the "data
+   blending" floor was really parameter usage.
+2. **Prove the detector can fail.** A check that only ever passes is a rubber
+   stamp. The Desktop probe passed 26/26 — and then passed four deliberately
+   broken projects too.
+3. **Build cross-module fixtures from the producer.** Hand-written JSON encodes
+   the consumer's assumption. Serialising through the producer's own classes
+   caught a wrong key immediately.
 
 ## Next phase
 
-### P1 — Close the producer/consumer contract gap
+### P1 — Make the remaining warnings mean something
 
-The four defects above were all found by accident. They should be impossible to
-reintroduce silently.
+Two motifs account for almost every warning in the corpus, and neither is
+currently actionable.
 
-- **Contract tests between stages.** *Started.*
-  `tests/test_extraction_contract.py` extracts genuine workbooks, derives the
-  field names actually emitted per object type, and asserts the constants
-  consumers depend on intersect them. It found three gaps on its first run:
-  filters, Hyper extracts and blending links exposed no name-like key, so the
-  inventory listed them as `item-0`. Extend the same shape to the remaining
-  hand-offs (parity → renderer, validator → preceptor → healer).
-- **A key-name lint.** *Done.* `scripts/check_field_names.py` tracks which
-  variables hold extracted objects of which type, groups fallback chains into
-  one logical value, and compares against both the vocabulary a real extraction
-  produces and the keys the extractor assigns anywhere. Observation proves a key
-  is emitted but never that it is absent, so the declared-key cross-check
-  matters: `hyper_files['tables']` is set on a branch the sample corpus does not
-  take. It reported 50 candidates before those refinements and 3 after.
+- **Unresolved lineage — 120 records across 12 of 26 workbooks**, one workbook
+  alone accounting for 65. Sampling them shows the resolver compares targets
+  against the wrong source category: the 19 unresolved `tables` are generated
+  **parameter** tables (`Base Salary`, `Last x Days`) whose source is a
+  parameter, not a table, and the 101 unresolved `columns` are **calculated**
+  columns whose source is a calculation, not a column. This is the same
+  category mismatch as the defects above, one level up. Either resolve across
+  source categories or stop reporting generated artifacts as orphans — but
+  decide on evidence, not by suppressing the count.
+- **"Pre-migration assessment contains warnings" — 10 of 26 workbooks.** One
+  line covers unrecognised connectors, wide schemas and LOD complexity, all
+  owned by "Assessor" and all `decide`. A reader cannot act on it. Split it by
+  what the warning actually is, so each carries its own action and owner, the
+  way findings already do elsewhere.
 
-  It surfaced a blind spot worth naming: **tests fabricate keys the extractor
-  never produces**. `test_conditional_formatting` builds a worksheet carrying
-  `conditionalFormatting` and `test_v51_features` one carrying
-  `dynamic_visibility`; both pass, while on a real workbook neither code path
-  fires. Fixed where the data exists — dynamic zone visibility is now read from
-  the dashboard, where the extractor records it, and the comparison report now
-  reads `chart_type` rather than falling through to the mark-encoding type.
-  Conditional formatting is genuinely not extracted, so counting it reports zero
-  on every workbook; extracting it is a feature, left open deliberately.
-- **Corpus assertion in CI.** *Done.* `scripts/check_corpus_gate.py` migrates
-  all three batches and enforces the floors static validation can prove — every
-  artefact migrates, every project passes the openability preflight, no
-  blockers. Warnings stay advisory. Wired as the `corpus-gate` job;
-  `tests/test_corpus_gate.py` proves the gate fails when a project will not
-  open, when a blocker appears, and when a verdict is missing or unreadable.
+### P2 — Audit the detectors that cannot fail
 
-### P2 — Make the quality report answer "what do I fix first?"
+Five of the nine defects were checks that could not report failure, or statuses
+asserted rather than measured. That is now a known failure mode, so look for it
+deliberately rather than waiting to trip over the next one.
 
-The report is now accurate — every verdict is coloured and no category is
-mistaken for one — but it still lists findings rather than ranking them.
+- Enumerate every status the pipeline reports and classify it: **measured**,
+  **asserted** (a fixed capability claim), or **unfalsifiable** (no input could
+  make it fail). The `alias` status was asserted; the Desktop probe is
+  unfalsifiable for content.
+- For each check, write the negative control first: what input *should* make
+  this fail? If none exists, the check is documentation, and should say so in
+  its payload the way the Desktop probe now does.
+- The parity registry is the densest concentration of asserted statuses — every
+  `Feature` carries a fixed verdict. Some are genuine capability statements;
+  others, as `alias` was, are measurable per workbook.
 
-- **Rank warnings by what they require.** *Done.* Every finding records the
-  action it needs — `repair` (measurably wrong, the pipeline can fix it),
-  `decide` (a human judgement is required first), `verify` (we approximated;
-  confirm it matches intent) or `note` (evidence, nothing to act on) — at the
-  point it is raised. The queue sorts blockers first, then repair before decide
-  before verify before note. Owners come from the same record; they used to be
-  guessed by searching the message text for "DAX" or "table", the same brittle
-  pattern that let producers and consumers drift apart elsewhere.
-- **Make the preceptor read what the generator writes.** *Done.* Before wiring
-  its coaching into the report, the reviewer itself had to be trusted — and it
-  was not. Six of its checks consumed a shape the generator never produces, so
-  it penalised correct output while leaving real defects unseen:
-  - It read *annotations* as DAX. `Copilot_Description` preserves the original
-    Tableau formula on purpose, so every `COUNTD` recorded there was reported
-    as a leak, and every truncated annotation as an unbalanced parenthesis.
-  - It looked for `definition.pbir` inside `definition/`; the generator writes
-    it beside that folder.
-  - It read report-level filters from a bare `filters` key; PBIR nests them
-    under `filterConfig`.
-  - It demanded a table literally named `Calendar`, though the generator
-    deliberately skips auto-Calendar when the source already ships a date
-    dimension such as `dim_date`.
-  - It expected a visual for *every* worksheet, including those never placed on
-    a dashboard, which map to no PBI artifact.
-  - **The M dimension inspected no M at all.** It scanned fenced ``` blocks,
-    but M partitions are written as a bare `source =` with an indented body —
-    fences hold calculated-table *DAX*. It therefore scored 5/5 by looking at
-    nothing, and its one finding was valid `NAMEOF('Table'[Col])` DAX misread
-    as an M string literal.
+### P3 — The runtime ceiling
 
-  Each check now reuses the producer's own vocabulary (`_DATE_TABLE_NAMES`,
-  `_is_non_restrictive`, `_dashboard_worksheet_names`) instead of restating it.
-  Across the real-world corpus the mean rose from 4.92 to 5.00 with every
-  finding eliminated — and a negative-control suite proves injected leaks,
-  paren imbalances, M `if`/`else` gaps, single-quoted M sets, missing PBIR and
-  absent date tables are all still caught.
-- **Carry the preceptor's coaching feedback into the consolidated report.** *Done.*
-  The review was the only surface that said *how* to fix something, and it was
-  reachable only via `--preceptor`. The quality report now reads
-  `preceptor_report.json` when it is present beside the project — the review
-  stays opt-in, and its absence reads as `not_run` rather than as a failure.
-  Each coaching item enters the remediation queue as a `repair` owned by the
-  agent that owns the artifact (DAX, Wiring, Semantic, Visual, Orchestrator)
-  instead of the generic "Assessor", carries its `fix` text and the file it
-  was raised against, and renders as a "How:" line in the HTML. Visual
-  equivalence asks to `verify` rather than `repair`, because screenshot
-  similarity is a judgement and not a measurable defect. An escalated review
-  becomes a blocker (`escalated_block`) or a warning (`escalated_warn`).
-- **Extract conditional formatting.** *Done, and the defect was not the one
-  recorded here.* Tableau has no separate conditional-formatting object: the
-  rules are the per-value colours and stepped thresholds of a colour encoding,
-  so the `conditionalFormatting` key the assessment counted was a vocabulary no
-  extractor could ever fill.
+Every workbook sits at `STATIC_PASS` and nothing in the engine can raise it.
 
-  Measuring the corpus found a larger loss underneath. Tableau splits a colour
-  encoding in two — the worksheet names the field and the palette, while the
-  per-value colours are stored once per datasource as
-  `<map to="#hex"><bucket>value</bucket></map>` — and only the worksheet half
-  was read. Of 114 `<color>` elements across the corpus **none** carries a
-  palette attribute and **no** `<bucket>` carries a colour attribute, so the
-  palette and threshold paths were both unreachable: 72 colour-encoded
-  worksheets produced 0 coloured visuals.
+- **Desktop is measured and capped.** All 26 projects launch and survive, but
+  the probe watches the process, not the document. Raising it needs UI
+  automation to read the error dialog, or a headless engine that loads the
+  model — a Tabular/AMO path is worth scoping, since those libraries ship with
+  Desktop and need no tenant.
+- **Semantic execution, refresh and deployment need an authorized
+  environment.** This is a decision, not an engineering task: either a
+  workspace and credentials exist, or the roadmap should say plainly that these
+  signals will stay `not_run` and stop listing them as pending.
 
-  The halves are now joined and custom palettes resolve against their
-  document-level `<color-palette>` definitions. 50 worksheets gained per-value
-  colours and **46 of 284 visuals now carry colour that was silently dropped**.
-  The assessment counts those rules instead of a key nobody emits. Corpus gate
-  unchanged: 27 openable, 0 blockers.
+### P4 — The last two parity gaps
 
-### P3 — Runtime evidence
+Both are genuine limits rather than measurement errors — the first real feature
+work on this list.
 
-Semantic execution, refresh and deployment are still `not_run`; they need an
-authorized environment. The Desktop signal, however, needed no authorization —
-Power BI Desktop is a local application — and has now been measured.
-
-- **Desktop open: measured, and worth less than it looks.** All **26 of 26**
-  migrated projects launched Power BI Desktop and survived the settle window
-  with no crash and no error trace. But the probe was then given deliberately
-  broken projects, and reported `opened` for **every one of them** — including
-  a corrupted `report.json`, a *deleted* semantic model, and invalid DAX.
-  Desktop surfaces content errors in a dialog and keeps running, so the process
-  stays alive either way. Every corpus run also lasted exactly the settle
-  window, confirming the verdict is "survived N seconds" and nothing more.
-
-  The probe now states its scope (`verified: process_survival`) and carries the
-  limitation in its own payload, so `opened` cannot be read as proof that a
-  project loaded. Static validation stays the authoritative content check, and
-  a failing static check is never rescued by a surviving process.
-
-- Making this a real gate would need UI automation to read the error dialog, or
-  a headless engine that loads the model. Neither exists here today; saying so
-  is more useful than a green tick that cannot fail.
-- Semantic execution against a real model would turn parity scores from
-  structural coverage into verified behaviour. Still needs an authorized
-  environment decision.
-
-### P4 — Fidelity where the corpus is weakest
-
-- **Field aliases are no longer dropped.** *Done.* All four floor workbooks
-  reported the same single gap, and its status was hardcoded `APPROXIMATED` in
-  the feature table rather than measured — so any workbook using aliases was
-  docked regardless of the result.
-
-  Measuring showed the family covers two capabilities with different fidelity.
-  Aliases that rename an *aggregated field* (`sum:F: GDP (curr $)` →
-  "GDP (US $'s)") were simply lost: **0 of 17 reached the model**, because
-  Tableau aggregates implicitly and there was no named object to carry the
-  caption. An explicit measure is now generated — added, never renamed, so no
-  reference can break — and `rank:` prefixes wrap it in `RANKX(ALL(...))`,
-  the convention the DAX converter already uses. All 17 are now applied.
-  Aliases that rename *individual values* (`%null%` → " ") have no Power BI
-  equivalent and stay approximated.
-
-  The registry feature is split accordingly (`alias_measure_name` healed,
-  `alias_value` approximated, registry 1.2.0). Effect on the floors:
-  `feedback_dashboard` 91.7% → **100%**, `RESTAPISample` and `SampleWB`
-  96.7% → 98.6%, `World Indicators` 97.8% → 99.0%. Corpus mean 98.4% → 98.9%,
-  workbooks at full parity 16 → 17 of 26. Corpus gate unchanged.
-
-- **The remaining floor was not data blending either — it was parameter usage
-  counted as one.** *Done.* Tableau exposes its parameter container as a
-  pseudo-datasource, so every worksheet referencing a parameter emits a
-  dependency on `Parameters`. All **15 of 15** extracted blend records across
-  the corpus named `Parameters` as the secondary: **not one genuine blend
-  existed**, yet five workbooks were docked for the feature.
-
-  `blend_graph` already owned this distinction (`VIRTUAL_SECONDARIES`, honoured
-  by the assessment); the parity detector counted the raw list instead. It now
-  reuses that vocabulary. `shapes_test` 90.9% → **100%**, `vishnu_dashboard`
-  94.7% → **100%**, `World Indicators` 99.0% → **100%**, `nba_player_stats`
-  93.3% → 96.4%, `Salesforce` 98.5% → 99.7%. Corpus mean 98.9% → **99.7%**,
-  lowest score 90.9% → **96.4%**, full parity 17 → **20 of 26**.
-
-- **What is genuinely left**: four `Field alias (per value)` gaps, which Power
-  BI cannot express, and two `URL action` gaps. Both are real limits rather
-  than measurement errors.
+- **Per-value aliases (4 workbooks).** Power BI has no per-value alias, but the
+  renaming is expressible as a Power Query value replacement or a lookup
+  column. Worth scoping against how often it changes meaning rather than
+  cosmetics.
+- **URL actions (2 workbooks).** Maps to a Power BI action button or a
+  conditional URL measure.
 
 ## Open decisions
 
-These need a product call, not an engineering one. They are listed because they
-have been deferred more than once.
+These need a product call, not an engineering one.
 
+- **An authorized environment for runtime evidence** (P3). Everything else on
+  this roadmap can be done locally; this cannot.
 - **Workbook names in test content assertions.** Fixtures are name-free, but
-  ~100 occurrences remain in `tests/` inside layout and regression assertions
-  (`test_layout_regression`, `test_non_regression`,
-  `test_performance_regression`). They are page and visual names — report
-  *content*. Replacing them would destroy the point of those tests. Either
-  accept them or accept weaker tests.
+  ~100 occurrences remain in `tests/` inside layout and regression assertions.
+  They are page and visual names — report *content*. Replacing them would
+  destroy the point of those tests. Either accept them or accept weaker tests.
 - **Unfaithful sample fixtures.** Three hand-written samples declare dashboard
   actions as `<action source=...>` attributes; no genuine Tableau file in the
   corpus uses that shape. The engine is correct and the fixtures are wrong.
-  Either regenerate them from real Tableau or accept that they exercise a
-  shape the engine will never see in production.
+  Either regenerate them from real Tableau or accept that they exercise a shape
+  the engine will never see in production.
+- **Orphaned documentation assets.** `docs/images/logo.svg`,
+  `conversions.svg`, `features.svg`, `pipeline.svg` and `light_ui_batch.png`
+  are referenced by nothing. Keep for future use or delete.
 
 ## Non-goals
 
@@ -248,6 +151,12 @@ Recorded so they are not re-proposed:
   the openability gate blocks anything that slips through.
 - Teaching the extractor the attribute-form action shape. That would be fitting
   production code to a bad test input.
+- Stripping parameter pseudo-blends at extraction. `blend_graph` deliberately
+  receives the raw records and filters them itself; removing them earlier would
+  break that contract and its `skip_virtual` option.
 - Widening the grade vocabulary to descriptive categories (`native`,
   `generated`, `static_evidence`). Colouring a category as if it were a verdict
   is worse than leaving it plain.
+- Failing the corpus gate on warnings. Unrecognised connectors and documented
+  approximations are advisory; gating on them would train people to ignore the
+  gate.
