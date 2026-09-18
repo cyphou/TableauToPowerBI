@@ -82,11 +82,23 @@ currently actionable.
   unattributable — an escaped name (`Probability \%`), two columns renamed
   during generation, one malformed (`-2,0`) — and the report already excludes
   them because they are not source objects.
-- **"Pre-migration assessment contains warnings" — 10 of 26 workbooks.** One
-  line covers unrecognised connectors, wide schemas and LOD complexity, all
-  owned by "Assessor" and all `decide`. A reader cannot act on it. Split it by
-  what the warning actually is, so each carries its own action and owner, the
-  way findings already do elsewhere.
+- **"Pre-migration assessment contains warnings" — 10 of 26 workbooks.**
+  *Done.* One line covered unrecognised connectors, wide schemas and licensing
+  limits alike, all owned by "Assessor" and all `decide`. Behind it sat **19
+  warnings across 6 categories and 13 distinct checks**, each already carrying
+  its own detail and recommendation — text the queue was discarding.
+
+  Each warning is now its own finding, routed by assessment *category* rather
+  than by matching words in a check name, which would drift the moment a new
+  connector appeared. The queue reads 9 `decide` / 6 `verify` / 4 `note` across
+  four owners: connector, volume and licensing warnings go to Deployer as
+  environment decisions nobody else can make; conversion warnings ask DAX and
+  Visual to confirm their approximations; the rest is context for Semantic.
+  Every entry carries the check's own recommendation as its *How* line. Blocking
+  failures are now named rather than merely counted.
+
+  Verdicts are deliberately unchanged — this makes the queue readable, it does
+  not move a score.
 
 ### P2 — Audit the detectors that cannot fail
 

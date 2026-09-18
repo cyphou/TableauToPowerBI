@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Pre-migration assessment warnings now reach the remediation queue as separate,
+  addressable entries. A single "assessment contains warnings" line stood in for
+  19 warnings spanning 6 categories and 13 distinct checks across the example
+  corpus, all attributed to one owner with one action, and it discarded the
+  detail and recommendation each check already carried. Warnings are now routed
+  by assessment category: connector, volume and licensing warnings go to the
+  deploying tenant as decisions, conversion warnings ask the owning agent to
+  confirm its approximation, and the rest is recorded as context. Blocking
+  failures are named rather than counted. Verdicts are unchanged.
+
 - Semantic lineage no longer reports generated and calculated objects as
   orphans. The resolver matched every target against source tables and columns
   only, so What-If tables named after their parameter, calculated columns whose

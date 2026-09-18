@@ -350,15 +350,50 @@ def build_consolidated_quality_html(quality_json_paths: list,
     return output_path
 
 
-def _assessment_has_blocking_failures(assessment: Any) -> bool:
-    """Return true for source incompatibility failures, not performance risk alone."""
+#: A failure here is a risk to weigh, not a source feature we cannot carry over.
+_ADVISORY_ASSESSMENT_CATEGORIES = {"Performance"}
+
+
+def _assessment_blocking_failures(assessment: Any) -> list[str]:
+    """Name the source incompatibility failures, excluding performance risk alone."""
+    failures = []
     for category in getattr(assessment, "categories", []) or []:
-        if getattr(category, "name", "") == "Performance":
+        name = getattr(category, "name", "")
+        if name in _ADVISORY_ASSESSMENT_CATEGORIES:
             continue
-        if any(getattr(check, "severity", "") == "fail"
-               for check in getattr(category, "checks", []) or []):
-            return True
-    return False
+        for check in getattr(category, "checks", []) or []:
+            if getattr(check, "severity", "") == "fail":
+                failures.append(f"{name} / {getattr(check, 'name', '') or 'check'}")
+    return failures
+
+
+def _assessment_check_findings(assessment: Any, findings: "_Findings") -> None:
+    """Raise one finding per warning check instead of one for the whole report.
+
+    A single "contains warnings" line collapsed unrecognised connectors, wide
+    schemas and licensing limits into one owner and one action, so a reader
+    could not act on any of them. Every check already carries its own detail
+    and recommendation; this hands each to the agent that can answer it.
+    """
+    for category in getattr(assessment, "categories", []) or []:
+        name = getattr(category, "name", "") or "Assessment"
+        finding_id = _ASSESSMENT_CATEGORY_FINDINGS.get(name, "assessment_warnings")
+        advisory = name in _ADVISORY_ASSESSMENT_CATEGORIES
+        for check in getattr(category, "checks", []) or []:
+            severity = getattr(check, "severity", "")
+            # A blocking failure is already listed by finding_id assessment_failures.
+            if severity == "fail" and not advisory:
+                continue
+            if severity not in ("warn", "fail"):
+                continue
+            detail = getattr(check, "detail", "") or ""
+            label = getattr(check, "name", "") or "Check"
+            findings.add(
+                finding_id,
+                f"{name} — {label}" + (f": {detail}" if detail else "."),
+                blocker=False,
+                fix=getattr(check, "recommendation", "") or "",
+            )
 
 
 def _assessment_dict(report: Any) -> Dict[str, Any]:
@@ -445,6 +480,23 @@ _FINDING_ACTIONS = {
     "assessment_failures": ("decide", "Assessor"),
     "assessment_red": ("decide", "Assessor"),
     "assessment_warnings": ("decide", "Assessor"),
+    # Assessment warnings, one entry per kind of warning rather than one for the
+    # whole report. Connector, volume and licensing warnings are environment
+    # decisions nobody but the deploying tenant can make; conversion warnings
+    # ask the owning agent to confirm its approximation; the rest is context.
+    "assessment_connector": ("decide", "Deployer"),
+    "assessment_connection_security": ("decide", "Deployer"),
+    "assessment_extract": ("decide", "Wiring"),
+    "assessment_volume": ("decide", "Deployer"),
+    "assessment_licensing": ("decide", "Deployer"),
+    "assessment_calculation": ("verify", "DAX"),
+    "assessment_prep": ("verify", "Wiring"),
+    "assessment_visual": ("verify", "Visual"),
+    "assessment_interaction": ("verify", "Visual"),
+    "assessment_model": ("note", "Semantic"),
+    "assessment_performance": ("note", "Semantic"),
+    "assessment_scope": ("note", "Assessor"),
+    "assessment_functionality": ("note", "Evidence"),
     "parity_unsupported": ("decide", "Assessor / domain owner"),
     "filter_coverage": ("verify", "Visual"),
     "m_fallback": ("verify", "Wiring"),
@@ -462,6 +514,30 @@ _FINDING_ACTIONS = {
     "review_tmdl_structure": ("repair", "Semantic"),
     "review_pbir_fidelity": ("repair", "Visual"),
     "review_visual_equivalence": ("verify", "Visual"),
+}
+
+#: Which finding a warning becomes, chosen by its assessment category.
+#:
+#: The category is the only field that reliably says what *kind* of problem a
+#: check reports; check names are free text and vary per connector, so matching
+#: on them would drift the moment a new connector appears. An unmapped category
+#: falls back to the generic assessment_warnings entry above.
+_ASSESSMENT_CATEGORY_FINDINGS = {
+    "Datasource Compatibility": "assessment_connector",
+    "Connection String Security": "assessment_connection_security",
+    "Data Extracts & Packaging": "assessment_extract",
+    "Data Volume": "assessment_volume",
+    "Licensing": "assessment_licensing",
+    "Calculation Readiness": "assessment_calculation",
+    "Prep Complexity": "assessment_prep",
+    "Visual & Dashboard Coverage": "assessment_visual",
+    "Filter & Parameter Complexity": "assessment_interaction",
+    "Interactivity & Actions": "assessment_interaction",
+    "Data Model Complexity": "assessment_model",
+    "Multi-Datasource": "assessment_model",
+    "Performance": "assessment_performance",
+    "Migration Scope & Effort": "assessment_scope",
+    "Functionality Parity": "assessment_functionality",
 }
 
 #: Fix what is broken before deciding what to do about what is merely different.
@@ -978,11 +1054,12 @@ def build_quality_report(extracted: Dict, project_dir: str,
                 + ", ".join(missing_runtime) + ".",
                 blocker=True,
             )
-    assessment_blocking_failures = _assessment_has_blocking_failures(assessment)
+    assessment_failures = _assessment_blocking_failures(assessment)
+    assessment_blocking_failures = bool(assessment_failures)
     if assessment_blocking_failures:
         findings.add("assessment_failures",
                      "Pre-migration assessment contains blocking failures.",
-                     blocker=True)
+                     blocker=True, evidence=assessment_failures)
     elif assessment.overall_score == "RED":
         findings.add(
             "assessment_red",
@@ -1014,9 +1091,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         findings.add("parameter_coverage",
                      "One or more extracted parameters lack a target symbol.",
                      blocker=False)
-    if assessment.overall_score == "YELLOW":
-        findings.add("assessment_warnings",
-                     "Pre-migration assessment contains warnings.", blocker=False)
+    _assessment_check_findings(assessment, findings)
 
     lineage = _lineage_evidence(extracted or {}, data, interface, parity)
     lineage_contract = _load_lineage_contract(project_dir)
