@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo-migration-dashboards.png" alt="Tableau to Power BI migration" width="180"/>
+</p>
+
 # 🔄 Tableau → Power BI
 
 **Automated Migration Tool** — convert Tableau workbooks (`.twb`/`.twbx`) to Power BI projects (`.pbip`) in seconds, fully automated, zero manual rework.

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/logo-migration-dashboards.png" alt="Tableau to Power BI migration" width="140"/>
+</p>
+
 # Documentation
 
 Reference documentation for the Tableau to Power BI migration engine.

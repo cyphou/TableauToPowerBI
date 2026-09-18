@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/logo.svg" alt="Tableau to Power BI" width="480"/>
+  <img src="docs/images/logo-migration-dashboards.png" alt="Tableau to Power BI" width="160"/>
 </p>
 
 # Contributing to Tableau to Power BI Migration Tool
