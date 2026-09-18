@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- The generation path's dependency on `visual_generator` is now pinned. The
+  module reads as the visual builder, but production imports ten names from it —
+  three lookup maps and seven helpers — and builds its visuals in
+  `pbip_generator`. Its other 48 top-level functions are referenced by no
+  production code, and 38 of those are named by a test, so the module read as
+  covered. A test now records the real surface, so wiring a builder in is a
+  decision rather than an accident.
+
+- `pbip_generator.py` no longer carries a UTF-8 BOM. It was the only file in the
+  repository with one, and it makes `ast.parse` reject an otherwise valid file —
+  quietly excluding the largest generator from any static scan. A test now
+  refuses a BOM anywhere in the source tree.
+
 - Tableau packed-bubble sheets become treemaps instead of tables. With Rows and
   Columns empty, a measure on Size with a dimension on Colour is one shape per
   category sized by the measure — which is what a Power BI treemap draws. A

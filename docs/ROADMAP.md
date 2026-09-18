@@ -182,14 +182,33 @@ large share of visuals were plain tables.
   Salesforce sheets mix Text and Columns; one is empty; one is a Heat Map,
   correctly a matrix.
 
-- **Found while looking, not fixed:** `visual_generator._build_visual_filters`
-  is never called during a migration — measured at zero calls across four
-  workbooks, including ones with worksheet filters. It emits a different shape
-  (`type`/`expression`/`values`) from the one every generated artefact actually
-  uses (`name`/`type`/`field`/`filter`), and its `topN` branch is reachable by
-  no producer. Three test files exercise it, so it reads as covered. This is
-  the P2 failure mode in test form and needs a decision: wire it up, or retire
-  it.
+- **Found while looking, then measured properly.** `visual_generator.py` reads
+  as the visual builder; it is consumed as a lookup registry. Production
+  imports **ten names** from it — three maps and seven helpers — and builds its
+  visuals in `pbip_generator`. The other **48 of its 55 top-level functions are
+  referenced by no production code at all**, including `_build_visual_filters`
+  (measured at zero calls across four migrations), `create_visual_container`,
+  `build_query_state` and the tooltip, sparkline, small-multiples and
+  sync-group builders. **38 of them are named by a test**, so the module reads
+  as covered. `tests/test_visual_generator_surface.py` now pins the ten, so
+  wiring a builder in becomes a decision rather than an accident.
+
+  What this does *not* show: that the unreached features are broken or missing.
+  Absence in the output only means the corpus never asked. Checking the source
+  side, SCRIPT_\* calls and synchronised filter zones are **0 across all 27
+  workbooks**, so those two are simply unexercised. Sparklines, small multiples
+  and conditional icons remain unverified in either direction.
+
+- **A hypothesis that measurement killed:** visual sort state looked missing —
+  11 worksheets carry a sort order and only 2 generated visuals have a
+  `sortDefinition`. Nine of those eleven sheets are on no dashboard, so they
+  never become visuals at all. Two placed, two emitted: the sort path is
+  correct end to end and needed no change.
+
+- **A trap removed:** `pbip_generator.py` was the only file in the repository
+  carrying a UTF-8 BOM, which makes `ast.parse` fail on an otherwise valid
+  file. It silently excluded the largest generator from this audit's first
+  pass. Stripped, and a test now refuses a BOM anywhere in the source tree.
 
 ### Filters — the reports that had none
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Power BI Project (.pbip) generator from converted Tableau objects
 
 This module automatically creates the complete structure of a Power BI Project,
