@@ -166,9 +166,30 @@ refresh, deployment. Static validation has taken the corpus as far as it can.
 
 ### P4 — Fidelity where the corpus is weakest
 
-Parity floors sit at 91.7% (`feedback_dashboard`) and ~96% for three others.
-Those four workbooks are the honest backlog: work the specific approximations
-they report rather than chasing an aggregate.
+- **Field aliases are no longer dropped.** *Done.* All four floor workbooks
+  reported the same single gap, and its status was hardcoded `APPROXIMATED` in
+  the feature table rather than measured — so any workbook using aliases was
+  docked regardless of the result.
+
+  Measuring showed the family covers two capabilities with different fidelity.
+  Aliases that rename an *aggregated field* (`sum:F: GDP (curr $)` →
+  "GDP (US $'s)") were simply lost: **0 of 17 reached the model**, because
+  Tableau aggregates implicitly and there was no named object to carry the
+  caption. An explicit measure is now generated — added, never renamed, so no
+  reference can break — and `rank:` prefixes wrap it in `RANKX(ALL(...))`,
+  the convention the DAX converter already uses. All 17 are now applied.
+  Aliases that rename *individual values* (`%null%` → " ") have no Power BI
+  equivalent and stay approximated.
+
+  The registry feature is split accordingly (`alias_measure_name` healed,
+  `alias_value` approximated, registry 1.2.0). Effect on the floors:
+  `feedback_dashboard` 91.7% → **100%**, `RESTAPISample` and `SampleWB`
+  96.7% → 98.6%, `World Indicators` 97.8% → 99.0%. Corpus mean 98.4% → 98.9%,
+  workbooks at full parity 16 → 17 of 26. Corpus gate unchanged.
+
+- **The remaining floor is data blending**, not aliases: `shapes_test` 90.9%,
+  `nba_player_stats` 93.3%, `vishnu_dashboard` 94.7%. Two `URL action` gaps
+  (`Enterprise_Sales`, `Complex_Enterprise`) are the only other family left.
 
 ## Open decisions
 

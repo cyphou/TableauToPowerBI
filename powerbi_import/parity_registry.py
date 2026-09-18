@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Dict, List, Optional
 
-REGISTRY_VERSION = "1.1.0"
+REGISTRY_VERSION = "1.2.0"
 
 EXACT = "exact"
 HEALED = "healed"
@@ -106,8 +106,12 @@ _FEATURES: List[Feature] = [
             "Review generated synonyms and validate them in the target semantic model."),
             Feature("dashboard", "Report", "Dashboard", HEALED,
                 "PBIR report page", "Review page composition and dashboard-level interactions."),
-            Feature("alias", "Semantic Model", "Field alias", APPROXIMATED,
-                "Column caption or synonym", "Verify aliases remain available as target captions or synonyms."),
+            Feature("alias_measure_name", "Semantic Model", "Field alias (measure name)", HEALED,
+                "Named DAX measure carrying the Tableau display name",
+                "Verify the generated measure name matches the Tableau caption and is used on the visual."),
+            Feature("alias_value", "Semantic Model", "Field alias (per value)", APPROXIMATED,
+                "Column caption or synonym",
+                "Power BI has no per-value alias; map the values in Power Query or a lookup column if the renaming matters."),
             Feature("sort_order", "Semantic Model", "Sort order", HEALED,
                 "Sort-by-column or visual sort state", "Verify custom sort direction and sort-by-column behavior."),
                 Feature("refresh_schedule", "Operations", "Refresh schedule", HEALED,
@@ -241,6 +245,26 @@ def _count_actions(kind: str) -> Callable[[Dict], int]:
     return detector
 
 
+#: The key Tableau uses for aliases that rename an aggregated measure.
+_MEASURE_NAMES_KEY = ":Measure Names"
+
+
+def _count_measure_name_aliases(converted: Dict) -> int:
+    """Aliases renaming an aggregated field, which become named DAX measures."""
+    aliases = converted.get("aliases")
+    if not isinstance(aliases, dict):
+        return 0
+    return len(aliases.get(_MEASURE_NAMES_KEY, {}) or {})
+
+
+def _count_value_aliases(converted: Dict) -> int:
+    """Aliases renaming individual values, which Power BI cannot express."""
+    aliases = converted.get("aliases")
+    if isinstance(aliases, dict):
+        return sum(1 for key in aliases if key != _MEASURE_NAMES_KEY)
+    return len(aliases or [])
+
+
 def _count_worksheet_list(key: str) -> Callable[[Dict], int]:
     """Sum the lengths of a per-worksheet list-valued field (e.g. trend_lines).
 
@@ -285,7 +309,8 @@ _DETECTORS: Dict[str, Callable[[Dict], int]] = {
     "custom_geocoding": _len("custom_geocoding"),
     "linguistic_schema": _count_linguistic_schema,
     "dashboard": _len("dashboards"),
-    "alias": _len("aliases"),
+    "alias_measure_name": _count_measure_name_aliases,
+    "alias_value": _count_value_aliases,
     "sort_order": _len("sort_orders"),
     "refresh_schedule": _count_refresh_schedules,
     "subscription": _len("subscriptions"),
@@ -440,7 +465,7 @@ def scan_workbook(converted: Dict, workbook: str = "Workbook") -> ParityScan:
         value = converted.get(source_key)
         in_use = bool(value) if not isinstance(value, dict) else bool(value)
         singular_key = {
-            "aliases": "alias",
+            "aliases": "alias_",
             "dashboards": "dashboard",
             "sort_orders": "sort_order",
             "calculations": "calc_",

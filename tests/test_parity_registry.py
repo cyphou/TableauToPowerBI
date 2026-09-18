@@ -176,12 +176,18 @@ class TestOtherDetectors(unittest.TestCase):
     def test_report_feature_families_are_detected(self):
         scan = scan_workbook({
             "dashboards": [{"name": "Sales"}],
-            "aliases": [{"field": "Region"}, {"field": "Sales"}],
+            # The extractor emits a dict keyed by field name, and reserves
+            # ":Measure Names" for aliases that rename an aggregated field.
+            "aliases": {
+                ":Measure Names": {'"[DS].[sum:Sales:qk]"': "Revenue"},
+                "Region": {"%null%": " "},
+            },
             "sort_orders": [{"field": "Month"}],
         })
         keys = {u.key: u for u in scan.usages}
         self.assertEqual(keys["dashboard"].count, 1)
-        self.assertEqual(keys["alias"].count, 2)
+        self.assertEqual(keys["alias_measure_name"].count, 1)
+        self.assertEqual(keys["alias_value"].count, 1)
         self.assertEqual(keys["sort_order"].count, 1)
 
     def test_operational_feature_families_are_detected(self):

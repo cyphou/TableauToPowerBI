@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Tableau field aliases that rename an aggregated field now survive migration.
+  Tableau aggregates implicitly, so an author renaming `sum:F: GDP (curr $)` to
+  "GDP (US $'s)" had no named object to carry the caption and it was dropped —
+  none of the 17 such aliases in the example corpus reached the model. A named
+  measure is now generated for each, added rather than renamed so existing
+  references stay valid. Parity for `feedback_dashboard` rises from 91.7% to
+  100%.
+
 - Tableau colour encodings are no longer dropped. A colour encoding is stored
   in two places — the worksheet names the field and the palette, the datasource
   holds the per-value colours — and only the first was read, so workbooks lost

@@ -1504,6 +1504,10 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
     # Phase 12c (Sprint 124): Dynamic format string measures
     _inject_dynamic_format_measures(model)
 
+    # Phase 12d: Named measures carrying Tableau field aliases
+    _inject_alias_measures(model, extra_objects.get('aliases', {}),
+                           column_table_map)
+
 
 def _inject_r_squared_measures(model, worksheets, main_table_name, column_table_map):
     """Sprint 123: Generate R² DAX measures for trend lines with show_r_squared.
@@ -1583,6 +1587,103 @@ def _inject_r_squared_measures(model, worksheets, main_table_name, column_table_
                     'annotations': [{'name': 'MigrationNote',
                                      'value': f'Auto-generated R² measure for Tableau trend line on {ws_name}'}],
                 })
+
+
+#: Tableau aggregation prefixes in a field reference, and their DAX function.
+_ALIAS_AGG_DAX = {
+    'sum': 'SUM', 'avg': 'AVERAGE', 'min': 'MIN', 'max': 'MAX',
+    'cnt': 'COUNT', 'ctd': 'DISTINCTCOUNT', 'median': 'MEDIAN',
+    'stdev': 'STDEV.S', 'stdevp': 'STDEV.P', 'var': 'VAR.S', 'varp': 'VAR.P',
+}
+
+#: Prefixes that qualify an aggregation rather than performing one.
+_ALIAS_RANK_PREFIXES = {'rank', 'rank_unique', 'rank_dense', 'rank_modified'}
+
+#: Trailing tokens that describe the field's role, not its name.
+_ALIAS_TYPE_SUFFIXES = {'qk', 'nk', 'ok'}
+
+
+def _parse_alias_field_ref(raw):
+    """Split a Tableau field reference into its aggregations and field name.
+
+    Field names may themselves contain colons (``H: Life exp (years)``), so the
+    known aggregation prefixes are consumed from the left and the role suffix
+    from the right; whatever remains is the name.
+
+    Args:
+        raw: A reference such as ``"[Datasource].[rank:sum:F: GDP (curr $):qk]"``.
+
+    Returns:
+        tuple: ``(aggregations, field_name)``, or ``([], '')`` when unparseable.
+    """
+    inner = (raw or '').strip().strip('"')
+    if '].[' in inner:
+        inner = inner.split('].[', 1)[1]
+    inner = inner.strip('[]')
+    if not inner:
+        return [], ''
+
+    parts = inner.split(':')
+    aggregations = []
+    while parts and parts[0].lower() in (_ALIAS_AGG_DAX.keys() | _ALIAS_RANK_PREFIXES):
+        aggregations.append(parts.pop(0).lower())
+    if parts and parts[-1].lower() in _ALIAS_TYPE_SUFFIXES:
+        parts.pop()
+
+    return aggregations, ':'.join(parts).strip()
+
+
+def _inject_alias_measures(model, aliases, column_table_map):
+    """Restore the display names a Tableau author gave to aggregated fields.
+
+    Tableau aggregates implicitly, so ``sum:F: GDP (curr $)`` renamed to
+    "GDP (US $'s)" has no named counterpart to carry the alias. An explicit
+    measure is added instead of renaming anything, so no existing reference
+    breaks.
+    """
+    measure_aliases = (aliases or {}).get(':Measure Names', {})
+    if not isinstance(measure_aliases, dict) or not measure_aliases:
+        return
+
+    tables = model['model']['tables']
+    taken = {m.get('name', '') for t in tables for m in t.get('measures', [])}
+    taken |= {c.get('name', '') for t in tables for c in t.get('columns', [])}
+    by_name = {t.get('name', ''): t for t in tables}
+
+    for raw, alias in measure_aliases.items():
+        alias = (alias or '').strip()
+        if not alias or alias in taken:
+            continue
+
+        aggregations, field = _parse_alias_field_ref(raw)
+        aggregation = next((a for a in aggregations if a in _ALIAS_AGG_DAX), '')
+        if not field or not aggregation:
+            continue
+
+        table_name = column_table_map.get(field)
+        table = by_name.get(table_name)
+        if not table or not any(c.get('name') == field
+                                for c in table.get('columns', [])):
+            continue
+
+        safe_table = table_name.replace("'", "''")
+        expression = f"{_ALIAS_AGG_DAX[aggregation]}('{safe_table}'[{field}])"
+        summary = f'{aggregation.upper()} of {field}'
+        if any(a in _ALIAS_RANK_PREFIXES for a in aggregations):
+            expression = f"RANKX(ALL('{safe_table}'), {expression})"
+            summary = f'rank by {summary}'
+
+        table.setdefault('measures', []).append({
+            'name': alias,
+            'expression': expression,
+            'displayFolder': 'Measures',
+            'description': f'Tableau display name for {summary}',
+            'annotations': [{
+                'name': 'MigrationNote',
+                'value': f'Restored from Tableau field alias: {raw}',
+            }],
+        })
+        taken.add(alias)
 
 
 def _inject_dynamic_format_measures(model):
