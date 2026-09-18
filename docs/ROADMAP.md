@@ -121,10 +121,18 @@ mistaken for one — but it still lists findings rather than ranking them.
   finding eliminated — and a negative-control suite proves injected leaks,
   paren imbalances, M `if`/`else` gaps, single-quoted M sets, missing PBIR and
   absent date tables are all still caught.
-- **Carry the preceptor's coaching feedback into the consolidated report.** It
-  is the only surface that says *how* to fix something, and it is currently
-  reachable only via `--preceptor`. Now unblocked: the coaching it emits is
-  trustworthy.
+- **Carry the preceptor's coaching feedback into the consolidated report.** *Done.*
+  The review was the only surface that said *how* to fix something, and it was
+  reachable only via `--preceptor`. The quality report now reads
+  `preceptor_report.json` when it is present beside the project — the review
+  stays opt-in, and its absence reads as `not_run` rather than as a failure.
+  Each coaching item enters the remediation queue as a `repair` owned by the
+  agent that owns the artifact (DAX, Wiring, Semantic, Visual, Orchestrator)
+  instead of the generic "Assessor", carries its `fix` text and the file it
+  was raised against, and renders as a "How:" line in the HTML. Visual
+  equivalence asks to `verify` rather than `repair`, because screenshot
+  similarity is a judgement and not a measurable defect. An escalated review
+  becomes a blocker (`escalated_block`) or a warning (`escalated_warn`).
 - **Extract conditional formatting.** Assessment counts it, but the extractor
   never produces it, so every workbook reports zero rules. Either extract it or
   stop claiming a count.

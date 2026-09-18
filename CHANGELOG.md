@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The consolidated quality report now carries the preceptorship review. When a
+  `preceptor_report.json` sits beside the project, its coaching enters the
+  remediation queue as a repair owned by the agent that owns the artifact,
+  together with the fix text and the file the finding was raised against — the
+  report previously said what was wrong but never how to correct it. The review
+  remains opt-in; its absence is reported as `not_run`.
 - Preceptor review now reads the shapes the generator actually writes.
   Annotations recording the original Tableau formula are no longer scored as
   leaked DAX; `definition.pbir`, report-level filters (`filterConfig`), date

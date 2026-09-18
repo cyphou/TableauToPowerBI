@@ -89,6 +89,7 @@ class MigrationQualityReport:
     evidence_manifest: Dict[str, Any] = field(default_factory=dict)
     strategy: Dict[str, Any] = field(default_factory=dict)
     lineage: Dict[str, Any] = field(default_factory=dict)
+    review: Dict[str, Any] = field(default_factory=dict)
     handoff_status: str = "UNVERIFIED"
     priorities: list[Dict[str, Any]] = field(default_factory=list)
     ai_summary: str = ""
@@ -128,6 +129,7 @@ class MigrationQualityReport:
             "evidence_manifest": self.evidence_manifest,
             "strategy": self.strategy,
             "lineage": self.lineage,
+            "review": self.review,
             "handoff_status": self.handoff_status,
         }
 
@@ -181,7 +183,10 @@ class MigrationQualityReport:
                 f"<li><strong>{esc(item['priority'])}</strong> "
                 f"{badge(_ACTION_LABEL.get(item.get('action_kind', ''), 'review'), _ACTION_TONE.get(item.get('action_kind', ''), 'gray'))} "
                 f"{esc(item['action'])} "
-                f"<em>(owner: {esc(item['owner'])})</em></li>"
+                f"<em>(owner: {esc(item['owner'])})</em>"
+                + (f"<br><small>How: {esc(item['fix'])}</small>"
+                   if item.get("fix") else "")
+                + "</li>"
                 for item in self.priorities
             ) + "</ol>"
         else:
@@ -443,6 +448,17 @@ _FINDING_ACTIONS = {
     "visual_approximation": ("verify", "Visual"),
     "parity_untracked": ("note", "Evidence"),
     "unresolved_lineage": ("note", "Evidence"),
+    # Preceptorship review. Coaching items are the only findings that say *how*
+    # to fix something, so they enter the queue as repairs owned by the agent
+    # that owns the artifact. Visual equivalence is a similarity judgement
+    # rather than a defect, so it asks for confirmation instead.
+    "review_escalated": ("decide", "Reviewer"),
+    "review_completeness": ("repair", "Orchestrator"),
+    "review_dax_correctness": ("repair", "DAX"),
+    "review_m_query_validity": ("repair", "Wiring"),
+    "review_tmdl_structure": ("repair", "Semantic"),
+    "review_pbir_fidelity": ("repair", "Visual"),
+    "review_visual_equivalence": ("verify", "Visual"),
 }
 
 #: Fix what is broken before deciding what to do about what is merely different.
@@ -466,7 +482,8 @@ class _Findings:
         self.warnings: list[str] = []
         self.records: list[Dict[str, Any]] = []
 
-    def add(self, finding_id: str, message: str, *, blocker: bool) -> None:
+    def add(self, finding_id: str, message: str, *, blocker: bool,
+            fix: str = "", evidence: Optional[list] = None) -> None:
         (self.blockers if blocker else self.warnings).append(message)
         action, owner = _FINDING_ACTIONS.get(finding_id, ("decide", "Assessor"))
         self.records.append({
@@ -475,6 +492,8 @@ class _Findings:
             "blocker": blocker,
             "action_kind": action,
             "owner": owner,
+            "fix": fix,
+            "evidence": list(evidence or []),
         })
 
     def by_policy(self, finding_id: str, message: str, verdict: str) -> None:
@@ -496,7 +515,8 @@ def _build_priorities(parity: Dict[str, Any], findings: "_Findings"
     for order, record in enumerate(findings.records):
         entries.append((
             record["blocker"], record["action_kind"], order,
-            record["message"], record["owner"], [],
+            record["message"], record["owner"], record.get("evidence", []),
+            record.get("fix", ""),
         ))
 
     for gap in parity.get("gaps", []):
@@ -505,7 +525,7 @@ def _build_priorities(parity: Dict[str, Any], findings: "_Findings"
         entries.append((
             False, "decide", len(entries),
             f"Resolve unsupported feature: {gap.get('label', gap.get('key', 'unknown'))}",
-            "Assessor / domain owner", list(gap.get("evidence", [])),
+            "Assessor / domain owner", list(gap.get("evidence", [])), "",
         ))
 
     entries.sort(key=lambda e: (not e[0], _ACTION_RANK.get(e[1], 9), e[2]))
@@ -515,9 +535,78 @@ def _build_priorities(parity: Dict[str, Any], findings: "_Findings"
         "action_kind": action,
         "owner": owner,
         "action": message,
+        "fix": fix,
         "evidence": evidence,
-    } for blocker, action, _order, message, owner, evidence in entries]
+    } for blocker, action, _order, message, owner, evidence, fix in entries]
 
+
+
+#: Written beside the project by ``--preceptor``; optional by design.
+_REVIEW_FILENAME = "preceptor_report.json"
+
+#: Review outcomes that need someone to act, and whether they block the handoff.
+_REVIEW_ESCALATIONS = {"escalated_block": True, "escalated_warn": False}
+
+
+def _review_evidence(project_dir: str) -> Dict[str, Any]:
+    """Read the preceptorship review left beside the project, if one was run.
+
+    The review is opt-in, so its absence is reported as ``not_run`` rather than
+    counted against the migration. Its coaching is the only evidence in the
+    report that states *how* to fix a finding, so it is preserved verbatim.
+    """
+    path = os.path.join(project_dir, _REVIEW_FILENAME)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {"status": "not_run", "coaching": [], "dimensions": {}}
+
+    cycles = data.get("cycles") or []
+    coaching = []
+    for cycle in cycles:
+        for item in cycle.get("coaching_items") or []:
+            coaching.append({
+                "dimension": item.get("dimension", ""),
+                "score": item.get("score"),
+                "issue": item.get("issue", ""),
+                "fix": item.get("fix", ""),
+                "location": item.get("location", ""),
+                "example_before": item.get("example_before", ""),
+                "example_after": item.get("example_after", ""),
+                "cycle": cycle.get("cycle"),
+            })
+
+    return {
+        "status": data.get("status", "unknown"),
+        "score": data.get("final_score"),
+        "passed": data.get("final_passed"),
+        "cycles": data.get("total_cycles"),
+        "escalation_reason": data.get("escalation_reason", ""),
+        "dimensions": (cycles[-1].get("scorecard", {}) if cycles else {}),
+        "coaching": coaching,
+    }
+
+
+def _record_review_findings(review: Dict[str, Any], findings: "_Findings") -> None:
+    """Fold review coaching into the remediation queue, carrying its fix text."""
+    status = str(review.get("status", "")).lower()
+    if status in _REVIEW_ESCALATIONS:
+        reason = review.get("escalation_reason") or "review did not reach the pass score"
+        findings.add("review_escalated",
+                     f"Preceptorship review escalated: {reason}",
+                     blocker=_REVIEW_ESCALATIONS[status])
+
+    for item in review.get("coaching", []):
+        dimension = item.get("dimension", "")
+        evidence = [item["location"]] if item.get("location") else []
+        findings.add(
+            f"review_{dimension}",
+            f"{item.get('issue', 'Review finding')} ({dimension.replace('_', ' ')})",
+            blocker=False,
+            fix=item.get("fix", ""),
+            evidence=evidence,
+        )
 
 
 def _semantic_context_validation(extracted: Dict[str, Any]) -> Dict[str, Any]:
@@ -968,6 +1057,9 @@ def build_quality_report(extracted: Dict, project_dir: str,
             policy["visual_approximation"],
         )
 
+    review = _review_evidence(project_dir)
+    _record_review_findings(review, findings)
+
     status = "FAIL" if blockers else "WARN" if warnings else "PASS"
     source_inventory = build_source_inventory(extracted or {})
     recovery = build_recovery_registry(source_inventory)
@@ -1094,6 +1186,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         priorities=priorities,
         strategy=strategy,
         lineage=lineage,
+        review=review,
         handoff_status=handoff_status,
         evidence_manifest=evidence_manifest,
     )
