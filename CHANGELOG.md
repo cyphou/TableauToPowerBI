@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Filters now carry the values they filter to. The workbook-level reader looked
+  for `<value>` children, a shape Tableau does not write — members are the
+  `member` attribute of a `<groupfilter>` — so all 167 filters in the example
+  corpus reported no values, and the generator correctly refused to emit a
+  categorical filter with an empty condition. Three workbooks therefore shipped
+  reports with no filter at any level. The worksheet-level reader already read
+  the real shape, so both now share one function and cannot disagree about the
+  same XML. 67 filters recovered their values; 19 report-level filters are now
+  generated where there were none.
+
+- A Tableau top-N filter is no longer migrated as a bound on the measure.
+  `class="topn" direction="top" max="10"` means "the ten largest", but its
+  cut-off was read as a range and emitted as `amount <= 10`. It is now
+  classified as top-N; expressing it as a Power BI TopN filter remains
+  outstanding, so the filter is absent rather than wrong.
+
 - Tableau KPI cards no longer arrive as data tables. A sheet that leaves Rows
   and Columns empty and puts its measure on the Text shelf is Tableau's
   "big number" card, but both the `Text` and `Automatic` marks fell through to

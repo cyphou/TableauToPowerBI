@@ -118,6 +118,75 @@ def _strip_datasource_prefix(column):
     return match.group(1) if match else (column or '')
 
 
+def _read_filter_condition(filt):
+    """Read what a ``<filter>`` actually keeps.
+
+    Tableau never writes filter members as ``<value>`` text; they are the
+    ``member`` attribute of a ``<groupfilter>``, and the parent's ``function``
+    says whether they are kept, excluded or merely enumerated. Shared so the
+    worksheet-level and workbook-level readers cannot disagree — they did, and
+    the workbook-level list reported every one of the 167 corpus filters as
+    having no values at all.
+
+    Returns ``(type, values, min, max, exclude)``.
+    """
+    filter_type = ''
+    values = []
+    filter_min = None
+    filter_max = None
+    exclude_mode = False
+
+    def _members(parent):
+        return [gf.get('member', '').replace('&quot;', '"')
+                for gf in parent.findall('.//groupfilter[@function="member"]')
+                if gf.get('member')]
+
+    groupfilter = filt.find('.//groupfilter')
+    if groupfilter is not None:
+        func = groupfilter.get('function', '')
+        if func == 'member':
+            filter_type = 'categorical'
+            val = groupfilter.get('member', '')
+            if val:
+                values.append(val.replace('&quot;', '"'))
+        elif func == 'union':
+            filter_type = 'categorical'
+            values.extend(_members(groupfilter))
+        elif func == 'range':
+            from_val = groupfilter.get('from', '')
+            to_val = groupfilter.get('to', '')
+            # Tableau also uses func="range" on text fields (from="A" to="Z")
+            # to mean "everything", which is not a comparison filter.
+            is_numeric = False
+            for raw in (from_val, to_val):
+                if raw:
+                    try:
+                        float(raw)
+                        is_numeric = True
+                    except (ValueError, TypeError):
+                        pass
+            if is_numeric:
+                filter_type = 'range'
+                filter_min = from_val or None
+                filter_max = to_val or None
+            else:
+                filter_type = 'all'
+        elif func == 'level-members':
+            filter_type = 'all'  # every member selected
+        elif func == 'crossjoin':
+            filter_type = 'all'  # multi-field action filter
+        elif func in ('except', 'not'):
+            exclude_mode = True
+            filter_type = 'categorical'
+            values.extend(_members(groupfilter))
+
+    for v in filt.findall('.//value'):
+        if v.text:
+            values.append(v.text)
+
+    return filter_type, values, filter_min, filter_max, exclude_mode
+
+
 def _split_sql_values(values_str):
     """Split a SQL VALUES tuple string into individual values.
 
@@ -787,24 +856,29 @@ class TableauExtractor:
                 owner_by_element.setdefault(id(owned), ws_name)
 
         for filt in self._findall_root_cached(root, './/filter'):
+            condition_type, condition_values, condition_min, condition_max, \
+                condition_exclude = _read_filter_condition(filt)
             filter_data = {
                 'field': filt.get('column', ''),
-                'type': filt.get('type', ''),
+                'type': filt.get('type', '') or condition_type,
                 'worksheet': owner_by_element.get(id(filt), ''),
-                'values': [v.text for v in filt.findall('.//value') if v.text is not None],
+                'values': condition_values,
             }
 
             # ── Sprint 77: Filter mode classification ──────────────
             filter_mode = 'categorical'  # default
+            # ``class="topn"`` carries its cut-off in min/max, which is a rank,
+            # not a value bound.
+            is_top_n = filt.get('class', '') == 'topn'
 
             # Exclude mode
-            exclude = filt.get('exclude', 'false') == 'true'
+            exclude = filt.get('exclude', 'false') == 'true' or condition_exclude
             filter_data['exclude'] = exclude
 
             # Range detection: min/max attributes or range child
-            fmin = filt.get('min', filt.findtext('.//min', ''))
-            fmax = filt.get('max', filt.findtext('.//max', ''))
-            if fmin or fmax:
+            fmin = filt.get('min', filt.findtext('.//min', '')) or (condition_min or '')
+            fmax = filt.get('max', filt.findtext('.//max', '')) or (condition_max or '')
+            if (fmin or fmax) and not is_top_n:
                 filter_mode = 'range'
                 filter_data['min'] = fmin
                 filter_data['max'] = fmax
@@ -836,13 +910,14 @@ class TableauExtractor:
             # Top-N detection
             count_type = filt.get('count-type', '')
             top_n = filt.findtext('.//top', '')
-            if count_type or top_n:
+            if count_type or top_n or is_top_n:
                 filter_mode = 'top-n'
-                raw_top_n = top_n or count_type or '10'
+                raw_top_n = top_n or count_type or filt.get('max', '') or '10'
                 try:
                     filter_data['top_n_count'] = int(raw_top_n)
                 except (ValueError, TypeError):
                     filter_data['top_n_count'] = 10
+                filter_data['top_n_direction'] = filt.get('direction', 'top')
                 filter_data['top_n_field'] = filt.get('count-field',
                                                        filt.findtext('.//count-field', ''))
 
@@ -1462,65 +1537,9 @@ class TableauExtractor:
             filter_max = None
             include_null = False
             exclude_mode = False
-            
-            # Determine the filter type
-            groupfilter = filt.find('.//groupfilter')
-            if groupfilter is not None:
-                func = groupfilter.get('function', '')
-                if func == 'member':
-                    # Filter by exact value
-                    filter_type = 'categorical'
-                    val = groupfilter.get('member', '')
-                    if val:
-                        filter_values.append(val.replace('&quot;', '"'))
-                elif func == 'union':
-                    filter_type = 'categorical'
-                    for gf in groupfilter.findall('.//groupfilter[@function="member"]'):
-                        val = gf.get('member', '')
-                        if val:
-                            filter_values.append(val.replace('&quot;', '"'))
-                elif func == 'range':
-                    from_val = groupfilter.get('from', '')
-                    to_val = groupfilter.get('to', '')
-                    # Detect text-range vs numeric/date range.
-                    # Tableau uses func="range" on categorical text fields
-                    # (e.g. from="Shipped Early" to="Shipped On Time")
-                    # to mean "keep only these categories".  In PBI this
-                    # should be a categorical In filter, not an Advanced >=/<= filter.
-                    _is_numeric_range = False
-                    for _rv in (from_val, to_val):
-                        if _rv:
-                            try:
-                                float(_rv)
-                                _is_numeric_range = True
-                            except (ValueError, TypeError):
-                                pass
-                    if _is_numeric_range:
-                        filter_type = 'range'
-                        filter_min = from_val if from_val else None
-                        filter_max = to_val if to_val else None
-                    else:
-                        # Text range → effectively "all selected" on a
-                        # categorical field.  Tableau uses an alphabetical
-                        # range (from="A" to="Z") to keep all values.
-                        # Skip: no real filtering intended.
-                        filter_type = 'all'
-                elif func == 'level-members':
-                    filter_type = 'all'  # filter "all selected"
-                elif func == 'crossjoin':
-                    filter_type = 'all'  # multi-field action filter → skip
-                elif func == 'except' or func == 'not':
-                    exclude_mode = True
-                    filter_type = 'categorical'
-                    for gf in groupfilter.findall('.//groupfilter[@function="member"]'):
-                        val = gf.get('member', '')
-                        if val:
-                            filter_values.append(val.replace('&quot;', '"'))
-            
-            # Values from <value>
-            for v in filt.findall('.//value'):
-                if v.text:
-                    filter_values.append(v.text)
+
+            filter_type, filter_values, filter_min, filter_max, exclude_mode = \
+                _read_filter_condition(filt)
             
             filters.append({
                 'field': clean_name,

@@ -136,6 +136,7 @@ deliberately rather than waiting to trip over the next one.
   vishnu_dashboard, feedback_dashboard) report source filters while their
   generated reports contain no filter at any level and no slicer. The old
   vocabulary could not distinguish this from "not checked". Owner: Visual.
+  *Resolved — see below. Making the miss visible is what found it.*
 
 - Still open: statuses outside the parity registry have not been enumerated.
   For each, write the negative control first — what input *should* make this
@@ -176,6 +177,32 @@ large share of visuals were plain tables.
   packed-bubble plot, not a card. They are deliberately excluded from the card
   rule and are the next candidate, but a bubble chart with no axes may read
   worse than a table, so it needs measuring before it is changed.
+
+### Filters — the reports that had none
+
+Found by the P2 evidence work, once `not_found` became distinguishable from
+`not_checked`.
+
+- **Filters carried no values at all.** *Done — 167 corpus filters reporting
+  zero values, now 67 with values.* The workbook-level reader looked for
+  `<value>` children; Tableau writes members as the `member` attribute of a
+  `<groupfilter>`, with the parent's `function` saying whether they are kept,
+  excluded or merely enumerated. The worksheet-level reader already knew this,
+  so two functions in one file disagreed about the same XML — the motif this
+  cycle keeps finding. They now share one reader. 19 report-level filters are
+  generated where there were none.
+
+- **A top-N filter was migrated as a bound on the measure.** `class="topn"
+  direction="top" max="10"` means "the ten largest"; its cut-off was read as a
+  range and shipped as `amount <= 10`. Now classified as top-N, so the filter
+  is *absent* rather than wrong. Expressing it as a Power BI TopN filter is
+  open work.
+
+- **The two filters still reporting `not_found` are honest.** Financial_Report
+  holds three "all members selected" filters, which have no condition to
+  express, plus the top-N above; feedback_dashboard filters on `:Measure
+  Names`, a Tableau virtual field with no Power BI column. Both are reported
+  rather than hidden, which is the point.
 
 ### P4 — The last two parity gaps
 
