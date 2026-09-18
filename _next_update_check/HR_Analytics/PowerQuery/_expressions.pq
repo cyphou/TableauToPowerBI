@@ -1,5 +1,0 @@
-expression DataFolder = "C:\\GitHub Project\\TableauToPowerBI\\_next_update_check\\HR_Analytics\\Data" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
-
-expression ServerName = "localhost" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
-
-expression DatabaseName = "HRDatabase" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]

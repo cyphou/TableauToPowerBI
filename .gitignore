@@ -90,6 +90,7 @@ profile_results/
 
 # Local migration output and diagnostic data (may contain sensitive content)
 _tmp_extract/
+_next_update_check/
 artifacts/
 input/
 output/

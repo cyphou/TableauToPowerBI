@@ -1,5 +1,0 @@
-expression DataFolder = "C:\\GitHub Project\\TableauToPowerBI\\_next_update_check\\Security_Test\\Data" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
-
-expression ServerName = "localhost" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
-
-expression DatabaseName = "SalesDB" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]

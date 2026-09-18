@@ -1,1 +1,0 @@
-expression DataFolder = "C:\\GitHub Project\\TableauToPowerBI\\_next_update_check\\Superstore_Sales\\Data" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
