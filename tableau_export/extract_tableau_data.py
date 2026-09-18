@@ -1011,7 +1011,7 @@ class TableauExtractor:
                 return 'map'
             return 'clusteredBarChart'
 
-        card_type = self._shelfless_card_type(worksheet, mark_class)
+        card_type = self._shelfless_marks_card_type(worksheet, mark_class)
         if card_type:
             return card_type
 
@@ -1026,12 +1026,13 @@ class TableauExtractor:
         # Automatic: infer from field shelf assignments
         return self._infer_automatic_chart_type(worksheet)
 
-    def _shelfless_card_type(self, worksheet, mark_class):
-        """Power BI card type for a sheet that draws only on the Marks card.
+    def _shelfless_marks_card_type(self, worksheet, mark_class):
+        """Power BI visual for a sheet that draws only on the Marks card.
 
-        Tableau renders a Text encoding with empty Rows and Columns as a KPI
-        figure, not a text table; mapping it to a grid loses the point of the
-        sheet. Returns None for a genuine table or a sized plot.
+        With Rows and Columns empty, Tableau reads the Marks card alone: a
+        measure on Size with a dimension on Colour is a packed-bubble plot,
+        and Text on its own is a KPI figure. Both were becoming data grids.
+        Returns None when the sheet is a genuine table.
         """
         if (mark_class or 'automatic').lower() not in _CARD_MARK_CLASSES:
             return None
@@ -1049,11 +1050,17 @@ class TableauExtractor:
                 for elem in encoding.findall(f'./{enc_type}'):
                     if elem.get('column'):
                         counts[enc_type] = counts.get(enc_type, 0) + 1
+
+        # Size measure + Colour dimension = one shape per category, area by
+        # measure. Power BI's treemap says the same thing; a scatter would
+        # need X and Y this sheet does not have.
+        if counts.get('size') and counts.get('color'):
+            return 'treemap'
+        if counts.get('size'):
+            return None
+
         text_fields = counts.get('text', 0)
         if not text_fields:
-            return None
-        # A measure on Size with no shelves is a packed-bubble plot, not a card.
-        if counts.get('size'):
             return None
         return 'card' if text_fields == 1 else 'multiRowCard'
     

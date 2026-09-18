@@ -95,8 +95,20 @@ class TestItIsStillATableWhenItShouldBe(unittest.TestCase):
         encodings = (_text('Sales')
                      + '<size column="[ds].[sum:Sales:qk]"/>'
                      + '<color column="[ds].[none:Region:nk]"/>')
+        self.assertEqual('treemap', _chart_type(_worksheet(encodings=encodings)))
+
+    def test_a_size_encoding_without_a_group_is_left_alone(self):
+        # A treemap needs something to group by; colour is what supplies it.
+        encodings = _text('Sales') + '<size column="[ds].[sum:Sales:qk]"/>'
         self.assertNotIn(_chart_type(_worksheet(encodings=encodings)),
-                         ('card', 'multiRowCard'))
+                         ('treemap', 'card', 'multiRowCard'))
+
+    def test_a_sized_sheet_with_a_real_shelf_is_not_a_treemap(self):
+        encodings = ('<size column="[ds].[sum:Sales:qk]"/>'
+                     + '<color column="[ds].[none:Region:nk]"/>')
+        ws = _worksheet(mark='Automatic', cols='[ds].[none:Region:nk]',
+                        rows='[ds].[sum:Sales:qk]', encodings=encodings)
+        self.assertNotEqual('treemap', _chart_type(ws))
 
     def test_a_bar_mark_is_never_a_card(self):
         self.assertEqual('clusteredBarChart', _chart_type(

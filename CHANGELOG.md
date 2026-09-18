@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Tableau packed-bubble sheets become treemaps instead of tables. With Rows and
+  Columns empty, a measure on Size with a dimension on Colour is one shape per
+  category sized by the measure — which is what a Power BI treemap draws. A
+  scatter chart was the nominal mapping but needs an X and a Y these sheets do
+  not have, so it would have degraded straight back to a table. Four more
+  example sheets now carry a real visual.
+
 - Filters now carry the values they filter to. The workbook-level reader looked
   for `<value>` children, a shape Tableau does not write — members are the
   `member` attribute of a `<groupfilter>` — so all 167 filters in the example

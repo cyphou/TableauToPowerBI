@@ -169,14 +169,27 @@ large share of visuals were plain tables.
   finds nothing on either shelf) sent them to a grid. They now become a `card`,
   or a `multiRowCard` when several measures share the Text shelf.
 
+- **Packed-bubble sheets.** *Done — four sheets, now treemaps.* With empty
+  shelves, a measure on Size and a dimension on Colour is one shape per
+  category sized by the measure. The registry's nominal mapping for a packed
+  bubble is a scatter chart, but a scatter needs an X and a Y these sheets do
+  not have, so it would have degraded straight back to a table; a treemap
+  draws exactly what the sheet says. Measured before choosing: all four carry
+  one measure on Size, one dimension on Colour, and nothing on Rows or Columns.
+
 - **Still tables, each for its own reason:** four sheets have a genuine
   dimension on Rows and a measure on Columns, so a text table is right; two
-  Salesforce sheets mix Text and Columns; one is empty. Four more
-  (`Share of World GDP` ×2, `Tourism By Country/Region`, `avg fdbck score`)
-  carry a Size *and* a Colour encoding with empty shelves — that is Tableau's
-  packed-bubble plot, not a card. They are deliberately excluded from the card
-  rule and are the next candidate, but a bubble chart with no axes may read
-  worse than a table, so it needs measuring before it is changed.
+  Salesforce sheets mix Text and Columns; one is empty; one is a Heat Map,
+  correctly a matrix.
+
+- **Found while looking, not fixed:** `visual_generator._build_visual_filters`
+  is never called during a migration — measured at zero calls across four
+  workbooks, including ones with worksheet filters. It emits a different shape
+  (`type`/`expression`/`values`) from the one every generated artefact actually
+  uses (`name`/`type`/`field`/`filter`), and its `topN` branch is reachable by
+  no producer. Three test files exercise it, so it reads as covered. This is
+  the P2 failure mode in test form and needs a decision: wire it up, or retire
+  it.
 
 ### Filters — the reports that had none
 
