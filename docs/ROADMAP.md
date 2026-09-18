@@ -13,9 +13,10 @@ Measured on the committed example corpus, not estimated:
 |---|---|
 | Migration success | 44/44 artefacts, 0 failures |
 | Static openability gate | 27/27 projects, 0 blockers |
-| Quality verdicts | 13 PASS, 14 WARN, 0 FAIL |
+| Quality verdicts | 17 PASS, 10 WARN, 0 FAIL |
 | Outstanding repairs | **0** — nothing measurably broken remains |
 | Functional parity | mean **99.7%**, lowest **96.4%**, 20 of 26 at full parity |
+| Lineage coverage | **99.9%**, 0 unresolved source records |
 | Evidence level | `STATIC_PASS` on 26/26 |
 | Test suite | 9,988 passed, 67 skipped, 1 xfailed, across 274 files |
 | Agent ownership | 0 unowned modules, 0 asymmetric declarations |
@@ -65,15 +66,22 @@ Three rules earned their place, and the next phase is built on them:
 Two motifs account for almost every warning in the corpus, and neither is
 currently actionable.
 
-- **Unresolved lineage — 120 records across 12 of 26 workbooks**, one workbook
-  alone accounting for 65. Sampling them shows the resolver compares targets
-  against the wrong source category: the 19 unresolved `tables` are generated
-  **parameter** tables (`Base Salary`, `Last x Days`) whose source is a
-  parameter, not a table, and the 101 unresolved `columns` are **calculated**
-  columns whose source is a calculation, not a column. This is the same
-  category mismatch as the defects above, one level up. Either resolve across
-  source categories or stop reporting generated artifacts as orphans — but
-  decide on evidence, not by suppressing the count.
+- **Unresolved lineage.** *Done — 120 records across 12 of 26 workbooks, now
+  0.* Not one was a missing source. The resolver compared every target against
+  source *tables* and *columns* only, so three whole categories could never
+  match: generated What-If tables (named after their parameter, `Base Salary`,
+  so a `startswith("parameter")` test never fired), calculated columns (whose
+  source is a calculation), and columns a join merged in from another Tableau
+  table (looked up only in the table sharing the target's name). Each is now
+  resolved against the category it actually comes from, and `generated` counts
+  as resolved for tables and columns as it already did for calculations —
+  "I made it" is an answer to "where did this come from?".
+
+  Lineage coverage 99.7% → **99.9%**, and corpus verdicts moved from
+  13 PASS / 14 WARN to **17 PASS / 10 WARN**. Six raw records remain genuinely
+  unattributable — an escaped name (`Probability \%`), two columns renamed
+  during generation, one malformed (`-2,0`) — and the report already excludes
+  them because they are not source objects.
 - **"Pre-migration assessment contains warnings" — 10 of 26 workbooks.** One
   line covers unrecognised connectors, wide schemas and LOD complexity, all
   owned by "Assessor" and all `decide`. A reader cannot act on it. Split it by

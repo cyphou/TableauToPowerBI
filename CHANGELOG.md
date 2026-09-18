@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Semantic lineage no longer reports generated and calculated objects as
+  orphans. The resolver matched every target against source tables and columns
+  only, so What-If tables named after their parameter, calculated columns whose
+  source is a calculation, and columns a join merged in from another table
+  could never resolve — 120 records across 12 of the 26 example workbooks. Each
+  now resolves against the category it comes from, taking the count to zero and
+  moving four workbooks from WARN to PASS.
+
 - The Power BI Desktop probe now states what it actually verifies. All 26
   migrated example projects launch Desktop and survive the settle window — but
   so does a project whose semantic model has been deleted, because Desktop
