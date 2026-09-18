@@ -133,9 +133,26 @@ mistaken for one — but it still lists findings rather than ranking them.
   equivalence asks to `verify` rather than `repair`, because screenshot
   similarity is a judgement and not a measurable defect. An escalated review
   becomes a blocker (`escalated_block`) or a warning (`escalated_warn`).
-- **Extract conditional formatting.** Assessment counts it, but the extractor
-  never produces it, so every workbook reports zero rules. Either extract it or
-  stop claiming a count.
+- **Extract conditional formatting.** *Done, and the defect was not the one
+  recorded here.* Tableau has no separate conditional-formatting object: the
+  rules are the per-value colours and stepped thresholds of a colour encoding,
+  so the `conditionalFormatting` key the assessment counted was a vocabulary no
+  extractor could ever fill.
+
+  Measuring the corpus found a larger loss underneath. Tableau splits a colour
+  encoding in two — the worksheet names the field and the palette, while the
+  per-value colours are stored once per datasource as
+  `<map to="#hex"><bucket>value</bucket></map>` — and only the worksheet half
+  was read. Of 114 `<color>` elements across the corpus **none** carries a
+  palette attribute and **no** `<bucket>` carries a colour attribute, so the
+  palette and threshold paths were both unreachable: 72 colour-encoded
+  worksheets produced 0 coloured visuals.
+
+  The halves are now joined and custom palettes resolve against their
+  document-level `<color-palette>` definitions. 50 worksheets gained per-value
+  colours and **46 of 284 visuals now carry colour that was silently dropped**.
+  The assessment counts those rules instead of a key nobody emits. Corpus gate
+  unchanged: 27 openable, 0 blockers.
 
 ### P3 — Runtime evidence
 

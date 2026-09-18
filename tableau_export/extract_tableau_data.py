@@ -96,6 +96,20 @@ def _strip_brackets(s):
     return s.replace('[', '').replace(']', '')
 
 
+#: A worksheet names a colour field with its datasource prefix, while the
+#: datasource-level colour map keys the same field without one.
+_DS_PREFIXED_FIELD = re.compile(r'^\[[^\]]+\]\.(\[.+\])$')
+
+#: Tableau's colour-ramp kinds, in the vocabulary the rest of the code uses.
+_COLOR_RAMP_KINDS = {'palette': 'categorical', 'interpolated': 'quantitative'}
+
+
+def _strip_datasource_prefix(column):
+    """``[federated.x].[none:Region:nk]`` -> ``[none:Region:nk]``."""
+    match = _DS_PREFIXED_FIELD.match(column or '')
+    return match.group(1) if match else (column or '')
+
+
 def _split_sql_values(values_str):
     """Split a SQL VALUES tuple string into individual values.
 
@@ -375,6 +389,7 @@ class TableauExtractor:
         """Extracts worksheets"""
         
         worksheets = []
+        self._color_index = self._build_color_index(root)
         
         for worksheet in self._findall_root_cached(root, './/worksheet'):
             ws_data = {
@@ -2096,6 +2111,48 @@ class TableauExtractor:
             sorts.append(sort_entry)
         return sorts
     
+    def _build_color_index(self, root):
+        """Index the document's colour definitions.
+
+        Tableau splits a colour encoding in two: the worksheet names the field
+        and the palette, while the per-value colours are stored once per
+        datasource as ``<map to="#hex"><bucket>value</bucket></map>``. Reading
+        only the worksheet half loses every colour the workbook defines.
+        """
+        palettes = {}
+        for palette in root.iter('color-palette'):
+            name = palette.get('name')
+            colours = [c.text.strip() for c in palette.findall('./color')
+                       if c.text and c.text.strip()]
+            if name and colours:
+                palettes.setdefault(name, colours)
+
+        maps = {}
+        for enc in root.iter('encoding'):
+            if enc.get('attr') != 'color':
+                continue
+            field = enc.get('field')
+            if not field:
+                continue
+            for node in enc.findall('.//map'):
+                colour = node.get('to')
+                if not colour:
+                    continue
+                for bucket in node.findall('.//bucket'):
+                    value = (bucket.text or '').strip().strip('"')
+                    if value and value != '%null%':
+                        maps.setdefault(field, {}).setdefault(value, colour)
+
+        return {'maps': maps, 'palettes': palettes}
+
+    @staticmethod
+    def _worksheet_color_style(worksheet):
+        """The palette name and colour-ramp kind declared on the worksheet."""
+        for enc in worksheet.iter('encoding'):
+            if enc.get('attr') == 'color':
+                return enc.get('palette', ''), enc.get('type', '')
+        return '', ''
+
     def extract_mark_encoding(self, worksheet):
         """Extracts visual mark encodings (color, size, shape, label)"""
         encoding = {}
@@ -2117,13 +2174,26 @@ class TableauExtractor:
                     color_type = 'quantitative'
                 elif not color_type and ':nk' in column:
                     color_type = 'categorical'
-                
+
+                style_palette, style_type = self._worksheet_color_style(worksheet)
+                if not palette:
+                    palette = style_palette
+                if not color_type:
+                    # 'palette' means discrete swatches, 'interpolated' a ramp.
+                    color_type = _COLOR_RAMP_KINDS.get(style_type, '')
+
                 color_data = {
                     'field': _clean_field_ref(col_refs[0][1]) if col_refs else _strip_brackets(column),
                     'palette': palette,
                     'type': color_type,
                 }
-                
+
+                index = getattr(self, '_color_index', None) or {}
+                value_colors = index.get('maps', {}).get(
+                    _strip_datasource_prefix(column))
+                if value_colors:
+                    color_data['color_values'] = dict(value_colors)
+
                 # Extract palette colors from <color-palette> within the encoding
                 palette_colors = []
                 for cp in enc_elem.findall('.//color-palette/color'):
@@ -2134,6 +2204,11 @@ class TableauExtractor:
                     for cp in worksheet.findall(f'.//color-palette[@name="{palette}"]/color'):
                         if cp.text:
                             palette_colors.append(cp.text)
+                # Custom palettes are declared once per document, never inside
+                # the worksheet, so resolve the name against the index.
+                if not palette_colors and palette:
+                    palette_colors = list(
+                        index.get('palettes', {}).get(palette, []))
                 if palette_colors:
                     color_data['palette_colors'] = palette_colors
                 

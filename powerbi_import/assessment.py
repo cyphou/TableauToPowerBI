@@ -687,8 +687,15 @@ def _check_visuals(extracted: Dict) -> CategoryResult:
     custom_font_count = 0
     for ws in worksheets:
         me = ws.get('mark_encoding', {})
-        if me.get('color', {}).get('field'):
+        color = me.get('color', {}) or {}
+        if color.get('field'):
             color_encoded += 1
+        # Tableau has no separate "conditional formatting" object: the rules
+        # are the per-value colours and stepped thresholds of a colour
+        # encoding. The explicit key is kept for callers supplying their own
+        # worksheet data.
+        cond_format_count += len(color.get('color_values', {}) or {})
+        cond_format_count += len(color.get('thresholds', []) or [])
         if ws.get('conditionalFormatting'):
             cond_format_count += len(ws['conditionalFormatting'])
         fmt = ws.get('formatting', {})

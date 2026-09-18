@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Tableau colour encodings are no longer dropped. A colour encoding is stored
+  in two places — the worksheet names the field and the palette, the datasource
+  holds the per-value colours — and only the first was read, so workbooks lost
+  their colours. The halves are now joined and custom palettes resolve against
+  their document-level definitions; across the example corpus 46 visuals gained
+  colour that previously vanished. The readiness assessment counts those colour
+  rules rather than a `conditionalFormatting` key no extractor produces.
+
 - The consolidated quality report now carries the preceptorship review. When a
   `preceptor_report.json` sits beside the project, its coaching enters the
   remediation queue as a repair owned by the agent that owns the artifact,
