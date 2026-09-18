@@ -414,7 +414,7 @@ The `merge_assessment.json` file lists all conflicts detected.
 python -m pytest tests/ -v
 ```
 
-The project includes **9,875 tests across 266 test files** covering DAX conversion, Power Query M generation, TMDL model building, visual generation, project structure, artifact validation, deployment utilities, Fabric-native generation, DAX optimization, cross-platform equivalence testing, and end-to-end non-regression migration of all 17 real-world workbooks.
+The project includes **9,979 tests across 274 test files** covering DAX conversion, Power Query M generation, TMDL model building, visual generation, project structure, artifact validation, deployment utilities, Fabric-native generation, DAX optimization, cross-platform equivalence testing, and end-to-end non-regression migration of all 17 real-world workbooks.
 
 ### How do I run the migration as a REST API?
 

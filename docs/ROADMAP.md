@@ -16,7 +16,7 @@ flows), not estimated:
 | Opens in PBI Desktop (static gate) | 27/27 |
 | Quality verdicts | 13 PASS, 14 WARN, 0 FAIL, 0 blockers |
 | Functional parity | 18 workbooks FULL (≥99%), 9 HIGH (≥90%), lowest 91.7% |
-| Test suite | 9,875 passed, 67 skipped, 1 xfailed |
+| Test suite | 9,979 passed, 67 skipped, 1 xfailed |
 | Agent ownership | 132 modules, 0 unowned, 0 asymmetric declarations |
 
 Residual warnings are legitimate and documented: unrecognised connectors to
@@ -156,13 +156,30 @@ mistaken for one — but it still lists findings rather than ranking them.
 
 ### P3 — Runtime evidence
 
-Every runtime signal is still `not_run`: Desktop open, semantic execution,
-refresh, deployment. Static validation has taken the corpus as far as it can.
+Semantic execution, refresh and deployment are still `not_run`; they need an
+authorized environment. The Desktop signal, however, needed no authorization —
+Power BI Desktop is a local application — and has now been measured.
 
-- Desktop probe is best-effort and opt-in; decide whether an authorized
-  environment exists to make it a gate, or state plainly that it never will be.
+- **Desktop open: measured, and worth less than it looks.** All **26 of 26**
+  migrated projects launched Power BI Desktop and survived the settle window
+  with no crash and no error trace. But the probe was then given deliberately
+  broken projects, and reported `opened` for **every one of them** — including
+  a corrupted `report.json`, a *deleted* semantic model, and invalid DAX.
+  Desktop surfaces content errors in a dialog and keeps running, so the process
+  stays alive either way. Every corpus run also lasted exactly the settle
+  window, confirming the verdict is "survived N seconds" and nothing more.
+
+  The probe now states its scope (`verified: process_survival`) and carries the
+  limitation in its own payload, so `opened` cannot be read as proof that a
+  project loaded. Static validation stays the authoritative content check, and
+  a failing static check is never rescued by a surviving process.
+
+- Making this a real gate would need UI automation to read the error dialog, or
+  a headless engine that loads the model. Neither exists here today; saying so
+  is more useful than a green tick that cannot fail.
 - Semantic execution against a real model would turn parity scores from
-  structural coverage into verified behaviour.
+  structural coverage into verified behaviour. Still needs an authorized
+  environment decision.
 
 ### P4 — Fidelity where the corpus is weakest
 

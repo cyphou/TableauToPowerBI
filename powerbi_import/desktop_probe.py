@@ -47,6 +47,23 @@ _FROWN_GLOBS = (
 _ERROR_TOKENS = ("error", "exception", "failed to load", "corrupt", "invalid")
 
 
+#: What an ``opened`` verdict actually covers. Measured against deliberately
+#: broken projects: a corrupted report.json, a deleted SemanticModel and
+#: invalid DAX all still report ``opened``, because Desktop surfaces content
+#: errors in a dialog and keeps running. The probe observes the process, not
+#: the document.
+VERIFIED_SCOPE = "process_survival"
+
+#: Said plainly wherever the verdict is reported, so it cannot be read as
+#: proof that the project loaded correctly.
+OPENED_LIMITATION = (
+    "'opened' means the Desktop process launched and survived the settle "
+    "window without crashing. Desktop reports content errors in a dialog "
+    "while staying alive, so this does not prove the model or report loaded. "
+    "Static validation remains the authoritative content check."
+)
+
+
 @dataclass
 class DesktopProbeReport:
     pbip_path: str
@@ -64,6 +81,9 @@ class DesktopProbeReport:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["opened"] = self.opened
+        d["verified"] = VERIFIED_SCOPE
+        if self.opened:
+            d["limitation"] = OPENED_LIMITATION
         return d
 
 
@@ -170,8 +190,8 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
             report.status = "crashed"
         elif alive:
             report.status = "opened"
-            report.note = ("Best-effort: Desktop launched and stayed alive past the "
-                           "settle window with no crash/error signal.")
+            report.note = ("Desktop launched and stayed alive past the settle "
+                           "window with no crash/error signal. " + OPENED_LIMITATION)
         else:
             report.status = "timed_out"
     finally:

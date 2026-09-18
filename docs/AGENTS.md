@@ -166,7 +166,7 @@ The original 8-agent model had two overloaded agents:
 6. (Optional) @assessor → readiness report
 7. (Optional) @merger → shared semantic model
 8. (Optional) @deployer → Fabric/PBI workspace
-9. @tester validates all steps with 9,875 tests
+9. @tester validates all steps with 9,979 tests
 ```
 
 ## Handoff Protocol

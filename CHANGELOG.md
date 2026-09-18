@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The Power BI Desktop probe now states what it actually verifies. All 26
+  migrated example projects launch Desktop and survive the settle window — but
+  so does a project whose semantic model has been deleted, because Desktop
+  reports content errors in a dialog and keeps running. The probe reports
+  `verified: process_survival` and carries that limitation in its payload, so
+  an `opened` verdict cannot be mistaken for proof that a project loaded.
+
 - Parameter usage is no longer counted as data blending. Tableau exposes its
   parameter container as a pseudo-datasource, so referencing a parameter looked
   like a cross-datasource blend: all 15 blend records in the example corpus

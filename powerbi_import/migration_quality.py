@@ -414,6 +414,9 @@ def _openability_confidence(openability: Dict[str, Any], fabric: Dict[str, Any],
             "status": desktop_status,
             "version": desktop.get("executable"),
             "signals": desktop.get("signals", []),
+            # The probe watches the process, not the document: a project with a
+            # deleted semantic model still reports "opened".
+            "verified": desktop.get("verified", "process_survival"),
         },
         "semantic_execution": "not_run",
         "refresh": "not_run",
