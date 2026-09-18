@@ -49,18 +49,25 @@ read what it wrote.
 The four defects above were all found by accident. They should be impossible to
 reintroduce silently.
 
-- **Contract tests between stages.** For each hand-off (extractor → inventory,
-  parity → renderer, validator → preceptor → healer), assert that the keys and
-  vocabularies one side emits are the ones the other side reads. The existing
-  `test_quality_grades` and `test_agent_ownership` guards are the shape to
-  follow: they fail the build on drift rather than reporting it.
+- **Contract tests between stages.** *Started.*
+  `tests/test_extraction_contract.py` extracts genuine workbooks, derives the
+  field names actually emitted per object type, and asserts the constants
+  consumers depend on intersect them. It found three gaps on its first run:
+  filters, Hyper extracts and blending links exposed no name-like key, so the
+  inventory listed them as `item-0`. Extend the same shape to the remaining
+  hand-offs (parity → renderer, validator → preceptor → healer).
 - **A key-name lint.** Every consumer that reads a field by name from extracted
   JSON should be checked against the extractor's actual output on the corpus.
   `source_worksheets` vs `worksheet` was invisible for as long as nobody
-  compared the two.
-- **Corpus assertion in CI.** The migration of `examples/` currently proves
-  itself only when run by hand. Wire the 44-artefact run into CI with a floor on
-  openability (27/27) and blockers (0) so a regression cannot merge.
+  compared the two. Note one known inconsistency left alone so far:
+  `calculations` emits `datasource_name` where every other type emits
+  `datasource`.
+- **Corpus assertion in CI.** *Done.* `scripts/check_corpus_gate.py` migrates
+  all three batches and enforces the floors static validation can prove — every
+  artefact migrates, every project passes the openability preflight, no
+  blockers. Warnings stay advisory. Wired as the `corpus-gate` job;
+  `tests/test_corpus_gate.py` proves the gate fails when a project will not
+  open, when a blocker appears, and when a verdict is missing or unreadable.
 
 ### P2 — Make the quality report answer "what do I fix first?"
 

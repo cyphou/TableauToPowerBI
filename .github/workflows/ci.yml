@@ -322,6 +322,36 @@ jobs:
           name: validated-pbip-projects
           path: /tmp/pbi_validate/
 
+  # ──────────── Stage 3.2: Corpus Gate ───────────────────────
+  # The validate job above covers examples/tableau_samples only. This one
+  # migrates the whole corpus — real_world and the prep portfolio too — and
+  # enforces the floors static validation can actually prove: everything
+  # migrates, every project passes the openability preflight, and nothing
+  # reports a blocker. Warnings stay advisory and never fail the build.
+  corpus-gate:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Migrate the example corpus and enforce release floors
+        run: python scripts/check_corpus_gate.py --output-dir /tmp/corpus_gate
+
+      - name: Upload corpus output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-gate-output
+          path: |
+            /tmp/corpus_gate/**/migration_quality_*.json
+            /tmp/corpus_gate/**/openability_report.json
+          if-no-files-found: warn
+
   # ──────────── Stage 3.5: Preceptor Review Gate ─────────────
   # Automated "preceptor" — runs security, governance, and
   # regression checks on migrated artifacts before deploy.
