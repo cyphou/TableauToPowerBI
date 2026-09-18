@@ -93,9 +93,38 @@ mistaken for one — but it still lists findings rather than ranking them.
   before verify before note. Owners come from the same record; they used to be
   guessed by searching the message text for "DAX" or "table", the same brittle
   pattern that let producers and consumers drift apart elsewhere.
+- **Make the preceptor read what the generator writes.** *Done.* Before wiring
+  its coaching into the report, the reviewer itself had to be trusted — and it
+  was not. Six of its checks consumed a shape the generator never produces, so
+  it penalised correct output while leaving real defects unseen:
+  - It read *annotations* as DAX. `Copilot_Description` preserves the original
+    Tableau formula on purpose, so every `COUNTD` recorded there was reported
+    as a leak, and every truncated annotation as an unbalanced parenthesis.
+  - It looked for `definition.pbir` inside `definition/`; the generator writes
+    it beside that folder.
+  - It read report-level filters from a bare `filters` key; PBIR nests them
+    under `filterConfig`.
+  - It demanded a table literally named `Calendar`, though the generator
+    deliberately skips auto-Calendar when the source already ships a date
+    dimension such as `dim_date`.
+  - It expected a visual for *every* worksheet, including those never placed on
+    a dashboard, which map to no PBI artifact.
+  - **The M dimension inspected no M at all.** It scanned fenced ``` blocks,
+    but M partitions are written as a bare `source =` with an indented body —
+    fences hold calculated-table *DAX*. It therefore scored 5/5 by looking at
+    nothing, and its one finding was valid `NAMEOF('Table'[Col])` DAX misread
+    as an M string literal.
+
+  Each check now reuses the producer's own vocabulary (`_DATE_TABLE_NAMES`,
+  `_is_non_restrictive`, `_dashboard_worksheet_names`) instead of restating it.
+  Across the real-world corpus the mean rose from 4.92 to 5.00 with every
+  finding eliminated — and a negative-control suite proves injected leaks,
+  paren imbalances, M `if`/`else` gaps, single-quoted M sets, missing PBIR and
+  absent date tables are all still caught.
 - **Carry the preceptor's coaching feedback into the consolidated report.** It
   is the only surface that says *how* to fix something, and it is currently
-  reachable only via `--preceptor`.
+  reachable only via `--preceptor`. Now unblocked: the coaching it emits is
+  trustworthy.
 - **Extract conditional formatting.** Assessment counts it, but the extractor
   never produces it, so every workbook reports zero rules. Either extract it or
   stop claiming a count.

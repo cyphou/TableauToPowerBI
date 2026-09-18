@@ -30,6 +30,15 @@ from pathlib import Path
 # Balance checking is span-aware there: parens inside "strings", 'table quotes'
 # and [bracketed identifiers] are literal, not grouping.
 from powerbi_import.dax_validator import TABLEAU_LEAK_FUNCTIONS, _check_balanced
+# Canonical "is this entry actually restrictive?" test, so this review agrees
+# with the interface diff about which shelf entries need a PBI filter object.
+from powerbi_import.interface_diff import (
+    _dashboard_worksheet_names,
+    _is_non_restrictive,
+)
+# Canonical date-dimension vocabulary, so this review agrees with the generator
+# about what counts as a date table instead of forking a second definition.
+from powerbi_import.tmdl_generator import _DATE_TABLE_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +267,130 @@ def _load_json_safe(path):
         return {}
 
 
+#: A DAX expression site in TMDL. Three shapes carry generated DAX:
+#: ``measure 'Name' = <expr>``, ``column 'Name' = <expr>``, and the bare
+#: ``expression = <expr>`` property used by calculation-group items.
+#: Deliberately anchored to those keywords so that
+#: ``annotation Copilot_Description = Migrated from Tableau: COUNTD(...)`` —
+#: which records the *original Tableau formula* as documentation — is never
+#: mistaken for generated DAX. Scalar properties use ``key: value`` (colon),
+#: so only ``annotation`` shares the ``=`` shape and is excluded by this anchor.
+_DAX_SITE_RE = re.compile(
+    r"^(?P<indent>\s*)(?:"
+    r"(?:measure|column)\s+(?:'(?:[^']|'')*'|[^=\s]+)"
+    r"|expression"
+    r")\s*=\s*(?P<expr>.*)$"
+)
+
+#: TMDL multi-line expression delimiter.
+_TMDL_BLOCK_DELIM = '```'
+
+
+def _iter_dax_expressions(content):
+    """Yield the DAX expression of every measure/calculated column in *content*.
+
+    Only genuine expression sites are yielded. Annotations, descriptions and
+    scalar properties are skipped, as are M-language partition bodies (which
+    live under ``partition``/``source``, never under ``measure``/``column``).
+
+    Args:
+        content: Full text of a TMDL table file.
+
+    Yields:
+        str: One DAX expression, with multi-line bodies joined into one string.
+    """
+    lines = content.splitlines()
+    index = 0
+    while index < len(lines):
+        match = _DAX_SITE_RE.match(lines[index])
+        if not match:
+            index += 1
+            continue
+
+        expr = match.group('expr').strip()
+        indent = len(match.group('indent'))
+        index += 1
+
+        if expr.startswith(_TMDL_BLOCK_DELIM):
+            # Fenced multi-line body: consume until the closing fence.
+            body = []
+            while index < len(lines):
+                if lines[index].strip() == _TMDL_BLOCK_DELIM:
+                    index += 1
+                    break
+                body.append(lines[index].strip())
+                index += 1
+            expr = ' '.join(part for part in body if part)
+        elif not expr:
+            # Bare ``=`` followed by a more-indented continuation block.
+            body = []
+            while index < len(lines):
+                line = lines[index]
+                if line.strip() and (len(line) - len(line.lstrip())) <= indent:
+                    break
+                body.append(line.strip())
+                index += 1
+            expr = ' '.join(part for part in body if part)
+
+        if expr:
+            yield expr
+
+
+#: A set literal holding single-quoted strings, which M does not accept.
+_M_SET_SINGLE_QUOTE_RE = re.compile(r"\{[^{}]*'[^']*'[^{}]*\}")
+
+#: Double-quoted M string, honouring the doubled-quote escape.
+_M_STRING_RE = re.compile(r'"(?:[^"]|"")*"')
+
+
+def _blank_m_strings(text):
+    """Replace every double-quoted M string with same-length filler.
+
+    Keeps offsets stable so downstream matches still line up, while ensuring
+    punctuation inside string literals is not read as syntax.
+    """
+    return _M_STRING_RE.sub(lambda m: '"' + ' ' * (len(m.group()) - 2) + '"', text)
+
+
+def _iter_m_expressions(content):
+    """Yield the body of every Power Query M partition in *content*.
+
+    M partitions are written as a bare ``source =`` followed by an indented
+    body (see tmdl_generator's partition writer). Calculated *DAX* tables use
+    the other two shapes — ``source = <expr>`` on one line, or a fenced
+    ```` ``` ```` block — so keying on the bare form is what separates the two
+    languages. Scanning fences instead would review DAX as if it were M.
+
+    Args:
+        content: Full text of a TMDL table file.
+
+    Yields:
+        str: One M expression body, newlines preserved.
+    """
+    lines = content.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if stripped != 'source =':
+            index += 1
+            continue
+
+        indent = len(line) - len(line.lstrip())
+        index += 1
+        body = []
+        while index < len(lines):
+            candidate = lines[index]
+            if candidate.strip() and (len(candidate) - len(candidate.lstrip())) <= indent:
+                break
+            body.append(candidate)
+            index += 1
+
+        text = '\n'.join(body).strip()
+        if text:
+            yield text
+
+
 def _count_tmdl_objects(sm_dir):
     """Count tables, measures, columns, and relationships in TMDL files."""
     counts = {'tables': 0, 'measures': 0, 'columns': 0, 'relationships': 0}
@@ -301,6 +434,14 @@ def _review_completeness(pbip_path, extraction_data):
 
     # Source counts from extraction
     src_worksheets = len(extraction_data.get('worksheets', []))
+    # Worksheets that should yield a visual. When dashboards exist, only the
+    # worksheets actually placed on one become visuals; the rest map to no PBI
+    # artifact. With no dashboards at all, PBIPGenerator falls back to one page
+    # per worksheet, so every worksheet is then expected.
+    if extraction_data.get('dashboards'):
+        expected_visual_sources = len(_dashboard_worksheet_names(extraction_data))
+    else:
+        expected_visual_sources = src_worksheets
     src_calculations = len(extraction_data.get('calculations', []))
     src_datasources = len(extraction_data.get('datasources', []))
     src_parameters = len(extraction_data.get('parameters', []))
@@ -328,12 +469,12 @@ def _review_completeness(pbip_path, extraction_data):
     penalties = 0
 
     # Check worksheets → visuals
-    if src_worksheets > 0 and out_visuals == 0:
-        issues.append(f"No visuals generated for {src_worksheets} source worksheets")
+    if expected_visual_sources > 0 and out_visuals == 0:
+        issues.append(f"No visuals generated for {expected_visual_sources} source worksheets")
         penalties += 2
-    elif src_worksheets > 0 and out_visuals < src_worksheets:
-        missing = src_worksheets - out_visuals
-        issues.append(f"{missing}/{src_worksheets} worksheets missing visuals")
+    elif expected_visual_sources > 0 and out_visuals < expected_visual_sources:
+        missing = expected_visual_sources - out_visuals
+        issues.append(f"{missing}/{expected_visual_sources} worksheets missing visuals")
         penalties += 1
 
     # Check calculations → measures/columns
@@ -390,16 +531,10 @@ def _review_dax_correctness(pbip_path, extraction_data):
             except OSError:
                 continue
 
-            # Extract DAX expressions (after `= ` or `expression = `)
-            expressions = re.findall(
-                r'(?:expression\s*=\s*|=\s+)(.*?)(?:\n\s*(?:formatString|description|displayFolder|dataType|lineageTag|annotation|isHidden|summarizeBy|dataCategory|sortByColumn)\s*=|\Z)',
-                content, re.DOTALL,
-            )
-
-            for expr in expressions:
-                expr = expr.strip()
-                if not expr or expr.startswith('```') or expr.startswith('let'):
-                    continue  # Skip M expressions
+            # Extract DAX expressions from genuine measure/column sites only.
+            for expr in _iter_dax_expressions(content):
+                if expr.startswith('let'):
+                    continue  # Defensive: skip anything M-shaped
                 total_formulas += 1
 
                 # Check Tableau function leakage
@@ -467,12 +602,9 @@ def _review_m_query_validity(pbip_path, extraction_data):
             except OSError:
                 continue
 
-            # Find M partition expressions (```...```)
-            m_blocks = re.findall(r'```\s*(.*?)```', content, re.DOTALL)
-            for block in m_blocks:
-                block = block.strip()
-                if not block:
-                    continue
+            # Find M partition bodies. Deliberately not the fenced blocks:
+            # those hold calculated-table DAX, not M.
+            for block in _iter_m_expressions(content):
                 total_m_exprs += 1
 
                 # Check if/then/else balance
@@ -490,8 +622,11 @@ def _review_m_query_validity(pbip_path, extraction_data):
                         fix="Add missing 'else null' clause to every 'if' expression",
                     ))
 
-                # Check for single-quoted strings in IN sets
-                single_quotes_in_set = re.findall(r"\{[^}]*'[^']*'[^}]*\}", block)
+                # Check for single-quoted strings in IN sets. An apostrophe
+                # *inside* a double-quoted M string is ordinary text (e.g. a
+                # column called Customer's Name), so blank those spans first.
+                single_quotes_in_set = _M_SET_SINGLE_QUOTE_RE.findall(
+                    _blank_m_strings(block))
                 if single_quotes_in_set:
                     single_quote_errors += 1
                     coaching.append(CoachingItem(
@@ -573,16 +708,23 @@ def _review_tmdl_structure(pbip_path, extraction_data):
                         has_date_cols = True
                         break
         if has_date_cols:
-            calendar_exists = (def_dir / 'tables' / 'Calendar.tmdl').exists()
-            if not calendar_exists:
-                # Check model.tmdl for calendar ref
-                if 'Calendar' not in model_content:
-                    penalties += 1
-                    coaching.append(CoachingItem(
-                        dimension='tmdl_structure', score=0,
-                        issue="Date columns found but no Calendar table generated",
-                        fix="Ensure auto-Calendar generation is enabled for date columns",
-                    ))
+            # The model needs *a* date dimension, not one literally named
+            # "Calendar". tmdl_generator deliberately skips auto-Calendar when
+            # the source already supplies one (see its ``_is_date_table``), so
+            # reuse its vocabulary rather than forking a second definition.
+            tables_dir = def_dir / 'tables'
+            generated = {
+                f.stem.lower().strip()
+                for f in (tables_dir.glob('*.tmdl') if tables_dir.exists() else [])
+            }
+            has_date_table = bool(generated & _DATE_TABLE_NAMES)
+            if not has_date_table and 'Calendar' not in model_content:
+                penalties += 1
+                coaching.append(CoachingItem(
+                    dimension='tmdl_structure', score=0,
+                    issue="Date columns found but no date/Calendar table generated",
+                    fix="Ensure auto-Calendar generation is enabled for date columns",
+                ))
 
     # Check RLS if user_filters exist
     src_user_filters = extraction_data.get('user_filters', [])
@@ -626,6 +768,12 @@ def _review_pbir_fidelity(pbip_path, extraction_data):
     def_dir = report_dir / 'definition'
 
     penalties = 0
+
+    # A workbook with neither worksheets nor dashboards carries nothing to
+    # render. PBIP allows a SemanticModel-only project, so the absence of a
+    # Report item is the correct outcome, not a fidelity loss.
+    if not extraction_data.get('worksheets') and not extraction_data.get('dashboards'):
+        return 5, "no report surface in source (semantic model only)", coaching
 
     # Check report.json exists
     report_json = def_dir / 'report.json'
@@ -691,24 +839,33 @@ def _review_pbir_fidelity(pbip_path, extraction_data):
             fix="Check visual JSON generation in visual_generator.py",
         ))
 
-    # Check definition.pbir exists
-    pbir_file = def_dir / 'definition.pbir'
+    # Check definition.pbir exists. PBIPGenerator writes it beside the
+    # ``definition/`` folder, not inside it (see pbip_generator._write_json).
+    pbir_file = report_dir / 'definition.pbir'
     if not pbir_file.exists():
         penalties += 1
         coaching.append(CoachingItem(
             dimension='pbir_fidelity', score=0,
             issue="definition.pbir not found",
-            location=str(def_dir),
+            location=str(report_dir),
             fix="Ensure PBIPGenerator produces definition.pbir",
         ))
 
     # Check filter levels (report-level filters exist if source has global filters)
-    src_filters = extraction_data.get('filters', [])
+    # Entries sitting on the Filters shelf without a chosen domain select
+    # everything, so PBI needs no object for them. Reuse interface_diff's
+    # predicate rather than forking a second notion of "a real filter".
+    src_filters = [
+        f for f in extraction_data.get('filters', [])
+        if isinstance(f, dict) and not _is_non_restrictive(f)
+    ]
     if src_filters:
         try:
             with open(report_json, 'r', encoding='utf-8') as f:
                 rdata = json.load(f)
-            report_filters = rdata.get('filters', [])
+            # PBIR nests report-level filters under ``filterConfig``; a bare
+            # ``filters`` key is never emitted at report scope.
+            report_filters = (rdata.get('filterConfig') or {}).get('filters', [])
             if not report_filters:
                 penalties += 1
                 coaching.append(CoachingItem(

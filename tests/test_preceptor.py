@@ -58,10 +58,11 @@ def _make_pbip_project(tmp, name='TestReport', *,
     rj = report_json or {'$schema': 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/report/2.0.0/schema.json'}
     (report_dir / 'report.json').write_text(json.dumps(rj), encoding='utf-8')
 
-    # definition.pbir
+    # definition.pbir — written beside the definition/ folder, matching
+    # pbip_generator, which joins it to the report dir and not to definition/.
     if definition_pbir:
         pbir = {'$schema': 'https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json'}
-        (report_dir / 'definition.pbir').write_text(json.dumps(pbir), encoding='utf-8')
+        (report_dir.parent / 'definition.pbir').write_text(json.dumps(pbir), encoding='utf-8')
 
     # Pages/visuals
     if pages:
@@ -273,9 +274,17 @@ class TestReviewCompleteness(unittest.TestCase):
     def test_missing_visuals(self):
         with tempfile.TemporaryDirectory() as tmp:
             pbip = _make_pbip_project(tmp)
-            ext_dir = _make_extraction(tmp, worksheets=[
-                {'name': 'S1'}, {'name': 'S2'}, {'name': 'S3'},
-            ])
+            # A dashboard references the worksheets it shows; only those are
+            # expected to become visuals.
+            ext_dir = _make_extraction(
+                tmp,
+                worksheets=[{'name': 'S1'}, {'name': 'S2'}, {'name': 'S3'}],
+                dashboards=[{'name': 'Dashboard1', 'objects': [
+                    {'type': 'worksheetReference', 'worksheetName': 'S1'},
+                    {'type': 'worksheetReference', 'worksheetName': 'S2'},
+                    {'type': 'worksheetReference', 'worksheetName': 'S3'},
+                ]}],
+            )
             data = _load_extraction_data(ext_dir)
 
             score, detail, coaching = _review_completeness(pbip, data)
@@ -343,16 +352,16 @@ class TestReviewMQueryValidity(unittest.TestCase):
 
     def test_unbalanced_if_else(self):
         with tempfile.TemporaryDirectory() as tmp:
+            # M partitions are written as a bare `source =` plus an indented
+            # body; fenced blocks hold calculated-table DAX instead.
             m = (
                 'table MTable\n'
-                '  partition p = m\n'
-                '    expression =\n'
-                '      ```\n'
-                '      let\n'
-                '        Result = if true then 1\n'
-                '      in\n'
-                '        Result\n'
-                '      ```\n'
+                '\tpartition p = m\n'
+                '\t\tsource =\n'
+                '\t\t\t\tlet\n'
+                '\t\t\t\t    Result = if true then 1\n'
+                '\t\t\t\tin\n'
+                '\t\t\t\t    Result\n'
             )
             pbip = _make_pbip_project(tmp, m_content=m)
             score, detail, coaching = _review_m_query_validity(pbip, {})
@@ -412,7 +421,7 @@ class TestReviewPbirFidelity(unittest.TestCase):
             rj.unlink()
 
             score, detail, coaching = _review_pbir_fidelity(pbip, {
-                'dashboards': [], 'filters': [],
+                'worksheets': [{'name': 'S1'}], 'dashboards': [], 'filters': [],
             })
             self.assertLess(score, 3)
             self.assertTrue(any('report.json' in c.issue for c in coaching))
