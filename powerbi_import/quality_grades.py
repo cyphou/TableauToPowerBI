@@ -47,7 +47,7 @@ _DIALECT = {
     },
     NEUTRAL: {
         'NOT_RUN', 'UNVERIFIED', 'SKIPPED', 'NONE', 'N/A', 'NA',
-        'NOT_AVAILABLE', 'NOT_FOUND', 'PENDING', 'UNKNOWN',
+        'NOT_AVAILABLE', 'NOT_FOUND', 'NOT_CHECKED', 'PENDING', 'UNKNOWN',
     },
 }
 

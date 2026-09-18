@@ -258,19 +258,35 @@ class TestSerialization(unittest.TestCase):
         self.assertEqual(scan.evidence_coverage["coverage_percent"], 50.0)
 
     def test_usage_marks_missing_target_evidence(self):
+        scan = scan_workbook({"filters": [1]})
+        usage = next(u for u in scan.usages if u.key == "filters")
+        self.assertEqual(usage.evidence_status, "not_found")
+
+    def test_unprobed_feature_says_so_rather_than_claiming_a_miss(self):
         scan = scan_workbook({"calculations": [{"formula": "[Sales]"}]})
         usage = next(u for u in scan.usages if u.key == "calc_basic")
-        self.assertEqual(usage.evidence_status, "source_only")
+        self.assertEqual(usage.evidence_status, "not_checked")
+
+    def test_unprobed_features_stay_out_of_the_coverage_denominator(self):
+        scan = scan_workbook({
+            "filters": [1],
+            "calculations": [{"formula": "[Sales]"}],
+            "_parity_evidence": {"filters": ["report.json"]},
+        })
+        coverage = scan.evidence_coverage
+        self.assertEqual(coverage["checked_features"], 1)
+        self.assertEqual(coverage["unchecked_features"], 1)
+        self.assertEqual(coverage["coverage_percent"], 100.0)
 
     def test_usage_marks_target_evidence(self):
         scan = scan_workbook({
-            "calculations": [{"formula": "[Sales]"}],
-            "_parity_evidence": {"calc_basic": ["Model.tmdl"]},
+            "filters": [1],
+            "_parity_evidence": {"filters": ["report.json"]},
         })
-        usage = next(u for u in scan.usages if u.key == "calc_basic")
+        usage = next(u for u in scan.usages if u.key == "filters")
         self.assertEqual(usage.evidence_status, "evidenced")
 
-    def test_untracked_features_reduce_evidence_coverage(self):
+    def test_untracked_features_are_reported(self):
         scan = scan_workbook({"schedules": [{"name": "Nightly"}]})
         self.assertIn("schedules", scan.untracked_features)
         self.assertEqual(scan.evidence_coverage["untracked_features"], 1)
@@ -328,13 +344,44 @@ class TestTargetEvidence(unittest.TestCase):
             os.makedirs(model, exist_ok=True)
             with open(os.path.join(report, "report.json"), "w", encoding="utf-8") as fh:
                 json.dump({"filterConfig": {"filters": [{"name": "f1"}]}}, fh)
+            with open(os.path.join(model, "Top N.tmdl"), "w", encoding="utf-8") as fh:
+                # The shape the generator emits for a What-If parameter.
+                fh.write("table 'Top N'\n\tpartition 'Top N' = calculated\n"
+                         "\t\tsource = GENERATESERIES(1, 20, 1)\n")
             with open(os.path.join(model, "Orders.tmdl"), "w", encoding="utf-8") as fh:
-                fh.write("table Orders\n\tmeasure 'Top N' = 10\n")
+                fh.write("table Orders\n\tmeasure 'Total Sales' = SUM(Orders[Sales])\n")
             evidence = collect_target_evidence(tmp, "Demo")
 
         self.assertEqual(evidence["filters"], ["Demo.Report/definition/report.json"])
         self.assertEqual(evidence["parameters"],
-                         ["Demo.SemanticModel/definition/tables/Orders.tmdl"])
+                         ["Demo.SemanticModel/definition/tables/Top N.tmdl"])
+
+    def test_a_measure_is_not_evidence_of_a_parameter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = os.path.join(tmp, "Demo.SemanticModel", "definition", "tables")
+            os.makedirs(model, exist_ok=True)
+            with open(os.path.join(model, "Orders.tmdl"), "w", encoding="utf-8") as fh:
+                fh.write("table Orders\n\tmeasure 'Total Sales' = SUM(Orders[Sales])\n")
+            self.assertNotIn("parameters", collect_target_evidence(tmp, "Demo"))
+
+    def test_collects_hierarchy_and_sort_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = os.path.join(tmp, "Demo.SemanticModel", "definition", "tables")
+            os.makedirs(model, exist_ok=True)
+            with open(os.path.join(model, "Calendar.tmdl"), "w", encoding="utf-8") as fh:
+                fh.write("table Calendar\n\tcolumn MonthName\n"
+                         "\t\tsortByColumn: Month\n\thierarchy 'Date Hierarchy'\n")
+            evidence = collect_target_evidence(tmp, "Demo")
+        self.assertIn("hierarchies", evidence)
+        self.assertIn("sort_order", evidence)
+
+    def test_a_plain_table_evidences_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = os.path.join(tmp, "Demo.SemanticModel", "definition", "tables")
+            os.makedirs(model, exist_ok=True)
+            with open(os.path.join(model, "Customers.tmdl"), "w", encoding="utf-8") as fh:
+                fh.write("table Customers\n\tcolumn Name\n\t\tdataType: string\n")
+            self.assertEqual({}, collect_target_evidence(tmp, "Demo"))
 
     def test_scan_project_attaches_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:

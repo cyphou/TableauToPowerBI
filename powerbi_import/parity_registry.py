@@ -363,7 +363,8 @@ class FeatureUsage:
     target: str
     remediation: str
     evidence: List[str] = field(default_factory=list)
-    evidence_status: str = "source_only"  # evidenced | source_only
+    #: evidenced | not_found | not_checked — see _EVIDENCE_PROBED.
+    evidence_status: str = "not_checked"
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -404,15 +405,23 @@ class ParityScan:
 
     @property
     def evidence_coverage(self) -> Dict[str, float]:
-        """Summarize how many in-use feature families have target evidence."""
-        tracked = len(self.usages) + len(self.untracked_features)
-        evidenced = sum(1 for usage in self.usages if usage.evidence)
+        """How many in-use features were confirmed in the generated project.
+
+        Only features in ``_EVIDENCE_PROBED`` can be confirmed, so they are the
+        denominator. Counting the rest as misses would have read as a failure
+        when in fact nothing had looked — the distinction the Desktop probe had
+        to learn to state as well.
+        """
+        checked = [u for u in self.usages if u.evidence_status != "not_checked"]
+        evidenced = sum(1 for u in checked if u.evidence)
         return {
-            "tracked_features": tracked,
+            "tracked_features": len(self.usages) + len(self.untracked_features),
+            "checked_features": len(checked),
             "evidenced_features": evidenced,
+            "unchecked_features": len(self.usages) - len(checked),
             "untracked_features": len(self.untracked_features),
-            "coverage_percent": round(evidenced / tracked * 100.0, 1)
-            if tracked else 100.0,
+            "coverage_percent": round(evidenced / len(checked) * 100.0, 1)
+            if checked else 0.0,
         }
 
     @property
@@ -484,7 +493,7 @@ def scan_workbook(converted: Dict, workbook: str = "Workbook") -> ParityScan:
             status=feat.status, count=count, target=feat.target,
             remediation=feat.remediation,
             evidence=feature_evidence,
-            evidence_status="evidenced" if feature_evidence else "source_only",
+            evidence_status=_evidence_status(feat.key, feature_evidence),
         ))
     untracked = []
     detector_keys = set(_DETECTORS)
@@ -530,6 +539,38 @@ def _load_tmdl_text(path: str) -> str:
         return ""
 
 
+#: Features ``collect_target_evidence`` actually looks for in a generated
+#: project. Anything outside this set reports ``not_checked`` rather than a
+#: miss, because "we found nothing" and "nothing looked" are different claims
+#: and only one of them is a defect.
+#:
+#: A probe earns its place only if it is *specific*. A measure in TMDL proves
+#: some calculation converted but not which kind, so attributing it to a
+#: particular calculation feature would be the same mis-count this registry
+#: has already been caught making.
+_EVIDENCE_PROBED = frozenset({
+    "filters", "datasource_filter", "dashboard", "action_url", "action_nav",
+    "story_bookmarks", "parameters", "hierarchies", "sort_order", "rls",
+    "custom_sql", "refresh_schedule", "subscription",
+})
+
+
+def _evidence_status(key: str, evidence: List[str]) -> str:
+    if key not in _EVIDENCE_PROBED:
+        return "not_checked"
+    return "evidenced" if evidence else "not_found"
+
+
+#: What a generated TMDL table looks like when it carries a Tableau parameter.
+_PARAMETER_TABLE_MARKERS = ("generateseries(", "datatable(", "nameof(")
+
+#: TMDL indents block declarations, so these are anchored to the line, not the
+#: file — the word "hierarchy" also appears in generated descriptions.
+_TMDL_HIERARCHY_RE = re.compile(r"^[ \t]*hierarchy ", re.MULTILINE)
+_TMDL_SORTBY_RE = re.compile(r"^[ \t]*sortByColumn:", re.MULTILINE)
+_TMDL_NATIVE_QUERY_RE = re.compile(r"Value\.NativeQuery\s*\(")
+
+
 def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, List[str]]:
     """Collect artifact references for features found in a generated project.
 
@@ -556,6 +597,8 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
         pass
     if (report_data.get("filterConfig") or {}).get("filters"):
         add("filters", report_json)
+        # Coarse: a datasource filter's declared target *is* a report-level
+        # filter, but nothing here tells the two apart.
         add("datasource_filter", report_json)
 
     visual_paths = glob.glob(os.path.join(
@@ -580,10 +623,16 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
 
     tables_glob = os.path.join(semantic_dir, "definition", "tables", "*.tmdl")
     for path in sorted(glob.glob(tables_glob)):
-        data = _load_tmdl_text(path)
-        lowered = data.lower()
-        if "measure '" in lowered or "measure " in lowered:
+        text = _load_tmdl_text(path)
+        lowered = text.lower()
+        if any(marker in lowered for marker in _PARAMETER_TABLE_MARKERS):
             add("parameters", path)
+        if _TMDL_HIERARCHY_RE.search(text):
+            add("hierarchies", path)
+        if _TMDL_SORTBY_RE.search(text):
+            add("sort_order", path)
+        if _TMDL_NATIVE_QUERY_RE.search(text):
+            add("custom_sql", path)
 
     add("rls", os.path.join(semantic_dir, "definition", "roles.tmdl"))
     for filename in ("refresh_config.json", "refresh.json", "pbi_refresh_config.json"):
@@ -641,9 +690,10 @@ def _render_html(scan: ParityScan) -> str:
 </style></head><body>
 <h1>Functionality parity — {_esc(scan.workbook)}</h1>
 <p class="score">{scan.parity_score}% <span style="font-size:14px">({_esc(scan.grade)})</span></p>
-<p>evidence {scan.evidence_coverage['evidenced_features']}/
-    {scan.evidence_coverage['tracked_features']} feature families
-    ({scan.evidence_coverage['coverage_percent']}%) ·
+<p>target evidence {scan.evidence_coverage['evidenced_features']}/
+    {scan.evidence_coverage['checked_features']} checked
+    ({scan.evidence_coverage['coverage_percent']}%),
+    {scan.evidence_coverage['unchecked_features']} not checked ·
     exact {counts[EXACT]} · healed {counts[HEALED]} ·
    approximated {counts[APPROXIMATED]} · unsupported {counts[UNSUPPORTED]}
    · registry v{_esc(scan.registry_version)}</p>

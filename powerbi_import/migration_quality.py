@@ -879,6 +879,8 @@ def _lineage_evidence(extracted: Dict[str, Any], data: Dict[str, Any],
             },
             "parity_evidence_percent": parity.get("evidence_coverage", {}).get(
                 "coverage_percent", 0.0),
+            "parity_features_unchecked": parity.get("evidence_coverage", {}).get(
+                "unchecked_features", 0),
             "inventory_objects": inventory["object_count"],
             "inventory_object_types": {
                 object_type: count for object_type, count in inventory["counts"].items()

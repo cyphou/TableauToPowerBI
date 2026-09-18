@@ -106,16 +106,41 @@ Five of the nine defects were checks that could not report failure, or statuses
 asserted rather than measured. That is now a known failure mode, so look for it
 deliberately rather than waiting to trip over the next one.
 
-- Enumerate every status the pipeline reports and classify it: **measured**,
-  **asserted** (a fixed capability claim), or **unfalsifiable** (no input could
-  make it fail). The `alias` status was asserted; the Desktop probe is
-  unfalsifiable for content.
-- For each check, write the negative control first: what input *should* make
-  this fail? If none exists, the check is documentation, and should say so in
-  its payload the way the Desktop probe now does.
-- The parity registry is the densest concentration of asserted statuses — every
-  `Feature` carries a fixed verdict. Some are genuine capability statements;
-  others, as `alias` was, are measurable per workbook.
+- **The parity registry, audited.** *Done for the evidence layer.* All 32
+  feature statuses are fixed by construction — not one varied across the 27
+  corpus workbooks, and 15 features were never exercised by any of them. The
+  registry does carry a second, genuinely measurable signal: whether the
+  generated project contains the target it claims. That signal was reported as
+  `source_only`, a single word covering both "we looked and found nothing" and
+  "nothing ever looked" — and only 8 of 32 features had a probe at all, so the
+  headline read 36% when 24 features simply had no check.
+
+  Evidence is now three-valued: `evidenced`, `not_found`, `not_checked`, with
+  the probed features declared explicitly and unprobed ones kept out of the
+  coverage denominator. Coverage reads **77.2%** over what is actually checked,
+  with the unchecked count reported beside it instead of hidden inside it.
+
+  The audit found a live mis-count, the same shape as the others: *any* TMDL
+  table containing the word "measure" was recorded as evidence of a
+  **parameter**. Parameters are now evidenced by the table shapes the generator
+  really emits for them (`GENERATESERIES` / `DATATABLE` / `NAMEOF`), and
+  hierarchies, sort-by-column and native SQL queries gained probes of their own.
+  A test fixture had pinned the wrong behaviour in place, so it was corrected to
+  a shape the generator would actually produce.
+
+  Probes were added only where they are *specific*. A measure in TMDL proves
+  some calculation converted but not which kind, so no calculation feature was
+  given one — claiming otherwise would repeat the mistake being fixed.
+
+- **Newly visible, not yet explained:** three workbooks (Complex_Enterprise,
+  vishnu_dashboard, feedback_dashboard) report source filters while their
+  generated reports contain no filter at any level and no slicer. The old
+  vocabulary could not distinguish this from "not checked". Owner: Visual.
+
+- Still open: statuses outside the parity registry have not been enumerated.
+  For each, write the negative control first — what input *should* make this
+  fail? If none exists, the check is documentation, and should say so in its
+  payload the way the Desktop probe and parity evidence now do.
 
 ### P3 — The runtime ceiling
 

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Parity evidence now distinguishes "we looked and found nothing" from "nothing
+  looked". Both were reported as `source_only`, and only 8 of the 32 tracked
+  features had a probe at all, so the headline read 36% coverage when three
+  quarters of it had never been checked. Evidence is now `evidenced`,
+  `not_found` or `not_checked`, unprobed features are kept out of the
+  denominator, and coverage reads 77.2% over what is actually verified with the
+  unchecked count stated beside it.
+
+- A Power BI parameter is no longer evidenced by any table containing the word
+  "measure". Parameters are confirmed by the table shapes the generator really
+  emits for them (`GENERATESERIES`, `DATATABLE`, `NAMEOF`), and hierarchies,
+  sort-by-column and native SQL queries gained probes of their own. Probes were
+  added only where they identify their feature specifically: a measure proves
+  some calculation converted but not which kind, so no calculation feature
+  claims one.
+
 - Pre-migration assessment warnings now reach the remediation queue as separate,
   addressable entries. A single "assessment contains warnings" line stood in for
   19 warnings spanning 6 categories and 13 distinct checks across the example
