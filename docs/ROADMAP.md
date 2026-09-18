@@ -254,10 +254,16 @@ Found by the P2 evidence work, once `not_found` became distinguishable from
   zero, where before there were 24 buttons pointing at a field reference and
   4 pointing at nothing.
 
-- **Open:** `_create_action_visuals` is called per page with the whole workbook
-  action list, so one action becomes one button per page. Binding an action to
-  its source dashboard needs `source/@dashboard`, which the extractor does not
-  capture yet. Invisible until now because so few actions survived.
+- **One action became one button per page.** *Done — three buttons for one
+  action, now one.* The call site filtered on `source_worksheet`, singular,
+  which the extractor never emits, so every action passed on every page.
+  Tableau names the endpoint on `<source>`/`<target>` as `dashboard`, and only
+  sometimes as `worksheet` — all six `<target>` elements in the corpus carry
+  `dashboard` alone, which is why `target_worksheets` was empty everywhere and
+  no drill-through page was ever built. Both endpoints are now captured, and
+  one function decides page ownership. Verified end to end on a workbook whose
+  URL was made static: three buttons before, one after, on the page the action
+  names.
 
 ### P4 — The last two parity gaps
 

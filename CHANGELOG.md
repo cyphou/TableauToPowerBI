@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- An action button is placed on the page its action came from. The call site
+  filtered on `source_worksheet` — singular, a key the extractor never emits —
+  so every action passed on every page and one action became one button per
+  page: three Salesforce actions produced twenty-four buttons. Tableau names
+  the endpoint as `dashboard` on `<source>` and `<target>`, and only sometimes
+  as `worksheet`; both are now captured. All six `<target>` elements in the
+  example corpus name a dashboard and no worksheet, which is why
+  `target_worksheets` was empty everywhere and no drill-through page was ever
+  built from an action.
+
 - Tableau actions are read again. A real `<action>` carries no `type`
   attribute: the kind is a child — `<command command="tsc:brush">` for
   highlighting, `tsc:tsl-filter` for filtering, `<link>` for a URL. The reader

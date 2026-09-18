@@ -2589,6 +2589,10 @@ class TableauExtractor:
                 'type': action_type,
                 'source_worksheets': [],
                 'target_worksheets': [],
+                # An endpoint names a dashboard when it covers every sheet on
+                # it; all six <target> elements in the example corpus do.
+                'source_dashboards': [],
+                'target_dashboards': [],
                 'command': action.get('command', ''),
             }
             
@@ -2597,12 +2601,18 @@ class TableauExtractor:
                 ws = source.get('worksheet', '')
                 if ws:
                     action_data['source_worksheets'].append(ws)
+                dash = source.get('dashboard', '')
+                if dash and dash not in action_data['source_dashboards']:
+                    action_data['source_dashboards'].append(dash)
             
             # Target sheets
             for target in action.findall('.//target'):
                 ws = target.get('worksheet', '')
                 if ws:
                     action_data['target_worksheets'].append(ws)
+                dash = target.get('dashboard', '')
+                if dash and dash not in action_data['target_dashboards']:
+                    action_data['target_dashboards'].append(dash)
             
             # URL action
             if action_type == 'url':

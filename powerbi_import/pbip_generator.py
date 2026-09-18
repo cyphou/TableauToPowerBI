@@ -119,6 +119,24 @@ def _is_static_url(value):
     return url.lower().startswith(_STATIC_URL_SCHEMES)
 
 
+def _action_belongs_to_page(action, page_display_name, page_worksheets=()):
+    """Whether an action's button belongs on this page.
+
+    Action buttons are built per page from the whole workbook list, so an
+    action that names where it lives would otherwise appear on every page.
+    Tableau names either the source dashboard or the source worksheets; an
+    action that names neither is left on all pages rather than silently
+    dropped.
+    """
+    dashboards = action.get('source_dashboards') or []
+    if dashboards:
+        return page_display_name in dashboards
+    worksheets = action.get('source_worksheets') or []
+    if worksheets:
+        return any(name in set(page_worksheets) for name in worksheets)
+    return True
+
+
 def _pbi_literal(v, column_type=None):
     """Convert a filter value to a PBI literal string.
 
@@ -1604,7 +1622,7 @@ class PowerBIProjectGenerator:
         created = 0
         for action in actions:
             action_type = action.get('type', '')
-            
+
             if action_type == 'url':
                 url = action.get('url', '')
                 if not _is_static_url(url):
@@ -2555,11 +2573,14 @@ class PowerBIProjectGenerator:
             # Create action buttons for URL and sheet-navigate actions
             actions = converted_objects.get('actions', [])
             if actions:
-                # Filter actions relevant to this dashboard
-                db_name = db.get('name', '')
-                db_actions = [a for a in actions if a.get('type') in ('url', 'sheet-navigate')
-                              and (not a.get('source_worksheet') or a.get('source_worksheet') == db_name
-                                   or any(o.get('worksheetName') == a.get('source_worksheet') for o in db_objects))]
+                page_worksheets = {o.get('worksheetName') for o in db_objects
+                                   if o.get('worksheetName')}
+                page_worksheets.add(db.get('name', ''))
+                db_actions = [
+                    a for a in actions
+                    if a.get('type') in ('url', 'sheet-navigate')
+                    and _action_belongs_to_page(a, page_display_name, page_worksheets)
+                ]
                 if db_actions:
                     created = self._create_action_visuals(visuals_dir, db_actions,
                                                            scale_x, scale_y, visual_count,
