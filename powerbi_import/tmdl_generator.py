@@ -1565,6 +1565,125 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
     # Phase 12d: Named measures carrying Tableau field aliases
     _inject_alias_measures(model, extra_objects.get('aliases', {}),
                            column_table_map)
+    # Phase 12e: Value-level Tableau aliases become a display-only column
+    _inject_value_alias_columns(model, extra_objects.get('aliases', {}),
+                               column_table_map)
+    _inject_url_action_categories(model, extra_objects.get('actions', []),
+                                  column_table_map,
+                                  extra_objects.get('calculations', []))
+
+
+def _value_alias_literal(value):
+    """Format a Tableau alias value as a DAX literal in a SWITCH expression."""
+    if value is None:
+        return 'BLANK()'
+    if isinstance(value, bool):
+        return 'TRUE()' if value else 'FALSE()'
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Keep Windows/Power BI formatting stable for small numeric aliases.
+        return str(value)
+    text = str(value)
+    if text.lower() in {'%null%', 'null', 'blank'}:
+        return 'BLANK()'
+    return f'"{text.replace("\"", "\"\"")}"'
+
+
+def _inject_url_action_categories(model, actions, column_table_map,
+                                  calculations=None):
+    """Mark direct Tableau URL-action fields as Power BI WebUrl columns."""
+    if not isinstance(actions, list):
+        return
+
+    field_ref = re.compile(r'<\[[^]]+\]\.\[([^]]+)\]>')
+    tables = {t.get('name', ''): t for t in model.get('model', {}).get('tables', [])}
+    calculation_names = {}
+    for calculation in calculations or []:
+        if not isinstance(calculation, dict):
+            continue
+        raw_name = str(calculation.get('name', '')).strip('[]')
+        caption = (calculation.get('caption') or '').strip()
+        if raw_name and caption:
+            calculation_names[raw_name] = caption
+    for action in actions:
+        if not isinstance(action, dict) or action.get('type') != 'url':
+            continue
+        match = field_ref.fullmatch((action.get('url') or '').strip())
+        if not match:
+            continue
+        field_name = calculation_names.get(match.group(1), match.group(1))
+        table_name = column_table_map.get(field_name)
+        table = tables.get(table_name)
+        if not table:
+            continue
+        for column in table.get('columns', []):
+            if column.get('name') == field_name:
+                column['dataCategory'] = 'WebUrl'
+                break
+
+
+def _inject_value_alias_columns(model, aliases, column_table_map):
+    """Create display columns for Tableau value aliases.
+
+    Tableau renames individual values such as "North" -> "North (N)" without
+    changing the underlying field. Power BI has no direct "per-value alias"
+    object, so the closest equivalent is a calculated text column that swaps the
+    display value while preserving the original column for filtering and joins.
+    """
+    if not isinstance(aliases, dict) or not aliases:
+        return
+
+    tables = model.get('model', {}).get('tables', [])
+    by_name = {t.get('name', ''): t for t in tables}
+    taken = {c.get('name', '') for t in tables for c in t.get('columns', [])}
+
+    for field_name, alias_map in aliases.items():
+        if field_name == ':Measure Names' or not isinstance(alias_map, dict):
+            continue
+
+        table_name = column_table_map.get(field_name)
+        if not table_name:
+            continue
+        table = by_name.get(table_name)
+        if not table:
+            continue
+        if not any(c.get('name') == field_name for c in table.get('columns', [])):
+            continue
+
+        base_name = f'{field_name} (Display)'
+        candidate = base_name
+        suffix = 1
+        while candidate in taken:
+            candidate = f'{field_name} (Display {suffix})'
+            suffix += 1
+
+        cases = []
+        for original_value, display_value in alias_map.items():
+            if original_value is None:
+                original_value = '%null%'
+            literal_value = _value_alias_literal(original_value)
+            literal_alias = _value_alias_literal(display_value)
+            cases.append(f'{literal_value}, {literal_alias}')
+
+        if not cases:
+            continue
+
+        field_ref = f"'{table_name}'[{field_name}]"
+        expr = f"SWITCH({field_ref}, {', '.join(cases)}, {field_ref})"
+        table.setdefault('columns', []).append({
+            'name': candidate,
+            'dataType': 'String',
+            'sourceColumn': candidate,
+            'summarizeBy': 'none',
+            'displayFolder': 'Aliases',
+            'expression': expr,
+            'isCalculated': True,
+            'description': f'Tableau display-name override for {field_name}',
+            'annotations': [{
+                'name': 'MigrationNote',
+                'value': f'Generated from Tableau value aliases for {field_name}',
+            }],
+        })
+        taken.add(candidate)
 
 
 def _inject_r_squared_measures(model, worksheets, main_table_name, column_table_map):

@@ -79,6 +79,23 @@ class _ContractBase(unittest.TestCase):
 
 
 class TestInventoryReadsWhatTheExtractorWrites(_ContractBase):
+    def test_extractor_writes_all_canonical_output_files(self):
+        expected = set(TableauExtractor.EXTRACTION_OUTPUT_TYPES)
+        for workbook in WORKBOOKS:
+            with self.subTest(workbook=os.path.basename(workbook)):
+                out = tempfile.mkdtemp()
+                try:
+                    self.assertTrue(TableauExtractor(
+                        workbook, output_dir=out).extract_all())
+                    actual = {
+                        filename[:-len('.json')]
+                        for filename in os.listdir(out)
+                        if filename.endswith('.json')
+                    }
+                    self.assertTrue(expected <= actual)
+                finally:
+                    shutil.rmtree(out, ignore_errors=True)
+
     def test_orphanable_types_expose_a_parent_key(self):
         """An object the inventory can call an orphan must be attributable."""
         for object_type in sorted(ORPHANABLE_TYPES):

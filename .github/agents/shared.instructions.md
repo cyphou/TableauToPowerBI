@@ -32,6 +32,15 @@ All agents MUST follow these rules. They apply to every file in the project.
 9. **Raise domain errors** — new failure paths raise a `powerbi_import.errors.MigrationError` subclass (`ExtractionError`, `ConversionError`, `GenerationError`, `ValidationError`, `ConfigurationError`, `DeploymentError`) instead of a bare `ValueError`/`RuntimeError`. Resilience boundaries that must never abort a migration should catch `MigrationError` (plus the specific stdlib errors they expect) rather than `Exception`, so genuine defects still surface. When a broad `except Exception` is genuinely required, keep it and state why on the same line.
 10. **Declare file ownership** — every module under `powerbi_import/` and `tableau_export/` must be listed by exactly one agent before that agent's `## Constraints` heading. To point at another owner write "owned by **@agent**"; to declare intentional sharing write "co-owned with @agent". `python scripts/check_agent_ownership.py` reports the current state and `tests/test_agent_ownership.py` fails the build on drift.
 
+### Documentation Gate
+
+Before every implementation, release, or documentation update, consult
+`@readme` (the Documentation Guardian). It checks `README.md`, `docs/ROADMAP.md`,
+`CHANGELOG.md`, relevant technical documentation, links, counts, release claims,
+and evidence status. After the change, run its post-update review again. A stale
+claim, broken reference, invented metric, or unverified readiness claim blocks the
+update until the owning agent reconciles it.
+
 ## Python Conventions
 
 - Python 3.12+ compatible

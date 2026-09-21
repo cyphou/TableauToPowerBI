@@ -38,6 +38,7 @@ except ImportError:
 _PI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'powerbi_import')
 if _PI_DIR not in sys.path:
     sys.path.insert(0, _PI_DIR)
+from powerbi_import.errors import ExtractionError
 try:
     from security_validator import (
         safe_zip_extract_member, safe_parse_xml, SecurityError,
@@ -350,6 +351,16 @@ def _scan_delimited_sample(text_chunk, col_names, max_rows):
 
 class TableauExtractor:
     """Tableau objects extractor"""
+
+    # Stable extraction contract consumed by inventory, parity, and generation.
+    EXTRACTION_OUTPUT_TYPES = (
+        'worksheets', 'dashboards', 'datasources', 'calculations',
+        'parameters', 'filters', 'stories', 'actions', 'sets', 'groups',
+        'bins', 'hierarchies', 'sort_orders', 'aliases', 'custom_sql',
+        'user_filters', 'hyper_files', 'datasource_filters',
+        'custom_geocoding', 'published_datasources', 'data_blending',
+        'table_extensions', 'linguistic_schema',
+    )
     
     def __init__(self, tableau_file, output_dir=None, hyper_max_rows=None):
         self.tableau_file = tableau_file
@@ -434,6 +445,17 @@ class TableauExtractor:
         self.extract_hyper_metadata()
         self.extract_table_extensions(root)
         self.extract_linguistic_schema(root)
+
+        missing_outputs = [
+            name for name in self.EXTRACTION_OUTPUT_TYPES
+            if name not in self.workbook_data
+        ]
+        if missing_outputs:
+            raise ExtractionError(
+                'Extractor did not produce the required output types',
+                source=self.tableau_file,
+                item=', '.join(missing_outputs),
+            )
         
         # Save the exports
         self.save_extractions()

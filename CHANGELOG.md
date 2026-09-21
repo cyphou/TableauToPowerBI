@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Direct Tableau URL actions now preserve their row-level target when the action
+  points exactly to a field (`<[datasource].[field]>`). The generated semantic
+  model marks that column as `dataCategory: WebUrl`, including calculated Tableau
+  fields resolved through their generated captions. Static URLs continue to use
+  action buttons. Composed or otherwise unsafe interpolated URLs remain omitted
+  rather than becoming incorrect static links; their report-level presentation is
+  still an open limitation.
+
+- Tableau per-value aliases now migrate. A field whose values were renamed in
+  Tableau ("North" shown as "North (N)") gets a generated
+  `'<field> (Display)'` calculated column that maps each value to its label with
+  a `SWITCH`, while the original column stays for filtering and joins. Measured
+  first: of the three corpus workbooks that appeared to use value aliases, two
+  were parameter value labels already carried by the parameter table's Name
+  column, so the `alias_value` parity detector — which had been counting those
+  parameter cases, the same over-count as the old data-blending floor — now
+  excludes parameter names. The feature's parity status moves from
+  `approximated` to `healed`, backed by an evidence probe on the generated
+  `displayFolder: Aliases` column; SampleWB scores 100% parity with the alias
+  evidenced.
+
 - An action button is placed on the page its action came from. The call site
   filtered on `source_worksheet` — singular, a key the extractor never emits —
   so every action passed on every page and one action became one button per

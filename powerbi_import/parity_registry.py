@@ -114,9 +114,9 @@ _FEATURES: List[Feature] = [
             Feature("alias_measure_name", "Semantic Model", "Field alias (measure name)", HEALED,
                 "Named DAX measure carrying the Tableau display name",
                 "Verify the generated measure name matches the Tableau caption and is used on the visual."),
-            Feature("alias_value", "Semantic Model", "Field alias (per value)", APPROXIMATED,
-                "Column caption or synonym",
-                "Power BI has no per-value alias; map the values in Power Query or a lookup column if the renaming matters."),
+            Feature("alias_value", "Semantic Model", "Field alias (per value)", HEALED,
+                "Generated SWITCH display column preserving the original values",
+                "A '<field> (Display)' column maps each value to its Tableau label; the source column stays for filtering and joins."),
             Feature("sort_order", "Semantic Model", "Sort order", HEALED,
                 "Sort-by-column or visual sort state", "Verify custom sort direction and sort-by-column behavior."),
                 Feature("refresh_schedule", "Operations", "Refresh schedule", HEALED,
@@ -284,12 +284,34 @@ def _count_measure_name_aliases(converted: Dict) -> int:
     return len(aliases.get(_MEASURE_NAMES_KEY, {}) or {})
 
 
+def _parameter_identifiers(converted: Dict) -> set:
+    """Names and captions of every parameter, whatever the extraction shape."""
+    identifiers = set()
+    for param in converted.get("parameters", []) or []:
+        if isinstance(param, dict):
+            for field in ("name", "caption"):
+                value = (param.get(field) or "").strip()
+                if value:
+                    identifiers.add(value)
+        elif isinstance(param, str) and param.strip():
+            identifiers.add(param.strip())
+    return identifiers
+
+
 def _count_value_aliases(converted: Dict) -> int:
-    """Aliases renaming individual values, which Power BI cannot express."""
+    """Column value aliases, which become a generated SWITCH display column.
+
+    Tableau exposes parameter value labels through the same alias structure, but
+    those are already migrated as the Name column of the parameter table, so
+    they are excluded here — counting them would penalise a workbook for a
+    capability that is already covered.
+    """
     aliases = converted.get("aliases")
-    if isinstance(aliases, dict):
-        return sum(1 for key in aliases if key != _MEASURE_NAMES_KEY)
-    return len(aliases or [])
+    if not isinstance(aliases, dict):
+        return len(aliases or [])
+    parameters = _parameter_identifiers(converted)
+    return sum(1 for key in aliases
+               if key != _MEASURE_NAMES_KEY and key not in parameters)
 
 
 def _count_worksheet_list(key: str) -> Callable[[Dict], int]:
@@ -551,7 +573,9 @@ def _load_tmdl_text(path: str) -> str:
 _EVIDENCE_PROBED = frozenset({
     "filters", "datasource_filter", "dashboard", "action_url", "action_nav",
     "story_bookmarks", "parameters", "hierarchies", "sort_order", "rls",
-    "custom_sql", "refresh_schedule", "subscription",
+    "custom_sql", "refresh_schedule", "subscription", "alias_measure_name",
+    "alias_value", "groups", "bins", "reference_line", "action_filter",
+    "extract_hyper", "linguistic_schema",
 })
 
 
@@ -569,6 +593,19 @@ _PARAMETER_TABLE_MARKERS = ("generateseries(", "datatable(", "nameof(")
 _TMDL_HIERARCHY_RE = re.compile(r"^[ \t]*hierarchy ", re.MULTILINE)
 _TMDL_SORTBY_RE = re.compile(r"^[ \t]*sortByColumn:", re.MULTILINE)
 _TMDL_NATIVE_QUERY_RE = re.compile(r"Value\.NativeQuery\s*\(")
+#: Value-alias display columns are the only ones filed under this folder.
+_TMDL_ALIAS_FOLDER_RE = re.compile(r"^[ \t]*displayFolder: Aliases\b", re.MULTILINE)
+_TMDL_WEB_URL_RE = re.compile(r"^[ \t]*dataCategory: WebUrl\b", re.MULTILINE)
+_TMDL_ALIAS_MEASURE_RE = re.compile(
+    r"^[ \t]*annotation MigrationNote = Restored from Tableau field alias:",
+    re.MULTILINE,
+)
+_TMDL_GROUP_FOLDER_RE = re.compile(r"^[ \t]*displayFolder: Groups\b", re.MULTILINE)
+_TMDL_BIN_FOLDER_RE = re.compile(r"^[ \t]*displayFolder: Bins\b", re.MULTILINE)
+_PBIR_REFERENCE_LINE_RE = re.compile(r'"referenceLine"\s*:', re.MULTILINE)
+_TMDL_LINGUISTIC_RE = re.compile(
+    r"^[ \t]*linguisticMetadata\s*=.*?Entities", re.MULTILINE | re.DOTALL
+)
 
 
 def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, List[str]]:
@@ -616,6 +653,18 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
         if visual.get("visualType") == "actionButton":
             add("action_url", path)
             add("action_nav", path)
+        if visual.get("drillFilterOtherVisuals") is True:
+            add("action_filter", path)
+        visual_text = json.dumps(data, ensure_ascii=False)
+        if _PBIR_REFERENCE_LINE_RE.search(visual_text):
+            add("reference_line", path)
+
+    data_dir = os.path.join(project_dir, "Data")
+    if glob.glob(os.path.join(data_dir, "*.csv")):
+        evidence["extract_hyper"] = [
+            os.path.relpath(path, project_dir).replace(os.sep, "/")
+            for path in sorted(glob.glob(os.path.join(data_dir, "*.csv")))
+        ]
 
     for path in glob.glob(os.path.join(
             report_dir, "definition", "bookmarks", "*", "bookmark.json")):
@@ -633,6 +682,21 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
             add("sort_order", path)
         if _TMDL_NATIVE_QUERY_RE.search(text):
             add("custom_sql", path)
+        if _TMDL_ALIAS_FOLDER_RE.search(text):
+            add("alias_value", path)
+        if _TMDL_WEB_URL_RE.search(text):
+            add("action_url", path)
+        if _TMDL_ALIAS_MEASURE_RE.search(text):
+            add("alias_measure_name", path)
+        if _TMDL_GROUP_FOLDER_RE.search(text):
+            add("groups", path)
+        if _TMDL_BIN_FOLDER_RE.search(text):
+            add("bins", path)
+
+    culture_glob = os.path.join(semantic_dir, "definition", "cultures", "*.tmdl")
+    for path in sorted(glob.glob(culture_glob)):
+        if _TMDL_LINGUISTIC_RE.search(_load_tmdl_text(path)):
+            add("linguistic_schema", path)
 
     add("rls", os.path.join(semantic_dir, "definition", "roles.tmdl"))
     for filename in ("refresh_config.json", "refresh.json", "pbi_refresh_config.json"):

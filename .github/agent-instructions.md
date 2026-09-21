@@ -2,7 +2,7 @@
 
 Rules for AI coding agents working in this codebase. Read `.github/copilot-instructions.md` for full project context (architecture, file map, DAX/M/PBIR specs, visual mappings).
 
-**Multi-agent architecture**: This project uses a 17-agent specialization model. See `docs/AGENTS.md` for the full architecture diagram, and `.github/agents/` for per-agent definitions.
+**Multi-agent architecture**: This project uses a 17-agent implementation specialization model, plus `@roadmap-planner` and `@readme` governance agents. See `docs/AGENTS.md` for the full architecture diagram, and `.github/agents/` for per-agent definitions.
 
 ---
 
@@ -11,10 +11,10 @@ Rules for AI coding agents working in this codebase. Read `.github/copilot-instr
 - **Pipeline**: `.twbx` → Extraction (23 JSON files) → Generation (`.pbip` in PBIR v4.0 + TMDL)
 - **Source**: `tableau_export/` (extraction + DAX converter + M query builder)
 - **Target**: `powerbi_import/` (TMDL generator + PBIR report + visual generator)
-- **Tests**: `pytest tests/ --tb=short -q` — currently **9,979 tests** in the latest full run
+- **Tests**: `pytest tests/ --tb=short -q` — currently **10,097 tests** in the latest full run
 - **Python**: 3.12+ stdlib only — **no external dependencies** for core migration
 - **Roadmap**: `docs/ROADMAP.md` — check current sprint before starting work
-- **Agents**: 15 specialized agents in `.github/agents/` — see `docs/AGENTS.md`
+- **Agents**: 17 implementation agents plus planning and documentation governance agents in `.github/agents/` — see `docs/AGENTS.md`
 
 ---
 

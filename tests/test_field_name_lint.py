@@ -13,7 +13,9 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from scripts.check_field_names import find_unknown, scan_module
+from scripts.check_field_names import (
+    EXTERNAL_CONSUMER_FIELDS, find_unknown, scan_module,
+)
 
 
 def _module(source):
@@ -125,6 +127,31 @@ class TestVerdict(unittest.TestCase):
     def test_a_key_the_extractor_assigns_is_accepted(self):
         """Observation proves presence, never absence — declared keys count."""
         self.assertEqual(self._unknown(declared={'worksheet'}), [])
+
+    def test_a_documented_external_fallback_is_accepted(self):
+        path = _module("""
+            def f(extracted):
+                for ws in extracted.get('worksheets', []):
+                    return ws.get('dynamic_visibility')
+        """)
+        self.addCleanup(os.unlink, path)
+        self.path = path
+        self.VOCAB = {'worksheets': {'name'}}
+        self.assertEqual(self._unknown(), [])
+        self.assertIn(('worksheets', 'dynamic_visibility'),
+                      EXTERNAL_CONSUMER_FIELDS)
+
+    def test_external_fallback_does_not_accept_an_unknown_key(self):
+        path = _module("""
+            def f(extracted):
+                for ws in extracted.get('worksheets', []):
+                    return ws.get('invented_field')
+        """)
+        self.addCleanup(os.unlink, path)
+        self.path = path
+        self.VOCAB = {'worksheets': {'name'}}
+        unknown = self._unknown()
+        self.assertEqual(frozenset({'invented_field'}), unknown[0][2])
 
     def test_underscore_prefixed_fields_are_enrichment_not_extraction(self):
         path = _module("""

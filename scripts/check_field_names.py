@@ -41,6 +41,15 @@ VOCABULARY_WORKBOOKS = (
 #: Keyed by field name rather than holding records, so "keys" are data.
 NOT_RECORD_SHAPED = {'aliases', 'linguistic_schema'}
 
+#: Consumer fallbacks accepted for callers supplying enriched objects directly.
+#: Production extraction emits the corresponding dashboard/color-encoding data
+#: through different keys; keep these exceptions narrow and typed.
+EXTERNAL_CONSUMER_FIELDS = frozenset({
+    ('worksheets', 'conditionalFormatting'),
+    ('worksheets', 'dynamic_visibility'),
+    ('worksheets', 'zone_visibility'),
+})
+
 
 def build_vocabulary() -> dict[str, set[str]]:
     """Field names a real extraction emits, per object type."""
@@ -268,7 +277,8 @@ def scan_module(path: str) -> list[tuple[str, frozenset, int]]:
 
 
 def find_unknown(vocab: dict[str, set[str]],
-                 declared: set[str] | None = None
+                 declared: set[str] | None = None,
+                 external: frozenset[tuple[str, str]] = EXTERNAL_CONSUMER_FIELDS,
                  ) -> list[tuple[str, str, frozenset, int]]:
     """Return (module, object_type, keys, lineno) for values with no known source.
 
@@ -287,7 +297,8 @@ def find_unknown(vocab: dict[str, set[str]],
                 continue  # the corpus produced none of this type: cannot judge
             if any(k.startswith('_') for k in keys):
                 continue  # enriched downstream, not an extraction field
-            if keys & known or keys & declared:
+            if (keys & known or keys & declared
+                    or any((kind, key) in external for key in keys)):
                 continue
             unknown.append((module, kind, keys, lineno))
     return unknown

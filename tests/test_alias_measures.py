@@ -14,7 +14,6 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.parity_registry import (  # noqa: E402
-    APPROXIMATED,
     HEALED,
     scan_workbook,
 )
@@ -148,6 +147,18 @@ class TestInjectAliasMeasures(unittest.TestCase):
                                _COLUMN_TABLE_MAP)
         self.assertEqual(_measures(model), {})
 
+    def test_value_aliases_generate_a_switch_column(self):
+        model = _model()
+        _inject_alias_measures(model, {'Region': {'%null%': ' '}},
+                               _COLUMN_TABLE_MAP)
+        from powerbi_import.tmdl_generator import _inject_value_alias_columns
+        _inject_value_alias_columns(model, {'Region': {'North': 'North (N)', 'South': 'South (S)'}},
+                                   _COLUMN_TABLE_MAP)
+        columns = {c['name']: c.get('expression', '') for t in model['model']['tables'] for c in t.get('columns', [])}
+        self.assertIn('Region (Display)', columns)
+        self.assertIn('SWITCH', columns['Region (Display)'])
+        self.assertIn('North (N)', columns['Region (Display)'])
+
     def test_absent_aliases_are_safe(self):
         model = _model()
         _inject_alias_measures(model, {}, _COLUMN_TABLE_MAP)
@@ -174,10 +185,18 @@ class TestAliasParityIsSplitByCapability(unittest.TestCase):
         self.assertEqual(usage.status, HEALED)
         self.assertEqual(usage.count, 1)
 
-    def test_value_aliases_remain_approximated(self):
+    def test_value_aliases_are_healed(self):
         scan = scan_workbook({'aliases': {'Region': {'%null%': ' '}}})
         usage = {u.key: u for u in scan.usages}['alias_value']
-        self.assertEqual(usage.status, APPROXIMATED)
+        self.assertEqual(usage.status, HEALED)
+
+    def test_parameter_value_aliases_are_not_counted(self):
+        """Parameter value labels migrate via the parameter table, not a column."""
+        scan = scan_workbook({
+            'parameters': [{'name': 'Last x Days', 'caption': 'Last x Days'}],
+            'aliases': {'Last x Days': {'"30"': 'Last 30 days'}},
+        })
+        self.assertNotIn('alias_value', {u.key for u in scan.usages})
 
     def test_measure_aliases_alone_score_full_parity(self):
         scan = scan_workbook({'aliases': {

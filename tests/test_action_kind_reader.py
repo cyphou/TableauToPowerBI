@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
 from powerbi_import.pbip_generator import _is_static_url  # noqa: E402
+from powerbi_import.tmdl_generator import _inject_url_action_categories  # noqa: E402
 from tableau_export.extract_tableau_data import (  # noqa: E402
     TableauExtractor, _read_action_kind)
 
@@ -105,6 +106,49 @@ class TestOnlyAStaticUrlBecomesAButton(unittest.TestCase):
     def test_a_non_http_scheme_is_not_static(self):
         self.assertFalse(_is_static_url('tsl:Dashboard?x=1'))
         self.assertFalse(_is_static_url('Open the CRM'))
+
+
+class TestDynamicUrlFieldMetadata(unittest.TestCase):
+
+    def test_direct_url_field_becomes_a_web_url_column(self):
+        model = {'model': {'tables': [{
+            'name': 'Sales',
+            'columns': [{'name': 'Opportunity URL', 'dataType': 'String'}],
+        }]}}
+        _inject_url_action_categories(
+            model,
+            [{'type': 'url', 'url': '<[ds].[Opportunity URL]>'}],
+            {'Opportunity URL': 'Sales'},
+        )
+        self.assertEqual('WebUrl',
+                         model['model']['tables'][0]['columns'][0]['dataCategory'])
+
+    def test_composed_url_does_not_mark_a_partial_field_as_web_url(self):
+        model = {'model': {'tables': [{
+            'name': 'Sales',
+            'columns': [{'name': 'Opportunity ID', 'dataType': 'String'}],
+        }]}}
+        _inject_url_action_categories(
+            model,
+            [{'type': 'url', 'url': 'https://crm/opportunity/<Opportunity ID>'}],
+            {'Opportunity ID': 'Sales'},
+        )
+        self.assertNotIn('dataCategory',
+                         model['model']['tables'][0]['columns'][0])
+
+    def test_calculated_url_field_uses_its_generated_caption(self):
+        model = {'model': {'tables': [{
+            'name': 'Sales',
+            'columns': [{'name': 'Opportunity Link', 'dataType': 'String'}],
+        }]}}
+        _inject_url_action_categories(
+            model,
+            [{'type': 'url', 'url': '<[ds].[Calculation_123]>'}],
+            {'Opportunity Link': 'Sales'},
+            [{'name': '[Calculation_123]', 'caption': 'Opportunity Link'}],
+        )
+        self.assertEqual('WebUrl',
+                         model['model']['tables'][0]['columns'][0]['dataCategory'])
 
 
 if __name__ == '__main__':

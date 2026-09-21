@@ -1,6 +1,13 @@
 # Multi-Agent Architecture — Tableau to Power BI Migration
 
-This project uses a **17-agent specialization model**. Each agent has scoped domain knowledge, file ownership, and clear boundaries. Four specialist agents (@dax, @wiring, @semantic, @visual) provide deep expertise, @converter and @generator remain as coordination layers, **@tableau** handles Tableau Server/Cloud interaction, **@reviewer** enforces a preceptorship quality loop on all generated artifacts, and **@web-designer** owns the end-user UI surfaces.
+This project uses a **17-agent implementation specialization model**, plus
+`@roadmap-planner` for planning and `@readme` as the documentation quality gate.
+Each implementation agent has scoped domain knowledge, file ownership, and clear
+boundaries. Four specialist agents (@dax, @wiring, @semantic, @visual) provide deep
+expertise, @converter and @generator remain as coordination layers, **@tableau**
+handles Tableau Server/Cloud interaction, **@reviewer** enforces a preceptorship
+quality loop on all generated artifacts, and **@web-designer** owns the end-user UI
+surfaces.
 
 All agents should use [ROADMAP.md](ROADMAP.md) as the source of truth for the
 next work. Do not describe the Fabric-native output as production-ready until
@@ -25,6 +32,7 @@ its release criteria pass.
 | **@reviewer** | Artifact quality review, preceptorship loop, coaching feedback, fidelity scoring | `powerbi_import/preceptor.py` |
 | **@web-designer** | End-user UI/UX, Tkinter light UI, layout clarity, presentation | `web/light_ui.py` |
 | **@tester** | Tests, coverage, fixtures, regression | `tests/*.py` |
+| **@readme** | Documentation consistency and pre/post-update checks | Read-only review of `README.md`, `docs/`, `CHANGELOG.md`, and project instructions |
 
 ## Architecture Diagram
 
@@ -166,7 +174,7 @@ The original 8-agent model had two overloaded agents:
 6. (Optional) @assessor → readiness report
 7. (Optional) @merger → shared semantic model
 8. (Optional) @deployer → Fabric/PBI workspace
-9. @tester validates all steps with 9,979 tests
+9. @tester validates all steps with 10,097 tests
 ```
 
 ## Handoff Protocol
@@ -216,3 +224,4 @@ All agent definitions are in `.github/agents/`:
 - `deployer.agent.md` — Fabric/PBI deployment + multi-tenant
 - `reviewer.agent.md` — Artifact quality review + preceptorship loop
 - `tester.agent.md` — Test creation and validation
+- `readme.agent.md` — Documentation quality gate before and after updates

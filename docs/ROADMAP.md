@@ -18,13 +18,115 @@ Measured on the committed example corpus, not estimated:
 | Functional parity | mean **99.7%**, lowest **96.4%**, 20 of 26 at full parity |
 | Lineage coverage | **99.9%**, 0 unresolved source records |
 | Evidence level | `STATIC_PASS` on 26/26 |
-| Test suite | 9,988 passed, 67 skipped, 1 xfailed, across 274 files |
+| Test suite | 10,097 passed, 67 skipped, 1 xfailed, across 288 files |
 | Agent ownership | 0 unowned modules, 0 asymmetric declarations |
 
 The remediation queue now contains **no `repair` actions at all**: 10 `decide`,
 12 `note`, 2 `verify`. Everything left either needs a human judgement or is
 evidence with nothing to act on. That is the milestone this cycle reached, and
 it changes what the next one should be about.
+
+## Convergence to 100% and Resilience
+
+The current **99.7% functional parity** is not the release target by itself.
+The target is the contract in [FULL_MIGRATION_EVOLUTION_PLAN.md](FULL_MIGRATION_EVOLUTION_PLAN.md):
+no silent source-object drops, an explicit target or remediation for every
+in-use object, evidence for every claimed conversion, and a separate status for
+runtime checks that cannot run locally.
+
+### The five 100% gates
+
+Every migration must pass these gates independently. A numerical score cannot
+compensate for a missing object, an unverified interaction, or a recovery path
+that loses state.
+
+| Gate | 100% condition | Required evidence |
+|---|---|---|
+| Inventory | All 23 extracted object types are counted and assigned stable source identity | Source inventory plus extraction contract report |
+| Conversion | Every in-use object is `exact`, `healed`, `approximated`, or `unsupported`; nothing is silently skipped | Parity registry, migration ledger, explicit remediation |
+| Target | Every convertible object has a PBIR, TMDL, M, Fabric, or handoff artifact | Target evidence probe and source-to-target lineage |
+| Behavior | Calculations, filters, visuals, actions, security, geometry, refresh strategy, and packaging have applicable checks | Equivalence, openability, QA, and review reports |
+| Resilience | A failed stage can resume or roll back without corrupting prior evidence or changing unrelated output | Checkpoint, recovery ledger, idempotence, fault-injection, and rollback evidence |
+
+`STATIC_100` means the first four gates pass locally. `OPERATIONAL_100` additionally
+requires authorized Desktop, semantic execution, refresh, deployment, and
+post-deployment evidence. Those states must never be inferred from static files.
+
+### Closure matrix for all migratable objects
+
+This is the inventory that future roadmap work must close. A row is complete only
+when its producer, target consumer, evidence probe, negative control, and owner
+are all documented. The list is intentionally broader than the parity score.
+
+| Source object | Target / closure mechanism | 100% proof | Owner |
+|---|---|---|---|
+| Worksheets | PBIR visual or explicit unplaced-sheet record | Worksheet lineage and visual binding | Extractor / Visual |
+| Dashboards | PBIR report page | Page inventory and layout comparison | Visual |
+| Datasources | M, Import, DirectQuery, Dataflow, or handoff connection | Connector strategy and sanitized prerequisite report | Wiring / Deployer |
+| Calculations | DAX measure, calculated column, or M transformation | DAX/M validation and value checks | DAX / Wiring |
+| Parameters | What-If, field parameter, or documented runtime binding | Parameter table/control and selected-value evidence | Semantic / Visual |
+| Filters | Report, page, visual filter, slicer, or explicit no-op reason | Filter condition comparison and negative control | Visual |
+| Stories | PBIR bookmarks and navigation | Bookmark inventory and state comparison | Visual |
+| Actions | Cross-filter, navigation, WebUrl, bookmark, or remediation | Action ownership and target evidence | Visual |
+| Sets | Boolean calculated column or DAX equivalent | Membership comparison | Semantic / Wiring |
+| Groups | SWITCH/Mapped display column | Value-to-group comparison | Semantic / Wiring |
+| Bins | FLOOR/bin column or equivalent grouping | Boundary and membership comparison | Semantic |
+| Hierarchies | TMDL hierarchy | Level order and drill-path evidence | Semantic |
+| Sort orders | Sort-by-column or visual sort state | Source order versus target order | Semantic / Visual |
+| Aliases | Named measure or generated display column | Alias evidence and value comparison | Semantic |
+| Custom SQL | Value.NativeQuery or approved connector query | Query text, binding, and credential prerequisite | Wiring / Deployer |
+| User filters | RLS roles and membership handoff | Role expression and assignment state | Semantic / Deployer |
+| Hyper files | Imported/staged table or explicit unsupported-format finding | Row/schema evidence and source hash | Extractor / Fabric |
+| Datasource filters | Report/data-scope filter | Scope-level filter evidence | Visual / Wiring |
+| Custom geocoding | Geographic category or registered shape resource | Category/resource presence and map review | Visual / Extractor |
+| Published datasources | Bound semantic source or connection handoff | Published-source identity and binding evidence | Tableau / Deployer |
+| Data blending | Relationship, merge, or documented virtual-source decision | Blend graph, cardinality, and direction check | Semantic / Merger |
+| Table extensions | M/Power Query extension source | Endpoint/schema/authentication readiness | Wiring / Deployer |
+| Linguistic schema | Q&A synonyms and Copilot metadata | Synonym/schema presence and semantic review | Semantic / Evidence |
+
+### Resilience workstream
+
+Resilience is a correctness requirement, not an operational extra. The route to
+100% is staged as follows:
+
+1. **Fail closed.** Any unreadable source, missing required artifact, invalid
+  DAX/M/TMDL/PBIR, unresolved reference, or missing prerequisite becomes a
+  structured blocker or `not_run`; it must not become a pass through a fallback.
+2. **Checkpoint every boundary.** Persist source hash, configuration hash,
+  stage, output manifest, and evidence references after extraction, generation,
+  validation, packaging, and deployment handoff. Resume from the last valid
+  boundary.
+3. **Make reruns idempotent.** Same source and configuration produce the same
+  semantic names, lineage, evidence, and repaired output aside from declared
+  nondeterministic IDs. A second run must not duplicate measures, columns,
+  visuals, relationships, or recovery entries.
+4. **Repair deterministically first.** Every automatic repair must declare its
+  confidence, before/after state, affected object, and follow-up check. Low
+  confidence or ambiguous repairs stop for review; they are never guessed.
+5. **Rollback on regression.** If a repair lowers parity, creates a blocker,
+  changes unrelated objects, or fails post-repair validation, restore the last
+  valid checkpoint and retain the failed attempt in the recovery ledger.
+6. **Bound external failure.** Connector, Desktop, Fabric, gateway, and LLM
+  calls use bounded timeout/retry policy, redacted diagnostics, and explicit
+  `not_run`/`blocked` states. Credentials and private payloads never enter
+  fixtures, prompts, or reports.
+7. **Prove failure paths.** Each gate needs a positive control and a negative
+  control: corrupt a source, delete a target table, break a reference, interrupt
+  a stage, and replay a checkpoint. A detector that cannot fail is not evidence.
+
+### Roadmap sequence to 100%
+
+| Wave | Outcome | Exit gate |
+|---|---|---|
+| R1 — Inventory closure | **Done.** The extractor guarantees all 23 canonical JSON outputs, including empty collections; producer-consumer field lint is strict | 17 contract/lint tests pass; 0 unknown consumer fields. The corpus populates 21 types, while 2 rare types remain represented by empty canonical outputs |
+| R2 — Target evidence closure | **In progress.** Specific probes now cover filters, actions, parameters, hierarchies, sort order, RLS, SQL, schedules, subscriptions, aliases, groups, bins, reference lines, Hyper staging, and linguistic cultures | 146 evidence/culture tests pass; only the three calculation families (basic, LOD, table calculations) remain without a family-specific target probe |
+| R3 — Fidelity closure | Resolve remaining approximations or publish equivalent/unsupported decisions | Every in-use item has accepted behavior evidence or explicit remediation |
+| R4 — Resilience closure | Resume, idempotence, rollback, timeout, and fault-injection coverage | Interrupted and replayed migrations preserve evidence and do not duplicate output |
+| R5 — Runtime closure | Desktop save/reopen, semantic execution, refresh, deployment, and post-deploy checks | `OPERATIONAL_100` only in an authorized environment |
+
+The next implementation issue must be selected by the first failing gate in this
+sequence, not by the headline parity percentage. This prevents a 100% score from
+masking an untested object type or a migration that cannot recover safely.
 
 ## What the last cycle proved about method
 
@@ -228,7 +330,9 @@ Found by the P2 evidence work, once `not_found` became distinguishable from
   direction="top" max="10"` means "the ten largest"; its cut-off was read as a
   range and shipped as `amount <= 10`. Now classified as top-N, so the filter
   is *absent* rather than wrong. Expressing it as a Power BI TopN filter is
-  open work.
+  open work. The current example corpus contains **0 real Top-N filters**, and
+  the repository has no verified PBIR TopN fixture, so this remains deliberately
+  unimplemented until a positive producer-to-output test exists.
 
 - **The two filters still reporting `not_found` are honest.** Financial_Report
   holds three "all members selected" filters, which have no condition to
@@ -270,12 +374,26 @@ Found by the P2 evidence work, once `not_found` became distinguishable from
 Both are genuine limits rather than measurement errors — the first real feature
 work on this list.
 
-- **Per-value aliases (4 workbooks).** Power BI has no per-value alias, but the
-  renaming is expressible as a Power Query value replacement or a lookup
-  column. Worth scoping against how often it changes meaning rather than
-  cosmetics.
-- **URL actions (2 workbooks).** Maps to a Power BI action button or a
-  conditional URL measure.
+- **Per-value aliases.** *Done — value aliases now migrate as a generated
+  `'<field> (Display)'` calculated column that maps each value to its Tableau
+  label with a `SWITCH`, leaving the source column intact for filtering and
+  joins.* Measuring the corpus first changed the shape of the work: of the three
+  workbooks that appeared to use value aliases, two were **parameter** value
+  labels (`Parameter 1`, `pLastxDays`) already carried by the parameter table's
+  Name column, and only one was a genuine column alias. The `alias_value`
+  detector was counting the parameter cases too — the same over-count as the old
+  `data_blending` floor — so it now excludes parameter names. The status moves
+  from `approximated` to `healed`, backed by an evidence probe on the generated
+  `displayFolder: Aliases` column. SampleWB scores 100% parity with the alias
+  `evidenced`.
+- **URL actions.** *Partially done for direct field targets.* A Tableau action
+  whose target is exactly `<[datasource].[field]>` now marks the generated
+  source column as `dataCategory: WebUrl`, which is the Power BI representation
+  for a row-level link. Salesforce was verified end to end: its calculated URL
+  field is emitted as `WebUrl`, and the parity evidence is `evidenced` for all
+  three source actions. Static URLs still become action buttons. URLs composed
+  from free-form placeholders remain suppressed rather than emitted as a wrong
+  static button, and their report-level presentation is still open.
 
 ## Open decisions
 
