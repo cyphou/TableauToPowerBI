@@ -354,17 +354,45 @@ its job: workspace ids that merely looked plausible (`ws-contoso-0001`) are
 rejected as non-GUIDs, and connection overrides must be `${UPPER_NAME}`
 placeholders rather than bare keys like `server`.
 
-### Known defect — shared-model output fails its own openability gateUnrelated to the flag work and pre-existing: `--shared-model` exits `5`
-(`VALIDATION_FAILED`) with 9 blocking issues, all from `pbip_contract` and
-`manifest_coherence` — "Report and SemanticModel names do not match", "report
-artifact is not declared", "manifest type must be Report". Confirmed against
-unmodified code via `git stash`, so it is not a regression.
+### Resolved — the openability gate assumed one report per project
 
-The cause is shape, not correctness: the gate assumes the single-project
-layout (one `.Report` beside one `.SemanticModel` sharing a name), while a
-shared model is one model plus *N* thin reports. The flagship multi-workbook
-feature therefore always reports failure. Either the gate learns the bundle
-layout or the bundle declares its artifacts — a decision for A3.
+`--shared-model` exited `5` (`VALIDATION_FAILED`) on every run, and because
+both post-shared-model deploy steps are gated on a `SUCCESS` exit code, that
+single defect kept `--deploy-bundle` and `--multi-tenant` unreachable.
+
+Three separate faults, and the diagnosis mattered more than the fix. The `.pbip`
+manifests were **correct** — `DiagModel.pbip` declares `DiagModel_Model.Report`,
+which exists — so the output was right and the gate was wrong:
+
+* `pbip_contract` required every `.Report` and `.SemanticModel` to share one
+  name. A bundle is one model plus *N* thin reports, so it never can.
+* `manifest_coherence` derived the report folder from the model name instead of
+  reading the path each `.pbip` declares.
+* `visual_bindings` validated `report_dirs[0]` only.
+
+Both checks now read the declared path, which is what Desktop opens and is
+correct for either layout.
+
+That third fault was the dangerous one, and it produced **false passes**. The
+verdict depended on glob order: with the model named `DiagModel` the empty
+model-explorer report sorted first, was checked, and passed while the thin
+reports went unexamined; renaming it to `MTFinal` moved `Financial_Report.Report`
+first and the same project reported 5 blockers. Deterministic, reproducible,
+and entirely an artefact of which report happened to sort first. Every report
+is now checked.
+
+One genuine generator defect surfaced underneath: the model-explorer report was
+written without `definition/pages/pages.json`, so it was an incomplete PBIR
+report. The gate was right to demand it.
+
+**Deployment is still blocked, now for a true reason.** With the false
+failures and false passes gone, the gate reports 10 real orphaned visual
+bindings — thin-report visuals referencing columns that do not survive the
+merge (`'transactions'.'Revenue'`, `'Net Income'`, and others). That is a merge
+defect, not a gate defect, and it is the next thing standing between
+`--multi-tenant` and a default run. Two measurement harnesses lied on the way
+here: one reused output directories so blocker counts accumulated 5→10, and an
+earlier control passed only because it inherited a model from a previous run.
 
 ### A2 findings — the advisory boundary
 

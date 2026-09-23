@@ -108,6 +108,34 @@ CONTROLS = [
         "test": "tests/test_advisory_boundary.py",
     },
 
+    # ── Openability gate ───────────────────────────────────────────────
+    {
+        "name": "visual bindings check only the first report again",
+        "file": "powerbi_import/openability.py",
+        "old": "    for report_dir in report_dirs:\n"
+               "        report_name = os.path.basename(report_dir)\n"
+               "        report_state = load_report(report_dir)",
+        "new": "    for report_dir in report_dirs[:1]:\n"
+               "        report_name = os.path.basename(report_dir)\n"
+               "        report_state = load_report(report_dir)",
+        "test": "tests/test_openability_bundle.py",
+    },
+    {
+        "name": "the contract derives the report name instead of reading it",
+        "file": "powerbi_import/openability.py",
+        "old": "        if report_name not in declared_names:",
+        "new": "        if report_name not in declared_names and False:",
+        "test": "tests/test_openability_bundle.py",
+    },
+    {
+        "name": "the model explorer report loses its pages.json",
+        "file": "powerbi_import/import_to_powerbi.py",
+        "old": "        _write_json_file(os.path.join(model_report_dir, 'definition', 'pages', 'pages.json'), {",
+        "new": "        _skip = lambda *a, **k: None\n"
+               "        _skip(os.path.join(model_report_dir, 'definition', 'pages', 'pages.json'), {",
+        "test": "tests/test_shared_model.py",
+    },
+
     # ── Documented surface ─────────────────────────────────────────────
     {
         "name": "the doc guard stops recognising pre-parse intercepts",

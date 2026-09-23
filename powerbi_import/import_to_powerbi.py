@@ -565,6 +565,24 @@ class PowerBIImporter:
             "dataFormatVersion": "2.0",
         })
 
+        # A PBIR report without pages/pages.json is incomplete and will not open.
+        page_name = 'ReportSection'
+        page_dir = os.path.join(model_report_dir, 'definition', 'pages', page_name)
+        os.makedirs(page_dir, exist_ok=True)
+        _write_json_file(os.path.join(model_report_dir, 'definition', 'pages', 'pages.json'), {
+            "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/pagesMetadata/1.0.0/schema.json",
+            "pageOrder": [page_name],
+            "activePageName": page_name,
+        })
+        _write_json_file(os.path.join(page_dir, 'page.json'), {
+            "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/page/2.1.0/schema.json",
+            "name": page_name,
+            "displayName": "Model",
+            "displayOption": "FitToPage",
+            "height": 720,
+            "width": 1280,
+        })
+
         # .pbip pointing to the model-explorer report
         _write_json_file(os.path.join(project_dir, f"{model_name}.pbip"), {
             "$schema": "https://developer.microsoft.com/json-schemas/fabric/pbip/pbipProperties/1.0.0/schema.json",

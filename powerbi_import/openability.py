@@ -158,6 +158,26 @@ def _check_structure(project_dir) -> CheckResult:
     return CheckResult("structure", not issues, "error", issues)
 
 
+def _declared_reports(project_dir):
+    """Map each ``.pbip`` to the report directory it declares.
+
+    A shared model is one SemanticModel beside N thin reports, so the report
+    name cannot be derived from the model name. Reading the declared path
+    works for both layouts, and is what Power BI Desktop actually opens.
+    """
+    declared = {}
+    for pbip_path in glob.glob(os.path.join(project_dir, "*.pbip")):
+        pbip = _read_json(pbip_path)
+        if not isinstance(pbip, dict):
+            declared[pbip_path] = None
+            continue
+        paths = [item.get("report", {}).get("path")
+                 for item in pbip.get("artifacts", [])
+                 if isinstance(item, dict) and isinstance(item.get("report"), dict)]
+        declared[pbip_path] = next((p for p in paths if p), None)
+    return declared
+
+
 def _check_pbip_contract(project_dir) -> CheckResult:
     """Validate the required shell files for a standard PBIP project."""
     fabric_suffixes = ("Lakehouse", "Dataflow", "Notebook", "Pipeline")
@@ -171,35 +191,44 @@ def _check_pbip_contract(project_dir) -> CheckResult:
         return CheckResult("pbip_contract", True, "error", [])
 
     issues = []
-    names = {os.path.basename(path).rsplit(".", 1)[0]
-             for path in report_dirs + model_dirs}
-    if len(names) != 1:
-        issues.append("Report and SemanticModel names do not match")
+    if len(model_dirs) > 1:
+        issues.append("more than one SemanticModel in a single project")
         return CheckResult("pbip_contract", False, "error", issues)
-    name = next(iter(names))
-    required = [f"{name}.pbip"]
-    if report_dirs:
-        required.extend([
-            f"{name}.Report/.platform",
-            f"{name}.Report/definition.pbir",
-            f"{name}.Report/definition/version.json",
-            f"{name}.Report/definition/report.json",
-            f"{name}.Report/definition/pages/pages.json",
-        ])
-    required.extend([
-        f"{name}.SemanticModel/.platform",
-        f"{name}.SemanticModel/definition.pbism",
-        f"{name}.SemanticModel/definition/model.tmdl",
-        f"{name}.SemanticModel/definition/database.tmdl",
-        f"{name}.SemanticModel/definition/expressions.tmdl",
-    ])
-    for relative in required:
-        if not os.path.isfile(os.path.join(project_dir, *relative.split("/"))):
-            issues.append(f"missing required PBIP artifact: {relative}")
-    tables_dir = os.path.join(project_dir, f"{name}.SemanticModel",
-                              "definition", "tables")
-    if not glob.glob(os.path.join(tables_dir, "*.tmdl")):
-        issues.append("missing required PBIP artifact: SemanticModel/definition/tables/*.tmdl")
+
+    declared = _declared_reports(project_dir)
+    declared_names = {os.path.basename(p.rstrip("/\\"))
+                      for p in declared.values() if p}
+
+    for report_dir in report_dirs:
+        report_name = os.path.basename(report_dir)
+        if report_name not in declared_names:
+            issues.append(f"{report_name} is not declared by any .pbip")
+            continue
+        for relative in (
+            f"{report_name}/.platform",
+            f"{report_name}/definition.pbir",
+            f"{report_name}/definition/version.json",
+            f"{report_name}/definition/report.json",
+            f"{report_name}/definition/pages/pages.json",
+        ):
+            if not os.path.isfile(os.path.join(project_dir, *relative.split("/"))):
+                issues.append(f"missing required PBIP artifact: {relative}")
+
+    if model_dirs:
+        name = os.path.basename(model_dirs[0]).rsplit(".", 1)[0]
+        for relative in (
+            f"{name}.SemanticModel/.platform",
+            f"{name}.SemanticModel/definition.pbism",
+            f"{name}.SemanticModel/definition/model.tmdl",
+            f"{name}.SemanticModel/definition/database.tmdl",
+            f"{name}.SemanticModel/definition/expressions.tmdl",
+        ):
+            if not os.path.isfile(os.path.join(project_dir, *relative.split("/"))):
+                issues.append(f"missing required PBIP artifact: {relative}")
+        tables_dir = os.path.join(project_dir, f"{name}.SemanticModel",
+                                  "definition", "tables")
+        if not glob.glob(os.path.join(tables_dir, "*.tmdl")):
+            issues.append("missing required PBIP artifact: SemanticModel/definition/tables/*.tmdl")
     return CheckResult("pbip_contract", not issues, "error", issues)
 
 
@@ -229,25 +258,34 @@ def _check_manifest_coherence(project_dir) -> CheckResult:
         return CheckResult("manifest_coherence", True, "error", [])
     name = os.path.basename(model_dirs[0]).rsplit(".", 1)[0]
     issues = []
-    pbip_path = os.path.join(project_dir, f"{name}.pbip")
-    pbip = _read_json(pbip_path)
-    if not isinstance(pbip, dict):
-        issues.append(f"{os.path.relpath(pbip_path, project_dir)}: invalid PBIP manifest")
+
+    declared = _declared_reports(project_dir)
+    if report_dirs:
+        for pbip_path, report_path in declared.items():
+            relative_pbip = os.path.relpath(pbip_path, project_dir)
+            if report_path is None:
+                issues.append(f"{relative_pbip}: report artifact is not declared")
+                continue
+            if not os.path.isdir(os.path.join(project_dir, report_path)):
+                issues.append(f"{relative_pbip}: declared report "
+                              f"'{report_path}' does not exist")
     else:
-        artifacts = [item for item in pbip.get("artifacts", [])
-                     if isinstance(item, dict)]
-        if report_dirs:
-            report_paths = [item.get("report", {}).get("path") for item in artifacts]
-            if f"{name}.Report" not in report_paths:
-                issues.append(f"{os.path.relpath(pbip_path, project_dir)}: report artifact is not declared")
+        pbip_path = os.path.join(project_dir, f"{name}.pbip")
+        pbip = _read_json(pbip_path)
+        if not isinstance(pbip, dict):
+            issues.append(f"{os.path.relpath(pbip_path, project_dir)}: invalid PBIP manifest")
         else:
-            model_paths = [item.get("semanticModel", {}).get("path") for item in artifacts]
+            model_paths = [item.get("semanticModel", {}).get("path")
+                           for item in pbip.get("artifacts", [])
+                           if isinstance(item, dict)]
             if f"{name}.SemanticModel" not in model_paths:
                 issues.append(f"{os.path.relpath(pbip_path, project_dir)}: semantic model artifact is not declared")
 
-    suffixes = (("Report", "Report"), ("SemanticModel", "SemanticModel")) if report_dirs else (("SemanticModel", "SemanticModel"),)
-    for suffix, expected_type in suffixes:
-        platform_path = os.path.join(project_dir, f"{name}.{suffix}", ".platform")
+    # Every report carries its own identity; the model carries one.
+    platform_targets = [(os.path.basename(d), "Report") for d in report_dirs]
+    platform_targets.append((f"{name}.SemanticModel", "SemanticModel"))
+    for folder, expected_type in platform_targets:
+        platform_path = os.path.join(project_dir, folder, ".platform")
         platform = _read_json(platform_path)
         metadata = platform.get("metadata", {}) if isinstance(platform, dict) else {}
         config = platform.get("config", {}) if isinstance(platform, dict) else {}
@@ -256,13 +294,15 @@ def _check_manifest_coherence(project_dir) -> CheckResult:
         if not config.get("logicalId"):
             issues.append(f"{os.path.relpath(platform_path, project_dir)}: manifest has no logicalId")
 
-    pbir_path = os.path.join(project_dir, f"{name}.Report", "definition.pbir")
-    pbir = _read_json(pbir_path)
-    by_path = ((pbir or {}).get("datasetReference") or {}).get("byPath", {}).get("path")
-    expected_model = os.path.normpath(os.path.join(
-        os.path.dirname(pbir_path), by_path or ""))
-    if by_path and expected_model != os.path.normpath(model_dirs[0]):
-        issues.append(f"{os.path.relpath(pbir_path, project_dir)}: datasetReference does not match SemanticModel")
+    for report_dir in report_dirs:
+        pbir_path = os.path.join(report_dir, "definition.pbir")
+        pbir = _read_json(pbir_path)
+        by_path = ((pbir or {}).get("datasetReference") or {}).get("byPath", {}).get("path")
+        if not by_path:
+            continue  # byConnection reports have no local model to match
+        resolved = os.path.normpath(os.path.join(os.path.dirname(pbir_path), by_path))
+        if resolved != os.path.normpath(model_dirs[0]):
+            issues.append(f"{os.path.relpath(pbir_path, project_dir)}: datasetReference does not match SemanticModel")
     return CheckResult("manifest_coherence", not issues, "error", issues)
 
 
@@ -444,18 +484,24 @@ def _check_visual_bindings(project_dir) -> CheckResult:
     if not model["model"]["tables"]:
         return CheckResult("visual_bindings", True, "error", [])
 
-    report_dirs = glob.glob(os.path.join(project_dir, "*.Report"))
+    report_dirs = sorted(glob.glob(os.path.join(project_dir, "*.Report")))
     if not report_dirs:
         return CheckResult("visual_bindings", True, "error", [])
-    report_state = load_report(report_dirs[0])
-    if not report_state:
-        return CheckResult("visual_bindings", False, "error",
-                           ["report state could not be loaded"])
+
     table_names, columns, measures = _build_model_index(model)
-    issues = _check_visual_refs(report_state, table_names, columns, measures)
-    return CheckResult("visual_bindings", not issues, "error", [
-        f"{issue.location}: {issue.message}" for issue in issues
-    ])
+    issues = []
+    # Checking only the first report made the verdict depend on glob order: a
+    # shared model whose empty model-explorer report happened to sort first
+    # passed while its thin reports went unexamined.
+    for report_dir in report_dirs:
+        report_name = os.path.basename(report_dir)
+        report_state = load_report(report_dir)
+        if not report_state:
+            issues.append(f"{report_name}: report state could not be loaded")
+            continue
+        for issue in _check_visual_refs(report_state, table_names, columns, measures):
+            issues.append(f"{report_name}/{issue.location}: {issue.message}")
+    return CheckResult("visual_bindings", not issues, "error", issues)
 
 
 def _check_schema(project_dir) -> CheckResult:
