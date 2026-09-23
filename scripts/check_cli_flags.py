@@ -23,10 +23,9 @@ CLI_SOURCE = os.path.join(_REPO_ROOT, "migrate.py")
 
 #: Flags measured as inert when this guard was introduced. The set exists to
 #: stop the defect growing, not to bless it: each entry still needs a wire or
-#: remove decision, and removing one from the CLI should remove it from here.
+#: remove decision, and a flag that gets wired must be dropped from here, so
+#: the baseline can only ever shrink.
 KNOWN_INERT = frozenset({
-    "agg_tables",
-    "composite_threshold",
     "live_connection",
     "merge_preview",
     "multi_tenant",

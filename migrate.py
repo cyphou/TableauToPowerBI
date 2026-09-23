@@ -1210,6 +1210,8 @@ def _run_batch_config(args):
             calendar_end=cal_end,
             culture=culture,
             paginated=paginated,
+            composite_threshold=getattr(args, 'composite_threshold', None),
+            agg_tables=getattr(args, 'agg_tables', 'none'),
         )
 
         # Migration report
@@ -7591,6 +7593,8 @@ def _run_single_migration(args):
             output_format=args.output_format,
             paginated=getattr(args, 'paginated', False),
             languages=getattr(args, 'languages', None),
+            composite_threshold=getattr(args, 'composite_threshold', None),
+            agg_tables=getattr(args, 'agg_tables', 'none'),
             incremental_refresh=getattr(args, 'incremental_refresh', False),
             incremental_refresh_months=getattr(args, 'incremental_refresh_months', 12),
             parameterize=getattr(args, 'parameterize', True),

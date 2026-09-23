@@ -170,7 +170,7 @@ Ordered so that no effort is spent refactoring code that should not exist.
 | Wave | Outcome | Exit gate |
 |---|---|---|
 | A1 — Calculation evidence | **Done.** Each family is keyed on its distinguishing DAX artifact — LOD by `ALLEXCEPT`/`REMOVEFILTERS`, table calc by `RANKX`/`OFFSET`/`ALLSELECTED`/`WINDOW`/`INDEX`, basic by an aggregation with neither — and every declaration is gated per-measure by its migration provenance annotation, so a generated helper is never attributed to a source calculation | 0 in-use features report `not_checked`; window semantics are tested before grain override so a `WINDOW_*` expression using `ALLEXCEPT` is not misread as a LOD; a generated R² measure using `RANKX` evidences nothing |
-| A2 — Reachability contract | **In progress.** Measured: **22 modules / 9,099 lines** unreachable from any production entry point, and **15 of 142 CLI flags declared but never read**. `scripts/check_cli_flags.py` plus a frozen baseline now prevent a new inert flag | Guard proven to fail on an injected inert flag and pass once wired. Remaining: a wire/declare/retire decision per module and per inert flag |
+| A2 — Reachability contract | **In progress.** Measured: **22 modules / 9,099 lines** unreachable from any production entry point, and **15 of 142 CLI flags declared but never read** — now 13, with `--agg-tables` and `--composite-threshold` wired and proven in composite mode. `scripts/check_cli_flags.py` plus a ratcheting baseline prevent both a new inert flag and a stale entry | Guard proven to fail on an injected inert flag and pass once wired. Remaining: a wire/declare/retire decision per module and per remaining inert flag |
 | A3 — Healing consolidation | Bring the three outside modules under the `healing_core` contract and one recovery ledger, or document the exemption | One healing contract, no undocumented stage, `RepairAttempt` stays distinct from `HealAction` |
 | A4 — Decompose by seam | Split the top-6 along existing seams (page/layout vs visual, relationship inference, parameter tables, per-type extractors) with the proven extraction recipe | No module above ~2,500 lines; `tmdl_generator` reduced to one owner |
 | A5 — Resilience baseline (R4) | Measure what survives interruption *before* building: interrupt a batch, replay a checkpoint, corrupt a source, delete a target table | Interrupted and replayed migrations preserve evidence and never duplicate output |
@@ -209,21 +209,32 @@ floor, not a guess. Three groups need different answers:
   imports `autoheal` directly and bypasses it. That is A3's problem, recorded
   here because it is why the facade looks unused.
 
-**Inert CLI flags — 15 of 142.** Declared, accepted by the parser, never read:
-`--agg-tables`, `--composite-threshold`, `--live-connection`,
-`--merge-preview`, `--multi-tenant`, `--no-ds-cache`, `--optimize-dax` /
-`--no-optimize-dax`, `--parallel-run`, `--prep-to-dataflow`,
+**Inert CLI flags — 13 of 142.** Declared, accepted by the parser, never read:
+`--live-connection`, `--merge-preview`, `--multi-tenant`, `--no-ds-cache`,
+`--optimize-dax` / `--no-optimize-dax`, `--parallel-run`, `--prep-to-dataflow`,
 `--resolve-published-ds`, `--server-assess`, `--skip-conversion`, `--sync`,
 `--time-intelligence`, `--validate-data`.
+
+`--agg-tables` and `--composite-threshold` **are now wired** and were the first
+two removed from that set. The generator already accepted both; only the
+CLI-to-pipeline handoff was missing. Verified with a positive control in
+composite mode: `--agg-tables auto` emits `Agg_Commandes.tmdl` and registers it
+in `model.tmdl`, and `--composite-threshold 3` moves tables from `import` to
+`directQuery`. In the default import mode they correctly change nothing, which
+is why a first comparison showed no difference until GUID churn was filtered
+out and the mode condition was found.
 
 `--gateway-bind` was *suspected* inert and is not: it is read through
 `getattr(args, 'gateway_bind')`, so the detector accounts for attribute,
 `getattr`, and config-dictionary access. `gateway_config.py` is separately
 unused because binding runs through `pbi_deployer` instead.
 
-Wiring `--optimize-dax` is deliberately **not** bundled with this guard: it
-changes generated DAX, so it needs its own slice with parity re-measured, per
-the existing rule that optimization stays opt-in to preserve semantics.
+`--optimize-dax` is the sharpest remaining case. It declares `default=True`
+("enabled by default") while `KNOWN_LIMITATIONS.md` states optimization is
+opt-in to preserve original semantics — and the code does neither, because the
+value is never read. Wiring it therefore needs its own slice: a decision on the
+real default, plus parity re-measured across the corpus, since it changes
+generated DAX.
 
 ## What the last cycle proved about method
 

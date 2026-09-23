@@ -96,6 +96,17 @@ class TestRealCliSurface(unittest.TestCase):
         self.assertEqual([], stale,
                          f"no longer declared: {stale} — drop them from KNOWN_INERT")
 
+    def test_the_baseline_only_shrinks(self):
+        """A flag that has been wired must leave the baseline.
+
+        Without this the set would quietly keep entries that are no longer a
+        defect, and it would stop describing the real inert surface.
+        """
+        still_inert = {dest for _flag, dest, _line in find_inert(self.source)}
+        fixed = sorted(KNOWN_INERT - still_inert)
+        self.assertEqual([], fixed,
+                         f"now consumed: {fixed} — drop them from KNOWN_INERT")
+
 
 if __name__ == "__main__":
     unittest.main()
