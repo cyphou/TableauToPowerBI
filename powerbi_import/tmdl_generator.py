@@ -168,6 +168,57 @@ from powerbi_import.tmdl_self_heal import (  # noqa: F401
 #  PUBLIC ENTRY POINT
 # ════════════════════════════════════════════════════════════════════
 
+def _apply_time_intelligence(model):
+    """Inject YTD/PY/YoY% measures for aggregation measures.
+
+    The date reference is resolved from the model's own date table: a source
+    that ships its own date dimension suppresses the generated Calendar, so a
+    hardcoded ``'Calendar'[Date]`` would point at a column that does not exist.
+    """
+    from powerbi_import.dax_optimizer import generate_time_intelligence_measures
+
+    tables = model.get('model', {}).get('tables', [])
+    date_reference = ''
+    for table in tables:
+        if not _is_date_table(table):
+            continue
+        for column in table.get('columns', []):
+            if (column.get('dataType') == 'DateTime'
+                    or column.get('dataCategory') == 'DateTime'):
+                safe_table = table.get('name', '').replace("'", "''")
+                date_reference = f"'{safe_table}'[{column.get('name')}]"
+                break
+        if date_reference:
+            break
+
+    if not date_reference:
+        print("  \u2139 Time intelligence skipped: the model has no date table")
+        return 0
+
+    taken = {m.get('name') for t in tables for m in t.get('measures', [])}
+    taken |= {c.get('name') for t in tables for c in t.get('columns', [])}
+
+    added = 0
+    for table in tables:
+        if _is_date_table(table):
+            continue
+        for measure in list(table.get('measures', [])):
+            group = generate_time_intelligence_measures(
+                [measure], date_column=date_reference)
+            # All-or-nothing: YoY% refers to PY, so a partial group would dangle.
+            if not group or any(ti['name'] in taken for ti in group):
+                continue
+            for time_measure in group:
+                table.setdefault('measures', []).append(time_measure)
+                taken.add(time_measure['name'])
+            added += len(group)
+
+    if added:
+        print(f"  \u23f1 Time intelligence added {added} measure(s) "
+              f"using {date_reference}")
+    return added
+
+
 def _apply_dax_optimization(model):
     """Rewrite generated measures with the DAX optimizer.
 
@@ -203,7 +254,7 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
                   model_mode='import', languages=None,
                   composite_threshold=None, agg_tables='none',
                   incremental_refresh=False, incremental_refresh_months=12,
-                  parameterize=True, optimize_dax=False):
+                  parameterize=True, optimize_dax=False, time_intelligence='none'):
     """
     Main entry point: directly convert extracted Tableau data to TMDL files.
 
@@ -232,6 +283,8 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         optimize_dax: If True, rewrite generated measures with the DAX optimizer
                     (nested IF to SWITCH, COALESCE, constant folding). Opt-in,
                     because it changes the emitted DAX (default: False).
+        time_intelligence: 'auto' to add YTD/PY/YoY% measures for aggregation
+                    measures, 'none' to skip (default). Requires a date table.
 
     Returns:
         dict: Statistics about the generated model
@@ -252,6 +305,9 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
     # validation and repair gates as directly converted DAX.
     if optimize_dax:
         _apply_dax_optimization(model)
+
+    if (time_intelligence or 'none') == 'auto':
+        _apply_time_intelligence(model)
 
     # Step 1b: Self-healing — validate and auto-repair common issues
     from powerbi_import.recovery_report import RecoveryReport

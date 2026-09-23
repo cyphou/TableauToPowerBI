@@ -36,7 +36,6 @@ KNOWN_INERT = frozenset({
     "server_assess",
     "skip_conversion",
     "sync",
-    "time_intelligence",
     "validate_data",
 })
 

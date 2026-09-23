@@ -453,5 +453,70 @@ class TestOptimizerWiring(unittest.TestCase):
         self.assertEqual(0, _apply_dax_optimization(model),
                          'optimization must be idempotent')
 
+
+
+class TestTimeIntelligenceWiring(unittest.TestCase):
+    """Time intelligence must bind to the model's real date table.
+
+    `generate_time_intelligence_measures` defaults to `'Calendar'[Date]`, but
+    the generator suppresses its Calendar when the source ships its own date
+    dimension — so the default would reference a column that does not exist.
+    """
+
+    def _model(self, date_table=True):
+        tables = [{
+            'name': 'fact_sales',
+            'columns': [{'name': 'amount', 'dataType': 'Double'}],
+            'measures': [{'name': 'Revenue', 'expression': "SUM('fact_sales'[amount])"}],
+        }]
+        if date_table:
+            tables.append({
+                'name': 'dim_date',
+                'columns': [
+                    {'name': 'full_date', 'dataType': 'DateTime'},
+                    {'name': 'Year', 'dataType': 'Int64'},
+                    {'name': 'Month', 'dataType': 'Int64'},
+                    {'name': 'Quarter', 'dataType': 'Int64'},
+                ],
+                'measures': [],
+            })
+        return {'model': {'tables': tables}}
+
+    def _measures(self, model):
+        return {m['name']: m['expression']
+                for t in model['model']['tables'] for m in t['measures']}
+
+    def test_it_binds_to_the_models_own_date_table(self):
+        from powerbi_import.tmdl_generator import _apply_time_intelligence
+        model = self._model()
+        self.assertEqual(3, _apply_time_intelligence(model))
+        measures = self._measures(model)
+        self.assertEqual("TOTALYTD([Revenue], 'dim_date'[full_date])",
+                         measures['Revenue YTD'])
+        self.assertNotIn("'Calendar'[Date]", " ".join(measures.values()))
+
+    def test_it_skips_when_the_model_has_no_date_table(self):
+        """Emitting measures against a missing column would break the model."""
+        from powerbi_import.tmdl_generator import _apply_time_intelligence
+        model = self._model(date_table=False)
+        self.assertEqual(0, _apply_time_intelligence(model))
+        self.assertEqual(['Revenue'], sorted(self._measures(model)))
+
+    def test_yoy_never_references_a_measure_that_was_not_added(self):
+        """The group is all-or-nothing, so YoY% cannot dangle."""
+        from powerbi_import.tmdl_generator import _apply_time_intelligence
+        model = self._model()
+        model['model']['tables'][0]['measures'].append(
+            {'name': 'Revenue PY', 'expression': 'BLANK()'})
+        self.assertEqual(0, _apply_time_intelligence(model))
+        self.assertNotIn('Revenue YoY %', self._measures(model))
+
+    def test_a_non_aggregation_measure_gets_no_time_intelligence(self):
+        from powerbi_import.tmdl_generator import _apply_time_intelligence
+        model = self._model()
+        model['model']['tables'][0]['measures'] = [
+            {'name': 'Flag', 'expression': 'IF([x] > 1, "Y", "N")'}]
+        self.assertEqual(0, _apply_time_intelligence(model))
+
 if __name__ == '__main__':
     unittest.main()

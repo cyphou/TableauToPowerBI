@@ -265,7 +265,7 @@ class PowerBIProjectGenerator:
                          output_format='pbip', paginated=False, languages=None,
                          composite_threshold=None, agg_tables='none',
                          incremental_refresh=False, incremental_refresh_months=12,
-                         parameterize=True, optimize_dax=False):
+                         parameterize=True, optimize_dax=False, time_intelligence='none'):
         """
         Generates a complete Power BI Project
         
@@ -297,6 +297,7 @@ class PowerBIProjectGenerator:
         self._composite_threshold = composite_threshold
         self._agg_tables = agg_tables
         self._optimize_dax = optimize_dax
+        self._time_intelligence = time_intelligence
         self._incremental_refresh = incremental_refresh
         self._incremental_refresh_months = incremental_refresh_months
         self._parameterize = parameterize
@@ -636,6 +637,7 @@ class PowerBIProjectGenerator:
                 incremental_refresh_months=getattr(self, '_incremental_refresh_months', 12),
                 parameterize=getattr(self, '_parameterize', True),
                 optimize_dax=getattr(self, '_optimize_dax', False),
+                time_intelligence=getattr(self, '_time_intelligence', 'none'),
             )
             
             print(f"  \u2713 TMDL model created with:")
