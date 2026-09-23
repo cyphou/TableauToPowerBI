@@ -935,6 +935,7 @@ The report shows for each migrated workbook:
 
 | Document | Description |
 |----------|-------------|
+| 📘 [User Manual](docs/USER_MANUAL.md) | Operator guide and Tableau → Power BI correspondence table |
 | 📖 [Migration Checklist](docs/MIGRATION_CHECKLIST.md) | Step-by-step migration guide |
 | 🗺️ [Mapping Reference](docs/MAPPING_REFERENCE.md) | Tableau → Power BI mappings |
 | 🔢 [133+ DAX Functions](docs/TABLEAU_TO_DAX_REFERENCE.md) | Complete formula reference |
@@ -949,10 +950,10 @@ The report shows for each migrated workbook:
 | ❓ [FAQ](docs/FAQ.md) | Frequently asked questions |
 | 🤝 [Contributing](CONTRIBUTING.md) | How to contribute |
 | 📝 [Changelog](CHANGELOG.md) | Change notes |
-| � [Enterprise Guide](docs/ENTERPRISE_GUIDE.md) | 8-phase enterprise migration guide |
+| 🏢 [Enterprise Guide](docs/ENTERPRISE_GUIDE.md) | 8-phase enterprise migration guide |
 | 📈 [Roadmap](docs/ROADMAP.md) | Development roadmap |
 | 🤖 [Agents](docs/AGENTS.md) | 17-agent specialization model |
-| �🌐 Global Assessment | Cross-workbook merge analysis with HTML heatmap (`--global-assess`) |
+| 🌐 Global Assessment | Cross-workbook merge analysis with HTML heatmap (`--global-assess`) |
 | 🚀 Bundle Deployment | Deploy shared model + reports to Fabric (`--deploy-bundle`) |
 
 ---

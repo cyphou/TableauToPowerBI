@@ -576,6 +576,7 @@ _EVIDENCE_PROBED = frozenset({
     "custom_sql", "refresh_schedule", "subscription", "alias_measure_name",
     "alias_value", "groups", "bins", "reference_line", "action_filter",
     "extract_hyper", "linguistic_schema",
+    "calc_basic", "calc_lod", "calc_table",
 })
 
 
@@ -596,6 +597,30 @@ _TMDL_NATIVE_QUERY_RE = re.compile(r"Value\.NativeQuery\s*\(")
 #: Value-alias display columns are the only ones filed under this folder.
 _TMDL_ALIAS_FOLDER_RE = re.compile(r"^[ \t]*displayFolder: Aliases\b", re.MULTILINE)
 _TMDL_WEB_URL_RE = re.compile(r"^[ \t]*dataCategory: WebUrl\b", re.MULTILINE)
+
+#: A converted Tableau calculation keeps its original formula as provenance, so
+#: a generated helper (R², Number of Records, alias measure) is never counted
+#: as a migrated calculation even when it uses the same DAX functions.
+_TMDL_CALC_PROVENANCE_RE = re.compile(
+    r"^[ \t]*annotation Copilot_Description = Migrated from Tableau:",
+    re.MULTILINE,
+)
+#: The generator condenses DAX to one line, so a declaration carries its body.
+_TMDL_EXPRESSION_RE = re.compile(
+    r"^[ \t]*(?:measure|column)\s+(?:'(?:[^']|'')*'|[^\s=]+)\s*=\s*(.+)$",
+    re.MULTILINE,
+)
+#: Window/ranking semantics — what a Tableau table calculation becomes.
+_DAX_TABLECALC_RE = re.compile(
+    r"\b(?:RANKX|OFFSET|ALLSELECTED|WINDOW|INDEX)\s*\(", re.IGNORECASE)
+#: Grain override — what a FIXED or EXCLUDE LOD becomes.
+_DAX_LOD_RE = re.compile(r"\b(?:ALLEXCEPT|REMOVEFILTERS)\s*\(", re.IGNORECASE)
+#: A plain aggregation — the shape a basic calculated field converts to.
+_DAX_AGGREGATION_RE = re.compile(
+    r"\b(?:SUM|SUMX|AVERAGE|AVERAGEX|MIN|MAX|COUNT|COUNTROWS|DISTINCTCOUNT"
+    r"|MEDIAN|STDEV\.S|STDEV\.P|VAR\.S|VAR\.P)\s*\(",
+    re.IGNORECASE,
+)
 _TMDL_ALIAS_MEASURE_RE = re.compile(
     r"^[ \t]*annotation MigrationNote = Restored from Tableau field alias:",
     re.MULTILINE,
@@ -603,6 +628,33 @@ _TMDL_ALIAS_MEASURE_RE = re.compile(
 _TMDL_GROUP_FOLDER_RE = re.compile(r"^[ \t]*displayFolder: Groups\b", re.MULTILINE)
 _TMDL_BIN_FOLDER_RE = re.compile(r"^[ \t]*displayFolder: Bins\b", re.MULTILINE)
 _PBIR_REFERENCE_LINE_RE = re.compile(r'"referenceLine"\s*:', re.MULTILINE)
+
+
+def _calculation_families(text: str) -> set:
+    """Which Tableau calculation families a generated TMDL file evidences.
+
+    Each declaration is judged on its own block: a measure only counts when it
+    carries the migration provenance annotation, so generated helpers that use
+    the same DAX functions are never attributed to a source calculation.
+
+    A table calculation may itself use ``ALLEXCEPT``, so window semantics are
+    tested first; otherwise one expression would evidence two families.
+    """
+    families = set()
+    declarations = list(_TMDL_EXPRESSION_RE.finditer(text))
+    for index, match in enumerate(declarations):
+        end = (declarations[index + 1].start()
+               if index + 1 < len(declarations) else len(text))
+        if not _TMDL_CALC_PROVENANCE_RE.search(text[match.start():end]):
+            continue
+        body = match.group(1)
+        if _DAX_TABLECALC_RE.search(body):
+            families.add("calc_table")
+        elif _DAX_LOD_RE.search(body):
+            families.add("calc_lod")
+        elif _DAX_AGGREGATION_RE.search(body):
+            families.add("calc_basic")
+    return families
 _TMDL_LINGUISTIC_RE = re.compile(
     r"^[ \t]*linguisticMetadata\s*=.*?Entities", re.MULTILINE | re.DOTALL
 )
@@ -692,6 +744,8 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
             add("groups", path)
         if _TMDL_BIN_FOLDER_RE.search(text):
             add("bins", path)
+        for family in sorted(_calculation_families(text)):
+            add(family, path)
 
     culture_glob = os.path.join(semantic_dir, "definition", "cultures", "*.tmdl")
     for path in sorted(glob.glob(culture_glob)):

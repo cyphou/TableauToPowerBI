@@ -263,14 +263,14 @@ class TestSerialization(unittest.TestCase):
         self.assertEqual(usage.evidence_status, "not_found")
 
     def test_unprobed_feature_says_so_rather_than_claiming_a_miss(self):
-        scan = scan_workbook({"calculations": [{"formula": "[Sales]"}]})
-        usage = next(u for u in scan.usages if u.key == "calc_basic")
+        scan = scan_workbook({"sets": [1]})
+        usage = next(u for u in scan.usages if u.key == "sets")
         self.assertEqual(usage.evidence_status, "not_checked")
 
     def test_unprobed_features_stay_out_of_the_coverage_denominator(self):
         scan = scan_workbook({
             "filters": [1],
-            "calculations": [{"formula": "[Sales]"}],
+            "sets": [1],
             "_parity_evidence": {"filters": ["report.json"]},
         })
         coverage = scan.evidence_coverage

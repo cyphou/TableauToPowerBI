@@ -119,7 +119,7 @@ Resilience is a correctness requirement, not an operational extra. The route to
 | Wave | Outcome | Exit gate |
 |---|---|---|
 | R1 — Inventory closure | **Done.** The extractor guarantees all 23 canonical JSON outputs, including empty collections; producer-consumer field lint is strict | 17 contract/lint tests pass; 0 unknown consumer fields. The corpus populates 21 types, while 2 rare types remain represented by empty canonical outputs |
-| R2 — Target evidence closure | **In progress.** Specific probes now cover filters, actions, parameters, hierarchies, sort order, RLS, SQL, schedules, subscriptions, aliases, groups, bins, reference lines, Hyper staging, and linguistic cultures | 146 evidence/culture tests pass; only the three calculation families (basic, LOD, table calculations) remain without a family-specific target probe |
+| R2 — Target evidence closure | **Done.** Specific probes cover filters, actions, parameters, hierarchies, sort order, RLS, SQL, schedules, subscriptions, aliases, groups, bins, reference lines, Hyper staging, linguistic cultures, and the three calculation families | Measured across the 16-workbook corpus: 18 features in use, 24 probed, **0 in-use features without a target probe** |
 | R3 — Fidelity closure | Resolve remaining approximations or publish equivalent/unsupported decisions | Every in-use item has accepted behavior evidence or explicit remediation |
 | R4 — Resilience closure | Resume, idempotence, rollback, timeout, and fault-injection coverage | Interrupted and replayed migrations preserve evidence and do not duplicate output |
 | R5 — Runtime closure | Desktop save/reopen, semantic execution, refresh, deployment, and post-deploy checks | `OPERATIONAL_100` only in an authorized environment |
@@ -127,6 +127,61 @@ Resilience is a correctness requirement, not an operational extra. The route to
 The next implementation issue must be selected by the first failing gate in this
 sequence, not by the headline parity percentage. This prevents a 100% score from
 masking an untested object type or a migration that cannot recover safely.
+
+## Measured architecture baseline
+
+Behaviour is mature; the remaining debt is structural. These numbers are
+measured from the tree, not estimated, and they set the agenda below.
+
+| Signal | Value |
+|---|---|
+| Source modules | 161 (149 `powerbi_import`, 12 `tableau_export`) |
+| Source lines | 96,538 |
+| Test files / lines | 288 / 119,084 (1.23x test-to-source) |
+| CLI surface | 14 public commands over 145 flags in a 6,795-line `migrate.py` |
+| Concentration | Top 6 modules hold 28,143 lines — **29% of all source** |
+| Production reachability | 132 modules reachable, **23 not reachable**, 1 genuinely dead |
+| Healing layering | 1,203 lines inside the documented facade, **3,995 lines outside it** |
+| Reporting surface | 29 modules, ~14,000 lines, 21 HTML generators |
+
+Four findings follow from that table:
+
+1. **Concentration risk.** `tmdl_generator` (6,151), `pbip_generator` (5,468),
+   `extract_tableau_data` (4,071), `shared_model` (3,219), `dax_converter`
+   (3,147) and `visual_generator` (3,053) are also the files most often recorded
+   as regression-prone. Two prior extractions proved the seams exist.
+2. **Shipped but unwired.** Only `api_server` (Dockerfile) and `mcp_server`
+   (MCP stdio) have a non-CLI entry point. The rest — including `dax_optimizer`,
+   `marketplace`, `model_templates`, `dax_recipes`, `plugin_sdk`,
+   `geo_passthrough`, `gateway_config`, `alerts_generator`, `visual_diff` and
+   `regression_suite` — are complete and tested with no user path. This is the
+   `visual_generator` finding generalised: a module reads as covered because a
+   test imports it.
+3. **The documented healing architecture describes a third of the code.**
+   `self_healing_v3`, `self_healing_report` and `tmdl_self_heal` sit outside the
+   `healing_core` contract, and `healing.py` is not reachable from `migrate.py`.
+4. **Reporting producers were never consolidated.** `html_template` (fan-in 32)
+   unified presentation; `migration_quality` still carries fan-out 29.
+
+## Next cycle — structural closure
+
+Ordered so that no effort is spent refactoring code that should not exist.
+
+| Wave | Outcome | Exit gate |
+|---|---|---|
+| A1 — Calculation evidence | **Done.** Each family is keyed on its distinguishing DAX artifact — LOD by `ALLEXCEPT`/`REMOVEFILTERS`, table calc by `RANKX`/`OFFSET`/`ALLSELECTED`/`WINDOW`/`INDEX`, basic by an aggregation with neither — and every declaration is gated per-measure by its migration provenance annotation, so a generated helper is never attributed to a source calculation | 0 in-use features report `not_checked`; window semantics are tested before grain override so a `WINDOW_*` expression using `ALLEXCEPT` is not misread as a LOD; a generated R² measure using `RANKX` evidences nothing |
+| A2 — Reachability contract | Decide **wire / declare library API / retire** for each unreachable module, then pin the decision with a surface test | Every production module is reachable, declared, or deleted |
+| A3 — Healing consolidation | Bring the three outside modules under the `healing_core` contract and one recovery ledger, or document the exemption | One healing contract, no undocumented stage, `RepairAttempt` stays distinct from `HealAction` |
+| A4 — Decompose by seam | Split the top-6 along existing seams (page/layout vs visual, relationship inference, parameter tables, per-type extractors) with the proven extraction recipe | No module above ~2,500 lines; `tmdl_generator` reduced to one owner |
+| A5 — Resilience baseline (R4) | Measure what survives interruption *before* building: interrupt a batch, replay a checkpoint, corrupt a source, delete a target table | Interrupted and replayed migrations preserve evidence and never duplicate output |
+| A6 — Runtime closure (R5) | Unchanged: an authorized environment, or the roadmap states plainly that these signals stay `not_run` | `OPERATIONAL_100` only with real environment evidence |
+
+Non-goals for this cycle, recorded so they are not re-proposed:
+
+- Rewriting the 145-flag surface. The 14-command layer already solved
+  discoverability, and flag-based automation is a compatibility contract.
+- Merging the 21 HTML generators. `html_template` already unified presentation;
+  merging producers would risk the reporting contract for cosmetic gain.
 
 ## What the last cycle proved about method
 

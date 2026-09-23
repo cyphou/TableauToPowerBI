@@ -8,6 +8,7 @@ Reference documentation for the Tableau to Power BI migration engine.
 
 ## Guides
 
+- [USER_MANUAL.md](USER_MANUAL.md) — Operator guide, workflows, validation states, and Tableau ↔ Power BI correspondence table
 - [POWERBI_PROJECT_GUIDE.md](POWERBI_PROJECT_GUIDE.md) — Understanding and using `.pbip` projects
 - [MAPPING_REFERENCE.md](MAPPING_REFERENCE.md) — Tableau ↔ Power BI mappings (190 visuals, formulas, interactions)
 - [TABLEAU_TO_DAX_REFERENCE.md](TABLEAU_TO_DAX_REFERENCE.md) — Complete 133+-function Tableau → DAX mapping

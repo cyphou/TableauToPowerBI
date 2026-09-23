@@ -65,6 +65,16 @@ def _full_project(root, name="Demo"):
            "\t\tdisplayFolder: Groups\n"
            "\tcolumn Bucket = FLOOR([Amount], 10)\n"
            "\t\tdisplayFolder: Bins\n")
+    _write(os.path.join(model, "tables", "Calculations.tmdl"),
+           "table Calculations\n"
+           "\tmeasure 'Net Revenue' = SUM('Sales'[Amount])\n"
+           "\t\tannotation Copilot_Description = Migrated from Tableau: SUM([Amount])\n"
+           "\tmeasure 'Revenue per Customer' = "
+           "CALCULATE(SUM('Sales'[Amount]), ALLEXCEPT('Sales', 'Sales'[customer_id]))\n"
+           "\t\tannotation Copilot_Description = Migrated from Tableau: "
+           "{FIXED [customer_id] : SUM([Amount])}\n"
+           "\tmeasure 'Revenue Rank' = RANKX(ALL('Sales'), SUM('Sales'[Amount]))\n"
+           "\t\tannotation Copilot_Description = Migrated from Tableau: RANK(SUM([Amount]))\n")
     _write(os.path.join(model, "cultures", "en-US.tmdl"),
            "culture en-US\n\tlinguisticMetadata =\n"
            "\t\t```\n\t\t{\"Entities\": {\"Region\": {}}}\n\t\t```\n")
@@ -181,6 +191,70 @@ class TestProbesCanFail(unittest.TestCase):
             evidence = collect_target_evidence(tmp, "Demo")
         self.assertNotIn("extract_hyper", evidence)
 
+
+class TestCalculationFamiliesAreDistinguished(unittest.TestCase):
+    """A measure proves *some* calculation converted, never which kind.
+
+    Each family is therefore keyed on its distinguishing DAX artifact, and a
+    declaration only counts when it carries migration provenance.
+    """
+
+    def _families(self, table_body):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(os.path.join(tmp, "Demo.SemanticModel", "definition",
+                                "tables", "T.tmdl"), table_body)
+            return collect_target_evidence(tmp, "Demo")
+
+    def test_aggregation_evidences_a_basic_calculation(self):
+        evidence = self._families(
+            "table T\n\tmeasure 'Total' = SUM('T'[Amount])\n"
+            "\t\tannotation Copilot_Description = Migrated from Tableau: SUM([Amount])\n")
+        self.assertIn("calc_basic", evidence)
+        self.assertNotIn("calc_lod", evidence)
+        self.assertNotIn("calc_table", evidence)
+
+    def test_grain_override_evidences_a_lod(self):
+        evidence = self._families(
+            "table T\n\tmeasure 'Per Customer' = "
+            "CALCULATE(SUM('T'[Amount]), ALLEXCEPT('T', 'T'[customer_id]))\n"
+            "\t\tannotation Copilot_Description = Migrated from Tableau: "
+            "{FIXED [customer_id] : SUM([Amount])}\n")
+        self.assertIn("calc_lod", evidence)
+        self.assertNotIn("calc_basic", evidence)
+
+    def test_window_semantics_evidence_a_table_calculation(self):
+        evidence = self._families(
+            "table T\n\tmeasure 'Rank' = RANKX(ALL('T'), SUM('T'[Amount]))\n"
+            "\t\tannotation Copilot_Description = Migrated from Tableau: RANK(SUM([Amount]))\n")
+        self.assertIn("calc_table", evidence)
+        self.assertNotIn("calc_basic", evidence)
+
+    def test_a_windowed_expression_using_allexcept_is_not_read_as_a_lod(self):
+        """WINDOW_* converts to CALCULATE(..., ALLEXCEPT), which would collide."""
+        evidence = self._families(
+            "table T\n\tmeasure 'Window' = "
+            "CALCULATE(SUM('T'[Amount]), ALLSELECTED('T'), ALLEXCEPT('T', 'T'[region]))\n"
+            "\t\tannotation Copilot_Description = Migrated from Tableau: "
+            "WINDOW_SUM(SUM([Amount]))\n")
+        self.assertIn("calc_table", evidence)
+        self.assertNotIn("calc_lod", evidence)
+
+    def test_a_generated_helper_is_not_a_migrated_calculation(self):
+        """The R2 measure uses RANKX but came from no Tableau calculation."""
+        evidence = self._families(
+            "table T\n\tmeasure 'R2 Sheet1' = "
+            "POWER(CORREL(ADDCOLUMNS(ALL('T'), \"_idx\", "
+            "RANKX(ALL('T'), [Amount],,ASC,Dense)), [_idx], [Amount]), 2)\n"
+            "\t\tdisplayFolder: Analytics\n")
+        self.assertNotIn("calc_table", evidence)
+        self.assertNotIn("calc_basic", evidence)
+
+    def test_a_plain_column_evidences_no_calculation_family(self):
+        evidence = self._families(
+            "table T\n\tcolumn Name\n\t\tdataType: string\n")
+        for key in ("calc_basic", "calc_lod", "calc_table"):
+            self.assertNotIn(key, evidence)
+
     def test_linguistic_culture_is_target_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             _write(os.path.join(tmp, "Demo.SemanticModel", "definition",
@@ -233,14 +307,14 @@ class TestScanReportsHowItKnows(unittest.TestCase):
     def test_an_unprobed_feature_never_counts_as_a_miss(self):
         with tempfile.TemporaryDirectory() as tmp:
             scan = scan_project(
-                {"filters": [1], "calculations": [{"formula": "[Sales]"}]},
+                {"filters": [1], "sets": [1]},
                 _full_project(tmp), "Demo")
         coverage = scan.evidence_coverage
         self.assertEqual(1, coverage["unchecked_features"])
         self.assertEqual(100.0, coverage["coverage_percent"])
         self.assertEqual(
             "not_checked",
-            next(u for u in scan.usages if u.key == "calc_basic").evidence_status)
+            next(u for u in scan.usages if u.key == "sets").evidence_status)
 
     def test_every_usage_says_how_its_evidence_was_established(self):
         with tempfile.TemporaryDirectory() as tmp:
