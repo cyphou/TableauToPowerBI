@@ -399,5 +399,59 @@ class TestCLIFlags(unittest.TestCase):
         self.assertEqual(args.time_intelligence, 'none')
 
 
+
+
+class TestOptimizerWiring(unittest.TestCase):
+    """The optimizer is opt-in: generation must not rewrite DAX by default.
+
+    `--optimize-dax` was declared with `default=True` and never read, so no
+    measure was ever optimized. It is now genuinely opt-in, which keeps the
+    emitted DAX identical unless the user asks for the rewrite.
+    """
+
+    def _model(self):
+        return {'model': {'tables': [{
+            'name': 'Sales',
+            'measures': [
+                {'name': 'Margin',
+                 'expression': 'IF(ISBLANK([Profit] / [Revenue]), 0, [Profit] / [Revenue])'},
+                {'name': 'Plain', 'expression': "SUM('Sales'[Amount])"},
+            ],
+        }]}}
+
+    def _measures(self, model):
+        return {m['name']: m for t in model['model']['tables'] for m in t['measures']}
+
+    def test_an_optimizable_measure_is_rewritten(self):
+        from powerbi_import.tmdl_generator import _apply_dax_optimization
+        model = self._model()
+        self.assertEqual(1, _apply_dax_optimization(model))
+        self.assertEqual('COALESCE([Profit] / [Revenue], 0)',
+                         self._measures(model)['Margin']['expression'])
+
+    def test_the_original_expression_is_kept_as_an_annotation(self):
+        from powerbi_import.tmdl_generator import _apply_dax_optimization
+        model = self._model()
+        _apply_dax_optimization(model)
+        notes = [a['value'] for a in self._measures(model)['Margin']['annotations']
+                 if a['name'] == 'MigrationNote']
+        self.assertTrue(any('ISBLANK' in n for n in notes),
+                        'the direct conversion must remain recoverable')
+
+    def test_a_measure_with_nothing_to_optimize_is_untouched(self):
+        from powerbi_import.tmdl_generator import _apply_dax_optimization
+        model = self._model()
+        _apply_dax_optimization(model)
+        plain = self._measures(model)['Plain']
+        self.assertEqual("SUM('Sales'[Amount])", plain['expression'])
+        self.assertNotIn('annotations', plain)
+
+    def test_rerunning_does_not_rewrite_again(self):
+        from powerbi_import.tmdl_generator import _apply_dax_optimization
+        model = self._model()
+        _apply_dax_optimization(model)
+        self.assertEqual(0, _apply_dax_optimization(model),
+                         'optimization must be idempotent')
+
 if __name__ == '__main__':
     unittest.main()

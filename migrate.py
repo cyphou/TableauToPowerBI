@@ -330,7 +330,7 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
                    output_format='pbip', paginated=False, languages=None,
                    composite_threshold=None, agg_tables='none',
                    incremental_refresh=False, incremental_refresh_months=12,
-                   parameterize=True):
+                   parameterize=True, optimize_dax=False):
     """Generate Power BI project (.pbip) from extracted data
 
     Args:
@@ -367,7 +367,8 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
                             composite_threshold=composite_threshold, agg_tables=agg_tables,
                             incremental_refresh=incremental_refresh,
                             incremental_refresh_months=incremental_refresh_months,
-                            parameterize=parameterize)
+                            parameterize=parameterize,
+                            optimize_dax=optimize_dax)
 
         # Collect generation stats from the output
         base_dir = output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
@@ -1212,6 +1213,7 @@ def _run_batch_config(args):
             paginated=paginated,
             composite_threshold=getattr(args, 'composite_threshold', None),
             agg_tables=getattr(args, 'agg_tables', 'none'),
+            optimize_dax=getattr(args, 'optimize_dax', False),
         )
 
         # Migration report
@@ -2418,8 +2420,8 @@ def _add_migration_args(parser):
     parser.add_argument(
         '--optimize-dax',
         action='store_true',
-        default=True,
-        help='Run DAX optimizer on converted measures (nested IF→SWITCH, COALESCE, constant fold). Enabled by default; use --no-optimize-dax to disable.'
+        default=False,
+        help='Run DAX optimizer on converted measures (nested IF→SWITCH, COALESCE, constant fold). Opt-in, because it changes the emitted DAX; the original is kept as an annotation.'
     )
     parser.add_argument(
         '--no-optimize-dax',
@@ -7598,6 +7600,7 @@ def _run_single_migration(args):
             incremental_refresh=getattr(args, 'incremental_refresh', False),
             incremental_refresh_months=getattr(args, 'incremental_refresh_months', 12),
             parameterize=getattr(args, 'parameterize', True),
+            optimize_dax=getattr(args, 'optimize_dax', False),
         )
         if results['generation']:
             checkpoint.mark(

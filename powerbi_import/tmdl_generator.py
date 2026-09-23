@@ -168,12 +168,42 @@ from powerbi_import.tmdl_self_heal import (  # noqa: F401
 #  PUBLIC ENTRY POINT
 # ════════════════════════════════════════════════════════════════════
 
+def _apply_dax_optimization(model):
+    """Rewrite generated measures with the DAX optimizer.
+
+    The direct Tableau conversion is kept as an annotation, so a reviewer can
+    always recover what the measure looked like before optimization.
+    """
+    from powerbi_import.dax_optimizer import optimize_dax as _optimize_expression
+
+    rewritten = 0
+    for table in model.get('model', {}).get('tables', []):
+        for measure in table.get('measures', []):
+            expression = measure.get('expression')
+            if not isinstance(expression, str) or not expression.strip():
+                continue
+            optimized, applied = _optimize_expression(expression)
+            if not applied or optimized == expression:
+                continue
+            measure['expression'] = optimized
+            measure.setdefault('annotations', []).append({
+                'name': 'MigrationNote',
+                'value': (f"DAX optimized ({', '.join(applied)}); "
+                          f"original: {expression}"),
+            })
+            rewritten += 1
+
+    if rewritten:
+        print(f"  \u26a1 DAX optimizer rewrote {rewritten} measure(s)")
+    return rewritten
+
+
 def generate_tmdl(datasources, report_name, extra_objects, output_dir,
                   calendar_start=None, calendar_end=None, culture=None,
                   model_mode='import', languages=None,
                   composite_threshold=None, agg_tables='none',
                   incremental_refresh=False, incremental_refresh_months=12,
-                  parameterize=True):
+                  parameterize=True, optimize_dax=False):
     """
     Main entry point: directly convert extracted Tableau data to TMDL files.
 
@@ -199,6 +229,9 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         incremental_refresh_months: Rolling window size in months (default: 12).
         parameterize: If True, inject RangeStart/RangeEnd M parameters and
                     modify partition expressions with range filters (default: True).
+        optimize_dax: If True, rewrite generated measures with the DAX optimizer
+                    (nested IF to SWITCH, COALESCE, constant folding). Opt-in,
+                    because it changes the emitted DAX (default: False).
 
     Returns:
         dict: Statistics about the generated model
@@ -214,6 +247,11 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
                                   model_mode=model_mode,
                                   composite_threshold=composite_threshold,
                                   agg_tables=agg_tables)
+
+    # Optimize before self-healing, so rewritten DAX still passes the same
+    # validation and repair gates as directly converted DAX.
+    if optimize_dax:
+        _apply_dax_optimization(model)
 
     # Step 1b: Self-healing — validate and auto-repair common issues
     from powerbi_import.recovery_report import RecoveryReport

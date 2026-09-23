@@ -30,7 +30,6 @@ KNOWN_INERT = frozenset({
     "merge_preview",
     "multi_tenant",
     "no_ds_cache",
-    "optimize_dax",
     "parallel_run",
     "prep_to_dataflow",
     "resolve_published_ds",

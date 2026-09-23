@@ -34,7 +34,7 @@ class PowerBIImporter:
                    model_mode='import', output_format='pbip', languages=None,
                    composite_threshold=None, agg_tables='none',
                    incremental_refresh=False, incremental_refresh_months=12,
-                   parameterize=True):
+                   parameterize=True, optimize_dax=False):
         """
         Import all extracted objects and generate Power BI project
         
@@ -85,7 +85,8 @@ class PowerBIImporter:
                                           composite_threshold=composite_threshold, agg_tables=agg_tables,
                                           incremental_refresh=incremental_refresh,
                                           incremental_refresh_months=incremental_refresh_months,
-                                          parameterize=parameterize)
+                                          parameterize=parameterize,
+                                          optimize_dax=optimize_dax)
         
         print()
         print("=" * 80)
@@ -162,7 +163,7 @@ class PowerBIImporter:
                                  model_mode='import', output_format='pbip', paginated=False,
                                  languages=None, composite_threshold=None, agg_tables='none',
                                  incremental_refresh=False, incremental_refresh_months=12,
-                                 parameterize=True):
+                                 parameterize=True, optimize_dax=False):
         """Generate a Power BI Project (.pbip)
 
         Args:
@@ -201,7 +202,8 @@ class PowerBIImporter:
                                                        agg_tables=agg_tables,
                                                        incremental_refresh=incremental_refresh,
                                                        incremental_refresh_months=incremental_refresh_months,
-                                                       parameterize=parameterize)
+                                                       parameterize=parameterize,
+                                                       optimize_dax=optimize_dax)
             self.last_generation_timings = generator.last_phase_timings
             print(f"  [OK] Power BI Project created: {project_path}")
             
