@@ -4272,6 +4272,67 @@ def _run_bundle_deploy(project_dir, workspace_id, refresh=False):
         return ExitCode.GENERAL_ERROR
 
 
+def _run_multi_tenant_deploy(args, project_dir):
+    """Deploy one shared model to several tenant workspaces.
+
+    Each tenant gets its own copy with connection strings substituted, so the
+    model is built once and pointed at each tenant's data.
+
+    Returns:
+        ExitCode
+    """
+    config_path = getattr(args, 'multi_tenant', None)
+    try:
+        from powerbi_import.deploy.multi_tenant import (
+            MultiTenantConfig, deploy_multi_tenant,
+        )
+
+        print_header("MULTI-TENANT DEPLOYMENT")
+        print(f"  Config:  {config_path}")
+        print(f"  Project: {project_dir}")
+
+        try:
+            config = MultiTenantConfig.load(config_path)
+        except (OSError, ValueError) as exc:
+            print(f"\n  ✗ Cannot load tenant config: {exc}")
+            return ExitCode.GENERAL_ERROR
+
+        errors = config.validate()
+        if errors:
+            print(f"\n  ✗ Tenant config is invalid ({len(errors)} problem(s)):")
+            for err in errors:
+                print(f"      • {err}")
+            return ExitCode.VALIDATION_FAILED
+
+        dry_run = getattr(args, 'dry_run', False)
+        print(f"  Tenants: {len(config.tenants)}"
+              f"{'  (dry run — validate only)' if dry_run else ''}")
+
+        result = deploy_multi_tenant(
+            model_dir=project_dir,
+            config=config,
+            refresh=getattr(args, 'bundle_refresh', False),
+            dry_run=dry_run,
+        )
+
+        result.print_summary()
+
+        report_path = os.path.join(project_dir, 'multi_tenant_deployment.json')
+        try:
+            result.save(report_path)
+            print(f"  Report: {report_path}")
+        except OSError as exc:
+            logger.warning("Cannot write multi-tenant report: %s", exc)
+
+        return (ExitCode.SUCCESS if result.failed_count == 0
+                else ExitCode.GENERAL_ERROR)
+
+    except Exception as exc:
+        logger.error("Multi-tenant deployment failed: %s", exc, exc_info=True)
+        print(f"\n  ✗ Multi-tenant deployment error: {exc}")
+        return ExitCode.GENERAL_ERROR
+
+
 # ── Prep Lineage mode ──────────────────────────────────────────────────────
 
 def run_prep_lineage_mode(args):
@@ -5861,6 +5922,14 @@ def main():
                 project_dir, args.deploy_bundle,
                 refresh=getattr(args, 'bundle_refresh', False),
             )
+
+        if exit_code == ExitCode.SUCCESS and getattr(args, 'multi_tenant', None):
+            model_name = getattr(args, 'model_name', None) or 'SharedModel'
+            project_dir = os.path.join(
+                args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'shared'),
+                model_name,
+            )
+            exit_code = _run_multi_tenant_deploy(args, project_dir)
 
         return exit_code
 

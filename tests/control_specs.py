@@ -65,6 +65,22 @@ CONTROLS = [
         "new": "assessment.get('overall_score', None)",
         "test": "tests/test_merge_preview_wiring.py",
     },
+    {
+        "name": "--multi-tenant stops being acted on",
+        "file": "migrate.py",
+        "old": "        if exit_code == ExitCode.SUCCESS and getattr(args, 'multi_tenant', None):",
+        "new": "        if False and getattr(args, 'multi_tenant', None):",
+        "test": "tests/test_multi_tenant_wiring.py",
+    },
+    {
+        "name": "multi-tenant stops validating its config",
+        "file": "migrate.py",
+        "old": "        errors = config.validate()\n"
+               "        if errors:",
+        "new": "        errors = []\n"
+               "        if errors:",
+        "test": "tests/test_multi_tenant_wiring.py",
+    },
 
     # ── Preceptorship cadence ──────────────────────────────────────────
     {

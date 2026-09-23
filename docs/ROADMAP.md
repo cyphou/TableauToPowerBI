@@ -209,9 +209,9 @@ floor, not a guess. Three groups need different answers:
   imports `autoheal` directly and bypasses it. That is A3's problem, recorded
   here because it is why the facade looks unused.
 
-**Inert CLI flags — 6 of 142.** Declared, accepted by the parser, never read:
-`--multi-tenant`, `--parallel-run`, `--prep-to-dataflow`, `--skip-conversion`,
-`--sync`, `--validate-data`.
+**Inert CLI flags — 5 of 142.** Declared, accepted by the parser, never read:
+`--parallel-run`, `--prep-to-dataflow`, `--skip-conversion`, `--sync`,
+`--validate-data`.
 
 `--agg-tables` and `--composite-threshold` **are now wired** and were the first
 two removed from that set. The generator already accepted both; only the
@@ -333,8 +333,28 @@ count is **1 real phantom**: `docs/ENTERPRISE_GUIDE.md` documented
 `--visual-diff`, whose module `visual_diff.py` is itself on the unreachable
 list. The example now shows the comparison report that does exist.
 
-### Known defect — shared-model output fails its own openability gate
-Unrelated to the flag work and pre-existing: `--shared-model` exits `5`
+`--multi-tenant` was inert while `deploy_multi_tenant()` was complete: it
+validates tenants, substitutes per-tenant connection strings, deploys each
+copy, and supports `dry_run`. The documented
+`--shared-model ... --multi-tenant tenants.json` built a model and stopped.
+Positive control (dry run, two tenants): 2/2 succeed and
+`multi_tenant_deployment.json` is written; without the flag, neither happens.
+
+Wiring it exposed something larger. Both post-shared-model deployment steps
+are gated on `exit_code == ExitCode.SUCCESS`, and `--shared-model` returns
+`VALIDATION_FAILED` because of the openability defect below — so
+**`--deploy-bundle` and `--multi-tenant` are both unreachable in a default
+run**. The first positive control failed for exactly this reason and only
+passed once `--no-verify-open` was added. The gate check is correct; what it
+depends on is broken. `TestDeploymentGating` pins the coupling so it is
+visible rather than rediscovered.
+
+Two test-data defects during the same wiring, both caught by validation doing
+its job: workspace ids that merely looked plausible (`ws-contoso-0001`) are
+rejected as non-GUIDs, and connection overrides must be `${UPPER_NAME}`
+placeholders rather than bare keys like `server`.
+
+### Known defect — shared-model output fails its own openability gateUnrelated to the flag work and pre-existing: `--shared-model` exits `5`
 (`VALIDATION_FAILED`) with 9 blocking issues, all from `pbip_contract` and
 `manifest_coherence` — "Report and SemanticModel names do not match", "report
 artifact is not declared", "manifest type must be Report". Confirmed against
