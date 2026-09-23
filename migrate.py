@@ -267,6 +267,91 @@ def run_extraction(tableau_file, hyper_max_rows=None):
         return False
 
 
+def _resolve_published_datasources(args):
+    """Replace published (sqlproxy) datasource stubs with their real definitions.
+
+    A published datasource carries no tables or columns in the workbook XML, so
+    without this the generator sees an empty source. Resolution reads the cache,
+    and the server too when credentials are present, then rewrites
+    datasources.json in place.
+
+    Returns True unless resolution was requested and could not run at all.
+    """
+    from tableau_export.datasource_extractor import resolve_all_published
+
+    json_path = os.path.join(_get_extract_dir(), 'datasources.json')
+    if not os.path.exists(json_path):
+        logger.debug("No datasources.json to resolve")
+        return True
+
+    try:
+        with open(json_path, 'r', encoding='utf-8') as fh:
+            datasources = json.load(fh)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Cannot read datasources.json for resolution: %s", exc)
+        return True
+
+    if not isinstance(datasources, list):
+        return True
+
+    published = [d for d in datasources
+                 if (d.get('connection') or {}).get('type') == 'Tableau Server']
+    if not published:
+        print("  ℹ No published datasources to resolve")
+        return True
+
+    server_client = None
+    if getattr(args, 'server', None):
+        try:
+            from tableau_export.server_client import TableauServerClient
+            server_client = TableauServerClient(
+                server_url=args.server,
+                token_name=getattr(args, 'token_name', None),
+                token_secret=(getattr(args, 'token_secret', None)
+                              or os.environ.get('TABLEAU_TOKEN_SECRET')),
+                site_id=getattr(args, 'site', ''),
+            )
+            server_client.sign_in()
+        except Exception as exc:
+            logger.warning("Server sign-in failed, falling back to cache: %s", exc)
+            server_client = None
+
+    cache_dir = getattr(args, 'ds_cache_dir', None) or os.path.join(
+        tempfile.gettempdir(), 'tableau_ds_cache')
+    no_cache = getattr(args, 'no_ds_cache', False)
+
+    print(f"\n  Resolving {len(published)} published datasource(s)...")
+    if no_cache:
+        print("  Cache reads disabled (--no-ds-cache); writes still occur")
+
+    try:
+        result = resolve_all_published(
+            datasources, server_client=server_client,
+            cache_dir=cache_dir, no_cache=no_cache,
+        )
+    finally:
+        if server_client:
+            try:
+                server_client.sign_out()
+            except Exception:
+                logger.debug("Server sign-out failed", exc_info=True)
+
+    for label, names in (('resolved from server', result['resolved']),
+                         ('resolved from cache', result['cached']),
+                         ('unresolved', result['unresolved'])):
+        if names:
+            print(f"    {label}: {len(names)} — {', '.join(names[:4])}"
+                  f"{' ...' if len(names) > 4 else ''}")
+
+    try:
+        with open(json_path, 'w', encoding='utf-8') as fh:
+            json.dump(datasources, fh, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        logger.warning("Cannot write resolved datasources.json: %s", exc)
+
+    return True
+
+
 def _run_fabric_generation(report_name=None, output_dir=None,
                            calendar_start=None, calendar_end=None,
                            culture=None, languages=None):
@@ -7586,6 +7671,8 @@ def _run_single_migration(args):
             progress.fail("Extraction failed")
             print("\nMigration aborted due to extraction failure")
             return ExitCode.EXTRACTION_FAILED
+        if getattr(args, 'resolve_published_ds', False):
+            _resolve_published_datasources(args)
         if not checkpoint_reused:
             shutil.copytree(_get_extract_dir(), extract_snapshot, dirs_exist_ok=True)
             checkpoint.mark('extraction', source='snapshot', path=extract_snapshot)

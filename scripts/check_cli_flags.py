@@ -28,10 +28,8 @@ CLI_SOURCE = os.path.join(_REPO_ROOT, "migrate.py")
 KNOWN_INERT = frozenset({
     "merge_preview",
     "multi_tenant",
-    "no_ds_cache",
     "parallel_run",
     "prep_to_dataflow",
-    "resolve_published_ds",
     "skip_conversion",
     "sync",
     "validate_data",

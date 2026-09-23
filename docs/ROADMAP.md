@@ -209,10 +209,9 @@ floor, not a guess. Three groups need different answers:
   imports `autoheal` directly and bypasses it. That is A3's problem, recorded
   here because it is why the facade looks unused.
 
-**Inert CLI flags — 9 of 142.** Declared, accepted by the parser, never read:
-`--merge-preview`, `--multi-tenant`, `--no-ds-cache`, `--parallel-run`,
-`--prep-to-dataflow`, `--resolve-published-ds`, `--skip-conversion`, `--sync`,
-`--validate-data`.
+**Inert CLI flags — 7 of 142.** Declared, accepted by the parser, never read:
+`--merge-preview`, `--multi-tenant`, `--parallel-run`, `--prep-to-dataflow`,
+`--skip-conversion`, `--sync`, `--validate-data`.
 
 `--agg-tables` and `--composite-threshold` **are now wired** and were the first
 two removed from that set. The generator already accepted both; only the
@@ -256,6 +255,27 @@ Writing the test for it exposed a gap in the test itself. Constructing
 about the caller: removing the forwarding left every assertion green while the
 flag went inert again. The handoff is now asserted directly, and the control
 that previously passed 5/5 now fails.
+
+`--resolve-published-ds` and `--no-ds-cache` were wired together, since one
+entry point serves both. `resolve_all_published()` was complete and already
+had passing tests, but no production caller: a published datasource carries no
+tables or columns in the workbook XML, so the generator saw an empty source
+while the flag meant to fix that did nothing. Resolution now runs after
+extraction, reads the cache and the server when credentials exist, and
+rewrites `datasources.json` in place.
+
+`--no-ds-cache` means something narrower than its help text suggests. It
+disables the cache as a *primary source*, but the offline fallback still
+applies when no server is reachable, so the only observable difference is the
+provenance tag (`cache` vs `cache_fallback`) — which is what the test asserts
+rather than a naive "nothing was resolved".
+
+Two method notes from this wave, both from controls that lied. A test asserting
+`"_resolve_published_datasources(args)" in source` passes with no call site at
+all, because the `def` line contains the same text. And a PowerShell control
+harness silently failed to write its mutations — `Copy-Item` reported
+`PathNotFound`, every control "passed", and the passes meant nothing. Controls
+now verify the mutation is on disk before judging the result.
 
 ### Known defect — shared-model output fails its own openability gate
 
