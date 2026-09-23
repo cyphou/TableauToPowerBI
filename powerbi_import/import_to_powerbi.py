@@ -222,7 +222,8 @@ class PowerBIImporter:
                             strict_merge=False, workbook_paths=None,
                             output_format='pbip',
                             strict_thin_report=False,
-                            thin_report_max_orphans=0):
+                            thin_report_max_orphans=0,
+                            live_connection=None):
         """Generate a shared semantic model + thin reports.
 
         Args:
@@ -244,6 +245,8 @@ class PowerBIImporter:
                 the configured threshold.
             thin_report_max_orphans: Maximum allowed orphaned field references across
                 all generated thin reports when strict_thin_report is enabled.
+            live_connection: Optional ``WORKSPACE_ID/MODEL_NAME``. Wires thin reports
+                to a deployed Fabric model via byConnection instead of byPath.
 
         Returns:
             dict with 'assessment', 'model_path', 'report_paths', plus new fields.
@@ -436,7 +439,8 @@ class PowerBIImporter:
         validation_issues = []
         orphaned_issue_count = 0
 
-        thin_gen = ThinReportGenerator(model_name, thin_report_dir)
+        thin_gen = ThinReportGenerator(model_name, thin_report_dir,
+                                       live_connection=live_connection)
 
         # Build cross-report navigation
         nav_configs = build_cross_report_navigation(workbook_names, model_name)

@@ -209,10 +209,10 @@ floor, not a guess. Three groups need different answers:
   imports `autoheal` directly and bypasses it. That is A3's problem, recorded
   here because it is why the facade looks unused.
 
-**Inert CLI flags — 10 of 142.** Declared, accepted by the parser, never read:
-`--live-connection`, `--merge-preview`, `--multi-tenant`, `--no-ds-cache`,
-`--parallel-run`, `--prep-to-dataflow`, `--resolve-published-ds`,
-`--skip-conversion`, `--sync`, `--validate-data`.
+**Inert CLI flags — 9 of 142.** Declared, accepted by the parser, never read:
+`--merge-preview`, `--multi-tenant`, `--no-ds-cache`, `--parallel-run`,
+`--prep-to-dataflow`, `--resolve-published-ds`, `--skip-conversion`, `--sync`,
+`--validate-data`.
 
 `--agg-tables` and `--composite-threshold` **are now wired** and were the first
 two removed from that set. The generator already accepted both; only the
@@ -240,6 +240,36 @@ and local assessment cannot drift apart.
 `getattr(args, 'gateway_bind')`, so the detector accounts for attribute,
 `getattr`, and config-dictionary access. `gateway_config.py` is separately
 unused because binding runs through `pbi_deployer` instead.
+
+`--live-connection` was the purest case of the pattern: `ThinReportGenerator`
+has always accepted a `live_connection` argument and writes a `byConnection`
+`datasetReference` when given one, but none of its three call sites passed it,
+so the documented shared-model command silently produced `byPath`. Threading
+it through `run_shared_model_migration` → `import_shared_model` → the generator
+is the whole fix. Positive control: with the flag, both thin reports emit
+`byConnection` with `Data Source=…/myorg/ws-1234;Initial Catalog=LCModel`,
+while the model-explorer report correctly stays `byPath` — it exists to open
+the *local* model, so flipping it would make the project unopenable.
+
+Writing the test for it exposed a gap in the test itself. Constructing
+`ThinReportGenerator` directly proves the generator works and says nothing
+about the caller: removing the forwarding left every assertion green while the
+flag went inert again. The handoff is now asserted directly, and the control
+that previously passed 5/5 now fails.
+
+### Known defect — shared-model output fails its own openability gate
+
+Unrelated to the flag work and pre-existing: `--shared-model` exits `5`
+(`VALIDATION_FAILED`) with 9 blocking issues, all from `pbip_contract` and
+`manifest_coherence` — "Report and SemanticModel names do not match", "report
+artifact is not declared", "manifest type must be Report". Confirmed against
+unmodified code via `git stash`, so it is not a regression.
+
+The cause is shape, not correctness: the gate assumes the single-project
+layout (one `.Report` beside one `.SemanticModel` sharing a name), while a
+shared model is one model plus *N* thin reports. The flagship multi-workbook
+feature therefore always reports failure. Either the gate learns the bundle
+layout or the bundle declares its artifacts — a decision for A3.
 
 ### A2 findings — the advisory boundary
 

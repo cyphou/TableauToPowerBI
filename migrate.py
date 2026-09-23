@@ -4810,7 +4810,8 @@ def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
                                save_config=False, strict_merge=False,
                                output_format='pbip', verify_open=True,
                                strict_thin_report=False,
-                               thin_report_max_orphans=0):
+                               thin_report_max_orphans=0,
+                               live_connection=None):
     """Orchestrate shared semantic model migration for multiple workbooks.
 
     Steps:
@@ -4915,6 +4916,7 @@ def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
                 output_format=output_format,
                 strict_thin_report=strict_thin_report,
                 thin_report_max_orphans=thin_report_max_orphans,
+                live_connection=live_connection,
             )
 
             if result.get('model_path'):
@@ -5689,6 +5691,7 @@ def main():
             verify_open=getattr(args, 'verify_open', True),
             strict_thin_report=getattr(args, 'strict_thin_report', False),
             thin_report_max_orphans=getattr(args, 'thin_report_max_orphans', 0),
+            live_connection=getattr(args, 'live_connection', None),
         )
 
         # Auto-deploy bundle if --deploy-bundle is given alongside --shared-model

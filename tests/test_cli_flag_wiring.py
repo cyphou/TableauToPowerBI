@@ -166,5 +166,98 @@ class TestServerAssess(unittest.TestCase):
                          "--server-assess never reached its handler")
 
 
+class TestLiveConnection(unittest.TestCase):
+    """--live-connection was inert while the generator already implemented it.
+
+    ThinReportGenerator has accepted a live_connection argument all along and
+    writes byConnection when given one; no caller ever passed it, so the
+    documented shared-model command silently produced byPath.
+    """
+
+    def setUp(self):
+        import migrate
+        self.parser = migrate._build_argument_parser()
+
+    def test_absent_by_default(self):
+        self.assertIsNone(self.parser.parse_args(['wb.twbx']).live_connection)
+
+    def test_accepts_workspace_and_model(self):
+        args = self.parser.parse_args(
+            ['wb.twbx', '--live-connection', 'ws-1234/SharedSales'])
+        self.assertEqual('ws-1234/SharedSales', args.live_connection)
+
+    def test_the_whole_chain_accepts_the_argument(self):
+        """The signature gap is the failure mode: a caller passes what the
+        callee never declared, and only a real run raises TypeError."""
+        import inspect
+
+        import migrate
+        from powerbi_import.import_to_powerbi import PowerBIImporter
+        from powerbi_import.thin_report_generator import ThinReportGenerator
+
+        for func in (migrate.run_shared_model_migration,
+                     PowerBIImporter.import_shared_model,
+                     ThinReportGenerator.__init__):
+            with self.subTest(func=func.__qualname__):
+                self.assertIn("live_connection",
+                              inspect.signature(func).parameters,
+                              f"{func.__qualname__} cannot receive live_connection")
+
+    def test_the_importer_hands_it_to_the_generator(self):
+        """Constructing the generator directly proves nothing about the caller.
+
+        Dropping ``live_connection=live_connection`` from the construction site
+        leaves every other test in this class green while the flag goes inert
+        again, so assert the handoff itself.
+        """
+        import inspect
+
+        from powerbi_import import import_to_powerbi
+
+        source = inspect.getsource(import_to_powerbi.PowerBIImporter.import_shared_model)
+        self.assertRegex(
+            source,
+            r"ThinReportGenerator\([^)]*live_connection=live_connection",
+            "import_shared_model builds the thin report generator without "
+            "forwarding live_connection",
+        )
+
+    def test_byconnection_is_written_when_requested(self):
+        import json
+        import tempfile
+
+        from powerbi_import.thin_report_generator import ThinReportGenerator
+
+        with tempfile.TemporaryDirectory() as td:
+            gen = ThinReportGenerator('SharedSales', td,
+                                      live_connection='ws-1234/SharedSales')
+            gen.generate_thin_report('Sales', {'worksheets': []})
+            pbir = os.path.join(td, 'Sales.Report', 'definition.pbir')
+            with open(pbir, encoding='utf-8') as fh:
+                ref = json.load(fh)['datasetReference']
+
+        self.assertIn('byConnection', ref)
+        self.assertNotIn('byPath', ref)
+        conn = ref['byConnection']['connectionString']
+        self.assertIn('myorg/ws-1234', conn)
+        self.assertIn('Initial Catalog=SharedSales', conn)
+
+    def test_bypath_remains_the_default(self):
+        import json
+        import tempfile
+
+        from powerbi_import.thin_report_generator import ThinReportGenerator
+
+        with tempfile.TemporaryDirectory() as td:
+            gen = ThinReportGenerator('SharedSales', td)
+            gen.generate_thin_report('Sales', {'worksheets': []})
+            pbir = os.path.join(td, 'Sales.Report', 'definition.pbir')
+            with open(pbir, encoding='utf-8') as fh:
+                ref = json.load(fh)['datasetReference']
+
+        self.assertIn('byPath', ref)
+        self.assertNotIn('byConnection', ref)
+
+
 if __name__ == "__main__":
     unittest.main()
