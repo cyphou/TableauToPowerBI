@@ -4887,6 +4887,65 @@ def run_global_assessment_mode(args):
 
 # ── Shared Semantic Model migration ─────────────────────────────────────────
 
+def _print_merge_preview(all_converted, workbook_names):
+    """Report what a merge would do, writing nothing.
+
+    Distinct from --assess-merge, which scores the merge and saves a JSON
+    report; this answers "what would change" and leaves no trace on disk.
+    """
+    from powerbi_import.shared_model import merge_preview
+
+    preview = merge_preview(all_converted, workbook_names)
+
+    print_header("MERGE PREVIEW (DRY RUN)")
+    print(f"  Workbooks: {', '.join(workbook_names)}")
+
+    assessment = preview.get('assessment') or {}
+    print(f"  Merge score: {assessment.get('merge_score', 0)}/100 — "
+          f"{assessment.get('recommendation', 'n/a')}")
+    print(f"  Tables: {assessment.get('total_tables', 0)} across workbooks → "
+          f"{assessment.get('unique_table_count', 0)} unique "
+          f"({assessment.get('tables_saved', 0)} saved by merging)")
+
+    grouped = {}
+    for action in preview.get('actions', []):
+        grouped.setdefault(action['action'], []).append(action)
+
+    labels = {
+        'merge_table': 'Tables merged',
+        'namespace_measure': 'Measures renamed to avoid collision',
+        'skip_isolated_table': 'Tables left out (no overlap)',
+    }
+    for kind, items in grouped.items():
+        print(f"\n  {labels.get(kind, kind)} ({len(items)}):")
+        for item in items[:10]:
+            if kind == 'merge_table':
+                print(f"    • {item['table']} ← {', '.join(item['sources'])} "
+                      f"(overlap {item['overlap']})")
+            elif kind == 'namespace_measure':
+                print(f"    • {item['measure']} → {item['new_name']}")
+            else:
+                print(f"    • {item['table']} ({item['workbook']})")
+        if len(items) > 10:
+            print(f"    … and {len(items) - 10} more")
+
+    conflicts = preview.get('rls_conflicts') or []
+    if conflicts:
+        print(f"\n  ⚠ RLS conflicts ({len(conflicts)}): resolve before merging")
+        for conflict in conflicts[:5]:
+            print(f"    • {conflict}")
+
+    suggestions = preview.get('relationship_suggestions') or []
+    if suggestions:
+        print(f"\n  Suggested cross-workbook relationships ({len(suggestions)}):")
+        for suggestion in suggestions[:5]:
+            print(f"    • {suggestion}")
+
+    print(f"\n  Total actions: {preview.get('total_actions', 0)}")
+    print("  Nothing was written. Re-run without --merge-preview to migrate.")
+    return ExitCode.SUCCESS
+
+
 def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
                                assess_only=False, force_merge=False,
                                calendar_start=None, calendar_end=None,
@@ -4896,7 +4955,8 @@ def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
                                output_format='pbip', verify_open=True,
                                strict_thin_report=False,
                                thin_report_max_orphans=0,
-                               live_connection=None):
+                               live_connection=None,
+                               preview_only=False):
     """Orchestrate shared semantic model migration for multiple workbooks.
 
     Steps:
@@ -4966,6 +5026,9 @@ def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
             return ExitCode.EXTRACTION_FAILED
 
         # Step 2: Assess or full migration
+        if preview_only:
+            return _print_merge_preview(all_converted, workbook_names)
+
         if assess_only:
             from powerbi_import.shared_model import assess_merge
             from powerbi_import.merge_assessment import print_merge_summary, generate_merge_report
@@ -5777,6 +5840,7 @@ def main():
             strict_thin_report=getattr(args, 'strict_thin_report', False),
             thin_report_max_orphans=getattr(args, 'thin_report_max_orphans', 0),
             live_connection=getattr(args, 'live_connection', None),
+            preview_only=getattr(args, 'merge_preview', False),
         )
 
         # Auto-deploy bundle if --deploy-bundle is given alongside --shared-model

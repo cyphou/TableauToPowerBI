@@ -209,9 +209,9 @@ floor, not a guess. Three groups need different answers:
   imports `autoheal` directly and bypasses it. That is A3's problem, recorded
   here because it is why the facade looks unused.
 
-**Inert CLI flags — 7 of 142.** Declared, accepted by the parser, never read:
-`--merge-preview`, `--multi-tenant`, `--parallel-run`, `--prep-to-dataflow`,
-`--skip-conversion`, `--sync`, `--validate-data`.
+**Inert CLI flags — 6 of 142.** Declared, accepted by the parser, never read:
+`--multi-tenant`, `--parallel-run`, `--prep-to-dataflow`, `--skip-conversion`,
+`--sync`, `--validate-data`.
 
 `--agg-tables` and `--composite-threshold` **are now wired** and were the first
 two removed from that set. The generator already accepted both; only the
@@ -276,6 +276,24 @@ all, because the `def` line contains the same text. And a PowerShell control
 harness silently failed to write its mutations — `Copy-Item` reported
 `PathNotFound`, every control "passed", and the passes meant nothing. Controls
 now verify the mutation is on disk before judging the result.
+
+`--merge-preview` was inert while `merge_preview()` was complete and tested.
+Its help promises a dry run "without writing any files", so the branch returns
+before `import_shared_model` and the test asserts the output directory stays
+empty. Positive control on two unrelated sample workbooks: score 20/100,
+recommendation `separate`, 0 tables saved, `FILES_WRITTEN=0` — the right answer
+for workbooks that should not be merged.
+
+The reporter shipped with the very defect this wave is about. It read
+`overall_score`, the assessment exposes `merge_score`, and the `if score is not
+None` guard turned a wrong key into a silently missing line rather than an
+error. A report that looks complete and has quietly dropped its headline number
+is the same failure as a flag that parses and does nothing. There is now a test
+asserting the score is actually printed, and a control that reproduces the bug.
+
+A third bad test surfaced here too: locating `import_shared_model` by substring
+matched the *docstring* before the call, so the ordering assertion failed
+against correct code. Matching prose is not matching behaviour.
 
 ### Known defect — shared-model output fails its own openability gate
 

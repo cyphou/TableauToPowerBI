@@ -26,7 +26,6 @@ CLI_SOURCE = os.path.join(_REPO_ROOT, "migrate.py")
 #: remove decision, and a flag that gets wired must be dropped from here, so
 #: the baseline can only ever shrink.
 KNOWN_INERT = frozenset({
-    "merge_preview",
     "multi_tenant",
     "parallel_run",
     "prep_to_dataflow",
