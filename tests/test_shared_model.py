@@ -869,6 +869,60 @@ class TestThinReportGenerator(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Model-explorer report
+# ═══════════════════════════════════════════════════════════════════
+
+class TestModelExplorerReport(unittest.TestCase):
+    """The report that lets Desktop open a shared model must be complete.
+
+    It shipped without definition/pages/pages.json, which makes it an
+    incomplete PBIR report. Nothing noticed, because the openability gate
+    only examined whichever report sorted first and this one usually did.
+    """
+
+    def _build(self, root, model_name='Shared'):
+        from powerbi_import.import_to_powerbi import PowerBIImporter
+        PowerBIImporter()._create_model_explorer_report(root, model_name)
+        return os.path.join(root, f'{model_name}_Model.Report')
+
+    def test_pages_metadata_is_written(self):
+        with tempfile.TemporaryDirectory() as td:
+            report_dir = self._build(td)
+            pages = os.path.join(report_dir, 'definition', 'pages', 'pages.json')
+            self.assertTrue(os.path.isfile(pages),
+                            'a PBIR report without pages.json will not open')
+
+    def test_the_active_page_exists(self):
+        """pages.json naming a page that has no page.json is still broken."""
+        with tempfile.TemporaryDirectory() as td:
+            report_dir = self._build(td)
+            with open(os.path.join(report_dir, 'definition', 'pages',
+                                   'pages.json'), encoding='utf-8') as fh:
+                meta = json.load(fh)
+            active = meta['activePageName']
+            self.assertIn(active, meta['pageOrder'])
+            self.assertTrue(os.path.isfile(os.path.join(
+                report_dir, 'definition', 'pages', active, 'page.json')))
+
+    def test_the_shell_files_are_written(self):
+        with tempfile.TemporaryDirectory() as td:
+            report_dir = self._build(td)
+            for relative in ('.platform', 'definition.pbir',
+                             'definition/report.json', 'definition/version.json'):
+                self.assertTrue(
+                    os.path.isfile(os.path.join(report_dir, *relative.split('/'))),
+                    f'missing {relative}')
+
+    def test_the_pbip_declares_the_report(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._build(td, 'Shared')
+            with open(os.path.join(td, 'Shared.pbip'), encoding='utf-8') as fh:
+                pbip = json.load(fh)
+            paths = [a['report']['path'] for a in pbip['artifacts']]
+            self.assertIn('Shared_Model.Report', paths)
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  CLI argument wiring
 # ═══════════════════════════════════════════════════════════════════
 
