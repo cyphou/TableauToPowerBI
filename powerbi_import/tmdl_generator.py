@@ -1322,6 +1322,12 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
                         hyper_table_data[tname.lower()] = hrt
 
     for table_name, (table, table_conn) in best_tables.items():
+        # An explicit table attribution wins: a merged model records which
+        # table each calculation came from, and datasource routing alone would
+        # send them all to the widest table in the merged datasource.
+        attributed = [c for c in all_calculations if c.get('table') == table_name]
+        unattributed = [c for c in all_calculations if not c.get('table')]
+
         # Route calculations to their source datasource's main table
         # Use table_datasource_set to handle multiple datasources sharing the same table name
         ds_names_for_table = table_datasource_set.get(table_name, set())
@@ -1335,25 +1341,29 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
                 if ds_main_table.get(dsn) == table_name
             }
             table_calculations = [
-                c for c in all_calculations
+                c for c in unattributed
                 if c.get('datasource_name', '') in owning_ds_names
             ]
             # Also add calcs with no datasource_name (legacy) if this is the global main table
             if table_name == main_table_name:
                 table_calculations += [
-                    c for c in all_calculations
+                    c for c in unattributed
                     if not c.get('datasource_name')
                 ]
         elif table_name == main_table_name:
             # Fallback: calcs with no datasource match go to the global main table
             routed_ds_names = set(ds_main_table.values())
             table_calculations = [
-                c for c in all_calculations
+                c for c in unattributed
                 if c.get('datasource_name', '') not in datasource_table_map.values()
                 or not c.get('datasource_name')
             ]
         else:
             table_calculations = []
+
+        table_calculations = attributed + [
+            c for c in table_calculations if c not in attributed
+        ]
 
         tbl = _build_table(
             table=table,

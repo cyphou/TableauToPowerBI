@@ -1437,6 +1437,24 @@ def merge_semantic_models(all_extracted: List[dict],
         all_extracted, workbook_names, assessment
     )
 
+    # The TMDL generator routes calculations to a table by datasource_name,
+    # reading the copy held inside the datasource. Merging replaces the source
+    # datasources with one new datasource, so any calculation still naming its
+    # original one is routed nowhere and its measure is silently dropped.
+    merged_ds_name = merged_datasource.get('name')
+    if merged_ds_name:
+        for calc in merged['calculations']:
+            calc['datasource_name'] = merged_ds_name
+        for calc in merged_datasource.get('calculations', []):
+            calc['datasource_name'] = merged_ds_name
+
+    # Routing by datasource alone sends every calculation to the merged
+    # datasource's largest table, so a measure from one workbook lands on
+    # another workbook's fact table and its thin report cannot bind to it.
+    # Record the table each calculation came from instead.
+    _attribute_calculations_to_source_tables(
+        merged, merged_datasource, all_extracted, workbook_names)
+
     # 3. Merge parameters
     merged['parameters'] = _merge_parameters(all_extracted, workbook_names)
 
@@ -1680,6 +1698,55 @@ _TYPE_WIDTH = {
 def _type_width(dtype: str) -> int:
     """Return a width score for type conflict resolution."""
     return _TYPE_WIDTH.get(dtype.lower(), 5)
+
+
+def _workbook_main_table(extracted: dict) -> str:
+    """The table a workbook's calculations belong to: its widest table."""
+    best_name, best_width = '', -1
+    for datasource in extracted.get('datasources', []):
+        for table in datasource.get('tables', []):
+            width = len(table.get('columns', []))
+            if width > best_width:
+                best_name, best_width = table.get('name', ''), width
+    return best_name
+
+
+def _attribute_calculations_to_source_tables(merged: dict,
+                                             merged_datasource: dict,
+                                             all_extracted: List[dict],
+                                             workbook_names: List[str]) -> None:
+    """Tag each merged calculation with the table it came from.
+
+    Without this the generator routes every calculation to the widest table in
+    the merged datasource, so a measure defined against one workbook's fact
+    table is emitted on another's and the thin report referencing it breaks.
+    """
+    main_table_by_workbook = {
+        name: _workbook_main_table(extracted)
+        for name, extracted in zip(workbook_names, all_extracted)
+    }
+    available = {t.get('name') for t in merged_datasource.get('tables', [])}
+
+    def _tag(calc):
+        if calc.get('table'):
+            return
+        sources = calc.get('_source_workbooks') or []
+        if not sources:
+            return
+        table = main_table_by_workbook.get(sources[0])
+        # A deduplicated calculation belongs to every workbook that defined it;
+        # leave it to default routing unless they all agree.
+        if len(sources) > 1:
+            tables = {main_table_by_workbook.get(s) for s in sources}
+            if len(tables) != 1:
+                return
+        if table and table in available:
+            calc['table'] = table
+
+    for calc in merged.get('calculations', []):
+        _tag(calc)
+    for calc in merged_datasource.get('calculations', []):
+        _tag(calc)
 
 
 def _merge_calculations(all_extracted: List[dict],

@@ -385,14 +385,34 @@ One genuine generator defect surfaced underneath: the model-explorer report was
 written without `definition/pages/pages.json`, so it was an incomplete PBIR
 report. The gate was right to demand it.
 
-**Deployment is still blocked, now for a true reason.** With the false
-failures and false passes gone, the gate reports 10 real orphaned visual
-bindings — thin-report visuals referencing columns that do not survive the
-merge (`'transactions'.'Revenue'`, `'Net Income'`, and others). That is a merge
-defect, not a gate defect, and it is the next thing standing between
-`--multi-tenant` and a default run. Two measurement harnesses lied on the way
-here: one reused output directories so blocker counts accumulated 5→10, and an
-earlier control passed only because it inherited a model from a previous run.
+**The gate then exposed a real merge defect, now fixed.** With the false
+failures and false passes gone, the remaining 10 blockers were genuine:
+thin-report visuals referencing `'transactions'.'Revenue'` against a model
+where `transactions` had 8 columns and **0 measures**. Two measurement
+harnesses lied on the way here: one reused output directories so blocker
+counts accumulated 5→10, and an earlier control passed only because it
+inherited a model from a previous run.
+
+Two compounding faults in the merge:
+
+* The generator routes calculations to a table by `datasource_name`, reading
+  the copy held *inside* the datasource. Merging replaces the source
+  datasources with one new one, so every calculation still named
+  `federated.1` while the merged datasource was `SharedModel`. Nothing
+  matched, and every measure on every data table was silently dropped — solo
+  migration produced 11 measures on `transactions`, the merged model 0.
+* Repointing them exposed the second fault: datasource routing sends
+  everything to the widest table, so Financial_Report's measures landed on
+  HR_Analytics's `Employees` (11 columns) rather than `transactions` (8), and
+  the thin report still could not bind to them.
+
+The merge now records which table each calculation came from and the generator
+prefers that attribution over datasource routing. A calculation defined in
+several workbooks with different home tables is left to default routing,
+because there is no safe answer. Result: `transactions` 11 measures — exactly
+matching the solo migration — `Employees` 4, the gate passes, and
+`--multi-tenant` runs, failing only on absent credentials. Both
+`--deploy-bundle` and `--multi-tenant` are reachable in a default run.
 
 ### A2 findings — the advisory boundary
 

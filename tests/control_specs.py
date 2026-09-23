@@ -108,6 +108,31 @@ CONTROLS = [
         "test": "tests/test_advisory_boundary.py",
     },
 
+    # ── Shared-model measure routing ───────────────────────────────────
+    {
+        "name": "merged calculations keep a dead datasource name",
+        "file": "powerbi_import/shared_model.py",
+        "old": "        for calc in merged_datasource.get('calculations', []):\n"
+               "            calc['datasource_name'] = merged_ds_name",
+        "new": "        pass",
+        "test": "tests/test_merge_measure_routing.py",
+    },
+    {
+        "name": "measures stop being attributed to their source table",
+        "file": "powerbi_import/shared_model.py",
+        "old": "    _attribute_calculations_to_source_tables(\n"
+               "        merged, merged_datasource, all_extracted, workbook_names)",
+        "new": "    pass",
+        "test": "tests/test_merge_measure_routing.py",
+    },
+    {
+        "name": "the generator ignores explicit table attribution",
+        "file": "powerbi_import/tmdl_generator.py",
+        "old": "        attributed = [c for c in all_calculations if c.get('table') == table_name]",
+        "new": "        attributed = []",
+        "test": "tests/test_merge_measure_routing.py",
+    },
+
     # ── Openability gate ───────────────────────────────────────────────
     {
         "name": "visual bindings check only the first report again",
