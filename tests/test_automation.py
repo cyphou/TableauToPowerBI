@@ -327,26 +327,36 @@ class TestQAFlag:
 # ════════════════════════════════════════════════════════════════════════
 
 class TestDefaultONFlags:
-    """Test that --optimize-dax and --compare default to True."""
+    """Pin which flags are on by default, and which are deliberately opt-in."""
 
-    def test_optimize_dax_default_true(self):
+    def test_optimize_dax_is_opt_in(self):
+        """DAX optimization rewrites emitted measures, so it must be asked for.
+
+        This previously asserted ``default=True`` by regexing migrate.py. That
+        default was declared but never read, so the assertion pinned a literal
+        rather than a behaviour and the contradiction with KNOWN_LIMITATIONS
+        ("Opt-in only to preserve original semantics by default") went unseen.
+        Assert the parsed value instead.
+        """
+        import migrate
+        parser = migrate._build_argument_parser()
+        assert parser.parse_args(['wb.twbx']).optimize_dax is False
+        assert parser.parse_args(['wb.twbx', '--optimize-dax']).optimize_dax is True
+
+    def test_optimize_dax_reaches_generation(self):
+        """A flag nobody reads is the bug this pair of tests exists to catch."""
         migrate_path = os.path.join(ROOT_DIR, 'migrate.py')
         with open(migrate_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        # Find the --optimize-dax definition and check default=True
-        import re
-        match = re.search(r"'--optimize-dax'.*?default=(\w+)", content, re.DOTALL)
-        assert match, "--optimize-dax arg not found"
-        assert match.group(1) == "True", f"Expected default=True, got {match.group(1)}"
+        assert content.count("optimize_dax=getattr(args, 'optimize_dax'") >= 1, \
+            "--optimize-dax is declared but never forwarded to generation"
 
     def test_compare_default_true(self):
-        migrate_path = os.path.join(ROOT_DIR, 'migrate.py')
-        with open(migrate_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        import re
-        match = re.search(r"'--compare'.*?default=(\w+)", content, re.DOTALL)
-        assert match, "--compare arg not found"
-        assert match.group(1) == "True", f"Expected default=True, got {match.group(1)}"
+        """--compare only writes an extra report, so default-ON is safe."""
+        import migrate
+        parser = migrate._build_argument_parser()
+        assert parser.parse_args(['wb.twbx']).compare is True
+        assert parser.parse_args(['wb.twbx', '--no-compare']).compare is False
 
     def test_no_optimize_dax_flag_exists(self):
         migrate_path = os.path.join(ROOT_DIR, 'migrate.py')
