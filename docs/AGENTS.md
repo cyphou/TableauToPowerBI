@@ -4,7 +4,8 @@ This project uses a **17-agent implementation specialization model**, plus
 `@roadmap-planner` for planning and `@readme` as the documentation quality gate.
 Each implementation agent has scoped domain knowledge, file ownership, and clear
 boundaries. Four specialist agents (@dax, @wiring, @semantic, @visual) provide deep
-expertise, @converter and @generator remain as coordination layers, **@tableau**
+conversion expertise; **@healing**, **@evidence**, **@fabric** and **@ai** own the
+self-repair, quality-evidence, Fabric-native and agent-facing surfaces; **@tableau**
 handles Tableau Server/Cloud interaction, **@reviewer** enforces a preceptorship
 quality loop on all generated artifacts, and **@web-designer** owns the end-user UI
 surfaces.
@@ -24,55 +25,160 @@ its release criteria pass.
 | **@wiring** | DAX↔M bridge, calc column vs measure classification, M generation, M step injection | `m_query_builder.py`, `calc_column_utils.py` + M functions in `tmdl_generator.py` |
 | **@semantic** | TMDL semantic model, relationships, Calendar, RLS, hierarchies, parameters | `tmdl_generator.py` (structural), `fabric_semantic_model_generator.py` |
 | **@visual** | PBIR report, visual containers, slicers, filters, bookmarks, themes, pages | `pbip_generator.py`, `visual_generator.py` |
-| **@converter** | _(Coordination layer)_ Cross-cutting DAX+M tasks | Delegates to @dax and @wiring |
-| **@generator** | _(Coordination layer)_ Fabric-native generation, cross-cutting model+report tasks | `fabric_project_generator.py`, `lakehouse_generator.py`, `dataflow_generator.py`, `notebook_generator.py`, `pipeline_generator.py`, `fabric_constants.py`, `fabric_naming.py` |
+| **@healing** | Self-repair subsystem, openability preflight, recovery ledger, rollback gate | `healing*.py`, `autoheal.py`, `dax_healing.py`, `m_healing.py`, `visual_healing.py`, `openability.py`, `self_healing_v3.py`, `tmdl_self_heal.py` |
+| **@evidence** | Quality reports, evidence packages, parity scoring, diff/coverage tooling | `migration_quality.py`, `parity_registry.py`, `evidence_*.py`, `*_diff.py`, `html_template.py`, `quality_grades.py` |
+| **@fabric** | Fabric-native artifacts (Lakehouse, Dataflow Gen2, Notebook, DirectLake, Pipeline) | `fabric_*.py`, `lakehouse_generator.py`, `dataflow_generator.py`, `notebook_generator.py`, `pipeline_generator.py` |
+| **@ai** | MCP server, LLM gateway, conversational Q&A, remediation, plugin SDK, marketplace | `mcp_server.py`, `llm_gateway.py`, `conversational.py`, `remediation.py`, `plugin_sdk.py`, `marketplace.py` |
 | **@assessor** | Migration readiness, scoring, strategy, diff reports, validation | `assessment.py`, `server_assessment.py`, `global_assessment.py`, `strategy_advisor.py`, `visual_diff.py`, `comparison_report.py`, `migration_report.py`, `equivalence_tester.py`, `regression_suite.py`, `schema_drift.py`, `validator.py` |
 | **@merger** | Shared semantic model, multi-workbook merge, Fabric merge | `shared_model.py`, `merge_config.py` (+ co-owns `merge_assessment.py`, `merge_report_html.py`, `thin_report_generator.py`) |
 | **@deployer** | Fabric/PBI deployment, auth, gateway, telemetry, multi-tenant | `deploy/*.py`, `gateway_config.py`, `telemetry.py`, `telemetry_dashboard.py`, `refresh_generator.py` |
 | **@reviewer** | Artifact quality review, preceptorship loop, coaching feedback, fidelity scoring | `powerbi_import/preceptor.py` |
 | **@web-designer** | End-user UI/UX, Tkinter light UI, layout clarity, presentation | `web/light_ui.py` |
 | **@tester** | Tests, coverage, fixtures, regression | `tests/*.py` |
+| **@roadmap-planner** | Roadmap waves, release gates, priority decisions | `docs/ROADMAP.md` and planning artifacts (owns no generator source) |
 | **@readme** | Documentation consistency and pre/post-update checks | Read-only review of `README.md`, `docs/`, `CHANGELOG.md`, and project instructions |
 
 ## Architecture Diagram
 
-```
-                        ┌──────────────┐
-                        │ Orchestrator │  ← CLI entry, pipeline coordination
-                        └──────┬───────┘
-                               │
-              ┌────────────────┼────────────────┐
-              │                │                │
-        ┌─────▼─────┐   ┌─────▼─────┐   ┌─────▼─────┐
-        │ Extractor  │   │ Converter │   │ Generator  │
-        │(XML parse) │   │ (coord.)  │   │ (coord.)   │
-        └──────┬─────┘   └─────┬─────┘   └─────┬──────┘
-               │          ┌────┴────┐     ┌─────┴──────┐
-        ┌──────▼──────┐   │         │     │            │
-        │  Tableau    │┌──▼───┐ ┌───▼───┐ ┌▼────────┐ ┌▼──────┐
-        │(Server API) ││ DAX  │ │Wiring │ │Semantic │ │Visual │
-        └─────────────┘│(formulas)│(DAX↔M)│ │(TMDL)   │ │(PBIR) │
-                       └───────┘ └───────┘ └─────────┘ └───────┘
-                                              │
-                        ┌─────────────────┬────┴────┐
-                        │                 │         │
-                  ┌─────▼─────┐    ┌──────▼──┐  ┌───▼────┐
-                  │  Assessor  │    │ Merger  │  │Deployer│
-                  │ (Analysis) │    │ (Merge) │  │(Fabric)│
-                  └────────────┘    └─────────┘  └────────┘
+Seventeen implementation agents own the pipeline; `@roadmap-planner` and
+`@readme` govern what gets built and what gets claimed.
 
-              ┌────────────────────────────────────────────┐
-              │                 Reviewer                    │
-              │    (Preceptorship loop — reviews artifacts  │
-              │     from Semantic + Visual + DAX + Wiring)  │
-              └────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph GOV["Governance (no source ownership)"]
+        direction LR
+        PLAN["@roadmap-planner<br/><i>waves, gates, priorities</i>"]
+        DOCS["@readme<br/><i>docs truth before/after change</i>"]
+    end
 
-              ┌────────────────────────────────────────────┐
-              │                  Tester                     │
-              │    (Cross-cutting — reads all, writes       │
-              │     only to tests/)                         │
-              └────────────────────────────────────────────┘
+    ORCH["<b>@orchestrator</b><br/>migrate.py · CLI · batch · wizard"]
+
+    subgraph SRC["Source — tableau_export/"]
+        direction LR
+        EXT["<b>@extractor</b><br/>TWB/TWBX XML · Hyper · Prep"]
+        TAB["<b>@tableau</b><br/>Server/Cloud REST · lineage"]
+    end
+
+    JSON[/"23 canonical JSON outputs<br/><i>extraction contract</i>"/]
+
+    subgraph CONV["Conversion"]
+        direction LR
+        DAX["<b>@dax</b><br/>Tableau → DAX · optimizer"]
+        WIR["<b>@wiring</b><br/>DAX ↔ M · classification"]
+    end
+
+    subgraph GEN["Generation — powerbi_import/"]
+        direction LR
+        SEM["<b>@semantic</b><br/>TMDL · relationships · RLS"]
+        VIS["<b>@visual</b><br/>PBIR · visuals · filters"]
+        FAB["<b>@fabric</b><br/>Lakehouse · Dataflow · Notebook"]
+    end
+
+    subgraph QUAL["Quality gates"]
+        direction LR
+        HEAL["<b>@healing</b><br/>self-repair · openability"]
+        EVI["<b>@evidence</b><br/>parity · quality · lineage"]
+        ASS["<b>@assessor</b><br/>readiness · strategy · diff"]
+        REV["<b>@reviewer</b><br/>preceptorship loop"]
+    end
+
+    subgraph DELIV["Delivery & surfaces"]
+        direction LR
+        MRG["<b>@merger</b><br/>shared semantic model"]
+        DEP["<b>@deployer</b><br/>Fabric · PBI Service"]
+        AI["<b>@ai</b><br/>MCP · LLM gateway"]
+        WEBD["<b>@web-designer</b><br/>Tkinter light UI"]
+    end
+
+    OUT[/".pbip — PBIR v4.0 + TMDL<br/>or Fabric-native bundle"/]
+    TEST["<b>@tester</b> — cross-cutting: reads all source, writes only tests/"]
+
+    PLAN -.-> ORCH
+    DOCS -.-> ORCH
+    ORCH --> EXT & TAB
+    TAB --> EXT
+    EXT --> JSON
+    JSON --> DAX & WIR
+    DAX --> SEM
+    WIR --> SEM & FAB
+    SEM --> VIS
+    SEM & VIS & FAB --> HEAL
+    HEAL --> OUT
+    OUT --> EVI --> REV
+    JSON -.-> ASS
+    OUT --> MRG & DEP
+    AI -.-> EVI
+    WEBD -.-> ORCH
+    TEST -.-> GEN
+    TEST -.-> CONV
+
+    classDef gov fill:#f3e8ff,stroke:#7c3aed,color:#3b0764
+    classDef core fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e
+    classDef gate fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef art fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class PLAN,DOCS gov
+    class ORCH,EXT,TAB,DAX,WIR,SEM,VIS,FAB core
+    class HEAL,EVI,ASS,REV,TEST gate
+    class JSON,OUT art
 ```
+
+### Ownership at a glance
+
+| Layer | Agents | Boundary |
+|---|---|---|
+| Governance | `@roadmap-planner`, `@readme` | Own no source; gate scope and claims |
+| Pipeline | `@orchestrator` | CLI, batch, checkpoints |
+| Source | `@extractor`, `@tableau` | Tableau XML, Hyper, Prep, Server API |
+| Conversion | `@dax`, `@wiring` | Formulas and the DAX↔M bridge |
+| Generation | `@semantic`, `@visual`, `@fabric` | TMDL, PBIR, Fabric artifacts |
+| Quality | `@healing`, `@evidence`, `@assessor`, `@reviewer` | Repair, proof, readiness, review |
+| Delivery | `@merger`, `@deployer`, `@ai`, `@web-designer` | Shared models, deployment, agent/UI surfaces |
+| Cross-cutting | `@tester` | Reads everything, writes only `tests/` |
+
+Solid arrows carry migration data; dotted arrows are advisory or governing.
+`@tester` and the governance agents never own generator source.
+
+### ASCII fallback
+
+```
+            @roadmap-planner ---.        .--- @readme
+                                 v        v
+                          +---------------------+
+                          |    @orchestrator    |  CLI, batch, checkpoints
+                          +----------+----------+
+                                     |
+                 @tableau ---> @extractor  (Server API feeds XML parsing)
+                                     |
+                          23 canonical JSON outputs
+                                     |
+                        +------------+------------+
+                        |                         |
+                      @dax                     @wiring
+                   (Tableau->DAX)              (DAX<->M)
+                        |                         |
+                        +------------+------------+
+                                     |
+                   +-----------------+-----------------+
+                   |                 |                 |
+               @semantic          @visual           @fabric
+                (TMDL)            (PBIR)         (Lakehouse etc.)
+                   +-----------------+-----------------+
+                                     |
+                                 @healing          self-repair + openability
+                                     |
+                         .pbip / Fabric bundle
+                                     |
+                   +-----------------+-----------------+
+                   |                 |                 |
+               @evidence          @merger           @deployer
+              (parity/proof)   (shared model)    (Fabric/PBI Service)
+                   |
+               @reviewer  (preceptorship loop)
+
+   @assessor   advises from extraction    @ai / @web-designer  agent + UI surfaces
+   @tester     reads all source, writes only tests/
+```
+
 
 ## The Preceptorship Loop
 
@@ -135,8 +241,8 @@ The `PreceptorLoop` class in `powerbi_import/preceptor.py` drives the cycle, con
 ## Specialist Agent Decomposition
 
 The original 8-agent model had two overloaded agents:
-- **@converter** owned all DAX conversion + all M generation → now split into **@dax** + **@wiring**
-- **@generator** owned all TMDL model + all PBIR report + Fabric → now split into **@semantic** + **@visual** (Fabric stays with @generator)
+- **@converter** owned all DAX conversion + all M generation → split into **@dax** + **@wiring**, and the agent itself was retired
+- **@generator** owned all TMDL model + all PBIR report + Fabric → split into **@semantic** + **@visual**, with Fabric moving to **@fabric**; the agent itself was retired
 
 ### @dax — DAX Formula Specialist
 - Owns: `dax_converter.py`, `dax_optimizer.py`
@@ -169,7 +275,7 @@ The original 8-agent model had two overloaded agents:
 4. Orchestrator delegates to generation:
    a. @semantic builds TMDL model (tables, relationships, Calendar, RLS)
    b. @visual builds PBIR report (pages, visuals, slicers, filters)
-   c. @generator coordinates Fabric output (Lakehouse, Dataflow, Notebook, Pipeline)
+   c. @fabric coordinates Fabric output (Lakehouse, Dataflow, Notebook, Pipeline)
 5. @semantic runs self-healing (TMDL self-repair)
 6. (Optional) @assessor → readiness report
 7. (Optional) @merger → shared semantic model
