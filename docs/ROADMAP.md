@@ -209,10 +209,10 @@ floor, not a guess. Three groups need different answers:
   imports `autoheal` directly and bypasses it. That is A3's problem, recorded
   here because it is why the facade looks unused.
 
-**Inert CLI flags — 11 of 142.** Declared, accepted by the parser, never read:
+**Inert CLI flags — 10 of 142.** Declared, accepted by the parser, never read:
 `--live-connection`, `--merge-preview`, `--multi-tenant`, `--no-ds-cache`,
 `--parallel-run`, `--prep-to-dataflow`, `--resolve-published-ds`,
-`--server-assess`, `--skip-conversion`, `--sync`, `--validate-data`.
+`--skip-conversion`, `--sync`, `--validate-data`.
 
 `--agg-tables` and `--composite-threshold` **are now wired** and were the first
 two removed from that set. The generator already accepted both; only the
@@ -223,10 +223,48 @@ in `model.tmdl`, and `--composite-threshold 3` moves tables from `import` to
 is why a first comparison showed no difference until GUID churn was filtered
 out and the mode condition was found.
 
+`--optimize-dax` and `--time-intelligence` followed. Both now reach the
+generator; time intelligence binds to the model's own date table rather than a
+hardcoded `'Calendar'[Date]` that the generator suppresses when the source
+ships its own date dimension.
+
+`--server-assess` carried a second defect on top of being inert: it was
+declared `store_true`, but README, `server_assessment.py` and the project
+instructions all document it taking a project name. Run as documented, the
+parser bound `Marketing` to the workbook positional, so the command failed for
+a reason unrelated to the flag. It now takes an optional project name — absent
+means the whole site — and delegates to `run_bulk_assessment_mode` so server
+and local assessment cannot drift apart.
+
 `--gateway-bind` was *suspected* inert and is not: it is read through
 `getattr(args, 'gateway_bind')`, so the detector accounts for attribute,
 `getattr`, and config-dictionary access. `gateway_config.py` is separately
 unused because binding runs through `pbi_deployer` instead.
+
+### A2 findings — the advisory boundary
+
+Determinism is the product: the same workbook must yield the same project, or
+the golden fixtures, the parity registry and the regression suite stop meaning
+anything. Non-deterministic code earns its freedom by staying out of the
+artifact path.
+
+Measured, that split is **already intact**. `llm_client` writes only a report
+JSON, `remediation` only its own JSON and HTML, and none of the nine advisory
+modules imports an artifact generator — 0 breaches. It held by habit, though,
+not by rule, so writing refined DAX straight into the model would have looked
+like an improvement while silently destroying reproducibility.
+
+`scripts/check_advisory_boundary.py` now enforces two statically checkable
+rules: an advisory module may not import a generator, and may not name a
+`.tmdl`/`.pbir`/`.pbip`/`.bim`/`.pq` path. Proven by injecting a real breach
+into `remediation.py`: the detector reports it and `TestRealBoundary` fails.
+The rule is stated in `SKILL.md` as golden rule 5, because the agent reading
+that file is the most likely thing to break it.
+
+This is also the answer to where Skills fit. A Skill is a routing and knowledge
+layer, not an execution layer, which makes it the right host for judgement:
+triaging a 200-workbook portfolio, or explaining which of forty warnings matter,
+is interpretation over deterministic evidence and writes nothing.
 
 **`--optimize-dax` is now wired, and the contradiction behind it is resolved.**
 It declared `default=True` ("enabled by default") while `KNOWN_LIMITATIONS.md`

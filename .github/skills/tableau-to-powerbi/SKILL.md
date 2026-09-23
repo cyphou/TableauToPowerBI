@@ -34,6 +34,13 @@ it correctly. **Prefer running the CLI over hand-editing generated artifacts.**
 4. **Read before editing generated code.** If a DAX/TMDL/PBIR fix is needed, find the
    *source generator* (see "Where things live") and fix it there so the fix is
    reproducible — not in the emitted artifact.
+5. **Advisory output may propose, never apply.** LLM refinement, remediation
+   suggestions, conversational answers and marketplace recipes are allowed to be
+   non-deterministic *because* they stay out of the artifact path: they read
+   evidence and write their own report. Never write a model-changing suggestion
+   into `.tmdl`/`.pbir` — emit it as a suggestion and let a deterministic gate
+   (openability, DAX validator, parity) decide. `scripts/check_advisory_boundary.py`
+   enforces this; the same workbook must always produce the same project.
 
 ## The 2-step pipeline
 

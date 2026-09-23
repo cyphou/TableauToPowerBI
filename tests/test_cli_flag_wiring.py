@@ -10,6 +10,7 @@ import os
 import sys
 import textwrap
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -106,6 +107,63 @@ class TestRealCliSurface(unittest.TestCase):
         fixed = sorted(KNOWN_INERT - still_inert)
         self.assertEqual([], fixed,
                          f"now consumed: {fixed} — drop them from KNOWN_INERT")
+
+
+class TestServerAssess(unittest.TestCase):
+    """--server-assess was declared, documented with a value, and inert.
+
+    As store_true it could not accept the project name the docs show, so the
+    documented command fed 'Marketing' to the workbook positional instead.
+    """
+
+    def setUp(self):
+        import migrate
+        self.parser = migrate._build_argument_parser()
+
+    def test_absent_by_default(self):
+        args = self.parser.parse_args(['wb.twbx'])
+        self.assertIsNone(args.server_assess)
+
+    def test_accepts_the_documented_project_name(self):
+        args = self.parser.parse_args(
+            ['--server', 'https://t.example.com', '--server-assess', 'Marketing'])
+        self.assertEqual('Marketing', args.server_assess)
+
+    def test_bare_flag_means_the_whole_site(self):
+        """Empty is distinct from None: requested, but unscoped."""
+        args = self.parser.parse_args(
+            ['--server', 'https://t.example.com', '--server-assess'])
+        self.assertEqual('', args.server_assess)
+
+    def test_the_project_name_is_not_eaten_as_a_workbook(self):
+        args = self.parser.parse_args(
+            ['--server', 'https://t.example.com', '--server-assess', 'Marketing'])
+        self.assertNotEqual('Marketing', getattr(args, 'tableau_file', None))
+
+    def test_the_default_does_not_trigger_server_work(self):
+        """No --server-assess must return before any network call."""
+        import migrate
+        args = self.parser.parse_args(['wb.twbx'])
+        self.assertIsNone(migrate._handle_enterprise_server_ops(args))
+
+    def test_it_routes_through_enterprise_operations(self):
+        """A bare --server-assess must reach the assessment handler."""
+        import migrate
+        args = self.parser.parse_args(
+            ['--server', 'https://t.example.com', '--server-assess'])
+        called = {}
+
+        def _fake(a, out):
+            called['project'] = a.server_assess
+            return migrate.ExitCode.SUCCESS
+
+        with mock.patch('tableau_export.server_client.TableauServerClient'), \
+                mock.patch.object(migrate, '_run_server_assessment', _fake):
+            result = migrate._handle_enterprise_server_ops(args)
+
+        self.assertEqual(migrate.ExitCode.SUCCESS, result)
+        self.assertEqual('', called.get('project'),
+                         "--server-assess never reached its handler")
 
 
 if __name__ == "__main__":

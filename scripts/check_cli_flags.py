@@ -33,7 +33,6 @@ KNOWN_INERT = frozenset({
     "parallel_run",
     "prep_to_dataflow",
     "resolve_published_ds",
-    "server_assess",
     "skip_conversion",
     "sync",
     "validate_data",

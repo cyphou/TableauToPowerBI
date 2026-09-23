@@ -3299,11 +3299,14 @@ def _add_shared_model_args(parser):
 
     parser.add_argument(
         '--server-assess',
-        action='store_true',
-        default=False,
+        nargs='?',
+        const='',
+        default=None,
+        metavar='PROJECT',
         help=(
             'Assess all workbooks on a Tableau Server site and produce a '
-            'portfolio readiness report (requires --server)'
+            'portfolio readiness report (requires --server). Pass a project '
+            'name to scope the assessment, or omit it to cover the whole site.'
         )
     )
 
@@ -3565,7 +3568,7 @@ def _handle_enterprise_server_ops(args):
     is_enterprise = any(getattr(args, flag, False) for flag in (
         'server_discover', 'plan_migration', 'map_permissions',
         'migrate_subscriptions', 'cutover', 'cutover_plan_only',
-    ))
+    )) or getattr(args, 'server_assess', None) is not None
     if not is_enterprise:
         return None
 
@@ -3722,7 +3725,56 @@ def _handle_enterprise_server_ops(args):
     finally:
         ts_client.sign_out()
 
+    # Runs after sign-out: the workbooks are already on disk, and the
+    # assessment pipeline re-authenticates only if it needs to.
+    if getattr(args, 'server_assess', None) is not None:
+        return _run_server_assessment(args, output_dir)
+
     return ExitCode.SUCCESS
+
+
+def _run_server_assessment(args, output_dir):
+    """Download a site's workbooks, then assess them as a local portfolio.
+
+    Delegates to run_bulk_assessment_mode so server and local assessment
+    cannot drift apart.
+    """
+    from tableau_export.server_client import TableauServerClient
+
+    project_filter = getattr(args, 'server_assess', '') or None
+
+    print_header("PORTFOLIO ASSESSMENT (SERVER)")
+    print(f"  Server:  {args.server}")
+    print(f"  Site:    {args.site or '(Default)'}")
+    print(f"  Project: {project_filter or '(all projects)'}")
+
+    download_dir = os.path.join(output_dir, 'server_assess_workbooks')
+    os.makedirs(download_dir, exist_ok=True)
+
+    client = TableauServerClient(
+        server_url=args.server,
+        token_name=getattr(args, 'token_name', None),
+        token_secret=(getattr(args, 'token_secret', None)
+                      or os.environ.get('TABLEAU_TOKEN_SECRET')),
+        site_id=getattr(args, 'site', ''),
+    )
+    client.sign_in()
+    try:
+        results = client.download_all_workbooks(
+            download_dir, project_name=project_filter,
+        )
+    finally:
+        client.sign_out()
+
+    succeeded = [r for r in results if r.get('status') == 'success']
+    print(f"  Downloaded: {len(succeeded)}/{len(results)} workbook(s)")
+
+    if not succeeded:
+        print("Error: No workbooks could be downloaded for assessment")
+        return ExitCode.GENERAL_ERROR
+
+    args.bulk_assess = download_dir
+    return run_bulk_assessment_mode(args)
 
 
 # ── Tableau Server download ─────────────────────────────────────────────────
