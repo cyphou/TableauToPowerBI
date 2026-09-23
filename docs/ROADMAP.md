@@ -170,7 +170,7 @@ Ordered so that no effort is spent refactoring code that should not exist.
 | Wave | Outcome | Exit gate |
 |---|---|---|
 | A1 — Calculation evidence | **Done.** Each family is keyed on its distinguishing DAX artifact — LOD by `ALLEXCEPT`/`REMOVEFILTERS`, table calc by `RANKX`/`OFFSET`/`ALLSELECTED`/`WINDOW`/`INDEX`, basic by an aggregation with neither — and every declaration is gated per-measure by its migration provenance annotation, so a generated helper is never attributed to a source calculation | 0 in-use features report `not_checked`; window semantics are tested before grain override so a `WINDOW_*` expression using `ALLEXCEPT` is not misread as a LOD; a generated R² measure using `RANKX` evidences nothing |
-| A2 — Reachability contract | Decide **wire / declare library API / retire** for each unreachable module, then pin the decision with a surface test | Every production module is reachable, declared, or deleted |
+| A2 — Reachability contract | **In progress.** Measured: **22 modules / 9,099 lines** unreachable from any production entry point, and **15 of 142 CLI flags declared but never read**. `scripts/check_cli_flags.py` plus a frozen baseline now prevent a new inert flag | Guard proven to fail on an injected inert flag and pass once wired. Remaining: a wire/declare/retire decision per module and per inert flag |
 | A3 — Healing consolidation | Bring the three outside modules under the `healing_core` contract and one recovery ledger, or document the exemption | One healing contract, no undocumented stage, `RepairAttempt` stays distinct from `HealAction` |
 | A4 — Decompose by seam | Split the top-6 along existing seams (page/layout vs visual, relationship inference, parameter tables, per-type extractors) with the proven extraction recipe | No module above ~2,500 lines; `tmdl_generator` reduced to one owner |
 | A5 — Resilience baseline (R4) | Measure what survives interruption *before* building: interrupt a batch, replay a checkpoint, corrupt a source, delete a target table | Interrupted and replayed migrations preserve evidence and never duplicate output |
@@ -182,6 +182,48 @@ Non-goals for this cycle, recorded so they are not re-proposed:
   discoverability, and flag-based automation is a compatibility contract.
 - Merging the 21 HTML generators. `html_template` already unified presentation;
   merging producers would risk the reporting contract for cosmetic gain.
+
+### A2 findings — the inert surface
+
+Two measurements, both the same defect class the last cycle kept finding: a
+surface that reads as working because a test imports it or `--help` lists it.
+
+**Unreachable modules — 22, totalling 9,099 lines.** Reachability was computed
+with full dotted-path resolution *and* the rule that importing a submodule
+executes its package `__init__`; that rule alone reclassified `deploy.utils`
+and `deploy.config.environments` as genuinely reachable, so the number is a
+floor, not a guess. Three groups need different answers:
+
+- **Declare** — real entry points that simply are not CLI-reachable:
+  `api_server` (Dockerfile `CMD`), `mcp_server` (MCP stdio), `notebook_api`
+  (Jupyter `MigrationSession`), `plugin_sdk` and `plugins` (authored against,
+  not called by us).
+- **Wire** — complete, tested, and wanted, but with no user path:
+  `dax_optimizer`, `gateway_config`, `alerts_generator`, `visual_diff`,
+  `geo_passthrough`, `marketplace`, `model_templates`, `dax_recipes`,
+  `regression_suite`, `remediation`, `conversational`,
+  `deploy.multi_tenant`, `deploy.credential_vault`, `subscription_migrator`,
+  `dax_query_generator`.
+- **Retire** — `connection_rewriter` (407 lines, zero tests, zero references).
+- **Special case** — `healing.py` is the documented facade, yet `migrate.py`
+  imports `autoheal` directly and bypasses it. That is A3's problem, recorded
+  here because it is why the facade looks unused.
+
+**Inert CLI flags — 15 of 142.** Declared, accepted by the parser, never read:
+`--agg-tables`, `--composite-threshold`, `--live-connection`,
+`--merge-preview`, `--multi-tenant`, `--no-ds-cache`, `--optimize-dax` /
+`--no-optimize-dax`, `--parallel-run`, `--prep-to-dataflow`,
+`--resolve-published-ds`, `--server-assess`, `--skip-conversion`, `--sync`,
+`--time-intelligence`, `--validate-data`.
+
+`--gateway-bind` was *suspected* inert and is not: it is read through
+`getattr(args, 'gateway_bind')`, so the detector accounts for attribute,
+`getattr`, and config-dictionary access. `gateway_config.py` is separately
+unused because binding runs through `pbi_deployer` instead.
+
+Wiring `--optimize-dax` is deliberately **not** bundled with this guard: it
+changes generated DAX, so it needs its own slice with parity re-measured, per
+the existing rule that optimization stays opt-in to preserve semantics.
 
 ## What the last cycle proved about method
 
