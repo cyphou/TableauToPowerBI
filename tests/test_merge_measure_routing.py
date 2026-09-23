@@ -142,5 +142,66 @@ class TestAttributionRules(unittest.TestCase):
         self.assertIsNone(self._merged(calcs)[0].get("table"))
 
 
+class TestGeneratorHonoursAttribution(unittest.TestCase):
+    """The merge can record the table; the generator has to use it.
+
+    Datasource routing alone sends every calculation to the widest table, so
+    an attribution the generator ignores changes nothing.
+    """
+
+    def _generate(self, attributed_table):
+        import tempfile
+
+        from powerbi_import import tmdl_generator
+
+        calc = {"name": "[Revenue]", "caption": "Revenue",
+                "formula": "SUM([amount])", "role": "measure",
+                "datasource_name": "SharedModel"}
+        if attributed_table:
+            calc["table"] = attributed_table
+
+        datasources = [{
+            "name": "SharedModel",
+            "connection": {"type": "excel"},
+            "tables": [
+                {"name": "Employees",
+                 "columns": [{"name": n, "datatype": "string"}
+                             for n in ("id", "name", "dept", "salary")]},
+                {"name": "transactions",
+                 "columns": [{"name": n, "datatype": "real"}
+                             for n in ("amount", "cost")]},
+            ],
+            "columns": [],
+            "calculations": [calc],
+        }]
+
+        with tempfile.TemporaryDirectory() as td:
+            tmdl_generator.generate_tmdl(
+                datasources=datasources,
+                report_name="M",
+                extra_objects={"calculations": [calc]},
+                output_dir=td,
+            )
+            tables_dir = os.path.join(td, "definition", "tables")
+            found = {}
+            for filename in os.listdir(tables_dir):
+                with open(os.path.join(tables_dir, filename),
+                          encoding="utf-8") as fh:
+                    found[filename[:-5]] = "measure Revenue" in fh.read() or \
+                                           "measure 'Revenue'" in fh.read()
+            return found
+
+    def test_the_measure_follows_its_attribution(self):
+        found = self._generate("transactions")
+        self.assertTrue(found.get("transactions"),
+                        f"Revenue not emitted on transactions: {found}")
+
+    def test_without_attribution_it_falls_back_to_the_widest_table(self):
+        """Documents the default the attribution exists to override."""
+        found = self._generate(None)
+        self.assertFalse(found.get("transactions", False),
+                         "fallback unexpectedly routed to the narrow table")
+
+
 if __name__ == "__main__":
     unittest.main()
