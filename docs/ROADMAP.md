@@ -295,8 +295,45 @@ A third bad test surfaced here too: locating `import_shared_model` by substring
 matched the *docstring* before the call, so the ordering assertion failed
 against correct code. Matching prose is not matching behaviour.
 
-### Known defect — shared-model output fails its own openability gate
+### Preceptorship now runs on every migration
 
+The loop existed, was reachable, scored six dimensions, and was **off unless
+asked for** — so the default migration shipped with no review at all. The
+mechanism was there; the cadence was not.
+
+Measured before changing it: median 9.2s without, 8.6s with, i.e. overhead
+inside run-to-run noise, one extra file (`preceptor_report.json`), verdict
+`approved 5.0/5 in 1 cycle`. A first measurement showed the reviewed run
+*faster by 71%*, which was cold-start cost on the unreviewed run rather than a
+result; discarding the warm-up run removed the artifact.
+
+Default-on is safe because the escalation contract already made it advisory:
+a warn never fails the migration, a reviewer exception never fails the
+migration, and blocking still requires `--preceptor-block`. `--no-preceptor`
+opts out, mirroring `--no-compare`.
+
+`docs/AGENTS.md` claimed the loop also triggered "on `--review`". That flag has
+never existed. The section now describes the two switches that do.
+
+### Documented flags must exist
+
+`--review` was not an isolated slip. The inert-flag guard covers flags the CLI
+accepts and ignores; nothing covered flags the *documentation* promises and the
+CLI rejects. That failure is worse to diagnose, because argparse fails for a
+reason unrelated to the flag — a documented `--server-assess PROJECT` bound the
+project name to the workbook positional and reported a missing file.
+
+`scripts/check_doc_claims.py` closes it. Precision mattered more than coverage:
+judging every `--word` in the docs produced 20 hits, almost all pytest's
+`--cov`, git's `--oneline`, VS Code's `--install-extension`. Judging only lines
+that invoke `migrate.py` produced 2 — and one of those, `--advanced-help`, was
+a blind spot in the guard rather than a defect in the docs, since it is
+compared against `argv` before the parser sees it. With intercept detection the
+count is **1 real phantom**: `docs/ENTERPRISE_GUIDE.md` documented
+`--visual-diff`, whose module `visual_diff.py` is itself on the unreachable
+list. The example now shows the comparison report that does exist.
+
+### Known defect — shared-model output fails its own openability gate
 Unrelated to the flag work and pre-existing: `--shared-model` exits `5`
 (`VALIDATION_FAILED`) with 9 blocking issues, all from `pbip_contract` and
 `manifest_coherence` — "Report and SemanticModel names do not match", "report

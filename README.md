@@ -773,8 +773,9 @@ TableauToPowerBI/
 | `--assess` | Run pre-migration assessment and strategy analysis |
 | `--bulk-assess DIR` | Full portfolio assessment on a local folder (readiness + merge + prep lineage) |
 | `--qa` | Full QA suite: validate → auto-fix → governance → compare |
-| `--preceptor` | Preceptorship review: score the output on 6 dimensions and emit coaching feedback |
-| `--preceptor-block` | Make `--preceptor` a hard gate instead of a warning |
+| `--preceptor` | Preceptorship review: score the output on 6 dimensions and emit coaching feedback. **On by default** (advisory) |
+| `--no-preceptor` | Skip the preceptorship review |
+| `--preceptor-block` | Make the preceptor a hard gate instead of a warning |
 | `--optimize-dax` | Run DAX optimizer (IF→SWITCH, COALESCE, constant folding) |
 | `--no-optimize-dax` | Disable DAX optimizer |
 | `--time-intelligence MODE` | Auto-inject Time Intelligence measures: `auto` or `none` |

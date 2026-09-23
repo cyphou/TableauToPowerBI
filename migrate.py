@@ -2781,19 +2781,26 @@ def _add_ai_args(parser):
     parser.add_argument(
         '--preceptor',
         action='store_true',
-        default=False,
-        help='After generation, run the preceptorship review loop: score the output '
+        default=True,
+        help='Run the preceptorship review loop after generation: score the output '
              'on 6 dimensions (completeness, DAX correctness, M validity, TMDL '
              'structure, PBIR fidelity, visual equivalence) and emit structured '
-             'coaching feedback for anything below the pass mark.'
+             'coaching feedback for anything below the pass mark. Enabled by '
+             'default and advisory; use --no-preceptor to skip it.'
+    )
+    parser.add_argument(
+        '--no-preceptor',
+        action='store_false',
+        dest='preceptor',
+        help='Skip the preceptorship review loop'
     )
 
     parser.add_argument(
         '--preceptor-block',
         action='store_true',
         default=False,
-        help='Make --preceptor a hard gate: exit with a validation failure when the '
-             'review still falls short after the final cycle (default is to warn).'
+        help='Make the preceptor a hard gate: exit with a validation failure when '
+             'the review still falls short after the final cycle (default is to warn).'
     )
 
     parser.add_argument(

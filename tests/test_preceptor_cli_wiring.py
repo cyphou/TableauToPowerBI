@@ -26,13 +26,29 @@ class TestPreceptorFlagsExist(unittest.TestCase):
     def setUp(self):
         self.parser = migrate._build_argument_parser()
 
-    def test_preceptor_flag_defaults_off(self):
+    def test_preceptor_runs_by_default(self):
+        """Review is part of the loop, not an extra step to remember.
+
+        The loop previously existed, was reachable, and was off unless asked
+        for, so the default migration shipped without any review at all.
+        Measured overhead is within noise and the outcome is advisory, so the
+        cadence now matches the model: every run is reviewed.
+        """
         args = self.parser.parse_args(['wb.twbx'])
+        self.assertTrue(args.preceptor)
+
+    def test_preceptor_can_be_skipped(self):
+        args = self.parser.parse_args(['wb.twbx', '--no-preceptor'])
         self.assertFalse(args.preceptor)
 
     def test_preceptor_flag_can_be_enabled(self):
         args = self.parser.parse_args(['wb.twbx', '--preceptor'])
         self.assertTrue(args.preceptor)
+
+    def test_blocking_stays_opt_in(self):
+        """Default-on review must not turn into a default-on gate."""
+        args = self.parser.parse_args(['wb.twbx'])
+        self.assertFalse(args.preceptor_block)
 
     def test_preceptor_block_flag_defaults_off(self):
         args = self.parser.parse_args(['wb.twbx', '--preceptor'])

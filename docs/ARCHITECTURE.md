@@ -225,7 +225,7 @@ repairs a different artifact at a different phase), not duplicates:
 | 3. Expression heal | `healing.py` subsystem (this section) | preflight / post-gen / on-demand | DAX, Power Query (M), visual containers |
 | 4. Recovery ledger | `recovery_report.py` | throughout | records every repair from stages 1–3 (one JSON) |
 | 5. Quality gate | `rollback_engine.py` | after generation | severity verdict → ship / quarantine / rollback |
-| 6. Review loop (optional) | `preceptor.py` | on request | DRAFT→REVIEW→COACH scoring + coaching feedback |
+| 6. Review loop | `preceptor.py` | every run (advisory) | DRAFT→REVIEW→COACH scoring + coaching feedback |
 
 Stages 1–3 all feed the single recovery ledger (stage 4) via
 `recovery_report.record()` / `record_heal()`; the ledger is duck-typed so it never

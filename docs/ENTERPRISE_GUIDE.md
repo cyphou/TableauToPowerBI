@@ -142,8 +142,8 @@ The cross-flow lineage report identifies chain dependencies, merge candidates, a
 # Validate all generated projects
 python migrate.py --batch /output/ --check-schema
 
-# Visual diff report
-python migrate.py workbook.twbx --visual-diff
+# Side-by-side comparison report (Tableau vs Power BI) — on by default
+python migrate.py workbook.twbx
 ```
 
 ## Phase 7: Deployment

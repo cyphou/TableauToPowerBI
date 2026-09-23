@@ -227,10 +227,17 @@ Example: {before → after, if applicable}
 
 ### Pipeline Integration
 
-The preceptorship loop triggers:
-1. **After generation** — automatic review of the full .pbip output
-2. **On `--review` flag** — explicit review of existing artifacts
-3. **On `--qa` flag** — combined with existing QA checks for deeper analysis
+The preceptorship loop runs **after generation on every migration**, scoring the
+full `.pbip` output. It is advisory by default: a review that falls short warns
+and writes `preceptor_report.json`, but does not fail the run. Two switches
+change that:
+
+- `--no-preceptor` — skip the review entirely
+- `--preceptor-block` — make it a hard gate, failing the run on escalation
+
+A crashing reviewer never fails a migration either; the review is
+instrumentation, not a correctness oracle. The authoritative pass/fail check
+remains the openability gate.
 
 The `PreceptorLoop` class in `powerbi_import/preceptor.py` drives the cycle, consuming:
 - `ArtifactValidator` results (structural checks)
