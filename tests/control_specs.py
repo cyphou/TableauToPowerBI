@@ -108,6 +108,40 @@ CONTROLS = [
         "test": "tests/test_advisory_boundary.py",
     },
 
+    # ── Data validation ────────────────────────────────────────────────
+    {
+        "name": "the equivalence suite stops reading the generated model",
+        "file": "powerbi_import/equivalence_tester_v2.py",
+        "old": "    model = _read_generated_model(pbi_artifact)",
+        "new": "    model = None",
+        "test": "tests/test_data_validation.py",
+    },
+    {
+        "name": "tests that never ran count as passes again",
+        "file": "powerbi_import/equivalence_tester_v2.py",
+        "old": "        comparable = [r for r in test_results if r.get('status') != 'not_run']",
+        "new": "        comparable = list(test_results)",
+        "test": "tests/test_data_validation.py",
+    },
+    {
+        "name": "field coverage compares Tableau against itself again",
+        "file": "powerbi_import/equivalence_tester_v2.py",
+        "old": "        passed, coverage = tester.test_visual_field_coverage(\n"
+               "            tableau_fields, model_names, ws_name\n"
+               "        )",
+        "new": "        passed, coverage = tester.test_visual_field_coverage(\n"
+               "            tableau_fields, tableau_fields, ws_name\n"
+               "        )",
+        "test": "tests/test_data_validation.py",
+    },
+    {
+        "name": "--validate-data stops being acted on",
+        "file": "migrate.py",
+        "old": "        _run_data_validation(args, source_basename)",
+        "new": "        pass",
+        "test": "tests/test_data_validation.py",
+    },
+
     # ── Shared-model measure routing ───────────────────────────────────
     {
         "name": "merged calculations keep a dead datasource name",

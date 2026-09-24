@@ -4272,6 +4272,61 @@ def _run_bundle_deploy(project_dir, workspace_id, refresh=False):
         return ExitCode.GENERAL_ERROR
 
 
+def _run_data_validation(args, source_basename):
+    """Check the generated model actually defines what the workbook used.
+
+    Advisory: row-value comparison needs a deployed model, so this reports
+    what can be checked offline and says "not run" for the rest rather than
+    claiming a pass it did not earn.
+    """
+    try:
+        from powerbi_import.equivalence_tester_v2 import run_full_equivalence_suite
+
+        out_base = args.output_dir or os.path.join(
+            'artifacts', 'powerbi_projects', 'migrated')
+        project_dir = os.path.join(out_base, source_basename)
+        if not os.path.isdir(project_dir):
+            print("  ⚠ Data validation skipped: project directory not found")
+            return
+
+        extract_dir = _get_extract_dir()
+
+        def _load(name):
+            path = os.path.join(extract_dir, name)
+            if not os.path.isfile(path):
+                return []
+            try:
+                with open(path, 'r', encoding='utf-8') as fh:
+                    return json.load(fh)
+            except (json.JSONDecodeError, OSError):
+                return []
+
+        report = run_full_equivalence_suite(
+            {
+                'datasources': _load('datasources.json'),
+                'calculations': _load('calculations.json'),
+                'worksheets': _load('worksheets.json'),
+            },
+            {'project_dir': project_dir},
+        )
+
+        print(f"\n  Data validation: {report['status']} — "
+              f"{report['passed']}/{report['compared']} checks passed "
+              f"({report['fidelity_percent']:.0f}% fidelity, "
+              f"{report['not_run']} need a deployed model)")
+        for detail in report['details']:
+            if not detail.get('passed') and detail.get('status') != 'not_run':
+                print(f"    • {detail['message']}")
+
+        report_path = os.path.join(project_dir, 'data_validation.json')
+        with open(report_path, 'w', encoding='utf-8') as fh:
+            json.dump(report, fh, indent=2, ensure_ascii=False)
+        print(f"    Report: {report_path}")
+    except Exception as exc:
+        print(f"  ⚠ Data validation error: {exc}")
+        logger.warning("Data validation failed: %s", exc)
+
+
 def _run_multi_tenant_deploy(args, project_dir):
     """Deploy one shared model to several tenant workspaces.
 
@@ -7988,6 +8043,11 @@ def _run_single_migration(args):
             progress.fail("Preceptor review: quality below the pass mark")
             return ExitCode.VALIDATION_FAILED
         checkpoint.mark('validation', check='preceptor')
+
+    # Step 3f2c: Data equivalence validation (--validate-data flag)
+    if (getattr(args, 'validate_data', False) and results.get('generation')
+            and not args.dry_run):
+        _run_data_validation(args, source_basename)
 
     # Step 3f3: Static openability gate (enabled by default; --no-verify-open to skip)
     if (getattr(args, 'verify_open', True)

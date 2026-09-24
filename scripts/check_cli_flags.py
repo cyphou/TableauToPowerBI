@@ -30,7 +30,6 @@ KNOWN_INERT = frozenset({
     "prep_to_dataflow",
     "skip_conversion",
     "sync",
-    "validate_data",
 })
 
 

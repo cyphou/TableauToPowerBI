@@ -138,27 +138,43 @@ class EquivalenceTester:
     
     def generate_report(self, test_results: List[Dict]) -> Dict:
         """Generate summary equivalence report.
-        
+
+        Tests that could not run are excluded from the fidelity ratio. Counting
+        them as passes reported 100% fidelity for a migration that had not been
+        compared to anything.
+
         Args:
             test_results: List of test result dicts
-        
+
         Returns:
             Summary report with pass/fail/warn breakdown
         """
         total = len(test_results)
-        passed = sum(1 for r in test_results if r.get('passed'))
-        failed = sum(1 for r in test_results if not r.get('passed') and r.get('severity') == 'error')
-        warned = sum(1 for r in test_results if not r.get('passed') and r.get('severity') == 'warning')
-        
-        fidelity_pct = (passed / total * 100) if total > 0 else 0
-        
+        not_run = sum(1 for r in test_results if r.get('status') == 'not_run')
+        comparable = [r for r in test_results if r.get('status') != 'not_run']
+        passed = sum(1 for r in comparable if r.get('passed'))
+        failed = sum(1 for r in comparable
+                     if not r.get('passed') and r.get('severity') == 'error')
+        warned = sum(1 for r in comparable
+                     if not r.get('passed') and r.get('severity') == 'warning')
+
+        if comparable:
+            fidelity_pct = passed / len(comparable) * 100
+            status = ('pass' if fidelity_pct >= 95
+                      else 'warn' if fidelity_pct >= 80 else 'fail')
+        else:
+            fidelity_pct = 0.0
+            status = 'not_run'
+
         return {
             'total': total,
             'passed': passed,
             'failed': failed,
             'warned': warned,
+            'not_run': not_run,
+            'compared': len(comparable),
             'fidelity_percent': fidelity_pct,
-            'status': 'pass' if fidelity_pct >= 95 else 'warn' if fidelity_pct >= 80 else 'fail',
+            'status': status,
             'details': test_results,
         }
 
@@ -276,75 +292,138 @@ class DataQualityValidator:
 #  TEST SUITE RUNNER
 # ════════════════════════════════════════════════════════════════════
 
+#: Tableau pseudo-fields. They drive shelf behaviour rather than naming data,
+#: so they have no model equivalent and must not count as missing coverage.
+_PSEUDO_FIELDS = frozenset({
+    'Measure Names', 'Measure Values',
+    'Number of Records', 'Latitude (generated)', 'Longitude (generated)',
+})
+
+
+def _read_generated_model(pbi_artifact: Dict) -> Optional[Dict]:
+    """Names the generated model actually defines.
+
+    Returns ``None`` when the artifact cannot be read, so callers can report
+    "not run" instead of inventing a comparison.
+    """
+    import glob
+    import os
+
+    project_dir = (pbi_artifact or {}).get('project_dir')
+    if not project_dir or not os.path.isdir(project_dir):
+        return None
+
+    try:
+        from powerbi_import.artifact_diff import _parse_tmdl_table
+    except Exception:  # noqa: BLE001 - absence must not fake a pass
+        return None
+
+    measures, columns, tables = set(), set(), set()
+    pattern = os.path.join(project_dir, "**", "definition", "tables", "*.tmdl")
+    for path in glob.glob(pattern, recursive=True):
+        parsed = _parse_tmdl_table(path)
+        if not parsed:
+            continue
+        tables.add(parsed.get('name', ''))
+        for column in parsed.get('columns', []):
+            columns.add(column.get('name', ''))
+        for measure in parsed.get('measures', []):
+            measures.add(measure.get('name', ''))
+
+    if not tables:
+        return None
+    return {'tables': tables, 'columns': columns, 'measures': measures}
+
+
 def run_full_equivalence_suite(tableau_export: Dict, pbi_artifact: Dict,
                                verbose: bool = False) -> Dict:
     """Run comprehensive equivalence test suite.
-    
+
+    Every test used to pass unconditionally: row count was a hardcoded
+    ``True``, the calculation test only checked that the *Tableau* formula was
+    non-empty, and field coverage compared the Tableau fields against
+    themselves. An empty or entirely wrong project reported 100% fidelity.
+    Tests now read the generated model, and say so when they cannot.
+
     Args:
         tableau_export: Extracted Tableau metadata (from extract_tableau_data)
-        pbi_artifact: Generated Power BI artifact (TMDL + visuals)
+        pbi_artifact: Generated Power BI artifact; ``project_dir`` is read
         verbose: Enable detailed logging
-    
+
     Returns:
         Equivalence report with detailed results
     """
     tester = EquivalenceTester(verbose=verbose)
     results = []
-    
-    # Test 1: Row count equivalence (if data available)
-    datasources = tableau_export.get('datasources', [])
-    for ds in datasources:
+    model = _read_generated_model(pbi_artifact)
+    model_names = (model['measures'] | model['columns']) if model else set()
+
+    # Test 1: Row counts need a live query against the deployed model.
+    for ds in tableau_export.get('datasources', []):
         ds_name = ds.get('name', 'Unknown')
-        tableau_rows = ds.get('row_count', 0)
-        # Note: Would need to query PBI to get actual row count
-        result = {
+        results.append({
             'test': f'row_count:{ds_name}',
-            'passed': True,  # Placeholder
+            'passed': False,
+            'status': 'not_run',
             'severity': 'info',
-            'message': f'{ds_name}: {tableau_rows} rows in Tableau',
-        }
-        results.append(result)
-    
-    # Test 2: Calculation equivalence
-    calculations = tableau_export.get('calculations', [])
-    for calc in calculations:
-        calc_name = calc.get('name', 'Unknown')
-        tableau_formula = calc.get('formula', '')
-        # Would need to extract PBI DAX from tmdl_generator output
-        result = {
-            'test': f'calc:{calc_name}',
-            'passed': len(tableau_formula) > 0,
-            'severity': 'info' if len(tableau_formula) > 0 else 'warning',
-            'message': f'{calc_name}: Formula present in Tableau',
-        }
-        results.append(result)
-    
-    # Test 3: Visual field coverage
-    worksheets = tableau_export.get('worksheets', [])
-    for ws in worksheets:
+            'message': (f'{ds_name}: {ds.get("row_count", 0)} rows in Tableau; '
+                        f'comparison needs a deployed model'),
+        })
+
+    # Test 2: every Tableau calculation should exist in the model
+    for calc in tableau_export.get('calculations', []):
+        calc_name = calc.get('caption') or calc.get('name', 'Unknown')
+        clean = str(calc_name).strip('[]')
+        if model is None:
+            results.append({
+                'test': f'calc:{clean}',
+                'passed': False,
+                'status': 'not_run',
+                'severity': 'info',
+                'message': f'{clean}: no generated model to compare against',
+            })
+            continue
+        present = clean in model_names
+        results.append({
+            'test': f'calc:{clean}',
+            'passed': present,
+            'severity': 'pass' if present else 'error',
+            'message': (f'{clean}: present in the generated model' if present
+                        else f'{clean}: missing from the generated model'),
+        })
+
+    # Test 3: fields a worksheet uses should exist in the model
+    for ws in tableau_export.get('worksheets', []):
         ws_name = ws.get('name', 'Unknown')
-        raw_fields = ws.get('fields', [])
         tableau_fields = set()
-        for field in raw_fields:
+        for field in ws.get('fields', []):
             if isinstance(field, dict):
                 name = field.get('name')
                 if name:
-                    tableau_fields.add(str(name))
+                    tableau_fields.add(str(name).strip('[]'))
             elif field:
-                tableau_fields.add(str(field))
-        # Would extract from PBI report schema
-        if tableau_fields:
-            passed, coverage = tester.test_visual_field_coverage(
-                tableau_fields, tableau_fields,  # Placeholder: would use PBI fields
-                ws_name
-            )
-            result = {
+                tableau_fields.add(str(field).strip('[]'))
+        tableau_fields -= _PSEUDO_FIELDS
+        if not tableau_fields:
+            continue
+        if model is None:
+            results.append({
                 'test': f'visual_coverage:{ws_name}',
-                'passed': passed,
-                'severity': 'warning' if not passed else 'pass',
-                'coverage_percent': coverage,
-                'message': f'{ws_name}: {coverage:.1f}% field coverage',
-            }
-            results.append(result)
-    
+                'passed': False,
+                'status': 'not_run',
+                'severity': 'info',
+                'message': f'{ws_name}: no generated model to compare against',
+            })
+            continue
+        passed, coverage = tester.test_visual_field_coverage(
+            tableau_fields, model_names, ws_name
+        )
+        results.append({
+            'test': f'visual_coverage:{ws_name}',
+            'passed': passed,
+            'severity': 'pass' if passed else 'warning',
+            'coverage_percent': coverage,
+            'message': f'{ws_name}: {coverage:.1f}% field coverage',
+        })
+
     return tester.generate_report(results)

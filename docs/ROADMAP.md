@@ -209,9 +209,8 @@ floor, not a guess. Three groups need different answers:
   imports `autoheal` directly and bypasses it. That is A3's problem, recorded
   here because it is why the facade looks unused.
 
-**Inert CLI flags — 5 of 142.** Declared, accepted by the parser, never read:
-`--parallel-run`, `--prep-to-dataflow`, `--skip-conversion`, `--sync`,
-`--validate-data`.
+**Inert CLI flags — 4 of 142.** Declared, accepted by the parser, never read:
+`--parallel-run`, `--prep-to-dataflow`, `--skip-conversion`, `--sync`.
 
 `--agg-tables` and `--composite-threshold` **are now wired** and were the first
 two removed from that set. The generator already accepted both; only the
@@ -413,6 +412,37 @@ because there is no safe answer. Result: `transactions` 11 measures — exactly
 matching the solo migration — `Employees` 4, the gate passes, and
 `--multi-tenant` runs, failing only on absent credentials. Both
 `--deploy-bundle` and `--multi-tenant` are reachable in a default run.
+
+### A validator that could not fail
+
+`--validate-data` was the last flag with obvious backing, and wiring it as
+found would have been worse than leaving it inert.
+`run_full_equivalence_suite` reported `status: pass` and `fidelity_percent:
+100.0` for an empty project and for one whose tables and fields bore no
+relation to the source. It never read the generated artifact at all: row count
+was a hardcoded `'passed': True`, the calculation test only checked that the
+*Tableau* formula was non-empty, and field coverage called
+`test_visual_field_coverage(tableau_fields, tableau_fields)` — the source
+compared against itself.
+
+A flag that does nothing wastes a run. A validator that always passes invites
+someone to ship on the strength of it. The existing test encoded the defect,
+asserting `report["failed"] == 0` against a function that could not produce a
+failure.
+
+Each test now reads the generated model, and one that cannot run is marked
+`not_run` and excluded from the fidelity ratio instead of counted as a pass.
+Proven in both directions on a real migration: a fabricated measure is
+reported missing, and the honest verdict for `Financial_Report` is 80%
+fidelity with two genuine coverage warnings — worksheets referencing
+`Net_Income` and `Profit_Margin` while the model defines `Net Income` and
+`Profit Margin %`.
+
+Tableau's shelf pseudo-fields (`Measure Names`, `Measure Values`, and the
+generated lat/long pair) are excluded from coverage. They have no model
+equivalent by design, and counting them made the first honest run look worse
+than it was — a validator that cries wolf gets ignored as surely as one that
+always passes.
 
 ### A2 findings — the advisory boundary
 
