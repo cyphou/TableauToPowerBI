@@ -116,6 +116,27 @@ class TestItDetectsRealDefects(unittest.TestCase):
         row = [d for d in report["details"] if d["test"].startswith("row_count:")]
         self.assertEqual("not_run", row[0]["status"])
 
+    def test_coverage_measures_against_the_model_not_the_source(self):
+        """Comparing the source against itself always scores 100%.
+
+        The field below exists only in the workbook, so a self-comparison
+        cannot distinguish a complete migration from one that dropped it.
+        """
+        tableau = {
+            "datasources": [],
+            "calculations": [],
+            "worksheets": [{"name": "S", "fields": [
+                {"name": "amount"}, {"name": "never_generated"}]}],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            _model_project(td)
+            report = run_full_equivalence_suite(tableau, {"project_dir": td})
+        coverage = [d for d in report["details"]
+                    if d["test"].startswith("visual_coverage:")][0]
+        self.assertEqual(50.0, coverage["coverage_percent"],
+                         "a field absent from the model was not detected")
+        self.assertFalse(coverage["passed"])
+
 
 class TestPseudoFields(unittest.TestCase):
     """Tableau shelf pseudo-fields have no model equivalent by design."""
