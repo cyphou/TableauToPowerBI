@@ -16,6 +16,7 @@ You are the **Semantic** agent for the Tableau to Power BI migration project. Yo
 - `powerbi_import/tmdl_refresh_policy.py` — incremental refresh policy detection, date-column selection, RangeStart/RangeEnd M parameters. Extracted from `tmdl_generator`, which re-exports but no longer defines them
 - `powerbi_import/tmdl_writers.py` — TMDL serialization: every `_write_*` file writer, the syntax helpers (`_quote_name`, `_tmdl_datatype`, `_tmdl_summarize`, `_safe_filename`) and the Copilot description generators. Extracted from `tmdl_generator`, which re-exports but no longer defines them
 - `powerbi_import/tmdl_relationships.py` — relationship inference and repair: cross-table inference, cardinality detection, many-to-many, ambiguous join paths, hybrid constraints. Extracted from `tmdl_generator`, which re-exports but no longer defines them
+- `powerbi_import/tmdl_parameters.py` — What-If parameter tables, calculation groups, field parameters and the SWITCH-branch parser. Extracted from `tmdl_generator`, which re-exports but no longer defines them
 
 ### Core Semantic Model Generation
 - `powerbi_import/tmdl_generator.py` — Co-owned with **@dax**, who owns the DAX post-processing blocks. Unified semantic model generator, the largest file in the project. You own the **structural** parts:
