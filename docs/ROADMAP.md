@@ -137,10 +137,10 @@ measured from the tree, not estimated, and they set the agenda below.
 |---|---|
 | Source modules | 161 (149 `powerbi_import`, 12 `tableau_export`) |
 | Source lines | 96,538 |
-| Test files / lines | 288 / 119,084 (1.23x test-to-source) |
-| CLI surface | 14 public commands over 145 flags in a 6,795-line `migrate.py` |
+| Test files / lines | 293 / 119,084 (1.23x test-to-source) |
+| CLI surface | 14 public commands over 142 flags, **0 inert**, in `migrate.py` |
 | Concentration | Top 6 modules hold 28,143 lines — **29% of all source** |
-| Production reachability | 132 modules reachable, **23 not reachable**, 1 genuinely dead |
+| Production reachability | 147 modules reachable, **14 not reachable** (4,292 lines), 1 genuinely dead |
 | Healing layering | 1,203 lines inside the documented facade, **3,995 lines outside it** |
 | Reporting surface | 29 modules, ~14,000 lines, 21 HTML generators |
 
@@ -151,12 +151,12 @@ Four findings follow from that table:
    (3,147) and `visual_generator` (3,053) are also the files most often recorded
    as regression-prone. Two prior extractions proved the seams exist.
 2. **Shipped but unwired.** Only `api_server` (Dockerfile) and `mcp_server`
-   (MCP stdio) have a non-CLI entry point. The rest — including `dax_optimizer`,
-   `marketplace`, `model_templates`, `dax_recipes`, `plugin_sdk`,
-   `geo_passthrough`, `gateway_config`, `alerts_generator`, `visual_diff` and
-   `regression_suite` — are complete and tested with no user path. This is the
-   `visual_generator` finding generalised: a module reads as covered because a
-   test imports it.
+   (MCP stdio) have a non-CLI entry point. Twelve modules — including
+   `marketplace`, `model_templates`, `dax_recipes`, `geo_passthrough`,
+   `gateway_config`, `alerts_generator`, `visual_diff` and `regression_suite` —
+   are complete and tested with no user path. This is the `visual_generator`
+   finding generalised: a module reads as covered because a test imports it.
+   `scripts/check_reachability.py` now stops that set growing.
 3. **The documented healing architecture describes a third of the code.**
    `self_healing_v3`, `self_healing_report` and `tmdl_self_heal` sit outside the
    `healing_core` contract, and `healing.py` is not reachable from `migrate.py`.
@@ -170,7 +170,7 @@ Ordered so that no effort is spent refactoring code that should not exist.
 | Wave | Outcome | Exit gate |
 |---|---|---|
 | A1 — Calculation evidence | **Done.** Each family is keyed on its distinguishing DAX artifact — LOD by `ALLEXCEPT`/`REMOVEFILTERS`, table calc by `RANKX`/`OFFSET`/`ALLSELECTED`/`WINDOW`/`INDEX`, basic by an aggregation with neither — and every declaration is gated per-measure by its migration provenance annotation, so a generated helper is never attributed to a source calculation | 0 in-use features report `not_checked`; window semantics are tested before grain override so a `WINDOW_*` expression using `ALLEXCEPT` is not misread as a LOD; a generated R² measure using `RANKX` evidences nothing |
-| A2 — Reachability contract | **In progress.** Measured: **22 modules / 9,099 lines** unreachable from any production entry point, and **15 of 142 CLI flags declared but never read** — now 11, with `--agg-tables`, `--composite-threshold`, `--optimize-dax` and `--time-intelligence` wired and proven. `scripts/check_cli_flags.py` plus a ratcheting baseline prevent both a new inert flag and a stale entry | Guard proven to fail on an injected inert flag, and twice on real fixes. Remaining: a wire/declare/retire decision per module and per remaining inert flag |
+| A2 — Reachability contract | **Done.** Both halves of the inert surface are now ratcheted. Flags: **0 inert of 142**, closed by retiring the last four into the flags that already did the work. Modules: **14 unreachable / 4,292 lines**, down from 22 / 9,099 — partly modules wired since, partly three resolver rules the codebase actually needs. `scripts/check_reachability.py` guards the module half as `check_cli_flags.py` guards the flag half | Both ratchets proven to fail on an injected regression and on a stale baseline entry. Remaining: a wire/declare/retire decision per module |
 | A3 — Healing consolidation | Bring the three outside modules under the `healing_core` contract and one recovery ledger, or document the exemption | One healing contract, no undocumented stage, `RepairAttempt` stays distinct from `HealAction` |
 | A4 — Decompose by seam | Split the top-6 along existing seams (page/layout vs visual, relationship inference, parameter tables, per-type extractors) with the proven extraction recipe | No module above ~2,500 lines; `tmdl_generator` reduced to one owner |
 | A5 — Resilience baseline (R4) | Measure what survives interruption *before* building: interrupt a batch, replay a checkpoint, corrupt a source, delete a target table | Interrupted and replayed migrations preserve evidence and never duplicate output |
@@ -187,30 +187,61 @@ Non-goals for this cycle, recorded so they are not re-proposed:
 
 Two measurements, both the same defect class the last cycle kept finding: a
 surface that reads as working because a test imports it or `--help` lists it.
+Both halves are now closed and ratcheted.
 
-**Unreachable modules — 22, totalling 9,099 lines.** Reachability was computed
-with full dotted-path resolution *and* the rule that importing a submodule
-executes its package `__init__`; that rule alone reclassified `deploy.utils`
-and `deploy.config.environments` as genuinely reachable, so the number is a
-floor, not a guess. Three groups need different answers:
+**Unreachable modules — 14, totalling 4,292 lines.** The first measurement said
+22 / 9,099. The difference is not a looser analyser: eight of those modules
+were genuinely wired during this cycle (`dax_optimizer`, `deploy.multi_tenant`,
+`deploy.credential_vault` among them), and the remainder came from three
+resolution rules the codebase actually requires. The CLI inserts the package
+directories on `sys.path` and then imports bare names (`from governance import
+run_governance`), `deploy/` does the same against its own directory (`from
+config.settings import ...`), and a package `__init__` is its *own* package
+rather than its parent — without that last rule `deploy.utils` and
+`deploy.config.environments` read as dead while `__init__` imports both.
+
+`scripts/check_reachability.py` now measures this on every test run, with the
+same ratchet shape as the flag guard: a new unreachable module fails, and so
+does a baseline entry that has since been wired. Declarations are checked
+rather than trusted — a module declared as having an external entry point must
+name a caller path that exists, and may not be declared and baselined at once.
+Three negative controls prove it: removing a module's only import, breaking
+bare-name resolution, and naming a caller that does not exist all fail the
+tests. Three groups still need different answers:
 
 - **Declare** — real entry points that simply are not CLI-reachable:
   `api_server` (Dockerfile `CMD`), `mcp_server` (MCP stdio), `notebook_api`
   (Jupyter `MigrationSession`), `plugin_sdk` and `plugins` (authored against,
-  not called by us).
+  not called by us), `visual_size_diff` (`scripts/compare_visual_sizes.py`).
 - **Wire** — complete, tested, and wanted, but with no user path:
-  `dax_optimizer`, `gateway_config`, `alerts_generator`, `visual_diff`,
-  `geo_passthrough`, `marketplace`, `model_templates`, `dax_recipes`,
-  `regression_suite`, `remediation`, `conversational`,
-  `deploy.multi_tenant`, `deploy.credential_vault`, `subscription_migrator`,
-  `dax_query_generator`.
+  `gateway_config`, `alerts_generator`, `visual_diff`, `geo_passthrough`,
+  `marketplace`, `model_templates`, `dax_recipes`, `regression_suite`,
+  `remediation`, `conversational`, `subscription_migrator`,
+  `dax_query_generator`. `dax_optimizer`, `deploy.multi_tenant` and
+  `deploy.credential_vault` have left this list by being wired.
 - **Retire** — `connection_rewriter` (407 lines, zero tests, zero references).
 - **Special case** — `healing.py` is the documented facade, yet `migrate.py`
   imports `autoheal` directly and bypasses it. That is A3's problem, recorded
   here because it is why the facade looks unused.
 
-**Inert CLI flags — 4 of 142.** Declared, accepted by the parser, never read:
-`--parallel-run`, `--prep-to-dataflow`, `--skip-conversion`, `--sync`.
+**Inert CLI flags — 0 of 142.** The last four (`--parallel-run`,
+`--prep-to-dataflow`, `--skip-conversion`, `--sync`) were not wired but
+*retired*, because searching for a backing implementation found none: no
+`sync_`, no `parallel_run`, no `prep_to_dataflow` function ever existed. Each
+also named behaviour a working flag already delivered — `--prep-to-dataflow`'s
+own help text said "used with `--prep` and `--output-format fabric`", which is
+the combination that works without it. There was nothing to wire them *to*.
+
+Deleting them would have broken existing automation silently, which is the
+same defect in a different costume, so each applies its replacement and prints
+what it did, and `--help` says `RETIRED` instead of promising behaviour that
+was never built. `KNOWN_INERT` is now empty, which the ratchet only permits
+because the detector returns nothing.
+
+One trap repeated itself here and was caught by the rule written for it last
+cycle: `assertIn('_apply_retired_flags(args)', source)` passes with no call
+site at all, because `def _apply_retired_flags(args):` contains the same text.
+The call site is asserted through the AST instead.
 
 `--agg-tables` and `--composite-threshold` **are now wired** and were the first
 two removed from that set. The generator already accepted both; only the
