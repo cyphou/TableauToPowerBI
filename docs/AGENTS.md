@@ -22,7 +22,7 @@ its release criteria pass.
 | **@extractor** | Parsing Tableau XML (.twb/.twbx), Hyper files, Prep flow conversion | `tableau_export/extract_tableau_data.py`, `datasource_extractor.py`, `hyper_reader.py`, `pulse_extractor.py`, `prep_flow_parser.py` |
 | **@tableau** | Tableau Server/Cloud REST API, JWT auth, site discovery, permissions, metadata lineage, Prep flow analysis | `tableau_export/server_client.py`, `tableau_export/prep_flow_analyzer.py` |
 | **@dax** | DAX formula correctness, conversion, optimization, aggregation context, cross-table refs | `dax_converter.py`, `dax_optimizer.py` + DAX post-processing in `tmdl_generator.py` |
-| **@wiring** | DAX↔M bridge, calc column vs measure classification, M generation, M step injection | `m_query_builder.py`, `calc_column_utils.py` + M functions in `tmdl_generator.py` |
+| **@wiring** | DAX↔M bridge, calc column vs measure classification, M generation, M step injection | `m_query_builder.py`, `calc_column_utils.py`, `tmdl_m_conversion.py` |
 | **@semantic** | TMDL semantic model, relationships, Calendar, RLS, hierarchies, parameters | `tmdl_generator.py` (structural), `fabric_semantic_model_generator.py` |
 | **@visual** | PBIR report, visual containers, slicers, filters, bookmarks, themes, pages | `pbip_generator.py`, `visual_generator.py` |
 | **@healing** | Self-repair subsystem, openability preflight, recovery ledger, rollback gate | `healing*.py`, `autoheal.py`, `dax_healing.py`, `m_healing.py`, `visual_healing.py`, `openability.py`, `self_healing_v3.py`, `tmdl_self_heal.py` |
@@ -137,6 +137,63 @@ flowchart TB
 
 Solid arrows carry migration data; dotted arrows are advisory or governing.
 `@tester` and the governance agents never own generator source.
+
+### How agents share files
+
+The flow diagram above shows who runs when. This one shows where two agents
+touch the same file — the only places a handoff is a *contract* rather than a
+message. It is machine-verified: `scripts/check_agent_ownership.py` fails the
+build if a file here is claimed by an agent that does not declare `co-owned`,
+if only one side declares it, or if a seventh file joins the list.
+
+```mermaid
+flowchart LR
+    DAXA(["@dax"]):::ag
+    SEMA(["@semantic"]):::ag
+    MRGA(["@merger"]):::ag
+    ASSA(["@assessor"]):::ag
+    TABA(["@tableau"]):::ag
+    WIRA(["@wiring"]):::ag
+    HEALA(["@healing"]):::ag
+
+    TMDL["tmdl_generator.py<br/><i>structure + DAX post-processing</i>"]:::sh
+    SHM["shared_model.py<br/><i>merge engine + semantic merge</i>"]:::sh
+    MASS["merge_assessment.py<br/>merge_report_html.py<br/><i>scoring + reporting</i>"]:::sh
+    PLIN["prep_lineage.py<br/>prep_lineage_report.py<br/><i>graph + flow profiles</i>"]:::sh
+
+    MCONV["tmdl_m_conversion.py"]:::solo
+    SHEAL["tmdl_self_heal.py"]:::solo
+
+    DAXA --- TMDL --- SEMA
+    SEMA --- SHM --- MRGA
+    MRGA --- MASS --- ASSA
+    ASSA --- PLIN --- TABA
+
+    WIRA -->|sole owner| MCONV
+    HEALA -->|sole owner| SHEAL
+    MCONV -.->|re-exported by| TMDL
+    SHEAL -.->|re-exported by| TMDL
+
+    classDef ag fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e
+    classDef sh fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef solo fill:#dcfce7,stroke:#16a34a,color:#14532d
+```
+
+Six files are co-owned, and every pair is a deliberate seam:
+
+| Shared file | Agents | Why it is shared |
+|---|---|---|
+| `tmdl_generator.py` | `@semantic` + `@dax` | `@semantic` owns tables, relationships, Calendar, RLS and the TMDL writers; `@dax` owns the post-processing that rewrites the emitted expressions |
+| `shared_model.py` | `@merger` + `@semantic` | `@merger` owns fingerprint matching and conflict resolution; `@semantic` owns how merged tables become one model |
+| `merge_assessment.py`, `merge_report_html.py` | `@assessor` + `@merger` | `@merger` supplies the score, `@assessor` owns how a score becomes a recommendation |
+| `prep_lineage.py`, `prep_lineage_report.py` | `@assessor` + `@tableau` | `@tableau` profiles each Prep flow, `@assessor` turns the cross-flow graph into merge advice |
+
+The green nodes are the opposite move. `tmdl_m_conversion.py` and
+`tmdl_self_heal.py` were *extracted* from `tmdl_generator.py` so `@wiring` and
+`@healing` could own their surfaces outright; `tmdl_generator` re-exports them
+for backward compatibility but defines none of them. That is why neither agent
+co-owns it — a re-export is a dependency, not shared ownership, and recording
+it as ownership would make the guard unable to tell the two apart.
 
 ### ASCII fallback
 
@@ -258,7 +315,7 @@ The original 8-agent model had two overloaded agents:
 
 ### @wiring — DAX↔M Bridge Specialist
 - Owns: `m_query_builder.py`, `calc_column_utils.py`
-- Co-owns: M functions in `tmdl_generator.py` (`_dax_to_m_expression()`, `_inject_m_steps_into_partition()`, `_build_m_transform_steps()`, `_fix_m_if_else_balance()`, `_quote_m_identifiers()`)
+- Owns: `tmdl_m_conversion.py` — `_dax_to_m_expression()`, `_inject_m_steps_into_partition()`, `_build_m_transform_steps()`, `_fix_m_if_else_balance()`. Extracted from `tmdl_generator`, which re-exports but no longer defines them, so this is sole ownership rather than a share
 - Expertise: Calc column vs measure classification, M pushdown decisions, M step chaining
 
 ### @semantic — Semantic Model Specialist
@@ -287,7 +344,7 @@ The original 8-agent model had two overloaded agents:
 6. (Optional) @assessor → readiness report
 7. (Optional) @merger → shared semantic model
 8. (Optional) @deployer → Fabric/PBI workspace
-9. @tester validates all steps with 10,097 tests
+9. @tester validates all steps with 10,272 tests
 ```
 
 ## Handoff Protocol

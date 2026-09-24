@@ -66,11 +66,14 @@ All TMDL serialization functions in `tmdl_generator.py`:
 
 ## Shared Ownership
 
-The following functions in `tmdl_generator.py` are **shared** with other agents:
-- **DAX post-processing** (shared with @dax): SUM wrapping, measure unwrapping, cross-table ref fixing
-- **M functions** (shared with @wiring): `_dax_to_m_expression()`, `_inject_m_steps_into_partition()`, `_build_m_transform_steps()`, `_fix_m_if_else_balance()`, `_quote_m_identifiers()`
+`tmdl_generator.py` is co-owned with **@dax**, who owns the DAX post-processing:
+SUM wrapping, measure unwrapping, and cross-table ref fixing. Coordinate before
+touching those blocks.
 
-When you need to modify these shared sections, coordinate with the owning agent.
+Two surfaces that used to live here are now owned outright elsewhere, and
+`tmdl_generator` only re-exports them:
+- `tmdl_m_conversion.py` — owned by **@wiring**: `_dax_to_m_expression()`, `_inject_m_steps_into_partition()`, `_build_m_transform_steps()`, `_fix_m_if_else_balance()`
+- `tmdl_self_heal.py` — owned by **@healing**: `_self_heal_model()`, `_validate_m_partitions()`
 
 ## Constraints
 

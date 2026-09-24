@@ -18,7 +18,7 @@ Measured on the committed example corpus, not estimated:
 | Functional parity | mean **99.7%**, lowest **96.4%**, 20 of 26 at full parity |
 | Lineage coverage | **99.9%**, 0 unresolved source records |
 | Evidence level | `STATIC_PASS` on 26/26 |
-| Test suite | 10,097 passed, 67 skipped, 1 xfailed, across 288 files |
+| Test suite | 10,272 passed, 66 skipped, 1 xfailed, across 293 files |
 | Agent ownership | 0 unowned modules, 0 asymmetric declarations |
 
 The remediation queue now contains **no `repair` actions at all**: 10 `decide`,

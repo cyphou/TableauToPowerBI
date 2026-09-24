@@ -126,7 +126,7 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
     - `credential_vault.py`: Credential vault — secure credential storage and retrieval for deployment authentication
   - `config/`: Configuration subpackage
     - `migration_config.py`: Migration configuration — typed config objects for migration settings and feature flags
-  - **tests/**: Unit and integration tests (10,097 tests across 288 files in latest full run)
+  - **tests/**: Unit and integration tests (10,272 tests across 293 files in latest full run)
 - **docs/**: FAQ, PBI project guide, mapping reference, **ROADMAP.md** (v45/v46 release roadmap and agent assignments)
 - **.github/workflows/ci.yml**: CI/CD pipeline (lint → test → validate → deploy)
 - **.github/workflows/publish.yml**: PyPI auto-publish workflow (tag-triggered, OIDC trusted publisher)
@@ -497,14 +497,14 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 | **@deployer** | Fabric/PBI deployment, auth, gateway | `deploy/*.py`, `gateway_config.py`, `telemetry.py` |
 | **@reviewer** | Artifact quality review, preceptorship loop, coaching feedback | `preceptor.py` (CLI: `--preceptor`) |
 | **@web-designer** | End-user UI/UX, Tkinter light UI, layout/presentation | `web/light_ui.py` |
-| **@tester** | Tests (10,097 across 288 files), coverage, public fixtures, regression | `tests/*.py` |
+| **@tester** | Tests (10,272 across 293 files), coverage, public fixtures, regression | `tests/*.py` |
 | **@readme** | Documentation quality gate before and after updates | `README.md`, `docs/`, `CHANGELOG.md`, project instructions (review only) |
 
 ### Rules
 
 - **One owner per file** — only the owning agent modifies each source file
 - **Read access is universal** — any agent can read any file for context
-- **Co-owned functions** — `tmdl_generator.py` has shared ownership: @semantic (structural), @dax (DAX post-processing), @wiring (M functions)
+- **Co-owned functions** — `tmdl_generator.py` is co-owned by @semantic (structural) and @dax (DAX post-processing). @wiring's M surface was extracted to `tmdl_m_conversion.py` and @healing's to `tmdl_self_heal.py`; `tmdl_generator` re-exports both but defines neither, so those are sole ownership, not a share
 - **Tester is cross-cutting** — reads all source, writes only to `tests/`
 - **Public fixtures only** — examples and test fixtures must use public sources or reserved placeholders; never add customer, tenant, account, or private-environment data.
 - **Default agent** handles multi-domain tasks, docs, git, sprint planning
