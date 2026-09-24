@@ -18,7 +18,7 @@ Measured on the committed example corpus, not estimated:
 | Functional parity | mean **99.7%**, lowest **96.4%**, 20 of 26 at full parity |
 | Lineage coverage | **99.9%**, 0 unresolved source records |
 | Evidence level | `STATIC_PASS` on 26/26 |
-| Test suite | 10,272 passed, 66 skipped, 1 xfailed, across 293 files |
+| Test suite | 10,274 passed, 66 skipped, 1 xfailed, across 293 files |
 | Agent ownership | 0 unowned modules, 0 asymmetric declarations |
 
 The remediation queue now contains **no `repair` actions at all**: 10 `decide`,
@@ -136,20 +136,22 @@ measured from the tree, not estimated, and they set the agenda below.
 | Signal | Value |
 |---|---|
 | Source modules | 161 (149 `powerbi_import`, 12 `tableau_export`) |
-| Source lines | 96,538 |
+| Source lines | 96,919 |
 | Test files / lines | 293 / 119,084 (1.23x test-to-source) |
 | CLI surface | 14 public commands over 142 flags, **0 inert**, in `migrate.py` |
-| Concentration | Top 6 modules hold 28,143 lines — **29% of all source** |
+| Concentration | Top 6 modules hold 28,318 lines — **29.2% of all source** |
 | Production reachability | 147 modules reachable, **14 not reachable** (4,292 lines), 1 genuinely dead |
 | Healing layering | 1,203 lines inside the documented facade, **3,995 lines outside it** |
 | Reporting surface | 29 modules, ~14,000 lines, 21 HTML generators |
 
 Four findings follow from that table:
 
-1. **Concentration risk.** `tmdl_generator` (6,151), `pbip_generator` (5,468),
-   `extract_tableau_data` (4,071), `shared_model` (3,219), `dax_converter`
-   (3,147) and `visual_generator` (3,053) are also the files most often recorded
-   as regression-prone. Two prior extractions proved the seams exist.
+1. **Concentration risk.** `tmdl_generator` (7,113), `pbip_generator` (5,964),
+   `extract_tableau_data` (4,297), `shared_model` (3,839), `dax_converter`
+   (3,618) and `visual_generator` (3,487) are also the files most often recorded
+   as regression-prone. Two prior extractions proved the seams exist. The
+   per-module figures previously printed here summed to 25,109 against a stated
+   total of 28,143, so they were re-measured rather than carried forward.
 2. **Shipped but unwired.** Only `api_server` (Dockerfile) and `mcp_server`
    (MCP stdio) have a non-CLI entry point. Twelve modules — including
    `marketplace`, `model_templates`, `dax_recipes`, `geo_passthrough`,
@@ -174,7 +176,7 @@ Ordered so that no effort is spent refactoring code that should not exist.
 | A1 — Calculation evidence | **Done.** Each family is keyed on its distinguishing DAX artifact — LOD by `ALLEXCEPT`/`REMOVEFILTERS`, table calc by `RANKX`/`OFFSET`/`ALLSELECTED`/`WINDOW`/`INDEX`, basic by an aggregation with neither — and every declaration is gated per-measure by its migration provenance annotation, so a generated helper is never attributed to a source calculation | 0 in-use features report `not_checked`; window semantics are tested before grain override so a `WINDOW_*` expression using `ALLEXCEPT` is not misread as a LOD; a generated R² measure using `RANKX` evidences nothing |
 | A2 — Reachability contract | **Done.** Both halves of the inert surface are now ratcheted. Flags: **0 inert of 142**, closed by retiring the last four into the flags that already did the work. Modules: **14 unreachable / 4,292 lines**, down from 22 / 9,099 — partly modules wired since, partly three resolver rules the codebase actually needs. `scripts/check_reachability.py` guards the module half as `check_cli_flags.py` guards the flag half | Both ratchets proven to fail on an injected regression and on a stale baseline entry. Remaining: a wire/declare/retire decision per module |
 | A3 — Healing consolidation | **Done, mostly as an exemption.** Measured first: there is already **one** recovery ledger, and **78 of 78** healers across all three stages feed it. The real defect was the facade — `healing.py` was imported by nobody while `migrate.py` and `mcp_server.py` went around it to `autoheal`/`openability`. Consumers now route through the facade | One ledger proven by measurement, not assertion; facade reachable and guarded; `RepairAttempt` stays distinct from `HealAction` |
-| A4 — Decompose by seam | Split the top-6 along existing seams (page/layout vs visual, relationship inference, parameter tables, per-type extractors) with the proven extraction recipe | No module above ~2,500 lines; `tmdl_generator` reduced to one owner |
+| A4 — Decompose by seam | Split the top-6 along existing seams with the proven extraction recipe. **Measured: they are two populations, not one** — see A4 findings below | No module above ~2,500 lines; `tmdl_generator` reduced to one owner |
 | A5 — Resilience baseline (R4) | Measure what survives interruption *before* building: interrupt a batch, replay a checkpoint, corrupt a source, delete a target table | Interrupted and replayed migrations preserve evidence and never duplicate output |
 | A6 — Runtime closure (R5) | Unchanged: an authorized environment, or the roadmap states plainly that these signals stay `not_run` | `OPERATIONAL_100` only with real environment evidence |
 
@@ -184,6 +186,42 @@ Non-goals for this cycle, recorded so they are not re-proposed:
   discoverability, and flag-based automation is a compatibility contract.
 - Merging the 21 HTML generators. `html_template` already unified presentation;
   merging producers would risk the reporting contract for cosmetic gain.
+
+### A4 findings — the recipe does not transfer to half the list
+
+The proven extraction recipe — slice module-level functions into a new module,
+re-export for compatibility — worked twice on `tmdl_generator`
+(`tmdl_m_conversion`, `tmdl_self_heal`). Measuring the top-6 before applying it
+again shows **it only applies to four of them.**
+
+| Module | Lines | Shape | Recipe applies |
+|---|---|---|---|
+| `tmdl_generator` | 7,113 | 88 module-level functions, 0 classes | Yes — proven twice |
+| `dax_converter` | 3,618 | 85 module-level functions, 0 classes | Yes |
+| `shared_model` | 3,839 | 74 functions + 7 small classes (180 lines) | Yes |
+| `visual_generator` | 3,487 | 55 module-level functions, 0 classes | Yes |
+| `extract_tableau_data` | 4,297 | **one class**, 83 methods, 3,923 lines | No — needs a different move |
+| `pbip_generator` | 5,964 | **one class**, 69 methods, 5,714 lines | No — needs a different move |
+
+For the two class-shaped modules the question is how much `self` state the
+methods share, because that is what a split has to carry:
+
+- `TableauExtractor` — 83 methods, **9** shared data attributes
+  (`workbook_data`, `tableau_file`, `output_dir`, `_xml_node_cache`,
+  `extraction_warnings`, `hyper_max_rows`, `_color_index`, and two constants).
+  Nearly stateless, so per-type extractors can be separated with explicit
+  arguments rather than inherited state.
+- `PowerBIProjectGenerator` — 69 methods, **44** shared data attributes
+  (`_field_map`, `_ds_table_map`, `_measure_names`, `_bim_measure_names`,
+  `_used_custom_guids`, `_set_action_bookmarks`,
+  `_relationship_inference_cache`, …). Genuinely entangled.
+
+That ordering is the plan: the four function-shaped modules first, because the
+recipe is already proven there; then `extract_tableau_data`, whose low coupling
+makes per-type extractors a mechanical change; and `pbip_generator` last,
+because 44 shared attributes mean a page/layout-versus-visual split is a
+redesign, not an extraction. Attempting it first would be the most expensive
+way to discover that.
 
 ### A3 findings — the consolidation that was mostly already done
 
