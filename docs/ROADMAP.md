@@ -305,6 +305,48 @@ Two notes for anyone continuing this work:
   A budget assertion that depends on whole-suite load will keep producing false
   failures; that is a `@tester` decision, not a refactor one.
 
+### Next A4 target measured: `dax_converter` is not an extraction problem either
+
+`dax_converter.py` (3,618 lines, 85 functions, no classes) looks like the ideal
+next target — purely function-shaped and sole `@dax`. Clustering its call graph
+into weakly-connected components says otherwise: **70 of the 85 functions and
+2,664 of the 3,121 function lines are one component**, all mutually reachable
+from `convert_tableau_formula_to_dax`. Moving that is a rename, not a seam.
+
+The other 14 components are single isolated functions, and measuring *why* they
+are isolated produced the more useful finding: **13 of the 15 functions not
+reachable from the main converter have no production caller at all — 422
+lines.** Only `detect_script_functions` (called by `pbip_generator`) and
+`map_tableau_to_powerbi_type` (called by `tmdl_generator`) are wired. Every one
+of the 13 is referenced by 1–4 tests, so the module reads as covered.
+
+| Unwired function | Lines | | Unwired function | Lines |
+|---|---|---|---|---|
+| `convert_nested_lod` | 71 | | `convert_regexp_extract` | 28 |
+| `convert_running_with_partition` | 48 | | `convert_multi_dim_exclude` | 29 |
+| `convert_spatial_to_python_visual` | 46 | | `convert_lookup_offset` | 29 |
+| `convert_regexp_replace` | 39 | | `convert_ismemberof_to_rls` | 27 |
+| `convert_regexp_match` | 36 | | `convert_window_percentile` | 23 |
+| | | | `generate_combined_field_dax` | 21 |
+| | | | `_detect_script_language` | 20 |
+| | | | `has_script_functions` | 5 |
+
+**They are not missing features.** Following the rule that absence of a caller
+never by itself proves a capability gap, each was tested against the main
+converter, which handles all of them through its own pattern table:
+`REGEXP_REPLACE` → `SUBSTITUTE`, `REGEXP_MATCH` → `LEFT(...) = "A"`,
+`REGEXP_EXTRACT` → `MID(...)`, nested LOD → nested `CALCULATE`/`ALLEXCEPT`,
+`WINDOW_PERCENTILE` → `CALCULATE(PERCENTILE.INC, ALL())`, `LOOKUP` →
+`OFFSET(... ORDERBY ...)`, `ISMEMBEROF` → `TRUE()` plus an RLS note. So these
+are **superseded implementations**, not capability.
+
+Open decision for `@dax`, deliberately not taken here: retire them, or wire
+them where they are better than the pattern-table result. Both need a
+per-function judgement on output quality, and deleting 422 lines of exported,
+test-referenced functions is not a refactor side-effect. Same disposition as
+the dead `topN` branch in `visual_generator._build_visual_filters` and the
+48-of-55 unreferenced functions in `visual_generator`.
+
 ### A4 findings — the recipe does not transfer to half the list
 
 The proven extraction recipe — slice module-level functions into a new module,
