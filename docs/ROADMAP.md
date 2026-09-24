@@ -219,8 +219,7 @@ again shows **it only applies to four of them.**
 
 | Module | Lines | Shape | Recipe applies |
 |---|---|---|---|
-| `tmdl_generator` | 7,113 | 88 module-level functions, 0 classes | Yes — proven twice |
-| `dax_converter` | 3,618 | 85 module-level functions, 0 classes | Yes |
+| `tmdl_generator` | 7,113 | 88 module-level functions, 0 classes | Yes — proven twice || `dax_converter` | 3,618 | 85 module-level functions, 0 classes | Yes |
 | `shared_model` | 3,839 | 74 functions + 7 small classes (180 lines) | Yes |
 | `visual_generator` | 3,487 | 55 module-level functions, 0 classes | Yes |
 | `extract_tableau_data` | 4,297 | **one class**, 83 methods, 3,923 lines | No — needs a different move |
@@ -245,6 +244,24 @@ makes per-type extractors a mechanical change; and `pbip_generator` last,
 because 44 shared attributes mean a page/layout-versus-visual split is a
 redesign, not an extraction. Attempting it first would be the most expensive
 way to discover that.
+
+**First cut done: `tmdl_refresh_policy` (347 lines).** Chosen by measurement,
+not by size. The writer group is the larger seam — 18 functions, 909 lines —
+but 11 foreign definitions are interleaved through its range, so a line slice
+would be wrong. The incremental-refresh group has **zero** foreign definitions
+inside its span and its three constants sit within the same block, so it is the
+one piece the proven recipe fits exactly. Dependencies measured first: three
+local constants, `logger`, `re`, and a single caller
+(`generate_tmdl → apply_incremental_refresh`).
+
+Behaviour was proven rather than assumed: the same workbook migrated before and
+after, all 12 generated TMDL files diffed with lineage GUIDs normalised, **0
+differing**. `tmdl_generator` 7,113 → 6,786.
+
+Removing it also drops the writers' interleaved count from 11 to 4 — the
+remaining four are the description generators, which are used *only* by writers
+and so move with them. That is the next cut, and it was made tractable by
+taking this one first.
 
 ### A3 findings — the consolidation that was mostly already done
 
