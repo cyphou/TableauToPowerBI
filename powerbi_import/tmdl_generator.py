@@ -1686,6 +1686,26 @@ def _inject_dynamic_format_measures(model):
 
 
 
+_BARE_COL_REF_RE = re.compile(r"^(?:'[^']*')?\[[^\]]+\]$")
+
+
+def _wrap_bare_ref_expression(dax_formula, datatype, table_name):
+    """Aggregate a measure whose whole expression is a bare column reference.
+
+    Type-aware: MAXX over IF for Boolean (MAX needs a column ref), MAX for
+    text and dates, SUM otherwise. Owned by @dax.
+    """
+    if not _BARE_COL_REF_RE.match(dax_formula.strip()):
+        return dax_formula
+    dt_lower = (datatype or '').lower()
+    if dt_lower == 'boolean':
+        tbl_esc = (table_name or '').replace("'", "''")
+        return f"MAXX('{tbl_esc}', IF({dax_formula.strip()}, 1, 0))"
+    if dt_lower in ('string', 'date', 'datetime'):
+        return f"MAX({dax_formula.strip()})"
+    return f"SUM({dax_formula.strip()})"
+
+
 def _unwrap_aggregations_of_measures(result_table):
     """Strip SUM/AVERAGE/COUNT/MIN/MAX wrappers from measure references.
 
@@ -2377,24 +2397,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             if (datatype or '').lower() == 'boolean':
                 _bool_table_columns.add(caption)
         else:
-            # DAX measures cannot be bare column references — they need an
-            # aggregation.  If the converted DAX is just 'Table'[Col] or
-            # [Col], wrap it in SUM() so PBI Desktop accepts it.
-            # Type-aware: SUM for numeric, MAX for string/date, MAXX(IF(col,1,0)) for boolean.
-            _bare_col_re = re.compile(
-                r"^(?:'[^']*')?\[[^\]]+\]$"
-            )
-            if _bare_col_re.match(dax_formula.strip()):
-                dt_lower = (datatype or '').lower()
-                if dt_lower == 'boolean':
-                    # MAX(IF(col,1,0)) is invalid — MAX needs a column ref.
-                    # Use MAXX('Table', IF(col,1,0)) iterator instead.
-                    tbl_esc = result_table.get('name', '').replace("'", "''")
-                    dax_formula = f"MAXX('{tbl_esc}', IF({dax_formula.strip()}, 1, 0))"
-                elif dt_lower in ('string', 'date', 'datetime'):
-                    dax_formula = f"MAX({dax_formula.strip()})"
-                else:
-                    dax_formula = f"SUM({dax_formula.strip()})"
+            dax_formula = _wrap_bare_ref_expression(
+                dax_formula, datatype, result_table.get('name', ''))
 
             # DAX Measure
             bim_measure = {
