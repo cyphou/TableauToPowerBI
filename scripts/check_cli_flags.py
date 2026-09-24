@@ -24,13 +24,9 @@ CLI_SOURCE = os.path.join(_REPO_ROOT, "migrate.py")
 #: Flags measured as inert when this guard was introduced. The set exists to
 #: stop the defect growing, not to bless it: each entry still needs a wire or
 #: remove decision, and a flag that gets wired must be dropped from here, so
-#: the baseline can only ever shrink.
-KNOWN_INERT = frozenset({
-    "parallel_run",
-    "prep_to_dataflow",
-    "skip_conversion",
-    "sync",
-})
+#: the baseline can only ever shrink. It is now empty; the last four were
+#: retired into aliases for the flags that already did the work.
+KNOWN_INERT = frozenset()
 
 
 def declared_flags(source: str) -> dict:

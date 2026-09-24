@@ -250,4 +250,28 @@ CONTROLS = [
         "new": '    "powerbi_import.api_server": "Dockerfile.removed",',
         "test": "tests/test_reachability.py",
     },
+
+    # ── Retired flags ──────────────────────────────────────────────────
+    {
+        "name": "a retired flag stops applying its replacement",
+        "file": "migrate.py",
+        "old": "        args.validate_data = True\n"
+               "        retired.append(('--parallel-run', '--validate-data'))",
+        "new": "        retired.append(('--parallel-run', '--validate-data'))",
+        "test": "tests/test_cli_flag_wiring.py",
+    },
+    {
+        "name": "retired flags are applied to everything, not just what was passed",
+        "file": "migrate.py",
+        "old": "    if getattr(args, 'sync', False):\n        args.incremental = True",
+        "new": "    if True:\n        args.incremental = True",
+        "test": "tests/test_cli_flag_wiring.py",
+    },
+    {
+        "name": "main stops applying retired flags",
+        "file": "migrate.py",
+        "old": "    _apply_retired_flags(args)\n\n    # Load configuration file if specified",
+        "new": "    # Load configuration file if specified",
+        "test": "tests/test_cli_flag_wiring.py",
+    },
 ]

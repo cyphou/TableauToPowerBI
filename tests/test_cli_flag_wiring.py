@@ -6,6 +6,7 @@ that state. These tests drive the detector with synthetic parsers so its
 judgement is verifiable, and freeze the measured set so the defect cannot grow.
 """
 
+import ast
 import os
 import sys
 import textwrap
@@ -13,6 +14,8 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import migrate  # noqa: E402
 
 from scripts.check_cli_flags import (  # noqa: E402
     CLI_SOURCE,
@@ -107,6 +110,68 @@ class TestRealCliSurface(unittest.TestCase):
         fixed = sorted(KNOWN_INERT - still_inert)
         self.assertEqual([], fixed,
                          f"now consumed: {fixed} — drop them from KNOWN_INERT")
+
+
+class TestRetiredFlags(unittest.TestCase):
+    """The last four inert flags, retired into aliases.
+
+    None had a backing implementation anywhere in the tree, and each named
+    behaviour a working flag already delivered. Deleting them would have
+    broken existing automation silently; leaving them parsed and ignored was
+    the defect. Each now applies its replacement and says so.
+    """
+
+    ALIASES = (
+        ('--sync', 'incremental', True),
+        ('--skip-conversion', 'incremental', True),
+        ('--parallel-run', 'validate_data', True),
+        ('--prep-to-dataflow', 'output_format', 'fabric'),
+    )
+
+    def _parse(self, argv):
+        return migrate._build_argument_parser().parse_args(argv)
+    def test_each_retired_flag_applies_its_replacement(self):
+        for flag, dest, expected in self.ALIASES:
+            with self.subTest(flag=flag):
+                args = self._parse(['wb.twbx', flag])
+                migrate._apply_retired_flags(args)
+                self.assertEqual(getattr(args, dest), expected)
+
+    def test_absent_flags_change_nothing(self):
+        """Without this, a function that set everything would also pass."""
+        args = self._parse(['wb.twbx'])
+        migrate._apply_retired_flags(args)
+        self.assertFalse(getattr(args, 'incremental', False))
+        self.assertFalse(getattr(args, 'validate_data', False))
+        self.assertEqual(args.output_format, 'pbip')
+
+    def test_each_retired_flag_is_reported(self):
+        for flag, _dest, _expected in self.ALIASES:
+            with self.subTest(flag=flag):
+                args = self._parse(['wb.twbx', flag])
+                reported = migrate._apply_retired_flags(args)
+                self.assertIn(flag, [old for old, _new in reported])
+
+    def test_help_no_longer_promises_the_unimplemented_behaviour(self):
+        for flag, _dest, _expected in self.ALIASES:
+            with self.subTest(flag=flag):
+                action = next(a for a in migrate._build_argument_parser()._actions
+                              if flag in a.option_strings)
+                self.assertIn('RETIRED', action.help or '')
+
+    def test_main_applies_them(self):
+        """Proven on the parser alone, the alias could still never be called.
+
+        Matched by AST rather than substring: `def _apply_retired_flags(args):`
+        contains the call text, so `in source` passes with no call site at all.
+        """
+        with open(CLI_SOURCE, encoding="utf-8-sig") as handle:
+            tree = ast.parse(handle.read())
+        main = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == 'main')
+        called = {n.func.id for n in ast.walk(main)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        self.assertIn('_apply_retired_flags', called)
 
 
 class TestServerAssess(unittest.TestCase):

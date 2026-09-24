@@ -2264,7 +2264,7 @@ def _add_source_args(parser):
     parser.add_argument(
         '--skip-conversion',
         action='store_true',
-        help='Skip DAX/M conversion step (use existing intermediate files)'
+        help='RETIRED: applies --incremental (never had an implementation)'
     )
 
 
@@ -2846,7 +2846,7 @@ def _add_ai_args(parser):
         '--prep-to-dataflow',
         action='store_true',
         default=False,
-        help='Convert Tableau Prep flow directly to Dataflow Gen2 (used with --prep and --output-format fabric)'
+        help='RETIRED: applies --output-format fabric, which already emits Dataflow Gen2 from --prep'
     )
 
     parser.add_argument(
@@ -2932,8 +2932,8 @@ def _add_deploy_args(parser):
         action='store_true',
         default=False,
         help=(
-            'Sync mode: detect changed workbooks, incrementally migrate only '
-            'modified artifacts, and deploy updates. Use with --deploy or --batch.'
+            'RETIRED: applies --incremental, which detects changed workbooks '
+            'and migrates only modified artifacts. Combine with --deploy.'
         )
     )
 
@@ -3174,7 +3174,7 @@ def _add_server_args(parser):
         '--parallel-run',
         action='store_true',
         default=False,
-        help='Run Tableau and PBI side-by-side and compare outputs for validation'
+        help='RETIRED: applies --validate-data, which compares migrated values against the source'
     )
 
 
@@ -5803,6 +5803,39 @@ def _run_assessment_mode(args, results):
         return ExitCode.ASSESSMENT_FAILED
 
 
+def _apply_retired_flags(args):
+    """Honour retired flags as aliases instead of ignoring them.
+
+    Each of these parsed for years and was never read, and none had a backing
+    implementation anywhere in the tree. Each also names behaviour a working
+    flag already delivers, so mapping them keeps existing automation running
+    while the flag stops being a no-op. Removing them outright would break that
+    automation silently, which is the defect in a different costume.
+    """
+    retired = []
+
+    if getattr(args, 'sync', False):
+        args.incremental = True
+        retired.append(('--sync', '--incremental'))
+
+    if getattr(args, 'skip_conversion', False):
+        args.incremental = True
+        retired.append(('--skip-conversion', '--incremental'))
+
+    if getattr(args, 'parallel_run', False):
+        args.validate_data = True
+        retired.append(('--parallel-run', '--validate-data'))
+
+    if getattr(args, 'prep_to_dataflow', False):
+        args.output_format = 'fabric'
+        retired.append(('--prep-to-dataflow', '--output-format fabric'))
+
+    for old, replacement in retired:
+        print(f"  [WARN] {old} is retired and never did anything; "
+              f"applying {replacement} instead.")
+    return retired
+
+
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 def main():
@@ -5813,6 +5846,8 @@ def main():
     # --qa-strict implies --qa
     if getattr(args, 'qa_strict', False):
         args.qa = True
+
+    _apply_retired_flags(args)
 
     # Load configuration file if specified
     _apply_config_file(args)
