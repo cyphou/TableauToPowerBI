@@ -291,7 +291,7 @@ CONTROLS = [
     # ── Copilot readiness ──────────────────────────────────────────────
     {
         "name": "columns stop carrying a description",
-        "file": "powerbi_import/tmdl_generator.py",
+        "file": "powerbi_import/tmdl_writers.py",
         "old": "    column_desc = _generate_column_description(column)",
         "new": "    column_desc = ''",
         "test": "tests/test_copilot_readiness.py",

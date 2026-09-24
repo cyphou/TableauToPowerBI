@@ -176,8 +176,8 @@ Ordered so that no effort is spent refactoring code that should not exist.
 | A1 — Calculation evidence | **Done.** Each family is keyed on its distinguishing DAX artifact — LOD by `ALLEXCEPT`/`REMOVEFILTERS`, table calc by `RANKX`/`OFFSET`/`ALLSELECTED`/`WINDOW`/`INDEX`, basic by an aggregation with neither — and every declaration is gated per-measure by its migration provenance annotation, so a generated helper is never attributed to a source calculation | 0 in-use features report `not_checked`; window semantics are tested before grain override so a `WINDOW_*` expression using `ALLEXCEPT` is not misread as a LOD; a generated R² measure using `RANKX` evidences nothing |
 | A2 — Reachability contract | **Done.** Both halves of the inert surface are now ratcheted. Flags: **0 inert of 142**, closed by retiring the last four into the flags that already did the work. Modules: **14 unreachable / 4,292 lines**, down from 22 / 9,099 — partly modules wired since, partly three resolver rules the codebase actually needs. `scripts/check_reachability.py` guards the module half as `check_cli_flags.py` guards the flag half | Both ratchets proven to fail on an injected regression and on a stale baseline entry. Remaining: a wire/declare/retire decision per module |
 | A3 — Healing consolidation | **Done, mostly as an exemption.** Measured first: there is already **one** recovery ledger, and **78 of 78** healers across all three stages feed it. The real defect was the facade — `healing.py` was imported by nobody while `migrate.py` and `mcp_server.py` went around it to `autoheal`/`openability`. Consumers now route through the facade | One ledger proven by measurement, not assertion; facade reachable and guarded; `RepairAttempt` stays distinct from `HealAction` |
-| A4 — Decompose by seam | Split the top-6 along existing seams with the proven extraction recipe. **Measured: they are two populations, not one** — see A4 findings below | No module above ~2,500 lines; `tmdl_generator` reduced to one owner |
-| A5 — Resilience baseline (R4) | Measure what survives interruption *before* building: interrupt a batch, replay a checkpoint, corrupt a source, delete a target table | Interrupted and replayed migrations preserve evidence and never duplicate output |
+| A4 — Decompose by seam | Split the top-6 along existing seams with the proven extraction recipe. **Measured: they are two populations, not one** — see A4 findings below | No module above ~2,500 lines. The "one owner" half of this gate is **not reachable by extraction** — see below |
+| A5 — Resilience baseline (R4) | Measure what survives interruption *before* building: interrupt a batch, replay a checkpoint, corrupt a source, delete a target table. **First input already measured: reruns are not path-idempotent** — 42 of 137 paths differ between two runs of identical code | Interrupted and replayed migrations preserve evidence and never duplicate output |
 | A6 — Runtime closure (R5) | Unchanged: an authorized environment, or the roadmap states plainly that these signals stay `not_run` | `OPERATIONAL_100` only with real environment evidence |
 
 Non-goals for this cycle, recorded so they are not re-proposed:
@@ -210,6 +210,39 @@ annotation, so both the calculated and physical column paths get it.
 Financial_Report went 16 → 34 annotations; the corpus gate is unchanged at 27
 openable, 0 blockers, 17 PASS / 10 WARN.
 
+### The "one owner" half of A4 is not an extraction problem
+
+A4's exit gate asked for `tmdl_generator` "reduced to one owner". Measuring
+what `@dax` actually owns there shows that cannot be done by moving functions.
+
+`dax.agent.md` names five separable functions —
+`_replace_related_with_lookupvalue`, `_replace_related_in_aggx_context`,
+`_fix_related_for_many_to_many`, `resolve_table_for_column`,
+`resolve_table_for_formula` — totalling **174 lines**, needing only `re`, with
+one remaining caller. Those would move cleanly.
+
+But the rest of what `@dax` owns is *inline*: SUM-of-measure unwrapping, bare
+cross-table reference wrapping and the inline bare-ref fix live as statements
+inside `_build_table` (**729 lines**), `_process_sets_groups_bins` (313) and
+`_create_quick_table_calc_measures` (117) — all `@semantic` structural
+functions. Moving the five named functions would shrink the file by 3% and
+leave the co-ownership exactly where it is.
+
+So the ownership goal has a prerequisite the gate did not state: `_build_table`
+has to be decomposed, and the DAX blocks inside it lifted into functions,
+*before* anything can be moved. That is a larger and riskier change than the
+extractions done so far, and it should be planned as its own item rather than
+folded into a size target. The size half of the gate is unaffected and
+continues.
+
+Next clean seam, measured and ready: the relationship group — 8 functions,
+**601 lines** (`_infer_cross_table_relationships`,
+`_create_and_validate_relationships`, `_detect_many_to_many`,
+`_fix_relationship_type_mismatches`, `_deactivate_ambiguous_paths`,
+`_detect_join_graph_issues`, `_build_relationships`,
+`_enforce_hybrid_relationship_constraints`), needing only `_is_parameter_table`
+and `re`, with 5 callers remaining in `tmdl_generator`. One direction, no cycle.
+
 ### A4 findings — the recipe does not transfer to half the list
 
 The proven extraction recipe — slice module-level functions into a new module,
@@ -219,7 +252,7 @@ again shows **it only applies to four of them.**
 
 | Module | Lines | Shape | Recipe applies |
 |---|---|---|---|
-| `tmdl_generator` | 7,113 | 88 module-level functions, 0 classes | Yes — proven twice || `dax_converter` | 3,618 | 85 module-level functions, 0 classes | Yes |
+| `tmdl_generator` | 5,522 | 88 module-level functions, 0 classes | Yes — two cuts landed || `dax_converter` | 3,618 | 85 module-level functions, 0 classes | Yes |
 | `shared_model` | 3,839 | 74 functions + 7 small classes (180 lines) | Yes |
 | `visual_generator` | 3,487 | 55 module-level functions, 0 classes | Yes |
 | `extract_tableau_data` | 4,297 | **one class**, 83 methods, 3,923 lines | No — needs a different move |
@@ -262,6 +295,38 @@ Removing it also drops the writers' interleaved count from 11 to 4 — the
 remaining four are the description generators, which are used *only* by writers
 and so move with them. That is the next cut, and it was made tractable by
 taking this one first.
+
+**Second cut done: `tmdl_writers` (1,296 lines).** 26 functions plus
+`_DISPLAY_FOLDER_TRANSLATIONS` — every `_write_*` writer, the TMDL syntax
+helpers and the description generators. Moved by AST span rather than a line
+slice, because `generate_theme_json` sits inside the range and must stay
+behind. All 8 helpers the writers use are called by writers only, so the group
+moves with no import back and no cycle. `tmdl_generator` **7,113 → 5,522**
+across the two cuts, and the `@dax` co-owned DAX post-processing is untouched.
+
+### Measured while proving that cut: reruns are not idempotent
+
+A first before/after diff reported 28 differing files. That was the harness
+being wrong, not the change — and the correction is the finding.
+
+Running the **same code twice** on the same workbook produces **42 differing
+paths out of 137**: bookmark directories (`Bookmark_<12 hex>`) and visual
+directories (`<20 hex>`) are randomly named on every run. So a naive path-keyed
+diff can never match, and any "before versus after" claim built on one is
+meaningless.
+
+Measuring both sides against each other instead: structure differs by 2 either
+way, TMDL content by 6 either way, and a name-keyed TMDL diff with GUIDs
+normalised gives 0 of 12. The extraction adds nothing.
+
+This is a **direct A5 input**, found early. The resilience wave requires that
+"same source and configuration produce the same semantic names, lineage,
+evidence, and repaired output aside from *declared* nondeterministic IDs".
+These IDs are not declared anywhere — they are simply random. Before A5 can
+test idempotence it has to decide whether these directory names should be
+derived from stable content (page name, visual ordinal) or explicitly declared
+nondeterministic. Until then, no rerun comparison in this repository can be
+trusted at path level, which is worth knowing before building on one.
 
 ### A3 findings — the consolidation that was mostly already done
 
