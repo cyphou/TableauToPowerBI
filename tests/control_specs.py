@@ -287,4 +287,13 @@ CONTROLS = [
                "        from powerbi_import.openability import check_openability",
         "test": "tests/test_healing_facade.py",
     },
+
+    # ── Copilot readiness ──────────────────────────────────────────────
+    {
+        "name": "columns stop carrying a description",
+        "file": "powerbi_import/tmdl_generator.py",
+        "old": "    column_desc = _generate_column_description(column)",
+        "new": "    column_desc = ''",
+        "test": "tests/test_copilot_readiness.py",
+    },
 ]

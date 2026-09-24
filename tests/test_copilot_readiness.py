@@ -312,7 +312,12 @@ class TestTmdlMeasureDescription:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestTmdlColumnDescription:
-    """Tests that column descriptions appear in generated TMDL."""
+    """Tests that column descriptions appear in generated TMDL.
+
+    Three of these once asserted ``'SummarizationSetBy' in content`` -- a line
+    ``_write_column_flags`` always emits -- so they passed for as long as
+    columns carried no description at all.
+    """
 
     def test_column_auto_description(self):
         """Column should get auto-generated description."""
@@ -320,7 +325,7 @@ class TestTmdlColumnDescription:
         col = {'name': 'CustomerName', 'dataType': 'string'}
         _write_column_flags(lines, col)
         content = '\n'.join(lines)
-        assert 'SummarizationSetBy' in content
+        assert 'annotation Copilot_Description = String column.' in content
 
     def test_column_explicit_description(self):
         """Explicit column description should appear as-is."""
@@ -328,7 +333,7 @@ class TestTmdlColumnDescription:
         col = {'name': 'OrderID', 'dataType': 'int64', 'description': 'Unique order identifier'}
         _write_column_flags(lines, col)
         content = '\n'.join(lines)
-        assert 'SummarizationSetBy' in content
+        assert 'annotation Copilot_Description = Unique order identifier' in content
 
     def test_column_copilot_hidden_id(self):
         """ID columns should get Copilot_Hidden annotation."""
@@ -373,7 +378,17 @@ class TestTmdlColumnDescription:
         }
         _write_column_flags(lines, col)
         content = '\n'.join(lines)
-        assert 'SummarizationSetBy' in content
+        assert 'Copilot_Description = Calculated column (double).' in content
+
+    def test_every_column_gets_one(self):
+        """The documented contract is every table, column and measure."""
+        for col in ({'name': 'Plain', 'dataType': 'string'},
+                    {'name': 'Geo', 'dataType': 'string', 'dataCategory': 'City'},
+                    {'name': 'Id_key', 'dataType': 'int64'},
+                    {'name': 'NoType'}):
+            lines = []
+            _write_column_flags(lines, col)
+            assert any('Copilot_Description' in ln for ln in lines), col
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -585,12 +600,14 @@ class TestEndToEndDescriptions:
         for fname in os.listdir(tables_dir):
             if fname.endswith('.tmdl') and 'Products' in fname:
                 content = open(os.path.join(tables_dir, fname), 'r', encoding='utf-8').read()
-                # Should have at least 2 column annotations
-                desc_count = content.count('SummarizationSetBy')
-                if desc_count >= 2:
-                    found = True
-                    break
-        assert found, "Products table should have SummarizationSetBy on its columns"
+                columns = content.count('\n\tcolumn ')
+                described = content.count('annotation Copilot_Description')
+                assert columns >= 2, f"expected the declared columns, got {columns}"
+                assert described >= columns, (
+                    f"{columns} column(s) but only {described} description(s)")
+                found = True
+                break
+        assert found, "Products table TMDL was not generated"
 
     def test_full_generation_has_measure_descriptions(self):
         """Full TMDL generation should produce description on measures."""

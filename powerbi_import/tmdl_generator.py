@@ -6576,6 +6576,12 @@ def _write_column_flags(lines, column):
         if ann_name and ann_value:
             lines.append(f"\t\tannotation {ann_name} = {ann_value}")
 
+    # Description as annotation for Copilot/Q&A readiness, as for measures
+    column_desc = _generate_column_description(column)
+    safe_desc = column_desc.replace('\n', ' ').replace('\r', '').strip()
+    if safe_desc:
+        lines.append(f"\t\tannotation Copilot_Description = {safe_desc}")
+
     # Copilot optimization: mark technical columns as hidden from Copilot
     # Match patterns like OrderID, Customer_ID, product_key, etc.
     # but not words like "Valid", "Fluid", "Avid"
