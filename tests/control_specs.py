@@ -296,4 +296,13 @@ CONTROLS = [
         "new": "    column_desc = ''",
         "test": "tests/test_copilot_readiness.py",
     },
+
+    # ── Extraction seams ───────────────────────────────────────────────
+    {
+        "name": "an extracted module stops being re-exported",
+        "file": "powerbi_import/tmdl_generator.py",
+        "old": "    detect_refresh_policy,\n",
+        "new": "",
+        "test": "tests/test_incremental_refresh.py",
+    },
 ]
