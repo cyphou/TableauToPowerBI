@@ -223,10 +223,19 @@ one remaining caller. Those would move cleanly.
 
 But the rest of what `@dax` owns is *inline*: SUM-of-measure unwrapping, bare
 cross-table reference wrapping and the inline bare-ref fix live as statements
-inside `_build_table` (**729 lines**), `_process_sets_groups_bins` (313) and
-`_create_quick_table_calc_measures` (117) — all `@semantic` structural
-functions. Moving the five named functions would shrink the file by 3% and
-leave the co-ownership exactly where it is.
+inside `_build_table` (**729 lines**). Moving the five named functions would
+shrink the file by 3% and leave the co-ownership exactly where it is.
+
+An earlier revision of this section also named `_process_sets_groups_bins` and
+`_create_quick_table_calc_measures` as carrying inline `@dax` work. Measured
+against the four markers `dax.agent.md` names — SUM-of-measure unwrapping,
+bare-ref wrapping, `measure_names` lookups and RELATED/LOOKUPVALUE substitution
+— that is wrong: `_build_table` scores 2 / 5 / 17 / 1, while
+`_create_quick_table_calc_measures` scores **0 / 0 / 0 / 0** and the extracted
+`tmdl_sets.py` carries a single structural `RELATED(` for combined-group
+references and none of the post-processing blocks. Both were therefore
+extracted, and declared, as sole `@semantic`. The prerequisite below is
+confined to one function, not three.
 
 So the ownership goal has a prerequisite the gate did not state: `_build_table`
 has to be decomposed, and the DAX blocks inside it lifted into functions,
@@ -235,13 +244,30 @@ extractions done so far, and it should be planned as its own item rather than
 folded into a size target. The size half of the gate is unaffected and
 continues.
 
-Next clean seam, measured and ready: the relationship group — 8 functions,
-**601 lines** (`_infer_cross_table_relationships`,
-`_create_and_validate_relationships`, `_detect_many_to_many`,
-`_fix_relationship_type_mismatches`, `_deactivate_ambiguous_paths`,
-`_detect_join_graph_issues`, `_build_relationships`,
-`_enforce_hybrid_relationship_constraints`), needing only `_is_parameter_table`
-and `re`, with 5 callers remaining in `tmdl_generator`. One direction, no cycle.
+Seams taken since, all with re-export compatibility and a measured equivalence
+check: the relationship group (601 lines), then `tmdl_lineage` (270),
+`tmdl_parameters` (551), `tmdl_rls` (266), `tmdl_sets` (332), `tmdl_dates`
+(283) and `tmdl_hierarchies` (120). `tmdl_generator` is **7,113 → 3,148
+lines (-56%)**, corpus gate unchanged throughout at 27 openable / 0 blockers /
+17 PASS / 10 WARN.
+
+What is left, measured against the current file:
+
+| Cluster | Lines | Callers | Status |
+|---|---|---|---|
+| `_build_table` | 835 | 1 | Blocked — 5 blocks over a 1,156-line span, and the only place inline `@dax` work lives. Needs the decomposition described above, and an ownership decision, before it can move |
+| quick table calcs | 117 | 1 | Contiguous and sole-`@semantic`, but **no corpus workbook exercises it** — see below |
+| time intelligence | 82 | 2 | Small |
+
+`_create_quick_table_calc_measures` reads `ws['fields'][i]['table_calc']`, and
+that key is set **0 times across the whole example corpus**. The path is not
+dead — the `pcto:`/`rank:` prefix its regex expects is real, and
+`RESTAPISample.twb` contains 27 of them — but every one appears in
+`<aliases>` for `[:Measure Names]` or in a `<column-instance>` declaration
+rather than directly on a shelf, and the field extractor reads shelves and
+encodings. So the feature is *unexercised*, not broken, and a TMDL diff cannot
+be used as evidence for any change to it. Same situation as sets/groups/bins,
+which the corpus also never produces.
 
 ### A4 findings — the recipe does not transfer to half the list
 
