@@ -18,7 +18,7 @@ Measured on the committed example corpus, not estimated:
 | Functional parity | mean **99.7%**, lowest **96.4%**, 20 of 26 at full parity |
 | Lineage coverage | **99.9%**, 0 unresolved source records |
 | Evidence level | `STATIC_PASS` on 26/26 |
-| Test suite | 10,274 passed, 66 skipped, 1 xfailed, across 293 files |
+| Test suite | 10,275 passed, 66 skipped, 1 xfailed, across 293 files |
 | Agent ownership | 0 unowned modules, 0 asymmetric declarations |
 
 The remediation queue now contains **no `repair` actions at all**: 10 `decide`,
@@ -186,6 +186,29 @@ Non-goals for this cycle, recorded so they are not re-proposed:
   discoverability, and flag-based automation is a compatibility contract.
 - Merging the 21 HTML generators. `html_template` already unified presentation;
   merging producers would risk the reporting contract for cosmetic gain.
+
+### Found while measuring A4 — columns had no description
+
+Surveying `tmdl_generator` for seams turned up `_generate_column_description`:
+defined once, covered by 8 tests, and called by **nothing in production**. The
+project instructions state that every table, column and measure gets an
+auto-generated description for Copilot/Q&A readiness. Measured on a real
+migration: 16 measures / 16 descriptions, **18 columns / zero**.
+
+This is the "reads as covered because a test imports it" pattern that A2 found
+at module level, appearing here at function level. It is worth recording as a
+distinct shape: module reachability now has a ratchet, function-level
+reachability does not.
+
+Four tests were named for the feature and none could fail. Three asserted
+`'SummarizationSetBy' in content` — a line `_write_column_flags` always emits —
+and the end-to-end test counted `SummarizationSetBy` occurrences while its name
+promised descriptions. All four now assert the annotation itself.
+
+Wired into `_write_column_flags` beside the existing `Copilot_Hidden`
+annotation, so both the calculated and physical column paths get it.
+Financial_Report went 16 → 34 annotations; the corpus gate is unchanged at 27
+openable, 0 blockers, 17 PASS / 10 WARN.
 
 ### A4 findings — the recipe does not transfer to half the list
 

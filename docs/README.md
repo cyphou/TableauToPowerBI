@@ -115,6 +115,6 @@ CLI, batch, MCP, Notebook, and Fabric outputs on the same provenance contract.
 | `migrate.py` | CLI entry point, batch support, logging |
 | `tableau_export/` | Tableau XML parsing, DAX conversion, Power Query M generation |
 | `powerbi_import/` | .pbip generation, TMDL, visuals, validation, deployment |
-| `tests/` | 10,274 tests in latest full run |
+| `tests/` | 10,275 tests in latest full run |
 | `artifacts/` | Generated .pbip projects |
 | `.github/workflows/` | CI/CD pipeline (lint, test, validate, deploy) |
