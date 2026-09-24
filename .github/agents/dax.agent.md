@@ -18,15 +18,14 @@ You are the **DAX** agent for the Tableau to Power BI migration project. You are
 - `tableau_export/dax_converter.py` — 133+ Tableau → DAX formula conversions (the raw translation engine)
 - `powerbi_import/dax_optimizer.py` — DAX optimizer engine (AST-based rewriter: nested IF→SWITCH, ISBLANK→COALESCE, constant folding, SUMX simplification, measure dependency DAG, Time Intelligence auto-injection)
 
-### DAX Post-Processing in `tmdl_generator.py` (co-owned with @semantic)
-@semantic owns the structural half. You own these **DAX-specific
-post-processing blocks** in `powerbi_import/tmdl_generator.py`:
-- **SUM-of-measure unwrapping** — `_unwrap_aggregations_of_measures()`: detects `SUM([MeasureName])` and unwraps to `[MeasureName]` when the argument is a measure (not a column)
-- **Bare cross-table column ref wrapping** — `_wrap_bare_cross_table_refs()`: detects `'Table'[Column]` in measures at parenthesis depth 0 and wraps in `SUM()` (columns inside iterators at depth>0 are left as row-level refs)
-- **Post-rewrite validation sweep** — `_validate_measures_after_rewrites()`: re-validates every measure once the rewrites have run
-- **Inline bare-ref fix** — wraps entire-expression bare column refs (`'T'[C]` or `[C]`) in SUM before measure creation. Still inline inside `_build_table`
-- **RELATED/LOOKUPVALUE substitution** — `_replace_related_with_lookupvalue()`, `_replace_related_in_aggx_context()`, `_fix_related_for_many_to_many()`
-- **Cross-table reference resolution** — `resolve_table_for_column()`, `resolve_table_for_formula()`
+### DAX Post-Processing
+- `powerbi_import/tmdl_dax_postprocess.py` — everything you own inside the TMDL generation path, extracted from `tmdl_generator` (which re-exports it and calls in from `_build_table` and `_apply_semantic_enrichments`):
+  - **SUM-of-measure unwrapping** — `_unwrap_aggregations_of_measures()`: detects `SUM([MeasureName])` and unwraps to `[MeasureName]` when the argument is a measure (not a column)
+  - **Bare cross-table column ref wrapping** — `_wrap_bare_cross_table_refs()`: detects `'Table'[Column]` in measures at parenthesis depth 0 and wraps in `SUM()` (columns inside iterators at depth>0 are left as row-level refs)
+  - **Bare-ref expression fix** — `_wrap_bare_ref_expression()`: aggregates a measure whose whole expression is a bare column ref. Measured as never firing on the example corpus (108 calls, 0 rewrites) — see `docs/ROADMAP.md`
+  - **Post-rewrite validation sweep** — `_validate_measures_after_rewrites()`
+  - **RELATED/LOOKUPVALUE substitution** — `_replace_related_with_lookupvalue()`, `_replace_related_in_aggx_context()`, `_fix_related_for_many_to_many()`
+  - **Cross-table reference resolution** — `resolve_table_for_column()`, `resolve_table_for_formula()`
 
 ## Constraints
 

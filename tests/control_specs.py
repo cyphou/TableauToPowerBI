@@ -213,10 +213,12 @@ CONTROLS = [
 
     # ── Agent ownership ────────────────────────────────────────────────
     {
-        "name": "co-ownership of tmdl_generator stops being declared",
-        "file": ".github/agents/dax.agent.md",
-        "old": "### DAX Post-Processing in `tmdl_generator.py` (co-owned with @semantic)",
-        "new": "### DAX Post-Processing in `tmdl_generator.py`",
+        # Retargeted from tmdl_generator, which became sole @semantic once the
+        # DAX half moved to tmdl_dax_postprocess.
+        "name": "co-ownership of shared_model stops being declared",
+        "file": ".github/agents/semantic.agent.md",
+        "old": "Co-owned with @merger (you own the semantic model merge logic)",
+        "new": "the semantic model merge logic",
         "test": "tests/test_agent_ownership.py",
     },
     {

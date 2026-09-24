@@ -15,16 +15,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from scripts.check_agent_ownership import analyse
 
 # Modules deliberately shared, and the number of agents each may carry.
-# tmdl_generator is the historical case: @semantic owns the structure and @dax
-# owns DAX post-processing. @wiring was removed once the M conversion surface
-# moved to tmdl_m_conversion. Shrink this map, never grow it.
+# tmdl_generator was the historical case (@semantic structure + @dax
+# post-processing); the DAX half moved to tmdl_dax_postprocess, so it is sole
+# @semantic now and this map shrank. Shrink it further, never grow it.
 CO_OWNED_LIMITS = {
     'merge_assessment.py': 2,
     'merge_report_html.py': 2,
     'prep_lineage.py': 2,
     'prep_lineage_report.py': 2,
     'shared_model.py': 2,
-    'tmdl_generator.py': 2,
 }
 
 

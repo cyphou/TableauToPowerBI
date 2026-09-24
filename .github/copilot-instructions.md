@@ -504,7 +504,7 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 
 - **One owner per file** — only the owning agent modifies each source file
 - **Read access is universal** — any agent can read any file for context
-- **Co-owned functions** — `tmdl_generator.py` is co-owned by @semantic (structural) and @dax (DAX post-processing). @wiring's M surface was extracted to `tmdl_m_conversion.py` and @healing's to `tmdl_self_heal.py`; `tmdl_generator` re-exports both but defines neither, so those are sole ownership, not a share
+- **Co-owned functions** — `tmdl_generator.py` is now **sole @semantic**. The DAX post-processing moved to `tmdl_dax_postprocess.py` (@dax), the M surface to `tmdl_m_conversion.py` (@wiring), the healing surface to `tmdl_self_heal.py` (@healing) and the lineage map to `tmdl_lineage.py` (@evidence); `tmdl_generator` re-exports them all but defines none, so those are sole ownership, not a share
 - **Tester is cross-cutting** — reads all source, writes only to `tests/`
 - **Public fixtures only** — examples and test fixtures must use public sources or reserved placeholders; never add customer, tenant, account, or private-environment data.
 - **Default agent** handles multi-domain tasks, docs, git, sprint planning

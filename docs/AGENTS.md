@@ -363,7 +363,7 @@ When an agent encounters work outside its domain:
 - **Read access is universal** — any agent can read any file for context
 - **Write access is restricted** — only the owning agent modifies a file
 - **Tester is special** — reads all source files, writes only to `tests/`
-- **Co-owned functions** — `tmdl_generator.py` has shared ownership: @semantic owns structural parts, @dax owns DAX post-processing, @wiring owns M functions
+- **Co-owned functions** — `tmdl_generator.py` is **sole @semantic**; the DAX post-processing (@dax), M conversion (@wiring), self-healing (@healing) and lineage (@evidence) surfaces were each extracted to their own module, which `tmdl_generator` re-exports but does not define
 - **Cross-cutting** — `security_validator.py` is used by Extractor, Orchestrator, and Deployer (no single owner — all contributors coordinate)
 
 ## When NOT to Use Specialized Agents

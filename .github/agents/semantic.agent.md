@@ -23,7 +23,7 @@ You are the **Semantic** agent for the Tableau to Power BI migration project. Yo
 - `powerbi_import/tmdl_hierarchies.py` — Tableau drill-paths and generated Year/Quarter/Month/Day date hierarchies. Extracted from `tmdl_generator`, which re-exports but no longer defines them
 
 ### Core Semantic Model Generation
-- `powerbi_import/tmdl_generator.py` — Co-owned with **@dax**, who owns the DAX post-processing blocks. Unified semantic model generator, the largest file in the project. You own the **structural** parts:
+- `powerbi_import/tmdl_generator.py` — Unified semantic model generator, the largest file in the project, and **yours outright**. You own the **structural** parts:
   - `generate_tmdl()` — main entry point
   - `_build_semantic_model()` — model orchestrator
   - `_collect_semantic_context()` — builds calc_map, param_map, column_table_map, measure_names
@@ -74,14 +74,12 @@ All TMDL serialization functions in `tmdl_generator.py`:
 
 ## Shared Ownership
 
-`tmdl_generator.py` is co-owned with **@dax**, who owns the DAX post-processing:
-SUM wrapping, measure unwrapping, and cross-table ref fixing. Coordinate before
-touching those blocks.
-
-Two surfaces that used to live here are now owned outright elsewhere, and
-`tmdl_generator` only re-exports them:
+Surfaces that used to live in `tmdl_generator.py` are now owned outright
+elsewhere, and `tmdl_generator` only re-exports them:
+- `tmdl_dax_postprocess.py` — owned by **@dax**: measure unwrapping, bare-ref wrapping, `RELATED`→`LOOKUPVALUE` substitution, cross-table ref resolution
 - `tmdl_m_conversion.py` — owned by **@wiring**: `_dax_to_m_expression()`, `_inject_m_steps_into_partition()`, `_build_m_transform_steps()`, `_fix_m_if_else_balance()`
 - `tmdl_self_heal.py` — owned by **@healing**: `_self_heal_model()`, `_validate_m_partitions()`
+- `tmdl_lineage.py` — owned by **@evidence**: `_build_lineage_map()`
 
 ## Constraints
 
