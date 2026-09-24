@@ -15,7 +15,7 @@ You are the **Semantic** agent for the Tableau to Power BI migration project. Yo
 - `powerbi_import/schema_validator.py` — TMDL/PBIR schema validation
 
 ### Core Semantic Model Generation
-- `powerbi_import/tmdl_generator.py` — Unified semantic model generator (5000+ lines). This is the largest file in the project. You own the **structural** parts:
+- `powerbi_import/tmdl_generator.py` — Co-owned with **@dax**, who owns the DAX post-processing blocks. Unified semantic model generator, the largest file in the project. You own the **structural** parts:
   - `generate_tmdl()` — main entry point
   - `_build_semantic_model()` — model orchestrator
   - `_collect_semantic_context()` — builds calc_map, param_map, column_table_map, measure_names

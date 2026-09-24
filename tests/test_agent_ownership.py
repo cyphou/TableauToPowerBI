@@ -14,17 +14,31 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from scripts.check_agent_ownership import analyse
 
-# tmdl_generator is the one historically co-owned file: @semantic owns the
-# structure and @dax owns DAX post-processing. @wiring was removed once the M
-# conversion surface moved to tmdl_m_conversion. Shrink this set, never grow it.
-KNOWN_MULTI_OWNED = {'tmdl_generator.py'}
-MAX_OWNERS = {'tmdl_generator.py': 2}
+# Modules deliberately shared, and the number of agents each may carry.
+# tmdl_generator is the historical case: @semantic owns the structure and @dax
+# owns DAX post-processing. @wiring was removed once the M conversion surface
+# moved to tmdl_m_conversion. Shrink this map, never grow it.
+CO_OWNED_LIMITS = {
+    'merge_assessment.py': 2,
+    'merge_report_html.py': 2,
+    'prep_lineage.py': 2,
+    'prep_lineage_report.py': 2,
+    'shared_model.py': 2,
+    'tmdl_generator.py': 2,
+}
 
 
 class TestAgentOwnership(unittest.TestCase):
     def setUp(self):
         (self.mods, self.owners, self.shared,
          self.unowned, self.multi, self.asymmetric) = analyse()
+
+    def _agents_for(self, module):
+        """Every agent recorded against a module, however it was declared."""
+        return (self.multi.get(module)
+                or self.shared.get(module)
+                or self.owners.get(module)
+                or [])
 
     def test_co_ownership_is_declared_on_both_sides(self):
         """Half-declared sharing leaves one agent's file claiming exclusivity."""
@@ -40,27 +54,32 @@ class TestAgentOwnership(unittest.TestCase):
             "modules with no owning agent:\n  " + "\n  ".join(self.unowned))
 
     def test_no_undeclared_multi_ownership(self):
-        unexpected = {m: a for m, a in self.multi.items()
-                      if m not in KNOWN_MULTI_OWNED}
         self.assertEqual(
-            unexpected, {},
+            self.multi, {},
             "modules claimed by several agents without a 'co-owned' marker:\n  "
             + "\n  ".join(f"{m} -> {', '.join(a)}"
-                          for m, a in sorted(unexpected.items())))
+                          for m, a in sorted(self.multi.items())))
 
-    def test_known_multi_owned_does_not_grow(self):
-        still_multi = set(self.multi) & KNOWN_MULTI_OWNED
-        self.assertTrue(
-            still_multi <= KNOWN_MULTI_OWNED,
-            f"co-ownership grew beyond the allow-list: {still_multi}")
+    def test_sharing_stays_on_the_allow_list(self):
+        """A newly shared module is a decision, not a side effect."""
+        self.assertEqual(
+            sorted(self.shared), sorted(CO_OWNED_LIMITS),
+            "declared co-ownership no longer matches the allow-list")
 
     def test_owner_count_does_not_grow(self):
-        for module, limit in MAX_OWNERS.items():
-            agents = self.multi.get(module, self.owners.get(module, []))
+        for module, limit in CO_OWNED_LIMITS.items():
+            agents = self._agents_for(module)
             self.assertLessEqual(
                 len(agents), limit,
                 f"{module} is now owned by {len(agents)} agents "
                 f"({', '.join(agents)}), limit is {limit}")
+
+    def test_sole_ownership_is_sole(self):
+        """The limit above is only meaningful if unshared files carry one agent."""
+        for module, agents in self.owners.items():
+            self.assertEqual(
+                len(agents), 1,
+                f"{module} is claimed by {', '.join(agents)} without 'co-owned'")
 
     def test_modules_are_discovered(self):
         self.assertGreater(len(self.mods), 100)

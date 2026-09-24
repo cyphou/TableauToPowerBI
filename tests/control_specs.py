@@ -210,4 +210,20 @@ CONTROLS = [
         "new": "",
         "test": "tests/test_doc_claims.py",
     },
+
+    # ── Agent ownership ────────────────────────────────────────────────
+    {
+        "name": "co-ownership of tmdl_generator stops being declared",
+        "file": ".github/agents/dax.agent.md",
+        "old": "### DAX Post-Processing in `tmdl_generator.py` (co-owned with @semantic)",
+        "new": "### DAX Post-Processing in `tmdl_generator.py`",
+        "test": "tests/test_agent_ownership.py",
+    },
+    {
+        "name": "a third agent claims a file without declaring the sharing",
+        "file": ".github/agents/visual.agent.md",
+        "old": "## Constraints",
+        "new": "- `powerbi_import/tmdl_generator.py`\n\n## Constraints",
+        "test": "tests/test_agent_ownership.py",
+    },
 ]
