@@ -21,9 +21,10 @@ You are the **DAX** agent for the Tableau to Power BI migration project. You are
 ### DAX Post-Processing in `tmdl_generator.py` (co-owned with @semantic)
 @semantic owns the structural half. You own these **DAX-specific
 post-processing blocks** in `powerbi_import/tmdl_generator.py`:
-- **SUM-of-measure unwrapping** — detects `SUM([MeasureName])` and unwraps to `[MeasureName]` when the argument is a measure (not a column)
-- **Bare cross-table column ref wrapping** — detects `'Table'[Column]` in measures at parenthesis depth 0 and wraps in `SUM()` (columns inside iterators at depth>0 are left as row-level refs)
-- **Inline bare-ref fix** — wraps entire-expression bare column refs (`'T'[C]` or `[C]`) in SUM before measure creation
+- **SUM-of-measure unwrapping** — `_unwrap_aggregations_of_measures()`: detects `SUM([MeasureName])` and unwraps to `[MeasureName]` when the argument is a measure (not a column)
+- **Bare cross-table column ref wrapping** — `_wrap_bare_cross_table_refs()`: detects `'Table'[Column]` in measures at parenthesis depth 0 and wraps in `SUM()` (columns inside iterators at depth>0 are left as row-level refs)
+- **Post-rewrite validation sweep** — `_validate_measures_after_rewrites()`: re-validates every measure once the rewrites have run
+- **Inline bare-ref fix** — wraps entire-expression bare column refs (`'T'[C]` or `[C]`) in SUM before measure creation. Still inline inside `_build_table`
 - **RELATED/LOOKUPVALUE substitution** — `_replace_related_with_lookupvalue()`, `_replace_related_in_aggx_context()`, `_fix_related_for_many_to_many()`
 - **Cross-table reference resolution** — `resolve_table_for_column()`, `resolve_table_for_formula()`
 
