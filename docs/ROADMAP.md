@@ -176,7 +176,7 @@ Ordered so that no effort is spent refactoring code that should not exist.
 | A1 — Calculation evidence | **Done.** Each family is keyed on its distinguishing DAX artifact — LOD by `ALLEXCEPT`/`REMOVEFILTERS`, table calc by `RANKX`/`OFFSET`/`ALLSELECTED`/`WINDOW`/`INDEX`, basic by an aggregation with neither — and every declaration is gated per-measure by its migration provenance annotation, so a generated helper is never attributed to a source calculation | 0 in-use features report `not_checked`; window semantics are tested before grain override so a `WINDOW_*` expression using `ALLEXCEPT` is not misread as a LOD; a generated R² measure using `RANKX` evidences nothing |
 | A2 — Reachability contract | **Done.** Both halves of the inert surface are now ratcheted. Flags: **0 inert of 142**, closed by retiring the last four into the flags that already did the work. Modules: **14 unreachable / 4,292 lines**, down from 22 / 9,099 — partly modules wired since, partly three resolver rules the codebase actually needs. `scripts/check_reachability.py` guards the module half as `check_cli_flags.py` guards the flag half | Both ratchets proven to fail on an injected regression and on a stale baseline entry. Remaining: a wire/declare/retire decision per module |
 | A3 — Healing consolidation | **Done, mostly as an exemption.** Measured first: there is already **one** recovery ledger, and **78 of 78** healers across all three stages feed it. The real defect was the facade — `healing.py` was imported by nobody while `migrate.py` and `mcp_server.py` went around it to `autoheal`/`openability`. Consumers now route through the facade | One ledger proven by measurement, not assertion; facade reachable and guarded; `RepairAttempt` stays distinct from `HealAction` |
-| A4 — Decompose by seam | Split the top-6 along existing seams with the proven extraction recipe. **Measured: they are two populations, not one** — see A4 findings below | No module above ~2,500 lines. The "one owner" half of this gate is **not reachable by extraction** — see below |
+| A4 — Decompose by seam | **Done for `tmdl_generator`.** 7,113 → **2,791 lines (-61%)** across nine cuts, each with re-export compatibility and a measured equivalence check. The "one owner" half is closed too: `tmdl_generator` is sole `@semantic` and `CO_OWNED_LIMITS` shrank 6 → 5. It needed a **lift before the move** — the `@dax` work was inline statements, so there was nothing to extract until it became functions. See A4 findings below | `tmdl_generator` under 2,500 lines is **not yet met** (2,791); one owner **met**. The remaining top-6 files are unstarted |
 | A5 — Resilience baseline (R4) | Measure what survives interruption *before* building: interrupt a batch, replay a checkpoint, corrupt a source, delete a target table. **First input already measured: reruns are not path-idempotent** — 42 of 137 paths differ between two runs of identical code | Interrupted and replayed migrations preserve evidence and never duplicate output |
 | A6 — Runtime closure (R5) | Unchanged: an authorized environment, or the roadmap states plainly that these signals stay `not_run` | `OPERATIONAL_100` only with real environment evidence |
 
@@ -210,21 +210,23 @@ annotation, so both the calculated and physical column paths get it.
 Financial_Report went 16 → 34 annotations; the corpus gate is unchanged at 27
 openable, 0 blockers, 17 PASS / 10 WARN.
 
-### The "one owner" half of A4 is not an extraction problem
+### The "one owner" half of A4 — CLOSED, but not by extraction alone
 
-A4's exit gate asked for `tmdl_generator` "reduced to one owner". Measuring
-what `@dax` actually owns there shows that cannot be done by moving functions.
+A4's exit gate asked for `tmdl_generator` "reduced to one owner". It is now
+sole `@semantic`, and `CO_OWNED_LIMITS` in `tests/test_agent_ownership.py`
+shrank from 6 declared co-ownerships to 5. The route there is worth recording,
+because the first measurement said it could not be done by moving functions —
+and that was correct as far as it went.
 
-`dax.agent.md` names five separable functions —
+`dax.agent.md` named five separable functions —
 `_replace_related_with_lookupvalue`, `_replace_related_in_aggx_context`,
 `_fix_related_for_many_to_many`, `resolve_table_for_column`,
-`resolve_table_for_formula` — totalling **174 lines**, needing only `re`, with
-one remaining caller. Those would move cleanly.
-
-But the rest of what `@dax` owns is *inline*: SUM-of-measure unwrapping, bare
-cross-table reference wrapping and the inline bare-ref fix live as statements
-inside `_build_table` (**729 lines**). Moving the five named functions would
-shrink the file by 3% and leave the co-ownership exactly where it is.
+`resolve_table_for_formula` — totalling **174 lines**. Those would move
+cleanly. But the rest of what `@dax` owned was *inline*: SUM-of-measure
+unwrapping, bare cross-table reference wrapping and the bare-ref fix lived as
+statements inside `_build_table` (**729 lines**). Moving only the five named
+functions would have shrunk the file by 3% and left the co-ownership exactly
+where it was — or worse, created a *second* co-owned module.
 
 An earlier revision of this section also named `_process_sets_groups_bins` and
 `_create_quick_table_calc_measures` as carrying inline `@dax` work. Measured
@@ -234,15 +236,35 @@ bare-ref wrapping, `measure_names` lookups and RELATED/LOOKUPVALUE substitution
 `_create_quick_table_calc_measures` scores **0 / 0 / 0 / 0** and the extracted
 `tmdl_sets.py` carries a single structural `RELATED(` for combined-group
 references and none of the post-processing blocks. Both were therefore
-extracted, and declared, as sole `@semantic`. The prerequisite below is
-confined to one function, not three.
+extracted, and declared, as sole `@semantic`. The prerequisite was confined to
+one function, not three.
 
-So the ownership goal has a prerequisite the gate did not state: `_build_table`
-has to be decomposed, and the DAX blocks inside it lifted into functions,
-*before* anything can be moved. That is a larger and riskier change than the
-extractions done so far, and it should be planned as its own item rather than
-folded into a size target. The size half of the gate is unaffected and
-continues.
+So the gate had an unstated prerequisite, and it was done in two steps before
+any module moved:
+
+1. **Lift** (`f1f8130`, `323a0f9`) — the four inline blocks became named
+   functions inside `tmdl_generator`. Verbatim moves: the bodies already sat at
+   4-space indent, so they went under a new `def` with no re-indentation.
+   `_build_table` 729 → 552 lines.
+2. **Extract** (`daeb8fa`) — all nine `@dax` functions moved to
+   `tmdl_dax_postprocess.py`, 399 lines, with `tmdl_generator` re-exporting and
+   calling in from `_build_table` and `_apply_semantic_enrichments`.
+
+Two things the evidence showed that the diff alone would not have:
+
+- The corpus diff covers `_wrap_bare_cross_table_refs` (4 real rewrites over 16
+  invocations) and the RELATED substitution (33 `LOOKUPVALUE` occurrences), but
+  **not** `_unwrap_aggregations_of_measures`, which rewrites 0 measures
+  corpus-wide. That half was proved separately by driving `_build_table` before
+  and after with calculations that do trigger it.
+- `_wrap_bare_ref_expression` is called 108 times across ten workbooks and
+  **rewrites nothing** — its guard never matches. A measure only reaches it if
+  its converted DAX is exactly a bare column reference, but such a formula has
+  no aggregation and does carry a column ref, so the classifier makes it a
+  calculated column instead. `ATTR([Region])` behaves the same. On this evidence
+  the rewriting branches look unreachable in the current pipeline, the same
+  shape as the dead `topN` branch in `visual_generator._build_visual_filters`.
+  Left in place: failing to find a trigger is not proof of unreachability.
 
 Seams taken since, all with re-export compatibility and a measured equivalence
 check: the relationship group (601 lines), then `tmdl_lineage` (270),
@@ -251,11 +273,11 @@ check: the relationship group (601 lines), then `tmdl_lineage` (270),
 lines (-56%)**, corpus gate unchanged throughout at 27 openable / 0 blockers /
 17 PASS / 10 WARN.
 
-What is left, measured against the current file:
+What is left, measured against the current file (`tmdl_generator` 2,791 lines):
 
 | Cluster | Lines | Callers | Status |
 |---|---|---|---|
-| `_build_table` | 835 | 1 | Blocked — 5 blocks over a 1,156-line span, and the only place inline `@dax` work lives. Needs the decomposition described above, and an ownership decision, before it can move |
+| `_build_table` | 552 | 1 | Still the largest single function, but no longer an ownership blocker — the `@dax` blocks were lifted out and extracted. Spread over several blocks, so a further split is a decomposition, not a slice |
 | quick table calcs | 117 | 1 | Contiguous and sole-`@semantic`, but **no corpus workbook exercises it** — see below |
 | time intelligence | 82 | 2 | Small |
 
@@ -268,6 +290,20 @@ rather than directly on a shelf, and the field extractor reads shelves and
 encodings. So the feature is *unexercised*, not broken, and a TMDL diff cannot
 be used as evidence for any change to it. Same situation as sets/groups/bins,
 which the corpus also never produces.
+
+Two notes for anyone continuing this work:
+
+- **`powerbi_import.tmdl_generator` and `tmdl_generator` are two distinct
+  module objects**, and the pipeline resolves the flat one. A probe that
+  patches the package object counts nothing and reads exactly like "this code
+  never runs" — that cost a wrong conclusion before it was caught. Check
+  re-export identity, and aim any patch, at both paths.
+- The four timing tests in `test_performance_regression` / `test_production_scale`
+  fail under full-suite load and pass in isolation with large margin
+  (`test_1000_tmdl_generations`: 216.7s loaded, 17.85s isolated, 120s budget).
+  Verified load-induced by measuring pre- and post-change at 25.08s vs 24.79s.
+  A budget assertion that depends on whole-suite load will keep producing false
+  failures; that is a `@tester` decision, not a refactor one.
 
 ### A4 findings — the recipe does not transfer to half the list
 
