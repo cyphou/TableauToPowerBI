@@ -54,7 +54,6 @@ KNOWN_UNREACHABLE = frozenset({
     "powerbi_import.dax_recipes",
     "powerbi_import.gateway_config",
     "powerbi_import.geo_passthrough",
-    "powerbi_import.healing",
     "powerbi_import.marketplace",
     "powerbi_import.model_templates",
     "powerbi_import.regression_suite",

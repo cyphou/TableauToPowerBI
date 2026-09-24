@@ -6478,9 +6478,9 @@ def _run_autoheal(args, source_basename):
         print(f"  ⚠ Autoheal skipped: project directory not found")
         return
     try:
-        from autoheal import AutoHealer, LogFileSource
+        from healing import AutoHealer, LogFileSource
     except ImportError:
-        from powerbi_import.autoheal import AutoHealer, LogFileSource
+        from powerbi_import.healing import AutoHealer, LogFileSource
 
     autofix = bool(getattr(args, 'llm_autofix', False))
     gateway = None
@@ -6560,9 +6560,9 @@ def _run_openability_gate(project_dir):
         print(f"  ✗ Openability preflight failed: project directory not found")
         return False
     try:
-        from openability import check_openability
+        from healing import check_openability
     except ImportError:
-        from powerbi_import.openability import check_openability
+        from powerbi_import.healing import check_openability
     report = check_openability(project_dir)
     if report.openable:
         pq = next((c for c in report.checks if c.name == 'power_query'), None)

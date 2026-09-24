@@ -274,4 +274,17 @@ CONTROLS = [
         "new": "    # Load configuration file if specified",
         "test": "tests/test_cli_flag_wiring.py",
     },
+
+    # ── Healing facade ─────────────────────────────────────────────────
+    {
+        "name": "a consumer bypasses the healing facade",
+        "file": "migrate.py",
+        "old": "        from healing import check_openability\n"
+               "    except ImportError:\n"
+               "        from powerbi_import.healing import check_openability",
+        "new": "        from openability import check_openability\n"
+               "    except ImportError:\n"
+               "        from powerbi_import.openability import check_openability",
+        "test": "tests/test_healing_facade.py",
+    },
 ]

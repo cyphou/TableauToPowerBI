@@ -498,7 +498,7 @@ class MigrationTools:
         autofix = bool(args.get("autofix", False))
         log = args.get("log")
         try:
-            from powerbi_import.autoheal import AutoHealer, PbiDesktopSource
+            from powerbi_import.healing import AutoHealer, PbiDesktopSource
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"autoheal unavailable: {exc}"}
         gateway = None
@@ -522,7 +522,7 @@ class MigrationTools:
         if not project_dir or not os.path.isdir(project_dir):
             return {"ok": False, "error": f"project_dir not found: {project_dir}"}
         try:
-            from powerbi_import.openability import check_openability
+            from powerbi_import.healing import check_openability
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"openability unavailable: {exc}"}
         report = check_openability(project_dir)

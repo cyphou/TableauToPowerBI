@@ -158,8 +158,10 @@ Four findings follow from that table:
    finding generalised: a module reads as covered because a test imports it.
    `scripts/check_reachability.py` now stops that set growing.
 3. **The documented healing architecture describes a third of the code.**
-   `self_healing_v3`, `self_healing_report` and `tmdl_self_heal` sit outside the
-   `healing_core` contract, and `healing.py` is not reachable from `migrate.py`.
+   `self_healing_v3`, `self_healing_report` and `tmdl_self_heal` sit outside
+   the `healing_core` contract, and `healing.py` is not reachable from
+   `migrate.py`. *Resolved in A3 — the ledger was already shared, the dataclass
+   difference is a recorded exemption, and the facade is now the import surface.*
 4. **Reporting producers were never consolidated.** `html_template` (fan-in 32)
    unified presentation; `migration_quality` still carries fan-out 29.
 
@@ -171,7 +173,7 @@ Ordered so that no effort is spent refactoring code that should not exist.
 |---|---|---|
 | A1 — Calculation evidence | **Done.** Each family is keyed on its distinguishing DAX artifact — LOD by `ALLEXCEPT`/`REMOVEFILTERS`, table calc by `RANKX`/`OFFSET`/`ALLSELECTED`/`WINDOW`/`INDEX`, basic by an aggregation with neither — and every declaration is gated per-measure by its migration provenance annotation, so a generated helper is never attributed to a source calculation | 0 in-use features report `not_checked`; window semantics are tested before grain override so a `WINDOW_*` expression using `ALLEXCEPT` is not misread as a LOD; a generated R² measure using `RANKX` evidences nothing |
 | A2 — Reachability contract | **Done.** Both halves of the inert surface are now ratcheted. Flags: **0 inert of 142**, closed by retiring the last four into the flags that already did the work. Modules: **14 unreachable / 4,292 lines**, down from 22 / 9,099 — partly modules wired since, partly three resolver rules the codebase actually needs. `scripts/check_reachability.py` guards the module half as `check_cli_flags.py` guards the flag half | Both ratchets proven to fail on an injected regression and on a stale baseline entry. Remaining: a wire/declare/retire decision per module |
-| A3 — Healing consolidation | Bring the three outside modules under the `healing_core` contract and one recovery ledger, or document the exemption | One healing contract, no undocumented stage, `RepairAttempt` stays distinct from `HealAction` |
+| A3 — Healing consolidation | **Done, mostly as an exemption.** Measured first: there is already **one** recovery ledger, and **78 of 78** healers across all three stages feed it. The real defect was the facade — `healing.py` was imported by nobody while `migrate.py` and `mcp_server.py` went around it to `autoheal`/`openability`. Consumers now route through the facade | One ledger proven by measurement, not assertion; facade reachable and guarded; `RepairAttempt` stays distinct from `HealAction` |
 | A4 — Decompose by seam | Split the top-6 along existing seams (page/layout vs visual, relationship inference, parameter tables, per-type extractors) with the proven extraction recipe | No module above ~2,500 lines; `tmdl_generator` reduced to one owner |
 | A5 — Resilience baseline (R4) | Measure what survives interruption *before* building: interrupt a batch, replay a checkpoint, corrupt a source, delete a target table | Interrupted and replayed migrations preserve evidence and never duplicate output |
 | A6 — Runtime closure (R5) | Unchanged: an authorized environment, or the roadmap states plainly that these signals stay `not_run` | `OPERATIONAL_100` only with real environment evidence |
@@ -182,6 +184,49 @@ Non-goals for this cycle, recorded so they are not re-proposed:
   discoverability, and flag-based automation is a compatibility contract.
 - Merging the 21 HTML generators. `html_template` already unified presentation;
   merging producers would risk the reporting contract for cosmetic gain.
+
+### A3 findings — the consolidation that was mostly already done
+
+A3 was framed as "bring the three outside modules under the `healing_core`
+contract and one recovery ledger". Measuring first changed the work, as it did
+twice last cycle: **the ledger half of that premise was already false.**
+
+`self_healing_v3` (53 healers), `self_healing_report` (25) and
+`tmdl_self_heal` (1) all take a `recovery` argument and all feed the same
+`RecoveryReport`. Counted directly: **78 of 78 healers record**, and there is
+exactly one ledger, not two. No stage heals silently.
+
+Getting that number took three attempts, and the wrong ones are the point.
+Looking for `recovery.record(...)` reported 25 silent healers in
+`self_healing_report` — they call a module-local `_record(recovery, ...)`
+wrapper. Looking for unused `recovery` parameters then flagged
+`build_migration_ledger` and `build_validation_contract`, which take a
+`recovery` **Mapping** of evidence, not the ledger object. Both were detectors
+counting something other than what they claimed, which is the failure mode
+this phase exists to find — found here in the audit rather than in the code.
+
+What the three modules genuinely do not share is the `HealAction` dataclass,
+and that is **a recorded exemption rather than debt**. `HealAction` carries
+`before`/`after` *strings*: it fits stage 3, which transforms expressions.
+Stages 1 and 2 mutate model dictionaries and PBIR JSON in place, where there is
+no before/after string to record, so they pass structured keyword arguments to
+the same ledger instead. Forcing one dataclass across both shapes would mean
+inventing string renderings of dict mutations purely to satisfy a type.
+
+**The real defect was the facade.** `healing.py` documents itself as "one
+coherent import surface over the whole self-healing stack", is described in
+`docs/ARCHITECTURE.md`, and was imported by **nobody** — `migrate.py` and
+`mcp_server.py` both reached past it to `autoheal` and `openability`. That is
+why it sat on the unreachable list. Both consumers now import from the facade,
+proven end to end on a real migration (autoheal and the openability gate both
+run, since those imports are function-local and only a real run exercises
+them). `tests/test_healing_facade.py` asserts by AST that no consumer takes a
+facade-owned symbol from a leaf module, with a negative control.
+
+The ratchet built in A2 proved itself on this change rather than on a fixture:
+making the facade reachable made `test_the_baseline_only_shrinks` fail until
+`powerbi_import.healing` was removed from `KNOWN_UNREACHABLE`. Unreachable
+modules: 14 → **13**.
 
 ### A2 findings — the inert surface
 

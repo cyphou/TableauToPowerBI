@@ -4,9 +4,60 @@ Locks in the layering so the shared contract stays canonical and the facade
 keeps exposing one coherent import surface over the whole subsystem.
 """
 
+import ast
 import os
 import tempfile
 import unittest
+
+_REPO_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+
+#: Symbols the facade owns. A consumer importing one of these from a leaf
+#: module bypasses the documented surface, which is how `healing.py` became
+#: unreachable while reading as the entry point for the whole subsystem.
+_FACADE_SYMBOLS = {
+    'AutoHealer', 'LogFileSource', 'PbiDesktopSource', 'StaticValidatorSource',
+    'check_openability', 'heal_dax', 'heal_m', 'heal_visual',
+}
+_LEAF_MODULES = {'autoheal', 'openability', 'dax_healing', 'm_healing',
+                 'visual_healing'}
+_FACADE_CONSUMERS = ('migrate.py', 'powerbi_import/mcp_server.py')
+
+
+class TestFacadeIsTheImportSurface(unittest.TestCase):
+    """The facade only exists if its consumers actually go through it."""
+
+    def _leaf_imports(self, relpath):
+        path = os.path.join(_REPO_ROOT, relpath)
+        with open(path, encoding='utf-8-sig') as handle:
+            tree = ast.parse(handle.read())
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            if node.module.split('.')[-1] not in _LEAF_MODULES:
+                continue
+            taken = {a.name for a in node.names} & _FACADE_SYMBOLS
+            if taken:
+                offenders.append((node.lineno, node.module, sorted(taken)))
+        return offenders
+
+    def test_consumers_import_from_the_facade(self):
+        for relpath in _FACADE_CONSUMERS:
+            with self.subTest(consumer=relpath):
+                offenders = self._leaf_imports(relpath)
+                self.assertEqual(
+                    offenders, [],
+                    f"{relpath} bypasses powerbi_import.healing:\n  "
+                    + "\n  ".join(f"line {ln}: from {mod} import "
+                                  + ", ".join(names)
+                                  for ln, mod, names in offenders))
+
+    def test_the_detector_can_see_a_leaf_import(self):
+        """Without this, a parse failure would make the check vacuous."""
+        tree = ast.parse("from powerbi_import.autoheal import AutoHealer\n")
+        node = next(n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom))
+        self.assertIn(node.module.split('.')[-1], _LEAF_MODULES)
+        self.assertTrue({a.name for a in node.names} & _FACADE_SYMBOLS)
 
 
 class TestHealingCore(unittest.TestCase):
