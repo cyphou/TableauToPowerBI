@@ -226,4 +226,28 @@ CONTROLS = [
         "new": "- `powerbi_import/tmdl_generator.py`\n\n## Constraints",
         "test": "tests/test_agent_ownership.py",
     },
+
+    # ── Module reachability ────────────────────────────────────────────
+    {
+        "name": "a wired module loses its only import",
+        "file": "migrate.py",
+        "old": "from goals_generator import generate_goals_json, write_goals_artifact",
+        "new": "generate_goals_json = write_goals_artifact = None",
+        "test": "tests/test_reachability.py",
+    },
+    {
+        "name": "the analyser stops resolving bare module names",
+        "file": "scripts/check_reachability.py",
+        "old": '    for directory in MODULE_DIRS:\n'
+               '        found |= _with_packages(f"{directory}.{name}")\n',
+        "new": "    for directory in MODULE_DIRS:\n        pass\n",
+        "test": "tests/test_reachability.py",
+    },
+    {
+        "name": "a declared entry point names a caller that does not exist",
+        "file": "scripts/check_reachability.py",
+        "old": '    "powerbi_import.api_server": "Dockerfile",',
+        "new": '    "powerbi_import.api_server": "Dockerfile.removed",',
+        "test": "tests/test_reachability.py",
+    },
 ]
