@@ -305,4 +305,11 @@ CONTROLS = [
         "new": "",
         "test": "tests/test_incremental_refresh.py",
     },
+    {
+        "name": "a test patches a name its target only re-exports",
+        "file": "tests/test_filter_apostrophe_escaping.py",
+        "old": "            with patch.object(tw, '_write_table_tmdl',",
+        "new": "            with patch.object(tg, '_write_table_tmdl',",
+        "test": "tests/test_patch_targets.py",
+    },
 ]
