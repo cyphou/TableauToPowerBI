@@ -173,6 +173,46 @@ in
         self.assertEqual(validate_m_query(m), [])
 
 
+class TestNumericLiterals(unittest.TestCase):
+    """Tableau and DAX accept `40.`; M does not.
+
+    A trailing decimal point survives bracket, closure and balance checks, so
+    the first symptom is Power BI Desktop refusing to load the model with
+    "Token ')' expected" when the literal sits inside parentheses.
+    """
+
+    def test_trailing_decimal_point_is_flagged(self):
+        issues = validate_m_query('let A = (([a])*40.+([b])*40.5)*1.234 in A')
+        self.assertTrue(any('trailing decimal point' in i for i in issues))
+
+    def test_trailing_decimal_before_closing_paren(self):
+        issues = validate_m_query('let A = (1 + 2.) in A')
+        self.assertTrue(any('trailing decimal point' in i for i in issues))
+
+    def test_missing_leading_digit_is_flagged(self):
+        issues = validate_m_query('let A = .5 * [x] in A')
+        self.assertTrue(any('no digit before' in i for i in issues))
+
+    def test_well_formed_decimals_are_clean(self):
+        self.assertEqual(
+            validate_m_query('let A = (([a])*40.0+([b])*40.5)*1.234 in A'), [])
+
+    def test_type_ascription_is_not_a_number(self):
+        m = ('let A = Table.TransformColumnTypes(S, '
+             '{{"c", Int64.Type}, {"d", Currency.Type}}) in A')
+        self.assertEqual(validate_m_query(m), [])
+
+    def test_list_range_is_not_a_trailing_point(self):
+        self.assertEqual(validate_m_query('let A = {1..5} in A'), [])
+
+    def test_trailing_point_inside_string_is_data(self):
+        self.assertEqual(validate_m_query('let A = "price 40. eur" in A'), [])
+
+    def test_trailing_point_inside_quoted_identifier_is_a_name(self):
+        self.assertEqual(
+            validate_m_query('let #"Step 40." = 1 in #"Step 40."'), [])
+
+
 class TestStripHelper(unittest.TestCase):
     """Internal helper: ensure string/comment stripping preserves length
     and line breaks (so error positions stay accurate)."""

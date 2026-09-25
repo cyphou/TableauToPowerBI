@@ -105,11 +105,23 @@ def tableau_formula_to_m(formula):
     m = re.sub(r'\bABS\s*\(', 'Number.Abs(', m, flags=re.IGNORECASE)
     m = re.sub(r'\bINT\s*\(', 'Int64.From(', m, flags=re.IGNORECASE)
 
-    return m.strip()
+    return normalize_m_numeric_literals(m.strip())
 
 
 # Characters invalid in M generalized identifiers (must use [#"name"] quoting).
 _M_SPECIAL = set('./()\'"+@#$%^&*!~`<>?;:{}|\\,-')
+
+# Tableau and DAX accept a trailing decimal point (`40.`); M does not, and
+# inside parentheses the engine reports "Token ')' expected". The guards keep
+# `Int64.Type` and `1.5` intact.
+_M_TRAILING_DOT_NUMBER = re.compile(r'(?<![\w.])(\d+)\.(?![\w.])')
+
+
+def normalize_m_numeric_literals(m_expr):
+    """Rewrite `40.` as `40` so the M parser accepts the literal."""
+    if not m_expr:
+        return m_expr
+    return _M_TRAILING_DOT_NUMBER.sub(r'\1', m_expr)
 
 
 def _quote_m_ids(m_expr):

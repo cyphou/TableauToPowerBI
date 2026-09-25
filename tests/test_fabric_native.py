@@ -369,6 +369,21 @@ class TestCalcColumnUtils:
         result = tableau_formula_to_m('LEFT([Code], 3)')
         assert 'Text.Start' in result
 
+    def test_tableau_formula_to_m_normalizes_trailing_decimal_point(self):
+        # Tableau accepts `40.`; M rejects it and Desktop then refuses to load
+        # the model with "Token ')' expected".
+        from powerbi_import.calc_column_utils import tableau_formula_to_m
+        from powerbi_import.m_validator import validate_m_query
+        result = tableau_formula_to_m('([A])*40.+([B])*40.5')
+        assert '40.+' not in result
+        assert '40.5' in result
+        assert validate_m_query('let X = %s in X' % result) == []
+
+    def test_tableau_formula_to_m_keeps_well_formed_decimals(self):
+        from powerbi_import.calc_column_utils import tableau_formula_to_m
+        result = tableau_formula_to_m('[A] * 1.5 + 0.25')
+        assert '1.5' in result and '0.25' in result
+
     def test_make_m_add_column_step(self):
         from powerbi_import.calc_column_utils import make_m_add_column_step
         line, step_name = make_m_add_column_step('[A] + [B]', 'Total', 'PrevStep')

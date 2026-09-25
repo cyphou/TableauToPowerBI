@@ -97,6 +97,7 @@ def _extract_function_body(expr, func_name):
 from powerbi_import.calc_column_utils import (
     _M_SPECIAL as _M_SPECIAL_CHARS,
     _quote_m_ids as _quote_m_identifiers,
+    normalize_m_numeric_literals,
 )
 
 
@@ -409,7 +410,7 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     # Remaining DAX function calls → not convertible
     if re.search(r'\b[A-Z_]{2,}\s*\(', result):
         return None
-    return _quote_m_identifiers(result)
+    return _quote_m_identifiers(normalize_m_numeric_literals(result))
 
 
 _DATE_DATATYPES = frozenset({

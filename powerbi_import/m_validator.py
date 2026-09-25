@@ -341,6 +341,37 @@ def _check_trailing_comma(stripped: str) -> List[str]:
     return []
 
 
+# Tableau and DAX tolerate `40.`; M requires digits on both sides of the point.
+# The lookarounds keep `Int64.Type`, `1.5` and the list-range `{1..5}` intact.
+_M_TRAILING_DOT_NUMBER = re.compile(r'(?<![\w.])\d+\.(?![\w.])')
+_M_LEADING_DOT_NUMBER = re.compile(r'(?<![\w.])\.\d')
+
+
+def _check_numeric_literals(stripped: str) -> List[str]:
+    """Detect number literals the M parser rejects.
+
+    A trailing decimal point survives every balance and closure check, so the
+    first sign of it is Power BI Desktop refusing to load the model with
+    "Token ')' expected" when the literal sits inside parentheses.
+    """
+    issues = []
+    match = _M_TRAILING_DOT_NUMBER.search(stripped)
+    if match:
+        line_no = stripped[:match.start()].count('\n') + 1
+        issues.append(
+            f'number literal "{match.group(0)}" at line {line_no} has a '
+            'trailing decimal point; M requires digits after the point'
+        )
+    match = _M_LEADING_DOT_NUMBER.search(stripped)
+    if match:
+        line_no = stripped[:match.start()].count('\n') + 1
+        issues.append(
+            f'number literal "{match.group(0)}" at line {line_no} has no '
+            'digit before the decimal point'
+        )
+    return issues
+
+
 def validate_m_query(m_text: str) -> List[str]:
     """Run all M validation checks. Returns a list of issue strings;
     empty list means the M text passed every check.
@@ -363,6 +394,7 @@ def validate_m_query(m_text: str) -> List[str]:
     issues.extend(_check_brackets(stripped))
     issues.extend(_check_let_in(stripped))
     issues.extend(_check_trailing_comma(stripped))
+    issues.extend(_check_numeric_literals(stripped))
     return issues
 
 
