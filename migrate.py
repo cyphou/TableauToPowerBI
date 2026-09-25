@@ -7350,6 +7350,47 @@ def _fix_twb_data_folder(project_dir, source_basename):
     _export_dax_files(project_dir, source_basename)
 
 
+def _flatten_data_files(data_dir, data_extensions):
+    """Move embedded data files up into ``data_dir`` itself.
+
+    A .twbx stores its sources under arbitrary folders. The generated M asks
+    for ``DataFolder & "\\basename"``, so a file left in a subfolder is never
+    found: File.Contents fails, the try/otherwise fallback yields an empty
+    table and every visual renders blank.
+
+    A basename already taken by different content is left where it is -- the
+    reference is ambiguous and guessing would silently bind the wrong file.
+    """
+    if not os.path.isdir(data_dir):
+        return []
+    moved, skipped = [], []
+    for root, _dirs, files in os.walk(data_dir):
+        if os.path.abspath(root) == os.path.abspath(data_dir):
+            continue
+        for fname in files:
+            if os.path.splitext(fname)[1].lower() not in data_extensions:
+                continue
+            src = os.path.join(root, fname)
+            dest = os.path.join(data_dir, fname)
+            if os.path.exists(dest):
+                if not os.path.samefile(src, dest):
+                    skipped.append(fname)
+                continue
+            try:
+                shutil.move(src, dest)
+                moved.append(fname)
+            except (OSError, shutil.Error) as exc:
+                logger.warning("Could not flatten data file %s: %s", fname, exc)
+    if moved:
+        print(f"  [OK] Flattened {len(moved)} data file(s) into Data/ "
+              "so basename references resolve")
+    for fname in skipped:
+        logger.warning(
+            "Data file '%s' left in a subfolder: another file of that name "
+            "is already in Data/", fname)
+    return moved
+
+
 def _process_twbx_post_generation(source_path, project_dir, source_basename):
     """Post-generation processing for TWBX files.
 
@@ -7420,6 +7461,9 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename):
 
     _DATA_EXT = {'.xlsx', '.xls', '.csv', '.tsv', '.json', '.xml', '.pdf',
                  '.geojson', '.topojson', '.parquet', '.hyper', '.tde'}
+
+    _flatten_data_files(data_dir, _DATA_EXT)
+
     data_parents = set()
     for root, _dirs, files in os.walk(data_dir):
         for fname in files:
