@@ -16,6 +16,7 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 - `powerbi_import/geo_passthrough.py` — shapefile/GeoJSON passthrough
 
 - `tableau_export/extract_tableau_data.py` — Main orchestrator, TWB/TWBX parser
+- `tableau_export/extract_primitives.py` — leaf helpers shared by the extractors: field-reference cleaning, bracket stripping, safe int coercion, line-break sentinel handling. Extracted from `extract_tableau_data`, which re-exports but no longer defines them
 - `tableau_export/datasource_extractor.py` — Datasource extraction (connections, tables, columns, calculations, relationships)
 - `tableau_export/hyper_reader.py` — Hyper file data loader (SQLite interface)
 - `tableau_export/pulse_extractor.py` — Tableau Pulse metric extractor
