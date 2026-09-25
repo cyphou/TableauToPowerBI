@@ -372,6 +372,47 @@ def _check_numeric_literals(stripped: str) -> List[str]:
     return issues
 
 
+_M_FIELD_SELECTOR = re.compile(r'\[([^\[\]\n]*)\]')
+
+# Deliberately duplicated from calc_column_utils: this module is a gate and
+# must stay stdlib-only so it can never fail open on an import error.
+# tests/test_m_identifier_quoting.py pins the two copies in agreement.
+_M_SPECIAL_CHARS = set('./()\'"+@#$%^&*!~`<>?;:{}|\\,-')
+
+
+def _m_identifier_needs_quoting(name: str) -> bool:
+    """True when ``name`` cannot appear bare inside ``[...]`` in M."""
+    if not name:
+        return True
+    if any(ch in _M_SPECIAL_CHARS for ch in name):
+        return True
+    if name != name.strip():
+        return True
+    return any(ch.isspace() and ch != ' ' for ch in name) or '  ' in name
+
+
+def _check_field_selectors(stripped: str) -> List[str]:
+    """Detect [field] references that are not legal M identifiers.
+
+    A generalized identifier joins its parts with single spaces, so a Tableau
+    column whose name keeps an edge space is rejected by the M engine with
+    "Invalid identifier" -- a model load failure that every balance and
+    closure check passes straight over.
+    """
+    issues = []
+    for match in _M_FIELD_SELECTOR.finditer(stripped):
+        name = match.group(1)
+        if not name.strip() or name.startswith('#"') or '=' in name or ',' in name:
+            continue          # blanked literal, quoted id, record or list
+        if _m_identifier_needs_quoting(name):
+            line_no = stripped[:match.start()].count('\n') + 1
+            issues.append(
+                f'field selector [{name}] at line {line_no} is not a valid M '
+                'identifier; it needs [#"..."] quoting'
+            )
+    return issues
+
+
 def validate_m_query(m_text: str) -> List[str]:
     """Run all M validation checks. Returns a list of issue strings;
     empty list means the M text passed every check.
@@ -395,6 +436,7 @@ def validate_m_query(m_text: str) -> List[str]:
     issues.extend(_check_let_in(stripped))
     issues.extend(_check_trailing_comma(stripped))
     issues.extend(_check_numeric_literals(stripped))
+    issues.extend(_check_field_selectors(stripped))
     return issues
 
 

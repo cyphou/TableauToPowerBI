@@ -124,6 +124,23 @@ def normalize_m_numeric_literals(m_expr):
     return _M_TRAILING_DOT_NUMBER.sub(r'\1', m_expr)
 
 
+def _m_identifier_needs_quoting(name):
+    """True when ``name`` cannot appear bare inside ``[...]`` in M.
+
+    A generalized identifier is a run of parts joined by *single* spaces, so
+    Tableau names that keep an edge space (``'Montant Articles '``), a double
+    space, or a tab are rejected by the M engine as "Invalid identifier" even
+    though they contain no special character.
+    """
+    if not name:
+        return True
+    if any(ch in _M_SPECIAL for ch in name):
+        return True
+    if name != name.strip():
+        return True
+    return any(ch.isspace() and ch != ' ' for ch in name) or '  ' in name
+
+
 def _quote_m_ids(m_expr):
     """Quote [field] refs containing chars invalid in M generalized identifiers."""
     if not m_expr:
@@ -132,7 +149,7 @@ def _quote_m_ids(m_expr):
         name = match.group(1)
         if name.startswith('#"') or '=' in name:
             return match.group(0)
-        if any(ch in _M_SPECIAL for ch in name):
+        if _m_identifier_needs_quoting(name):
             return f'[#"{name}"]'
         return match.group(0)
     return re.sub(r'\[([^\]]+)\]', _repl, m_expr)
