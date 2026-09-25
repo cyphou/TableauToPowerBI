@@ -75,3 +75,8 @@ def _clean_tableau_run_text(run_elem):
     if any(run_elem.get(a) for a in _TABLEAU_RUN_STYLE_ATTRS):
         return text
     return text.replace('\u00c6', '').replace('\u00a0', '')
+
+
+#: Marks-card encodings. Shared so the field extractor and the chart-type
+#: inference cannot disagree about which shelves exist.
+_MARK_ENCODINGS = ('color', 'size', 'shape', 'detail', 'tooltip', 'label', 'text')
