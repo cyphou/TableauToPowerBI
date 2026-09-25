@@ -314,22 +314,21 @@ into weakly-connected components says otherwise: **70 of the 85 functions and
 from `convert_tableau_formula_to_dax`. Moving that is a rename, not a seam.
 
 The other 14 components are single isolated functions, and measuring *why* they
-are isolated produced the more useful finding: **13 of the 15 functions not
-reachable from the main converter have no production caller at all — 422
-lines.** Only `detect_script_functions` (called by `pbip_generator`) and
-`map_tableau_to_powerbi_type` (called by `tmdl_generator`) are wired. Every one
-of the 13 is referenced by 1–4 tests, so the module reads as covered.
+are isolated produced the more useful finding: **12 functions are called
+neither from anywhere inside `dax_converter` nor from any file outside it —
+402 lines.** Only `detect_script_functions` (called by `pbip_generator`) and
+`map_tableau_to_powerbi_type` (called by `tmdl_generator`) are wired, and
+`_detect_script_language` is reachable through the first of those. Every one of
+the 12 is referenced by 1–4 tests, so the module reads as covered.
 
 | Unwired function | Lines | | Unwired function | Lines |
 |---|---|---|---|---|
-| `convert_nested_lod` | 71 | | `convert_regexp_extract` | 28 |
-| `convert_running_with_partition` | 48 | | `convert_multi_dim_exclude` | 29 |
-| `convert_spatial_to_python_visual` | 46 | | `convert_lookup_offset` | 29 |
-| `convert_regexp_replace` | 39 | | `convert_ismemberof_to_rls` | 27 |
-| `convert_regexp_match` | 36 | | `convert_window_percentile` | 23 |
-| | | | `generate_combined_field_dax` | 21 |
-| | | | `_detect_script_language` | 20 |
-| | | | `has_script_functions` | 5 |
+| `convert_nested_lod` | 71 | | `convert_multi_dim_exclude` | 29 |
+| `convert_running_with_partition` | 48 | | `convert_regexp_extract` | 28 |
+| `convert_spatial_to_python_visual` | 46 | | `convert_ismemberof_to_rls` | 27 |
+| `convert_regexp_replace` | 39 | | `convert_window_percentile` | 23 |
+| `convert_regexp_match` | 36 | | `generate_combined_field_dax` | 21 |
+| `convert_lookup_offset` | 29 | | `has_script_functions` | 5 |
 
 **They are not missing features.** Following the rule that absence of a caller
 never by itself proves a capability gap, each was tested against the main
@@ -342,10 +341,34 @@ are **superseded implementations**, not capability.
 
 Open decision for `@dax`, deliberately not taken here: retire them, or wire
 them where they are better than the pattern-table result. Both need a
-per-function judgement on output quality, and deleting 422 lines of exported,
+per-function judgement on output quality, and deleting 402 lines of exported,
 test-referenced functions is not a refactor side-effect. Same disposition as
 the dead `topN` branch in `visual_generator._build_visual_filters` and the
 48-of-55 unreferenced functions in `visual_generator`.
+
+### `shared_model` measured: same shape, far less dead code
+
+`shared_model.py` (3,839 lines, 74 functions, 7 small classes) has the same
+structure as `dax_converter`: **58 of the 74 functions and 2,647 of the 3,284
+function lines are one component**, so there is no medium-sized cluster to
+slice. The next largest candidates are small and contiguous — RLS consolidation
+(`consolidate_rls_roles` + `merge_rls_roles`, 123 lines), `extract_lineage`
+(116), `validate_thin_report_fields` (72), `validate_rls_propagation` (55).
+
+Unlike `dax_converter`, almost nothing here is dead: only **3 functions / 86
+lines** are called neither internally nor externally — `detect_isolated_tables`
+(34), `fuzzy_table_match` (33), `build_custom_sql_fingerprints` (19).
+
+**A measurement error worth recording, because it nearly became a finding.** A
+first pass asked only "is this name mentioned outside the module?" and reported
+11 functions / 545 lines as unwired, including `load_existing_model`,
+`calculate_merge_score`, `compute_column_overlap` and `detect_merge_cycles`.
+All four are called from inside `shared_model` itself (lines 3644/3766, 513,
+467, 991); the scan had excluded the module's own file. A function is unwired
+only when **neither** an intra-module caller **nor** an external mention exists.
+The same flaw inflated the `dax_converter` count above from 12 to 13:
+`_detect_script_language` is called by `detect_script_functions`, which is
+itself wired.
 
 ### A4 findings — the recipe does not transfer to half the list
 
