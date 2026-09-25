@@ -9,9 +9,6 @@ You are the **Healing** agent for the Tableau to Power BI migration project. You
 
 ## Your Files (You Own These)
 
-### Also owned
-- `powerbi_import/recovery_report.py` — recovery ledger for every auto-repair action
-
 ### Healing contract & healers
 - `powerbi_import/healing_core.py` — canonical contract (`HealAction`, `HealReport`, `HIGH`/`MEDIUM`/`LOW`, `CONFIDENCE_RANK`)
 - `powerbi_import/healing.py` — unified facade (single import surface over the whole subsystem)
@@ -28,6 +25,7 @@ You are the **Healing** agent for the Tableau to Power BI migration project. You
 - `powerbi_import/tmdl_self_heal.py` — stage-1 pre-write healing extracted from `tmdl_generator` (`_self_heal_model`, `_validate_m_partitions`, `_categorize_m_issue`); `tmdl_generator` re-exports these names
 - `powerbi_import/self_healing_v3.py` — TMDL healers applied before write
 - `powerbi_import/self_healing_report.py` — PBIR JSON healers applied after write
+- `powerbi_import/recovery_report.py` — recovery ledger for every auto-repair action (stage 4)
 - `powerbi_import/recovery_registry.py` — recovery record registry
 - `powerbi_import/rollback_engine.py` — quality gate that quarantines or rolls back a bad migration
 
