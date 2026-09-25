@@ -416,6 +416,29 @@ in
         result = wrap_source_with_try_otherwise(m_query)
         self.assertEqual(result, m_query)
 
+    def test_wrap_source_escapes_quotes_in_column_names(self):
+        """Column names containing double quotes must be escaped for the M engine.
+
+        An unescaped quote closes the string literal early, so the parser meets
+        an identifier where it expects a separator and reports
+        "Token ',' expected", which makes Power BI Desktop refuse to load the
+        model even though the TMDL itself is well-formed.
+        """
+        m_query = '''let
+    Source = Csv.Document(File.Contents("data.csv")),
+    #"Promoted" = Table.PromoteHeaders(Source)
+in
+    #"Promoted"'''
+        result = wrap_source_with_try_otherwise(
+            m_query, ['Revenue "net" total', 'Plain Column'])
+
+        # The quoted name survives, escaped M-style.
+        self.assertIn('"Revenue ""net"" total"', result)
+        self.assertNotIn('"Revenue "net" total"', result)
+        # And no bare quote remains inside the fallback column list.
+        fallback = result[result.index('otherwise'):]
+        self.assertEqual(fallback.count('"') % 2, 0)
+
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # WINDOW_SUM/AVG/MAX/MIN (existing â€” non-regression)

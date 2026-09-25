@@ -315,7 +315,7 @@ in
 def _gen_m_fallback(details, table_name, columns):
     conn_type = details.get('_conn_type', 'Unknown')
     named_cols = [col for col in columns if 'name' in col]
-    col_list = ", ".join([f'"{col["name"]}"' for col in named_cols])
+    col_list = ", ".join([f'"{_m_escape_col_name(col["name"])}"' for col in named_cols])
     sample1 = ", ".join([f'"Sample {i+1}"' if col.get('datatype') == 'string' else str(i+1) for i, col in enumerate(named_cols)])
     sample2 = ", ".join([f'"Sample {i+2}"' if col.get('datatype') == 'string' else str(i+2) for i, col in enumerate(named_cols)])
     return f'''let
@@ -753,7 +753,8 @@ def _gen_m_hyper(details, table_name, columns):
         logger.debug('Hyper read failed for %s: %s', table_name, exc)
 
     # Fallback: structured #table() with column names from metadata
-    col_list = ', '.join([f'"{ col["name"] }"' for col in columns if 'name' in col])
+    col_list = ', '.join([f'"{_m_escape_col_name(col["name"])}"'
+                          for col in columns if 'name' in col])
     return f'''let
     // Hyper extract: {table_name}
     // TODO: Replace with actual data source or imported CSV.
@@ -783,7 +784,8 @@ def _gen_m_sqlproxy(details, table_name, columns):
     port = details.get('port', '443')
     channel = details.get('channel', 'https')
 
-    col_list = ', '.join([f'"{ col["name"] }"' for col in columns if 'name' in col])
+    col_list = ', '.join([f'"{_m_escape_col_name(col["name"])}"'
+                          for col in columns if 'name' in col])
     named_cols = [col for col in columns if 'name' in col]
     sample1 = ', '.join(
         [f'"Sample {i+1}"' if col.get('datatype') == 'string' else str(i + 1)
@@ -2174,7 +2176,7 @@ def wrap_source_with_try_otherwise(m_query, empty_table_columns=None):
 
     # Build fallback table
     if empty_table_columns:
-        col_list = ', '.join([f'"{c}"' for c in empty_table_columns])
+        col_list = ', '.join([f'"{_m_escape_col_name(c)}"' for c in empty_table_columns])
         fallback = f'#table({{{col_list}}}, {{}})'
     else:
         fallback = '#table({}, {})'
@@ -2459,7 +2461,8 @@ def generate_table_extension_query(extension):
         return '\n'.join(lines)
     else:
         # Placeholder for extensions without a direct endpoint
-        cols = [f'"{c["name"]}"' for c in schema] if schema else ['"Value"']
+        cols = ([f'"{_m_escape_col_name(c["name"])}"' for c in schema]
+                if schema else ['"Value"'])
         return (
             f'let\n'
             f'    // MigrationNote: Tableau table extension "{name}" (type: {ext_type})\n'

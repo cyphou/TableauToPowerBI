@@ -14,6 +14,10 @@ Checks performed:
   * Quoted-identifier syntax: every ``#"..."`` is properly closed
   * String literal closure: every ``"`` has a matching ``"``; M escapes
     internal quotes by doubling (``""``)
+  * String literal adjacency: an unescaped quote inside a literal leaves
+    the quote count even, so closure still "passes" — but the engine
+    reports ``Token ',' expected``. Detected by checking what follows a
+    closing quote.
   * No trailing comma directly before ``in`` keyword
   * No empty M expression
 
@@ -175,6 +179,113 @@ def _check_string_literals(text: str) -> List[str]:
     return issues
 
 
+def _strip_comments_only(text: str) -> str:
+    """Blank out ``//`` and ``/* */`` comments, leaving string literals
+    intact so literal-adjacency can be inspected."""
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if ch == '"':
+                if i + 1 < n and text[i + 1] == '"':
+                    out.append('""')
+                    i += 2
+                    continue
+                in_str = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '/' and i + 1 < n and text[i + 1] == '/':
+            j = text.find('\n', i)
+            j = n if j == -1 else j
+            out.append(' ' * (j - i))
+            i = j
+            continue
+        if ch == '/' and i + 1 < n and text[i + 1] == '*':
+            j = text.find('*/', i + 2)
+            j = n if j == -1 else j + 2
+            out.append(''.join(c if c == '\n' else ' ' for c in text[i:j]))
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
+# After a string literal closes, only a separator/operator or one of these
+# keywords may follow. Anything else means the quote that appeared to close
+# the literal was really an unescaped quote *inside* it.
+_LEGAL_AFTER_STRING = set(' \t\r\n,;}){]=&<>+-*/.?|')
+_LEGAL_WORD_AFTER_STRING = frozenset({
+    'then', 'else', 'and', 'or', 'meta', 'as', 'is', 'otherwise',
+    'in', 'each', 'not',
+})
+
+
+def _check_string_adjacency(text: str) -> List[str]:
+    """Detect unescaped double quotes inside M string literals.
+
+    A name such as ``Revenue "net" total`` emitted without doubling its
+    inner quotes still yields an *even* number of quotes, so closure and
+    bracket checks both pass. The M engine, however, reads it as
+    ``"Revenue "`` followed by the bare token ``net`` and reports
+    ``Token ',' expected`` — which makes Power BI Desktop refuse to load
+    the model. Catch it by requiring that whatever follows a closing
+    quote is actually able to follow one.
+    """
+    issues = []
+    src = _strip_comments_only(text)
+    i, n = 0, len(src)
+    in_str = False
+    while i < n:
+        ch = src[i]
+        if not in_str and ch == '#' and i + 1 < n and src[i + 1] == '"':
+            # Quoted identifier — validated by _check_quoted_identifiers.
+            j = i + 2
+            while j < n:
+                if src[j] == '"':
+                    if j + 1 < n and src[j + 1] == '"':
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            i = j
+            continue
+        if not in_str:
+            if ch == '"':
+                in_str = True
+            i += 1
+            continue
+        if ch == '"':
+            if i + 1 < n and src[i + 1] == '"':
+                i += 2
+                continue
+            in_str = False
+            j = i + 1
+            while j < n and src[j] in ' \t':
+                j += 1
+            if j < n and src[j] not in _LEGAL_AFTER_STRING:
+                word = re.match(r'[A-Za-z_][A-Za-z0-9_]*', src[j:])
+                if not (word and word.group(0) in _LEGAL_WORD_AFTER_STRING):
+                    line_no = src[:i].count('\n') + 1
+                    issues.append(
+                        'unescaped double quote inside string literal at '
+                        f'line {line_no} (use "" to escape); the M engine '
+                        "reports: Token ',' expected"
+                    )
+                    return issues
+        i += 1
+    return issues
+
+
 def _check_brackets(text: str) -> List[str]:
     """Verify bracket balance on a string-stripped copy of the M text."""
     issues = []
@@ -247,6 +358,7 @@ def validate_m_query(m_text: str) -> List[str]:
     issues: List[str] = []
     issues.extend(_check_quoted_identifiers(m_text))
     issues.extend(_check_string_literals(m_text))
+    issues.extend(_check_string_adjacency(m_text))
     stripped = _strip_strings_and_comments(m_text)
     issues.extend(_check_brackets(stripped))
     issues.extend(_check_let_in(stripped))
