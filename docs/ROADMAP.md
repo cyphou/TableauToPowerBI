@@ -370,6 +370,42 @@ The same flaw inflated the `dax_converter` count above from 12 to 13:
 `_detect_script_language` is called by `detect_script_functions`, which is
 itself wired.
 
+### `extract_tableau_data` IS separable — 47 pure methods, 2,050 lines
+
+This is the one remaining top-6 file with a real seam, and it needed a
+different measurement to see it. `TableauExtractor` is a 3,810-line class of 83
+methods, so clustering its *call graph* reports a single blob — but that blob
+is held together by `self.method()` calls, not by shared state.
+
+Measured by state instead: the class has **9 instance attributes**, and only
+`workbook_data` is widespread (27 of 83 methods). Discounting it, the methods
+fall into **71 clusters, 70 of them a single method**.
+
+The sharpest cut falls out of that: **47 of the 83 methods use no instance
+attribute and call no sibling method at all — 2,050 lines, 54% of the class.**
+They are module-level functions wearing a method's clothes.
+
+| Pure method | Lines | | Pure method | Lines |
+|---|---|---|---|---|
+| `extract_dashboard_objects` | 256 | | `extract_reference_lines` | 59 |
+| `extract_worksheet_fields` | 252 | | `extract_theme` | 55 |
+| `extract_annotations` | 112 | | `extract_map_options` | 52 |
+| `_parse_zone_node` | 84 | | `_parse_datasource_filter` | 50 |
+| `_map_tableau_mark_to_type` | 81 | | `extract_allowable_values` | 47 |
+| `_infer_automatic_chart_type` | 76 | | `extract_worksheet_filters` | 44 |
+| `extract_formatting` | 69 | | …33 more | |
+
+The compatible move is the class equivalent of the re-export pattern used on
+`tmdl_generator`: the body goes to a module-level function, and a thin
+delegating method stays on the class so `extractor.extract_x(root)` keeps
+working for the ~30 tests that call methods directly.
+
+**This corrects an over-broad statement made one commit earlier** ("none of the
+remaining top-6 is an extraction problem"). That held for `dax_converter`,
+`shared_model` and `visual_generator`; it does not hold here. The reason it was
+missed is that a call-graph measurement is the wrong instrument for a god-class
+— it answers "what calls what", when the question is "what shares state".
+
 ### A4 findings — the recipe does not transfer to half the list
 
 The proven extraction recipe — slice module-level functions into a new module,
