@@ -7,7 +7,8 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from powerbi_import.dax_validator import validate_dax_expression
+from powerbi_import.dax_validator import validate_dax_expression, mask_literal_spans
+from powerbi_import.validator import ArtifactValidator
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
 
 
@@ -100,6 +101,82 @@ class TestDaxValidatorPhase3(unittest.TestCase):
                 any('Tableau function' in i for i in issues),
                 f"Expected Tableau leak detection for {tok}",
             )
+
+
+class TestMaskLiteralSpans(unittest.TestCase):
+    """Masking keeps offsets so position-based messages stay accurate."""
+
+    def test_length_is_preserved(self):
+        expr = 'IF([Show % (Nat)] = "a (b)", 1, 0)'
+        self.assertEqual(len(mask_literal_spans(expr)), len(expr))
+
+    def test_parens_in_bracketed_name_are_masked(self):
+        self.assertEqual(mask_literal_spans('[a (b)]').count('('), 0)
+
+    def test_parens_in_string_are_masked(self):
+        self.assertEqual(mask_literal_spans('"a (b)"').count('('), 0)
+
+    def test_grouping_parens_survive(self):
+        self.assertEqual(mask_literal_spans('SUM(([A]))').count('('), 2)
+
+    def test_escaped_bracket_inside_name(self):
+        self.assertEqual(mask_literal_spans('[a]]b (c)]').count('('), 0)
+
+    def test_empty_input(self):
+        self.assertEqual(mask_literal_spans(''), '')
+
+
+class TestArtifactValidatorSpanAwareness(unittest.TestCase):
+    """A Tableau calculation with no caption is named after its own formula,
+    so a generated measure can legitimately be called
+    ``[if SUM(Elec (GWh))>1 then SUM(Elec...]``. Counting those parentheses as
+    grouping made the openability gate block projects whose DAX was correct.
+    """
+
+    def _parens(self, formula):
+        return [i for i in ArtifactValidator.validate_dax_formula(formula)
+                if 'parenthesis' in i]
+
+    def test_parens_inside_measure_name_are_literal(self):
+        expr = 'VAR _val = [if SUM(Elec (GWh))>1 then SUM(Elec...] RETURN _val'
+        self.assertEqual(self._parens(expr), [])
+
+    def test_nested_parens_inside_measure_name(self):
+        expr = 'VAR _v = [if (SUM(Energie (GWh)))>=1 then X...] RETURN _v'
+        self.assertEqual(self._parens(expr), [])
+
+    def test_parens_inside_string_literal_are_literal(self):
+        self.assertEqual(self._parens('FORMAT(_val, "#,0.00 (k)")'), [])
+
+    def test_genuinely_unbalanced_open_is_still_caught(self):
+        issues = self._parens('SUM(Sales[Amount]')
+        self.assertTrue(any('opening' in i for i in issues))
+
+    def test_genuinely_unbalanced_close_is_still_caught(self):
+        issues = self._parens('SUM(Sales[Amount]))')
+        self.assertTrue(any('closing' in i for i in issues))
+
+    def test_unbalanced_paren_outside_a_named_reference_is_caught(self):
+        # The name is well-formed; the surrounding call is not.
+        issues = self._parens('IF([Show % (Nat)] = 1, BLANK()')
+        self.assertTrue(any('opening' in i for i in issues))
+
+    def test_line_comment_inside_name_is_not_flagged(self):
+        issues = ArtifactValidator.validate_dax_formula('SUM([http://host])')
+        self.assertEqual([i for i in issues if 'line comment' in i], [])
+
+    def test_real_line_comment_is_still_flagged(self):
+        issues = ArtifactValidator.validate_dax_formula('SUM(Sales[A]) // total')
+        self.assertTrue(any('line comment' in i for i in issues))
+
+    def test_parameter_reference_is_still_flagged(self):
+        # Masking blanks brackets, so this check must keep reading the raw text.
+        issues = ArtifactValidator.validate_dax_formula('[Parameters].[Rate]')
+        self.assertTrue(any('Unresolved parameter' in i for i in issues))
+
+    def test_tableau_leak_is_still_flagged(self):
+        issues = ArtifactValidator.validate_dax_formula('COUNTD(Sales[Id])')
+        self.assertTrue(any('Tableau function leak' in i for i in issues))
 
 
 class TestConverterGuardMode(unittest.TestCase):

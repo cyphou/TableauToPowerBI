@@ -8,7 +8,8 @@ import re
 from typing import List
 
 
-__all__ = ['validate_dax_expression', 'DaxExpressionValidator']
+__all__ = ['validate_dax_expression', 'DaxExpressionValidator',
+           'mask_literal_spans']
 
 
 #: Canonical set of Tableau function names that must never survive into DAX.
@@ -54,6 +55,45 @@ TABLEAU_LEAK_REPLACEMENTS = (
     (r"\bDATEPART\s*\(\s*'minute'\s*,\s*", 'MINUTE(', 'high'),
     (r"\bDATEPART\s*\(\s*'second'\s*,\s*", 'SECOND(', 'high'),
 )
+
+
+def mask_literal_spans(expr: str) -> str:
+    """Blank out "strings", 'table' quotes and [bracketed] identifiers,
+    preserving length and character positions.
+
+    A Tableau calculation with no caption is named after its own formula, so a
+    generated measure can legitimately be called ``[if SUM(Sales (EUR))>1 ...]``.
+    The parentheses inside that name are literal characters, not grouping
+    operators, so any paren counting must run on the masked text or it will
+    report a balanced expression as unbalanced.
+    """
+    if not expr:
+        return expr
+    out = list(expr)
+    i, n = 0, len(expr)
+
+    def blank_until(start, closer):
+        j = start
+        while j < n:
+            if expr[j] == closer:
+                if j + 1 < n and expr[j + 1] == closer:
+                    out[j] = out[j + 1] = ' '
+                    j += 2
+                    continue
+                out[j] = ' '
+                return j + 1
+            out[j] = ' '
+            j += 1
+        return j
+
+    while i < n:
+        ch = expr[i]
+        if ch in ('"', "'", '['):
+            out[i] = ' '
+            i = blank_until(i + 1, {'"': '"', "'": "'", '[': ']'}[ch])
+            continue
+        i += 1
+    return ''.join(out)
 
 
 def _check_balanced(expr: str) -> List[str]:

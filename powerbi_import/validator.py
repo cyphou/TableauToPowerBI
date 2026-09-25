@@ -19,7 +19,10 @@ from pathlib import Path
 
 # Single source of truth for Tableau→DAX leak repairs, shared with the healer
 # and the preceptor so the three quality gates stay consistent.
-from powerbi_import.dax_validator import TABLEAU_LEAK_REPLACEMENTS
+from powerbi_import.dax_validator import (
+    TABLEAU_LEAK_REPLACEMENTS,
+    mask_literal_spans,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -513,9 +516,13 @@ class ArtifactValidator:
 
         ctx = f' in {context}' if context else ''
 
+        # Parens inside "strings" and [names] are literal characters, so all
+        # character-level checks below run on the masked copy.
+        masked = mask_literal_spans(formula)
+
         # 1. Balanced parentheses
         depth = 0
-        for ch in formula:
+        for ch in masked:
             if ch == '(':
                 depth += 1
             elif ch == ')':
@@ -536,8 +543,7 @@ class ArtifactValidator:
             issues.append(f'Unresolved parameter reference [Parameters].[...]{ctx}')
 
         # 4. Line comment // in single-line DAX (would break M inlining)
-        stripped_formula = re.sub(r'"[^"]*"', '""', formula)
-        if re.search(r'(?<![:/])//(?!/)', stripped_formula):
+        if re.search(r'(?<![:/])//(?!/)', masked):
             issues.append(f'DAX contains // line comment (breaks M inlining){ctx}')
 
         return issues
