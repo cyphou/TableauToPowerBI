@@ -334,6 +334,7 @@ def _self_heal_model(model, recovery=None):
         tname = t.get('name', '')
         existing_cols = {c.get('name', '') for c in t.get('columns', []) if c.get('name')}
         created_for_cc = []
+        self_referential = []
         for col in t.get('columns', []):
             expr = col.get('expression', '')
             if not expr:
@@ -343,6 +344,13 @@ def _self_heal_model(model, recovery=None):
             for q_table, q_col in qualified_refs:
                 q_table = q_table.replace("''", "'")
                 if q_table != tname:
+                    continue
+                if q_col == col.get('name'):
+                    # Column names are unique within a table, so a same-name
+                    # reference can only be the column itself. Checked before
+                    # the existing-column exits below, which would otherwise
+                    # skip it -- the column's own name is always present.
+                    self_referential.append(col)
                     continue
                 if q_col in existing_cols or q_col in measure_names_in_model:
                     continue
@@ -376,6 +384,9 @@ def _self_heal_model(model, recovery=None):
             # Also check bare [ColumnName] references (not qualified)
             bare_refs = re.findall(r'\[([^\]]+)\]', expr)
             for ref in bare_refs:
+                if ref == col.get('name'):
+                    self_referential.append(col)
+                    continue
                 if ref in existing_cols or ref in measure_names_in_model:
                     continue
                 if ref.upper() in ('VALUE', 'FORMAT', 'YEAR', 'MONTH', 'DAY',
@@ -404,6 +415,41 @@ def _self_heal_model(model, recovery=None):
                 existing_cols.add(ref)
                 created_for_cc.append(ref)
                 repairs += 1
+
+        seen_self_ref = set()
+        for col in self_referential:
+            if id(col) in seen_self_ref:
+                continue
+            seen_self_ref.add(id(col))
+            cname = col.get('name', '?')
+            col['expression'] = 'BLANK()'
+            col['isHidden'] = True
+            col.setdefault('annotations', []).append({
+                'name': 'MigrationNote',
+                'value': (
+                    'Self-heal: calculated column referenced a column of its '
+                    f"own name ([{cname}]) that does not exist in '{tname}'. "
+                    'Blanked to avoid a circular dependency; restore the '
+                    'source column and re-apply the original formula.'
+                ),
+            })
+            repairs += 1
+            print(f"  ⚕ Self-heal: Blanked self-referential calculated column '{cname}'")
+            if recovery:
+                recovery.record(
+                    'tmdl', 'self_referential_calc_column',
+                    item_name=cname,
+                    description=(
+                        f"Calculated column '{cname}' referenced [{cname}], "
+                        'which does not exist as a source column'
+                    ),
+                    action='Expression blanked, column hidden',
+                    severity='warning',
+                    follow_up=(
+                        f"Restore the source column [{cname}] and re-apply the "
+                        'original Tableau formula'
+                    ),
+                )
 
         if created_for_cc:
             print(

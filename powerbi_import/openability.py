@@ -669,6 +669,65 @@ def _check_tmdl_partitions(project_dir) -> CheckResult:
     return CheckResult("tmdl_partitions", not issues, "error", issues)
 
 
+_CALC_COL_RE = re.compile(r"^\s*column\s+('(?:[^']|'')*'|\S+)\s*=\s*(.+)$")
+_MEASURE_DEF_RE = re.compile(r"^\s*measure\s+('(?:[^']|'')*'|\S+)\s*=")
+_BARE_MODEL_REF_RE = re.compile(r"(?<!')\[([^\]]+)\]")
+
+
+def _tmdl_unquote(token: str) -> str:
+    token = token.strip()
+    if token.startswith("'") and token.endswith("'"):
+        return token[1:-1].replace("''", "'")
+    return token
+
+
+def _check_calc_column_dependencies(project_dir) -> CheckResult:
+    """Block calculated columns that call a measure.
+
+    The measure's filter context is unknown at row level, so the engine makes
+    the column depend on its whole table and reports
+    "A circular dependency was detected", refusing to load the model. Balance
+    and syntax checks cannot see this - the DAX is well-formed.
+    """
+    issues = []
+    for model_dir in glob.glob(os.path.join(project_dir, "*.SemanticModel")):
+        tables_dir = os.path.join(model_dir, "definition", "tables")
+        if not os.path.isdir(tables_dir):
+            continue
+        calc_columns, measures = [], set()
+        for path in sorted(glob.glob(os.path.join(tables_dir, "*.tmdl"))):
+            try:
+                lines = _read(path).splitlines()
+            except OSError:
+                continue
+            rel = os.path.relpath(path, project_dir)
+            for line in lines:
+                mm = _MEASURE_DEF_RE.match(line)
+                if mm:
+                    measures.add(_tmdl_unquote(mm.group(1)))
+                    continue
+                cm = _CALC_COL_RE.match(line)
+                if cm:
+                    calc_columns.append(
+                        (rel, _tmdl_unquote(cm.group(1)), cm.group(2)))
+        for rel, name, expr in calc_columns:
+            called = sorted({r for r in _BARE_MODEL_REF_RE.findall(expr)
+                             if r in measures})
+            if called:
+                issues.append(
+                    f"{rel}: calculated column '{name}' calls measure(s) "
+                    f"{', '.join(called)}; a calculated column cannot call a "
+                    "measure (circular dependency on its own table)"
+                )
+            if name in _BARE_MODEL_REF_RE.findall(expr) or re.search(
+                    r"'(?:[^']|'')*'\[" + re.escape(name) + r"\]", expr):
+                issues.append(
+                    f"{rel}: calculated column '{name}' references itself "
+                    "(circular dependency)"
+                )
+    return CheckResult("calc_column_dependencies", not issues, "error", issues)
+
+
 def check_openability(project_dir: str) -> OpenabilityReport:
     """Run the full PBI Desktop openability preflight."""
     report = OpenabilityReport(project_dir=project_dir)
@@ -688,6 +747,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_power_query(project_dir),
         _check_dax(project_dir),
         _check_semantic_validation(project_dir),
+        _check_calc_column_dependencies(project_dir),
         _check_executable_tmdl_dax(project_dir),
         _check_visual_bindings(project_dir),
         _check_references(project_dir),

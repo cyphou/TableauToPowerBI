@@ -83,6 +83,7 @@ from powerbi_import.tmdl_m_conversion import (  # noqa: F401
 from powerbi_import.tmdl_dax_postprocess import (  # noqa: E402,F401
     _BARE_COL_REF_RE,
     _fix_related_for_many_to_many,
+    _promote_measure_dependent_calc_columns,
     _replace_related_in_aggx_context,
     _replace_related_with_lookupvalue,
     _unwrap_aggregations_of_measures,
@@ -2167,6 +2168,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             if not existing_measure:
                 result_table["measures"].append(bim_measure)
 
+    _promote_measure_dependent_calc_columns(result_table)
     _unwrap_aggregations_of_measures(result_table)
     _wrap_bare_cross_table_refs(result_table)
     _validate_measures_after_rewrites(result_table)

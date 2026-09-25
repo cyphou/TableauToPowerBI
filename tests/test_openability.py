@@ -193,7 +193,7 @@ class TestOpenability(unittest.TestCase):
             for key in ("project_dir", "openable", "blocking_count",
                         "warning_count", "blocking_issues", "warnings", "checks"):
                 self.assertIn(key, data)
-            self.assertEqual(len(data["checks"]), 16)
+            self.assertEqual(len(data["checks"]), 17)
 
     def test_check_names_present(self):
         with tempfile.TemporaryDirectory() as d:
@@ -204,6 +204,7 @@ class TestOpenability(unittest.TestCase):
                                      "generated_content", "report_content",
                                      "manifest_coherence",
                                      "semantic_validation", "executable_dax", "visual_bindings", "references", "report_structure", "schema",
+                                     "calc_column_dependencies",
                                      "pbip_contract"})
 
     def test_unknown_semantic_reference_blocks_open(self):
@@ -217,6 +218,37 @@ class TestOpenability(unittest.TestCase):
             r = check_openability(d)
             self.assertFalse(r.openable)
             self.assertTrue(any("Missing" in issue for issue in r.blocking_issues))
+
+    def test_calc_column_calling_measure_blocks_open(self):
+        # A calculated column cannot call a measure: the engine makes the
+        # column depend on its whole table and reports a circular dependency.
+        with tempfile.TemporaryDirectory() as d:
+            tmdl = ("table 'Sales'\n"
+                    "\tcolumn Amount\n"
+                    "\t\tdataType: decimal\n"
+                    "\tcolumn 'Weighted' = [Total Amount] * 'Sales'[Amount]\n"
+                    "\tmeasure 'Total Amount' = SUM('Sales'[Amount])\n"
+                    + _tmdl_with_m(["let x=1 in x"]))
+            _write_project(d, tmdl)
+            r = check_openability(d)
+            self.assertFalse(r.openable)
+            self.assertTrue(any("circular dependency" in i
+                                for i in r.blocking_issues))
+
+    def test_calc_column_over_plain_columns_is_allowed(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmdl = ("table 'Sales'\n"
+                    "\tcolumn Amount\n"
+                    "\t\tdataType: decimal\n"
+                    "\tcolumn Qty\n"
+                    "\t\tdataType: int64\n"
+                    "\tcolumn 'Line Total' = 'Sales'[Amount] * 'Sales'[Qty]\n"
+                    "\tmeasure 'Total Amount' = SUM('Sales'[Amount])\n"
+                    + _tmdl_with_m(["let x=1 in x"]))
+            _write_project(d, tmdl)
+            issues = [i for i in check_openability(d).blocking_issues
+                      if "circular dependency" in i]
+            self.assertEqual(issues, [])
 
     def test_unknown_visual_field_binding_blocks_open(self):
         with tempfile.TemporaryDirectory() as d:

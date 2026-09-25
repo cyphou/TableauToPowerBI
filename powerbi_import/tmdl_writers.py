@@ -26,7 +26,11 @@ logger = logging.getLogger(__name__)
 def _quote_name(name):
     """Quote a TMDL name if needed (spaces, special characters).
     Internal apostrophes are escaped by doubling them ('')."""
-    name = (name or '').strip()
+    # Trailing/leading spaces are part of the identity: Tableau allows
+    # 'Montant Articles ' and 'Montant Articles' to coexist, and trimming
+    # merged them into one name, which made calculated columns reference
+    # themselves. Only characters TMDL cannot carry are normalised.
+    name = (name or '').replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
     # Keep bare identifiers only when they follow standard identifier rules.
     # This avoids emitting invalid names like numeric-only identifiers (e.g. 0).
     if re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):

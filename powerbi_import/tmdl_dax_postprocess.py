@@ -95,6 +95,62 @@ def _wrap_bare_ref_expression(dax_formula, datatype, table_name):
     return f"SUM({dax_formula.strip()})"
 
 
+_BARE_REF_RE = re.compile(r"(?<!')\[([^\]]+)\]")
+
+
+def _promote_measure_dependent_calc_columns(result_table):
+    """Turn a calculated column that calls a measure into a measure.
+
+    A calculated column cannot call a measure: the measure's filter context
+    is unknown at row level, so the engine makes the column depend on its
+    whole table, detects a circular dependency and refuses to load the
+    model. Tableau's own formula was already aggregate-valued, so a measure
+    is the faithful target. Owned by @dax.
+
+    Runs before :func:`_unwrap_aggregations_of_measures` so that call sites
+    written as ``MIN('T'[col])`` are rewritten to ``[col]`` by that pass, and
+    before :func:`_wrap_bare_cross_table_refs` so the promoted expression's
+    bare column refs get an aggregation.
+    """
+    measure_names = {m.get("name", "") for m in result_table.get("measures", [])}
+    if not measure_names:
+        return []
+
+    promoted = []
+    # A promotion can make another column measure-dependent, so iterate.
+    for _ in range(len(result_table.get("columns", [])) + 1):
+        kept, changed = [], False
+        for col in result_table.get("columns", []):
+            expr = col.get("expression", "")
+            name = col.get("name", "")
+            if not (col.get("isCalculated") and expr and name):
+                kept.append(col)
+                continue
+            called = sorted({r for r in _BARE_REF_RE.findall(expr)
+                             if r in measure_names})
+            if not called or name in measure_names:
+                kept.append(col)
+                continue
+            measure = {"name": name, "expression": expr}
+            for key in ("formatString", "isHidden", "description",
+                        "displayFolder"):
+                if key in col:
+                    measure[key] = col[key]
+            result_table["measures"].append(measure)
+            measure_names.add(name)
+            promoted.append((name, called))
+            changed = True
+            logger.warning(
+                "Calculated column '%s' calls measure(s) %s; promoted to a "
+                "measure to avoid a circular dependency",
+                name, ", ".join(called),
+            )
+        result_table["columns"] = kept
+        if not changed:
+            break
+    return promoted
+
+
 def _unwrap_aggregations_of_measures(result_table):
     """Strip SUM/AVERAGE/COUNT/MIN/MAX wrappers from measure references.
 
