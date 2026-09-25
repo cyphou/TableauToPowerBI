@@ -581,7 +581,7 @@ def _build_motion_chart_bookmarks(page_field, page_values, page_name,
     label_prefix = worksheet_name or 'Motion'
     for idx, value in enumerate(page_values):
         bm = {
-            "name": f"Motion_{_uuid.uuid4().hex[:12]}",
+            "name": f"Motion_{_uuid.uuid4().hex[:8]}",
             "displayName": f"{label_prefix}: {page_field} = {value}",
             "explorationState": {
                 "version": "1.0",
@@ -619,7 +619,7 @@ def _build_motion_chart_action_button(bookmark_names, page_name,
     """
     import uuid as _uuid
 
-    visual_id = _uuid.uuid4().hex[:20]
+    visual_id = _uuid.uuid4().hex[:8]
     return {
         "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
         "name": visual_id,

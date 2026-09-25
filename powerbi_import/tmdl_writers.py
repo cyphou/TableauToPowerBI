@@ -8,6 +8,7 @@ single owner (@semantic); tmdl_generator re-exports these names for backward
 compatibility.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -62,10 +63,34 @@ def _tmdl_summarize(summarize_by):
     return mapping.get(str(summarize_by).lower(), 'none')
 
 
-def _safe_filename(name):
-    """Create a safe filename for a table."""
+# Power BI shreds a .pbip through PBIProjectUtils.EnsureNotLong and refuses to
+# open it when a path reaches these limits, whatever the OS supports.
+PBI_MAX_PATH = 260
+
+
+def _safe_filename(name, base_dir=None, suffix=''):
+    """Create a safe filename stem for a table.
+
+    With *base_dir*, the stem is shortened until the full path fits Power BI's
+    limit. A Tableau table name carries its whole source description, so under
+    a deep output folder the path alone can exceed 260 characters and Desktop
+    reports "The specified path, file name, or both are too long". The table's
+    real name is declared inside the file, so shortening the stem costs
+    nothing; a hash keeps distinct tables distinct.
+    """
     safe = re.sub(r'[<>:"/\\|?*]', '_', name)
-    return safe
+    if base_dir is None:
+        return safe
+    budget = PBI_MAX_PATH - len(os.path.join(os.path.abspath(base_dir), '')) \
+        - len(suffix) - 1
+    if len(safe) <= budget:
+        return safe
+    digest = hashlib.sha256(name.encode('utf-8')).hexdigest()[:8]
+    keep = budget - len(digest) - 1
+    if keep < 1:
+        # Nothing of the name survives; the hash alone still identifies it.
+        return digest
+    return safe[:keep].rstrip() + '_' + digest
 
 
 def _write_tmdl_files(model_data, output_dir):
@@ -129,7 +154,7 @@ def _write_tmdl_files(model_data, output_dir):
     expected_files = set()
     for table in tables:
         tname = table.get('name', 'Table')
-        expected_files.add(_safe_filename(tname) + '.tmdl')
+        expected_files.add(_safe_filename(tname, tables_dir, '.tmdl') + '.tmdl')
     for existing in os.listdir(tables_dir):
         if existing.endswith('.tmdl') and existing not in expected_files:
             stale_path = os.path.join(tables_dir, existing)
@@ -1101,7 +1126,7 @@ def _write_table_tmdl(tables_dir, table):
 
     content = '\n'.join(lines) + '\n'
 
-    filename = _safe_filename(table_name) + '.tmdl'
+    filename = _safe_filename(table_name, tables_dir, '.tmdl') + '.tmdl'
     filepath = os.path.join(tables_dir, filename)
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(content)

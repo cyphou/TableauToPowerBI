@@ -937,7 +937,7 @@ class PowerBIProjectGenerator:
         If the worksheet uses SCRIPT_* analytics extensions, generates a
         PBI Python or R script visual instead of a standard chart.
         """
-        visual_id = uuid.uuid4().hex[:20]
+        visual_id = uuid.uuid4().hex[:8]
         visual_dir = os.path.join(visuals_dir, visual_id)
 
         pos = obj.get('position', {})
@@ -1354,7 +1354,7 @@ class PowerBIProjectGenerator:
         Supports rich text with bold, italic, color, font_size, and URLs
         from Tableau <formatted-text><run> elements.
         """
-        visual_id = uuid.uuid4().hex[:20]
+        visual_id = uuid.uuid4().hex[:8]
         visual_dir = os.path.join(visuals_dir, visual_id)
 
         pos = obj.get('position', {})
@@ -1396,7 +1396,7 @@ class PowerBIProjectGenerator:
             scale_y: Vertical scale factor.
             visual_count: Z-index / tab order value.
         """
-        visual_id = uuid.uuid4().hex[:20]
+        visual_id = uuid.uuid4().hex[:8]
         visual_dir = os.path.join(visuals_dir, visual_id)
 
         text = annotation.get('text', '')
@@ -1471,7 +1471,7 @@ class PowerBIProjectGenerator:
 
     def _create_visual_image(self, visuals_dir, obj, scale_x, scale_y, visual_count):
         """Create an image visual from a Tableau image object."""
-        visual_id = uuid.uuid4().hex[:20]
+        visual_id = uuid.uuid4().hex[:8]
         visual_dir = os.path.join(visuals_dir, visual_id)
 
         pos = obj.get('position', {})
@@ -1507,7 +1507,7 @@ class PowerBIProjectGenerator:
     def _create_visual_filter_control(self, visuals_dir, obj, scale_x, scale_y,
                                        visual_count, calc_id_to_caption, converted_objects):
         """Create a slicer visual from a Tableau filter control."""
-        visual_id = uuid.uuid4().hex[:20]
+        visual_id = uuid.uuid4().hex[:8]
         visual_dir = os.path.join(visuals_dir, visual_id)
 
         pos = obj.get('position', {})
@@ -1568,7 +1568,7 @@ class PowerBIProjectGenerator:
         slicer references the parameter table's Value column so users can pick
         a parameter value from a dropdown.
         """
-        visual_id = uuid.uuid4().hex[:20]
+        visual_id = uuid.uuid4().hex[:8]
         visual_dir = os.path.join(visuals_dir, visual_id)
 
         pos = obj.get('position', {})
@@ -1633,7 +1633,7 @@ class PowerBIProjectGenerator:
                     # Tableau URL actions are usually built from a field, which
                     # a button cannot hold; a data-bound URL column carries it.
                     continue
-                visual_id = uuid.uuid4().hex[:20]
+                visual_id = uuid.uuid4().hex[:8]
                 visual_dir = os.path.join(visuals_dir, visual_id)
 
                 action_name = action.get('name', 'URL Action')
@@ -1667,7 +1667,7 @@ class PowerBIProjectGenerator:
                 created += 1
             
             elif action_type == 'sheet-navigate':
-                visual_id = uuid.uuid4().hex[:20]
+                visual_id = uuid.uuid4().hex[:8]
                 visual_dir = os.path.join(visuals_dir, visual_id)
                 
                 target_ws = action.get('target_worksheet', '')
@@ -1740,7 +1740,7 @@ class PowerBIProjectGenerator:
                 table_name = entry[0]
 
             # 1. Hidden slicer visual
-            slicer_id = uuid.uuid4().hex[:20]
+            slicer_id = uuid.uuid4().hex[:8]
             slicer_dir = os.path.join(visuals_dir, slicer_id)
             slicer_json = {
                 "$schema": SCHEMA_VISUAL,
@@ -1784,7 +1784,7 @@ class PowerBIProjectGenerator:
             assign = action.get('assign_behavior', 'assign')
             for suffix, bm_label in [('active', f'{action_name} (Apply)'),
                                       ('clear', f'{action_name} (Clear)')]:
-                bm_name = uuid.uuid4().hex[:20]
+                bm_name = uuid.uuid4().hex[:8]
                 bm = {
                     'name': bm_name,
                     'displayName': bm_label,
@@ -1803,7 +1803,7 @@ class PowerBIProjectGenerator:
                 bookmarks.append(bm)
 
             # 3. Action button that triggers the first (active) bookmark
-            btn_id = uuid.uuid4().hex[:20]
+            btn_id = uuid.uuid4().hex[:8]
             btn_dir = os.path.join(visuals_dir, btn_id)
             btn_json = {
                 "$schema": SCHEMA_VISUAL,
@@ -1857,7 +1857,7 @@ class PowerBIProjectGenerator:
             action_name = action.get('name', target_ws or 'Navigate')
             dest_page = page_name_map.get(target_ws, target_ws) if target_ws else ''
 
-            visual_id = uuid.uuid4().hex[:20]
+            visual_id = uuid.uuid4().hex[:8]
             visual_dir = os.path.join(visuals_dir, visual_id)
 
             action_props = {"type": _L("'PageNavigation'")}
@@ -1939,7 +1939,7 @@ class PowerBIProjectGenerator:
             else:
                 slicer_mode = 'Dropdown'
 
-            visual_id = uuid.uuid4().hex[:20]
+            visual_id = uuid.uuid4().hex[:8]
             visual_dir = os.path.join(visuals_dir, visual_id)
 
             slicer_json = {
@@ -2416,7 +2416,7 @@ class PowerBIProjectGenerator:
         """Creates report pages from Tableau dashboards. Returns list of page_names."""
         page_names = []
         for db_idx, db in enumerate(dashboards):
-            page_name = f"ReportSection{uuid.uuid4().hex[:20]}" if db_idx > 0 else "ReportSection"
+            page_name = f"ReportSection{uuid.uuid4().hex[:6]}" if db_idx > 0 else "ReportSection"
             page_display_name = db.get('name', f'Page {db_idx + 1}')
             page_names.append(page_name)
 
@@ -2656,7 +2656,7 @@ class PowerBIProjectGenerator:
             return page_names
 
         for idx, ws in enumerate(worksheets):
-            page_name = "ReportSection" if idx == 0 else f"ReportSection{uuid.uuid4().hex[:20]}"
+            page_name = "ReportSection" if idx == 0 else f"ReportSection{uuid.uuid4().hex[:6]}"
             page_names.append(page_name)
 
             ws_name = ws.get('name', f'Sheet {idx+1}')
@@ -2676,7 +2676,7 @@ class PowerBIProjectGenerator:
             visuals_dir = os.path.join(page_dir, 'visuals')
             os.makedirs(visuals_dir, exist_ok=True)
 
-            visual_id = uuid.uuid4().hex[:20]
+            visual_id = uuid.uuid4().hex[:8]
             visual_dir = os.path.join(visuals_dir, visual_id)
 
             from visual_generator import resolve_visual_type as _rvt
@@ -2827,7 +2827,7 @@ class PowerBIProjectGenerator:
                             break
 
         for tip_ws in tooltip_worksheets:
-            tip_name = f"Tooltip_{uuid.uuid4().hex[:12]}"
+            tip_name = f"Tooltip_{uuid.uuid4().hex[:8]}"
             tip_display = f"Tooltip - {tip_ws.get('name', 'Tooltip')}"
             page_names.append(tip_name)
             # Track tooltip page for visual binding
@@ -2871,7 +2871,7 @@ class PowerBIProjectGenerator:
             for dl in device_layouts:
                 device_type = dl.get('device_type', '')
                 if device_type == 'phone' and not dl.get('auto_generated', False):
-                    mobile_page_name = f"MobileLayout_{uuid.uuid4().hex[:12]}"
+                    mobile_page_name = f"MobileLayout_{uuid.uuid4().hex[:8]}"
                     mobile_display = f"{db.get('name', 'Dashboard')} (Phone)"
                     page_names.append(mobile_page_name)
 
@@ -3973,7 +3973,7 @@ class PowerBIProjectGenerator:
                 caption = sp.get('caption', f'{story_name} - Point {sp_idx + 1}')
                 active_section = sp.get('captured_sheet', 'ReportSection')
                 bookmark = {
-                    "name": f"Bookmark_{uuid.uuid4().hex[:12]}",
+                    "name": f"Bookmark_{uuid.uuid4().hex[:8]}",
                     "displayName": caption,
                     "explorationState": {
                         "version": "1.0",
@@ -4045,7 +4045,7 @@ class PowerBIProjectGenerator:
                 }
 
             bookmark = {
-                "name": f"Swap_{uuid.uuid4().hex[:12]}",
+                "name": f"Swap_{uuid.uuid4().hex[:8]}",
                 "displayName": label,
                 "explorationState": {
                     "version": "1.0",
@@ -4164,7 +4164,7 @@ class PowerBIProjectGenerator:
                            or _bim_meas_types.get((entity, prop.strip())))
 
             filter_obj = {
-                "name": f"Filter_{uuid.uuid4().hex[:12]}",
+                "name": f"Filter_{uuid.uuid4().hex[:8]}",
                 "type": "Categorical",
                 "field": {
                     "Column": {
@@ -4342,7 +4342,7 @@ class PowerBIProjectGenerator:
                               'quarter': 3, 'year': 4}
                 period_type_map = {'last': 0, 'this': 1, 'next': 2}
                 pbi_filter = {
-                    "name": f"Filter_{uuid.uuid4().hex[:12]}",
+                    "name": f"Filter_{uuid.uuid4().hex[:8]}",
                     "type": "RelativeDate",
                     "field": {
                         "Column": {
@@ -4388,7 +4388,7 @@ class PowerBIProjectGenerator:
 
                 # Range filter (dates, numbers)
                 pbi_filter = {
-                    "name": f"Filter_{uuid.uuid4().hex[:12]}",
+                    "name": f"Filter_{uuid.uuid4().hex[:8]}",
                     "type": "Advanced",
                     "field": {
                         _field_kind: {
@@ -4485,7 +4485,7 @@ class PowerBIProjectGenerator:
                         continue
 
                     pbi_filter = {
-                        "name": f"Filter_{uuid.uuid4().hex[:12]}",
+                        "name": f"Filter_{uuid.uuid4().hex[:8]}",
                         "type": "Advanced",
                         "field": {
                             "Measure": {
@@ -4545,7 +4545,7 @@ class PowerBIProjectGenerator:
                     continue
 
                 pbi_filter = {
-                    "name": f"Filter_{uuid.uuid4().hex[:12]}",
+                    "name": f"Filter_{uuid.uuid4().hex[:8]}",
                     "type": "Categorical",
                     "field": {
                         _field_kind: {
@@ -5403,7 +5403,7 @@ class PowerBIProjectGenerator:
 
         Places a horizontal page navigator bar at the bottom of the page.
         """
-        visual_id = uuid.uuid4().hex[:20]
+        visual_id = uuid.uuid4().hex[:8]
         visual_dir = os.path.join(visuals_dir, visual_id)
         os.makedirs(visual_dir, exist_ok=True)
 
@@ -5446,7 +5446,7 @@ class PowerBIProjectGenerator:
         if not field:
             return
         table_name = self._find_column_table(field, converted_objects)
-        visual_id = uuid.uuid4().hex[:20]
+        visual_id = uuid.uuid4().hex[:8]
         visual_dir = os.path.join(visuals_dir, visual_id)
         os.makedirs(visual_dir, exist_ok=True)
         slicer = self._create_slicer_visual(
@@ -5527,7 +5527,7 @@ class PowerBIProjectGenerator:
             if not ws_data:
                 continue
 
-            dt_page_name = f"Drillthrough_{uuid.uuid4().hex[:12]}"
+            dt_page_name = f"Drillthrough_{uuid.uuid4().hex[:8]}"
             dt_display = f"Drillthrough - {target_ws}"
             page_names.append(dt_page_name)
 

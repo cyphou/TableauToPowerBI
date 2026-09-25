@@ -673,6 +673,10 @@ _CALC_COL_RE = re.compile(r"^\s*column\s+('(?:[^']|'')*'|\S+)\s*=\s*(.+)$")
 _MEASURE_DEF_RE = re.compile(r"^\s*measure\s+('(?:[^']|'')*'|\S+)\s*=")
 _BARE_MODEL_REF_RE = re.compile(r"(?<!')\[([^\]]+)\]")
 
+# Power BI's own limits, enforced by PBIProjectUtils.EnsureNotLong.
+_PBI_MAX_PATH = 260
+_PBI_MAX_DIR = 248
+
 
 def _tmdl_unquote(token: str) -> str:
     token = token.strip()
@@ -728,6 +732,40 @@ def _check_calc_column_dependencies(project_dir) -> CheckResult:
     return CheckResult("calc_column_dependencies", not issues, "error", issues)
 
 
+def _check_path_length(project_dir) -> CheckResult:
+    """Block paths Power BI refuses to read.
+
+    Desktop shreds a .pbip through PBIProjectUtils.EnsureNotLong and reports
+    "The specified path, file name, or both are too long" whatever the OS
+    supports, so a long output folder can sink an otherwise valid project.
+    """
+    issues = []
+    longest = 0
+    for dirpath, _dirnames, filenames in os.walk(project_dir):
+        abs_dir = os.path.abspath(dirpath)
+        if len(abs_dir) >= _PBI_MAX_DIR:
+            issues.append(
+                f"directory path is {len(abs_dir)} characters "
+                f"(limit {_PBI_MAX_DIR}): ...{abs_dir[-60:]}"
+            )
+        for name in filenames:
+            full = os.path.join(abs_dir, name)
+            longest = max(longest, len(full))
+            if len(full) >= _PBI_MAX_PATH:
+                issues.append(
+                    f"file path is {len(full)} characters "
+                    f"(limit {_PBI_MAX_PATH}): ...{full[-60:]}"
+                )
+    if issues:
+        issues = issues[:10] + (
+            [f"... plus more; longest path is {longest} characters. "
+             "Migrate into a shorter output directory."]
+            if len(issues) > 10 else
+            ["Migrate into a shorter output directory."]
+        )
+    return CheckResult("path_length", not issues, "error", issues)
+
+
 def check_openability(project_dir: str) -> OpenabilityReport:
     """Run the full PBI Desktop openability preflight."""
     report = OpenabilityReport(project_dir=project_dir)
@@ -748,6 +786,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_dax(project_dir),
         _check_semantic_validation(project_dir),
         _check_calc_column_dependencies(project_dir),
+        _check_path_length(project_dir),
         _check_executable_tmdl_dax(project_dir),
         _check_visual_bindings(project_dir),
         _check_references(project_dir),
