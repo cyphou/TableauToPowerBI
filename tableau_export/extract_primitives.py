@@ -80,3 +80,72 @@ def _clean_tableau_run_text(run_elem):
 #: Marks-card encodings. Shared so the field extractor and the chart-type
 #: inference cannot disagree about which shelves exist.
 _MARK_ENCODINGS = ('color', 'size', 'shape', 'detail', 'tooltip', 'label', 'text')
+
+
+def _read_filter_condition(filt):
+    """Read what a ``<filter>`` actually keeps.
+
+    Tableau never writes filter members as ``<value>`` text; they are the
+    ``member`` attribute of a ``<groupfilter>``, and the parent's ``function``
+    says whether they are kept, excluded or merely enumerated. Shared so the
+    worksheet-level and workbook-level readers cannot disagree — they did, and
+    the workbook-level list reported every one of the 167 corpus filters as
+    having no values at all.
+
+    Returns ``(type, values, min, max, exclude)``.
+    """
+    filter_type = ''
+    values = []
+    filter_min = None
+    filter_max = None
+    exclude_mode = False
+
+    def _members(parent):
+        return [gf.get('member', '').replace('&quot;', '"')
+                for gf in parent.findall('.//groupfilter[@function="member"]')
+                if gf.get('member')]
+
+    groupfilter = filt.find('.//groupfilter')
+    if groupfilter is not None:
+        func = groupfilter.get('function', '')
+        if func == 'member':
+            filter_type = 'categorical'
+            val = groupfilter.get('member', '')
+            if val:
+                values.append(val.replace('&quot;', '"'))
+        elif func == 'union':
+            filter_type = 'categorical'
+            values.extend(_members(groupfilter))
+        elif func == 'range':
+            from_val = groupfilter.get('from', '')
+            to_val = groupfilter.get('to', '')
+            # Tableau also uses func="range" on text fields (from="A" to="Z")
+            # to mean "everything", which is not a comparison filter.
+            is_numeric = False
+            for raw in (from_val, to_val):
+                if raw:
+                    try:
+                        float(raw)
+                        is_numeric = True
+                    except (ValueError, TypeError):
+                        pass
+            if is_numeric:
+                filter_type = 'range'
+                filter_min = from_val or None
+                filter_max = to_val or None
+            else:
+                filter_type = 'all'
+        elif func == 'level-members':
+            filter_type = 'all'  # every member selected
+        elif func == 'crossjoin':
+            filter_type = 'all'  # multi-field action filter
+        elif func in ('except', 'not'):
+            exclude_mode = True
+            filter_type = 'categorical'
+            values.extend(_members(groupfilter))
+
+    for v in filt.findall('.//value'):
+        if v.text:
+            values.append(v.text)
+
+    return filter_type, values, filter_min, filter_max, exclude_mode

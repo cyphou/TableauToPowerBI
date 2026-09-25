@@ -19,6 +19,7 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 - `tableau_export/extract_primitives.py` — leaf helpers shared by the extractors: field-reference cleaning, bracket stripping, safe int coercion, line-break sentinel handling. Extracted from `extract_tableau_data`, which re-exports but no longer defines them
 - `tableau_export/dashboard_extractor.py` — dashboard objects, zones, layout containers and device layouts, plus the text/vertical alignment maps. Extracted from `extract_tableau_data`, which keeps thin delegating methods on `TableauExtractor`
 - `tableau_export/chart_type_inference.py` — `determine_chart_type` and the mark/shelf heuristics it delegates to. Extracted from `extract_tableau_data`, which keeps thin delegating methods on `TableauExtractor`
+- `tableau_export/worksheet_extractor.py` — worksheet fields, filters, formatting and tooltips. Extracted from `extract_tableau_data`, which keeps thin delegating methods on `TableauExtractor`
 - `tableau_export/datasource_extractor.py` — Datasource extraction (connections, tables, columns, calculations, relationships)
 - `tableau_export/hyper_reader.py` — Hyper file data loader (SQLite interface)
 - `tableau_export/pulse_extractor.py` — Tableau Pulse metric extractor
