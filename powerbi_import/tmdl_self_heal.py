@@ -254,6 +254,11 @@ def _self_heal_model(model, recovery=None):
                     t.setdefault('columns', []).append({
                         'name': missing_col,
                         'dataType': 'string',
+                        # A placeholder must not claim source data: a physical
+                        # column whose partition never produces it makes Power
+                        # BI report the field as broken.
+                        'expression': 'BLANK()',
+                        'isCalculated': True,
                         'isHidden': True,
                         'description': (
                             'Self-heal placeholder column created from '
@@ -361,6 +366,8 @@ def _self_heal_model(model, recovery=None):
                 t.setdefault('columns', []).append({
                     'name': q_col,
                     'dataType': 'string',
+                    'expression': 'BLANK()',
+                    'isCalculated': True,
                     'isHidden': True,
                     'description': (
                         'Self-heal placeholder column created from '
@@ -396,6 +403,8 @@ def _self_heal_model(model, recovery=None):
                 t.setdefault('columns', []).append({
                     'name': ref,
                     'dataType': 'string',
+                    'expression': 'BLANK()',
+                    'isCalculated': True,
                     'isHidden': True,
                     'description': (
                         'Self-heal placeholder column created from '

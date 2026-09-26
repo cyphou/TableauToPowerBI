@@ -54,7 +54,27 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
         return
 
     existing_cols = {col.get("name", "") for col in main_table.get("columns", [])}
-    m_steps = []  # Accumulated M steps
+    m_steps_by_table = {}   # table name -> accumulated M steps
+
+    def _steps_for(table_name):
+        return m_steps_by_table.setdefault(table_name, [])
+
+    def _owner_of(source_field):
+        """Table that owns *source_field*.
+
+        A group or bin is a row-level recode of its source column, so it has
+        to live in that column's own table: a calculated column cannot read a
+        bare column from another table, and Power BI rejects the model with
+        "a single value for column X cannot be determined".
+        """
+        name = column_table_map.get(source_field, main_table_name)
+        if name != main_table_name:
+            for table in model["model"]["tables"]:
+                if table.get("name") == name:
+                    return table, name
+        return main_table, main_table_name
+
+    m_steps = _steps_for(main_table_name)
 
     # Sets -> boolean column
     for s in extra_objects.get('sets', []):
@@ -240,6 +260,9 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
             continue
 
         elif members and source_field:
+            owner_table, owner_name = _owner_of(source_field)
+            if group_name in {c.get("name", "") for c in owner_table.get("columns", [])}:
+                continue
             total_values = sum(len(v) for v in members.values())
             # Large groups: use M table-join lookup (avoids M engine complexity limit)
             if total_values > 100:
@@ -256,19 +279,20 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                     f'{{{", ".join(rows)}}})'
                 )
                 safe_tag = re.sub(r'[^A-Za-z0-9_]', '_', group_name)
-                m_steps.append((
+                owner_steps = _steps_for(owner_name)
+                owner_steps.append((
                     f'#"Join_{safe_tag}"',
                     f'Table.NestedJoin({{prev}}, {{"{escaped_src}"}}, {map_expr}, {{"key"}}, "_lkp_{safe_tag}", JoinKind.LeftOuter)'
                 ))
-                m_steps.append((
+                owner_steps.append((
                     f'#"Expand_{safe_tag}"',
                     f'Table.ExpandTableColumn({{prev}}, "_lkp_{safe_tag}", {{"grp"}}, {{"{escaped_grp}"}})'
                 ))
-                m_steps.append((
+                owner_steps.append((
                     f'#"Fill_{safe_tag}"',
                     f'Table.ReplaceValue({{prev}}, null, "Other", Replacer.ReplaceValue, {{"{escaped_grp}"}})'
                 ))
-                main_table["columns"].append({
+                owner_table["columns"].append({
                     "name": group_name,
                     "dataType": "String",
                     "sourceColumn": group_name,
@@ -278,7 +302,7 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                 existing_cols.add(group_name)
                 continue
 
-            table_ref = column_table_map.get(source_field, main_table_name)
+            table_ref = owner_name
             cases = []
             for label, values in members.items():
                 escaped_label = label.replace('"', '""')
@@ -290,13 +314,16 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                 dax_expr = f"SWITCH('{table_ref}'[{source_field}], {', '.join(cases)}, \"Other\")"
             else:
                 dax_expr = f"'{table_ref}'[{source_field}]"
+            group_target, group_target_name = owner_table, owner_name
         else:
             dax_expr = '""'
+            group_target, group_target_name = main_table, main_table_name
 
-        m_expr = _dax_to_m_expression(dax_expr, main_table_name)
+        m_expr = _dax_to_m_expression(dax_expr, group_target_name)
         if m_expr is not None:
-            m_steps.append(m_transform_add_column(group_name, f'each {m_expr}', 'type text'))
-            main_table["columns"].append({
+            _steps_for(group_target_name).append(
+                m_transform_add_column(group_name, f'each {m_expr}', 'type text'))
+            group_target["columns"].append({
                 "name": group_name,
                 "dataType": "String",
                 "sourceColumn": group_name,
@@ -304,7 +331,7 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                 "displayFolder": "Groups"
             })
         else:
-            main_table["columns"].append({
+            group_target["columns"].append({
                 "name": group_name,
                 "dataType": "String",
                 "expression": dax_expr,
@@ -324,15 +351,19 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
         bin_size = b.get('size', '10')
 
         if source_field:
-            table_ref = column_table_map.get(source_field, main_table_name)
+            bin_target, table_ref = _owner_of(source_field)
             dax_expr = f"FLOOR('{table_ref}'[{source_field}], {bin_size})"
         else:
+            bin_target, table_ref = main_table, main_table_name
             dax_expr = '0'
+        if bin_name in {c.get("name", "") for c in bin_target.get("columns", [])}:
+            continue
 
-        m_expr = _dax_to_m_expression(dax_expr, main_table_name)
+        m_expr = _dax_to_m_expression(dax_expr, table_ref)
         if m_expr is not None:
-            m_steps.append(m_transform_add_column(bin_name, f'each {m_expr}', 'type number'))
-            main_table["columns"].append({
+            _steps_for(table_ref).append(
+                m_transform_add_column(bin_name, f'each {m_expr}', 'type number'))
+            bin_target["columns"].append({
                 "name": bin_name,
                 "dataType": "Double",
                 "sourceColumn": bin_name,
@@ -340,7 +371,7 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                 "displayFolder": "Bins"
             })
         else:
-            main_table["columns"].append({
+            bin_target["columns"].append({
                 "name": bin_name,
                 "dataType": "Double",
                 "expression": dax_expr,
@@ -350,6 +381,14 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
             })
         existing_cols.add(bin_name)
 
-    # Inject accumulated M steps into the partition
-    if m_steps:
-        _inject_m_steps_into_partition(main_table, m_steps)
+    # Inject accumulated M steps into each table's own partition
+    for table_name, steps in m_steps_by_table.items():
+        if not steps:
+            continue
+        target = main_table
+        if table_name != main_table_name:
+            for table in model["model"]["tables"]:
+                if table.get("name") == table_name:
+                    target = table
+                    break
+        _inject_m_steps_into_partition(target, steps)
