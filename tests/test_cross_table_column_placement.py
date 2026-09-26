@@ -156,5 +156,37 @@ class TestPlaceholderColumnsClaimNoSourceData(unittest.TestCase):
         self.assertFalse(col.get('isCalculated'))
 
 
+class TestPlaceholderTypeFollowsItsConsumer(unittest.TestCase):
+    """A string placeholder cannot be summed or negated, so Power BI reports
+    Missing_References on the very expression it was created to satisfy."""
+
+    def _heal(self, consumer_type, expression="-'Sales'[Gross]"):
+        table = _table('Sales', [{'name': 'Net', 'dataType': 'double'}])
+        table['columns'].append({
+            'name': 'Derived', 'dataType': consumer_type,
+            'expression': expression, 'isCalculated': True,
+        })
+        model = _model(table)
+        _self_heal_model(model)
+        return _columns(table)
+
+    def test_numeric_consumer_yields_a_numeric_placeholder(self):
+        self.assertEqual(self._heal('double')['Gross'].get('dataType'),
+                         'double')
+
+    def test_integer_consumer_yields_a_numeric_placeholder(self):
+        self.assertEqual(self._heal('int64')['Gross'].get('dataType'),
+                         'int64')
+
+    def test_text_consumer_yields_a_string_placeholder(self):
+        cols = self._heal('string', expression="'Sales'[Gross] & \"x\"")
+        self.assertEqual(cols['Gross'].get('dataType'), 'string')
+
+    def test_placeholder_is_still_blank_and_hidden(self):
+        col = self._heal('double')['Gross']
+        self.assertEqual(col.get('expression'), 'BLANK()')
+        self.assertTrue(col.get('isHidden'))
+
+
 if __name__ == '__main__':
     unittest.main()

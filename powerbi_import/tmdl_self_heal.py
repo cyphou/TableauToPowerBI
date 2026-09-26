@@ -16,6 +16,20 @@ from m_query_builder import wrap_source_with_try_otherwise  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+_NUMERIC_DATA_TYPES = frozenset({'double', 'int64', 'decimal'})
+
+
+def _placeholder_data_type(consumer):
+    """Type a placeholder after whatever needed it.
+
+    A string column cannot be summed or negated, so a placeholder typed
+    string breaks the very expression it was created to satisfy and any
+    visual that aggregates it -- Power BI reports Missing_References.
+    """
+    data_type = consumer.get('dataType') or ''
+    return data_type if data_type.lower() in _NUMERIC_DATA_TYPES else 'string'
+
+
 # ════════════════════════════════════════════════════════════════════
 #  SELF-HEALING — SEMANTIC MODEL VALIDATION & REPAIR
 # ════════════════════════════════════════════════════════════════════
@@ -253,7 +267,7 @@ def _self_heal_model(model, recovery=None):
                         continue
                     t.setdefault('columns', []).append({
                         'name': missing_col,
-                        'dataType': 'string',
+                        'dataType': _placeholder_data_type(measure),
                         # A placeholder must not claim source data: a physical
                         # column whose partition never produces it makes Power
                         # BI report the field as broken.
@@ -365,7 +379,7 @@ def _self_heal_model(model, recovery=None):
                 # Add placeholder
                 t.setdefault('columns', []).append({
                     'name': q_col,
-                    'dataType': 'string',
+                    'dataType': _placeholder_data_type(col),
                     'expression': 'BLANK()',
                     'isCalculated': True,
                     'isHidden': True,
@@ -402,7 +416,7 @@ def _self_heal_model(model, recovery=None):
                 # Add placeholder
                 t.setdefault('columns', []).append({
                     'name': ref,
-                    'dataType': 'string',
+                    'dataType': _placeholder_data_type(col),
                     'expression': 'BLANK()',
                     'isCalculated': True,
                     'isHidden': True,
