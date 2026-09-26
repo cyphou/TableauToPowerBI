@@ -83,7 +83,8 @@ class TestProbe(unittest.TestCase):
                  mock.patch("powerbi_import.desktop_probe._scan_trace_errors",
                             return_value=[]), \
                  mock.patch("powerbi_import.desktop_probe.time.sleep"):
-                r = probe_desktop_open(_pbip(d), settle=0, timeout=5)
+                r = probe_desktop_open(_pbip(d), settle=0, timeout=5,
+                                       wait_for_window=False)
         self.assertEqual(r.status, "opened")
         self.assertTrue(r.opened)
         self.assertEqual(r.pid, 4242)
@@ -99,7 +100,8 @@ class TestProbe(unittest.TestCase):
                  mock.patch("powerbi_import.desktop_probe._scan_trace_errors",
                             return_value=[]), \
                  mock.patch("powerbi_import.desktop_probe.time.sleep"):
-                r = probe_desktop_open(_pbip(d), settle=30, timeout=60)
+                r = probe_desktop_open(_pbip(d), settle=30, timeout=60,
+                                       wait_for_window=False)
         self.assertEqual(r.status, "crashed")
         self.assertFalse(r.opened)
         self.assertTrue(any("exited early" in s for s in r.signals))
@@ -115,7 +117,8 @@ class TestProbe(unittest.TestCase):
                  mock.patch("powerbi_import.desktop_probe._scan_trace_errors",
                             return_value=[]), \
                  mock.patch("powerbi_import.desktop_probe.time.sleep"):
-                r = probe_desktop_open(_pbip(d), settle=30, timeout=60)
+                r = probe_desktop_open(_pbip(d), settle=30, timeout=60,
+                                       wait_for_window=False)
         self.assertEqual(r.status, "crashed")
         self.assertTrue(any("FrownDump" in s for s in r.signals))
 
@@ -130,7 +133,8 @@ class TestProbe(unittest.TestCase):
                  mock.patch("powerbi_import.desktop_probe._scan_trace_errors",
                             return_value=["error tokens in trace Desktop.log"]), \
                  mock.patch("powerbi_import.desktop_probe.time.sleep"):
-                r = probe_desktop_open(_pbip(d), settle=0, timeout=5)
+                r = probe_desktop_open(_pbip(d), settle=0, timeout=5,
+                                       wait_for_window=False)
         self.assertEqual(r.status, "crashed")
         self.assertFalse(r.opened)
 

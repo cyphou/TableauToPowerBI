@@ -35,6 +35,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 
+from powerbi_import import desktop_window
+
 # Power BI Desktop trace + crash-dump locations (Windows).
 _TRACE_GLOBS = (
     r"Microsoft\Power BI Desktop\Traces\*.log",
@@ -63,6 +65,18 @@ OPENED_LIMITATION = (
     "Static validation remains the authoritative content check."
 )
 
+#: Raised scope when the probe waited for the document window instead of a
+#: fixed sleep: the window appeared, carried the report name and answered a
+#: message, so the model finished loading.
+WINDOW_VERIFIED_SCOPE = "window_loaded"
+
+WINDOW_LIMITATION = (
+    "'opened' means the report window appeared, carried the report name and "
+    "became responsive, and a screenshot was captured. Power BI draws most "
+    "content errors inside that window, so read the screenshot: an empty "
+    "dialog list does not prove every visual rendered."
+)
+
 
 @dataclass
 class DesktopProbeReport:
@@ -72,18 +86,30 @@ class DesktopProbeReport:
     pid: Optional[int] = None
     duration_s: float = 0.0
     signals: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
     note: str = ""
+    window_title: Optional[str] = None
+    screenshot: Optional[str] = None
+    screenshot_blank: Optional[bool] = None
+    dialogs: List[str] = field(default_factory=list)
 
     @property
     def opened(self) -> bool:
         return self.status == "opened"
 
+    @property
+    def window_loaded(self) -> bool:
+        return bool(self.window_title)
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["opened"] = self.opened
-        d["verified"] = VERIFIED_SCOPE
+        d["window_loaded"] = self.window_loaded
+        d["verified"] = (WINDOW_VERIFIED_SCOPE if self.window_loaded
+                          else VERIFIED_SCOPE)
         if self.opened:
-            d["limitation"] = OPENED_LIMITATION
+            d["limitation"] = (WINDOW_LIMITATION if self.window_loaded
+                               else OPENED_LIMITATION)
         return d
 
 
@@ -135,8 +161,14 @@ def _scan_trace_errors(since: float) -> List[str]:
 
 
 def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
-                       close_after: bool = True) -> DesktopProbeReport:
+                       close_after: bool = True,
+                       screenshot_path: Optional[str] = None,
+                       wait_for_window: bool = True) -> DesktopProbeReport:
     """Launch Power BI Desktop against ``pbip_path`` and watch for load failure.
+
+    With *wait_for_window* the probe waits for the document window to carry the
+    report name and answer a message rather than sleeping for a fixed period,
+    and *screenshot_path* captures what actually rendered.
 
     Best-effort: returns a DesktopProbeReport; never raises.
     """
@@ -153,6 +185,11 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
                        "authoritative check.")
         return report
     report.executable = exe
+    pre_existing = set(desktop_pids())
+    if pre_existing and wait_for_window:
+        report.warnings.append(
+            f"{len(pre_existing)} Power BI Desktop instance(s) already running; "
+            "close them for an unambiguous probe")
 
     start = time.time()
     try:
@@ -167,21 +204,11 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
     settle_until = start + settle
     crashed = False
     try:
-        while time.time() < deadline:
-            rc = proc.poll()
-            if rc is not None:
-                # Exited before settling → almost certainly a load failure.
-                if time.time() < settle_until:
-                    crashed = True
-                    report.signals.append(f"process exited early rc={rc}")
-                break
-            if _recent_matches(_FROWN_GLOBS, start):
-                crashed = True
-                report.signals.append("FrownDump crash dump created")
-                break
-            if time.time() >= settle_until:
-                break
-            time.sleep(1.0)
+        if wait_for_window and desktop_window.IS_WINDOWS:
+            crashed = _watch_window(report, proc, pbip_path, start, timeout,
+                                    screenshot_path)
+        else:
+            crashed = _watch_process(report, proc, start, deadline, settle_until)
 
         report.signals.extend(_scan_trace_errors(start))
         alive = proc.poll() is None
@@ -190,22 +217,135 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
             report.status = "crashed"
         elif alive:
             report.status = "opened"
-            report.note = ("Desktop launched and stayed alive past the settle "
-                           "window with no crash/error signal. " + OPENED_LIMITATION)
+            report.note = (WINDOW_LIMITATION if report.window_loaded
+                           else "Desktop launched and stayed alive past the "
+                                "settle window with no crash/error signal. "
+                                + OPENED_LIMITATION)
         else:
             report.status = "timed_out"
     finally:
-        if close_after and proc.poll() is None:
-            try:
-                proc.terminate()
+        if close_after:
+            if proc.poll() is None:
                 try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-            except OSError:
-                pass
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                except OSError:
+                    pass
+            # The file may have been handed to a second instance we spawned.
+            # Only close instances that did not exist before the launch.
+            for pid in set(desktop_pids()) - pre_existing - {proc.pid}:
+                try:
+                    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                                   capture_output=True, timeout=15)
+                except (OSError, subprocess.SubprocessError):
+                    pass
     report.duration_s = round(time.time() - start, 1)
     return report
+
+
+def _watch_process(report, proc, start, deadline, settle_until) -> bool:
+    """Original behaviour: watch the process only. Returns True when crashed."""
+    while time.time() < deadline:
+        rc = proc.poll()
+        if rc is not None:
+            # Exited before settling → almost certainly a load failure.
+            if time.time() < settle_until:
+                report.signals.append(f"process exited early rc={rc}")
+                return True
+            break
+        if _recent_matches(_FROWN_GLOBS, start):
+            report.signals.append("FrownDump crash dump created")
+            return True
+        if time.time() >= settle_until:
+            break
+        time.sleep(1.0)
+    return False
+
+
+def desktop_pids() -> List[int]:
+    """PIDs of every running PBIDesktop.exe (Windows; empty elsewhere)."""
+    if os.name != "nt":
+        return []
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq PBIDesktop.exe", "/NH", "/FO", "CSV"],
+            capture_output=True, text=True, timeout=15).stdout
+    except (OSError, TypeError, AttributeError, subprocess.SubprocessError):
+        # A test double for Popen can break subprocess.run; never raise here.
+        return []
+    pids = []
+    for line in out.splitlines():
+        parts = [p.strip('" ') for p in line.split('","')]
+        if len(parts) > 1 and parts[1].isdigit():
+            pids.append(int(parts[1]))
+    return pids
+
+
+def _capture_any(report, screenshot_path) -> None:
+    """Screenshot the largest Power BI window, whatever it is showing."""
+    if not screenshot_path:
+        return
+    best = None
+    for pid in desktop_pids():
+        win = desktop_window.main_window(pid)
+        if win and (best is None or win.width * win.height >
+                    best.width * best.height):
+            best = win
+    if best is None:
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(screenshot_path)),
+                exist_ok=True)
+    # Deliberately not window_title: that field means "the report loaded".
+    report.warnings.append(f"captured window titled {best.title!r}")
+    report.screenshot = desktop_window.capture_window(best.hwnd,
+                                                      screenshot_path)
+    if report.screenshot:
+        report.screenshot_blank = desktop_window.is_blank(report.screenshot)
+
+
+def _watch_window(report, proc, pbip_path, start, timeout,
+                  screenshot_path) -> bool:
+    """Wait for the report window, then capture it. Returns True when crashed."""
+    expected = os.path.splitext(os.path.basename(pbip_path))[0]
+    window, signals = desktop_window.wait_for_window(
+        desktop_pids, expected, timeout=timeout)
+
+    if window is None:
+        # Power BI hands the file to an existing instance and the launcher
+        # exits, so an exited process is only a crash when no window appeared.
+        if proc.poll() is not None:
+            report.signals.append(
+                f"process exited and no report window appeared "
+                f"rc={proc.returncode}")
+        report.signals.extend(signals)
+        if _recent_matches(_FROWN_GLOBS, start):
+            report.signals.append("FrownDump crash dump created")
+        # Capture whatever Desktop is showing: on a failed load that window
+        # holds the error, which is the evidence worth keeping.
+        _capture_any(report, screenshot_path)
+        return True
+
+    if _recent_matches(_FROWN_GLOBS, start):
+        report.signals.append("FrownDump crash dump created")
+        return True
+
+    report.window_title = window.title
+    report.dialogs = [w.title for pid in desktop_pids()
+                      for w in desktop_window.dialog_windows(pid)]
+    for title in report.dialogs:
+        report.signals.append(f"modal dialog open: {title!r}")
+
+    if screenshot_path:
+        os.makedirs(os.path.dirname(os.path.abspath(screenshot_path)),
+                    exist_ok=True)
+        report.screenshot = desktop_window.capture_window(
+            window.hwnd, screenshot_path)
+        if report.screenshot:
+            report.screenshot_blank = desktop_window.is_blank(report.screenshot)
+    return False
 
 
 def probe_desktop_reopen(pbip_path: str, *, settle: int = 20, timeout: int = 90,
