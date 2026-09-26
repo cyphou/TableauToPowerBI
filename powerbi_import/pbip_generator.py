@@ -34,6 +34,32 @@ _TABLEAU_AGG_TO_PBI_FUNC = {
     'median': 0, 'attr': 0,
 }
 
+_LATITUDE_ROLES = frozenset({'latitude', 'lat'})
+_LONGITUDE_ROLES = frozenset({'longitude', 'lon', 'lng'})
+
+
+def _is_bindable_coordinate(field):
+    """Tableau's own geocoding output is not a model column, so it can never
+    reach a Latitude/Longitude well."""
+    return '(generated)' not in (field.get('name') or '').lower()
+
+
+def _is_latitude_field(field):
+    """True when *field* carries a bindable latitude, by role or by name."""
+    if not _is_bindable_coordinate(field):
+        return False
+    role = (field.get('semantic_role') or '').strip('[]').lower()
+    return role in _LATITUDE_ROLES or 'latitude' in (field.get('name') or '').lower()
+
+
+def _is_longitude_field(field):
+    """True when *field* carries a bindable longitude, by role or by name."""
+    if not _is_bindable_coordinate(field):
+        return False
+    role = (field.get('semantic_role') or '').strip('[]').lower()
+    return role in _LONGITUDE_ROLES or 'longitude' in (field.get('name') or '').lower()
+
+
 # â”€â”€ PBIR schema constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 SCHEMA_REPORT = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/report/2.0.0/schema.json"
 SCHEMA_PAGE = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/page/2.1.0/schema.json"
@@ -1075,16 +1101,8 @@ class PowerBIProjectGenerator:
         # Spatial detection: map visuals with lat/lon fields â†’ azureMap
         if visual_type in ('map', 'scatterChart') and ws_data:
             fields = ws_data.get('fields', [])
-            has_lat = any(
-                f.get('semantic_role', '').lower() in ('latitude', 'lat')
-                or 'latitude' in f.get('name', '').lower()
-                for f in fields
-            )
-            has_lon = any(
-                f.get('semantic_role', '').lower() in ('longitude', 'lon', 'lng')
-                or 'longitude' in f.get('name', '').lower()
-                for f in fields
-            )
+            has_lat = any(_is_latitude_field(f) for f in fields)
+            has_lon = any(_is_longitude_field(f) for f in fields)
             if has_lat and has_lon:
                 visual_type = 'azureMap'
 
@@ -3242,6 +3260,7 @@ class PowerBIProjectGenerator:
         "lineStackedColumnComboChart":       (["Category", "Series"], ["ColumnY", "LineY"]),
         "lineClusteredColumnComboChart":     (["Category", "Series"], ["ColumnY", "LineY"]),
         "map":                               (["Category", "Series"], ["Size"]),
+        "azureMap":                          (["Latitude", "Longitude"], ["Size"]),
         "filledMap":                         (["Category", "Series"], ["Size"]),
         "shapeMap":                          (["Location"], ["Color"]),
         "ribbonChart":                       (["Category", "Series"], ["Y"]),
@@ -3628,6 +3647,45 @@ class PowerBIProjectGenerator:
                                     for f in tip_fields[:5]]
                 }
 
+        elif visual_type == 'azureMap':
+            # A coordinate pair must reach the Latitude/Longitude wells
+            # unaggregated; summed coordinates make the visual refuse to draw.
+            lat = next((f for f in cleaned_fields if _is_latitude_field(f)), None)
+            lon = next((f for f in cleaned_fields if _is_longitude_field(f)), None)
+            if not (lat and lon):
+                # A coordinate did not survive model validation, so plot the
+                # geography by name instead of shipping an empty map.
+                ws_data['_override_visual_type'] = 'map'
+                lat = lon = None
+            used = [f for f in (lat, lon) if f is not None]
+            if lat:
+                query_state["Latitude"] = {
+                    "projections": [self._make_projection_entry(
+                        lat, force_column=True)]
+                }
+            if lon:
+                query_state["Longitude"] = {
+                    "projections": [self._make_projection_entry(
+                        lon, force_column=True)]
+                }
+            legend = [d for d in (color_dims + axis_dims) if d not in used]
+            if not legend and not used:
+                legend = [f for f in tip_fields
+                          if not self._is_measure_field(f['name'])]
+                tip_fields = [f for f in tip_fields if f not in legend]
+            if legend:
+                query_state["Category"] = self._make_projection(legend[0])
+            sz = [m for m in (size_fields + axis_meas + color_meas)
+                  if m not in used]
+            if sz:
+                query_state["Size"] = self._make_projection(sz[0])
+            tips = [f for f in tip_fields if f not in used and f not in sz[:1]]
+            if tips:
+                query_state["Tooltips"] = {
+                    "projections": [self._make_projection_entry(f)
+                                    for f in tips[:5]]
+                }
+
         elif visual_type in ('lineClusteredColumnComboChart',
                              'lineStackedColumnComboChart'):
             if axis_dims:
@@ -3840,7 +3898,7 @@ class PowerBIProjectGenerator:
             "active": True
         }
     
-    def _make_projection_entry(self, field):
+    def _make_projection_entry(self, field, force_column=False):
         """Creates a projection entry for a field, resolved to the Power BI model.
 
         Wrapper selection:
@@ -3851,6 +3909,9 @@ class PowerBIProjectGenerator:
           (in _measure_names but NOT in _bim_measure_names) â†’ ``Aggregation``
           wrapper with Function 0 (Sum) so PBI shows explicit aggregation
         - Everything else (dimension columns) â†’ ``Column`` wrapper
+
+        *force_column* keeps the bare ``Column`` wrapper whatever the field
+        looks like, for roles where Power BI rejects an aggregate.
         """
         raw_name = field.get('name', 'Field')
 
@@ -3912,7 +3973,7 @@ class PowerBIProjectGenerator:
             and (clean_name in self._measure_names or prop in self._measure_names)
         )
 
-        if is_bim_measure:
+        if is_bim_measure and not force_column:
             # Named DAX measure â†’ Measure wrapper
             field_ref = {
                 "Measure": {
@@ -3920,7 +3981,8 @@ class PowerBIProjectGenerator:
                     "Property": prop
                 }
             }
-        elif is_physical_measure or explicit_agg_func is not None:
+        elif not force_column and (is_physical_measure
+                                   or explicit_agg_func is not None):
             # Physical column with aggregation â€” use shelf aggregation if present
             agg_func = explicit_agg_func if explicit_agg_func is not None else 0
             field_ref = {

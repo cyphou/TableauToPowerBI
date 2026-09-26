@@ -1790,7 +1790,11 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             bim_column["dataCategory"] = "DateTime"
             bim_column["formatString"] = "General Date"
         elif col.get('datatype') in ['integer', 'real']:
-            bim_column["summarizeBy"] = "sum"
+            # A summed coordinate is meaningless, and a map visual refuses to
+            # plot one: "set the aggregate for Latitude and Longitude to
+            # Don't summarize".
+            if geo_category not in _COORDINATE_CATEGORIES:
+                bim_column["summarizeBy"] = "sum"
             if col.get('datatype') == 'real':
                 bim_column["formatString"] = "#,0.00"
 
@@ -2198,6 +2202,9 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
 
 
+
+
+_COORDINATE_CATEGORIES = frozenset({'Latitude', 'Longitude'})
 
 
 def _map_semantic_role_to_category(semantic_role, col_name=''):
