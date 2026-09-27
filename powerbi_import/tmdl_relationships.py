@@ -456,7 +456,23 @@ def _detect_many_to_many(model, datasources):
         from_table = rel.get('fromTable', '')
         join_type = rel.get('joinType', 'left')
 
-        if join_type == 'full':
+        if to_table == 'Calendar':
+            # We generate Calendar ourselves, one row per date, so Date is
+            # unique as a matter of fact. Every branch below is a guess about
+            # uniqueness, and a guess must not overrule something known --
+            # the column-count heuristic used to read our own date table as a
+            # peer table and make it many-to-many.
+            rel['fromCardinality'] = 'many'
+            rel['toCardinality'] = 'one'
+            # Use bothDirections when multiple tables connect to Calendar
+            # so Calendar acts as a shared dimension bridge (star schema).
+            if _cal_rel_count > 1:
+                rel['crossFilteringBehavior'] = 'bothDirections'
+                print(f"  ✓  Relation → '{to_table}.{to_col}' set to manyToOne bothDirections (Calendar bridge).")
+            else:
+                rel['crossFilteringBehavior'] = 'oneDirection'
+                print(f"  ✓  Relation → '{to_table}.{to_col}' set to manyToOne (Calendar table).")
+        elif join_type == 'full':
             rel['fromCardinality'] = 'many'
             rel['toCardinality'] = 'many'
             # Single-direction is the safe default for many-to-many: a
@@ -491,18 +507,6 @@ def _detect_many_to_many(model, datasources):
                 rel['toCardinality'] = 'many'
                 rel['crossFilteringBehavior'] = 'oneDirection'
                 print(f"  ⚠️  Relation → '{to_table}.{to_col}' set to manyToMany (peer table, {to_cols}/{from_cols} cols ≥ 70%, single-direction).")
-            elif to_table == 'Calendar':
-                # Calendar.Date is guaranteed unique (generated table)
-                rel['fromCardinality'] = 'many'
-                rel['toCardinality'] = 'one'
-                # Use bothDirections when multiple tables connect to Calendar
-                # so Calendar acts as a shared dimension bridge (star schema).
-                if _cal_rel_count > 1:
-                    rel['crossFilteringBehavior'] = 'bothDirections'
-                    print(f"  ✓  Relation → '{to_table}.{to_col}' set to manyToOne bothDirections (Calendar bridge).")
-                else:
-                    rel['crossFilteringBehavior'] = 'oneDirection'
-                    print(f"  ✓  Relation → '{to_table}.{to_col}' set to manyToOne (Calendar table).")
             else:
                 # Default to manyToMany — we cannot verify uniqueness without data
                 # PBI silently drops manyToOne relationships if the "one" side has duplicates
