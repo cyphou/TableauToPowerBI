@@ -43,6 +43,25 @@ class TestIdentifierPredicate(unittest.TestCase):
         for name in ('% part', 'Nb(logts)/2', 'A&B', 'Coût, à payer'):
             self.assertTrue(_m_identifier_needs_quoting(name), name)
 
+    def test_curly_apostrophe_needs_quoting(self):
+        # U+2019 is punctuation, not a letter, so it cannot appear bare. A
+        # blacklist of forbidden characters missed it and Power BI refused
+        # the whole model with "Invalid identifier".
+        self.assertTrue(_m_identifier_needs_quoting("Surface d\u2019usage"))
+
+    def test_other_unicode_punctuation_needs_quoting(self):
+        for name in ('Marge \u2013 nette', 'Taux \u00ab net \u00bb',
+                     'Ratio \u2044 an', 'Co\u00fbt\u2026 total'):
+            self.assertTrue(_m_identifier_needs_quoting(name), name)
+
+    def test_the_rule_is_a_whitelist_not_a_blacklist(self):
+        # Any character that is neither a letter, a digit, an underscore nor
+        # a single space must be quoted, whatever it is.
+        for codepoint in (0x2019, 0x00A0, 0x2013, 0x2212, 0x00B7, 0x203A):
+            name = 'A' + chr(codepoint) + 'B'
+            self.assertTrue(_m_identifier_needs_quoting(name),
+                            'U+%04X' % codepoint)
+
 
 class TestQuotingInExpressions(unittest.TestCase):
 
@@ -98,7 +117,8 @@ class TestDuplicatedPredicatesAgree(unittest.TestCase):
             _m_identifier_needs_quoting as gate_copy)
         names = ['Amount', 'Montant Articles', 'Montant Articles ', ' M',
                  'Montant  Articles', 'Montant\tArticles', '', 'Degré',
-                 '% part', 'Nb(logts)/2', 'A&B', 'a.b', 'Order Date 2026']
+                 '% part', 'Nb(logts)/2', 'A&B', 'a.b', 'Order Date 2026',
+                 'Surface d\u2019usage', 'Marge \u2013 nette']
         for n in names:
             self.assertEqual(_m_identifier_needs_quoting(n), gate_copy(n), n)
 

@@ -384,11 +384,9 @@ def _m_identifier_needs_quoting(name: str) -> bool:
     """True when ``name`` cannot appear bare inside ``[...]`` in M."""
     if not name:
         return True
-    if any(ch in _M_SPECIAL_CHARS for ch in name):
+    if name != name.strip() or '  ' in name:
         return True
-    if name != name.strip():
-        return True
-    return any(ch.isspace() and ch != ' ' for ch in name) or '  ' in name
+    return not all(ch.isalpha() or ch.isdigit() or ch in '_ ' for ch in name)
 
 
 def _check_field_selectors(stripped: str) -> List[str]:

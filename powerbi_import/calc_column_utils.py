@@ -131,14 +131,16 @@ def _m_identifier_needs_quoting(name):
     Tableau names that keep an edge space (``'Montant Articles '``), a double
     space, or a tab are rejected by the M engine as "Invalid identifier" even
     though they contain no special character.
+
+    The test is a whitelist on purpose. A blacklist of forbidden characters
+    has twice let one through -- whitespace, then the curly apostrophe U+2019
+    -- and each time Power BI refused to load the whole model.
     """
     if not name:
         return True
-    if any(ch in _M_SPECIAL for ch in name):
+    if name != name.strip() or '  ' in name:
         return True
-    if name != name.strip():
-        return True
-    return any(ch.isspace() and ch != ' ' for ch in name) or '  ' in name
+    return not all(ch.isalpha() or ch.isdigit() or ch in '_ ' for ch in name)
 
 
 def _quote_m_ids(m_expr):

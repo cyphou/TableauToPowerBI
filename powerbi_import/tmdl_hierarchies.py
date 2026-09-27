@@ -13,10 +13,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 from m_query_builder import m_transform_add_column  # noqa: E402
 
-from powerbi_import.tmdl_m_conversion import (
-    _inject_m_steps_into_partition,
-    _M_SPECIAL_CHARS,
-)
+from powerbi_import.calc_column_utils import _m_identifier_needs_quoting
+from powerbi_import.tmdl_m_conversion import _inject_m_steps_into_partition
 
 
 def _apply_hierarchies(model, hierarchies, column_table_map):
@@ -109,7 +107,9 @@ def _auto_date_hierarchies(model):
                     calc_col_names.append(calc_name)
                     continue  # already exists (e.g. from Tableau extraction)
 
-                col_ref = f'[{col_name}]' if not any(c in _M_SPECIAL_CHARS for c in col_name) else f'[#"{col_name}"]'
+                col_ref = (f'[#"{col_name}"]'
+                           if _m_identifier_needs_quoting(col_name)
+                           else f'[{col_name}]')
                 m_steps.append(m_transform_add_column(
                     calc_name,
                     f'each {m_fn}({col_ref})',
