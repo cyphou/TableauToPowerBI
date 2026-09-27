@@ -787,6 +787,52 @@ def _check_bookmarks_index(project_dir: str) -> CheckResult:
     return CheckResult("bookmarks_index", not issues, "error", issues)
 
 
+_DATA_FOLDER = re.compile(r'expression DataFolder = "((?:[^"\\]|\\.)*)"')
+_DATA_REF = re.compile(r'DataFolder\s*&\s*"\\\\?((?:[^"\\]|\\.)*)"')
+
+
+def _unescape_tmdl(raw: str) -> str:
+    return raw.replace('\\\\', '\\').replace('\\"', '"')
+
+
+def _check_data_files_present(project_dir: str) -> CheckResult:
+    """Name the data files the model asks for but cannot find.
+
+    A partition that cannot read its file falls back to an empty table, so
+    the report opens looking healthy and every visual renders its axes with
+    no data, under two banners that name no file. This is a warning, not a
+    blocker: a .twb never carries data, so the files are often external and
+    only the person running the migration can supply them.
+    """
+    issues = []
+    for expressions in glob.glob(
+            os.path.join(project_dir, "**", "definition", "expressions.tmdl"),
+            recursive=True):
+        found = _DATA_FOLDER.search(_read(expressions))
+        if not found:
+            continue
+        folder = _unescape_tmdl(found.group(1))
+        definition = os.path.dirname(expressions)
+        refs = set(_DATA_REF.findall(_read(expressions)))
+        for table in glob.glob(os.path.join(definition, "tables", "*.tmdl")):
+            refs.update(_DATA_REF.findall(_read(table)))
+        if not refs:
+            continue
+        model = os.path.basename(os.path.dirname(definition))
+        if not os.path.isdir(folder):
+            issues.append(
+                f"{model}: data folder {folder} does not exist, so all "
+                f"{len(refs)} referenced file(s) are unreadable")
+            continue
+        absent = sorted(r for r in (_unescape_tmdl(x) for x in refs)
+                        if not os.path.isfile(os.path.join(folder, r)))
+        if absent:
+            issues.append(
+                "%s: %d of %d data file(s) missing from %s: %s"
+                % (model, len(absent), len(refs), folder, ", ".join(absent)))
+    return CheckResult("data_files_present", not issues, "warning", issues)
+
+
 #: A quoted literal whose body closes early on a lone apostrophe.
 _UNESCAPED_APOSTROPHE = re.compile(r"(?<!')'(?!')")
 
@@ -863,6 +909,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_path_length(project_dir),
         _check_bookmarks_index(project_dir),
         _check_literal_grammar(project_dir),
+        _check_data_files_present(project_dir),
         _check_executable_tmdl_dax(project_dir),
         _check_visual_bindings(project_dir),
         _check_references(project_dir),

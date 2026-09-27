@@ -6569,6 +6569,11 @@ def _run_openability_gate(project_dir):
         pq_note = f", {len(pq.issues)} Power Query issues" if pq and pq.issues else ""
         warn = f" ({len(report.warnings)} warnings)" if report.warnings else ""
         print(f"\n  Openability: ✓ project will open in PBI Desktop{pq_note}{warn}")
+        # A counted warning tells nobody which file is missing.
+        for issue in report.warnings[:5]:
+            print(f"      • {issue}")
+        if len(report.warnings) > 5:
+            print(f"      ... and {len(report.warnings) - 5} more")
     else:
         print(f"\n  Openability: ✗ {len(report.blocking_issues)} blocking issue(s):")
         for issue in report.blocking_issues[:20]:
