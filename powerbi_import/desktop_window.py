@@ -210,9 +210,10 @@ def wait_for_window(pids, title_fragment: str = "", *, timeout: float = 120,
                     poll: float = 1.0) -> Tuple[Optional[WindowInfo], List[str]]:
     """Wait until one of *pids* shows a responsive report window.
 
-    Returns ``(window, signals)``. Waiting for the title to match and for the
-    window to answer a message is a real load signal, unlike sleeping for a
-    fixed number of seconds.
+    Returns ``(window, signals)``. An error dialog ends the wait immediately:
+    a popup is what makes a project unusable, and waiting out the timeout only
+    delays the verdict. Waiting for the title to match and for the window to
+    answer a message is a real load signal, unlike a fixed sleep.
     """
     signals: List[str] = []
     if not IS_WINDOWS:
@@ -225,6 +226,11 @@ def wait_for_window(pids, title_fragment: str = "", *, timeout: float = 120,
 
     while time.time() < deadline:
         live = list(pids() if callable(pids) else pids)
+
+        for dialog in (d for pid in live for d in dialog_windows(pid)):
+            signals.append(f"error dialog: {dialog.title!r}")
+            return None, signals
+
         win = report_window(live, title_fragment)
         if win is not None and is_responsive(win.hwnd):
             matched_since = matched_since or time.time()

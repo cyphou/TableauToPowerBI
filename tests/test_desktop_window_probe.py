@@ -220,7 +220,47 @@ class TestWindowAwareProbe(unittest.TestCase):
                                                       'fixed', owned=True)]):
                 report = probe_desktop_open(_pbip(d), timeout=1)
         self.assertEqual(report.status, 'crashed')
-        self.assertTrue(any('modal dialog' in s for s in report.signals))
+        self.assertTrue(any('error dialog' in s for s in report.signals))
+        self.assertIn('Fields that need to be fixed', report.dialogs)
+
+
+class TestErrorDialogEndsTheWait(unittest.TestCase):
+    """A popup is what makes a project unusable, so it must end the wait at
+    once rather than let the probe sit out its timeout."""
+
+    def _wait(self, dialogs, report=None, timeout=4):
+        with mock.patch.object(desktop_window, 'IS_WINDOWS', True), \
+             mock.patch.object(desktop_window, 'dialog_windows',
+                               return_value=dialogs), \
+             mock.patch.object(desktop_window, 'report_window',
+                               return_value=report), \
+             mock.patch.object(desktop_window, 'main_window',
+                               return_value=None), \
+             mock.patch.object(desktop_window, 'is_responsive',
+                               return_value=True), \
+             mock.patch.object(desktop_window.time, 'sleep'):
+            return desktop_window.wait_for_window([1], 'Sales', timeout=timeout)
+
+    def test_a_dialog_stops_the_wait(self):
+        win, signals = self._wait([_win('Something went wrong', owned=True)])
+        self.assertIsNone(win)
+        self.assertTrue(any('Something went wrong' in s for s in signals))
+
+    def test_the_dialog_title_is_reported(self):
+        _win_, signals = self._wait([_win('Fields that need to be fixed',
+                                          owned=True)])
+        self.assertTrue(any('error dialog' in s for s in signals))
+
+    def test_no_dialog_lets_a_good_load_through(self):
+        loaded = _win('Sales - Power BI Desktop')
+        win, signals = self._wait([], report=loaded)
+        self.assertIs(win, loaded)
+        self.assertEqual(signals, [])
+
+    def test_no_dialog_and_no_window_still_times_out(self):
+        win, signals = self._wait([])
+        self.assertIsNone(win)
+        self.assertTrue(any('timeout' in s for s in signals))
 
 
 class TestReportShape(unittest.TestCase):

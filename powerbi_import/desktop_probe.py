@@ -91,6 +91,7 @@ class DesktopProbeReport:
     window_title: Optional[str] = None
     screenshot: Optional[str] = None
     screenshot_blank: Optional[bool] = None
+    dialog_screenshot: Optional[str] = None
     dialogs: List[str] = field(default_factory=list)
 
     @property
@@ -284,6 +285,22 @@ def desktop_pids() -> List[int]:
     return pids
 
 
+def _capture_dialogs(report, screenshot_path) -> None:
+    """Record every open popup and screenshot the first one."""
+    dialogs = [w for pid in desktop_pids()
+               for w in desktop_window.dialog_windows(pid)]
+    if not dialogs:
+        return
+    report.dialogs = [w.title for w in dialogs]
+    if not screenshot_path:
+        return
+    base, ext = os.path.splitext(screenshot_path)
+    os.makedirs(os.path.dirname(os.path.abspath(screenshot_path)),
+                exist_ok=True)
+    report.dialog_screenshot = desktop_window.capture_window(
+        dialogs[0].hwnd, base + ".dialog" + (ext or ".png"))
+
+
 def _capture_any(report, screenshot_path) -> None:
     """Screenshot the largest Power BI window, whatever it is showing."""
     if not screenshot_path:
@@ -323,8 +340,10 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         report.signals.extend(signals)
         if _recent_matches(_FROWN_GLOBS, start):
             report.signals.append("FrownDump crash dump created")
-        # Capture whatever Desktop is showing: on a failed load that window
-        # holds the error, which is the evidence worth keeping.
+        # An error popup is what makes a project unusable, so keep its own
+        # picture: it carries the message, and it is a separate window that a
+        # capture of the main window would not show.
+        _capture_dialogs(report, screenshot_path)
         _capture_any(report, screenshot_path)
         return True
 
@@ -333,10 +352,9 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         return True
 
     report.window_title = window.title
-    report.dialogs = [w.title for pid in desktop_pids()
-                      for w in desktop_window.dialog_windows(pid)]
+    _capture_dialogs(report, screenshot_path)
     for title in report.dialogs:
-        report.signals.append(f"modal dialog open: {title!r}")
+        report.signals.append(f"error dialog: {title!r}")
 
     if screenshot_path:
         os.makedirs(os.path.dirname(os.path.abspath(screenshot_path)),
