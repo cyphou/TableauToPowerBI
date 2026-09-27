@@ -80,14 +80,18 @@ class TestPbiLiteral(unittest.TestCase):
     def test_french_bool_Vrai(self):
         self.assertEqual(_pbi_literal('Vrai'), 'true')
 
+    # A bare number crashes SQExprValidationVisitor.visitIn with
+    # "e.accept is not a function" and the report refuses to render, so a
+    # numeric literal always carries its DAX type suffix.
+
     def test_numeric_int(self):
-        self.assertEqual(_pbi_literal(42), '42')
+        self.assertEqual(_pbi_literal(42), '42L')
 
     def test_numeric_float(self):
-        self.assertEqual(_pbi_literal('3.14'), '3.14')
+        self.assertEqual(_pbi_literal('3.14'), '3.14D')
 
     def test_numeric_negative(self):
-        self.assertEqual(_pbi_literal('-5'), '-5')
+        self.assertEqual(_pbi_literal('-5'), '-5L')
 
     def test_string_default(self):
         self.assertEqual(_pbi_literal('hello'), "'hello'")
@@ -130,12 +134,19 @@ class TestPbiLiteral(unittest.TestCase):
         self.assertEqual(_pbi_literal('false', column_type='boolean'), 'false')
         self.assertEqual(_pbi_literal('vrai', column_type='boolean'), 'true')
 
-    def test_int64_column_emits_unquoted_number(self):
-        self.assertEqual(_pbi_literal('42', column_type='int64'), '42')
-        self.assertEqual(_pbi_literal(42, column_type='int64'), '42')
+    def test_int64_column_emits_typed_number(self):
+        self.assertEqual(_pbi_literal('42', column_type='int64'), '42L')
+        self.assertEqual(_pbi_literal(42, column_type='int64'), '42L')
 
-    def test_double_column_emits_unquoted_number(self):
-        self.assertEqual(_pbi_literal('3.14', column_type='double'), '3.14')
+    def test_double_column_emits_typed_number(self):
+        self.assertEqual(_pbi_literal('3.14', column_type='double'), '3.14D')
+
+    def test_a_whole_value_on_a_double_column_stays_real(self):
+        # The column decides the type, not how the value happens to look.
+        self.assertEqual(_pbi_literal('2025', column_type='double'), '2025D')
+
+    def test_a_real_value_on_an_int_column_is_narrowed(self):
+        self.assertEqual(_pbi_literal('2025.0', column_type='int64'), '2025L')
 
     def test_numeric_column_with_non_numeric_value_falls_back_to_string(self):
         """Non-numeric value on a numeric column → quote as string fallback."""

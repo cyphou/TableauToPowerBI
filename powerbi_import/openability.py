@@ -787,6 +787,59 @@ def _check_bookmarks_index(project_dir: str) -> CheckResult:
     return CheckResult("bookmarks_index", not issues, "error", issues)
 
 
+#: A quoted literal whose body closes early on a lone apostrophe.
+_UNESCAPED_APOSTROPHE = re.compile(r"(?<!')'(?!')")
+
+
+def _check_literal_grammar(project_dir: str) -> CheckResult:
+    """Every PBIR literal must be something Power BI can parse.
+
+    Two ways to get this wrong, both fatal and both silent until render:
+    a bare number, which crashes ``SQExprValidationVisitor.visitIn`` with
+    ``e.accept is not a function``; and a quoted string whose inner
+    apostrophe is not doubled, which closes the literal early. French
+    text hits the second one constantly -- ``Taux d'utilisation``.
+    """
+    issues = []
+    for path in glob.glob(os.path.join(project_dir, "**", "*.json"),
+                          recursive=True):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (ValueError, OSError):
+            continue          # _check_json_parse already owns this failure
+        rel = os.path.relpath(path, project_dir)
+        for value in _literal_values(data):
+            if _BARE_NUMBER.fullmatch(value):
+                issues.append(
+                    f"{rel}: literal {value} has no type suffix "
+                    "(expected L or D)")
+            elif (len(value) >= 2 and value.startswith("'")
+                    and value.endswith("'")
+                    and _UNESCAPED_APOSTROPHE.search(value[1:-1])):
+                issues.append(
+                    f"{rel}: literal {value} has an undoubled apostrophe")
+    return CheckResult("literal_grammar", not issues, "error", issues)
+
+
+#: A number with no DAX type suffix is never a valid PBI literal.
+_BARE_NUMBER = re.compile(r"-?\d+(\.\d+)?")
+
+
+def _literal_values(node):
+    """Yield every ``Literal.Value`` string found anywhere in *node*."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if (key == "Literal" and isinstance(value, dict)
+                    and isinstance(value.get("Value"), str)):
+                yield value["Value"]
+            else:
+                yield from _literal_values(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _literal_values(item)
+
+
 def check_openability(project_dir: str) -> OpenabilityReport:
     """Run the full PBI Desktop openability preflight."""
     report = OpenabilityReport(project_dir=project_dir)
@@ -809,6 +862,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_calc_column_dependencies(project_dir),
         _check_path_length(project_dir),
         _check_bookmarks_index(project_dir),
+        _check_literal_grammar(project_dir),
         _check_executable_tmdl_dax(project_dir),
         _check_visual_bindings(project_dir),
         _check_references(project_dir),

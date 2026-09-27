@@ -122,7 +122,20 @@ def _rmtree_with_retry(path, attempts=3, delay=0.5):
 
 
 def _L(v):
-    """PBIR expression literal wrapper."""
+    """PBIR expression literal wrapper.
+
+    Over a hundred call sites build their own quoted literal with
+    ``f"'{value}'"``. That is correct until the value carries an
+    apostrophe -- a French title such as ``Taux d'utilisation`` then
+    closes the literal early and Power BI cannot parse the expression.
+    Rather than trust each site to escape, normalise here: re-escape the
+    body of an already-quoted literal so every caller is right by
+    construction. Collapsing before doubling keeps this idempotent, so a
+    site that *did* escape correctly is left alone.
+    """
+    if isinstance(v, str) and len(v) >= 2 and v.startswith("'") and v.endswith("'"):
+        body = v[1:-1].replace("''", "'").replace("'", "''")
+        v = f"'{body}'"
     return {"expr": {"Literal": {"Value": v}}}
 
 
@@ -162,6 +175,31 @@ def _action_belongs_to_page(action, page_display_name, page_worksheets=()):
     if worksheets:
         return any(name in set(page_worksheets) for name in worksheets)
     return True
+
+
+def _numeric_pbi_literal(v_str, prefer_integer=None):
+    """Return a typed numeric literal, or None when *v_str* is not numeric.
+
+    A bare number is never a valid Power BI literal: it crashes
+    ``SQExprValidationVisitor.visitIn`` with ``e.accept is not a function``
+    and the report refuses to render. DAX types it with a suffix -- ``L``
+    for a whole number, ``D`` for a real one.
+    """
+    text = str(v_str).strip()
+    try:
+        value = float(text)
+    except (ValueError, TypeError):
+        return None
+    if value != value or value in (float('inf'), float('-inf')):
+        return None          # NaN and infinity have no literal form
+    looks_integer = ('.' not in text and 'e' not in text.lower())
+    as_integer = looks_integer if prefer_integer is None else prefer_integer
+    if as_integer:
+        try:
+            return f"{int(float(text))}L"
+        except (ValueError, OverflowError):
+            return None
+    return f"{text}D"
 
 
 def _pbi_literal(v, column_type=None):
@@ -210,25 +248,23 @@ def _pbi_literal(v, column_type=None):
                 return 'false'
             # Unknown boolean value — fall through to default detection
         elif ct in ('int64', 'integer', 'double', 'decimal', 'currency', 'number'):
-            try:
-                float(v_str)
-                return v_str
-            except (ValueError, TypeError):
-                # Numeric column but value is non-numeric — wrap as string
-                # to avoid crashing the visitor (PBI will report a type
-                # mismatch warning but won't crash).
-                return f"'{v_str}'"
+            literal = _numeric_pbi_literal(
+                v_str, prefer_integer=ct in ('int64', 'integer'))
+            if literal is not None:
+                return literal
+            # Numeric column but value is non-numeric — wrap as string
+            # to avoid crashing the visitor (PBI will report a type
+            # mismatch warning but won't crash).
+            return f"'{v_str}'"
 
     # Auto-detect (no column type hint, or unknown type)
     # Boolean
     if v_lower in ('true', 'false', 'vrai', 'faux'):
         return v_lower.replace('vrai', 'true').replace('faux', 'false')
     # Numeric
-    try:
-        float(v_str)
-        return v_str
-    except (ValueError, TypeError):
-        pass
+    literal = _numeric_pbi_literal(v_str)
+    if literal is not None:
+        return literal
     # String (default)
     return f"'{v_str.replace(chr(39), chr(39) * 2)}'"
 
@@ -263,13 +299,9 @@ def _filter_literal(v, date_part_prefix='', boundary='min'):
             pass
 
     # Numeric — PBI expects 123L (integer) or 1.5D (decimal)
-    try:
-        float_val = float(v_str)
-        if '.' in v_str or 'e' in v_str.lower():
-            return f"{float_val}D"
-        return f"{int(float_val)}L"
-    except (ValueError, TypeError):
-        pass
+    literal = _numeric_pbi_literal(v_str)
+    if literal is not None:
+        return literal
 
     # String literal — double apostrophes so PBI can parse the PBIR JSON.
     return f"'{v_str.replace(chr(39), chr(39) * 2)}'"
