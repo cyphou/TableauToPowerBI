@@ -7338,10 +7338,11 @@ def _fix_twb_data_folder(project_dir, source_basename):
     # Create a local Data/ folder and point DataFolder there
     data_dir = os.path.join(project_dir, 'Data')
     os.makedirs(data_dir, exist_ok=True)
-    abs_data = os.path.abspath(data_dir).replace('\\', '\\\\')
+    abs_data = os.path.abspath(data_dir)
+    escaped = abs_data.replace('\\', '\\\\')     # TMDL doubles backslashes
     new_content = _re.sub(
         r'(expression\s+DataFolder\s*=\s*)"[^"]*"',
-        lambda m: m.group(1) + '"' + abs_data + '"',
+        lambda m: m.group(1) + '"' + escaped + '"',
         content,
     )
     if new_content != content:
@@ -7553,7 +7554,7 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename):
 def _extract_twbx_data_files(args, source_basename):
     """Single-migration wrapper for TWBX post-generation processing."""
     source = getattr(args, 'tableau_file', '')
-    if not source or not source.lower().endswith('.twbx'):
+    if not source:
         return
     default_root = (
         os.path.join('artifacts', 'fabric_projects', 'migrated')
@@ -7562,7 +7563,12 @@ def _extract_twbx_data_files(args, source_basename):
     )
     out_base = args.output_dir or default_root
     project_dir = os.path.join(out_base, source_basename)
-    _process_twbx_post_generation(source, project_dir, source_basename)
+    if source.lower().endswith('.twbx'):
+        _process_twbx_post_generation(source, project_dir, source_basename)
+    else:
+        # Batch mode has always done this; a single .twb was left pointing at
+        # a folder that does not exist, with no hint of where to put the data.
+        _fix_twb_data_folder(project_dir, source_basename)
 
 
 def _run_post_generation_reports(args, source_basename, results):

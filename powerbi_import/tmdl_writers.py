@@ -21,6 +21,9 @@ from powerbi_import.tmdl_m_conversion import (
     _strip_m_inline_comments,
 )
 
+#: A path that already names its own drive, e.g. ``C:\data``.
+_DRIVE_ROOTED = re.compile(r'^[A-Za-z]:\\')
+
 logger = logging.getLogger(__name__)
 
 
@@ -734,6 +737,50 @@ def _write_model_tmdl(def_dir, model, tables, roles=None, relationships=None):
         f.write(content)
 
 
+def _data_folder_from(dirs):
+    """Pick the folder the model should read, from the dirs Tableau named.
+
+    A path that is already rooted -- ``C:\\...`` or ``\\\\server\\share`` --
+    is kept exactly. Prefixing a drive letter onto it produced
+    ``C:\\C:\\Users\\...``, which never exists, so a workbook whose data was
+    still on the machine could never load it; and it turned
+    ``\\\\server\\share`` into ``C:\\server\\share``, a local path that is
+    silently wrong rather than merely absent.
+
+    A POSIX or relative path keeps the old behaviour of being read as
+    C-drive relative, which is what makes a Mac-authored workbook usable.
+    """
+    unique = list(dict.fromkeys(d for d in dirs if d))
+    if not unique:
+        return ''
+    if len(unique) == 1:
+        chosen = unique[0]
+    else:
+        chosen = _common_ancestor(unique) or unique[0]
+    windows = chosen.replace('/', '\\')
+    if _DRIVE_ROOTED.match(windows) or windows.startswith('\\\\'):
+        return windows
+    return 'C:\\' + windows.lstrip('\\')
+
+
+def _common_ancestor(dirs):
+    """The deepest directory all of *dirs* share, or '' when they share none.
+
+    Compared segment by segment: a character-wise prefix of
+    ``/data/2024`` and ``/data/2025`` is ``/data/202``, a directory that
+    does not exist.
+    """
+    split = [d.split('/') for d in dirs]
+    shared = []
+    for parts in zip(*split):
+        if len(set(parts)) != 1:
+            break
+        shared.append(parts[0])
+    if not shared or (len(shared) == 1 and not shared[0]):
+        return ''
+    return '/'.join(shared)
+
+
 def _write_expressions_tmdl(def_dir, tables, datasources=None, incremental_params=None):
     """Generate expressions.tmdl with M parameters.
 
@@ -790,31 +837,18 @@ def _write_expressions_tmdl(def_dir, tables, datasources=None, incremental_param
                 fn = details.get('filename', '')
                 dr = details.get('directory', '')
                 if fn:
-                    norm = fn.replace('\\', '/').lstrip('/')
+                    # Keep any leading slashes: they are what tells a UNC
+                    # share apart from a relative path.
+                    norm = fn.replace('\\', '/')
                     parent = norm.rsplit('/', 1)[0] if '/' in norm else ''
                     if parent:
                         file_dirs.append(parent)
                         has_file_source = True
                 if dr:
-                    file_dirs.append(dr.replace('\\', '/').lstrip('/'))
+                    file_dirs.append(dr.replace('\\', '/'))
                     has_file_source = True
 
-    default_folder = "C:\\Data"
-
-    if file_dirs:
-        unique_dirs = list(dict.fromkeys(file_dirs))  # deduplicate, preserve order
-
-        if len(unique_dirs) == 1:
-            common_dir = unique_dirs[0]
-        else:
-            common = os.path.commonprefix(unique_dirs)
-            if '/' in common:
-                common_dir = common[:common.rfind('/')]
-            else:
-                common_dir = common  # all in same directory
-
-        if common_dir:
-            default_folder = "C:\\" + common_dir.replace('/', '\\')
+    default_folder = _data_folder_from(file_dirs) or "C:\\Data"
 
     # TMDL strings require doubled backslashes for literal backslash characters
     escaped_folder = default_folder.replace('\\', '\\\\')
