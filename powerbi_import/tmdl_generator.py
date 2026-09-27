@@ -1791,7 +1791,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
         # Geographic data categories from semantic-role
         semantic_role = col_meta.get('semantic_role', '')
-        geo_category = _map_semantic_role_to_category(semantic_role, unique_col_name)
+        geo_category = _map_semantic_role_to_category(
+            semantic_role, unique_col_name, col.get('datatype'))
         if geo_category:
             bim_column["dataCategory"] = geo_category
 
@@ -2131,7 +2132,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             if calc_meta.get('description', ''):
                 bim_calc_col["description"] = calc_meta['description']
             sr = calc_meta.get('semantic_role', '')
-            geo_cat = _map_semantic_role_to_category(sr, caption)
+            geo_cat = _map_semantic_role_to_category(sr, caption, datatype)
             if geo_cat:
                 bim_calc_col["dataCategory"] = geo_cat
 
@@ -2217,7 +2218,11 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 _COORDINATE_CATEGORIES = frozenset({'Latitude', 'Longitude'})
 
 
-def _map_semantic_role_to_category(semantic_role, col_name=''):
+#: Tableau datatypes that can hold a place name.
+_TEXTUAL_DATATYPES = frozenset({'string', 'str', 'text'})
+
+
+def _map_semantic_role_to_category(semantic_role, col_name='', datatype=None):
     """Map a Tableau semantic-role to a Power BI dataCategory."""
     role_map = {
         '[Country].[Name]': 'Country',
@@ -2243,6 +2248,11 @@ def _map_semantic_role_to_category(semantic_role, col_name=''):
             return 'Latitude'
         if 'longitude' in name_lower or name_lower in ('lon', 'lng', 'long', 'long_upgrade'):
             return 'Longitude'
+        # Past here every category is a place name, and a place name is
+        # text. Guessing one from the name of a numeric column turns a
+        # postal or INSEE code into a location Power BI tries to map.
+        if datatype and datatype.lower() not in _TEXTUAL_DATATYPES:
+            return None
         if name_lower in ('city', 'ville', 'commune', 'label') and 'code' not in name_lower:
             return 'City'
         if name_lower in ('country', 'pays') or name_lower.startswith('pays/'):
