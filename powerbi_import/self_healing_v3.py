@@ -1233,15 +1233,31 @@ def _heal_missing_lineage_tag(model, recovery=None) -> int:
     return repairs
 
 
+def _partition_m_text(tbl) -> str:
+    """Concatenated M of a table's partitions, empty when it has none."""
+    parts = []
+    for partition in tbl.get('partitions', []) or []:
+        source = partition.get('source', {}) or {}
+        if source.get('type') == 'm':
+            parts.append(str(source.get('expression', '') or ''))
+    return '\n'.join(parts)
+
+
 def _heal_source_column_missing(model, recovery=None) -> int:
     """``sourceColumn`` referencing a column that no upstream M step
     produces causes refresh failure.  We can't introspect the M output,
     so the best we can do is detect ``sourceColumn`` that doesn't match
     any known column ``name`` on the same table (case-insensitive) and
-    align it to ``name`` if a near-match exists; otherwise drop to None."""
+    align it to ``name`` if a near-match exists; otherwise drop to None.
+
+    A partition that renames its columns breaks the premise that a model
+    column name equals the produced name, so a sourceColumn the M clearly
+    produces is left alone.
+    """
     repairs = 0
     for tbl in model.get('model', {}).get('tables', []) or []:
         tname = tbl.get('name', '') or ''
+        m_text = _partition_m_text(tbl)
         col_names = {(c.get('name', '') or '').lower(): c.get('name', '')
                      for c in tbl.get('columns', []) or []}
         for col in tbl.get('columns', []) or []:
@@ -1249,6 +1265,8 @@ def _heal_source_column_missing(model, recovery=None) -> int:
             sc = col.get('sourceColumn')
             if not sc or sc == cname:
                 continue
+            if m_text and '"%s"' % sc in m_text:
+                continue          # the partition produces this name
             # Try case-insensitive match
             match = col_names.get(sc.lower())
             if match and match != sc:

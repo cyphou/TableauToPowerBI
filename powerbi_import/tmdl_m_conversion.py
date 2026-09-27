@@ -566,6 +566,24 @@ def _inject_m_steps_into_partition(table, steps):
     return False
 
 
+def m_rename_map(columns, col_metadata_map):
+    """Return {raw column name: caption} for the columns the partition renames.
+
+    The model must ask the partition for the name it actually produces, so
+    both the rename step and every sourceColumn are derived from this one
+    map rather than each recomputing the rule.
+    """
+    renames = {}
+    for col in columns:
+        col_name = col.get('name', '')
+        meta = col_metadata_map.get(col_name, {})
+        caption = meta.get('caption', '')
+        clean_name = col_name.strip('[]')
+        if caption and caption != clean_name and caption != col_name:
+            renames[clean_name] = caption
+    return renames
+
+
 def _build_m_transform_steps(columns, col_metadata_map):
     """
     Build M transformation steps from TWB-embedded column metadata.
@@ -582,18 +600,7 @@ def _build_m_transform_steps(columns, col_metadata_map):
         list of (step_name, step_expression) tuples for inject_m_steps()
     """
     steps = []
-
-    # 1. Collect column renames from caption metadata
-    renames = {}
-    for col in columns:
-        col_name = col.get('name', '')
-        meta = col_metadata_map.get(col_name, {})
-        caption = meta.get('caption', '')
-        # Clean bracket notation: [col_name] → col_name
-        clean_name = col_name.strip('[]')
-        if caption and caption != clean_name and caption != col_name:
-            renames[clean_name] = caption
-
+    renames = m_rename_map(columns, col_metadata_map)
     if renames:
         steps.append(m_transform_rename(renames))
 

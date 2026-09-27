@@ -73,6 +73,7 @@ from powerbi_import.tmdl_m_conversion import (  # noqa: F401
     _split_top_level_binop,
     _strip_m_inline_comments,
     _build_m_transform_steps,
+    m_rename_map,
     _fix_m_if_else_balance,
     _wrap_date_subtraction_in_duration_days,
 )
@@ -1702,6 +1703,10 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         col_names = [c.get('name', '') for c in columns if c.get('name')]
         m_query = wrap_source_with_try_otherwise(m_query, col_names)
 
+    # Whatever the partition renames, the model must ask for the produced
+    # name; deriving both from one map stops the two sides drifting apart.
+    rename_map = m_rename_map(columns, col_metadata_map)
+
     # Determine partition mode based on model_mode
     # For composite: large tables use directQuery, small/lookup use import
     partition_mode = model_mode if model_mode in ('import', 'directQuery') else 'import'
@@ -1766,10 +1771,15 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         if ds_datatype and ds_datatype != col_datatype:
             col_datatype = ds_datatype
 
+        # The partition renames a captioned column, so the model has to ask
+        # the partition for the name it actually produces.
+        raw_col_name = col.get('name', 'Column')
+        source_col = rename_map.get(raw_col_name.strip('[]'), raw_col_name)
+
         bim_column = {
             "name": unique_col_name,
             "dataType": map_tableau_to_powerbi_type(col_datatype),
-            "sourceColumn": col.get('name', 'Column'),
+            "sourceColumn": source_col,
             "summarizeBy": "none"
         }
 
