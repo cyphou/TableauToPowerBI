@@ -86,6 +86,33 @@ class TestPngEncoding(unittest.TestCase):
                 handle.write(desktop_window._png_bytes(64, 64, pixels))
             self.assertFalse(desktop_window.is_blank(path))
 
+    def test_a_uniform_top_edge_does_not_make_it_blank(self):
+        """The shape of every real capture: flat chrome, content below.
+
+        Sampling only the first few thousand bytes never got past the title
+        bar, so a perfectly good screenshot was reported as caught-nothing.
+        """
+        width = height = 64
+        flat_rows = 24
+        pixels = bytearray([0, 0, 0, 255] * width * flat_rows)
+        pixels += bytearray(
+            (i * 37) % 251 for i in range(width * (height - flat_rows) * 4))
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'chrome.png')
+            with open(path, 'wb') as handle:
+                handle.write(desktop_window._png_bytes(
+                    width, height, bytes(pixels)))
+            self.assertFalse(desktop_window.is_blank(path))
+
+    def test_a_truncated_image_is_unknown_not_blank(self):
+        png = desktop_window._png_bytes(8, 8, bytes([7, 7, 7, 255] * 64))
+        head = png[:16] + struct.pack('>II', 8, 4096) + png[24:]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'short.png')
+            with open(path, 'wb') as handle:
+                handle.write(head)
+            self.assertIsNone(desktop_window.is_blank(path))
+
     def test_unreadable_file_is_unknown_not_blank(self):
         self.assertIsNone(desktop_window.is_blank(
             os.path.join(tempfile.gettempdir(), 'no_such_capture.png')))

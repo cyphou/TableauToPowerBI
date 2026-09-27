@@ -105,6 +105,59 @@ class WindowInfo(NamedTuple):
     owned: bool
 
 
+#: Per-monitor v2, the context that makes GetWindowRect report real pixels.
+_DPI_PER_MONITOR_V2 = -4
+_DPI_PER_MONITOR = 2
+
+_dpi_ready = False
+
+
+def _dpi_calls():
+    """The ways to claim DPI awareness, newest API first."""
+    if not IS_WINDOWS:
+        return []
+    calls = []
+    if hasattr(_user32, "SetProcessDpiAwarenessContext"):
+        calls.append(lambda: _user32.SetProcessDpiAwarenessContext(
+            ctypes.c_void_p(_DPI_PER_MONITOR_V2)))
+    try:
+        shcore = ctypes.WinDLL("shcore", use_last_error=True)
+    except OSError:
+        shcore = None
+    if shcore is not None and hasattr(shcore, "SetProcessDpiAwareness"):
+        calls.append(
+            lambda: shcore.SetProcessDpiAwareness(_DPI_PER_MONITOR) == 0)
+    if hasattr(_user32, "SetProcessDPIAware"):
+        calls.append(_user32.SetProcessDPIAware)
+    return calls
+
+
+def _ensure_dpi_aware() -> bool:
+    """Ask Windows for physical pixels before measuring or capturing.
+
+    A DPI-unaware process is handed GetWindowRect in *logical* coordinates,
+    so on a scaled display the rect is smaller than the window really is.
+    The bitmap gets sized from that rect while PrintWindow renders at the
+    window's true size, and the capture comes back cropped along the bottom
+    and right edges -- which on an error dialog cuts off the buttons.
+
+    Awareness is a one-shot, process-wide setting: if the host already chose
+    one, ours is refused and there is nothing to do about it. So this runs at
+    most once and never raises.
+    """
+    global _dpi_ready
+    if _dpi_ready:
+        return True
+    _dpi_ready = True
+    for call in _dpi_calls():
+        try:
+            if call():
+                return True
+        except (OSError, AttributeError, ValueError):
+            continue
+    return False
+
+
 def _text_of(hwnd) -> str:                        # pragma: no cover - platform
     length = _user32.GetWindowTextLengthW(hwnd)
     if length <= 0:
@@ -124,6 +177,7 @@ def windows_for_pid(pid: int) -> List[WindowInfo]:
     """Every visible top-level window belonging to ``pid``."""
     if not IS_WINDOWS or not pid:
         return []
+    _ensure_dpi_aware()
     found: List[WindowInfo] = []
 
     def _callback(hwnd, _lparam):                 # pragma: no cover - platform
@@ -281,6 +335,7 @@ def capture_window(hwnd: int, path: str) -> Optional[str]:
     """Write a PNG of the window. Returns the path, or None when unavailable."""
     if not IS_WINDOWS:
         return None
+    _ensure_dpi_aware()
     rect = wintypes.RECT()
     if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         return None
@@ -332,6 +387,10 @@ def is_blank(png_path: str, sample_stride: int = 97) -> Optional[bool]:
 
     A blank capture means the screenshot failed, not that the report is empty,
     so callers should report it as an unknown rather than a pass.
+
+    Samples across the whole image. Reading only the first few thousand bytes
+    would cover barely half the top row -- uniform window chrome on any real
+    capture, so every screenshot read as blank.
     """
     try:
         with open(png_path, "rb") as handle:
@@ -339,12 +398,27 @@ def is_blank(png_path: str, sample_stride: int = 97) -> Optional[bool]:
     except OSError:
         return None
     idat = data.find(b"IDAT")
-    if idat < 0:
+    if idat < 0 or len(data) < 24:
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    if width <= 0 or height <= 0:
         return None
     size = struct.unpack(">I", data[idat - 4:idat])[0]
     try:
         raw = zlib.decompress(data[idat + 4:idat + 4 + size])
     except zlib.error:
         return None
-    sample = raw[1:3000:sample_stride]
-    return len(set(sample)) <= 1
+
+    row_len = 1 + width * 3                    # our writer always filters 0
+    if len(raw) < row_len * height:
+        return None
+    total = width * height
+    step = min(sample_stride, max(1, total // 256))
+    seen = set()
+    for index in range(0, total, step):
+        row, col = divmod(index, width)
+        start = row * row_len + 1 + col * 3
+        seen.add(raw[start:start + 3])
+        if len(seen) > 1:
+            return False
+    return True
