@@ -37,6 +37,7 @@ EXPECTED_SCHEMAS = {
     'page': 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/page/2.1.0/schema.json',
     'visual': 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.7.0/schema.json',
     'bookmark': 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/bookmark/2.1.0/schema.json',
+    'bookmarks_metadata': 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/bookmarksMetadata/1.0.0/schema.json',
     'pages_metadata': 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/pagesMetadata/1.0.0/schema.json',
     'version': 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/versionMetadata/1.0.0/schema.json',
     'definition_pbir': 'https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json',
@@ -48,6 +49,7 @@ _ACCEPTABLE_VERSIONS = {
     'page': {'2.0.0', '2.1.0'},
     'visual': {'2.5.0', '2.7.0'},
     'bookmark': {'1.1.0', '2.1.0'},
+    'bookmarks_metadata': {'1.0.0'},
     'pages_metadata': {'1.0.0'},
     'version': {'1.0.0'},
     'definition_pbir': {'2.0.0'},
@@ -160,6 +162,8 @@ def _schema_family(url: str) -> Optional[str]:
         return 'version'
     if 'definitionproperties' in low:
         return 'definition_pbir'
+    if 'bookmarksmetadata' in low:
+        return 'bookmarks_metadata'
     if 'bookmark' in low:
         return 'bookmark'
     if '/page/' in low:
@@ -332,6 +336,25 @@ def _validate_report(data: dict, issues: List[SchemaIssue]) -> None:
                                           'filters must be a list'))
 
 
+def _validate_bookmarks_metadata(data: dict, issues: List[SchemaIssue]) -> None:
+    """Deep-validate the bookmarks.json index.
+
+    Power BI refuses a project whose bookmarks folder has no index, so the
+    index has to be a first-class artifact rather than read as a bookmark.
+    """
+    _validate_schema_url(data, 'bookmarks_metadata', issues)
+
+    items = data.get('items')
+    if not isinstance(items, list):
+        issues.append(SchemaIssue('error', 'items',
+                                  'bookmarks.json must list items'))
+        return
+    for index, entry in enumerate(items):
+        if not isinstance(entry, dict) or not entry.get('name'):
+            issues.append(SchemaIssue('error', f'items[{index}].name',
+                                      'Each bookmark entry needs a name'))
+
+
 def _validate_bookmark(data: dict, issues: List[SchemaIssue]) -> None:
     """Deep-validate a bookmark.json artifact."""
     _validate_schema_url(data, 'bookmark', issues)
@@ -390,6 +413,7 @@ _VALIDATORS = {
     'page': _validate_page,
     'report': _validate_report,
     'bookmark': _validate_bookmark,
+    'bookmarks_metadata': _validate_bookmarks_metadata,
     'pages_metadata': _validate_pages_metadata,
     'version': _validate_version,
     'definition_pbir': _validate_definition_pbir,

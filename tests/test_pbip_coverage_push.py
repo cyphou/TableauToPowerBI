@@ -218,7 +218,11 @@ class TestSwapBookmarks(unittest.TestCase):
         # Bookmarks should be in definition/bookmarks/ directory
         bookmarks_dir = os.path.join(project_dir, 'Test.Report', 'definition', 'bookmarks')
         self.assertTrue(os.path.isdir(bookmarks_dir))
-        bookmark_dirs = os.listdir(bookmarks_dir)
+        # The folder also holds the bookmarks.json index Power BI requires.
+        self.assertTrue(os.path.isfile(
+            os.path.join(bookmarks_dir, 'bookmarks.json')))
+        bookmark_dirs = [d for d in os.listdir(bookmarks_dir)
+                         if os.path.isdir(os.path.join(bookmarks_dir, d))]
         self.assertGreater(len(bookmark_dirs), 0)
         # Verify each bookmark file has correct schema
         for bm_dir in bookmark_dirs:

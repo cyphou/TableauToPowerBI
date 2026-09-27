@@ -193,7 +193,7 @@ class TestOpenability(unittest.TestCase):
             for key in ("project_dir", "openable", "blocking_count",
                         "warning_count", "blocking_issues", "warnings", "checks"):
                 self.assertIn(key, data)
-            self.assertEqual(len(data["checks"]), 18)
+            self.assertEqual(len(data["checks"]), 19)
 
     def test_check_names_present(self):
         with tempfile.TemporaryDirectory() as d:
@@ -206,6 +206,7 @@ class TestOpenability(unittest.TestCase):
                                      "semantic_validation", "executable_dax", "visual_bindings", "references", "report_structure", "schema",
                                      "calc_column_dependencies",
                                      "path_length",
+                                     "bookmarks_index",
                                      "pbip_contract"})
 
     def test_unknown_semantic_reference_blocks_open(self):

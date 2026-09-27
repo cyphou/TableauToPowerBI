@@ -766,6 +766,27 @@ def _check_path_length(project_dir) -> CheckResult:
     return CheckResult("path_length", not issues, "error", issues)
 
 
+def _check_bookmarks_index(project_dir: str) -> CheckResult:
+    """A bookmarks folder needs its bookmarks.json index.
+
+    Power BI reads the index to know which bookmarks exist. Without it the
+    whole project is refused with a bare "Something went wrong", naming
+    neither the folder nor the bookmark.
+    """
+    issues = []
+    for root, dirs, files in os.walk(project_dir):
+        if os.path.basename(root) != "bookmarks":
+            continue
+        entries = [d for d in dirs
+                   if os.path.isfile(os.path.join(root, d, "bookmark.json"))]
+        if entries and "bookmarks.json" not in files:
+            rel = os.path.relpath(root, project_dir)
+            issues.append(
+                f"{rel} holds {len(entries)} bookmark(s) but no "
+                "bookmarks.json index")
+    return CheckResult("bookmarks_index", not issues, "error", issues)
+
+
 def check_openability(project_dir: str) -> OpenabilityReport:
     """Run the full PBI Desktop openability preflight."""
     report = OpenabilityReport(project_dir=project_dir)
@@ -787,6 +808,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_semantic_validation(project_dir),
         _check_calc_column_dependencies(project_dir),
         _check_path_length(project_dir),
+        _check_bookmarks_index(project_dir),
         _check_executable_tmdl_dax(project_dir),
         _check_visual_bindings(project_dir),
         _check_references(project_dir),

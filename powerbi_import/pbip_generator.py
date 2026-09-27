@@ -65,6 +65,7 @@ SCHEMA_REPORT = "https://developer.microsoft.com/json-schemas/fabric/item/report
 SCHEMA_PAGE = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/page/2.1.0/schema.json"
 SCHEMA_VISUAL = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.7.0/schema.json"
 SCHEMA_BOOKMARK = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/bookmark/2.1.0/schema.json"
+SCHEMA_BOOKMARKS_METADATA = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/bookmarksMetadata/1.0.0/schema.json"
 SCHEMA_PAGES_METADATA = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/pagesMetadata/1.0.0/schema.json"
 SCHEMA_VERSION = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/versionMetadata/1.0.0/schema.json"
 SCHEMA_DEFINITION_PBIR = "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json"
@@ -2197,7 +2198,7 @@ class PowerBIProjectGenerator:
         all_bookmarks = []
         stories = converted_objects.get('stories', [])
         if stories:
-            all_bookmarks.extend(self._create_bookmarks(stories))
+            all_bookmarks.extend(self._create_bookmarks(stories, page_names))
         # Dynamic zone visibility â†’ swap bookmarks (per dashboard)
         if dashboards:
             for db_idx, db in enumerate(dashboards):
@@ -2389,7 +2390,7 @@ class PowerBIProjectGenerator:
         all_bookmarks = []
         stories = converted_objects.get('stories', [])
         if stories:
-            all_bookmarks.extend(self._create_bookmarks(stories))
+            all_bookmarks.extend(self._create_bookmarks(stories, page_names))
         if dashboards:
             for db_idx, db in enumerate(dashboards):
                 dz_vis = db.get('dynamic_zone_visibility', [])
@@ -4026,14 +4027,19 @@ class PowerBIProjectGenerator:
             "active": True
         }
     
-    def _create_bookmarks(self, stories):
+    def _create_bookmarks(self, stories, page_names=None):
         """Converts Tableau stories to Power BI bookmarks (PBIR format)."""
         bookmarks = []
+        pages = list(page_names or [])
+        # A bookmark whose section names no real page makes Power BI refuse
+        # the project. Tableau stores a worksheet name, which is not a page.
+        fallback = pages[0] if pages else 'ReportSection'
         for story in stories:
             story_name = story.get('name', 'Story')
             for sp_idx, sp in enumerate(story.get('story_points', [])):
                 caption = sp.get('caption', f'{story_name} - Point {sp_idx + 1}')
-                active_section = sp.get('captured_sheet', 'ReportSection')
+                captured = (sp.get('captured_sheet') or '').strip()
+                active_section = captured if captured in pages else fallback
                 bookmark = {
                     "name": f"Bookmark_{uuid.uuid4().hex[:8]}",
                     "displayName": caption,
@@ -4127,9 +4133,12 @@ class PowerBIProjectGenerator:
     def _write_bookmark_files(self, def_dir, bookmarks):
         """Write bookmarks as individual PBIR bookmark files.
 
-        Each bookmark gets its own directory under ``definition/bookmarks/``.
+        Each bookmark gets its own directory under ``definition/bookmarks/``,
+        plus the ``bookmarks.json`` index. Without that index Power BI Desktop
+        refuses the whole project with a bare "Something went wrong".
         """
         bookmarks_dir = os.path.join(def_dir, 'bookmarks')
+        written = []
         for bm in bookmarks:
             bm_name = bm["name"]
             bm_dir = os.path.join(bookmarks_dir, bm_name)
@@ -4137,12 +4146,19 @@ class PowerBIProjectGenerator:
             bookmark_json = {
                 "$schema": SCHEMA_BOOKMARK,
                 "name": bm["name"],
-                "displayName": bm["displayName"],
+                "displayName": bm["displayName"] or bm_name,
                 "explorationState": bm["explorationState"],
             }
             if bm.get("options"):
                 bookmark_json["options"] = bm["options"]
             _write_json(os.path.join(bm_dir, 'bookmark.json'), bookmark_json)
+            written.append(bm_name)
+
+        if written:
+            _write_json(os.path.join(bookmarks_dir, 'bookmarks.json'), {
+                "$schema": SCHEMA_BOOKMARKS_METADATA,
+                "items": [{"name": name} for name in written],
+            })
 
     def _copy_custom_shapes(self, def_dir, converted_objects):
         """Copy extracted custom shape files to RegisteredResources/.
