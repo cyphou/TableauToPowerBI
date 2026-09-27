@@ -88,6 +88,39 @@ _SCRIPT_FUNCTIONS = re.compile(
     re.IGNORECASE,
 )
 
+_NUMBER_ARG = re.compile(r'\s*[-+]?\d+(?:\.\d+)?\s*')
+
+
+def _is_constant_point_only(formula: str) -> bool:
+    """True when every unsupported call is MAKEPOINT over numeric literals.
+
+    A point from constants is one fixed location, so grouping by it in an
+    LOD is the same as not grouping and the migrated DAX computes the same
+    numbers. A point built from columns is a real per-row grain the model
+    cannot hold, so that case stays blocking.
+    """
+    matches = list(_UNSUPPORTED_FUNCTIONS.finditer(formula))
+    if not matches:
+        return False
+    for match in matches:
+        if match.group(1).upper() != 'MAKEPOINT':
+            return False
+        depth, start = 1, match.end()
+        index = start
+        while index < len(formula) and depth:
+            if formula[index] == '(':
+                depth += 1
+            elif formula[index] == ')':
+                depth -= 1
+            index += 1
+        if depth:
+            return False
+        args = formula[start:index - 1].split(',')
+        if len(args) not in (2, 3) or not all(
+                _NUMBER_ARG.fullmatch(a) for a in args):
+            return False
+    return True
+
 _PARTIAL_FUNCTIONS = re.compile(
     r'\b('
     r'REGEXP_EXTRACT|REGEXP_EXTRACT_NTH|REGEXP_MATCH|REGEXP_REPLACE'
@@ -492,6 +525,7 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
 
     # Classify
     unsupported = []
+    constant_points = []
     partial = []
     script_calcs = []
     lod_calcs = []
@@ -501,7 +535,9 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
         formula = calc.get("formula") or ""
         name = calc.get("caption", calc.get("name", "?"))
 
-        if _UNSUPPORTED_FUNCTIONS.search(formula):
+        if _is_constant_point_only(formula):
+            constant_points.append(name)
+        elif _UNSUPPORTED_FUNCTIONS.search(formula):
             unsupported.append(name)
         if _SCRIPT_FUNCTIONS.search(formula):
             script_calcs.append(name)
@@ -532,6 +568,20 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
         cat.checks.append(CheckItem(
             cat.name, "Unsupported functions", PASS,
             "No calculations use unsupported functions.",
+        ))
+
+    if constant_points:
+        names_preview = ", ".join(constant_points[:5])
+        extra = (f" (+{len(constant_points) - 5} more)"
+                 if len(constant_points) > 5 else "")
+        cat.checks.append(CheckItem(
+            cat.name, "Constant MAKEPOINT", WARN,
+            f"{len(constant_points)} calculation(s) build a fixed point from "
+            f"constants: {names_preview}{extra}.",
+            "Power BI has no point type, so the point itself is not migrated. "
+            "Grouping by one fixed location changes nothing, so LOD measures "
+            "using it compute the same numbers; only a map that plots the "
+            "point directly loses it.",
         ))
 
     if script_calcs:
