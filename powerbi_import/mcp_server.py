@@ -8,10 +8,16 @@ Tools:
     assess         Pre-migration readiness assessment (no artifacts written)
     migrate        Full extract → generate pipeline, returns output dir
     qa             Real-world QA report card on a generated .pbip project
+    quality_report Unified deterministic quality report with openability diagnostics
+    agent_handoff  Pull read-only quality priorities filtered to the requested owner
+    agent_handoff_ack Record a proof-gated, process-memory acknowledgement
     parity_scan    Functionality-parity scan using the shipped parity registry
     shared_model   Build a shared semantic model from several workbooks
     diff           Compare source extraction vs generated output
     deploy         Deploy to Fabric / Power BI Service (guarded, dry-run default)
+    llm_status     Report LLM gateway configuration and connectivity
+    autoheal       Heal and re-validate a generated .pbip project
+    verify_open    Preflight a generated .pbip for Power BI Desktop openability
 
 Design principles (see docs/ROADMAP.md v44.0.0):
     * Tools are contracts — each has a typed input schema and structured output.
@@ -28,9 +34,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
+import stat
 import sys
 import tempfile
 import traceback
@@ -119,6 +127,37 @@ def _tool_catalogue():
                     "project_dir": {"type": "string", "description": "Generated project dir"},
                 },
                 "required": ["file", "project_dir"],
+            },
+        },
+        {
+            "name": "agent_handoff",
+            "description": "Return a read-only packet of current quality-report priorities "
+                           "owned by the requested agent. Requires quality_report to have "
+                           "run in this MCP session; completion requires an external "
+                           "agent/operator and a fresh quality report.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent": {"type": "string", "description": "Owner name, with optional @ prefix"},
+                },
+                "required": ["agent"],
+            },
+        },
+        {
+            "name": "agent_handoff_ack",
+            "description": "Acknowledge a handoff issued by this MCP session. Applied "
+                           "requires a fresh quality report for the same project, changed "
+                           "PBIP definition artifacts, and a finding no longer prioritized. "
+                           "Acknowledgements remain in process memory only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "handoff_id": {"type": "string", "description": "ID from agent_handoff"},
+                    "agent": {"type": "string", "description": "Owner token, with optional @ prefix"},
+                    "outcome": {"type": "string", "enum": ["applied", "not_applicable"]},
+                    "rationale": {"type": "string", "description": "Reason for this acknowledgement"},
+                },
+                "required": ["handoff_id", "agent", "outcome", "rationale"],
             },
         },
         {
@@ -280,6 +319,72 @@ def _validate_input_file(path):
     return ""
 
 
+def _validate_pbip_project_dir(path):
+    """Validate a generated PBIP root before any MCP read or write."""
+    if not path or not isinstance(path, str):
+        return "missing 'project_dir'"
+    if "\x00" in path:
+        return "invalid project path (null byte)"
+    absolute = os.path.abspath(path)
+    output_error = _validate_output_path(absolute)
+    if output_error:
+        return output_error
+    if os.path.islink(absolute) or not os.path.isdir(absolute):
+        return "project_dir must be a real directory"
+    pbips = [name for name in os.listdir(absolute)
+             if name.casefold().endswith(".pbip")]
+    reports = [name for name in os.listdir(absolute)
+               if name.casefold().endswith(".report")]
+    models = [name for name in os.listdir(absolute)
+              if name.casefold().endswith(".semanticmodel")]
+    if len(pbips) != 1 or len(reports) != 1 or len(models) != 1:
+        return "project_dir must contain one .pbip, one .Report, and one .SemanticModel"
+    if not os.path.isdir(os.path.join(absolute, reports[0], "definition")):
+        return "PBIP report definition directory is missing"
+    if not os.path.isdir(os.path.join(absolute, models[0], "definition")):
+        return "PBIP semantic-model definition directory is missing"
+    for current, dirs, filenames in os.walk(absolute, followlinks=False):
+        if any(os.path.islink(os.path.join(current, name)) for name in dirs + filenames):
+            return "project_dir must not contain symbolic links"
+    try:
+        _pbip_artifact_fingerprint(absolute)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+def _validate_output_path(path):
+    """Reject output paths containing existing symbolic-link components."""
+    if not isinstance(path, str) or not path or "\x00" in path:
+        return "invalid output path"
+    current = os.path.abspath(path)
+    while current and current != os.path.dirname(current):
+        if os.path.lexists(current) and os.path.islink(current):
+            return "output path must not contain symbolic links"
+        current = os.path.dirname(current)
+    return ""
+
+
+def _validate_desktop_log(path, project_dir):
+    """Allow only a bounded, regular log beneath the validated project root."""
+    if not path or not isinstance(path, str):
+        return "invalid Desktop log path"
+    if "\x00" in path:
+        return "invalid Desktop log path (null byte)"
+    log_path = os.path.abspath(path)
+    root = os.path.realpath(os.path.abspath(project_dir))
+    if os.path.islink(log_path) or not os.path.isfile(log_path):
+        return "Desktop log must be a regular non-symlink file"
+    try:
+        if os.path.commonpath((root, os.path.realpath(log_path))) != root:
+            return "Desktop log must be inside project_dir"
+        if os.path.getsize(log_path) > 10 * 1024 * 1024:
+            return "Desktop log exceeds the 10 MiB limit"
+    except OSError:
+        return "Desktop log is unreadable"
+    return ""
+
+
 def _extract_to_dir(file_path, extract_dir):
     """Extract a Tableau workbook into ``extract_dir``. Returns converted objects."""
     from extract_tableau_data import TableauExtractor  # type: ignore
@@ -289,6 +394,96 @@ def _extract_to_dir(file_path, extract_dir):
     extractor.extract_all()
     importer = PowerBIImporter(extract_dir)
     return importer, importer._load_converted_objects()
+
+
+def _pbip_artifact_fingerprint(project_dir):
+    """Hash only generated PBIP, report-definition, and semantic-model artifacts."""
+    if not isinstance(project_dir, str) or not os.path.isdir(project_dir):
+        raise ValueError("project directory is missing or unreadable")
+
+    excluded_dirs = {"data", "log", "logs", "html", "mcp", "mcp_state", "mcp-state"}
+    artifacts = []
+    walk_errors = []
+
+    def _on_walk_error(error):
+        error_path = os.path.abspath(error.filename or project_dir)
+        relative = os.path.relpath(error_path, project_dir)
+        parts = relative.split(os.sep)
+        if relative == "." or any(
+            part.casefold().endswith((".report", ".semanticmodel")) for part in parts
+        ):
+            walk_errors.append(error)
+
+    for current, dirs, filenames in os.walk(project_dir, onerror=_on_walk_error):
+        dirs[:] = [name for name in dirs if name.casefold() not in excluded_dirs]
+        relative_dir = os.path.relpath(current, project_dir)
+        parts = [] if relative_dir == "." else relative_dir.split(os.sep)
+        in_report = any(part.casefold().endswith(".report") for part in parts)
+        in_model = any(part.casefold().endswith(".semanticmodel") for part in parts)
+
+        for filename in filenames:
+            extension = os.path.splitext(filename)[1].casefold()
+            is_platform = filename.casefold() == ".platform"
+            if not (
+                extension == ".pbip"
+                or (extension == ".tmdl" and in_model)
+                or (extension == ".json" and in_report)
+                or (is_platform and (in_report or in_model))
+            ):
+                continue
+            path = os.path.join(current, filename)
+            relative_path = os.path.relpath(path, project_dir).replace(os.sep, "/")
+            artifacts.append((relative_path, path))
+
+    if walk_errors:
+        raise ValueError("a PBIP report/model artifact directory is unreadable")
+    artifacts.sort(key=lambda entry: entry[0].casefold())
+    if not any(path.casefold().endswith(".pbip") for _, path in artifacts):
+        raise ValueError("PBIP project descriptor is missing")
+    if not any(not path.casefold().endswith(".pbip") for _, path in artifacts):
+        raise ValueError("PBIP report/model definition artifacts are missing")
+
+    digest = hashlib.sha256()
+    for relative_path, path in artifacts:
+        try:
+            if os.path.islink(path):
+                raise ValueError("symbolic links are not valid PBIP artifacts")
+            before = os.stat(path, follow_symlinks=False)
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError("PBIP artifact is not a regular file")
+            digest.update(relative_path.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(before.st_size).encode("ascii"))
+            digest.update(b"\0")
+            with open(path, "rb") as artifact_file:
+                while True:
+                    chunk = artifact_file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+            after = os.stat(path, follow_symlinks=False)
+            if (before.st_size, before.st_mtime_ns, before.st_ino) != (
+                after.st_size, after.st_mtime_ns, after.st_ino
+            ):
+                raise ValueError("PBIP artifact changed while fingerprinting")
+            digest.update(b"\0")
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"PBIP artifact is missing or unreadable: {relative_path}") from exc
+    return digest.hexdigest(), frozenset(relative_path for relative_path, _ in artifacts)
+
+
+def _normalize_agent_token(agent):
+    token = agent.strip()
+    if token.startswith("@"):
+        token = token[1:]
+    return token.strip().casefold()
+
+
+def _finding_signature(item):
+    return json.dumps(
+        {key: item.get(key) for key in ("owner", "action", "fix", "evidence")},
+        ensure_ascii=False, sort_keys=True, default=str,
+    )
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -304,6 +499,10 @@ class MigrationTools:
 
     def __init__(self):
         self.report_store = {}  # kind -> dict
+        self._quality_revision = 0
+        self._quality_context = None
+        self._issued_handoffs = {}
+        self.acknowledgements = {}
 
     # -- assess -------------------------------------------------------
     def assess(self, args):
@@ -325,6 +524,9 @@ class MigrationTools:
         if err:
             return {"ok": False, "error": err}
         out_dir = args.get("output_dir") or tempfile.mkdtemp(prefix="ttpbi_mcp_out_")
+        output_error = _validate_output_path(out_dir)
+        if output_error:
+            return {"ok": False, "error": output_error}
         fmt = args.get("output_format", "pbip")
         if fmt not in ("pbip", "fabric"):
             return {"ok": False, "error": f"invalid output_format: {fmt}"}
@@ -366,7 +568,197 @@ class MigrationTools:
             report = build_quality_report(converted, project_dir, name)
             payload = report.to_dict()
         self.report_store["quality"] = payload
+        self._quality_revision += 1
+        self._quality_context = {
+            "report": payload,
+            "report_name": payload.get("report_name") or name,
+            "project_dir": os.path.normcase(os.path.realpath(os.path.abspath(project_dir))),
+            "revision": self._quality_revision,
+        }
         return {"ok": True, "report": payload}
+
+    # -- agent_handoff -----------------------------------------------
+    def agent_handoff(self, args):
+        agent = args.get("agent")
+        if not isinstance(agent, str) or not agent.strip():
+            return {"ok": False, "error": "agent is required and must be a non-blank string"}
+        requested_agent = agent.strip()
+        normalized_agent = _normalize_agent_token(requested_agent)
+        if not normalized_agent:
+            return {"ok": False, "error": "agent is required and must be a non-blank string"}
+
+        report = self.report_store.get("quality")
+        if not isinstance(report, dict):
+            return {"ok": False, "error": "not ready: run quality_report in this MCP session first"}
+
+        context = self._quality_context
+        context_is_current = isinstance(context, dict) and context.get("report") is report
+        report_name = report.get("report_name")
+        if context_is_current:
+            report_name = report_name or context.get("report_name")
+        baseline_fingerprint = None
+        project_identity = None
+        project_dir = None
+        issue_revision = self._quality_revision
+        if context_is_current:
+            project_dir = context.get("project_dir")
+            project_identity = project_dir
+            issue_revision = context.get("revision", self._quality_revision)
+            try:
+                baseline_fingerprint = _pbip_artifact_fingerprint(project_dir)
+            except ValueError:
+                # Issuance stays read-only; applied acknowledgements fail closed.
+                baseline_fingerprint = None
+
+        findings = []
+        for index, item in enumerate(report.get("priorities", [])):
+            if not isinstance(item, dict):
+                continue
+            owners = item.get("owner", "")
+            if not isinstance(owners, str):
+                continue
+            owner_tokens = [_normalize_agent_token(token) for token in owners.split("/")]
+            if normalized_agent not in owner_tokens:
+                continue
+
+            finding = {
+                key: item[key]
+                for key in ("priority", "action_kind", "action", "fix", "evidence", "owner")
+                if key in item
+            }
+            if "blocker" in item:
+                finding["blocker"] = item["blocker"]
+            identity = json.dumps(
+                [report.get("report_name"), index, item],
+                ensure_ascii=False, sort_keys=True, default=str,
+            ).encode("utf-8")
+            finding["handoff_id"] = hashlib.sha256(identity).hexdigest()
+            registry_key = (finding["handoff_id"], normalized_agent)
+            self._issued_handoffs[registry_key] = {
+                "agent": normalized_agent,
+                "finding_signature": _finding_signature(item),
+                "report_name": report_name,
+                "project_dir": project_dir,
+                "project_identity": project_identity,
+                "baseline_fingerprint": baseline_fingerprint,
+                "quality_revision": issue_revision,
+            }
+            findings.append(finding)
+
+        return {
+            "ok": True,
+            "read_only": True,
+            "report_name": report_name,
+            "report_status": report.get("status"),
+            "requested_agent": requested_agent,
+            "count": len(findings),
+            "status": "ready" if findings else "no_findings",
+            "findings": findings,
+            "completion_note": (
+                "This is a read-only packet. Completion requires an external "
+                "agent/operator and a fresh quality report."
+            ),
+        }
+
+    # -- agent_handoff_ack -------------------------------------------
+    def agent_handoff_ack(self, args):
+        handoff_id = args.get("handoff_id")
+        if not isinstance(handoff_id, str) or not handoff_id.strip():
+            return {"ok": False, "persisted": False,
+                    "error": "handoff_id is required and must be a non-blank string"}
+
+        agent = args.get("agent")
+        if not isinstance(agent, str) or not agent.strip():
+            return {"ok": False, "persisted": False,
+                    "error": "agent is required and must be a non-blank string"}
+        normalized_agent = _normalize_agent_token(agent)
+        if not normalized_agent:
+            return {"ok": False, "persisted": False,
+                    "error": "agent is required and must be a non-blank string"}
+
+        outcome = args.get("outcome")
+        if outcome not in ("applied", "not_applicable"):
+            return {"ok": False, "persisted": False,
+                    "error": "outcome must be 'applied' or 'not_applicable'"}
+        rationale = args.get("rationale")
+        if not isinstance(rationale, str):
+            return {"ok": False, "persisted": False,
+                    "error": "rationale is required and must be a string"}
+        if outcome == "not_applicable" and not rationale.strip():
+            return {"ok": False, "persisted": False,
+                    "error": "not_applicable requires a non-blank rationale"}
+
+        registry_key = (handoff_id.strip(), normalized_agent)
+        issued = self._issued_handoffs.get(registry_key)
+        if not isinstance(issued, dict):
+            return {"ok": False, "persisted": False,
+                    "error": "handoff_id was not issued to this agent by this MigrationTools instance"}
+        if registry_key in self.acknowledgements:
+            return {"ok": False, "persisted": False,
+                    "error": "this handoff has already been acknowledged"}
+
+        current_fingerprint = None
+        if outcome == "applied":
+            if issued.get("baseline_fingerprint") is None or not issued.get("project_dir"):
+                return {"ok": False, "persisted": False,
+                        "error": "issue baseline artifacts were missing or unreadable; applied ACK rejected"}
+
+            latest_report = self.report_store.get("quality")
+            context = self._quality_context
+            if not isinstance(context, dict) or context.get("report") is not latest_report:
+                return {"ok": False, "persisted": False,
+                        "error": "no fresh quality_report is available in this MCP instance"}
+            if context.get("revision", 0) <= issued.get("quality_revision", 0):
+                return {"ok": False, "persisted": False,
+                        "error": "applied ACK requires a fresh quality_report after the handoff"}
+            if (context.get("report_name") != issued.get("report_name")
+                    or context.get("project_dir") != issued.get("project_identity")):
+                return {"ok": False, "persisted": False,
+                        "error": "fresh quality_report must target the same report and project"}
+
+            priorities = latest_report.get("priorities")
+            if not isinstance(priorities, list):
+                return {"ok": False, "persisted": False,
+                        "error": "latest quality_report priorities are missing or unreadable"}
+            if any(
+                isinstance(item, dict)
+                and _finding_signature(item) == issued.get("finding_signature")
+                for item in priorities
+            ):
+                return {"ok": False, "persisted": False,
+                        "error": "finding is still present in the latest quality_report priorities"}
+
+            try:
+                current_fingerprint = _pbip_artifact_fingerprint(issued["project_dir"])
+            except ValueError as exc:
+                return {"ok": False, "persisted": False,
+                        "error": f"latest PBIP artifacts are missing or unreadable: {exc}"}
+            baseline_hash, baseline_paths = issued["baseline_fingerprint"]
+            current_hash, current_paths = current_fingerprint
+            if not baseline_paths.issubset(current_paths):
+                return {"ok": False, "persisted": False,
+                        "error": "one or more baseline PBIP artifacts are missing"}
+            if current_hash == baseline_hash:
+                return {"ok": False, "persisted": False,
+                        "error": "PBIP report/model definition artifacts have not changed since handoff"}
+
+        self.acknowledgements[registry_key] = {
+            "handoff_id": handoff_id.strip(),
+            "agent": normalized_agent,
+            "outcome": outcome,
+            "rationale": rationale,
+            "report_name": issued.get("report_name"),
+            "artifact_fingerprint": current_fingerprint,
+        }
+        return {
+            "ok": True,
+            "accepted": True,
+            "persisted": False,
+            "handoff_id": handoff_id.strip(),
+            "agent": normalized_agent,
+            "outcome": outcome,
+            "rationale": rationale,
+        }
 
     # -- parity_scan --------------------------------------------------
     def parity_scan(self, args):
@@ -434,6 +826,9 @@ class MigrationTools:
         workspace_id = args.get("workspace_id")
         if not project_dir or not os.path.isdir(project_dir):
             return {"ok": False, "error": f"project_dir not found: {project_dir}"}
+        output_error = _validate_output_path(project_dir)
+        if output_error:
+            return {"ok": False, "error": output_error}
         if not workspace_id:
             return {"ok": False, "error": "workspace_id is required"}
         # Refuse if secrets were smuggled through the arguments.
@@ -493,10 +888,15 @@ class MigrationTools:
                 return {"ok": False, "error": "credentials must not be passed as tool "
                                               "arguments; set them in the environment"}
         project_dir = args.get("project_dir")
-        if not project_dir or not os.path.isdir(project_dir):
-            return {"ok": False, "error": f"project_dir not found: {project_dir}"}
+        project_error = _validate_pbip_project_dir(project_dir)
+        if project_error:
+            return {"ok": False, "error": project_error}
         autofix = bool(args.get("autofix", False))
         log = args.get("log")
+        if log:
+            log_error = _validate_desktop_log(log, project_dir)
+            if log_error:
+                return {"ok": False, "error": log_error}
         try:
             from powerbi_import.healing import AutoHealer, PbiDesktopSource
         except Exception as exc:  # noqa: BLE001

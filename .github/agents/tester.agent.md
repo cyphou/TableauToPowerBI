@@ -9,7 +9,7 @@ You are the **Tester** agent for the Tableau to Power BI migration project. You 
 
 ## Your Files (You Own These)
 
-- `tests/*.py` — All test files and regression fixtures (current full suite: 9,500+ tests)
+- `tests/*.py` — All test files and regression fixtures (latest full run: 10,553 passed, 66 skipped, 1 xfailed; 10,620 collected across 312 files)
 - `tests/conftest.py` — Shared pytest fixtures
 
 ## Read-Only Access
@@ -61,7 +61,7 @@ class TestFeatureName(unittest.TestCase):
 
 ## Known Test Patterns
 
-- 55 tests skip total (intentional):
+- The latest full run had 66 skipped tests. Known intentional skip reasons include:
   - 13 skip with "Base class — no sample defined" (abstract base classes for parameterized tests)
   - 2 skip for "Export directory not found" / "Converted files not found" (integration tests)
   - 1 skips for "pydantic-settings not installed" (optional dependency)

@@ -186,6 +186,12 @@ class LogFileSource(ErrorSource):
     def collect(self, project_dir: str) -> List[ErrorRecord]:
         errors: List[ErrorRecord] = []
         try:
+            if os.path.islink(self.log_path):
+                return errors
+            if not os.path.isfile(self.log_path):
+                return errors
+            if os.path.getsize(self.log_path) > 10 * 1024 * 1024:
+                return errors
             text = _read(self.log_path)
         except OSError:
             return errors
@@ -199,7 +205,9 @@ class LogFileSource(ErrorSource):
                 mm = re.search(r"measure\s+'([^']+)'|\[([^\]]+)\]", line, re.IGNORECASE)
                 if mm:
                     loc = mm.group(1) or mm.group(2) or ""
-                errors.append(ErrorRecord("dax", self.log_path, loc or "unknown", line))
+                errors.append(ErrorRecord(
+                    "dax", "desktop-log", loc or "unknown",
+                    "Desktop log reported a supported error signature"))
         return errors
 
 
@@ -217,8 +225,6 @@ class PbiDesktopSource(ErrorSource):
 
     @staticmethod
     def pbi_desktop_installed() -> bool:
-        if shutil.which("PBIDesktop") or shutil.which("pbi-tools"):
-            return True
         for base in (os.environ.get("ProgramFiles", ""),
                      os.environ.get("ProgramW6432", "")):
             if base and os.path.exists(os.path.join(
@@ -470,7 +476,17 @@ def _read(path):
 
 
 def _write(path, text):
-    with open(path, "w", encoding="utf-8") as fh:
+    current = os.path.abspath(path)
+    while current and current != os.path.dirname(current):
+        if os.path.lexists(current) and os.path.islink(current):
+            raise OSError("refusing to write through symbolic-link component")
+        current = os.path.dirname(current)
+    if os.path.islink(path):
+        raise OSError("refusing to write through symbolic link")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags | no_follow, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
 
 
@@ -483,8 +499,7 @@ def _read_json(path):
 
 
 def _write_json(path, data):
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2, ensure_ascii=False)
+    _write(path, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def _measure_name(line):

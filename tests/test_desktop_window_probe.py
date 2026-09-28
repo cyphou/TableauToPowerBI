@@ -5,6 +5,7 @@ Waiting for the report window and capturing it gives a verdict that can be
 wrong in the useful direction. These tests drive that logic with doubles --
 they never launch Power BI.
 """
+import json
 import os
 import struct
 import sys
@@ -16,7 +17,8 @@ from unittest import mock
 from powerbi_import import desktop_window
 from powerbi_import.desktop_probe import (DesktopProbeReport,
                                           WINDOW_VERIFIED_SCOPE, desktop_pids,
-                                          probe_desktop_open)
+                                          probe_desktop_open,
+                                          verify_desktop_data)
 
 
 def _win(title='Report - Power BI Desktop', hwnd=11, owned=False,
@@ -166,7 +168,8 @@ class TestDesktopPids(unittest.TestCase):
 
 class TestWindowAwareProbe(unittest.TestCase):
 
-    def _probe(self, window, signals, shot=True, rc=None, fallback=None):
+    def _probe(self, window, signals, shot=True, rc=None, fallback=None,
+               verify_data=False, data_load=None):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'shot.png') if shot else None
             with mock.patch('powerbi_import.desktop_probe.find_pbi_desktop',
@@ -182,6 +185,8 @@ class TestWindowAwareProbe(unittest.TestCase):
                  mock.patch.object(desktop_window, 'IS_WINDOWS', True), \
                  mock.patch.object(desktop_window, 'wait_for_window',
                                    return_value=(window, signals)), \
+                 mock.patch.object(desktop_window, 'window_process_id',
+                                   return_value=4242), \
                  mock.patch.object(desktop_window, 'dialog_windows',
                                    return_value=[]), \
                  mock.patch.object(desktop_window, 'main_window',
@@ -189,9 +194,12 @@ class TestWindowAwareProbe(unittest.TestCase):
                  mock.patch.object(desktop_window, 'capture_window',
                                    side_effect=lambda h, p: p), \
                  mock.patch.object(desktop_window, 'is_blank',
-                                   return_value=False):
+                                   return_value=False), \
+                 mock.patch('powerbi_import.desktop_probe.verify_desktop_data',
+                            return_value=data_load):
                 return probe_desktop_open(_pbip(d), timeout=1,
-                                          screenshot_path=path)
+                                          screenshot_path=path,
+                                          verify_data=verify_data)
 
     def test_a_loaded_window_is_opened(self):
         report = self._probe(_win('Report - Power BI Desktop'), [])
@@ -208,6 +216,31 @@ class TestWindowAwareProbe(unittest.TestCase):
         report = self._probe(_win(), [])
         self.assertTrue(report.screenshot)
         self.assertFalse(report.screenshot_blank)
+
+    def test_empty_or_unavailable_data_skips_report_capture(self):
+        for status in ('empty', 'unavailable'):
+            with self.subTest(status=status):
+                report = self._probe(
+                    _win(), [], verify_data=True,
+                    data_load={
+                        'status': status, 'tables_checked': 1,
+                        'tables_nonempty': 0, 'tables_empty': 1,
+                        'tables_failed': 0, 'total_rows': 0,
+                    })
+                self.assertEqual(report.status, 'opened')
+                self.assertTrue(report.window_loaded)
+                self.assertIsNone(report.screenshot)
+
+    def test_verified_data_permits_report_capture(self):
+        report = self._probe(
+            _win(), [], verify_data=True,
+            data_load={
+                'status': 'verified', 'tables_checked': 1,
+                'tables_nonempty': 1, 'tables_empty': 0,
+                'tables_failed': 0, 'total_rows': 3,
+            })
+        self.assertTrue(report.window_loaded)
+        self.assertTrue(report.screenshot)
 
     def test_a_missing_window_fails(self):
         # The point of the rewrite: this verdict was impossible before.
@@ -300,6 +333,55 @@ class TestReportShape(unittest.TestCase):
 
     def test_window_loaded_defaults_to_false(self):
         self.assertFalse(DesktopProbeReport(pbip_path='x.pbip').window_loaded)
+
+    def test_data_load_is_aggregate_only_and_redacted(self):
+        report = DesktopProbeReport(
+            pbip_path='x.pbip',
+            data_load={
+                'status': 'verified', 'tables_checked': 2,
+                'tables_nonempty': 2, 'tables_empty': 0,
+                'tables_failed': 0, 'total_rows': 37,
+            })
+        data = report.to_dict()
+        self.assertEqual(set(data['data_load']), {
+            'status', 'tables_checked', 'tables_nonempty', 'tables_empty',
+            'tables_failed', 'total_rows',
+        })
+        rendered = json.dumps(data)
+        for sensitive in ('Customers', 'secret value', 'exception detail'):
+            self.assertNotIn(sensitive, rendered)
+
+
+class TestDataVerificationFailsClosed(unittest.TestCase):
+
+    def _verify(self, payload):
+        completed = mock.Mock(returncode=0, stdout=json.dumps(payload))
+        with mock.patch('powerbi_import.desktop_probe._m_backed_tables',
+                        return_value=['Customers']), \
+             mock.patch.object(desktop_window, 'IS_WINDOWS', True), \
+             mock.patch('powerbi_import.desktop_probe.subprocess.run',
+                        return_value=completed):
+            return verify_desktop_data('Report.pbip', 4242)
+
+    def test_malformed_or_failed_results_are_not_verified(self):
+        malformed = {
+            'status': 'verified', 'tables_checked': 1,
+            'tables_nonempty': 1, 'tables_empty': 0,
+            'tables_failed': 0, 'total_rows': 0,
+            'table': 'Customers', 'error': 'secret value',
+        }
+        failed = {
+            'status': 'query_failed', 'tables_checked': 1,
+            'tables_nonempty': 0, 'tables_empty': 0,
+            'tables_failed': 1, 'total_rows': 0,
+            'table': 'Customers', 'error': 'exception detail',
+        }
+        self.assertEqual(self._verify(malformed)['status'], 'unavailable')
+        result = self._verify(failed)
+        self.assertEqual(result['status'], 'query_failed')
+        self.assertNotEqual(result['status'], 'verified')
+        self.assertNotIn('Customers', json.dumps(result))
+        self.assertNotIn('exception detail', json.dumps(result))
 
 
 if __name__ == '__main__':

@@ -6,9 +6,9 @@ Each implementation agent has scoped domain knowledge, file ownership, and clear
 boundaries. Four specialist agents (@dax, @wiring, @semantic, @visual) provide deep
 conversion expertise; **@healing**, **@evidence**, **@fabric** and **@ai** own the
 self-repair, quality-evidence, Fabric-native and agent-facing surfaces; **@tableau**
-handles Tableau Server/Cloud interaction, **@reviewer** enforces a preceptorship
-quality loop on all generated artifacts, and **@web-designer** owns the end-user UI
-surfaces.
+handles Tableau Server/Cloud interaction, **@reviewer** owns the preceptor scoring
+engine and coaching reports, and **@web-designer** owns the end-user UI surfaces.
+The CLI does not dispatch that coaching to a Copilot agent.
 
 All agents should use [ROADMAP.md](ROADMAP.md) as the source of truth for the
 next work. Do not describe the Fabric-native output as production-ready until
@@ -32,7 +32,7 @@ its release criteria pass.
 | **@assessor** | Migration readiness, scoring, strategy, diff reports, validation | `assessment.py`, `server_assessment.py`, `global_assessment.py`, `strategy_advisor.py`, `visual_diff.py`, `comparison_report.py`, `migration_report.py`, `equivalence_tester.py`, `regression_suite.py`, `schema_drift.py`, `validator.py` |
 | **@merger** | Shared semantic model, multi-workbook merge, Fabric merge | `shared_model.py`, `merge_config.py` (+ co-owns `merge_assessment.py`, `merge_report_html.py`, `thin_report_generator.py`) |
 | **@deployer** | Fabric/PBI deployment, auth, gateway, telemetry, multi-tenant | `deploy/*.py`, `gateway_config.py`, `telemetry.py`, `telemetry_dashboard.py`, `refresh_generator.py` |
-| **@reviewer** | Artifact quality review, preceptorship loop, coaching feedback, fidelity scoring | `powerbi_import/preceptor.py` |
+| **@reviewer** | Artifact review engine and coaching reports; CLI does not invoke the Copilot agent or dispatch fixes | `powerbi_import/preceptor.py` |
 | **@web-designer** | End-user UI/UX, Tkinter light UI, layout clarity, presentation | `web/light_ui.py` |
 | **@tester** | Tests, coverage, fixtures, regression | `tests/*.py` |
 | **@roadmap-planner** | Roadmap waves, release gates, priority decisions | `docs/ROADMAP.md` and planning artifacts (owns no generator source) |
@@ -79,7 +79,7 @@ flowchart TB
         HEAL["<b>@healing</b><br/>self-repair · openability"]
         EVI["<b>@evidence</b><br/>parity · quality · lineage"]
         ASS["<b>@assessor</b><br/>readiness · strategy · diff"]
-        REV["<b>@reviewer</b><br/>preceptorship loop"]
+        REV["<b>@reviewer</b><br/>preceptor report engine"]
     end
 
     subgraph DELIV["Delivery & surfaces"]
@@ -230,30 +230,30 @@ it as ownership would make the guard unable to tell the two apart.
                @evidence          @merger           @deployer
               (parity/proof)   (shared model)    (Fabric/PBI Service)
                    |
-               @reviewer  (preceptorship loop)
+               @reviewer  (review report; owner handoff is external)
 
    @assessor   advises from extraction    @ai / @web-designer  agent + UI surfaces
    @tester     reads all source, writes only tests/
 ```
 
 
-## The Preceptorship Loop
+## Preceptor Review and Agent Handoff
 
-Every migration passes through a **quality gate** before artifacts are finalized:
+The CLI runs the Python preceptor after generation by default. It scores the
+generated PBIP and writes `preceptor_report.json`; it does **not** invoke the
+Copilot `@reviewer` agent or call a generation agent to apply coaching.
 
 ```
-DRAFT (Agent)  ──→  REVIEW (@reviewer)  ──→  APPROVE? (≥ 4★?)
-     ↑                                           │
-     │                  YES ─────────────────────→ DONE (artifacts ready)
-     │                   NO ─────────────────────→ COACH (structured feedback)
-     │                                                │
-     └────────────────────────────────────────────────┘
-                       (max 3 cycles, then escalate)
+GENERATED PBIP → PreceptorLoop → APPROVED or COACHING REPORT
+                               │
+                  agent/operator reads report and acts separately
+                               │
+                   re-review after a real artifact change
 ```
 
 ### Review Dimensions (5-star scoring)
 
-| Dimension | What @reviewer Checks |
+| Dimension | What the preceptor checks |
 |-----------|----------------------|
 | **Completeness** | All source objects have corresponding output (no missing tables, measures, visuals) |
 | **DAX Correctness** | No Tableau function leakage, valid DAX syntax, correct aggregation context |
@@ -264,11 +264,12 @@ DRAFT (Agent)  ──→  REVIEW (@reviewer)  ──→  APPROVE? (≥ 4★?)
 
 ### Scoring Rules
 
-- **≥ 4★ average** across all 6 dimensions → **APPROVE** — artifact is ready
-- **< 4★ average** → **COACH** — @reviewer provides specific, actionable feedback per dimension
-- **After 3 failed cycles** → **ESCALATE** to user with two options:
-  - **Accept with warnings** — proceed with quality annotations in the migration report
-  - **Block** — halt and request manual intervention
+- **≥ 4★ average** across all 6 dimensions → `approved` in the review report.
+- **< 4★ average** → structured coaching is emitted; the preceptor applies no
+    fix.
+- **After the configured cycles** → `escalated_warn` by default, or
+    `escalated_block` when `--preceptor-block` is enabled. The CLI reports this
+    state; it does not itself initiate a conversation with the user.
 
 ### Coaching Feedback Format
 
@@ -284,17 +285,31 @@ Example: {before → after, if applicable}
 
 ### Pipeline Integration
 
-The preceptorship loop runs **after generation on every migration**, scoring the
-full `.pbip` output. It is advisory by default: a review that falls short warns
-and writes `preceptor_report.json`, but does not fail the run. Two switches
-change that:
+The CLI review runs after generation by default, scoring the full `.pbip` output.
+It is advisory by default: a review that falls short writes
+`preceptor_report.json` and does not fail the run. Two switches change that:
 
 - `--no-preceptor` — skip the review entirely
 - `--preceptor-block` — make it a hard gate, failing the run on escalation
 
-A crashing reviewer never fails a migration either; the review is
-instrumentation, not a correctness oracle. The authoritative pass/fail check
-remains the openability gate.
+A review exception never fails a migration; the review is instrumentation, not a
+correctness oracle. The authoritative pass/fail check remains the openability
+gate. `PreceptorLoop.run()` may score up to three times, but has no agent callback
+or artifact mutation between cycles; without an external edit, it can review the
+same output repeatedly. The consolidated quality report carries coaching into
+findings with dimensions, fixes, and evidence, but that is a reporting handoff,
+not automatic agent dispatch.
+
+For an MCP-connected owner, run `quality_report` for the source workbook and
+generated project, then call `agent_handoff` with your own name (for example,
+`{"agent":"@dax"}`) in the same MCP server session. The packet filters to
+matching owner tokens, including co-owned findings. Handle a non-applicable item
+with `agent_handoff_ack(outcome="not_applicable", rationale=...)`. For a repair,
+change the PBIP, rerun `quality_report`, then call
+`agent_handoff_ack(outcome="applied", rationale=...)`; the tool checks that the
+PBIP definition changed and the same finding is absent from the fresh report.
+The ACK is held in MCP process memory only (`persisted: false`); this flow does
+not automatically dispatch to an agent or persist resolution history.
 
 The `PreceptorLoop` class in `powerbi_import/preceptor.py` drives the cycle, consuming:
 - `ArtifactValidator` results (structural checks)
@@ -344,7 +359,7 @@ The original 8-agent model had two overloaded agents:
 6. (Optional) @assessor → readiness report
 7. (Optional) @merger → shared semantic model
 8. (Optional) @deployer → Fabric/PBI workspace
-9. @tester validates all steps with 10,275 tests
+9. @tester validates all steps; latest full run: 10,553 passed, 66 skipped, 1 xfailed (10,620 collected across 312 test files)
 ```
 
 ## Handoff Protocol

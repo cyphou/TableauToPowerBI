@@ -10,7 +10,7 @@ You are the **AI** agent for the Tableau to Power BI migration project. You own 
 ## Your Files (You Own These)
 
 ### Agent-callable surface
-- `powerbi_import/mcp_server.py` — Model Context Protocol server (stdlib JSON-RPC over stdio), tool + resource catalogue
+- `powerbi_import/mcp_server.py` — Model Context Protocol server (stdlib JSON-RPC over stdio), tool + resource catalogue, including owner-pull `agent_handoff` and proof-gated `agent_handoff_ack`
 - `powerbi_import/conversational.py` — grounded Q&A over assessment payloads, plan summaries
 
 ### LLM integration
@@ -28,6 +28,8 @@ You are the **AI** agent for the Tableau to Power BI migration project. You own 
 - **Offline-first**: every feature must have a deterministic, network-free path. LLM use is strictly opt-in.
 - **Redact before send**: any payload leaving the process goes through `security_validator.redact_credentials` first.
 - **Ground every answer**: conversational and remediation output cites verified evidence rows — never invent findings.
+- **Handoff is pull-only**: `agent_handoff` returns findings for the requesting owner from the current quality report; it does not dispatch agents, persist acknowledgements, or mark work resolved. Require a fresh quality report after an artifact change.
+- **ACKs are proof-gated and ephemeral**: `agent_handoff_ack` accepts `not_applicable` only with rationale; `applied` requires changed PBIP definition artifacts and a fresh same-project quality report where the finding is absent. The ACK is process-memory only (`persisted: false`).
 - **Re-validate LLM output**: an LLM-suggested fix is applied only if it re-validates clean.
 - **UTF-8 stdio**: the MCP server must reconfigure stdout/stdin to UTF-8 (Windows cp1252 will otherwise raise on non-ASCII tool descriptions).
 

@@ -293,6 +293,24 @@ healing). Add `--llm-autofix` to allow opt-in LLM correction, which is applied o
 result re-validates cleanly. For a best-effort real Desktop smoke test, use the explicit
 `--desktop-probe`; the static `--verify-open` result stays authoritative.
 
+### How do I validate a client report opening and its screenshot?
+
+Run the batch probe against the generated output directory:
+
+```powershell
+python scripts/probe_projects.py C:\Client\migration_output `
+   --shots C:\Client\migration_output\opening_validation\screenshots `
+   --json C:\Client\migration_output\opening_validation\opening_report.json
+```
+
+The default probe waits for the report window, checks aggregate row counts in
+Desktop's local model, and only captures a data-bearing screenshot when rows are
+verified. Read `DESKTOP_OPENING_VALIDATION.html` for the green `OPENED` and red
+`CRASHED` cards. `empty` means Desktop opened but the model returned zero rows;
+`unavailable` or `query_failed` means the data check could not complete. Use
+`--skip-data-check` only for diagnostic captures, never as a successful data
+validation. Store all client screenshots and reports outside this repository.
+
 ### Why did strict thin-report validation block my shared model?
 
 `--strict-thin-report` fails shared-model generation when orphaned thin-report field
@@ -414,7 +432,22 @@ The `merge_assessment.json` file lists all conflicts detected.
 python -m pytest tests/ -v
 ```
 
-The project includes **10,275 tests across 293 test files** covering DAX conversion, Power Query M generation, TMDL model building, visual generation, project structure, artifact validation, deployment utilities, Fabric-native generation, DAX optimization, cross-platform equivalence testing, and end-to-end non-regression migration of all 17 real-world workbooks.
+The latest full run completed with **10,553 passed, 66 skipped, and 1 xfailed** from 10,620 collected tests across 312 files. Coverage includes DAX conversion, Power Query M generation, TMDL model building, visual generation, project structure, artifact validation, deployment utilities, Fabric-native generation, DAX optimization, cross-platform equivalence testing, and end-to-end non-regression migration.
+
+### Does the preceptor automatically send fixes to agents?
+
+Not automatically. The CLI runs preceptor scoring by default and writes
+`preceptor_report.json`; it does not invoke Copilot agents or apply coaching.
+With MCP configured, an owner can call `quality_report` and then
+`agent_handoff` with its own name in the same server session to pull only its
+findings. The packet is read-only. After a real artifact change, rerun
+`quality_report` and call `agent_handoff_ack` with `outcome="applied"`; the ACK
+is accepted only if PBIP definition files changed and the finding disappeared.
+An owner can instead acknowledge `not_applicable` with a rationale. Accepted
+ACKs live only in the MCP process (`persisted: false`); they do not trigger an
+agent or persist a resolution history. `--no-preceptor` skips scoring;
+`--preceptor-block` opts into a hard failure after escalation. `--qa` is a
+separate QA suite.
 
 ### How do I run the migration as a REST API?
 

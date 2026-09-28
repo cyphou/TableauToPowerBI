@@ -46,15 +46,14 @@ class _FakeProc:
 
 class TestFind(unittest.TestCase):
     def test_returns_none_when_absent(self):
-        with mock.patch("powerbi_import.desktop_probe.shutil.which", return_value=None), \
-             mock.patch.dict(os.environ, {"ProgramFiles": "", "ProgramW6432": "",
+        with mock.patch.dict(os.environ, {"ProgramFiles": "", "ProgramW6432": "",
                                           "ProgramFiles(x86)": ""}, clear=False):
             self.assertIsNone(find_pbi_desktop())
 
-    def test_returns_which_hit(self):
-        with mock.patch("powerbi_import.desktop_probe.shutil.which",
-                        return_value=r"C:\pbi\PBIDesktop.exe"):
-            self.assertEqual(find_pbi_desktop(), r"C:\pbi\PBIDesktop.exe")
+    def test_accepts_explicit_path(self):
+        path = r"C:\pbi\PBIDesktop.exe"
+        with mock.patch("powerbi_import.desktop_probe.os.path.isfile", return_value=True):
+            self.assertEqual(find_pbi_desktop(path), path)
 
 
 class TestProbe(unittest.TestCase):

@@ -17,7 +17,9 @@ from powerbi_import.autoheal import (  # noqa: E402
 
 def _make_project(tmp, *, bad_measure="CALCULATE(SUM([Amt])",
                   good_measure="SUM([Amt])", bad_visual=True):
-    sm = os.path.join(tmp, "Model.SemanticModel", "definition", "tables")
+    with open(os.path.join(tmp, "T.pbip"), "w", encoding="utf-8") as fh:
+        fh.write('{"version":"1.0"}')
+    sm = os.path.join(tmp, "T.SemanticModel", "definition", "tables")
     os.makedirs(sm, exist_ok=True)
     tmdl = os.path.join(sm, "T.tmdl")
     with open(tmdl, "w", encoding="utf-8") as fh:
@@ -25,7 +27,7 @@ def _make_project(tmp, *, bad_measure="CALCULATE(SUM([Amt])",
         fh.write(f"\tmeasure 'Bad' = {bad_measure}\n")
         fh.write(f"\tmeasure 'Good' = {good_measure}\n")
     if bad_visual:
-        vdir = os.path.join(tmp, "Report", "definition", "pages", "p", "visuals", "v")
+        vdir = os.path.join(tmp, "T.Report", "definition", "pages", "p", "visuals", "v")
         os.makedirs(vdir, exist_ok=True)
         vf = os.path.join(vdir, "visual.json")
         with open(vf, "w", encoding="utf-8") as fh:
@@ -89,7 +91,7 @@ class TestDeterministicHeal(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _make_project(tmp)
             AutoHealer().heal_project(tmp)
-            vf = os.path.join(tmp, "Report", "definition", "pages", "p",
+            vf = os.path.join(tmp, "T.Report", "definition", "pages", "p",
                               "visuals", "v", "visual.json")
             data = json.load(open(vf, encoding="utf-8"))
             self.assertIn("annotations", data)
@@ -178,6 +180,7 @@ class TestErrorSources(unittest.TestCase):
             errs = LogFileSource(log).collect(tmp)
             self.assertEqual(len(errs), 1)
             self.assertEqual(errs[0].location, "Bad")
+            self.assertNotIn("syntax error", errs[0].message)
 
     def test_pbi_desktop_source_guidance_without_log(self):
         errs = PbiDesktopSource().collect("/tmp")
@@ -272,6 +275,30 @@ class TestMCPAutohealTool(unittest.TestCase):
         from powerbi_import.mcp_server import MigrationTools
         res = MigrationTools().autoheal({"project_dir": "/no/such"})
         self.assertFalse(res["ok"])
+
+    def test_tool_rejects_log_outside_project(self):
+        from powerbi_import.mcp_server import MigrationTools
+        with tempfile.TemporaryDirectory() as root:
+            project = os.path.join(root, "project")
+            os.makedirs(project)
+            _make_project(project)
+            log = os.path.join(root, "outside.log")
+            with open(log, "w", encoding="utf-8") as fh:
+                fh.write("syntax error in measure [Bad]\n")
+            res = MigrationTools().autoheal({"project_dir": project, "log": log})
+            self.assertFalse(res["ok"])
+            self.assertIn("inside project_dir", res["error"])
+
+    def test_tool_rejects_oversized_log(self):
+        from powerbi_import.mcp_server import MigrationTools
+        with tempfile.TemporaryDirectory() as project:
+            _make_project(project)
+            log = os.path.join(project, "desktop.log")
+            with open(log, "wb") as fh:
+                fh.truncate(10 * 1024 * 1024 + 1)
+            res = MigrationTools().autoheal({"project_dir": project, "log": log})
+            self.assertFalse(res["ok"])
+            self.assertIn("10 MiB", res["error"])
 
 
 if __name__ == "__main__":

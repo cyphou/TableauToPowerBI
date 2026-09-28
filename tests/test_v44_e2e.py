@@ -44,15 +44,15 @@ class TestSkillLintClean(unittest.TestCase):
 
 
 class TestMCPContractStable(unittest.TestCase):
-    def test_seven_tools(self):
-        self.assertEqual(len(_tool_catalogue()), 11)
+    def test_tool_count(self):
+        self.assertEqual(len(_tool_catalogue()), 13)
 
     def test_initialize_and_list(self):
         srv = MCPServer()
         init = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         self.assertEqual(init["result"]["serverInfo"]["version"], "44.0.0")
         lst = srv.handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        self.assertEqual(len(lst["result"]["tools"]), 11)
+        self.assertEqual(len(lst["result"]["tools"]), 13)
 
 
 class TestRemediationChain(unittest.TestCase):

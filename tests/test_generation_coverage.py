@@ -429,7 +429,7 @@ class TestResolveVisualType(unittest.TestCase):
         self.assertEqual(resolve_visual_type("treemap"), "treemap")
 
     def test_map(self):
-        self.assertEqual(resolve_visual_type("map"), "map")
+        self.assertEqual(resolve_visual_type("map"), "azureMap")
 
     def test_text_to_table(self):
         self.assertEqual(resolve_visual_type("text"), "tableEx")

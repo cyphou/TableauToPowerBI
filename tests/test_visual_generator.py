@@ -73,7 +73,9 @@ class TestVisualTypeMapping(unittest.TestCase):
         self.assertEqual(resolve_visual_type("packedbubble"), "scatterChart")
 
     def test_map_types(self):
-        self.assertEqual(resolve_visual_type("map"), "map")
+        self.assertEqual(resolve_visual_type("map"), "azureMap")
+        self.assertEqual(resolve_visual_type("geomap"), "azureMap")
+        self.assertEqual(resolve_visual_type("density"), "azureMap")
         self.assertEqual(resolve_visual_type("polygon"), "map")
 
     def test_table_matrix(self):

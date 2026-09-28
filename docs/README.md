@@ -17,6 +17,7 @@ Reference documentation for the Tableau to Power BI migration engine.
 - [FAQ.md](FAQ.md) — Frequently asked questions
 - [ROADMAP.md](ROADMAP.md) — Release gates, verified evidence, and active semantic-validation work
 - [WINDOWS_APP.md](WINDOWS_APP.md) — Portable Windows application, EXE build, and runtime requirements
+- [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) — Fabric deployment and client-side Desktop opening validation
 
 ## Quick Reference
 
@@ -59,6 +60,13 @@ real-world report card. Batch and Notebook workflows currently expose their own
 migration/assessment operations and do not implicitly run the unified quality
 report for every item.
 
+In an MCP session, an owning agent can then call `agent_handoff` with its own
+agent name to pull only its matching quality priorities. The packet is
+read-only. The separate `agent_handoff_ack` tool accepts `not_applicable` with
+a rationale, or `applied` only after PBIP definition files change and a fresh
+quality report no longer contains the same finding. ACKs remain in the MCP
+process memory; they are not durable resolution history.
+
 Notebook sessions can run the same report explicitly after generation:
 `session.quality_report()`. It writes JSON and HTML evidence beside the generated
 project and keeps live semantic execution marked `not_run` until an authorized
@@ -90,12 +98,17 @@ Desktop probe results are evidence gates: a successful launch can produce
 `DESKTOP_SMOKE_PASS`, while a crash, timeout, or probe error downgrades the
 confidence level to `UNVERIFIED` even when static validation passed. Two
 successful consecutive launches produce `DESKTOP_REOPEN_PASS`; this still does
-not claim that Desktop saved project changes.
+not claim that Desktop saved project changes. The batch opening service also
+records `OPENED`/`CRASHED` and a separate model data status; only `OPENED` plus
+`verified` qualifies as a data-bearing screenshot. Its HTML/JSON/PNG evidence
+must remain outside the repository for customer reports.
 
-The feedback loop uses the unified quality status when recording zero-touch
-history: quality blockers are classified as `quality_blocker` and cannot be
-counted as successful migrations. Batch runs use the same classification for
-each workbook.
+The migration-level zero-touch tracker (`ZeroTouchTracker` in
+`powerbi_import/feedback_loop.py`) uses the unified quality status when recording
+history: blockers are `quality_blocker` and cannot count as successful
+migrations. This is distinct from preceptor coaching: that review writes a
+report, but does not dispatch fixes to owning agents. Batch runs use the same
+zero-touch classification for each workbook.
 
 Authenticated Tableau Server evidence also includes an operational risk level
 and reasons, so dependency and refresh complexity can influence migration
@@ -115,6 +128,6 @@ CLI, batch, MCP, Notebook, and Fabric outputs on the same provenance contract.
 | `migrate.py` | CLI entry point, batch support, logging |
 | `tableau_export/` | Tableau XML parsing, DAX conversion, Power Query M generation |
 | `powerbi_import/` | .pbip generation, TMDL, visuals, validation, deployment |
-| `tests/` | 10,275 tests in latest full run |
+| `tests/` | 10,553 passed, 66 skipped, 1 xfailed; 312 test files in latest full run |
 | `artifacts/` | Generated .pbip projects |
 | `.github/workflows/` | CI/CD pipeline (lint, test, validate, deploy) |

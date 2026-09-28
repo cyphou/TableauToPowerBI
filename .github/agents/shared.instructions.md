@@ -15,7 +15,7 @@ All agents MUST follow these rules. They apply to every file in the project.
 
 - **Source**: `tableau_export/` — extraction + DAX converter + M query builder
 - **Target**: `powerbi_import/` — TMDL generator + PBIR report + visual generator + Fabric generators
-- **Tests**: `tests/` — 9,500+ tests across the current test suites
+- **Tests**: `tests/` — latest full run: 10,553 passed, 66 skipped, 1 xfailed (10,620 collected across 312 test files)
 - **Docs**: `docs/` — architecture, known limitations, deployment, agent surface, references, roadmap
 - **Release gates**: `docs/ROADMAP.md` is authoritative for current scope and gates.
 
@@ -93,26 +93,38 @@ Minimum evidence for a clean push:
 - public provenance checked for newly added assets; and
 - the user is told about any remaining provenance or sample-data caveat.
 
-## Preceptorship Loop — Quality Gate
+## Preceptorship Report and Agent Handoff
 
-All generation agents participate in the **preceptorship loop** before artifacts are finalized:
+The CLI runs the Python preceptor by default after generation. This scores the
+artifact and writes `preceptor_report.json`; it does **not** invoke the Copilot
+`@reviewer` agent, dispatch coaching to an owning agent, or apply a fix. The
+quality report can carry those coaching items into its finding queue.
 
-```
-DRAFT (Agent) → REVIEW (@reviewer) → APPROVE? (≥ 4★?)
-     ↑                                    │
-     │              YES ──────────────────→ DONE
-     │               NO ──────────────────→ COACH (feedback)
-     │                                        │
-     └────────────────────────────────────────┘
-                   (max 3 cycles, then escalate)
-```
+For an MCP-connected agent handling an existing migration, pull only your own
+items by calling `agent_handoff` with your agent name (for example,
+`{"agent":"@dax"}`). The MCP process must first have a current `quality_report`
+for the source workbook and project; if its report cache is empty or stale, run
+`quality_report` again in that session. Handle only findings returned for your
+owner token. The packet is read-only and is not itself an ACK or a resolution.
 
-### Rules
-- After generating artifacts, the pipeline invokes `@reviewer` for quality scoring
-- If scored < 4★, read the coaching feedback and apply fixes within your domain
-- Do NOT ignore coaching items — address each one or explain why it's not applicable
-- After 3 cycles, the reviewer escalates to the user (accept-with-warnings or block)
-- The review is read-only — `@reviewer` never modifies your files directly
+When an agent or operator receives a review report:
+- Check the dimension, evidence, location, and suggested fix.
+- Apply an in-scope fix or explain why the finding is not applicable; hand off
+     changes outside your ownership boundary.
+- Request a fresh review after an actual artifact change. A repeated score of
+     unchanged output is not remediation evidence.
+- In an MCP session, rerun `quality_report` after a change and compare the new
+     findings. For an actual repair, call `agent_handoff_ack` with the handoff ID,
+     your agent name, `outcome="applied"`, and a rationale only after the PBIP
+     definition changed and the same finding is absent from the fresh report. For
+     a non-applicable item, call it with `outcome="not_applicable"` and a rationale.
+     ACKs live only in the current MCP process (`persisted: false`); they are not
+     durable resolution history or automatic agent dispatch.
+- Treat escalation as report/CLI state, not an automatic user interaction.
+
+`--no-preceptor` opts out. `--preceptor-block` opts into a hard failure after
+the configured review cycles fail to meet the score threshold. Without an
+external artifact change, those cycles can re-score the same output.
 
 ### Scoring Dimensions (6)
 1. **Completeness** — all source objects mapped to output

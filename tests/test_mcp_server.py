@@ -1,9 +1,13 @@
 """Tests for the migration MCP server (v44, Sprint 216.5)."""
 
+import copy
+import hashlib
 import json
 import os
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
@@ -40,7 +44,8 @@ class TestProtocol(unittest.TestCase):
     def test_tools_list(self):
         resp = self.server.handle_request(_req("tools/list"))
         names = [t["name"] for t in resp["result"]["tools"]]
-        self.assertEqual(names, ["assess", "migrate", "qa", "quality_report", "parity_scan",
+        self.assertEqual(names, ["assess", "migrate", "qa", "quality_report", "agent_handoff",
+                 "agent_handoff_ack", "parity_scan",
                                  "shared_model", "diff", "deploy", "llm_status",
                                  "autoheal", "verify_open"])
 
@@ -150,6 +155,316 @@ class TestToolsCall(unittest.TestCase):
     def test_diff_missing_dirs(self):
         resp, payload = self._call("diff", {"extraction_dir": "/no", "project_dir": "/no"})
         self.assertFalse(payload["ok"])
+
+
+class TestAgentHandoff(unittest.TestCase):
+    def setUp(self):
+        self.server = MCPServer()
+
+    def _call(self, agent):
+        resp = self.server.handle_request(
+            _req("tools/call", {"name": "agent_handoff", "arguments": {"agent": agent}}))
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        return resp, payload
+
+    def test_requires_nonblank_agent(self):
+        for agent in (None, "", "   ", "@"):
+            with self.subTest(agent=agent):
+                _, payload = self._call(agent)
+                self.assertFalse(payload["ok"])
+                self.assertIn("non-blank", payload["error"])
+
+    def test_requires_quality_report_in_this_session(self):
+        _, payload = self._call("dax")
+        self.assertFalse(payload["ok"])
+        self.assertIn("quality_report", payload["error"])
+
+        self.server.tools.report_store["quality"] = {
+            "report_name": "Synthetic Quality", "status": "ready", "priorities": []
+        }
+        _, ready_payload = self._call("dax")
+        self.assertTrue(ready_payload["ok"])
+
+        fresh_server = MCPServer()
+        response = fresh_server.handle_request(_req(
+            "tools/call", {"name": "agent_handoff", "arguments": {"agent": "dax"}}))
+        fresh_payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertFalse(fresh_payload["ok"])
+        self.assertIn("this MCP session", fresh_payload["error"])
+
+    def test_filters_case_insensitive_optional_at_and_co_owned_owners(self):
+        self.server.tools.report_store["quality"] = {
+            "report_name": "Synthetic Quality",
+            "status": "review",
+            "priorities": [
+                {"priority": "high", "owner": "@DaX", "action": "first"},
+                {"priority": "medium", "owner": "Semantic / @DAX", "action": "shared"},
+                {"priority": "low", "owner": "@dax-special", "action": "not a match"},
+            ],
+        }
+
+        _, dax_payload = self._call(" @DAX ")
+        self.assertEqual([item["action"] for item in dax_payload["findings"]],
+                         ["first", "shared"])
+        _, semantic_payload = self._call("@semantic")
+        self.assertEqual([item["action"] for item in semantic_payload["findings"]],
+                         ["shared"])
+
+    def test_unmatched_owner_returns_no_findings(self):
+        self.server.tools.report_store["quality"] = {
+            "report_name": "Synthetic Quality",
+            "status": "review",
+            "priorities": [{"priority": "high", "owner": "@dax"}],
+        }
+
+        _, payload = self._call("visual")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "no_findings")
+        self.assertEqual(payload["count"], 0)
+        self.assertEqual(payload["findings"], [])
+
+    def test_preserves_finding_fields_and_generates_deterministic_id_without_mutation(self):
+        item = {
+            "priority": "high",
+            "action_kind": "repair",
+            "action": "Correct the synthetic expression",
+            "fix": "Replace the invalid expression",
+            "evidence": {"source": "synthetic", "check": "expression"},
+            "owner": "@DAX / Semantic",
+            "blocker": True,
+            "internal_note": "not part of the handoff",
+        }
+        report = {
+            "report_name": "Synthetic Quality",
+            "status": "blocked",
+            "priorities": [item],
+            "metadata": {"synthetic": True},
+        }
+        original_report = copy.deepcopy(report)
+        self.server.tools.report_store["quality"] = report
+
+        _, first_payload = self._call("dax")
+        _, second_payload = self._call("@DAX")
+        finding = first_payload["findings"][0]
+        expected_id = hashlib.sha256(json.dumps(
+            [report["report_name"], 0, item], ensure_ascii=False, sort_keys=True,
+            default=str,
+        ).encode("utf-8")).hexdigest()
+
+        for key in ("priority", "action_kind", "action", "fix", "evidence", "owner", "blocker"):
+            self.assertEqual(finding[key], item[key])
+        self.assertNotIn("internal_note", finding)
+        self.assertEqual(finding["handoff_id"], expected_id)
+        self.assertEqual(second_payload["findings"][0]["handoff_id"], expected_id)
+        self.assertEqual(report, original_report)
+
+    def test_declares_read_only_and_external_completion_with_fresh_report(self):
+        self.server.tools.report_store["quality"] = {
+            "report_name": "Synthetic Quality", "status": "review", "priorities": []
+        }
+
+        _, payload = self._call("dax")
+        self.assertTrue(payload["read_only"])
+        self.assertIn("read-only", payload["completion_note"])
+        self.assertIn("external agent/operator", payload["completion_note"])
+        self.assertIn("fresh quality report", payload["completion_note"])
+
+
+class TestAgentHandoffAck(unittest.TestCase):
+    def setUp(self):
+        self.tools = MigrationTools()
+        self.project_dir = self._make_project()
+        self.finding = {
+            "priority": "high",
+            "owner": "@dax",
+            "action": "Correct the synthetic expression",
+            "fix": "Replace the invalid expression",
+            "evidence": {"check": "synthetic"},
+        }
+
+    def _make_project(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        project_dir = temp_dir.name
+        report_dir = os.path.join(project_dir, "Synthetic.Report", "definition")
+        model_dir = os.path.join(
+            project_dir, "Synthetic.SemanticModel", "definition", "tables"
+        )
+        os.makedirs(report_dir)
+        os.makedirs(model_dir)
+        self._write(os.path.join(project_dir, "Synthetic.pbip"), '{"version": 1}')
+        self._write(os.path.join(report_dir, "report.json"), '{"name": "Synthetic"}')
+        self._write(os.path.join(model_dir, "Fact.tmdl"), "table Fact\n")
+        return project_dir
+
+    @staticmethod
+    def _write(path, contents):
+        with open(path, "w", encoding="utf-8") as artifact:
+            artifact.write(contents)
+
+    @staticmethod
+    def _project_snapshot(project_dir):
+        snapshot = {}
+        for root, _, filenames in os.walk(project_dir):
+            for filename in filenames:
+                path = os.path.join(root, filename)
+                with open(path, "rb") as artifact:
+                    snapshot[os.path.relpath(path, project_dir)] = artifact.read()
+        return snapshot
+
+    def _quality_report(self, project_dir=None, report_name="Synthetic Quality",
+                        priorities=None):
+        report = {
+            "report_name": report_name,
+            "status": "review",
+            "priorities": list(priorities if priorities is not None else [self.finding]),
+        }
+        self.tools.report_store["quality"] = report
+        self.tools._quality_revision += 1
+        self.tools._quality_context = {
+            "report": report,
+            "report_name": report_name,
+            "project_dir": os.path.normcase(os.path.realpath(os.path.abspath(
+                project_dir or self.project_dir
+            ))),
+            "revision": self.tools._quality_revision,
+        }
+        return report
+
+    def _issue_handoff(self):
+        self._quality_report()
+        result = self.tools.agent_handoff({"agent": "dax"})
+        self.assertTrue(result["ok"], result)
+        return result["findings"][0]["handoff_id"]
+
+    def _ack(self, handoff_id, agent="dax", outcome="applied", rationale=""):
+        return self.tools.agent_handoff_ack({
+            "handoff_id": handoff_id,
+            "agent": agent,
+            "outcome": outcome,
+            "rationale": rationale,
+        })
+
+    def test_applied_ack_requires_all_evidence_and_is_memory_only(self):
+        handoff_id = self._issue_handoff()
+        report_path = os.path.join(
+            self.project_dir, "Synthetic.Report", "definition", "report.json"
+        )
+        self._write(report_path, '{"name": "Synthetic", "revision": 2}')
+        self._quality_report(priorities=[])
+        before_ack = self._project_snapshot(self.project_dir)
+
+        result = self._ack(handoff_id)
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["persisted"])
+        self.assertIn((handoff_id, "dax"), self.tools.acknowledgements)
+        self.assertEqual(self.tools.acknowledgements[(handoff_id, "dax")]["outcome"],
+                         "applied")
+        self.assertEqual(self._project_snapshot(self.project_dir), before_ack)
+
+    def test_rejects_ack_without_issued_handoff_or_with_wrong_owner(self):
+        missing = self._ack("not-issued")
+        self.assertFalse(missing["ok"])
+        self.assertFalse(missing["persisted"])
+
+        handoff_id = self._issue_handoff()
+        wrong_owner = self._ack(handoff_id, agent="semantic")
+        self.assertFalse(wrong_owner["ok"])
+        self.assertFalse(wrong_owner["persisted"])
+
+    def test_rejects_applied_ack_without_fresh_quality_report(self):
+        handoff_id = self._issue_handoff()
+
+        result = self._ack(handoff_id)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("fresh quality_report", result["error"])
+
+    def test_rejects_applied_ack_when_artifacts_are_unchanged(self):
+        handoff_id = self._issue_handoff()
+        self._quality_report(priorities=[])
+
+        result = self._ack(handoff_id)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("have not changed", result["error"])
+
+    def test_rejects_applied_ack_when_finding_remains(self):
+        handoff_id = self._issue_handoff()
+        self._write(os.path.join(
+            self.project_dir, "Synthetic.SemanticModel", "definition", "tables", "Fact.tmdl"
+        ), "table Fact\n column Value\n")
+        self._quality_report(priorities=[self.finding])
+
+        result = self._ack(handoff_id)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("finding is still present", result["error"])
+
+    def test_rejects_applied_ack_for_changed_report_or_project(self):
+        handoff_id = self._issue_handoff()
+        self._quality_report(report_name="Other Synthetic Quality", priorities=[])
+        changed_report = self._ack(handoff_id)
+        self.assertFalse(changed_report["ok"])
+        self.assertIn("same report and project", changed_report["error"])
+
+        other_project = self._make_project()
+        self._quality_report(project_dir=other_project, priorities=[])
+        changed_project = self._ack(handoff_id)
+        self.assertFalse(changed_project["ok"])
+        self.assertIn("same report and project", changed_project["error"])
+
+    def test_not_applicable_requires_rationale_but_not_artifact_change(self):
+        handoff_id = self._issue_handoff()
+        blank = self._ack(handoff_id, outcome="not_applicable", rationale="  ")
+        self.assertFalse(blank["ok"])
+        self.assertIn("non-blank rationale", blank["error"])
+
+        result = self._ack(
+            handoff_id, outcome="not_applicable", rationale="Not applicable to this model"
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["persisted"])
+
+    def test_rejects_duplicate_ack(self):
+        handoff_id = self._issue_handoff()
+        first = self._ack(
+            handoff_id, outcome="not_applicable", rationale="Not applicable"
+        )
+        duplicate = self._ack(
+            handoff_id, outcome="not_applicable", rationale="Still not applicable"
+        )
+
+        self.assertTrue(first["ok"], first)
+        self.assertFalse(duplicate["ok"])
+        self.assertIn("already been acknowledged", duplicate["error"])
+
+    def test_applied_ack_fails_closed_when_issue_artifact_baseline_is_unavailable(self):
+        self._quality_report()
+        with patch("powerbi_import.mcp_server._pbip_artifact_fingerprint",
+                   side_effect=ValueError("synthetic unreadable artifacts")):
+            result = self.tools.agent_handoff({"agent": "dax"})
+        handoff_id = result["findings"][0]["handoff_id"]
+        self._write(os.path.join(
+            self.project_dir, "Synthetic.SemanticModel", "definition", "tables", "Fact.tmdl"
+        ), "table Fact\n column Value\n")
+        self._quality_report(priorities=[])
+
+        ack = self._ack(handoff_id)
+
+        self.assertFalse(ack["ok"])
+        self.assertIn("baseline artifacts were missing or unreadable", ack["error"])
+
+    def test_applied_ack_fails_closed_when_required_baseline_artifact_is_missing(self):
+        os.remove(os.path.join(self.project_dir, "Synthetic.pbip"))
+        handoff_id = self._issue_handoff()
+        self._quality_report(priorities=[])
+
+        result = self._ack(handoff_id)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("baseline artifacts were missing or unreadable", result["error"])
 
 
 class TestDeployGuard(unittest.TestCase):

@@ -600,8 +600,8 @@ class TestBuildVisualQuery(unittest.TestCase):
         fields = [{'name': 'Region'}, {'name': 'Revenue'}]
         result = self._query('map', fields)
         qs = result['queryState']
-        self.assertIn('Category', qs)
-        self.assertIn('Size', qs)  # map uses Category + Size
+        self.assertIn('Location', qs)
+        self.assertIn('Size', qs)  # Azure Maps uses Location + Size
 
     def test_table_type(self):
         fields = [{'name': 'Region'}, {'name': 'Revenue'}]
@@ -870,15 +870,15 @@ class TestBuildVisualQuery(unittest.TestCase):
         self.assertEqual(len(qs['Y']['projections']), 1)
 
     def test_map_uses_location_role(self):
-        """Map visual must use Category role (PBIR Location well)."""
+        """Map visual must use the Azure Maps Location role."""
         fields = [{'name': 'City', 'shelf': 'rows'}, {'name': 'Revenue'}]
         result = self._query('map', fields)
         qs = result['queryState']
-        self.assertIn('Category', qs)
-        self.assertNotIn('Location', qs)
+        self.assertIn('Location', qs)
+        self.assertNotIn('Category', qs)
 
     def test_map_multiple_geo_dims_in_location(self):
-        """Map: all geo dims → Category role (multiple levels)."""
+        """Map: the first geo dim → the single-value Location role."""
         fields = [
             {'name': 'Country', 'shelf': 'rows'},
             {'name': 'City', 'shelf': 'rows'},
@@ -886,7 +886,7 @@ class TestBuildVisualQuery(unittest.TestCase):
         ]
         result = self._query('map', fields)
         qs = result['queryState']
-        self.assertEqual(len(qs['Category']['projections']), 2)
+        self.assertEqual(len(qs['Location']['projections']), 1)
 
     def test_filled_map_legend_from_color_dim(self):
         """FilledMap: color dim → Series role."""

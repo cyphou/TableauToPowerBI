@@ -122,6 +122,14 @@ Do not edit generated files as the long-term fix. If the output is wrong, fix th
 | `DESKTOP_SMOKE_PASS` | Power BI Desktop process launched and survived the smoke window; it does not prove document correctness by itself |
 | `OPERATIONAL_100` | Reserved for authorized Desktop, semantic execution, refresh, deployment, and post-deploy evidence |
 
+For the client opening-validation service, read the evidence in two dimensions:
+the Desktop status (`OPENED` or `CRASHED`) and the local model data status
+(`verified`, `empty`, `unavailable`, or `query_failed`). Only `OPENED` plus
+`verified` qualifies as a data-bearing screenshot. Diagnostic screenshots made
+with `--skip-data-check` are useful for visual troubleshooting but must not be
+reported as proof that the model contains rows. Keep the HTML, JSON, and PNG
+evidence outside the source repository when it contains customer information.
+
 Static validation is intentionally conservative. It must not claim Desktop or Fabric success unless those environments actually supplied evidence.
 
 ## 6. Tableau to Power BI Correspondence Table
@@ -176,7 +184,8 @@ After migration:
 6. Test slicers, parameters, bookmarks, and navigation.
 7. Review RLS roles before publishing.
 8. Read the quality report and resolve blockers before deployment.
-9. Keep runtime checks marked `not_run` until an authorized environment supplies evidence.
+9. For opening evidence, run `scripts/probe_projects.py` and inspect `DESKTOP_OPENING_VALIDATION.html`.
+10. Keep runtime checks marked `not_run` until an authorized environment supplies evidence.
 
 ## 8. Troubleshooting
 

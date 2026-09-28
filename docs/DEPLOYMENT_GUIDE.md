@@ -88,6 +88,30 @@ the terminal `Completed` state. Preflight, deployment, or Pipeline failure is
 included in the migration summary and produces a nonzero process exit code.
 Power BI Desktop is never opened unless `--desktop-probe` is explicitly set.
 
+## Client-side opening validation
+
+Migration and Fabric deployment do not require Power BI Desktop. Use Desktop on
+a Windows validation runner when real opening evidence and screenshots are
+required. Configure the executable explicitly on client machines with a custom
+installation path:
+
+```powershell
+$py = ".\.venv\Scripts\python.exe"
+$env:POWERBI_DESKTOP_PATH = "C:\Program Files\Microsoft Power BI Desktop\bin\PBIDesktop.exe"
+$output = "C:\Client\migration_output"
+
+& $py migrate.py --batch "C:\Client\tableau_sources" `
+  --output-dir $output --qa --quality-report --verify-open --quiet
+& $py scripts/probe_projects.py $output `
+  --shots "$output\opening_validation\screenshots" `
+  --json "$output\opening_validation\opening_report.json"
+```
+
+`POWERBI_DESKTOP_PATH` must point to an existing `PBIDesktop.exe`; an invalid
+explicit path fails closed. Reports and screenshots remain beside the external
+output directory. A screenshot made with `--skip-data-check` is diagnostic only
+and is not evidence that the model contains rows.
+
 ### CI/CD Deployment (GitHub Actions)
 
 The project includes a 5-stage CI/CD pipeline in `.github/workflows/ci.yml`:

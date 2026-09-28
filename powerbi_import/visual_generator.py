@@ -125,9 +125,9 @@ VISUAL_TYPE_MAP = {
     "stripplot": "scatterChart",
 
     # ── Map visualizations ────────────────────────────────────
-    "map": "map",
-    "geomap": "map",
-    "density": "map",
+    "map": "azureMap",
+    "geomap": "azureMap",
+    "density": "azureMap",
     "filledmap": "filledMap",
     "polygon": "map",
     "multipolygon": "map",
@@ -1533,7 +1533,7 @@ VISUAL_DATA_ROLES = {
     "lineStackedColumnComboChart":       (["Category"], ["ColumnY", "LineY"]),
     "lineClusteredColumnComboChart":     (["Category"], ["ColumnY", "LineY"]),
     "map":                               (["Category", "Location"], ["Size", "Color"]),
-    "azureMap":                           (["Latitude", "Longitude"], ["Size", "Color"]),
+    "azureMap":                           (["Location", "Latitude", "Longitude"], ["Size", "Color"]),
     "filledMap":                         (["Location"], ["Color"]),
     "shapeMap":                          (["Location"], ["Color"]),
     "ribbonChart":                       (["Category", "Series"], ["Y"]),
@@ -1825,30 +1825,33 @@ APPROXIMATION_MAP = {
 def resolve_visual_type(source_type):
     """Resolve a source visualization type to a Power BI visual type.
 
-    Resolution order:
-      1. Identity pass-through — if ``source_type`` is already a valid PBI
+     Resolution order:
+        1. ``VISUAL_TYPE_MAP`` lookup (lower-cased source key → PBI type).
+            Exact Tableau source keys take precedence when a name overlaps with
+            a Power BI visual type, such as ``map``.
+        2. Identity pass-through — if ``source_type`` is already a valid PBI
          visualType (matches a value in ``VISUAL_TYPE_MAP`` or
          ``APPROXIMATION_MAP``), return it unchanged. This protects
          already-normalized values from being dropped to ``tableEx`` just
          because their lower-cased form is not a map key (e.g.
          ``"boxAndWhisker"`` → lowercased ``"boxandwhisker"`` is not in
          the source-side map, but is a valid PBI output type).
-      2. ``VISUAL_TYPE_MAP`` lookup (lower-cased source key → PBI type).
       3. ``APPROXIMATION_MAP`` fallback (e.g. Sankey → custom visual).
       4. Default to ``tableEx``.
     """
     if not source_type:
         return "tableEx"
-    # 1. Identity pass-through for already-valid PBI visualTypes
+    # Tableau source keys are authoritative when names overlap with PBI types.
+    key = source_type.lower()
+    if key in VISUAL_TYPE_MAP:
+        return VISUAL_TYPE_MAP[key]
+    # 2. Identity pass-through for already-valid PBI visualTypes
     valid_pbi_types = set(VISUAL_TYPE_MAP.values()) | {
         v[0] for v in APPROXIMATION_MAP.values()
     }
     if source_type in valid_pbi_types:
         return source_type
-    # 2-3. Source-side maps (lower-cased lookup)
-    key = source_type.lower()
-    if key in VISUAL_TYPE_MAP:
-        return VISUAL_TYPE_MAP[key]
+    # 3. Source-side approximation map
     approx = APPROXIMATION_MAP.get(key)
     if approx:
         return approx[0]

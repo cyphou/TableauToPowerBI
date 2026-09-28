@@ -19,6 +19,7 @@ from powerbi_import.pbip_generator import (PowerBIProjectGenerator,
                                            _is_latitude_field,
                                            _is_longitude_field)
 from powerbi_import.tmdl_generator import generate_tmdl
+from powerbi_import.visual_generator import resolve_visual_type
 
 
 class TestCoordinateFieldDetection(unittest.TestCase):
@@ -171,12 +172,12 @@ class TestMapVisualBinding(unittest.TestCase):
                 self.assertNotIn(p.get('queryRef'),
                                  ('Sites.Latitude', 'Sites.Longitude'))
 
-    def test_missing_coordinate_degrades_to_a_named_map(self):
+    def test_missing_coordinate_and_location_degrades_to_a_named_map(self):
         # Only a latitude survives: an azureMap with one well is a blank map,
         # so plot the geography by name instead.
         fields = [
             {'name': 'Latitude', 'shelf': 'rows', 'semantic_role': '[Latitude]'},
-            {'name': 'City', 'shelf': 'detail'},
+            {'name': 'Product Label', 'shelf': 'detail'},
             {'name': 'Amount', 'shelf': 'size'},
         ]
         ws = self._ws(fields)
@@ -185,6 +186,33 @@ class TestMapVisualBinding(unittest.TestCase):
         self.assertEqual(ws.get('_override_visual_type'), 'map')
         self.assertNotIn('Latitude', roles)
         self.assertNotIn('Longitude', roles)
+
+    def test_location_detail_keeps_azure_maps_without_coordinates(self):
+        ws = self._ws([
+            {'name': 'City', 'shelf': 'detail'},
+            {'name': 'Amount', 'shelf': 'size'},
+        ])
+        roles = self._roles(self._generator(measures={'Amount'})
+                            ._build_visual_query(ws))
+        self.assertIn('Location', roles)
+        self.assertNotIn('_override_visual_type', ws)
+
+    def test_location_tooltip_keeps_azure_maps_without_coordinates(self):
+        ws = self._ws([
+            {'name': 'Country', 'shelf': 'tooltip'},
+            {'name': 'Amount', 'shelf': 'size'},
+        ])
+        roles = self._roles(self._generator(measures={'Amount'})
+                            ._build_visual_query(ws))
+        self.assertIn('Location', roles)
+        self.assertNotIn('_override_visual_type', ws)
+
+
+class TestAzureMapsDefaults(unittest.TestCase):
+
+    def test_standard_tableau_geographies_default_to_azure_maps(self):
+        for chart_type in ('map', 'geomap', 'density'):
+            self.assertEqual(resolve_visual_type(chart_type), 'azureMap')
 
 
 if __name__ == '__main__':

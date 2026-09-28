@@ -23,6 +23,8 @@ GOLDEN_TOOLS = {
     "migrate": {"file"},
     "qa": {"project_dir"},
     "quality_report": {"file", "project_dir"},
+    "agent_handoff": {"agent"},
+    "agent_handoff_ack": {"handoff_id", "agent", "outcome", "rationale"},
     "parity_scan": {"file"},
     "shared_model": {"files"},
     "diff": {"extraction_dir", "project_dir"},
@@ -53,8 +55,8 @@ class TestToolContract(unittest.TestCase):
 
     def test_tool_order_is_stable(self):
         names = [t["name"] for t in _tool_catalogue()]
-        self.assertEqual(names, ["assess", "migrate", "qa", "quality_report",
-                                 "parity_scan", "shared_model", "diff", "deploy",
+        self.assertEqual(names, ["assess", "migrate", "qa", "quality_report", "agent_handoff",
+                     "agent_handoff_ack", "parity_scan", "shared_model", "diff", "deploy",
                                  "llm_status", "autoheal", "verify_open"])
 
     def test_resource_contract(self):

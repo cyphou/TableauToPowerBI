@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added MCP owner-pull handoff and `agent_handoff_ack`. Owners can retrieve only
+  their findings; `applied` ACKs require changed PBIP definition artifacts and
+  a fresh quality report where the finding is gone. ACKs are in-memory only and
+  do not dispatch agents or start review cycles. Durable status and automatic
+  orchestration remain open in the roadmap.
+
 - Direct Tableau URL actions now preserve their row-level target when the action
   points exactly to a field (`<[datasource].[field]>`). The generated semantic
   model marks that column as `dataCategory: WebUrl`, including calculated Tableau
@@ -159,10 +165,12 @@
 
 - The consolidated quality report now carries the preceptorship review. When a
   `preceptor_report.json` sits beside the project, its coaching enters the
-  remediation queue as a repair owned by the agent that owns the artifact,
-  together with the fix text and the file the finding was raised against — the
-  report previously said what was wrong but never how to correct it. The review
-  remains opt-in; its absence is reported as `not_run`.
+  remediation queue as a repair finding tagged for the owning agent, together
+  with the fix text and the file the finding was raised against — the report
+  previously said what was wrong but never how to correct it. This is a report
+  handoff, not automatic agent dispatch or repair. The CLI review is on by
+  default and can be skipped with `--no-preceptor`; review evidence remains
+  optional, so a missing report is recorded as `not_run`.
 - Preceptor review now reads the shapes the generator actually writes.
   Annotations recording the original Tableau formula are no longer scored as
   leaked DAX; `definition.pbir`, report-level filters (`filterConfig`), date

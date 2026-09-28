@@ -7,11 +7,11 @@ Rules for AI coding agents working in this codebase. Read `.github/copilot-instr
 ---
 
 ## Project Context (Quick Reference)
-
+j'ai
 - **Pipeline**: `.twbx` → Extraction (23 JSON files) → Generation (`.pbip` in PBIR v4.0 + TMDL)
 - **Source**: `tableau_export/` (extraction + DAX converter + M query builder)
 - **Target**: `powerbi_import/` (TMDL generator + PBIR report + visual generator)
-- **Tests**: `pytest tests/ --tb=short -q` — currently **10,275 tests** in the latest full run
+- **Tests**: `pytest tests/ --tb=short -q` — latest full run: **10,553 passed, 66 skipped, 1 xfailed** (10,620 collected across 312 test files)
 - **Python**: 3.12+ stdlib only — **no external dependencies** for core migration
 - **Roadmap**: `docs/ROADMAP.md` — check current sprint before starting work
 - **Agents**: 17 implementation agents plus planning and documentation governance agents in `.github/agents/` — see `docs/AGENTS.md`

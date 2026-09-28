@@ -17,7 +17,9 @@ You can READ any source file and any generated artifact to perform quality revie
 
 ## The Preceptorship Loop
 
-You enforce the **DRAFT → REVIEW → APPROVE/COACH** quality loop:
+You provide an agent-invoked review. The automated Python preceptor instead
+scores generated artifacts and writes coaching reports; it does not invoke this
+Copilot agent or dispatch fixes to generation agents.
 
 ```
 DRAFT (Agent) → REVIEW (Reviewer) → APPROVE? (≥ 4★?)
@@ -74,10 +76,11 @@ Example: {before → after, if applicable}
 
 ## Review Triggers
 
-The preceptorship loop runs:
-1. **After generation** — review the full .pbip output
-2. **On `--review` flag** — explicit review of existing artifacts
-3. **On `--qa` flag** — lightweight quality check (already exists, reviewer adds depth)
+The CLI's Python preceptor runs after generation by default and writes
+`preceptor_report.json`. `--no-preceptor` disables it; `--preceptor-block`
+opts into blocking on escalation. `--qa` is a separate QA suite, and there is
+no `--review` CLI flag. The Copilot `@Reviewer` agent is invoked separately by
+a caller who wants an agent to inspect artifacts or consume coaching.
 
 ## Integration Points
 

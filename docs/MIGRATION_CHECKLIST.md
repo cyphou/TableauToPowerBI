@@ -12,12 +12,17 @@ Use this checklist after running the migration tool to validate the generated Po
 - [ ] Optionally run `--autoheal` (add `--llm-autofix` for opt-in LLM correction) to recover automatically
 - [ ] For shared models, resolve `--strict-thin-report` orphan violations before opening
 - [ ] Use `--desktop-probe` only as a best-effort real-Desktop smoke test; `--verify-open` stays authoritative
+- [ ] For client evidence, run `scripts/probe_projects.py` with its default data check and save output outside the repository
 
 ## 1. Open & Load
 
 - [ ] Open the `.pbip` file in Power BI Desktop (March 2025+)
 - [ ] Confirm the project loads without errors
 - [ ] Check the notification bar for any warnings
+- [ ] Confirm the report window is `OPENED` and the strict data status is `verified` before treating its screenshot as data-bearing evidence
+- [ ] Treat `empty`, `unavailable`, `query_failed`, or `no_m_tables` as a validation failure/limitation, not as a successful data screenshot
+- [ ] Use `--skip-data-check` only for a clearly labelled diagnostic screenshot
+- [ ] Review `DESKTOP_OPENING_VALIDATION.html` for green/red opening cards and keep it with the external migration output
 
 ## 2. Data Source Connections
 

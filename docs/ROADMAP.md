@@ -18,7 +18,7 @@ Measured on the committed example corpus, not estimated:
 | Functional parity | mean **99.7%**, lowest **96.4%**, 20 of 26 at full parity |
 | Lineage coverage | **99.9%**, 0 unresolved source records |
 | Evidence level | `STATIC_PASS` on 26/26 |
-| Test suite | 10,275 passed, 66 skipped, 1 xfailed, across 293 files |
+| Test suite | 10,553 passed, 66 skipped, 1 xfailed; 10,620 collected across 312 `test_*.py` files in 878.76s |
 | Agent ownership | 0 unowned modules, 0 asymmetric declarations |
 
 The remediation queue now contains **no `repair` actions at all**: 10 `decide`,
@@ -137,7 +137,7 @@ measured from the tree, not estimated, and they set the agenda below.
 |---|---|
 | Source modules | 161 (149 `powerbi_import`, 12 `tableau_export`) |
 | Source lines | 96,919 |
-| Test files / lines | 293 / 119,084 (1.23x test-to-source) |
+| Test files / lines | 312 `test_*.py` files / 119,084 (1.23x test-to-source) |
 | CLI surface | 14 public commands over 142 flags, **0 inert**, in `migrate.py` |
 | Concentration | Top 6 modules hold 28,318 lines — **29.2% of all source** |
 | Production reachability | 147 modules reachable, **14 not reachable** (4,292 lines), 1 genuinely dead |
@@ -676,25 +676,57 @@ A third bad test surfaced here too: locating `import_shared_model` by substring
 matched the *docstring* before the call, so the ordering assertion failed
 against correct code. Matching prose is not matching behaviour.
 
-### Preceptorship now runs on every migration
+### Preceptorship: Python review and agent handoff boundary
 
-The loop existed, was reachable, scored six dimensions, and was **off unless
-asked for** — so the default migration shipped with no review at all. The
-mechanism was there; the cadence was not.
+`migrate.py` enables `--preceptor` by default; `--no-preceptor` opts out, and
+`--preceptor-block` opts into blocking after escalation. `PreceptorLoop.run()`
+can run up to `max_cycles` and emits a `ReviewReport`, including
+`preceptor_report.json`. The Python loop does **not** call an owning Copilot
+agent or apply coaching fixes between cycles. Without an external agent or
+operator edit, it can score the same unchanged artifacts again; a rerating is
+not a repair.
 
-Measured before changing it: median 9.2s without, 8.6s with, i.e. overhead
-inside run-to-run noise, one extra file (`preceptor_report.json`), verdict
-`approved 5.0/5 in 1 cycle`. A first measurement showed the reviewed run
-*faster by 71%*, which was cold-start cost on the unreviewed run rather than a
-result; discarding the warm-up run removed the artifact.
+`migration_quality.py` consumes the coaching and records each finding's
+dimension, fix, location, and evidence in its finding queue. Shared agent
+instructions ask an agent receiving coaching to address the finding or explain
+why it is not applicable. That is an instruction to an agent, not automatic
+Python orchestration or proof that an artifact changed.
 
-Default-on is safe because the escalation contract already made it advisory:
-a warn never fails the migration, a reviewer exception never fails the
-migration, and blocking still requires `--preceptor-block`. `--no-preceptor`
-opts out, mirroring `--no-compare`.
+### Agent-side coaching handoff — partial
 
-`docs/AGENTS.md` claimed the loop also triggered "on `--review`". That flag has
-never existed. The section now describes the two switches that do.
+**Implemented:** MCP `agent_handoff` pulls findings for one requested owner
+from the latest in-memory `quality_report` in that MCP server process. It
+returns matching owner tokens (including slash-separated co-owners), fix and
+evidence fields, and a deterministic handoff ID. `agent_handoff_ack` accepts a
+`not_applicable` rationale or an `applied` result only when a newer quality
+report targets the same report/project, PBIP definition artifacts changed, and
+the same finding signature is absent from current priorities. Acknowledgements
+are process-memory only (`persisted: false`). Behavioral tests cover owner
+filtering, co-ownership, missing reports, stable IDs, immutability, ACK gates,
+and fail-closed artifact evidence.
+
+**Boundary:** these MCP tools do not invoke Copilot custom agents. The connected
+IDE/agent must choose the owner, pull the packet, make or reject the change, and
+call the ACK tool. The CLI preceptor still has no callback to dispatch findings
+or automatically start another review cycle.
+
+### OPEN — Orchestrated and durable review closure
+
+Owners: AI for MCP/tool integration, Orchestrator for pipeline-cycle wiring,
+Reviewer for coaching semantics, Tester for controls.
+
+Acceptance evidence:
+
+- An IDE/agent orchestrator can route each handoff to the named owner rather
+  than relying on an agent to discover and pull it manually.
+- Handoff and ACK state survives MCP server restart, or the product explicitly
+  chooses a durable external store and exposes its audit trail.
+- An applied ACK triggers or schedules a fresh quality review of the changed
+  project; `applied` cannot be reported if the finding remains.
+- Negative controls prove that dispatch failure, no coaching, wrong owner,
+  unchanged artifacts, and stale reports cannot be represented as resolution.
+- Existing `max_cycles` and escalation behavior remain intact.
+- Re-scoring unchanged artifacts is never represented as a repair.
 
 ### Documented flags must exist
 

@@ -620,7 +620,7 @@ def _build_priorities(parity: Dict[str, Any], findings: "_Findings"
 
 
 
-#: Written beside the project by ``--preceptor``; optional by design.
+#: Written beside the project by default; ``--no-preceptor`` opts out.
 _REVIEW_FILENAME = "preceptor_report.json"
 
 #: Review outcomes that need someone to act, and whether they block the handoff.
@@ -628,11 +628,13 @@ _REVIEW_ESCALATIONS = {"escalated_block": True, "escalated_warn": False}
 
 
 def _review_evidence(project_dir: str) -> Dict[str, Any]:
-    """Read the preceptorship review left beside the project, if one was run.
+    """Read the preceptorship review left beside the project, if available.
 
-    The review is opt-in, so its absence is reported as ``not_run`` rather than
-    counted against the migration. Its coaching is the only evidence in the
-    report that states *how* to fix a finding, so it is preserved verbatim.
+    The CLI runs the review by default, with ``--no-preceptor`` as an opt-out.
+    A report may still be absent if the review was skipped or unavailable, or
+    could not be read; those cases are reported as ``not_run``. Its coaching
+    is the only evidence in the report that states *how* to fix a finding, so
+    it is preserved verbatim.
     """
     path = os.path.join(project_dir, _REVIEW_FILENAME)
     try:

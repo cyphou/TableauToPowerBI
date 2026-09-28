@@ -13,6 +13,7 @@ problem can never break a migration.
 from __future__ import annotations
 
 import binascii
+import os
 import struct
 import sys
 import time
@@ -171,6 +172,19 @@ def _class_of(hwnd) -> str:                       # pragma: no cover - platform
     buf = ctypes.create_unicode_buffer(256)
     _user32.GetClassNameW(hwnd, buf, 256)
     return buf.value
+
+
+def window_process_id(hwnd: int) -> Optional[int]:
+    """Return the owning process ID for a window, or None when unavailable."""
+    if not IS_WINDOWS or not hwnd:
+        return None
+    try:
+        owner_pid = wintypes.DWORD()
+        if not _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid)):
+            return None
+        return int(owner_pid.value) or None
+    except (OSError, ValueError, ctypes.ArgumentError):
+        return None
 
 
 def windows_for_pid(pid: int) -> List[WindowInfo]:
@@ -335,6 +349,8 @@ def capture_window(hwnd: int, path: str) -> Optional[str]:
     """Write a PNG of the window. Returns the path, or None when unavailable."""
     if not IS_WINDOWS:
         return None
+    if os.path.islink(path):
+        return None
     _ensure_dpi_aware()
     rect = wintypes.RECT()
     if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -368,7 +384,10 @@ def capture_window(hwnd: int, path: str) -> Optional[str]:
                           window_dc, 0, 0, _SRCCOPY)
 
         buf = ctypes.string_at(bits, width * height * 4)
-        with open(path, "wb") as handle:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags | no_follow, 0o600)
+        with os.fdopen(fd, "wb") as handle:
             handle.write(_png_bytes(width, height, buf))
         return path
     except (OSError, ValueError, ctypes.ArgumentError):

@@ -27,9 +27,11 @@ Public API:
 
 from __future__ import annotations
 
+import base64
 import glob
+import json
 import os
-import shutil
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field, asdict
@@ -77,6 +79,104 @@ WINDOW_LIMITATION = (
     "dialog list does not prove every visual rendered."
 )
 
+DATA_LOAD_LIMITATION = (
+    "Data-load verification could not prove usable rows. Pending Power Query "
+    "queries, unapplied changes, or unavailable source data may require user "
+    "action in Power BI Desktop."
+)
+
+_TMDL_TABLE_RE = re.compile(r"^table\s+(.+?)\s*$", re.MULTILINE)
+_TMDL_M_PARTITION_RE = re.compile(
+    r"^\s*partition\s+.+?\s*=\s*m\s*$", re.MULTILINE)
+_DATA_LOAD_KEYS = (
+    "status", "tables_checked", "tables_nonempty", "tables_empty",
+    "tables_failed", "total_rows",
+)
+_DESKTOP_PIDS_QUERY_FAILED = False
+
+_ADOMD_VERIFY_SCRIPT = r'''
+$ErrorActionPreference = 'Stop'
+$result = [ordered]@{
+    status = 'unavailable'; tables_checked = 0; tables_nonempty = 0
+    tables_empty = 0; tables_failed = 0; total_rows = 0
+}
+try {
+    $requestJson = [Text.Encoding]::UTF8.GetString(
+        [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()))
+    $request = ConvertFrom-Json -InputObject $requestJson
+    $ownerPid = [int]$request.owner_pid
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $byId = @{}
+    foreach ($process in $processes) { $byId[[int]$process.ProcessId] = $process }
+    if (-not $byId.ContainsKey($ownerPid)) { throw 'owner unavailable' }
+
+    $descendants = New-Object 'System.Collections.Generic.HashSet[int]'
+    $pending = New-Object System.Collections.Queue
+    $null = $descendants.Add($ownerPid)
+    $pending.Enqueue($ownerPid)
+    while ($pending.Count -gt 0) {
+        $parent = [int]$pending.Dequeue()
+        foreach ($process in $processes) {
+            if ([int]$process.ParentProcessId -eq $parent) {
+                $child = [int]$process.ProcessId
+                if ($descendants.Add($child)) { $pending.Enqueue($child) }
+            }
+        }
+    }
+    $engines = @($processes | Where-Object {
+        $_.Name -ieq 'msmdsrv.exe' -and $descendants.Contains([int]$_.ProcessId)
+    })
+    if ($engines.Count -ne 1) { throw 'engine unavailable or ambiguous' }
+
+    $engine = $engines[0]
+    $ports = @(Get-NetTCPConnection -State Listen `
+        -OwningProcess ([int]$engine.ProcessId) -ErrorAction Stop |
+        Select-Object -ExpandProperty LocalPort -Unique)
+    if ($ports.Count -ne 1) { throw 'engine port unavailable or ambiguous' }
+    $owner = $byId[$ownerPid]
+    $dllPath = Join-Path (Split-Path -Parent $owner.ExecutablePath) `
+        'Microsoft.PowerBI.AdomdClient.dll'
+    if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
+        throw 'ADOMD client unavailable'
+    }
+    Add-Type -Path $dllPath -ErrorAction Stop
+    $connection = New-Object Microsoft.AnalysisServices.AdomdClient.AdomdConnection(
+        "Data Source=localhost:$($ports[0]);Connect Timeout=10")
+    try {
+        $connection.Open()
+        foreach ($table in $request.tables) {
+            $result.tables_checked++
+            $escaped = ([string]$table).Replace("'", "''")
+            $command = $connection.CreateCommand()
+            $command.CommandTimeout = 8
+            $command.CommandText = "EVALUATE ROW(`"Rows`", COUNTROWS('$escaped'))"
+            $reader = $null
+            try {
+                $reader = $command.ExecuteReader()
+                if (-not $reader.Read()) { throw 'query returned no aggregate' }
+                $rows = [long]$reader.GetValue(0)
+                if ($rows -gt 0) { $result.tables_nonempty++ }
+                else { $result.tables_empty++ }
+                $result.total_rows += $rows
+            }
+            catch {
+                $result.tables_failed++
+            }
+            finally {
+                if ($reader) { $reader.Dispose() }
+                $command.Dispose()
+            }
+        }
+        if ($result.tables_failed -gt 0) { $result.status = 'query_failed' }
+        elseif ($result.total_rows -gt 0) { $result.status = 'verified' }
+        else { $result.status = 'empty' }
+    }
+    finally { $connection.Dispose() }
+}
+catch { $result.status = 'unavailable' }
+[Console]::Out.WriteLine((ConvertTo-Json -InputObject $result -Compress))
+'''
+
 
 @dataclass
 class DesktopProbeReport:
@@ -93,6 +193,11 @@ class DesktopProbeReport:
     screenshot_blank: Optional[bool] = None
     dialog_screenshot: Optional[str] = None
     dialogs: List[str] = field(default_factory=list)
+    data_load: dict = field(default_factory=lambda: {
+        "status": "not_requested", "tables_checked": 0,
+        "tables_nonempty": 0, "tables_empty": 0, "tables_failed": 0,
+        "total_rows": 0,
+    })
 
     @property
     def opened(self) -> bool:
@@ -114,12 +219,18 @@ class DesktopProbeReport:
         return d
 
 
-def find_pbi_desktop() -> Optional[str]:
-    """Return the path to PBIDesktop.exe, or None if not installed."""
-    for name in ("PBIDesktop", "PBIDesktop.exe"):
-        found = shutil.which(name)
-        if found:
-            return found
+def find_pbi_desktop(preferred_path: Optional[str] = None) -> Optional[str]:
+    """Return a validated PBIDesktop.exe path, or None if unavailable.
+
+    ``preferred_path`` and ``POWERBI_DESKTOP_PATH`` support client machines
+    with a custom or centrally managed installation location.
+    """
+    preferred = preferred_path or os.environ.get("POWERBI_DESKTOP_PATH", "")
+    if preferred:
+        candidate = os.path.abspath(os.path.expandvars(os.path.expanduser(preferred)))
+        if os.path.isfile(candidate) and os.path.basename(candidate).lower() == "pbidesktop.exe":
+            return candidate
+        return None
     for base in (os.environ.get("ProgramFiles", ""),
                  os.environ.get("ProgramW6432", ""),
                  os.environ.get("ProgramFiles(x86)", "")):
@@ -153,7 +264,7 @@ def _scan_trace_errors(since: float) -> List[str]:
     for fp in _recent_matches(_TRACE_GLOBS, since):
         try:
             with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
-                text = fh.read().lower()
+                text = fh.read(1024 * 1024).lower()
         except OSError:
             continue
         if any(tok in text for tok in _ERROR_TOKENS):
@@ -164,7 +275,9 @@ def _scan_trace_errors(since: float) -> List[str]:
 def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
                        close_after: bool = True,
                        screenshot_path: Optional[str] = None,
-                       wait_for_window: bool = True) -> DesktopProbeReport:
+                       wait_for_window: bool = True,
+                       verify_data: bool = False,
+                       desktop_path: Optional[str] = None) -> DesktopProbeReport:
     """Launch Power BI Desktop against ``pbip_path`` and watch for load failure.
 
     With *wait_for_window* the probe waits for the document window to carry the
@@ -174,19 +287,29 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
     Best-effort: returns a DesktopProbeReport; never raises.
     """
     report = DesktopProbeReport(pbip_path=pbip_path)
+    if screenshot_path and not _safe_output_path(screenshot_path):
+        report.status = "error"
+        report.note = "screenshot path contains a symbolic-link component"
+        return report
     if not pbip_path or not os.path.isfile(pbip_path):
         report.status = "error"
         report.note = f".pbip not found: {pbip_path}"
         return report
-    exe = find_pbi_desktop()
+    exe = find_pbi_desktop(desktop_path)
     if not exe:
         report.status = "unavailable"
-        report.note = ("Power BI Desktop not found. Install it or open the .pbip "
+        report.note = ("Power BI Desktop executable not found or invalid. Set "
+                       "POWERBI_DESKTOP_PATH or --powerbi-desktop-path, install it, "
+                       "or open the .pbip "
                        "manually; the static --verify-open preflight is the "
                        "authoritative check.")
         return report
     report.executable = exe
     pre_existing = set(desktop_pids())
+    if os.name == "nt" and wait_for_window and _DESKTOP_PIDS_QUERY_FAILED:
+        report.status = "error"
+        report.note = "cannot enumerate existing Power BI Desktop processes safely"
+        return report
     if pre_existing and wait_for_window:
         report.warnings.append(
             f"{len(pre_existing)} Power BI Desktop instance(s) already running; "
@@ -207,9 +330,11 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
     try:
         if wait_for_window and desktop_window.IS_WINDOWS:
             crashed = _watch_window(report, proc, pbip_path, start, timeout,
-                                    screenshot_path)
+                                    screenshot_path, verify_data, pre_existing)
         else:
             crashed = _watch_process(report, proc, start, deadline, settle_until)
+            if verify_data:
+                report.data_load = _data_load_result("unavailable")
 
         report.signals.extend(_scan_trace_errors(start))
         alive = proc.poll() is None
@@ -218,10 +343,13 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
             report.status = "crashed"
         elif alive:
             report.status = "opened"
-            report.note = (WINDOW_LIMITATION if report.window_loaded
-                           else "Desktop launched and stayed alive past the "
-                                "settle window with no crash/error signal. "
-                                + OPENED_LIMITATION)
+            if report.data_load["status"] not in ("not_requested", "verified"):
+                report.note = DATA_LOAD_LIMITATION
+            else:
+                report.note = (WINDOW_LIMITATION if report.window_loaded
+                               else "Desktop launched and stayed alive past the "
+                                    "settle window with no crash/error signal. "
+                                    + OPENED_LIMITATION)
         else:
             report.status = "timed_out"
     finally:
@@ -234,14 +362,6 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
                     except subprocess.TimeoutExpired:
                         proc.kill()
                 except OSError:
-                    pass
-            # The file may have been handed to a second instance we spawned.
-            # Only close instances that did not exist before the launch.
-            for pid in set(desktop_pids()) - pre_existing - {proc.pid}:
-                try:
-                    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                                   capture_output=True, timeout=15)
-                except (OSError, subprocess.SubprocessError):
                     pass
     report.duration_s = round(time.time() - start, 1)
     return report
@@ -268,6 +388,8 @@ def _watch_process(report, proc, start, deadline, settle_until) -> bool:
 
 def desktop_pids() -> List[int]:
     """PIDs of every running PBIDesktop.exe (Windows; empty elsewhere)."""
+    global _DESKTOP_PIDS_QUERY_FAILED
+    _DESKTOP_PIDS_QUERY_FAILED = False
     if os.name != "nt":
         return []
     try:
@@ -275,7 +397,7 @@ def desktop_pids() -> List[int]:
             ["tasklist", "/FI", "IMAGENAME eq PBIDesktop.exe", "/NH", "/FO", "CSV"],
             capture_output=True, text=True, timeout=15).stdout
     except (OSError, TypeError, AttributeError, subprocess.SubprocessError):
-        # A test double for Popen can break subprocess.run; never raise here.
+        _DESKTOP_PIDS_QUERY_FAILED = True
         return []
     pids = []
     for line in out.splitlines():
@@ -285,9 +407,9 @@ def desktop_pids() -> List[int]:
     return pids
 
 
-def _capture_dialogs(report, screenshot_path) -> None:
+def _capture_dialogs(report, screenshot_path, allowed_pids) -> None:
     """Record every open popup and screenshot the first one."""
-    dialogs = [w for pid in desktop_pids()
+    dialogs = [w for pid in allowed_pids
                for w in desktop_window.dialog_windows(pid)]
     if not dialogs:
         return
@@ -301,12 +423,22 @@ def _capture_dialogs(report, screenshot_path) -> None:
         dialogs[0].hwnd, base + ".dialog" + (ext or ".png"))
 
 
-def _capture_any(report, screenshot_path) -> None:
-    """Screenshot the largest Power BI window, whatever it is showing."""
+def _safe_output_path(path: str) -> bool:
+    """Return false when an existing path component is a symbolic link."""
+    current = os.path.abspath(path)
+    while current and current != os.path.dirname(current):
+        if os.path.lexists(current) and os.path.islink(current):
+            return False
+        current = os.path.dirname(current)
+    return True
+
+
+def _capture_any(report, screenshot_path, allowed_pids) -> None:
+    """Screenshot only a window owned by a process launched by this probe."""
     if not screenshot_path:
         return
     best = None
-    for pid in desktop_pids():
+    for pid in allowed_pids:
         win = desktop_window.main_window(pid)
         if win and (best is None or win.width * win.height >
                     best.width * best.height):
@@ -324,11 +456,18 @@ def _capture_any(report, screenshot_path) -> None:
 
 
 def _watch_window(report, proc, pbip_path, start, timeout,
-                  screenshot_path) -> bool:
+                  screenshot_path, verify_data=False, pre_existing=None) -> bool:
     """Wait for the report window, then capture it. Returns True when crashed."""
+    pre_existing = pre_existing or set()
+    allowed_pids = set(desktop_pids()) - set(pre_existing)
+    allowed_pids.add(proc.pid)
+    if verify_data:
+        report.data_load = _data_load_result("unavailable")
     expected = os.path.splitext(os.path.basename(pbip_path))[0]
+    launched_pids = lambda: [pid for pid in desktop_pids()
+                             if pid not in pre_existing]
     window, signals = desktop_window.wait_for_window(
-        desktop_pids, expected, timeout=timeout)
+        launched_pids, expected, timeout=timeout)
 
     if window is None:
         # Power BI hands the file to an existing instance and the launcher
@@ -343,8 +482,8 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         # An error popup is what makes a project unusable, so keep its own
         # picture: it carries the message, and it is a separate window that a
         # capture of the main window would not show.
-        _capture_dialogs(report, screenshot_path)
-        _capture_any(report, screenshot_path)
+        _capture_dialogs(report, screenshot_path, allowed_pids)
+        _capture_any(report, screenshot_path, allowed_pids)
         return True
 
     if _recent_matches(_FROWN_GLOBS, start):
@@ -352,9 +491,16 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         return True
 
     report.window_title = window.title
-    _capture_dialogs(report, screenshot_path)
+    _capture_dialogs(report, screenshot_path, allowed_pids)
     for title in report.dialogs:
         report.signals.append(f"error dialog: {title!r}")
+
+    if verify_data:
+        owner_pid = desktop_window.window_process_id(window.hwnd)
+        report.data_load = verify_desktop_data(pbip_path, owner_pid)
+        if report.data_load["status"] != "verified":
+            report.note = DATA_LOAD_LIMITATION
+            return False
 
     if screenshot_path:
         os.makedirs(os.path.dirname(os.path.abspath(screenshot_path)),
@@ -364,6 +510,104 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         if report.screenshot:
             report.screenshot_blank = desktop_window.is_blank(report.screenshot)
     return False
+
+
+def _data_load_result(status="unavailable", *, checked=0, nonempty=0,
+                      empty=0, failed=0, rows=0):
+    return {
+        "status": status,
+        "tables_checked": checked,
+        "tables_nonempty": nonempty,
+        "tables_empty": empty,
+        "tables_failed": failed,
+        "total_rows": rows,
+    }
+
+
+def _m_backed_tables(pbip_path: str):
+    """Return local TMDL table names with M partitions, or None if ambiguous."""
+    project_dir = os.path.dirname(os.path.abspath(pbip_path))
+    model_dirs = glob.glob(os.path.join(project_dir, "*.SemanticModel"))
+    if len(model_dirs) != 1:
+        return None
+    tables_dir = os.path.join(model_dirs[0], "definition", "tables")
+    table_names = []
+    for path in glob.glob(os.path.join(tables_dir, "*.tmdl")):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                text = handle.read()
+        except (OSError, UnicodeError):
+            return None
+        table_match = _TMDL_TABLE_RE.search(text)
+        if not table_match or not _TMDL_M_PARTITION_RE.search(text):
+            continue
+        name = table_match.group(1).strip()
+        if len(name) >= 2 and name[0] == "'" and name[-1] == "'":
+            name = name[1:-1].replace("''", "'")
+        if name:
+            table_names.append(name)
+    return table_names
+
+
+def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
+                        timeout: int = 60) -> dict:
+    """Verify M-backed tables through the Analysis Services engine owned by HWND.
+
+    Only aggregate counts/status are returned. Query details and exceptions are
+    deliberately kept out of stdout, warnings, and the report.
+    """
+    tables = _m_backed_tables(pbip_path)
+    if tables is None or not owner_pid or not desktop_window.IS_WINDOWS:
+        return _data_load_result("unavailable")
+    if not tables:
+        return _data_load_result("no_m_tables")
+
+    request = json.dumps({"owner_pid": int(owner_pid), "tables": tables},
+                         ensure_ascii=True).encode("utf-8")
+    encoded = base64.b64encode(request).decode("ascii")
+    try:
+        bounded_timeout = max(5, min(int(timeout), 120))
+    except (TypeError, ValueError):
+        return _data_load_result("unavailable")
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+             _ADOMD_VERIFY_SCRIPT],
+            input=encoded, capture_output=True, text=True,
+            timeout=bounded_timeout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return _data_load_result("unavailable")
+    if completed.returncode != 0:
+        return _data_load_result("unavailable")
+    try:
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+        if not isinstance(result, dict):
+            raise ValueError
+        values = {key: result[key] for key in _DATA_LOAD_KEYS}
+        if values["status"] not in {
+                "verified", "empty", "query_failed", "unavailable"}:
+            raise ValueError
+        if any(not isinstance(values[key], int) or values[key] < 0
+               for key in _DATA_LOAD_KEYS[1:]):
+            raise ValueError
+        counts_complete = (
+            values["tables_checked"] == len(tables)
+            and values["tables_nonempty"] + values["tables_empty"]
+            + values["tables_failed"] == len(tables)
+        )
+        if values["status"] == "verified" and (
+                not counts_complete or values["tables_failed"]
+                or values["total_rows"] <= 0):
+            raise ValueError
+        if values["status"] == "empty" and (
+                not counts_complete or values["tables_failed"]
+                or values["total_rows"] != 0):
+            raise ValueError
+        if values["status"] == "query_failed" and not values["tables_failed"]:
+            raise ValueError
+        return values
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return _data_load_result("unavailable")
 
 
 def probe_desktop_reopen(pbip_path: str, *, settle: int = 20, timeout: int = 90,

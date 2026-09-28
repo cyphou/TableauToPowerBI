@@ -36,6 +36,16 @@ _TABLEAU_AGG_TO_PBI_FUNC = {
 
 _LATITUDE_ROLES = frozenset({'latitude', 'lat'})
 _LONGITUDE_ROLES = frozenset({'longitude', 'lon', 'lng'})
+_GEOGRAPHIC_ROLES = frozenset({
+    'address', 'city', 'continent', 'country', 'county', 'geography',
+    'place', 'postalcode', 'postcode', 'region', 'state', 'stateorprovince',
+    'territory', 'zip', 'zipcode',
+})
+_GEOGRAPHIC_FIELD_WORDS = frozenset({
+    'address', 'city', 'continent', 'country', 'county', 'geography',
+    'location', 'place', 'postal', 'postcode', 'province', 'region', 'state',
+    'territory', 'zip',
+})
 
 
 def _is_bindable_coordinate(field):
@@ -58,6 +68,17 @@ def _is_longitude_field(field):
         return False
     role = (field.get('semantic_role') or '').strip('[]').lower()
     return role in _LONGITUDE_ROLES or 'longitude' in (field.get('name') or '').lower()
+
+
+def _is_geographic_dimension(field):
+    """True when a non-coordinate Tableau field can populate Azure Maps Location."""
+    if _is_latitude_field(field) or _is_longitude_field(field):
+        return False
+    role = (field.get('semantic_role') or '').strip('[]').lower()
+    if role in _GEOGRAPHIC_ROLES:
+        return True
+    field_words = re.findall(r'[a-z]+', (field.get('name') or '').lower())
+    return any(word in _GEOGRAPHIC_FIELD_WORDS for word in field_words)
 
 
 # â”€â”€ PBIR schema constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3293,7 +3314,7 @@ class PowerBIProjectGenerator:
         "lineStackedColumnComboChart":       (["Category", "Series"], ["ColumnY", "LineY"]),
         "lineClusteredColumnComboChart":     (["Category", "Series"], ["ColumnY", "LineY"]),
         "map":                               (["Category", "Series"], ["Size"]),
-        "azureMap":                          (["Latitude", "Longitude"], ["Size"]),
+        "azureMap":                          (["Location", "Latitude", "Longitude"], ["Size", "Color"]),
         "filledMap":                         (["Category", "Series"], ["Size"]),
         "shapeMap":                          (["Location"], ["Color"]),
         "ribbonChart":                       (["Category", "Series"], ["Y"]),
@@ -3685,10 +3706,8 @@ class PowerBIProjectGenerator:
             # unaggregated; summed coordinates make the visual refuse to draw.
             lat = next((f for f in cleaned_fields if _is_latitude_field(f)), None)
             lon = next((f for f in cleaned_fields if _is_longitude_field(f)), None)
-            if not (lat and lon):
-                # A coordinate did not survive model validation, so plot the
-                # geography by name instead of shipping an empty map.
-                ws_data['_override_visual_type'] = 'map'
+            has_coordinates = lat is not None and lon is not None
+            if not has_coordinates:
                 lat = lon = None
             used = [f for f in (lat, lon) if f is not None]
             if lat:
@@ -3701,13 +3720,23 @@ class PowerBIProjectGenerator:
                     "projections": [self._make_projection_entry(
                         lon, force_column=True)]
                 }
-            legend = [d for d in (color_dims + axis_dims) if d not in used]
-            if not legend and not used:
-                legend = [f for f in tip_fields
-                          if not self._is_measure_field(f['name'])]
-                tip_fields = [f for f in tip_fields if f not in legend]
-            if legend:
-                query_state["Category"] = self._make_projection(legend[0])
+            if not has_coordinates:
+                location_candidates = axis_dims + detail_dims
+                location = next((d for d in location_candidates
+                                 if d not in used and _is_geographic_dimension(d)), None)
+                if location is None:
+                    location = next((f for f in tip_fields
+                                     if (not self._is_measure_field(f['name'])
+                                         and _is_geographic_dimension(f))), None)
+                if location is None:
+                    # Azure Maps cannot render without a coordinate pair or
+                    # a geographic location field.
+                    ws_data['_override_visual_type'] = 'map'
+                else:
+                    query_state["Location"] = self._make_projection(location)
+                    tip_fields = [f for f in tip_fields if f is not location]
+            if color_dims:
+                query_state["Color"] = self._make_projection(color_dims[0])
             sz = [m for m in (size_fields + axis_meas + color_meas)
                   if m not in used]
             if sz:

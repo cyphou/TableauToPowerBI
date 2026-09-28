@@ -200,7 +200,7 @@ healing.py (facade — one import surface, heal_and_verify())
 | `m_healing.py` | `heal_m()` — Power Query M repairs (identifier quoting, trailing commas, paren balance). |
 | `visual_healing.py` | `heal_visual()` — PBIR container repairs; flagship fix moves annotations to the container root (critical load-failure bug). |
 | `openability.py` | `check_openability()` preflight + `extract_m_partitions()` — validates every M partition, executable DAX, JSON file, TMDL, PBIP shell, semantic reference, visual binding, report→model reference and PBIR schema without opening Desktop. |
-| `desktop_probe.py` | `probe_desktop_open()` — best-effort **real** open self-check: launches Power BI Desktop against the `.pbip` and watches for an early crash / FrownDump / error traces (Windows + Desktop install; the static preflight stays authoritative). |
+| `desktop_probe.py` | `probe_desktop_open()` — best-effort **real** open self-check: launches Power BI Desktop against the `.pbip`, watches for an early crash / FrownDump / error traces, and can verify aggregate row counts through Desktop's local model before capturing a screenshot (Windows + Desktop install; the static preflight stays authoritative). |
 | `autoheal.py` | `AutoHealer` closed loop — deterministic heal → collect residual errors (`StaticValidatorSource`/`LogFileSource`/`PbiDesktopSource`) → optional LLM correction via `LLMGateway` → **re-validate → apply only if valid** (never degrades). Records each applied fix as a `RepairAttempt` (distinct from `HealAction` — it carries the validation outcome). |
 | `recovery_report.py` | Records every applied repair (`record_heal`) into the recovery ledger via duck typing (no import coupling to the healers). |
 | `healing.py` | Unified facade re-exporting the whole subsystem; `heal_and_verify(project_dir)` heals then re-runs the openability preflight, returning `(AutoHealReport, OpenabilityReport)`. |
@@ -211,6 +211,19 @@ migration and writes `openability_report.json`; `--no-verify-open` is the explic
 escape hatch. Power BI Desktop is never launched automatically: `--desktop-probe`
 remains an opt-in diagnostic. The subsystem is also reachable through MCP
 (`verify_open`, `autoheal` tools).
+
+For batch Desktop evidence, run `python scripts/probe_projects.py <projects-dir>`.
+It requires both a loaded Desktop window and a non-empty aggregate data result for
+every M-backed table before saving a screenshot. `--skip-data-check` is diagnostic
+only: it permits a window screenshot without claiming that data loaded.
+
+For a client machine with a non-standard Desktop installation, set
+`POWERBI_DESKTOP_PATH` to the full path of `PBIDesktop.exe`, or pass
+`--powerbi-desktop-path PATH` with `--desktop-probe`. An explicit path must exist
+and end in `PBIDesktop.exe`; an invalid override fails closed instead of silently
+selecting another installation. Without an override, discovery checks the standard
+`ProgramFiles`, `ProgramW6432`, and `ProgramFiles(x86)` installation roots only;
+the system `PATH` is not trusted for launching Desktop.
 
 #### How the healing layers relate
 
@@ -225,7 +238,7 @@ repairs a different artifact at a different phase), not duplicates:
 | 3. Expression heal | `healing.py` subsystem (this section) | preflight / post-gen / on-demand | DAX, Power Query (M), visual containers |
 | 4. Recovery ledger | `recovery_report.py` | throughout | records every repair from stages 1–3 (one JSON) |
 | 5. Quality gate | `rollback_engine.py` | after generation | severity verdict → ship / quarantine / rollback |
-| 6. Review loop | `preceptor.py` | every run (advisory) | DRAFT→REVIEW→COACH scoring + coaching feedback |
+| 6. Preceptor report | `preceptor.py` | post-generation, default-on (advisory) | Scores six dimensions and writes coaching; owner-agent dispatch/fixes are not automated |
 
 Stages 1–3 all feed the single recovery ledger (stage 4) via
 `recovery_report.record()` / `record_heal()`; the ledger is duck-typed so it never

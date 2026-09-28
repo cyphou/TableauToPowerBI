@@ -75,7 +75,7 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
   - `equivalence_tester.py`: Cross-platform validation — measure value comparison with tolerance, SSIM-based screenshot comparison, validation report generation
   - `regression_suite.py`: Regression suite — snapshot generation (tables, measures, filters, formula hashes), snapshot comparison with drift detection
   - `recovery_report.py`: Self-healing recovery report — records every auto-repair action (category, severity, description, action, follow-up), JSON export, MigrationReport integration via `merge_into()`
-  - `preceptor.py`: Preceptorship loop engine — DRAFT→REVIEW→APPROVE/COACH quality gate, 6-dimension scoring (completeness, DAX correctness, M validity, TMDL structure, PBIR fidelity, visual equivalence), SSIM screenshot comparison, structured coaching feedback, max 3 cycles then escalate (warn or block), `PreceptorLoop.run()`, `ReviewReport`, `ReviewScorecard`
+  - `preceptor.py`: Post-generation scoring/report engine — 6 dimensions, SSIM screenshot comparison and structured coaching. The CLI enables it by default, but it does not invoke Copilot agents or apply their fixes; repeated cycles can review unchanged output. `--preceptor-block` opts into blocking after escalation.
   - `security_validator.py`: Centralized security utilities — path validation (null byte, traversal, extension whitelist), ZIP slip defense (`safe_zip_extract_member`), XML XXE protection (`safe_parse_xml`), credential detection/redaction (10 patterns), M query credential scrubbing, template substitution sanitization, migration artifact scanning
   - `governance.py`: Enterprise governance framework — `GovernanceEngine` (naming conventions, PII detection, sensitivity labels), `AuditTrail` (append-only JSONL with SHA-256 hashing), `run_governance()` convenience function, configurable warn/enforce modes
   - `sla_tracker.py`: Migration SLA tracker — per-workbook time/fidelity/validation compliance, `SLATracker` with `start()`/`record_result()`/`get_report()`, `SLAReport` with compliance rate and JSON export
@@ -126,7 +126,7 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
     - `credential_vault.py`: Credential vault — secure credential storage and retrieval for deployment authentication
   - `config/`: Configuration subpackage
     - `migration_config.py`: Migration configuration — typed config objects for migration settings and feature flags
-  - **tests/**: Unit and integration tests (10,275 tests across 293 files in latest full run)
+  - **tests/**: Unit and integration tests (latest full run: 10,553 passed, 66 skipped, 1 xfailed; 10,620 collected across 312 files)
 - **docs/**: FAQ, PBI project guide, mapping reference, **ROADMAP.md** (v45/v46 release roadmap and agent assignments)
 - **.github/workflows/ci.yml**: CI/CD pipeline (lint → test → validate → deploy)
 - **.github/workflows/publish.yml**: PyPI auto-publish workflow (tag-triggered, OIDC trusted publisher)
@@ -495,9 +495,9 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 | **@assessor** | Readiness scoring, strategy, diff reports, prep lineage | `assessment.py`, `server_assessment.py`, `strategy_advisor.py`, `schema_drift.py`, `prep_lineage.py`, `prep_lineage_report.py` |
 | **@merger** | Shared semantic model, fingerprint matching | `shared_model.py`, `merge_config.py` |
 | **@deployer** | Fabric/PBI deployment, auth, gateway | `deploy/*.py`, `gateway_config.py`, `telemetry.py` |
-| **@reviewer** | Artifact quality review, preceptorship loop, coaching feedback | `preceptor.py` (CLI: `--preceptor`) |
+| **@reviewer** | Artifact quality review and preceptor engine; CLI emits coaching reports but does not dispatch them to owner agents | `preceptor.py` (CLI default-on; `--no-preceptor` opts out) |
 | **@web-designer** | End-user UI/UX, Tkinter light UI, layout/presentation | `web/light_ui.py` |
-| **@tester** | Tests (10,275 across 293 files), coverage, public fixtures, regression | `tests/*.py` |
+| **@tester** | Tests (10,553 passed, 66 skipped, 1 xfailed; 10,620 collected across 312 files), coverage, public fixtures, regression | `tests/*.py` |
 | **@readme** | Documentation quality gate before and after updates | `README.md`, `docs/`, `CHANGELOG.md`, project instructions (review only) |
 
 ### Rules

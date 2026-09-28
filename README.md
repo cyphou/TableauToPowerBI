@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | 🏷️ **Package** | 48.0.0 · roadmap track v48 |
-| ✅ **Tests** | 55 evidence-quality tests passed · 275 PBIP/openability tests passed · 10,275 repository tests passed |
+| ✅ **Tests** | 10,553 passed · 66 skipped · 1 xfailed (10,620 collected across 312 test files) |
 | 🐍 **Python** | 3.12+ · zero external dependencies |
 | 📜 **License** | MIT |
 
@@ -105,6 +105,30 @@ Run `python migrate.py --help` for the concise command list. Existing flag-based
 automation remains compatible; use `python migrate.py --advanced-help` only when an
 advanced option is required. Secrets belong in environment variables, never in
 command history.
+
+### Client validation service (Windows)
+
+Use this flow for a repeatable client migration plus a real Desktop opening
+check. Keep customer source files and generated evidence outside this repository.
+
+```powershell
+$py = ".\.venv\Scripts\python.exe"
+$src = "C:\Client\Tableau"
+$out = "C:\Client\Tableau\migration_output"
+$env:POWERBI_DESKTOP_PATH = "C:\Program Files\Microsoft Power BI Desktop\bin\PBIDesktop.exe"
+
+& $py migrate.py --batch $src --output-dir $out --qa --quality-report --verify-open --quiet
+& $py scripts/probe_projects.py $out `
+    --shots "$out\opening_validation\screenshots" `
+    --json "$out\opening_validation\opening_report.json"
+```
+
+The probe captures a screenshot only after aggregate model data is verified.
+Use `--skip-data-check` only for diagnostic screenshots. `OPENED` means the
+report window loaded, `CRASHED` means a Desktop crash or error dialog was
+detected, `verified` means rows were found, and `empty` means no usable rows
+were confirmed. Keep the generated HTML/JSON report and screenshots beside the
+external output directory; do not copy customer evidence into the repository.
 
 The optional Tkinter interface remains available through
 `powershell -ExecutionPolicy Bypass -File .\run_light_ui.ps1`.
@@ -704,7 +728,7 @@ TableauToPowerBI/
 │   ├── schema_drift.py                        #   Schema drift detection (v28)
 │   └── deploy/                                #   Deploy to PBI Service / Fabric
 ├── Dockerfile                                 # Docker image for API server
-├── tests/                                     # 9,979 tests in latest full run
+├── tests/                                     # 10,553 passed, 66 skipped, 1 xfailed; 312 test files
 ├── docs/                                      # 18 documentation files
 └── examples/                                  # Sample Tableau workbooks
 ```
@@ -773,7 +797,7 @@ TableauToPowerBI/
 | `--assess` | Run pre-migration assessment and strategy analysis |
 | `--bulk-assess DIR` | Full portfolio assessment on a local folder (readiness + merge + prep lineage) |
 | `--qa` | Full QA suite: validate → auto-fix → governance → compare |
-| `--preceptor` | Preceptorship review: score the output on 6 dimensions and emit coaching feedback. **On by default** (advisory) |
+| `--preceptor` | Automated post-generation scoring on 6 dimensions; writes coaching feedback but does not call an agent or apply fixes. **On by default** (advisory) |
 | `--no-preceptor` | Skip the preceptorship review |
 | `--preceptor-block` | Make the preceptor a hard gate instead of a warning |
 | `--optimize-dax` | Run DAX optimizer (IF→SWITCH, COALESCE, constant folding) |
@@ -907,7 +931,7 @@ python -m pytest tests/test_openability.py -v         # Static PBIP openability 
 
 ```mermaid
 flowchart LR
-    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\n9,979 tests\nPy 3.12–3.14"]
+    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\n10,553 passed\nPy 3.12–3.14"]
     T --> V["✅ Validate\nStrict .twbx\nmigrations"]
     V --> S["📦 Staging\nFabric deploy"]
     S --> P["🚀 Production\nManual approval"]

@@ -48,7 +48,8 @@ healing.py (facade)
 3. Expression heal — this subsystem (`dax_healing` / `m_healing` / `visual_healing`)
 4. Recovery ledger — `recovery_report.py` (`record()` / `record_heal()`)
 5. Quality gate — `rollback_engine.py`
-6. Optional review loop — `preceptor.py` (owned by @reviewer)
+6. Post-generation preceptor report — `preceptor.py` (owned by @reviewer;
+      default-on and advisory, but it does not dispatch feedback to owner agents)
 
 ## Hard Rules
 

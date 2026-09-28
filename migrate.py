@@ -2580,6 +2580,14 @@ def _add_report_args(parser):
     )
 
     parser.add_argument(
+        '--powerbi-desktop-path',
+        default=None,
+        metavar='PATH',
+        help='Explicit path to PBIDesktop.exe for --desktop-probe. Overrides '
+             'POWERBI_DESKTOP_PATH and automatic discovery.'
+    )
+
+    parser.add_argument(
         '--compare',
         action='store_true',
         default=True,
@@ -6539,7 +6547,7 @@ def _run_desktop_probe(args, source_basename):
         from desktop_probe import probe_desktop_open
     except ImportError:
         from powerbi_import.desktop_probe import probe_desktop_open
-    report = probe_desktop_open(pbips[0])
+    report = probe_desktop_open(pbips[0], desktop_path=args.powerbi_desktop_path)
     icon = {'opened': '✓', 'unavailable': '•', 'crashed': '✗',
             'timed_out': '⚠', 'error': '✗'}.get(report.status, '•')
     print(f"\n  Desktop probe: {icon} {report.status}"
