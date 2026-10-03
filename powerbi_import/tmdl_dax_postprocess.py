@@ -16,6 +16,86 @@ import re
 
 logger = logging.getLogger(__name__)
 
+#: ``'Sales'[Amount]``, ``Sales[Amount]`` or a bare ``[Amount]``.
+_DAX_COLUMN_REF = re.compile(
+    r"""(?P<owner>'(?:[^']|'')+'|\b[A-Za-z_]\w*)?\[(?P<col>[^\[\]]+)\]"""
+)
+
+
+def _split_dax_strings(expr):
+    """Yield ``(text, is_literal)`` so rewrites never reach inside a string."""
+    parts, buf, in_string, i = [], [], False, 0
+    while i < len(expr):
+        ch = expr[i]
+        if ch == '"':
+            if in_string and i + 1 < len(expr) and expr[i + 1] == '"':
+                buf.append('""')
+                i += 2
+                continue
+            buf.append(ch)
+            parts.append((''.join(buf), in_string))
+            buf, in_string = [], not in_string
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    if buf:
+        parts.append((''.join(buf), in_string))
+    return parts
+
+
+def retarget_dax_column_refs(model):
+    """Point DAX column references at the names the model actually carries.
+
+    A captioned column is renamed by its partition, so the model names it
+    after what the partition produces.  Expressions written against the
+    Tableau name have to follow, or they resolve to nothing.
+
+    Returns the number of expressions rewritten.
+    """
+    renames = model.get('_column_rename_map') or {}
+    if not renames:
+        return 0
+
+    by_table = {}
+    for (table_name, raw), produced in renames.items():
+        by_table.setdefault(table_name, {})[raw] = produced
+
+    def rewrite(expr, home_table):
+        def _swap(match):
+            owner = match.group('owner')
+            column = match.group('col')
+            if owner:
+                key = owner[1:-1].replace("''", "'") if owner.startswith("'") else owner
+            else:
+                key = home_table
+            target = by_table.get(key, {}).get(column)
+            if not target:
+                return match.group(0)
+            return f'{owner or ""}[{target}]'
+
+        return ''.join(
+            chunk if literal else _DAX_COLUMN_REF.sub(_swap, chunk)
+            for chunk, literal in _split_dax_strings(expr)
+        )
+
+    rewritten = 0
+    for table in model.get('model', {}).get('tables', []):
+        home = table.get('name', '')
+        for holder in (table.get('columns', []), table.get('measures', [])):
+            for item in holder:
+                expression = item.get('expression')
+                if not expression or '[' not in expression:
+                    continue
+                updated = rewrite(expression, home)
+                if updated != expression:
+                    item['expression'] = updated
+                    rewritten += 1
+    if rewritten:
+        logger.debug("Retargeted %d DAX expression(s) onto renamed columns",
+                     rewritten)
+    return rewritten
+
 
 def resolve_table_for_column(column_name, datasource_name=None, dax_context=None):
     """Resolve which table a column belongs to, with optional datasource scoping.

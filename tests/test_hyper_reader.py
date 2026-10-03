@@ -5,6 +5,8 @@ import sqlite3
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
+import tableau_export.hyper_reader as _hyper_reader
 
 from tableau_export.hyper_reader import (
     INLINE_ROW_THRESHOLD,
@@ -490,6 +492,18 @@ class TestGenerateMCsvReference(unittest.TestCase):
         m = generate_m_csv_reference(info, csv_filename='custom.csv')
         self.assertIn('custom.csv', m)
         self.assertNotIn('T.csv', m)
+
+    def test_real_hyper_magic_is_detected(self):
+        with tempfile.NamedTemporaryFile(suffix='.hyper', delete=False) as handle:
+            path = handle.name
+            handle.write(b'Hyper' + b'\0' * 11)
+        try:
+            with mock.patch.object(_hyper_reader, '_read_hyper_api', return_value=[]), \
+                 mock.patch.object(_hyper_reader, '_read_hyper_sqlite', return_value=[]), \
+                 mock.patch.object(_hyper_reader, '_read_hyper_header', return_value=[]):
+                self.assertEqual(_hyper_reader.read_hyper(path)['format'], 'hyper')
+        finally:
+            os.unlink(path)
 
 
 # ── generate_m_for_hyper_table ─────────────────────────────────────

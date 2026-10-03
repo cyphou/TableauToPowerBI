@@ -203,22 +203,77 @@ class TestBuildVisualObjects(unittest.TestCase):
             "formatting": {"background_color": "#FFFFFF"},
             "mark_encoding": {}
         }
-        result = self.gen._build_visual_objects("C", ws_data, "barChart")
-        self.assertIn("visualContainerStyle", result)
+        expected_background = [{
+            "properties": {
+                "color": {"solid": {
+                    "color": {"expr": {"Literal": {"Value": "'#FFFFFF'"}}}
+                }}
+            }
+        }]
+        result = self.gen._build_visual_objects("C", ws_data, "clusteredBarChart")
+        self.assertEqual(result["background"], expected_background)
+        self.assertNotIn("visualContainerStyle", result)
+        with tempfile.TemporaryDirectory() as visuals_dir:
+            self.gen._create_visual_worksheet(
+                visuals_dir, ws_data, {'worksheetName': 'C'},
+                1.0, 1.0, 0, [], {'calculations': []})
+            visual_ids = os.listdir(visuals_dir)
+            self.assertEqual(len(visual_ids), 1)
+            with open(os.path.join(visuals_dir, visual_ids[0], 'visual.json'),
+                      encoding='utf-8') as visual_file:
+                visual = json.load(visual_file)['visual']
+        container_objects = visual['visualContainerObjects']
+        self.assertEqual(set(container_objects), {'title', 'background'})
+        self.assertEqual(container_objects['background'], expected_background)
+        self.assertNotIn('background', visual['objects'])
+        self.assertNotIn('visualContainerStyle', visual['objects'])
 
     def test_reference_lines(self):
         ws_data = {
             "formatting": {},
             "mark_encoding": {},
             "reference_lines": [
-                {"value": 500, "label": "Target", "color": "#FF0000"}
+                {"value": 500, "label": "Target", "color": "#FF0000",
+                 "style": "dashed"}
             ]
         }
-        result = self.gen._build_visual_objects("C", ws_data, "barChart")
-        self.assertIn("valueAxis", result)
-        ref_lines = result["valueAxis"][0]["properties"].get("referenceLine", [])
-        self.assertEqual(len(ref_lines), 1)
-        self.assertEqual(ref_lines[0]["value"], "500")
+        expected_axes = {
+            "categoryAxis": [{"properties": {
+                "show": {"expr": {"Literal": {"Value": "true"}}}
+            }}],
+            "valueAxis": [{"properties": {
+                "show": {"expr": {"Literal": {"Value": "true"}}}
+            }}],
+        }
+        with self.subTest(value=500):
+            result = self.gen._build_visual_objects(
+                "C", ws_data, "clusteredBarChart")
+            self.assertEqual(result, {
+                **expected_axes,
+                "y1AxisReferenceLine": [{
+                    "properties": {
+                        "value": {"expr": {"Literal": {"Value": "500.0D"}}},
+                        "show": {"expr": {"Literal": {"Value": "true"}}},
+                        "displayName": {"expr": {"Literal": {"Value": "'Target'"}}},
+                        "lineColor": {"solid": {
+                            "color": {"expr": {"Literal": {"Value": "'#FF0000'"}}}
+                        }},
+                        "style": {"expr": {"Literal": {"Value": "'dashed'"}}},
+                    },
+                    "selector": {"id": "0"},
+                }],
+            })
+        for value in ('', None):
+            with self.subTest(value=value):
+                empty_ws_data = {
+                    **ws_data,
+                    "reference_lines": [{
+                        **ws_data["reference_lines"][0], "value": value
+                    }],
+                }
+                result = self.gen._build_visual_objects(
+                    "C", empty_ws_data, "clusteredBarChart")
+                self.assertEqual(result, expected_axes)
 
     def test_conditional_formatting_gradient(self):
         ws_data = {

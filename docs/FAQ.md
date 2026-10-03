@@ -300,12 +300,13 @@ Run the batch probe against the generated output directory:
 ```powershell
 python scripts/probe_projects.py C:\Client\migration_output `
    --shots C:\Client\migration_output\opening_validation\screenshots `
-   --json C:\Client\migration_output\opening_validation\opening_report.json
+   --json C:\Client\migration_output\opening_validation\opening_report.json `
+   --html C:\Client\migration_output\DESKTOP_OPENING_VALIDATION.html
 ```
 
-The default probe waits for the report window, checks aggregate row counts in
-Desktop's local model, and only captures a data-bearing screenshot when rows are
-verified. Read `DESKTOP_OPENING_VALIDATION.html` for the green `OPENED` and red
+The default probe waits for the report window, presses **Home > Refresh >
+Schema and data**, checks aggregate row counts in Desktop's local model, and
+labels each screenshot *data verified* or *data not verified*. Read `DESKTOP_OPENING_VALIDATION.html` for the green `OPENED` and red
 `CRASHED` cards. `empty` means Desktop opened but the model returned zero rows;
 `unavailable` or `query_failed` means the data check could not complete. Use
 `--skip-data-check` only for diagnostic captures, never as a successful data
@@ -432,7 +433,7 @@ The `merge_assessment.json` file lists all conflicts detected.
 python -m pytest tests/ -v
 ```
 
-The latest full run completed with **10,553 passed, 66 skipped, and 1 xfailed** from 10,620 collected tests across 312 files. Coverage includes DAX conversion, Power Query M generation, TMDL model building, visual generation, project structure, artifact validation, deployment utilities, Fabric-native generation, DAX optimization, cross-platform equivalence testing, and end-to-end non-regression migration.
+The latest full run completed with **10,798 passed, 66 skipped, and 1 xfailed** from 10,865 collected tests across 316 files. Coverage includes DAX conversion, Power Query M generation, TMDL model building, visual generation, project structure, artifact validation, deployment utilities, Fabric-native generation, DAX optimization, cross-platform equivalence testing, and end-to-end non-regression migration.
 
 ### Does the preceptor automatically send fixes to agents?
 

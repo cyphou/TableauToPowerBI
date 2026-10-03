@@ -198,6 +198,21 @@ class TestDetermineChartType(unittest.TestCase):
         ws = ET.fromstring('<worksheet><encoding><map/></encoding></worksheet>')
         self.assertEqual(self.ext.determine_chart_type(ws), 'map')
 
+    def test_generated_geography_shelves_override_circle_scatter(self):
+        ws = ET.fromstring('''<worksheet><table>
+            <cols>[ds].[Longitude (generated)]</cols>
+            <rows>[ds].[Latitude (generated)]</rows>
+            <panes><pane><mark class="Circle"/></pane></panes>
+        </table></worksheet>''')
+        self.assertEqual(self.ext.determine_chart_type(ws), 'map')
+
+    def test_one_generated_coordinate_does_not_make_a_map(self):
+        ws = ET.fromstring('''<worksheet><table>
+            <cols>[ds].[Longitude (generated)]</cols><rows>[ds].[sum:Revenue:qk]</rows>
+            <panes><pane><mark class="Circle"/></pane></panes>
+        </table></worksheet>''')
+        self.assertEqual(self.ext.determine_chart_type(ws), 'scatterChart')
+
     def test_no_mark_defaults_to_clusteredBarChart(self):
         # Fallback must be a *valid* PBI visualType, never the raw
         # Tableau name. PBI renders unknown visualType as a blank box.
@@ -232,6 +247,16 @@ class TestDetermineChartType(unittest.TestCase):
             <table><cols></cols><rows></rows></table>
         </worksheet>''')
         self.assertEqual(self.ext.determine_chart_type(ws), 'table')
+
+    def test_marks_tooltip_quick_calc_retains_aggregation_without_instance_suffix(self):
+        ws = ET.fromstring('''<worksheet><table><panes><pane><encodings>
+            <tooltip column="[ds].[pcto:sum:Sales:qk:14]"/>
+        </encodings></pane></panes></table></worksheet>''')
+        fields = self.ext.extract_worksheet_fields(ws)
+        self.assertEqual(fields[0]['name'], 'Sales')
+        self.assertEqual(fields[0]['shelf'], 'tooltip')
+        self.assertEqual(fields[0]['table_calc'], 'pcto')
+        self.assertEqual(fields[0]['table_calc_agg'], 'sum')
 
 
 class TestMapTableauMarkToType(unittest.TestCase):

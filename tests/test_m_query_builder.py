@@ -169,9 +169,50 @@ class TestGeneratePowerQueryM(unittest.TestCase):
         conn = {"type": "UnknownDB", "details": {}}
         table = {"name": "T", "columns": []}
         result = generate_power_query_m(conn, table)
-        # Should produce a fallback comment
         self.assertIn("let", result)
         self.assertIn("in", result)
+        self.assertIn("#table({}, {})", result)
+        self.assertNotIn("Sample", result)
+
+    def test_uppercase_connector_types_use_real_generators(self):
+        columns = self._make_columns(("Amount", "real"))
+        generators = {
+            "HYPER": "_gen_m_hyper",
+            "EXTRACT": "_gen_m_hyper",
+            "MONGODB": "_gen_m_mongodb",
+            "ATHENA": "_gen_m_athena",
+            "COSMOSDB": "_gen_m_cosmosdb",
+            "DATABRICKS-UNITY-CATALOG": "_gen_m_databricks_unity",
+            "DENODO": "_gen_m_denodo",
+            "ESSBASE": "_gen_m_essbase",
+            "SERVICENOW": "_gen_m_servicenow",
+            "SPLUNK": "_gen_m_splunk",
+        }
+        import m_query_builder as builder
+        for connector, expected in generators.items():
+            with self.subTest(connector=connector):
+                actual = builder._M_GENERATORS.get(connector.lower())
+                self.assertEqual(actual.__name__, expected)
+                result = generate_power_query_m(
+                    {"type": connector, "details": {}},
+                    {"name": "T", "columns": columns},
+                )
+                self.assertNotIn("TODO: Configure the data source", result)
+
+    def test_hyper_uses_dbname_when_filename_is_absent(self):
+        import m_query_builder as builder
+        from unittest import mock
+        details = {"dbname": "C:/data/extract.hyper"}
+        columns = self._make_columns(("Amount", "real"))
+        with mock.patch("hyper_reader.read_hyper", return_value={
+                "tables": [{"table": "T", "columns": [{"name": "Amount"}]}]
+            }) as read, \
+               mock.patch("hyper_reader.generate_m_for_hyper_table",
+                        return_value="READER"):
+            with mock.patch("os.path.isfile", return_value=True):
+                result = builder._gen_m_hyper(details, "T", columns)
+        self.assertEqual(result, "READER")
+        read.assert_called_once_with("C:/data/extract.hyper", max_rows=20)
 
     def test_custom_sql(self):
         conn = {"type": "Custom SQL", "details": {"server": "host", "database": "db"}}
@@ -954,9 +995,10 @@ class TestSqlproxyConnector(unittest.TestCase):
         self.assertIn("SQL Server", result)
         self.assertIn("Oracle", result)
         self.assertIn("PostgreSQL", result)
-        # Should have sample data (not empty fallback)
+        # The fallback must preserve schema without inventing rows.
         self.assertIn("#table(", result)
         self.assertIn('"Region"', result)
+        self.assertNotIn("Sample 1", result)
 
     def test_sqlproxy_via_type_key(self):
         """sqlproxy and SQLPROXY type keys should also work."""

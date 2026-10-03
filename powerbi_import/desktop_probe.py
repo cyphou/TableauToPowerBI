@@ -168,7 +168,11 @@ try {
             }
         }
         if ($result.tables_failed -gt 0) { $result.status = 'query_failed' }
-        elseif ($result.total_rows -gt 0) { $result.status = 'verified' }
+        elseif ($result.tables_checked -gt 0 -and
+                $result.tables_nonempty -eq $result.tables_checked) {
+            $result.status = 'verified'
+        }
+        elseif ($result.tables_nonempty -gt 0) { $result.status = 'partial' }
         else { $result.status = 'empty' }
     }
     finally { $connection.Dispose() }
@@ -192,11 +196,15 @@ class DesktopProbeReport:
     screenshot: Optional[str] = None
     screenshot_blank: Optional[bool] = None
     dialog_screenshot: Optional[str] = None
+    screenshot_data_verified: Optional[bool] = None
     dialogs: List[str] = field(default_factory=list)
     data_load: dict = field(default_factory=lambda: {
         "status": "not_requested", "tables_checked": 0,
         "tables_nonempty": 0, "tables_empty": 0, "tables_failed": 0,
         "total_rows": 0,
+    })
+    refresh: dict = field(default_factory=lambda: {
+        "status": "not_requested", "clicks": 0, "waited_s": 0.0,
     })
 
     @property
@@ -277,7 +285,10 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
                        screenshot_path: Optional[str] = None,
                        wait_for_window: bool = True,
                        verify_data: bool = False,
-                       desktop_path: Optional[str] = None) -> DesktopProbeReport:
+                       desktop_path: Optional[str] = None,
+                       refresh: bool = False,
+                       refresh_timeout: int = 300,
+                       capture_unverified: bool = False) -> DesktopProbeReport:
     """Launch Power BI Desktop against ``pbip_path`` and watch for load failure.
 
     With *wait_for_window* the probe waits for the document window to carry the
@@ -330,7 +341,8 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
     try:
         if wait_for_window and desktop_window.IS_WINDOWS:
             crashed = _watch_window(report, proc, pbip_path, start, timeout,
-                                    screenshot_path, verify_data, pre_existing)
+                                    screenshot_path, verify_data, pre_existing,
+                                    refresh, refresh_timeout, capture_unverified)
         else:
             crashed = _watch_process(report, proc, start, deadline, settle_until)
             if verify_data:
@@ -456,7 +468,9 @@ def _capture_any(report, screenshot_path, allowed_pids) -> None:
 
 
 def _watch_window(report, proc, pbip_path, start, timeout,
-                  screenshot_path, verify_data=False, pre_existing=None) -> bool:
+                  screenshot_path, verify_data=False, pre_existing=None,
+                  refresh=False, refresh_timeout=300,
+                  capture_unverified=False) -> bool:
     """Wait for the report window, then capture it. Returns True when crashed."""
     pre_existing = pre_existing or set()
     allowed_pids = set(desktop_pids()) - set(pre_existing)
@@ -495,21 +509,304 @@ def _watch_window(report, proc, pbip_path, start, timeout,
     for title in report.dialogs:
         report.signals.append(f"error dialog: {title!r}")
 
-    if verify_data:
-        owner_pid = desktop_window.window_process_id(window.hwnd)
+    owner_pid = desktop_window.window_process_id(window.hwnd)
+    if refresh:
+        report.refresh = refresh_report(window.hwnd, pbip_path, owner_pid,
+                                        timeout=refresh_timeout)
+        if report.refresh["status"] == "verified":
+            report.data_load = report.refresh["data_load"]
+        # A refresh failure surfaces as an owned popup; keep its picture.
+        _capture_dialogs(report, screenshot_path, allowed_pids)
+
+    if verify_data and report.data_load["status"] != "verified":
         report.data_load = verify_desktop_data(pbip_path, owner_pid)
         if report.data_load["status"] != "verified":
             report.note = DATA_LOAD_LIMITATION
-            return False
+            if not capture_unverified:
+                return False
+    if verify_data:
+        report.screenshot_data_verified = (
+            report.data_load["status"] == "verified")
 
     if screenshot_path:
         os.makedirs(os.path.dirname(os.path.abspath(screenshot_path)),
                     exist_ok=True)
+        if refresh and report.refresh.get("clicks"):
+            _wait_for_render(window.hwnd, screenshot_path)
         report.screenshot = desktop_window.capture_window(
             window.hwnd, screenshot_path)
         if report.screenshot:
             report.screenshot_blank = desktop_window.is_blank(report.screenshot)
     return False
+
+
+# Ribbon Home > Refresh, then the relationships banner button, EN and FR UI.
+_RIBBON_REFRESH_NAMES = ("Refresh", "Actualiser")
+_BANNER_REFRESH_NAMES = ("Refresh now", "Actualiser maintenant")
+_SCHEMA_REFRESH_NAMES = ("Schema and data", "Sch\u00e9ma et donn\u00e9es")
+# Schema refresh leaves query changes pending until this banner is pressed.
+_APPLY_CHANGES_NAMES = ("Apply changes", "Appliquer les modifications")
+_PENDING_CHANGES_TEXT = (
+    "There are pending changes in your queries that haven't been applied",
+    "Des modifications sont en attente dans vos requêtes",
+)
+
+_UIA_MENU_SCRIPT = r'''
+$ErrorActionPreference = 'Stop'
+$out = [ordered]@{ opened = 0; invoked = 0 }
+try {
+    $request = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString(
+        [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())))
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    $root = [Windows.Automation.AutomationElement]::FromHandle([IntPtr][long]$request.hwnd)
+    $buttons = New-Object Windows.Automation.PropertyCondition(
+        [Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [Windows.Automation.ControlType]::Button)
+    $ribbon = @($request.ribbon)
+    foreach ($e in $root.FindAll([Windows.Automation.TreeScope]::Descendants, $buttons)) {
+        if ($e.Current.ClassName -notmatch 'SplitButton__menuButton') { continue }
+        $label = ($e.Current.Name -split ' ')[0]
+        if ($ribbon -notcontains $label -or -not $e.Current.IsEnabled) { continue }
+        $pattern = $null
+        if ($e.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+            $pattern.Invoke(); $out.opened++
+        } elseif ($e.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {
+            $pattern.Expand(); $out.opened++
+        }
+        break
+    }
+    if ($out.opened -gt 0) {
+        $items = New-Object Windows.Automation.PropertyCondition(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [Windows.Automation.ControlType]::MenuItem)
+        $names = @($request.names)
+        for ($i = 0; $i -lt 30 -and $out.invoked -eq 0; $i++) {
+            Start-Sleep -Milliseconds 500
+            foreach ($m in $root.FindAll([Windows.Automation.TreeScope]::Descendants, $items)) {
+                if ($names -notcontains $m.Current.Name) { continue }
+                $pattern = $null
+                if ($m.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+                    $pattern.Invoke(); $out.invoked++; break
+                }
+            }
+        }
+    }
+} catch { }
+[Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
+'''
+
+_UIA_INVOKE_SCRIPT = r'''
+$ErrorActionPreference = 'Stop'
+$out = [ordered]@{ found = 0; invoked = 0 }
+try {
+    $request = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString(
+        [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())))
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    $root = [Windows.Automation.AutomationElement]::FromHandle([IntPtr][long]$request.hwnd)
+    $cond = New-Object Windows.Automation.PropertyCondition(
+        [Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [Windows.Automation.ControlType]::Button)
+    $names = @($request.names)
+    foreach ($e in $root.FindAll([Windows.Automation.TreeScope]::Descendants, $cond)) {
+        if ($names -notcontains $e.Current.Name) { continue }
+        $out.found++
+        if ($out.invoked -gt 0 -or -not $e.Current.IsEnabled) { continue }
+        $pattern = $null
+        if ($e.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+            $pattern.Invoke(); $out.invoked++
+        }
+    }
+} catch { }
+[Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
+'''
+
+# Desktop's web banners ignore UIA Invoke, so these get a real mouse click.
+_UIA_CLICK_SCRIPT = r'''
+$ErrorActionPreference = 'Stop'
+$out = [ordered]@{ found = 0; invoked = 0 }
+try {
+    $request = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString(
+        [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())))
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    Add-Type -Namespace TtPbi -Name Mouse -MemberDefinition @"
+[DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+[DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+"@
+    [TtPbi.Mouse]::SetProcessDPIAware() | Out-Null
+    $hwnd = [IntPtr][long]$request.hwnd
+    $root = [Windows.Automation.AutomationElement]::FromHandle($hwnd)
+    $cond = New-Object Windows.Automation.PropertyCondition(
+        [Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [Windows.Automation.ControlType]::Button)
+    $names = @($request.names)
+    foreach ($e in $root.FindAll([Windows.Automation.TreeScope]::Descendants, $cond)) {
+        if ($names -notcontains $e.Current.Name -or -not $e.Current.IsEnabled) { continue }
+        $out.found++
+        $r = $e.Current.BoundingRectangle
+        if ($r.Width -le 0 -or $r.Height -le 0) { continue }
+        [TtPbi.Mouse]::SetForegroundWindow($hwnd) | Out-Null
+        Start-Sleep -Milliseconds 300
+        [TtPbi.Mouse]::SetCursorPos([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)) | Out-Null
+        Start-Sleep -Milliseconds 200
+        [TtPbi.Mouse]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+        [TtPbi.Mouse]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        $out.invoked++
+        break
+    }
+} catch { }
+[Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
+'''
+
+_UIA_TEXT_SCRIPT = r'''
+$ErrorActionPreference = 'Stop'
+$out = [ordered]@{ found = 0 }
+try {
+    $request = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString(
+        [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())))
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    $root = [Windows.Automation.AutomationElement]::FromHandle([IntPtr][long]$request.hwnd)
+    $names = @($request.names)
+    foreach ($e in $root.FindAll([Windows.Automation.TreeScope]::Descendants,
+                                 [Windows.Automation.Condition]::TrueCondition)) {
+        foreach ($name in $names) {
+            if ($e.Current.Name -like "*$name*") { $out.found++; break }
+        }
+        if ($out.found -gt 0) { break }
+    }
+} catch { }
+[Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
+'''
+
+
+def _run_uia(script: str, payload: dict) -> dict:
+    if not desktop_window.IS_WINDOWS:
+        return {}
+    request = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+             script],
+            input=request, capture_output=True, text=True, timeout=120)
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+        return result if isinstance(result, dict) else {}
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return {}
+
+
+def _invoke_button(hwnd: int, names) -> int:
+    """Invoke the first enabled button named in *names*. Returns clicks made."""
+    result = _run_uia(_UIA_INVOKE_SCRIPT, {"hwnd": int(hwnd), "names": list(names)})
+    return int(result.get("invoked", 0) or 0)
+
+
+def _button_present(hwnd: int, names) -> bool:
+    """Return whether an enabled button is still visible without invoking it."""
+    result = _run_uia(_UIA_INVOKE_SCRIPT, {"hwnd": int(hwnd), "names": list(names)})
+    return bool(result.get("found", 0))
+
+
+def _text_present(hwnd: int, names) -> bool:
+    result = _run_uia(_UIA_TEXT_SCRIPT, {"hwnd": int(hwnd), "names": list(names)})
+    return bool(result.get("found", 0))
+
+
+def _click_button(hwnd: int, names) -> int:
+    """Mouse-click the first enabled button named in *names*. Returns clicks made."""
+    result = _run_uia(_UIA_CLICK_SCRIPT, {"hwnd": int(hwnd), "names": list(names)})
+    return int(result.get("invoked", 0) or 0)
+
+
+def _invoke_schema_refresh(hwnd: int) -> int:
+    """Home > Refresh arrow > Schema and data. Returns clicks made."""
+    result = _run_uia(_UIA_MENU_SCRIPT, {
+        "hwnd": int(hwnd), "ribbon": list(_RIBBON_REFRESH_NAMES),
+        "names": list(_SCHEMA_REFRESH_NAMES)})
+    return int(result.get("invoked", 0) or 0)
+
+
+def _wait_for_render(hwnd: int, screenshot_path: str, *, timeout: float = 60.0,
+                     poll: float = 5.0) -> None:
+    """Wait until two consecutive captures match, i.e. visuals stopped redrawing."""
+    previous = None
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(poll)
+        shot = desktop_window.capture_window(hwnd, screenshot_path)
+        if not shot:
+            return
+        try:
+            with open(shot, "rb") as handle:
+                current = handle.read()
+        except OSError:
+            return
+        if current == previous:
+            return
+        previous = current
+
+
+def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
+                   timeout: int = 300, poll: float = 10.0) -> dict:
+    """Press Desktop's Refresh, then wait until the model holds rows.
+
+    Returns counters only; the data check is the completion signal because the
+    ribbon gives no reliable "refresh finished" state.
+    """
+    result = {"status": "not_found", "mode": "none", "clicks": 0,
+              "waited_s": 0.0, "data_load": _data_load_result("unavailable")}
+    started = time.time()
+    for _attempt in range(3):
+        result["clicks"] = _invoke_schema_refresh(hwnd)
+        if result["clicks"]:
+            break
+        time.sleep(5)
+    if result["clicks"]:
+        result["mode"] = "schema_and_data"
+    else:
+        result["clicks"] = _invoke_button(hwnd, _RIBBON_REFRESH_NAMES)
+        if result["clicks"]:
+            result["mode"] = "data"
+    if not result["clicks"]:
+        return result
+    result["status"] = "clicked"
+    banner_done = False
+    applied = False
+    apply_attempted_at = None
+    while time.time() - started < timeout:
+        time.sleep(poll)
+        if not applied:
+            applied_clicks = _click_button(hwnd, _APPLY_CHANGES_NAMES)
+            if not applied_clicks:
+                applied_clicks = _invoke_button(hwnd, _APPLY_CHANGES_NAMES)
+            if applied_clicks:
+                result["clicks"] += applied_clicks
+                result["applied_changes"] = True
+                applied = True
+                apply_attempted_at = time.time()
+        elif (result["data_load"].get("status") != "verified"
+              and apply_attempted_at and time.time() - apply_attempted_at >= 10):
+            # Desktop occasionally leaves the banner visible after a click.
+            # Retry without treating its presence as a successful refresh.
+            retry_clicks = _click_button(hwnd, _APPLY_CHANGES_NAMES)
+            if retry_clicks:
+                result["clicks"] += retry_clicks
+                apply_attempted_at = time.time()
+        if (apply_attempted_at and time.time() - apply_attempted_at >= 20
+            and (_button_present(hwnd, _APPLY_CHANGES_NAMES)
+                 or _text_present(hwnd, _PENDING_CHANGES_TEXT))):
+            result["status"] = "pending_changes"
+            break
+        data = verify_desktop_data(pbip_path, owner_pid)
+        result["data_load"] = data
+        if data["status"] == "verified":
+            result["status"] = "verified"
+            break
+        if not banner_done and time.time() - started >= timeout / 3:
+            result["clicks"] += _invoke_button(hwnd, _BANNER_REFRESH_NAMES)
+            banner_done = True
+    result["waited_s"] = round(time.time() - started, 1)
+    return result
 
 
 def _data_load_result(status="unavailable", *, checked=0, nonempty=0,
@@ -585,7 +882,7 @@ def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
             raise ValueError
         values = {key: result[key] for key in _DATA_LOAD_KEYS}
         if values["status"] not in {
-                "verified", "empty", "query_failed", "unavailable"}:
+                "verified", "partial", "empty", "query_failed", "unavailable"}:
             raise ValueError
         if any(not isinstance(values[key], int) or values[key] < 0
                for key in _DATA_LOAD_KEYS[1:]):
@@ -597,7 +894,12 @@ def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
         )
         if values["status"] == "verified" and (
                 not counts_complete or values["tables_failed"]
+                or values["tables_nonempty"] != len(tables)
                 or values["total_rows"] <= 0):
+            raise ValueError
+        if values["status"] == "partial" and (
+                not counts_complete or values["tables_failed"]
+                or not values["tables_nonempty"] or not values["tables_empty"]):
             raise ValueError
         if values["status"] == "empty" and (
                 not counts_complete or values["tables_failed"]

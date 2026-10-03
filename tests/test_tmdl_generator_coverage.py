@@ -17,6 +17,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -28,6 +29,7 @@ from powerbi_import.tmdl_generator import (
     _quote_name,
     _split_dax_args,
     _build_semantic_model,
+    _apply_semantic_enrichments,
     _add_date_table,
     _write_tmdl_files,
     _write_table_tmdl,
@@ -259,8 +261,12 @@ class TestDaxToMExpression(unittest.TestCase):
         self.assertEqual(result, 'Number.Abs([Value])')
 
     def test_int(self):
+        # DAX INT truncates toward zero: Number.RoundDown is wrong for
+        # negatives and Int64.From rounds to nearest instead of truncating.
         result = _dax_to_m_expression("INT([Value])", 'T')
-        self.assertEqual(result, 'Number.RoundDown([Value])')
+        self.assertEqual(result, 'Number.RoundTowardZero([Value])')
+        self.assertEqual(_dax_to_m_expression("INT(-[Value])", 'T'),
+                         'Number.RoundTowardZero(-[Value])')
 
     def test_sqrt(self):
         result = _dax_to_m_expression("SQRT([Value])", 'T')
@@ -537,6 +543,21 @@ class TestRelationshipValidation(unittest.TestCase):
 class TestFixRelationshipTypeMismatches(unittest.TestCase):
     """Cover L1651-1690: aligning column data types across relationship keys."""
 
+    def test_numeric_many_to_text_postal_code_preserves_text(self):
+        model = {'model': {'tables': [
+            {'name': 'Facts', 'columns': [{'name': 'PostalCode', 'dataType': 'Double'}],
+             'partitions': [{'source': {'type': 'm',
+                                       'expression': '{"PostalCode", type number}'}}]},
+            {'name': 'Places', 'columns': [{'name': 'PostalCode', 'dataType': 'String'}],
+             'partitions': []},
+        ], 'relationships': [{'fromTable': 'Facts', 'fromColumn': 'PostalCode',
+                              'toTable': 'Places', 'toColumn': 'PostalCode'}]}}
+        _fix_relationship_type_mismatches(model)
+        self.assertEqual(model['model']['tables'][0]['columns'][0]['dataType'], 'String')
+        self.assertEqual(model['model']['tables'][1]['columns'][0]['dataType'], 'String')
+        self.assertIn('"PostalCode", type text',
+                      model['model']['tables'][0]['partitions'][0]['source']['expression'])
+
     def test_aligns_types_across_rel(self):
         model = {
             "model": {
@@ -731,6 +752,101 @@ class TestProcessSetsGroupsBins(unittest.TestCase):
 class TestCreateQuickTableCalcMeasures(unittest.TestCase):
     """Cover L2721-2816: table calculation measure generation."""
 
+    def test_generate_tmdl_uses_pbip_worksheets_key(self):
+        datasources = [{'name': 'Sample', 'tables': [{
+            'name': 'Sales',
+            'columns': [{'name': 'Revenue', 'datatype': 'real', 'role': 'measure'}],
+        }]}]
+        worksheets = [{'fields': [{
+            'name': 'Revenue', 'table_calc': 'pcto', 'table_calc_agg': 'sum',
+        }]}]
+        with tempfile.TemporaryDirectory() as output:
+            generate_tmdl(datasources, 'Sample', {'_worksheets': worksheets},
+                          output_dir=output)
+            tables_dir = os.path.join(output, 'definition', 'tables')
+            text = '\n'.join(open(os.path.join(tables_dir, filename), encoding='utf-8').read()
+                             for filename in os.listdir(tables_dir))
+        self.assertIn('measure \'% of Total Revenue\'', text)
+
+    def test_same_column_name_keeps_each_datasource_type(self):
+        datasources = [
+            {'name': 'addresses', 'columns': [{'name': '[Code]', 'datatype': 'string'}],
+             'tables': [{'name': 'Addresses', 'columns': [
+                 {'name': 'Code', 'datatype': 'string'}]}]},
+            {'name': 'measurements', 'columns': [{'name': '[Code]', 'datatype': 'real'}],
+             'tables': [{'name': 'Measurements', 'columns': [
+                 {'name': 'Code', 'datatype': 'real'}]}]},
+        ]
+        with tempfile.TemporaryDirectory() as output:
+            generate_tmdl(datasources, 'Sample', {}, output_dir=output)
+            tables_dir = os.path.join(output, 'definition', 'tables')
+            addresses = open(os.path.join(tables_dir, 'Addresses.tmdl'), encoding='utf-8').read()
+            measurements = open(os.path.join(tables_dir, 'Measurements.tmdl'), encoding='utf-8').read()
+        self.assertIn('dataType: string', addresses)
+        self.assertIn('dataType: double', measurements)
+
+    def test_duplicate_column_declarations_preserve_explicit_role_and_hidden(self):
+        datasources = [{'name': 'ds', 'columns': [
+            {'name': 'commune', 'datatype': 'string'},
+            {'name': '[commune]', 'datatype': 'string',
+             'semantic_role': '[County].[Name]', 'hidden': True},
+        ], 'tables': [{'name': 'Communes', 'columns': [
+            {'name': 'commune', 'datatype': 'string'}]}]}]
+        with tempfile.TemporaryDirectory() as output:
+            generate_tmdl(datasources, 'Sample', {}, output_dir=output)
+            with open(os.path.join(output, 'definition', 'tables', 'Communes.tmdl'),
+                      encoding='utf-8') as stream:
+                content = stream.read()
+        self.assertIn('dataCategory: County', content)
+        self.assertIn('isHidden', content)
+
+    def test_explicit_hidden_survives_source_column_casing_difference(self):
+        datasources = [{'name': 'ds', 'columns': [
+            {'name': '[Année Origine]', 'datatype': 'string', 'hidden': True},
+        ], 'tables': [{'name': 'Campaigns', 'columns': [
+            {'name': 'Année origine', 'datatype': 'string'}]}]}]
+        with tempfile.TemporaryDirectory() as output:
+            generate_tmdl(datasources, 'Sample', {}, output_dir=output)
+            with open(os.path.join(output, 'definition', 'tables', 'Campaigns.tmdl'),
+                      encoding='utf-8') as stream:
+                content = stream.read()
+        self.assertIn('isHidden', content)
+
+    def test_hidden_physical_and_visible_calculation_survive_case_collision(self):
+        datasources = [{'name': 'ds', 'columns': [
+            {'name': '[Year Origin]', 'datatype': 'string', 'hidden': True},
+        ], 'tables': [{'name': 'Invoices', 'columns': [
+            {'name': 'Year Origin', 'datatype': 'string'}]}],
+            'calculations': [{'name': '[Calculation_1]', 'caption': 'Year origin',
+                              'formula': 'UPPER([Year Origin])', 'datatype': 'string',
+                              'role': 'dimension', 'datasource_name': 'ds'}]}]
+        with tempfile.TemporaryDirectory() as output:
+            generate_tmdl(datasources, 'Sample', {}, output_dir=output)
+            with open(os.path.join(output, 'definition', 'tables', 'Invoices.tmdl'),
+                      encoding='utf-8') as stream:
+                content = stream.read()
+        self.assertIn("column 'Year Origin (source)'", content)
+        self.assertIn("sourceColumn: 'Year Origin'", content)
+        self.assertIn("column 'Year origin'", content)
+
+    def test_distinct_physical_columns_differing_only_by_case_survive(self):
+        datasources = [{'name': 'ds', 'columns': [
+            {'name': '[Siren]', 'datatype': 'string'},
+            {'name': '[siren]', 'datatype': 'integer'}],
+            'tables': [{'name': 'Data', 'columns': [
+                {'name': 'Siren', 'datatype': 'string'},
+                {'name': 'siren', 'datatype': 'integer'}]}]}]
+        with tempfile.TemporaryDirectory() as output:
+            generate_tmdl(datasources, 'Sample', {}, output_dir=output)
+            with open(os.path.join(output, 'definition', 'tables', 'Data.tmdl'),
+                      encoding='utf-8') as stream:
+                content = stream.read()
+        self.assertIn("column Siren\n", content)
+        self.assertIn("sourceColumn: Siren", content)
+        self.assertIn("column 'siren (source)'", content)
+        self.assertIn("sourceColumn: siren", content)
+        self.assertIn('dataType: int64', content)
+
     def _make_model_and_ws(self, tc_type, tc_agg='sum'):
         model = {
             "model": {
@@ -755,6 +871,14 @@ class TestCreateQuickTableCalcMeasures(unittest.TestCase):
         self.assertIn("DIVIDE", m["expression"])
         self.assertIn("ALL", m["expression"])
         self.assertEqual(m["formatString"], "0.00%")
+
+    def test_pcto_virtual_number_of_records_counts_rows(self):
+        model, ws = self._make_model_and_ws('pcto')
+        ws[0]['fields'][0]['name'] = 'Number of Records'
+        _create_quick_table_calc_measures(model, ws, 'Sales', {})
+        expression = model['model']['tables'][0]['measures'][0]['expression']
+        self.assertIn("COUNTROWS('Sales')", expression)
+        self.assertNotIn('[Number of Records]', expression)
 
     def test_pctd(self):
         model, ws = self._make_model_and_ws('pctd')
@@ -1723,6 +1847,75 @@ class TestGenerateTmdlWithCulture(unittest.TestCase):
             self.assertTrue(os.path.exists(persp_path))
         finally:
             shutil.rmtree(tmpdir)
+
+
+class TestMeasureRenameProvenance(unittest.TestCase):
+    def setUp(self):
+        self.caption = 'Shared Calculation Caption'
+        self.model = {'model': {
+            'culture': 'en-US',
+            'tables': [
+                {'name': table,
+                 'columns': [{'name': 'Record Label', 'dataType': 'string',
+                              'sourceColumn': 'Record Label'}],
+                 'partitions': [],
+                 'measures': [{'name': self.caption, 'expression': 'BLANK()'}]}
+                for table in ('TableA', 'TableB')
+            ],
+            'relationships': [],
+        }}
+
+    def test_semantic_enrichments_record_exact_measure_rename_provenance(self):
+        _apply_semantic_enrichments(self.model, {}, 'TableA', {}, [])
+        namespaced_caption = f'{self.caption} (TableB)'
+        self.assertEqual(self.model['_measure_rename_map'], {
+            ('TableB', self.caption): namespaced_caption,
+        })
+        self.assertEqual([
+            [measure['name'] for measure in table['measures']]
+            for table in self.model['model']['tables']
+        ], [[self.caption], [namespaced_caption]])
+
+    def test_semantic_enrichments_preserve_exact_spaces_and_unicode_in_rename_keys(self):
+        caption = 'Montant  réalisé (%)'
+        second_table = 'Données  synthétiques'
+        tables = self.model['model']['tables']
+        tables[1]['name'] = second_table
+        for table in tables:
+            table['measures'][0]['name'] = caption
+        _apply_semantic_enrichments(self.model, {}, 'TableA', {}, [])
+        namespaced_caption = f'{caption} ({second_table})'
+        self.assertEqual(self.model['_measure_rename_map'], {
+            (second_table, caption): namespaced_caption,
+        })
+        self.assertNotIn(
+            (second_table, caption.replace('  ', ' ')),
+            self.model['_measure_rename_map'],
+        )
+        self.assertNotIn(
+            (second_table.replace('  ', ' '), caption),
+            self.model['_measure_rename_map'],
+        )
+        self.assertEqual(tables[0]['measures'][0]['name'], caption)
+        self.assertEqual(tables[1]['measures'][0]['name'], namespaced_caption)
+
+    def test_generate_tmdl_returns_measure_rename_provenance_in_stats(self):
+        _apply_semantic_enrichments(self.model, {}, 'TableA', {}, [])
+        output_dir = self.enterContext(tempfile.TemporaryDirectory())
+        with patch('powerbi_import.tmdl_generator._build_semantic_model',
+                   return_value=self.model):
+            stats = generate_tmdl([], 'Synthetic Report', {}, output_dir=output_dir)
+        namespaced_caption = f'{self.caption} (TableB)'
+        self.assertEqual(stats['measure_rename_map'], {
+            ('TableB', self.caption): namespaced_caption,
+        })
+        self.assertEqual(stats['actual_bim_measures'], {
+            self.caption, namespaced_caption,
+        })
+        self.assertEqual(stats['actual_bim_symbols'], {
+            ('TableA', self.caption), ('TableB', namespaced_caption),
+            ('TableA', 'Record Label'), ('TableB', 'Record Label'),
+        })
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -21,6 +21,7 @@ You are the **Healing** agent for the Tableau to Power BI migration project. You
 - `powerbi_import/openability.py` — static "will it open in Desktop" preflight (`check_openability`, `extract_m_partitions`)
 - `powerbi_import/desktop_probe.py` — best-effort real Desktop launch smoke test (Windows, never raises)
 - `powerbi_import/desktop_window.py` — Win32 window wait/inspect/screenshot for the Desktop probe (stdlib ctypes, never raises)
+- `powerbi_import/desktop_feedback_healing.py` — deterministic visual-role repairs driven by private Desktop evidence
 
 ### Pre/post-write repair passes
 - `powerbi_import/tmdl_self_heal.py` — stage-1 pre-write healing extracted from `tmdl_generator` (`_self_heal_model`, `_validate_m_partitions`, `_categorize_m_issue`); `tmdl_generator` re-exports these names

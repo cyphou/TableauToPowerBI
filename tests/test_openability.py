@@ -193,7 +193,7 @@ class TestOpenability(unittest.TestCase):
             for key in ("project_dir", "openable", "blocking_count",
                         "warning_count", "blocking_issues", "warnings", "checks"):
                 self.assertIn(key, data)
-            self.assertEqual(len(data["checks"]), 21)
+            self.assertEqual(len(data["checks"]), 22)
 
     def test_check_names_present(self):
         with tempfile.TemporaryDirectory() as d:
@@ -208,8 +208,26 @@ class TestOpenability(unittest.TestCase):
                                      "path_length",
                                      "bookmarks_index",
                                      "literal_grammar",
-                                     "data_files_present",
+                                     "data_files_present", "model_column_projection",
                                      "pbip_contract"})
+
+    def test_final_model_columns_cannot_drop_a_visual_source_column(self):
+        with tempfile.TemporaryDirectory() as project:
+            tmdl = ("table 'Sales'\n"
+                    "\tcolumn MigrationLatitude\n\t\tdataType: double\n"
+                    "\t\tsourceColumn: MigrationLatitude\n\n"
+                    "\tpartition Sales = m\n\t\tsource =\n"
+                    "\t\t\t\tlet\n"
+                    "\t\t\t\t\tSource = #table({\"MigrationLatitude\"}, {{48.0}}),\n"
+                    "\t\t\t\t\t#\"Model Columns\" = Table.SelectColumns(Source, {\"Other\"}, MissingField.UseNull)\n"
+                    "\t\t\t\tin\n\t\t\t\t\t#\"Model Columns\"\n")
+            _write_project(project, tmdl)
+            report = check_openability(project)
+            check = next(item for item in report.checks
+                         if item.name == 'model_column_projection')
+            self.assertFalse(check.ok)
+            self.assertFalse(report.openable)
+            self.assertIn('MigrationLatitude', check.issues[0])
 
     def test_unknown_semantic_reference_blocks_open(self):
         with tempfile.TemporaryDirectory() as d:

@@ -240,6 +240,7 @@ class TestVisualValidation(unittest.TestCase):
                            for i in r.issues))
 
     def test_known_visual_types(self):
+        self.assertIn('azureMap', KNOWN_VISUAL_TYPES)
         for vt in ('clusteredBarChart', 'lineChart', 'table', 'slicer', 'card'):
             data = _visual()
             data['visual']['visualType'] = vt

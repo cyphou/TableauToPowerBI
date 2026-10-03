@@ -119,6 +119,16 @@ def _load_pbi_visuals(pbip_dir: str) -> List[Dict]:
     return visuals
 
 
+def _placed_worksheets(extracted_data, worksheets):
+    from powerbi_import.interface_diff import _dashboard_worksheet_names
+
+    if not extracted_data.get('dashboards'):
+        return worksheets, []
+    placed = _dashboard_worksheet_names(extracted_data)
+    return ([ws for ws in worksheets if ws.get('name') in placed],
+            [ws.get('name') for ws in worksheets if ws.get('name') not in placed])
+
+
 def _extract_pbi_visual_info(visual_json: Dict) -> Dict:
     """Extract key info from a PBI visual.json."""
     visual = visual_json.get('visual', visual_json.get('singleVisual', {}))
@@ -140,11 +150,12 @@ def _extract_pbi_visual_info(visual_json: Dict) -> Dict:
 
     # Extract field references
     fields = []
+    role_fields = {}
     query = visual_json.get('query', visual.get('query', {}))
     if isinstance(query, dict):
         query_state = query.get('queryState')
         if isinstance(query_state, dict):
-            for state in query_state.values():
+            for role, state in query_state.items():
                 if not isinstance(state, dict):
                     continue
                 for projection in state.get('projections', []) or []:
@@ -165,11 +176,13 @@ def _extract_pbi_visual_info(visual_json: Dict) -> Dict:
                         prop = ref.get('Property', '')
                         if entity and prop:
                             fields.append(f'{entity}[{prop}]')
+                            role_fields.setdefault(role, []).append(prop)
                         break
             return {
                 'visualType': visual_type,
                 'title': title,
                 'fields': fields,
+                'role_fields': role_fields,
             }
         commands = query.get('Commands', [])
         for cmd in commands:
@@ -205,6 +218,7 @@ def _extract_pbi_visual_info(visual_json: Dict) -> Dict:
         'visualType': visual_type,
         'title': title,
         'fields': fields,
+        'role_fields': role_fields,
     }
 
 
@@ -213,22 +227,41 @@ def _extract_pbi_visual_info(visual_json: Dict) -> Dict:
 _ENCODING_TYPES = ['color', 'size', 'shape', 'label', 'tooltip', 'detail', 'path']
 
 
-def _diff_worksheet(ws: Dict, pbi_visuals: List[Dict]) -> Dict:
+def _diff_worksheet(ws: Dict, pbi_visuals: List[Dict], calculation_map=None) -> Dict:
     """Compare a single Tableau worksheet against PBI visuals."""
     ws_name = ws.get('name', 'Unknown')
-    mark_type = ws.get('mark_type') or ws.get('chart_type', '')
+    mark_type = ws.get('chart_type') or ws.get('mark_type', '')
     if isinstance(mark_type, dict):
         mark_type = mark_type.get('type', '')
     mark_type = str(mark_type).lower()
 
+    calculation_map = calculation_map or {}
+    def canonical(value):
+        value = str(value).strip()
+        if value.startswith('[') and value.endswith(']') and value.count('[') == 1:
+            value = value[1:-1]
+        return value.strip()
+
+    def resolved(field):
+        source = field if isinstance(field, str) else (field.get('name') or field.get('caption', ''))
+        source = canonical(source)
+        clean = canonical(calculation_map.get(source, source))
+        if isinstance(field, dict) and field.get('table_calc') == 'pcto':
+            return f'% of Total {clean}'
+        return clean
+
     # Tableau fields
-    tab_fields = []
+    source_fields = []
     for f in ws.get('fields', []):
         if isinstance(f, dict):
-            tab_fields.append(f.get('name') or f.get('caption', ''))
+            source_fields.append(f)
         elif isinstance(f, str):
-            tab_fields.append(f)
-    tab_fields = [f for f in tab_fields if f]
+            source_fields.append(f)
+    source_fields = [f for f in source_fields if (f if isinstance(f, str)
+                                                 else f.get('name') or f.get('caption'))]
+    tab_fields = [resolved(field) for field in source_fields]
+    tab_labels = [field if isinstance(field, str) else field.get('name') or field.get('caption')
+                  for field in source_fields]
 
     # Tableau encodings
     mark_enc = ws.get('mark_encoding', {})
@@ -247,17 +280,21 @@ def _diff_worksheet(ws: Dict, pbi_visuals: List[Dict]) -> Dict:
     except ImportError:
         expected_pbi = _MARK_TO_PBI.get(mark_type, 'tableEx')
 
-    # Try to match with PBI visual
-    pbi_match = None
-    for v in pbi_visuals:
-        info = _extract_pbi_visual_info(v)
-        if info['title'] and ws_name.lower() in info['title'].lower():
-            pbi_match = info
-            break
-        if info['visualType'] == expected_pbi:
-            # Weak match by type
-            if pbi_match is None:
-                pbi_match = info
+    infos = [_extract_pbi_visual_info(v) for v in pbi_visuals]
+    matching_type = [info for info in infos if info['visualType'] == expected_pbi]
+    candidates = matching_type or infos
+    def match_score(info):
+        available = [f.lower() for f in info['fields']]
+        overlap = sum(any(field.lower() in pbi for pbi in available)
+                      for field in tab_fields)
+        source_title = ws.get('title', '')
+        title_exact = bool(source_title and source_title != '<Sheet Name>' and
+                           canonical(info['title']).casefold() == canonical(source_title).casefold())
+        title_match = bool(info['title'] and ws_name.lower() in info['title'].lower())
+        return (title_exact, overlap, title_match)
+    pbi_match = max(candidates, key=match_score) if candidates else None
+    if pbi_match and tab_fields and match_score(pbi_match) == (False, 0, False):
+        pbi_match = None
 
     # Classification
     if pbi_match:
@@ -272,21 +309,29 @@ def _diff_worksheet(ws: Dict, pbi_visuals: List[Dict]) -> Dict:
     pbi_fields = pbi_match['fields'] if pbi_match else []
     mapped_fields = []
     unmapped_fields = []
-    for tf in tab_fields:
-        clean = tf.strip('[]')
-        found = any(clean.lower() in pf.lower() for pf in pbi_fields)
+    for raw, expected in zip(tab_labels, tab_fields):
+        found = any(expected.lower() in pf.lower() for pf in pbi_fields)
         if found:
-            mapped_fields.append(tf)
+            mapped_fields.append(raw)
         else:
-            unmapped_fields.append(tf)
+            unmapped_fields.append(raw)
 
+    tableau_tooltips = [resolved(f) for f in ws.get('fields', [])
+                        if isinstance(f, dict) and f.get('shelf') == 'tooltip' and f.get('name')]
+    role_fields = pbi_match.get('role_fields', {}) if pbi_match else {}
+    pbi_tooltips = role_fields.get('Tooltips', [])
+    main_fields = [field for role, values in role_fields.items()
+                   if role != 'Tooltips' for field in values]
+    def contains(fields, name):
+        return any(canonical(name).casefold() == canonical(field).casefold()
+                   for field in fields)
     return {
         'name': ws_name,
         'mark_type': mark_type,
         'expected_pbi_type': expected_pbi,
         'actual_pbi_type': pbi_match['visualType'] if pbi_match else None,
         'status': status,
-        'tableau_fields': tab_fields,
+        'tableau_fields': tab_labels,
         'pbi_fields': pbi_fields,
         'mapped_fields': mapped_fields,
         'unmapped_fields': unmapped_fields,
@@ -295,6 +340,12 @@ def _diff_worksheet(ws: Dict, pbi_visuals: List[Dict]) -> Dict:
             if tab_fields else 100
         ),
         'tableau_encodings': tab_encodings,
+        'tableau_tooltips': tableau_tooltips,
+        'pbi_tooltips': pbi_tooltips,
+        'tooltips_in_main_roles': [f for f in tableau_tooltips
+                       if not contains(pbi_tooltips, f) and contains(main_fields, f)],
+        'missing_tooltips': [f for f in tableau_tooltips
+                     if not contains(pbi_tooltips + main_fields, f)],
         'tableau_filter_count': len(tab_filters),
         'pbi_matched': pbi_match is not None,
     }
@@ -319,10 +370,13 @@ def generate_visual_diff(
     worksheets = extracted_data.get('worksheets', [])
     if isinstance(worksheets, dict):
         worksheets = worksheets.get('worksheets', [])
+    worksheets, _source_only = _placed_worksheets(extracted_data, worksheets)
 
     pbi_visuals = _load_pbi_visuals(pbip_dir)
 
-    diffs = [_diff_worksheet(ws, pbi_visuals) for ws in worksheets]
+    calc_map = {str(c.get('name', '')).strip('[]'): c.get('caption') or c.get('name', '').strip('[]')
+                for c in extracted_data.get('calculations', []) if isinstance(c, dict)}
+    diffs = [_diff_worksheet(ws, pbi_visuals, calc_map) for ws in worksheets]
 
     # Summary stats
     total = len(diffs)
@@ -463,13 +517,17 @@ def generate_visual_diff_json(
     worksheets = extracted_data.get('worksheets', [])
     if isinstance(worksheets, dict):
         worksheets = worksheets.get('worksheets', [])
+    worksheets, source_only = _placed_worksheets(extracted_data, worksheets)
 
     pbi_visuals = _load_pbi_visuals(pbip_dir)
-    diffs = [_diff_worksheet(ws, pbi_visuals) for ws in worksheets]
+    calc_map = {str(c.get('name', '')).strip('[]'): c.get('caption') or c.get('name', '').strip('[]')
+                for c in extracted_data.get('calculations', []) if isinstance(c, dict)}
+    diffs = [_diff_worksheet(ws, pbi_visuals, calc_map) for ws in worksheets]
 
     total = len(diffs)
     return {
         'total': total,
+        'source_only_worksheets': source_only,
         'exact': sum(1 for d in diffs if d['status'] == 'exact'),
         'approximate': sum(1 for d in diffs if d['status'] == 'approx'),
         'unmapped': sum(1 for d in diffs if d['status'] == 'unmapped'),

@@ -383,6 +383,29 @@ class TestDataVerificationFailsClosed(unittest.TestCase):
         self.assertNotIn('Customers', json.dumps(result))
         self.assertNotIn('exception detail', json.dumps(result))
 
+    def _verify_two(self, payload):
+        completed = mock.Mock(returncode=0, stdout=json.dumps(payload))
+        with mock.patch('powerbi_import.desktop_probe._m_backed_tables',
+                        return_value=['Customers', 'Orders']), \
+             mock.patch.object(desktop_window, 'IS_WINDOWS', True), \
+             mock.patch('powerbi_import.desktop_probe.subprocess.run',
+                        return_value=completed):
+            return verify_desktop_data('Report.pbip', 4242)
+
+    def test_one_empty_table_is_partial_not_verified(self):
+        partial = {'status': 'partial', 'tables_checked': 2,
+                   'tables_nonempty': 1, 'tables_empty': 1,
+                   'tables_failed': 0, 'total_rows': 5}
+        self.assertEqual(self._verify_two(partial)['status'], 'partial')
+        claimed = dict(partial, status='verified')
+        self.assertEqual(self._verify_two(claimed)['status'], 'unavailable')
+
+    def test_all_tables_with_rows_is_verified(self):
+        full = {'status': 'verified', 'tables_checked': 2,
+                'tables_nonempty': 2, 'tables_empty': 0,
+                'tables_failed': 0, 'total_rows': 9}
+        self.assertEqual(self._verify_two(full)['status'], 'verified')
+
 
 if __name__ == '__main__':
     unittest.main()

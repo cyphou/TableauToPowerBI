@@ -284,7 +284,7 @@ def _gen_m_geojson(details, table_name, columns):
     m_query = f'''let
     // Source GeoJSON: {filename}
     Source = Json.Document(File.Contents(DataFolder & "\\{file_path_bs}")),
-    features = Source[features],
+    features = try Source[features] otherwise {{}},
     #"Converted to Table" = Table.FromList(features, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
     #"Expanded Column1" = Table.ExpandRecordColumn(#"Converted to Table", "Column1", {{"properties", "geometry"}}),
     #"Expanded properties" = Table.ExpandRecordColumn(#"Expanded Column1", "properties", {{{prop_names}}}),'''
@@ -316,21 +316,9 @@ def _gen_m_fallback(details, table_name, columns):
     conn_type = details.get('_conn_type', 'Unknown')
     named_cols = [col for col in columns if 'name' in col]
     col_list = ", ".join([f'"{_m_escape_col_name(col["name"])}"' for col in named_cols])
-    sample1 = ", ".join([f'"Sample {i+1}"' if col.get('datatype') == 'string' else str(i+1) for i, col in enumerate(named_cols)])
-    sample2 = ", ".join([f'"Sample {i+2}"' if col.get('datatype') == 'string' else str(i+2) for i, col in enumerate(named_cols)])
     return f'''let
     // TODO: Configure the data source for connector type: {conn_type}
-    // Replace the sample table below with the actual source expression.
-    Source = try
-        #table(
-            {{{col_list}}},
-            {{
-                {{{sample1}}},
-                {{{sample2}}}
-            }}
-        )
-    otherwise
-        #table({{{col_list}}}, {{}})  // Empty table on error
+    Source = #table({{{col_list}}}, {{}})
 in
     Source'''
 
@@ -734,7 +722,7 @@ def _gen_m_hyper(details, table_name, columns):
     try:
         import os as _os
         from hyper_reader import read_hyper, generate_m_for_hyper_table
-        filename = details.get('filename', '')
+        filename = details.get('filename') or details.get('dbname', '')
         hyper_rows = details.get('hyper_max_rows', 20)
         if filename and _os.path.isfile(filename):
             result = read_hyper(filename, max_rows=hyper_rows)
@@ -786,13 +774,6 @@ def _gen_m_sqlproxy(details, table_name, columns):
 
     col_list = ', '.join([f'"{_m_escape_col_name(col["name"])}"'
                           for col in columns if 'name' in col])
-    named_cols = [col for col in columns if 'name' in col]
-    sample1 = ', '.join(
-        [f'"Sample {i+1}"' if col.get('datatype') == 'string' else str(i + 1)
-         for i, col in enumerate(named_cols)])
-    sample2 = ', '.join(
-        [f'"Sample {i+2}"' if col.get('datatype') == 'string' else str(i + 2)
-         for i, col in enumerate(named_cols)])
 
     return f'''let
     // ================================================================
@@ -800,7 +781,7 @@ def _gen_m_sqlproxy(details, table_name, columns):
     // Server: {channel}://{server}:{port}
     // ================================================================
     // This table was sourced from a Tableau Server published datasource.
-    // Replace the sample data below with your actual database connection.
+    // Replace the empty source below with your actual database connection.
     //
     // Option A — SQL Server:
     //   Source = Sql.Database("your-server", "your-database"){{[Schema="dbo", Item="{table_name}"]}}[Data]
@@ -814,13 +795,7 @@ def _gen_m_sqlproxy(details, table_name, columns):
     // Option D — Snowflake:
     //   Source = Snowflake.Databases("account.snowflakecomputing.com", "WAREHOUSE"){{[Name="DB"]}}[Data]{{[Schema="PUBLIC", Name="{table_name.upper()}"]}}[Data]
     // ================================================================
-    Source = #table(
-        {{{col_list}}},
-        {{
-            {{{sample1}}},
-            {{{sample2}}}
-        }}
-    )
+    Source = #table({{{col_list}}}, {{}})
 in
     Source'''
 
@@ -1317,6 +1292,8 @@ def generate_power_query_m(connection, table):
         details['_source_table'] = source_table
 
     generator = _M_GENERATORS.get(conn_type)
+    if generator is None and isinstance(conn_type, str):
+        generator = _M_GENERATORS.get(conn_type.lower())
     if generator:
         return generator(details, table_name, columns)
 

@@ -14,7 +14,7 @@ Covers:
   - Sort order depth (computed sort)
   - Worksheet sort → visual sort definition
   - Action button visual creation (URL, sheet-navigate)
-  - Dual-axis combo chart roles (ColumnY/LineY)
+    - Dual-axis combo chart roles (Y/Y2)
   - Table/matrix formatting (header, banding, grid)
   - Conditional formatting gradient (min/mid/max)
   - Tooltip page binding
@@ -564,11 +564,11 @@ class TestSortOrderExtraction(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Combo Chart Role Names (ColumnY/LineY)
+# Combo Chart Role Names (Y/Y2)
 # ═══════════════════════════════════════════════════════════════════
 
 class TestComboChartRoles(unittest.TestCase):
-    """Test that combo chart uses correct ColumnY/LineY role names."""
+    """Test that combo chart uses correct Y/Y2 role names."""
 
     def test_combo_chart_roles(self):
         gen = _make_generator()
@@ -585,10 +585,22 @@ class TestComboChartRoles(unittest.TestCase):
             ],
         }
         query = gen._build_visual_query(ws_data)
-        self.assertIn('ColumnY', query.get('queryState', {}))
-        self.assertIn('LineY', query.get('queryState', {}))
-        self.assertNotIn('Y', query.get('queryState', {}))
-        self.assertNotIn('Y2', query.get('queryState', {}))
+        query_state = query['queryState']
+        self.assertEqual(set(query_state), {'Category', 'Y', 'Y2'})
+        category_projections = query_state['Category']['projections']
+        self.assertEqual(len(category_projections), 1)
+        self.assertEqual(
+            category_projections[0]['field']['Column']['Property'], 'Category'
+        )
+        for role, field_name in (('Y', 'Revenue'), ('Y2', 'Profit')):
+            with self.subTest(role=role):
+                projections = query_state[role]['projections']
+                self.assertEqual(len(projections), 1)
+                self.assertEqual(
+                    projections[0]['field']['Aggregation']['Expression']['Column']['Property'],
+                    field_name
+                )
+                self.assertEqual(projections[0]['nativeQueryRef'], field_name)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -654,19 +666,22 @@ class TestActionButtonVisuals(unittest.TestCase):
             ]
             created = gen._create_action_visuals(visuals_dir, actions, 1.0, 1.0, 0, 'Test Page')
             self.assertEqual(created, 1)
-            
-            # Read the visual
-            for vdir in os.listdir(visuals_dir):
-                visual_path = os.path.join(visuals_dir, vdir, 'visual.json')
-                if os.path.exists(visual_path):
-                    with open(visual_path, 'r') as f:
-                        visual = json.load(f)
-                    vtype = visual.get('visual', {}).get('visualType')
-                    self.assertEqual(vtype, 'actionButton')
-                    action_obj = visual['visual']['objects'].get('action', [{}])[0]
-                    action_type = action_obj['properties']['type']['expr']['Literal']['Value']
-                    self.assertEqual(action_type, "'WebUrl'")
-                    break
+
+            visual_dirs = os.listdir(visuals_dir)
+            self.assertEqual(len(visual_dirs), 1)
+            visual_path = os.path.join(visuals_dir, visual_dirs[0], 'visual.json')
+            with open(visual_path, 'r') as f:
+                visual = json.load(f)
+            self.assertEqual(visual['visual']['visualType'], 'actionButton')
+            visual_links = visual['visual']['visualContainerObjects']['visualLink']
+            self.assertEqual(len(visual_links), 1)
+            properties = visual_links[0]['properties']
+            self.assertEqual(properties['show']['expr']['Literal']['Value'], 'true')
+            self.assertEqual(properties['type']['expr']['Literal']['Value'], "'WebUrl'")
+            self.assertEqual(
+                properties['webUrl']['expr']['Literal']['Value'], "'https://google.com'"
+            )
+            self.assertNotIn('action', visual['visual'].get('objects', {}))
         finally:
             _cleanup(visuals_dir)
 
@@ -892,15 +907,28 @@ class TestPaddingApplication(unittest.TestCase):
             gen._create_visual_worksheet(
                 visuals_dir, ws_data, obj, 1.0, 1.0, 0, [], {}
             )
-            for vdir in os.listdir(visuals_dir):
-                visual_path = os.path.join(visuals_dir, vdir, 'visual.json')
-                if os.path.exists(visual_path):
-                    with open(visual_path, 'r') as f:
-                        visual = json.load(f)
-                    obj_data = visual.get('visual', {}).get('objects', {})
-                    self.assertIn('padding', obj_data)
-                    self.assertIn('border', obj_data)
-                    break
+            visual_dirs = os.listdir(visuals_dir)
+            self.assertEqual(len(visual_dirs), 1)
+            visual_path = os.path.join(visuals_dir, visual_dirs[0], 'visual.json')
+            with open(visual_path, 'r') as f:
+                visual = json.load(f)
+            container_objects = visual['visual']['visualContainerObjects']
+            self.assertEqual(container_objects['padding'], [{
+                'properties': {
+                    'left': {'expr': {'Literal': {'Value': '10D'}}},
+                    'top': {'expr': {'Literal': {'Value': '5D'}}},
+                }
+            }])
+            self.assertEqual(container_objects['border'], [{
+                'properties': {
+                    'show': {'expr': {'Literal': {'Value': 'true'}}},
+                    'color': {'solid': {
+                        'color': {'expr': {'Literal': {'Value': "'#000'"}}}
+                    }},
+                }
+            }])
+            self.assertNotIn('padding', visual['visual'].get('objects', {}))
+            self.assertNotIn('border', visual['visual'].get('objects', {}))
         finally:
             _cleanup(visuals_dir)
 

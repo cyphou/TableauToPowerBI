@@ -363,6 +363,39 @@ def _check_no_empty_visuals(project_dir: str, visuals: List[Tuple[str, Any]]) ->
     )
 
 
+def _check_visual_role_contract(project_dir: str) -> QACheck:
+    """Report incompatible PBIR data-well roles before Desktop renders them."""
+    try:
+        from powerbi_import.cross_validator import scan_visual_role_contract
+        result = scan_visual_role_contract(project_dir)
+    except (ImportError, OSError, ValueError):
+        return QACheck(
+            key="visual_role_contract",
+            name="Visual data-well contract",
+            passed=False,
+            severity="error",
+            summary="Could not inspect visual data-well roles.",
+        )
+    evidence = []
+    for visual in result.get("visuals", []):
+        if visual.get("status") == "valid":
+            continue
+        issues = "; ".join(visual.get("issues", []))
+        evidence.append(f"{visual.get('path', '')}: {issues}")
+        if len(evidence) >= _MAX_EVIDENCE:
+            break
+    return QACheck(
+        key="visual_role_contract",
+        name="Visual data-well contract",
+        passed=not evidence,
+        severity="error",
+        summary=("Every visual uses compatible data-well roles."
+                 if not evidence else
+                 f"{len(evidence)} visual(s) have incompatible data-well roles."),
+        evidence=evidence,
+    )
+
+
 def _check_format_coverage(project_dir: str, visuals: List[Tuple[str, Any]]) -> QACheck:
     evidence: List[str] = []
     for path, data in visuals:
@@ -569,6 +602,7 @@ def run_qa_suite(
     checks = [
         _check_no_stray_sentinels(project_dir, visuals),
         _check_no_empty_visuals(project_dir, visuals),
+        _check_visual_role_contract(project_dir),
         _check_format_coverage(project_dir, visuals),
         _check_zones_matched(project_dir, visuals, extraction_dir),
         _check_no_orphan_filters(project_dir, visuals),

@@ -1480,7 +1480,7 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
 def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, display_name,
                              skip_extraction, wb_prep, wb_cal_start, wb_cal_end, wb_culture,
                              verify_open=True, output_format='pbip',
-                             quality_policy='report'):
+                             quality_policy='report', data_search_root=None):
     """Migrate a single workbook — used by both sequential and parallel batch modes.
 
     For .tfl/.tflx files, delegates to _migrate_single_prep_flow() which produces
@@ -1549,6 +1549,19 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     if file_results.get('generation') and not tableau_file.lower().endswith('.twbx'):
         project_dir = os.path.join(workbook_output_dir, basename)
         _fix_twb_data_folder(project_dir, basename)
+
+    # Step 4c: Sources kept beside the workbook (or linked, not embedded)
+    if file_results.get('generation'):
+        project_dir = os.path.join(workbook_output_dir, basename)
+        _collect_local_data_files(tableau_file, project_dir, basename,
+                                  search_root=data_search_root)
+        _convert_hyper_to_csv_in_data(
+            os.path.join(project_dir, 'Data'), basename, project_dir)
+        _route_spatial_partitions(project_dir, basename)
+        _reconcile_csv_partitions(project_dir, basename)
+        _wire_shapefile_map_coordinates(project_dir, basename)
+        _restrict_file_partitions_to_model(project_dir, basename)
+        _shorten_report_artifact_path(project_dir, basename)
 
     if file_results.get('generation') and verify_open:
         project_dir = os.path.join(workbook_output_dir, basename)
@@ -2144,6 +2157,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'wb_culture': wb_culture,
             'output_format': output_format,
             'quality_policy': quality_policy,
+            'search_root': batch_dir,
         })
 
     def _run_task(task):
@@ -2175,6 +2189,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 output_format=task['output_format'],
                 verify_open=verify_open,
                 quality_policy=task['quality_policy'],
+                data_search_root=task.get('search_root'),
             )
         except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
             wb_result = {'success': False, 'error': str(exc), 'error_category': 'exception'}
@@ -6532,7 +6547,7 @@ def _run_autoheal(args, source_basename):
 
 
 def _run_desktop_probe(args, source_basename):
-    """Best-effort real Power BI Desktop open self-check on the generated .pbip."""
+    """Best-effort Desktop check for every generated PBIP, including data rows."""
     out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
     project_dir = os.path.join(out_base, source_basename)
     if not os.path.isdir(project_dir):
@@ -6547,17 +6562,29 @@ def _run_desktop_probe(args, source_basename):
         from desktop_probe import probe_desktop_open
     except ImportError:
         from powerbi_import.desktop_probe import probe_desktop_open
-    report = probe_desktop_open(pbips[0], desktop_path=args.powerbi_desktop_path)
-    icon = {'opened': '✓', 'unavailable': '•', 'crashed': '✗',
-            'timed_out': '⚠', 'error': '✗'}.get(report.status, '•')
-    print(f"\n  Desktop probe: {icon} {report.status}"
-          + (f" — {report.note}" if report.note else ""))
-    for sig in report.signals[:10]:
-        print(f"      • {sig}")
+    screenshot_dir = os.path.join(project_dir, 'desktop_probe')
+    os.makedirs(screenshot_dir, exist_ok=True)
+    reports = []
+    for pbip in pbips:
+        stem = os.path.splitext(os.path.basename(pbip))[0]
+        report = probe_desktop_open(
+            pbip,
+            desktop_path=args.powerbi_desktop_path,
+            screenshot_path=os.path.join(screenshot_dir, f'{stem}.png'),
+            verify_data=True,
+        )
+        reports.append(report.to_dict())
+        icon = {'opened': '✓', 'unavailable': '•', 'crashed': '✗',
+                'timed_out': '⚠', 'error': '✗'}.get(report.status, '•')
+        data_status = report.data_load.get('status', 'not_requested')
+        print(f"\n  Desktop probe: {icon} {stem}: {report.status} / {data_status}"
+              + (f" — {report.note}" if report.note else ""))
+        for sig in report.signals[:10]:
+            print(f"      • {sig}")
     try:
         with open(os.path.join(project_dir, 'desktop_probe_report.json'), 'w',
                   encoding='utf-8') as f:
-            json.dump(report.to_dict(), f, indent=2)
+            json.dump({'reports': reports, 'count': len(reports)}, f, indent=2)
     except OSError:
         pass
 
@@ -6755,6 +6782,7 @@ def _run_qa_suite(args, source_basename):
             extraction_dir=extract_dir if os.path.isdir(extract_dir) else None,
             workbook=source_basename,
         )
+        qa_results['report_card'] = rw_report.to_dict()
         html_path = os.path.join(project_dir, 'qa_report.html')
         generate_qa_html(rw_report, html_path)
         status = '✓' if rw_report.passed else '✗'
@@ -6767,6 +6795,12 @@ def _run_qa_suite(args, source_basename):
             args._qa_strict_failed = True
     except (ImportError, OSError) as exc:
         logger.warning("QA report card failed: %s", exc)
+
+    try:
+        with open(qa_path, 'w', encoding='utf-8') as f:
+            json.dump(qa_results, f, indent=2, ensure_ascii=False, default=str)
+    except OSError as exc:
+        logger.warning("QA report update failed: %s", exc)
 
 
 def _export_power_query_files(project_dir, source_basename):
@@ -6986,6 +7020,24 @@ def _extract_dax_from_tmdl(tmdl_path):
     return measures
 
 
+def _widen_csv_field_limit(csv_module):
+    """Raises the csv field size limit so oversized cells stay readable.
+
+    Spatial extracts store WKT geometry in a single cell, which routinely
+    exceeds Python's 128 KB default and otherwise aborts the migration with
+    ``field larger than field limit``. The limit is lowered progressively
+    because ``sys.maxsize`` overflows the C long used on Windows.
+    """
+    limit = sys.maxsize
+    while limit > 131072:
+        try:
+            csv_module.field_size_limit(limit)
+            return limit
+        except OverflowError:
+            limit //= 2
+    return csv_module.field_size_limit()
+
+
 def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
     """Convert .hyper files in *data_dir* to CSV and patch TMDL M expressions.
 
@@ -6999,6 +7051,8 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
     import csv as _csv
     import glob as _glob
 
+    _widen_csv_field_limit(_csv)
+
     hyper_files = []
     for root, _dirs, files in os.walk(data_dir):
         for fname in files:
@@ -7007,37 +7061,35 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
     if not hyper_files:
         return
 
-    # Check if real data files (xlsx/xls) already exist — if so, no conversion needed
-    has_xlsx = False
-    for root, _dirs, files in os.walk(data_dir):
-        for fname in files:
-            ext = os.path.splitext(fname)[1].lower()
-            if ext in {'.xlsx', '.xls'}:
-                has_xlsx = True
-                break
-        if has_xlsx:
-            break
-    if has_xlsx:
-        return
-
-    # Check if CSV files already exist (from a previous hyper conversion)
-    existing_csvs = {}
-    for root, _dirs, files in os.walk(data_dir):
-        for fname in files:
-            if fname.lower().endswith('.csv'):
-                name = os.path.splitext(fname)[0]
-                existing_csvs[name] = fname
-
-    # Convert Hyper → CSV using 3-tier strategy (skip if CSVs already present)
-    csv_map = {}  # table_name → csv_filename
-    if not existing_csvs:
-        for hyper_path in hyper_files:
-            converted = _hyper_to_csv_files(hyper_path, data_dir, source_basename, _csv)
-            csv_map.update(converted)
-        if csv_map:
-            print(f"  📊 Converted Hyper → {len(csv_map)} CSV file(s)")
-    else:
-        csv_map = existing_csvs
+    # Convert every extract whose CSV is not already on disk. Workbooks mixing
+    # native CSV/Excel sources with extracts still need their extracts.
+    csv_map = {}  # csv stem → csv_filename
+    converted_now = 0
+    for hyper_path in hyper_files:
+        stem = os.path.splitext(os.path.basename(hyper_path))[0]
+        existing = [f for f in os.listdir(data_dir)
+                    if f.lower().endswith('.csv')
+                    and os.path.splitext(f)[0].lower().startswith(stem.lower())]
+        if existing:
+            csv_map.update({os.path.splitext(f)[0]: f for f in existing})
+            if os.path.dirname(os.path.abspath(hyper_path)) != os.path.abspath(data_dir):
+                try:
+                    os.unlink(hyper_path)
+                except OSError as exc:
+                    logger.warning("Converted Hyper remains in Data subfolder %s: %s",
+                                   os.path.basename(hyper_path), exc)
+            continue
+        converted = _hyper_to_csv_files(hyper_path, data_dir, source_basename, _csv)
+        converted_now += len(converted)
+        csv_map.update(converted)
+        if converted and os.path.dirname(os.path.abspath(hyper_path)) != os.path.abspath(data_dir):
+            try:
+                os.unlink(hyper_path)
+            except OSError as exc:
+                logger.warning("Converted Hyper remains in Data subfolder %s: %s",
+                               os.path.basename(hyper_path), exc)
+    if converted_now:
+        print(f"  📊 Converted Hyper → {converted_now} CSV file(s)")
 
     if not csv_map:
         return
@@ -7084,6 +7136,8 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
     except (OSError, ValueError):
         pass
 
+    csv_headers_by_file = _csv_header_sets(data_dir, csv_map.values())
+
     for tmdl_path in _glob.glob(os.path.join(tables_dir, '*.tmdl')):
         try:
             with open(tmdl_path, 'r', encoding='utf-8') as f:
@@ -7091,32 +7145,47 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
         except OSError:
             continue
 
-        # Match Excel.Workbook(File.Contents(DataFolder & "\name.xlsx"), null, true)
-        # followed by _nav = _src{[Item="SheetName",Kind="Sheet"]}[Data]
+        # An Excel source whose workbook was not packaged is served by the one
+        # converted extract that carries every column the partition expects.
         original = content
-        for table_name, csv_filename in csv_map.items():
-            # Replace the try/otherwise Excel block with Csv.Document
-            pattern = (
-                r'Source\s*=\s*try\s+'
-                r'let\s+'
-                r'_src\s*=\s*Excel\.Workbook\(File\.Contents\(DataFolder\s*&\s*"\\[^"]*"\),\s*null,\s*true\),\s*'
-                r'_nav\s*=\s*_src\{[^\}]*\}\[Data\]\s*'
-                r'in\s+_nav\s+'
-                r'otherwise\s+'
-                r'#table\(\{[^}]*\},\s*\{\}\)'
-            )
-            replacement = (
-                f'Source = Csv.Document(File.Contents(DataFolder & "\\\\{csv_filename}"), '
-                f'[Delimiter=",", Encoding=65001, QuoteStyle=QuoteStyle.Csv])'
-            )
-            content = _re.sub(pattern, replacement, content, flags=_re.DOTALL)
+        excel_block = _re.search(
+            r'Source\s*=\s*try\s+'
+            r'let\s+'
+            r'_src\s*=\s*Excel\.Workbook\(File\.Contents\(DataFolder\s*&\s*"\\\\?([^"]*)"\),\s*null,\s*true\),\s*'
+            r'_nav\s*=\s*_src\{[^\}]*\}\[Data\]\s*'
+            r'in\s+_nav\s+'
+            r'otherwise\s+'
+            r'#table\(\{([^}]*)\},\s*\{\}\)',
+            content, flags=_re.DOTALL)
+        if excel_block and not os.path.isfile(
+                os.path.join(data_dir, excel_block.group(1).replace('\\\\', '\\'))):
+            expected = [c.replace('""', '"') for c in
+                        _re.findall(r'"((?:[^"]|"")*)"', excel_block.group(2))]
+            chosen = _pick_csv_for_columns(expected, csv_headers_by_file)
+            if chosen:
+                replacement = (
+                    f'Source = Csv.Document(File.Contents(DataFolder & "\\\\{chosen}"), '
+                    f'[Delimiter=",", Encoding=65001, QuoteStyle=QuoteStyle.Csv])'
+                )
+                content = (content[:excel_block.start()] + replacement
+                           + content[excel_block.end():])
+            else:
+                logger.warning("No single converted extract matches the columns of %s; "
+                               "partition left unchanged", os.path.basename(tmdl_path))
 
         # Also replace #table() inline/fallback partitions with Csv.Document
         # when a matching CSV exists (matched via source_table metadata).
-        if '#table(' in content and tmdl_to_csv:
+        if '#table(' in content and csv_map:
             # Derive TMDL table name from filename
             tmdl_table_name = os.path.splitext(os.path.basename(tmdl_path))[0]
             matched_csv = tmdl_to_csv.get(tmdl_table_name)
+            if not matched_csv:
+                inline_cols = _re.search(r'Source\s*=\s*try\s+#table\(\s*\{([^}]*)\}', content)
+                if inline_cols:
+                    matched_csv = _pick_csv_for_columns(
+                        [c.replace('""', '"') for c in
+                         _re.findall(r'"((?:[^"]|"")*)"', inline_cols.group(1))],
+                        csv_headers_by_file)
             if matched_csv:
                 # Replace only the Source assignment (try/otherwise block).
                 htable_pattern = (
@@ -7150,8 +7219,14 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
                         reader = _csv.reader(cf)
                         csv_headers = next(reader, [])
                         csv_rows = list(reader)
-                except OSError:
-                    pass
+                except (OSError, _csv.Error) as exc:
+                    logger.warning(
+                        "Could not read converted extract %s (%s); "
+                        "partition column names left unchanged",
+                        matched_csv, exc,
+                    )
+                    csv_headers = []
+                    csv_rows = []
 
                 if csv_headers and tmdl_cols:
                     # Build mapping: raw CSV header → TMDL caption name.
@@ -7230,9 +7305,53 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
                 pass
 
 
+def _norm_col(name):
+    import unicodedata as _ud
+    return ' '.join(_ud.normalize('NFKC', name).split()).casefold()
+
+
+def _csv_header_sets(data_dir, filenames):
+    """filename → normalised header names, read from the real CSV files."""
+    import csv as _csv
+    headers = {}
+    for fname in filenames:
+        path = os.path.join(data_dir, fname)
+        try:
+            with open(path, 'r', newline='', encoding='utf-8-sig') as f:
+                row = next(_csv.reader(f), [])
+        except (OSError, UnicodeDecodeError):
+            continue
+        headers[fname] = {_norm_col(c) for c in row}
+    return headers
+
+
+def _pick_csv_for_columns(expected, headers_by_file):
+    """The unique CSV whose header covers every expected column, else None."""
+    wanted = {_norm_col(c) for c in expected if c}
+    if not wanted:
+        return None
+    full = [f for f, hdr in headers_by_file.items() if wanted <= hdr]
+    if len(full) == 1:
+        return full[0]
+    if len(full) > 1:
+        # Prefer the tightest header; ties are ambiguous and are not guessed.
+        sizes = sorted((len(headers_by_file[f]), f) for f in full)
+        if sizes[0][0] < sizes[1][0]:
+            return sizes[0][1]
+    return None
+
+
 def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
-    """Convert a single Hyper file to CSV(s). Returns {table_name: csv_filename}."""
+    """Convert a single Hyper file to CSV(s). Returns {table_name: csv_filename}.
+
+    Every workbook extract names its table ``Extract``, so CSVs are named after
+    the Hyper file itself or several extracts would overwrite one another.
+    """
     results = {}
+    stem = os.path.splitext(os.path.basename(hyper_path))[0]
+
+    def _csv_name(table, count):
+        return f"{stem}.csv" if count == 1 else f"{stem}_{table}.csv"
 
     # Tier 1: tableauhyperapi
     try:
@@ -7241,18 +7360,19 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
         try:
             conn = Connection(hyper_proc.endpoint, hyper_path)
             try:
-                for schema in conn.catalog.get_schema_names():
-                    for table in conn.catalog.get_table_names(schema):
-                        cols = conn.catalog.get_table_definition(table).columns
-                        col_names = [c.name.unescaped for c in cols]
-                        rows = conn.execute_list_query(f"SELECT * FROM {table}")
-                        csv_name = f"{table.name.unescaped}.csv"
-                        csv_path = os.path.join(out_dir, csv_name)
-                        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-                            writer = _csv.writer(f)
-                            writer.writerow(col_names)
-                            writer.writerows(rows)
-                        results[table.name.unescaped] = csv_name
+                tables = [t for s in conn.catalog.get_schema_names()
+                          for t in conn.catalog.get_table_names(s)]
+                for table in tables:
+                    cols = conn.catalog.get_table_definition(table).columns
+                    col_names = [c.name.unescaped for c in cols]
+                    rows = conn.execute_list_query(f"SELECT * FROM {table}")
+                    csv_name = _csv_name(table.name.unescaped, len(tables))
+                    csv_path = os.path.join(out_dir, csv_name)
+                    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                        writer = _csv.writer(f)
+                        writer.writerow(col_names)
+                        writer.writerows(rows)
+                    results[os.path.splitext(csv_name)[0]] = csv_name
             finally:
                 conn.close()
         finally:
@@ -7268,6 +7388,7 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
             pass
 
     # Tier 2: sqlite3
+    conn = None
     try:
         import sqlite3 as _sqlite3
         conn = _sqlite3.connect(hyper_path)
@@ -7280,17 +7401,19 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
             cur.execute(f'SELECT * FROM "{tname}"')
             rows = cur.fetchall()
             if rows:
-                csv_name = f"{tname}.csv"
+                csv_name = _csv_name(tname, len(tables))
                 csv_path = os.path.join(out_dir, csv_name)
                 with open(csv_path, 'w', newline='', encoding='utf-8') as f:
                     writer = _csv.writer(f)
                     writer.writerow(col_names)
                     writer.writerows(rows)
-                results[tname] = csv_name
-        conn.close()
+                results[os.path.splitext(csv_name)[0]] = csv_name
         return results
     except Exception:
         pass
+    finally:
+        if conn is not None:
+            conn.close()
 
     # Tier 3: project hyper_reader
     try:
@@ -7300,10 +7423,10 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
         for tbl in tbls:
             if tbl.get('sample_rows'):
                 name = tbl.get('table', 'data')
-                csv_name = f"{name}.csv"
+                csv_name = _csv_name(name, len(tbls))
                 csv_path = export_hyper_to_csv(tbl, out_dir, csv_filename=csv_name)
                 if csv_path:
-                    results[name] = csv_name
+                    results[os.path.splitext(csv_name)[0]] = csv_name
     except Exception:
         pass
 
@@ -7362,6 +7485,875 @@ def _fix_twb_data_folder(project_dir, source_basename):
     # Also export Power Query M files and DAX measures
     _export_power_query_files(project_dir, source_basename)
     _export_dax_files(project_dir, source_basename)
+
+
+def _read_data_folder(expr_path):
+    import re as _re
+    try:
+        with open(expr_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except OSError:
+        return None, None
+    match = _re.search(r'expression\s+DataFolder\s*=\s*"([^"]*)"', content)
+    if not match:
+        return content, None
+    return content, match.group(1).replace('\\\\', '\\')
+
+
+def _referenced_data_files(model_dir):
+    """Basenames the model loads through ``DataFolder & "\\name"``."""
+    import glob as _glob
+    import re as _re
+    refs = set()
+    pattern = _re.compile(r'DataFolder\s*&\s*"\\?([^"\\/]+)"')
+    for tmdl in _glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
+        try:
+            with open(tmdl, 'r', encoding='utf-8') as f:
+                refs.update(m.group(1) for m in pattern.finditer(f.read()))
+        except OSError:
+            continue
+    return sorted(refs)
+
+
+def _is_generated_dir(path, names):
+    return any(n.lower().endswith('.pbip') for n in names) or \
+        os.path.isfile(os.path.join(path, '.migration_batch_state.json'))
+
+
+def _local_data_candidates(source_path, wanted, max_files=20000, max_depth=4,
+                           search_root=None):
+    """Map wanted basename -> candidate paths near the Tableau workbook.
+
+    Tiers: the workbook folder, its subfolders, its parent folder, then the
+    batch root. The nearest tier with a hit wins; generated PBIP output is
+    never searched.
+    """
+    wanted_lc = {w.lower(): w for w in wanted}
+    found = {}
+    src_dir = os.path.dirname(os.path.abspath(source_path))
+    parent = os.path.dirname(src_dir)
+
+    def _scan(root, recursive, depth_limit=max_depth):
+        hits, seen = {}, 0
+        for current, dirs, files in os.walk(root):
+            depth = os.path.relpath(current, root).count(os.sep)
+            if _is_generated_dir(current, files + dirs) and current != root:
+                dirs[:] = []
+                continue
+            dirs[:] = [d for d in dirs
+                       if not os.path.islink(os.path.join(current, d))
+                       and not d.lower().endswith(('.semanticmodel', '.report'))]
+            if not recursive or depth >= depth_limit:
+                dirs[:] = []
+            for name in files:
+                seen += 1
+                key = name.lower()
+                path = os.path.join(current, name)
+                if key in wanted_lc and os.path.isfile(path) and not os.path.islink(path):
+                    hits.setdefault(wanted_lc[key], []).append(path)
+            if seen > max_files:
+                break
+        return hits
+
+    tiers = [(src_dir, False, max_depth), (src_dir, True, max_depth)]
+    if parent and parent != src_dir:
+        tiers.append((parent, False, max_depth))
+    if search_root and os.path.isdir(search_root):
+        tiers.append((os.path.abspath(search_root), True, 8))
+    for root, recursive, depth_limit in tiers:
+        remaining = [w for w in wanted if w not in found]
+        if not remaining:
+            break
+        for name, paths in _scan(root, recursive, depth_limit).items():
+            if name not in found:
+                found[name] = paths
+    return found
+
+
+def _same_content(paths):
+    import hashlib as _hashlib
+    digests = set()
+    for p in paths:
+        h = _hashlib.sha256()
+        try:
+            with open(p, 'rb') as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                    h.update(chunk)
+        except OSError:
+            return False
+        digests.add(h.hexdigest())
+    return len(digests) == 1
+
+
+def _sniff_csv(path):
+    """(delimiter, encoding_code, header) read from the real file, or None."""
+    import csv as _csv
+    try:
+        with open(path, 'rb') as f:
+            raw = f.read(262144)
+    except OSError:
+        return None
+    try:
+        text, code = raw.decode('utf-8'), 65001
+    except UnicodeDecodeError as exc:
+        # A multi-byte char cut by the read limit is still UTF-8.
+        if exc.start >= len(raw) - 3:
+            text, code = raw[:exc.start].decode('utf-8'), 65001
+        else:
+            text, code = raw.decode('cp1252', errors='replace'), 1252
+    text = text.lstrip('\ufeff')
+    first = text.splitlines()[0] if text else ''
+    if not first:
+        return None
+    delim = max([',', ';', '\t', '|'], key=first.count)
+    header = next(_csv.reader([first], delimiter=delim), [])
+    return delim, code, header
+
+
+def _reconcile_csv_partitions(project_dir, source_basename):
+    """Align every Csv.Document partition with the file actually in DataFolder.
+
+    Tableau's declared delimiter/charset/column count can differ from the file,
+    and joined columns are captioned ``Col (file)`` while the file says ``Col``.
+    Either way Power Query reports "column ... wasn't found". Returns counters.
+    """
+    import glob as _glob
+    import re as _re
+    stats = {'partitions': 0, 'options_fixed': 0, 'columns_renamed': 0,
+             'columns_unmatched': 0}
+    model_dir = os.path.join(project_dir, f'{source_basename}.SemanticModel')
+    _, folder = _read_data_folder(os.path.join(model_dir, 'definition', 'expressions.tmdl'))
+    if not folder:
+        return stats
+    csv_call = _re.compile(
+        r'Csv\.Document\(File\.Contents\(DataFolder\s*&\s*"\\\\?([^"]+)"\),\s*\[(.*?)\]\)',
+        _re.DOTALL)
+    delim_lit = {',': ',', ';': ';', '|': '|', '\t': '#(tab)'}
+    for tmdl in _glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
+        try:
+            with open(tmdl, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError:
+            continue
+        original = content
+        for match in list(csv_call.finditer(content))[::-1]:
+            fname = match.group(1).replace('\\\\', '\\')
+            sniff = _sniff_csv(os.path.join(folder, fname))
+            if not sniff:
+                continue
+            stats['partitions'] += 1
+            delim, code, header = sniff
+            options = (f'[Delimiter="{delim_lit[delim]}", Encoding={code}, '
+                       f'QuoteStyle=QuoteStyle.Csv]')
+            new_call = (f'Csv.Document(File.Contents(DataFolder & "\\\\{match.group(1)}"), '
+                        f'{options})')
+            if match.group(0) != new_call:
+                stats['options_fixed'] += 1
+                content = content[:match.start()] + new_call + content[match.end():]
+            # Rename step for joined columns, placed right after PromoteHeaders.
+            tail = content[match.start():]
+            types = _re.search(r'Table\.TransformColumnTypes\((#"[^"]+"|\w+),\s*\{(.*?)\}\s*\)',
+                               tail, _re.DOTALL)
+            promoted = _re.search(r'(#"Promoted Headers"|\#"[^"]+")\s*=\s*Table\.PromoteHeaders\(',
+                                  tail)
+            if not types or not promoted:
+                continue
+            present = {_norm_col(h): h for h in header}
+            header_exact = set(header)
+            declared = [c.replace('""', '"') for c in
+                        _re.findall(r'\{"((?:[^"]|"")*)",', types.group(2))]
+            pairs, absent = [], []
+            for real in declared:
+                if real in header_exact:
+                    continue
+                if _norm_col(real) in present:  # M column names are case-sensitive
+                    pairs.append((present[_norm_col(real)], real))
+                    continue
+                base = _re.sub(r'\s*\([^()]*\)$', '', real)
+                if base != real and _norm_col(base) in present:
+                    pairs.append((present[_norm_col(base)], real))
+                else:
+                    absent.append(real)
+                    stats['columns_unmatched'] += 1
+            if (not pairs and not absent) or types.group(1) != promoted.group(1):
+                continue
+            step = promoted.group(1)
+            source_expr = step
+
+            def _q(text):
+                return text.replace('"', '""')
+
+            targets = {}
+            for src, dst in pairs:
+                targets.setdefault(src, []).append(dst)
+            renames = [(s, t[0]) for s, t in targets.items()
+                       if len(t) == 1 and s not in declared]
+            # One file column feeding several captions (or itself declared) is copied.
+            for src, dsts in targets.items():
+                if (src, dsts[0]) in renames:
+                    continue
+                for dst in dsts:
+                    source_expr = f'Table.DuplicateColumn({source_expr}, "{_q(src)}", "{_q(dst)}")'
+            if renames:
+                joined = ', '.join('{"%s", "%s"}' % (_q(a), _q(b)) for a, b in renames)
+                source_expr = f'Table.RenameColumns({source_expr}, {{{joined}}})'
+            # Declared but absent from the file: keep the column, empty, so the
+            # refresh succeeds and the gap stays visible instead of failing.
+            for col in absent:
+                source_expr = f'Table.AddColumn({source_expr}, "{col.replace(chr(34), chr(34) * 2)}", each null)'
+            abs_types = match.start() + types.start()
+            type_expr = content[abs_types:abs_types + len(types.group(0))].replace(
+                f'({step},', f'({source_expr},', 1)
+            content = (content[:abs_types] + type_expr
+                       + content[abs_types + len(types.group(0)):])
+            stats['columns_renamed'] += len(pairs)
+        if content != original:
+            try:
+                with open(tmdl, 'w', encoding='utf-8') as f:
+                    f.write(content)
+            except OSError as exc:
+                logger.warning("Could not update CSV partition %s: %s", tmdl, exc)
+    if stats['partitions']:
+        print(f"  🧾 CSV partitions aligned with files: {stats['partitions']} checked, "
+              f"{stats['options_fixed']} options fixed, {stats['columns_renamed']} joined "
+              f"columns renamed, {stats['columns_unmatched']} columns absent from the file "
+              f"(kept empty)")
+    return stats
+
+
+_SHAPEFILE_SIDECARS = ('.dbf', '.shx', '.prj', '.cpg')
+
+
+def _shp_polygon_centers(shp_path):
+    """Yield an interior WGS84 point for each polygon record, or None."""
+    import struct
+
+    prj_path = os.path.splitext(shp_path)[0] + '.prj'
+    with open(prj_path, encoding='utf-8') as prj:
+        projection = prj.read().upper()
+    if 'WGS_1984' not in projection and 'WGS 84' not in projection:
+        raise ValueError('Shapefile is not in WGS84; coordinate conversion is required')
+    with open(shp_path, 'rb') as shp:
+        header = shp.read(100)
+        if len(header) != 100 or struct.unpack('>I', header[:4])[0] != 9994:
+            raise ValueError('Invalid shapefile header')
+        if struct.unpack('<I', header[32:36])[0] not in (5, 15, 25):
+            raise ValueError('Only polygon shapefiles are supported')
+        while record_header := shp.read(8):
+            if len(record_header) != 8:
+                raise ValueError('Truncated shapefile record header')
+            length = struct.unpack('>I', record_header[4:])[0] * 2
+            if length < 4 or length > 256 * 1024 * 1024:
+                raise ValueError('Invalid shapefile record length')
+            body = shp.read(length)
+            if len(body) != length:
+                raise ValueError('Truncated shapefile record')
+            shape_type = struct.unpack('<I', body[:4])[0]
+            if shape_type == 0:
+                yield None
+                continue
+            if shape_type not in (5, 15, 25) or length < 36:
+                raise ValueError('Unexpected polygon record type')
+            west, south, east, north = struct.unpack('<4d', body[4:36])
+            if not (-180 <= west <= east <= 180 and -90 <= south <= north <= 90):
+                raise ValueError('Polygon bounds are not valid WGS84 coordinates')
+            if len(body) < 44:
+                raise ValueError('Truncated polygon geometry')
+            part_count, point_count = struct.unpack('<2I', body[36:44])
+            if not part_count or not point_count or len(body) < 44 + part_count * 4 + point_count * 16:
+                raise ValueError('Invalid polygon geometry')
+            offsets = struct.unpack_from(f'<{part_count}I', body, 44) + (point_count,)
+            points_start = 44 + part_count * 4
+            location = None
+            for fraction in (0.5, 0.25, 0.75, 0.37, 0.63):
+                latitude = south + (north - south) * fraction
+                crossings = []
+                for first, last in zip(offsets, offsets[1:]):
+                    if first >= last or last > point_count:
+                        raise ValueError('Invalid polygon ring offsets')
+                    previous = struct.unpack_from('<2d', body, points_start + (last - 1) * 16)
+                    for index in range(first, last):
+                        current = struct.unpack_from('<2d', body, points_start + index * 16)
+                        if (previous[1] <= latitude < current[1] or
+                                current[1] <= latitude < previous[1]):
+                            crossings.append(previous[0] + (latitude - previous[1]) *
+                                             (current[0] - previous[0]) / (current[1] - previous[1]))
+                        previous = current
+                crossings.sort()
+                if len(crossings) >= 2 and len(crossings) % 2 == 0:
+                    west_edge, east_edge = max(zip(crossings[::2], crossings[1::2]),
+                                              key=lambda pair: pair[1] - pair[0])
+                    location = (latitude, (west_edge + east_edge) / 2)
+                    break
+            yield location
+
+
+def _wire_shapefile_map_coordinates(project_dir, source_basename):
+    """Bind a generated-coordinate map using WGS84 SHP points and an explicit join."""
+    import csv
+    import glob
+    import json
+    import re
+    import tempfile
+
+    data_dir = os.path.join(project_dir, 'Data')
+    model_dir = os.path.join(project_dir, f'{source_basename}.SemanticModel', 'definition')
+    report_dir = os.path.join(project_dir, f'{source_basename}.Report', 'definition')
+    shp_files = glob.glob(os.path.join(data_dir, '*.shp'))
+    if len(shp_files) != 1:
+        return {'mapped': 0, 'unmatched': 0}
+    shp_path = shp_files[0]
+    spatial_csv = shp_path + '.csv'
+    relationships = os.path.join(model_dir, 'relationships.tmdl')
+    if not os.path.isfile(spatial_csv) or not os.path.isfile(relationships):
+        return {'mapped': 0, 'unmatched': 0}
+
+    def _name(value):
+        return value[1:-1].replace("''", "'") if value.startswith("'") else value
+
+    ref_pattern = re.compile(
+        r"(?m)^\s*(?:fromColumn|toColumn):\s*('(?:[^']|'')+'|[\w]+)\.('(?:[^']|'')+'|[\w]+)\s*$")
+    with open(relationships, encoding='utf-8') as stream:
+        relation_blocks = re.split(r'(?m)^relationship\s+', stream.read())[1:]
+    pairs = set()
+    for block in relation_blocks:
+        refs = [(_name(table), _name(column)) for table, column in ref_pattern.findall(block)]
+        if len(refs) == 2:
+            pairs.add(tuple(refs))
+            pairs.add(tuple(reversed(refs)))
+
+    visual_files = glob.glob(os.path.join(report_dir, 'pages', '*', 'visuals', '*', 'visual.json'))
+    candidates = []
+    for path in visual_files:
+        with open(path, encoding='utf-8') as stream:
+            visual = json.load(stream)
+        notes = visual.get('annotations') or []
+        if visual.get('visual', {}).get('visualType') != 'map' or not any(
+            item.get('name') == 'MigrationNote' and
+            'Tableau-generated map coordinates' in item.get('value', '')
+            for item in notes if isinstance(item, dict)
+        ):
+            continue
+        query = visual['visual'].get('query', {}).get('queryState', {})
+        size = (query.get('Size') or {}).get('projections') or []
+        if len(size) != 1:
+            continue
+        def _entity(node):
+            if isinstance(node, dict):
+                if isinstance(node.get('SourceRef'), dict):
+                    return node['SourceRef'].get('Entity')
+                return next((name for child in node.values()
+                             if (name := _entity(child))), None)
+            if isinstance(node, list):
+                return next((name for child in node if (name := _entity(child))), None)
+            return None
+        fact_table = _entity(size[0].get('field', {}))
+        if fact_table:
+            candidates.append((path, visual, fact_table))
+    if len(candidates) != 1:
+        return {'mapped': 0, 'unmatched': 0}
+    visual_path, visual, fact_table = candidates[0]
+    table_files = glob.glob(os.path.join(model_dir, 'tables', '*.tmdl'))
+    table_contents = {}
+    for path in table_files:
+        with open(path, encoding='utf-8') as stream:
+            content = stream.read()
+        match = re.search(r"(?m)^table\s+('(?:[^']|'')+'|[^\n]+)$", content)
+        if match:
+            table_contents[_name(match.group(1).strip())] = (path, content)
+    fact_entry = table_contents.get(fact_table)
+    spatial_entry = next(((name, content) for name, (_path, content) in table_contents.items()
+                          if os.path.basename(shp_path) + '.csv' in content), None)
+    if not fact_entry or not spatial_entry:
+        return {'mapped': 0, 'unmatched': 0}
+    spatial_table = spatial_entry[0]
+    with open(spatial_csv, encoding='utf-8', newline='') as stream:
+        geo_rows = list(csv.DictReader(stream))
+    try:
+        points = list(_shp_polygon_centers(shp_path))
+    except (OSError, ValueError) as exc:
+        logger.warning('Spatial map coordinates unavailable: %s', exc)
+        return {'mapped': 0, 'unmatched': 0}
+    if len(geo_rows) != len(points):
+        logger.warning('Spatial geometry and attribute row counts differ')
+        return {'mapped': 0, 'unmatched': 0}
+    fact_path, fact_content = fact_entry
+    m_sources = re.findall(r'Csv\.Document\(File\.Contents\(DataFolder\s*&\s*"\\{1,2}([^"\\]+\.csv)"\)',
+                           fact_content)
+    if len(set(m_sources)) != 1:
+        return {'mapped': 0, 'unmatched': 0}
+    csv_path = os.path.join(data_dir, m_sources[0])
+    if not os.path.isfile(csv_path):
+        return {'mapped': 0, 'unmatched': 0}
+    sniffed = _sniff_csv(csv_path)
+    if not sniffed:
+        return {'mapped': 0, 'unmatched': 0}
+    delimiter, _encoding, headers = sniffed
+    if any(name in headers for name in ('MigrationLatitude', 'MigrationLongitude')):
+        return {'mapped': 0, 'unmatched': 0}
+    valid_joins = [(fact_col, geo_col) for (from_table, fact_col), (to_table, geo_col) in pairs
+                   if from_table == fact_table and to_table == spatial_table
+                   and fact_col in headers and geo_col in (geo_rows[0] if geo_rows else {})]
+    if len(set(valid_joins)) != 1:
+        return {'mapped': 0, 'unmatched': 0}
+    fact_col, geo_col = valid_joins[0]
+    coordinates = {}
+    for row, point in zip(geo_rows, points):
+        key = row.get(geo_col)
+        if key and point is not None:
+            if key in coordinates and coordinates[key] != point:
+                logger.warning('Spatial join has conflicting coordinates; no changes applied')
+                return {'mapped': 0, 'unmatched': 0}
+            coordinates[key] = point
+
+    with open(csv_path, encoding='utf-8-sig', newline='') as stream:
+        reader = csv.DictReader(stream, delimiter=delimiter)
+        rows = list(reader)
+        if not reader.fieldnames or fact_col not in reader.fieldnames:
+            return {'mapped': 0, 'unmatched': 0}
+        fieldnames = list(reader.fieldnames) + ['MigrationLatitude', 'MigrationLongitude']
+    mapped = 0
+    for row in rows:
+        point = coordinates.get(row.get(fact_col))
+        row['MigrationLatitude'] = format(point[0], '.10f') if point else ''
+        row['MigrationLongitude'] = format(point[1], '.10f') if point else ''
+        mapped += point is not None
+    if not mapped:
+        return {'mapped': 0, 'unmatched': len(rows)}
+
+    types = re.search(r'(?s)(#"Changed Types"\s*=\s*Table\.TransformColumnTypes\(.*?)(\n\s*\}\))',
+                      fact_content)
+    partition = re.search(r'(?m)^\tpartition\s+', fact_content)
+    if not types or not partition:
+        return {'mapped': 0, 'unmatched': len(rows)}
+    types_insert = (',\n\t\t\t\t\t\t{"MigrationLatitude", type number},'
+                    '\n\t\t\t\t\t\t{"MigrationLongitude", type number}')
+    fact_content = (fact_content[:types.start(2)] + types_insert +
+                    fact_content[types.start(2):])
+    model_columns = re.search(
+        r'(#"Model Columns"\s*=\s*Table\.SelectColumns\([^\n]*?\{)([^}]*)(\},\s*MissingField\.UseNull\))',
+        fact_content)
+    if model_columns:
+        existing = set(re.findall(r'"((?:[^"]|"")*)"', model_columns.group(2)))
+        additions = [f'"{name}"' for name in ('MigrationLatitude', 'MigrationLongitude')
+                     if name not in existing]
+        if additions:
+            fact_content = (fact_content[:model_columns.end(2)] + ', ' + ', '.join(additions)
+                            + fact_content[model_columns.end(2):])
+    partition = re.search(r'(?m)^\tpartition\s+', fact_content)
+    if not partition:
+        return {'mapped': 0, 'unmatched': len(rows)}
+    columns = ''.join(
+        f'\tcolumn {name}\n\t\tdataType: double\n\t\tsummarizeBy: none\n'
+        f'\t\tsourceColumn: {name}\n\t\tdataCategory: {category}\n\n'
+        for name, category in (('MigrationLatitude', 'Latitude'),
+                               ('MigrationLongitude', 'Longitude')))
+    fact_content = fact_content[:partition.start()] + columns + fact_content[partition.start():]
+
+    query = visual['visual']['query']['queryState']
+    for role in ('Latitude', 'Longitude', 'Location', 'Color'):
+        query.pop(role, None)
+    for role, column in (('Y', 'MigrationLatitude'),
+                         ('X', 'MigrationLongitude')):
+        query[role] = {'projections': [{
+            'field': {'Column': {'Expression': {'SourceRef': {'Entity': fact_table}},
+                                 'Property': column}},
+            'queryRef': f'{fact_table}.{column}', 'nativeQueryRef': column, 'active': True,
+        }]}
+    if not (query.get('Category') or {}).get('projections'):
+        tooltip_projections = (query.get('Tooltips') or {}).get('projections') or []
+        category_projection = next(
+            (projection for projection in tooltip_projections
+             if projection.get('field', {}).get('Column', {}).get('Property')
+             and projection.get('field', {}).get('Column', {}).get(
+                 'Expression', {}).get('SourceRef', {}).get('Entity') == fact_table),
+            None)
+        if category_projection is not None:
+            query['Category'] = {'projections': [{**category_projection, 'active': True}]}
+            query['Tooltips']['projections'] = [
+                projection for projection in tooltip_projections
+                if projection.get('field') != category_projection['field']]
+            if not query['Tooltips']['projections']:
+                del query['Tooltips']
+        else:
+            query['Category'] = {'projections': [query['Y']['projections'][0].copy()]}
+    visual['visual']['visualType'] = 'azureMap'
+    objects = visual['visual'].get('objects', {})
+    objects.pop('categoryAxis', None)
+    objects.pop('valueAxis', None)
+    control_properties = {
+        'mapStyle': 'defaultStyle', 'zoomLevel': 'zoom',
+        'latitude': 'centerLatitude', 'longitude': 'centerLongitude',
+        'autoZoom': 'autoZoom',
+    }
+    map_styles = {
+        "'road'": "'road'", "'grayscale'": "'grayscale_light'",
+        "'darkGrayscale'": "'grayscale_dark'", "'aerial'": "'satellite'",
+    }
+    map_controls = []
+    for object_name in ('mapControl', 'mapControls'):
+        for control in objects.pop(object_name, []):
+            properties = {}
+            for property_name, value in control.get('properties', {}).items():
+                mapped_name = control_properties.get(property_name, property_name)
+                if mapped_name not in control_properties.values():
+                    continue
+                if mapped_name == 'defaultStyle':
+                    expression = value.get('expr', {})
+                    literal = expression.get('Literal', {})
+                    if literal.get('Value') in map_styles:
+                        value = {**value, 'expr': {**expression, 'Literal': {
+                            **literal, 'Value': map_styles[literal['Value']]}}}
+                properties[mapped_name] = value
+            map_controls.append({**control, 'properties': properties})
+    if map_controls:
+        objects['mapControls'] = map_controls
+    for note in visual['annotations']:
+        if note.get('name') == 'MigrationNote' and 'Tableau-generated map coordinates' in note.get('value', ''):
+            note['value'] = (f'WGS84 polygon representative points joined by model relationship; '
+                             f'{len(rows) - mapped} source rows have no geometry.')
+
+    staged_csv = None
+    try:
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', newline='',
+                                         dir=data_dir, suffix='.tmp', delete=False) as stream:
+            staged_csv = stream.name
+            writer = csv.DictWriter(stream, fieldnames=fieldnames, delimiter=delimiter)
+            writer.writeheader()
+            writer.writerows(rows)
+        with open(fact_path, 'w', encoding='utf-8') as stream:
+            stream.write(fact_content)
+        with open(visual_path, 'w', encoding='utf-8') as stream:
+            json.dump(visual, stream, indent=2, ensure_ascii=False)
+        os.replace(staged_csv, csv_path)
+    finally:
+        if staged_csv and os.path.exists(staged_csv):
+            os.unlink(staged_csv)
+    logger.info('Bound %s map points; %s fact rows lack geometry', mapped, len(rows) - mapped)
+    return {'mapped': mapped, 'unmatched': len(rows) - mapped}
+
+
+def _restrict_file_partitions_to_model(project_dir, source_basename):
+    """End every file-backed partition on exactly the model's source columns.
+
+    A file often holds more columns than Tableau used. Desktop's "Refresh >
+    Schema and data" then tries to add them and collides with calculated or
+    placeholder columns of the same name. Returns the partitions updated.
+    """
+    import glob as _glob
+    import re as _re
+    updated = 0
+    tables_dir = os.path.join(project_dir, f'{source_basename}.SemanticModel',
+                              'definition', 'tables')
+    tail = _re.compile(r'\n([ \t]*)in[ \t]*\n([ \t]*)(#"(?:[^"]|"")+"|[A-Za-z_]\w*)[ \t]*(?=\n|$)')
+    for tmdl in _glob.glob(os.path.join(tables_dir, '*.tmdl')):
+        try:
+            with open(tmdl, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError:
+            continue
+        if 'File.Contents(DataFolder' not in content or '#"Model Columns"' in content:
+            continue
+        columns = [c.strip().strip("'").replace("''", "'") for c in
+                   _re.findall(r'^\t\tsourceColumn:\s*(.+?)\s*$', content, _re.MULTILINE)]
+        start = content.find('partition ')
+        ends = list(tail.finditer(content, start)) if start >= 0 and columns else []
+        if not ends:
+            continue
+        last = ends[-1]
+        step_indent = last.group(2)
+        names = ', '.join('"%s"' % c.replace('"', '""') for c in dict.fromkeys(columns))
+        new_tail = (f',\n{step_indent}#"Model Columns" = Table.SelectColumns('
+                    f'{last.group(3)}, {{{names}}}, MissingField.UseNull)'
+                    f'\n{last.group(1)}in\n{step_indent}#"Model Columns"')
+        content = content[:last.start()] + new_tail + content[last.end():]
+        try:
+            with open(tmdl, 'w', encoding='utf-8') as f:
+                f.write(content)
+            updated += 1
+        except OSError as exc:
+            logger.warning("Could not restrict partition columns in %s: %s", tmdl, exc)
+    return updated
+
+
+def _dbf_to_csv(dbf_path, csv_path):
+    """Write the attribute table of a dBase (.dbf) file to UTF-8 CSV.
+
+    Power Query has no shapefile connector; the attributes are what the
+    report's fields use. Returns the number of rows written, or None.
+    """
+    import csv as _csv
+    import struct as _struct
+    encoding = 'utf-8'
+    cpg = os.path.splitext(dbf_path)[0] + '.cpg'
+    try:
+        with open(cpg, 'r', encoding='ascii', errors='ignore') as f:
+            declared = f.read().strip().lower()
+        if declared in ('1252', 'ansi 1252', 'cp1252', 'windows-1252'):
+            encoding = 'cp1252'
+        elif declared in ('88591', 'iso-8859-1', 'latin1'):
+            encoding = 'latin-1'
+    except OSError:
+        pass
+    try:
+        with open(dbf_path, 'rb') as f:
+            head = f.read(32)
+            if len(head) < 32:
+                return None
+            count, header_len, record_len = _struct.unpack('<IHH', head[4:12])
+            fields = []
+            while f.tell() < header_len - 1:
+                desc = f.read(32)
+                if len(desc) < 32 or desc[0] == 0x0D:
+                    break
+                name = desc[:11].split(b'\x00', 1)[0].decode(encoding, errors='replace')
+                fields.append((name, chr(desc[11]), desc[16]))
+            f.seek(header_len)
+            with open(csv_path, 'w', newline='', encoding='utf-8') as out:
+                writer = _csv.writer(out)
+                writer.writerow([n for n, _t, _l in fields])
+                written = 0
+                for _ in range(count):
+                    record = f.read(record_len)
+                    if len(record) < record_len:
+                        break
+                    if record[:1] == b'*':
+                        continue
+                    pos, row = 1, []
+                    for _name, ftype, length in fields:
+                        raw = record[pos:pos + length]
+                        pos += length
+                        value = raw.decode(encoding, errors='replace').strip()
+                        if ftype == 'L':
+                            value = {'T': 'true', 'Y': 'true', 'F': 'false',
+                                     'N': 'false'}.get(value.upper(), '')
+                        elif ftype == 'D' and len(value) == 8 and value.isdigit():
+                            value = f'{value[:4]}-{value[4:6]}-{value[6:]}'
+                        row.append(value)
+                    writer.writerow(row)
+                    written += 1
+    except (OSError, _struct.error) as exc:
+        logger.warning("Could not read shapefile attributes %s: %s", dbf_path, exc)
+        return None
+    return written
+
+
+def _route_spatial_partitions(project_dir, source_basename):
+    """Point spatial-file partitions at data Power Query can actually read.
+
+    Tableau spatial sources (GeoJSON, shapefile) become ``Json.Document``
+    partitions. A shapefile is binary, and a GeoJSON that is not on disk only
+    exists as the workbook's Hyper extract. Either way the refresh fails, so
+    the partition is rewired to a CSV: the shapefile's .dbf attributes, or the
+    unique extract CSV holding every expected column. Returns counters.
+    """
+    import glob as _glob
+    import re as _re
+    stats = {'spatial': 0, 'shapefile_csv': 0, 'extract_csv': 0, 'unresolved': 0}
+    model_dir = os.path.join(project_dir, f'{source_basename}.SemanticModel')
+    _, folder = _read_data_folder(os.path.join(model_dir, 'definition', 'expressions.tmdl'))
+    if not folder or not os.path.isdir(folder):
+        return stats
+    block = _re.compile(
+        r'Source\s*=\s*try\s+Json\.Document\(File\.Contents\(DataFolder\s*&\s*"\\{0,2}([^"]+)"\)\)'
+        r'\s+otherwise\s+#table\(\{([^}]*)\},\s*\{\s*\}\),')
+    csv_names = None
+    headers = None
+    for tmdl in _glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
+        try:
+            with open(tmdl, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError:
+            continue
+        match = block.search(content)
+        if not match:
+            continue
+        stats['spatial'] += 1
+        ref = match.group(1).replace('\\\\', '\\')
+        ext = os.path.splitext(ref)[1].lower()
+        ref_path = os.path.join(folder, ref)
+        if ext != '.shp' and os.path.isfile(ref_path):
+            continue  # a real GeoJSON file loads as generated
+        expected = [c.replace('""', '"') for c in _re.findall(r'"((?:[^"]|"")*)"', match.group(2))]
+        chosen = None
+        dbf = os.path.splitext(ref_path)[0] + '.dbf'
+        if ext == '.shp' and os.path.isfile(dbf):
+            chosen = f'{ref}.csv'
+            target = os.path.join(folder, chosen)
+            if not os.path.isfile(target) and _dbf_to_csv(dbf, target) is None:
+                chosen = None
+            if chosen:
+                stats['shapefile_csv'] += 1
+        if not chosen:
+            if csv_names is None:
+                csv_names = sorted(f for f in os.listdir(folder) if f.lower().endswith('.csv'))
+                headers = _csv_header_sets(folder, csv_names)
+            chosen = _pick_csv_for_columns(expected, headers)
+            if not chosen:
+                # Joined tables caption columns "col (file)"; the extract says "col".
+                bases = [_re.sub(r'\s*\([^()]*\)$', '', c) for c in expected]
+                chosen = _pick_csv_for_columns(bases, headers)
+                wanted = {_norm_col(c) for c in bases if c}
+                full = sorted(f for f, h in headers.items() if wanted and wanted <= h)
+                if not chosen and len(full) > 1 and _same_content(
+                        [os.path.join(folder, f) for f in full]):
+                    chosen = full[0]
+            if chosen:
+                stats['extract_csv'] += 1
+        tail = content[match.end():]
+        types = _re.search(
+            r'#"Changed Types"\s*=\s*Table\.TransformColumnTypes\((#"[^"]+"|\w+),\s*\{(.*?)\}\s*\)',
+            tail, _re.DOTALL)
+        if not chosen or not types:
+            stats['unresolved'] += 1
+            logger.warning("Spatial source '%s' has no readable file or matching extract; "
+                           "table stays empty", ref)
+            continue
+        line_start = content.rfind('\n', 0, match.start()) + 1
+        indent = content[line_start:match.start()]
+        prev = types.group(1)
+        typed = {c.replace('""', '"') for c in _re.findall(r'\{"((?:[^"]|"")*)",', types.group(2))}
+        extra = [c for c in expected if c and c not in typed]
+        type_body = types.group(2).rstrip()
+        if extra:
+            sep = ',' if type_body.strip() else ''
+            type_body += sep + ''.join(
+                f'\n{indent}    {{"{c.replace(chr(34), chr(34) * 2)}", type text}}' for c in extra)
+            type_body += f'\n{indent}'
+        new_types = (f'#"Changed Types" = Table.TransformColumnTypes({prev}, '
+                     f'{{{type_body}}})')
+        replacement = (
+            f'Source = Csv.Document(File.Contents(DataFolder & "\\{chosen}"), '
+            f'[Delimiter=",", Encoding=65001, QuoteStyle=QuoteStyle.Csv]),\n'
+            f'{indent}{prev} = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),\n'
+            f'{indent}')
+        content = (content[:match.start()] + replacement + new_types
+                   + tail[types.end():])
+        try:
+            with open(tmdl, 'w', encoding='utf-8') as f:
+                f.write(content)
+        except OSError as exc:
+            logger.warning("Could not update spatial partition %s: %s", tmdl, exc)
+    if stats['spatial']:
+        print(f"  🗺️  Spatial sources: {stats['spatial']} checked, {stats['shapefile_csv']} "
+              f"shapefile(s) read from .dbf, {stats['extract_csv']} served by their extract, "
+              f"{stats['unresolved']} left empty")
+    return stats
+
+
+def _shorten_report_artifact_path(project_dir, source_basename):
+    """Shorten only the PBIR folder when Desktop's MAX_PATH limit is exceeded."""
+    import json as _json
+    report_dir = os.path.join(project_dir, f'{source_basename}.Report')
+    if not os.path.isdir(report_dir):
+        return False
+    paths = [os.path.join(root, name)
+             for root, _dirs, files in os.walk(report_dir)
+             for name in files]
+    if not any(len(path) >= 260 for path in paths):
+        return False
+    short_name = 'R.Report'
+    short_dir = os.path.join(project_dir, short_name)
+    if os.path.exists(short_dir):
+        shutil.rmtree(short_dir)
+    os.replace(report_dir, short_dir)
+    pbip_path = os.path.join(project_dir, f'{source_basename}.pbip')
+    try:
+        with open(pbip_path, 'r', encoding='utf-8') as stream:
+            manifest = _json.load(stream)
+        for artifact in manifest.get('artifacts', []):
+            report = artifact.get('report')
+            if report and report.get('path') == f'{source_basename}.Report':
+                report['path'] = short_name
+        with open(pbip_path, 'w', encoding='utf-8') as stream:
+            _json.dump(manifest, stream, indent=2, ensure_ascii=False)
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not update PBIP report path after shortening: %s", exc)
+        return False
+    print(f"  📏 Shortened report artifact path: {source_basename}.Report → {short_name}")
+    return True
+
+
+def _collect_local_data_files(source_path, project_dir, source_basename,
+                              search_root=None):
+    """Copy data files the model references from beside the workbook into Data/.
+
+    Many workbooks keep their sources next to the .twb/.twbx, or link files a
+    .twbx does not embed. Without them in DataFolder the partitions fall back
+    to empty tables. Returns counters only.
+    """
+    stats = {'referenced': 0, 'already_present': 0, 'copied': 0,
+             'ambiguous': 0, 'not_found': 0}
+    if not source_path or not os.path.isfile(source_path):
+        return stats
+    model_dir = os.path.join(project_dir, f'{source_basename}.SemanticModel')
+    expr_path = os.path.join(model_dir, 'definition', 'expressions.tmdl')
+    content, current = _read_data_folder(expr_path)
+    refs = _referenced_data_files(model_dir)
+    stats['referenced'] = len(refs)
+    if not refs or content is None or current is None:
+        return stats
+
+    data_dir = os.path.abspath(os.path.join(project_dir, 'Data'))
+    current_abs = os.path.abspath(current) if current else ''
+    in_data = [r for r in refs if os.path.isfile(os.path.join(data_dir, r))]
+    in_current = [r for r in refs if current_abs and os.path.isfile(os.path.join(current_abs, r))]
+    missing = [r for r in refs if r not in in_data]
+    candidates = (_local_data_candidates(source_path, missing, search_root=search_root)
+                  if missing else {})
+
+    os.makedirs(data_dir, exist_ok=True)
+    for ref in missing:
+        if ref in in_current and current_abs != data_dir:
+            paths = [os.path.join(current_abs, ref)]
+        else:
+            paths = candidates.get(ref, [])
+        if not paths:
+            stats['not_found'] += 1
+            continue
+        if len(paths) > 1 and not _same_content(paths):
+            stats['ambiguous'] += 1
+            logger.warning("Data file '%s' found in several places with different "
+                           "content; not copied", ref)
+            continue
+        try:
+            shutil.copy2(paths[0], os.path.join(data_dir, ref))
+            stats['copied'] += 1
+        except OSError as exc:
+            stats['not_found'] += 1
+            logger.warning("Could not copy data file %s: %s", ref, exc)
+    stats['already_present'] = len(in_data)
+
+    # A shapefile's attributes live in its .dbf, which the model never names.
+    sidecars = [os.path.splitext(r)[0] + ext for r in refs if r.lower().endswith('.shp')
+                and os.path.isfile(os.path.join(data_dir, r)) for ext in _SHAPEFILE_SIDECARS]
+    sidecars = [s for s in sidecars if not os.path.isfile(os.path.join(data_dir, s))]
+    if sidecars:
+        found = _local_data_candidates(source_path, sidecars, search_root=search_root)
+        for name, paths in found.items():
+            if len(paths) == 1 or _same_content(paths):
+                try:
+                    shutil.copy2(paths[0], os.path.join(data_dir, name))
+                except OSError as exc:
+                    logger.warning("Could not copy shapefile part %s: %s", name, exc)
+
+    resolved = sum(1 for r in refs if os.path.isfile(os.path.join(data_dir, r)))
+    if resolved and resolved >= len(in_current) and current_abs != data_dir:
+        import re as _re
+        escaped = data_dir.replace('\\', '\\\\')
+        new_content = _re.sub(
+            r'(expression\s+DataFolder\s*=\s*)"[^"]*"',
+            lambda m: m.group(1) + '"' + escaped + '"', content)
+        try:
+            with open(expr_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            print(f"  📂 DataFolder updated → {data_dir}")
+        except OSError as exc:
+            logger.warning("Could not update DataFolder: %s", exc)
+    print(f"  📊 Data files: {resolved}/{len(refs)} available in Data/ "
+          f"(copied {stats['copied']} from the workbook folder, "
+          f"{stats['ambiguous']} ambiguous, {stats['not_found']} not found)")
+    return stats
 
 
 def _flatten_data_files(data_dir, data_extensions):
@@ -7577,6 +8569,14 @@ def _extract_twbx_data_files(args, source_basename):
         # Batch mode has always done this; a single .twb was left pointing at
         # a folder that does not exist, with no hint of where to put the data.
         _fix_twb_data_folder(project_dir, source_basename)
+    _collect_local_data_files(source, project_dir, source_basename)
+    _convert_hyper_to_csv_in_data(
+        os.path.join(project_dir, 'Data'), source_basename, project_dir)
+    _route_spatial_partitions(project_dir, source_basename)
+    _reconcile_csv_partitions(project_dir, source_basename)
+    _wire_shapefile_map_coordinates(project_dir, source_basename)
+    _restrict_file_partitions_to_model(project_dir, source_basename)
+    _shorten_report_artifact_path(project_dir, source_basename)
 
 
 def _run_post_generation_reports(args, source_basename, results):

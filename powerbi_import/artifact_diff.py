@@ -230,6 +230,11 @@ def _parse_tmdl_table(filepath):
                 prop = lines[j].strip()
                 if prop.startswith('dataType:'):
                     col_info['dataType'] = prop.split(':', 1)[1].strip()
+                elif prop.startswith('sourceColumn:'):
+                    source = prop.split(':', 1)[1].strip()
+                    col_info['sourceColumn'] = (source[1:-1].replace("''", "'")
+                                                if source.startswith("'") and source.endswith("'")
+                                                else source)
                 elif prop.startswith('dataCategory:'):
                     col_info['dataCategory'] = prop.split(':', 1)[1].strip()
                 elif prop.startswith('isHidden'):

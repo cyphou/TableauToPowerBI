@@ -4,12 +4,12 @@
 
 # 🔄 Tableau → Power BI
 
-**Automated Migration Tool** — convert Tableau workbooks (`.twb`/`.twbx`) to Power BI projects (`.pbip`) in seconds, fully automated, zero manual rework.
+**Automated Migration Tool** — automatically generate Power BI projects (`.pbip`) from Tableau workbooks (`.twb`/`.twbx`), with validation and manual review or adjustment where required.
 
 | | |
 |---|---|
 | 🏷️ **Package** | 48.0.0 · roadmap track v48 |
-| ✅ **Tests** | 10,553 passed · 66 skipped · 1 xfailed (10,620 collected across 312 test files) |
+| ✅ **Tests** | 10,798 passed · 66 skipped · 1 xfailed (10,865 collected across 316 test files) |
 | 🐍 **Python** | 3.12+ · zero external dependencies |
 | 📜 **License** | MIT |
 
@@ -120,11 +120,16 @@ $env:POWERBI_DESKTOP_PATH = "C:\Program Files\Microsoft Power BI Desktop\bin\PBI
 & $py migrate.py --batch $src --output-dir $out --qa --quality-report --verify-open --quiet
 & $py scripts/probe_projects.py $out `
     --shots "$out\opening_validation\screenshots" `
-    --json "$out\opening_validation\opening_report.json"
+    --json "$out\opening_validation\opening_report.json" `
+    --html "$out\DESKTOP_OPENING_VALIDATION.html"
 ```
 
-The probe captures a screenshot only after aggregate model data is verified.
-Use `--skip-data-check` only for diagnostic screenshots. `OPENED` means the
+For each report the probe presses **Home > Refresh > Schema and data** through
+UI Automation (English or French UI), waits until the local model holds rows,
+then captures the rendered page. A screenshot is labelled *data verified* only
+when every checked model table contains rows; partial or unavailable loads are
+labelled *data not verified*. `--no-refresh` skips the click and
+`--skip-data-check` captures the window state only. `OPENED` means the
 report window loaded, `CRASHED` means a Desktop crash or error dialog was
 detected, `verified` means rows were found, and `empty` means no usable rows
 were confirmed. Keep the generated HTML/JSON report and screenshots beside the
@@ -668,7 +673,8 @@ SharedSales/
 | Funnel | `funnel` | |
 | Bullet / Radial / Gauge | `gauge` | |
 | Heat Map / Highlight Table | `matrix` | Conditional formatting |
-| Packed Bubble / Strip Plot | `scatterChart` | Bubble variant |
+| Explicit Packed Bubble / Strip Plot | `scatterChart` | Explicit marks may use scatter; review required roles |
+| Shelfless inferred packed bubble | `treemap` | Empty Rows/Columns shelves, one Size measure + Colour dimension; approximation, not bubble geometry |
 | Word Cloud | `wordCloud` | |
 | Dual Axis / Combo / Pareto | `lineClusteredColumnComboChart` | |
 | Sankey | `sankeyDiagram` | Custom visual GUID |
@@ -728,7 +734,7 @@ TableauToPowerBI/
 │   ├── schema_drift.py                        #   Schema drift detection (v28)
 │   └── deploy/                                #   Deploy to PBI Service / Fabric
 ├── Dockerfile                                 # Docker image for API server
-├── tests/                                     # 10,553 passed, 66 skipped, 1 xfailed; 312 test files
+├── tests/                                     # 10,798 passed, 66 skipped, 1 xfailed; 316 test files
 ├── docs/                                      # 18 documentation files
 └── examples/                                  # Sample Tableau workbooks
 ```
@@ -931,7 +937,7 @@ python -m pytest tests/test_openability.py -v         # Static PBIP openability 
 
 ```mermaid
 flowchart LR
-    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\n10,553 passed\nPy 3.12–3.14"]
+    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\n10,798 passed\nPy 3.12–3.14"]
     T --> V["✅ Validate\nStrict .twbx\nmigrations"]
     V --> S["📦 Staging\nFabric deploy"]
     S --> P["🚀 Production\nManual approval"]

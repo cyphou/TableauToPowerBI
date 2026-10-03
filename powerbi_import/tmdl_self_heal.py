@@ -723,7 +723,7 @@ def _self_heal_model(model, recovery=None):
 
     # 8. Data type / formatString consistency
     #    A numeric formatString on a String column causes PBI Desktop to
-    #    report "Missing_References".  Fix by changing dataType to Double.
+    #    report "Missing_References".  Keep string identifiers as strings.
     _NUMERIC_FMT_RE = re.compile(r'[#0,.]')  # digits/decimal in format
     for t in model.get('model', {}).get('tables', []):
         tname = t.get('name', '')
@@ -732,18 +732,16 @@ def _self_heal_model(model, recovery=None):
             dt = (col.get('dataType') or '').lower()
             fmt = col.get('formatString', '')
             if dt == 'string' and fmt and _NUMERIC_FMT_RE.search(fmt):
-                # Numeric format on a string column — fix type
-                col['dataType'] = 'Double'
-                col['summarizeBy'] = 'sum'
+                col.pop('formatString', None)
                 repairs += 1
-                print(f"  \u2695 Self-heal: Fixed dataType for '{tname}'.'{cname}' "
-                      f"String \u2192 Double (formatString '{fmt}')")
+                print(f"  \u2695 Self-heal: Removed numeric format for string column "
+                    f"'{tname}'.'{cname}'")
                 if recovery:
                     recovery.record('tmdl', 'datatype_format_mismatch',
                                     item_name=f'{tname}.{cname}',
                                     description=f"Column '{cname}' has dataType String "
                                                 f"but numeric formatString '{fmt}'",
-                                    action="Changed dataType to Double",
+                            action="Removed incompatible numeric format; kept String data type",
                                     severity='warning')
 
     # 9. Duplicate column names within a table

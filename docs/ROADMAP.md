@@ -18,7 +18,7 @@ Measured on the committed example corpus, not estimated:
 | Functional parity | mean **99.7%**, lowest **96.4%**, 20 of 26 at full parity |
 | Lineage coverage | **99.9%**, 0 unresolved source records |
 | Evidence level | `STATIC_PASS` on 26/26 |
-| Test suite | 10,553 passed, 66 skipped, 1 xfailed; 10,620 collected across 312 `test_*.py` files in 878.76s |
+| Test suite | 10,798 passed, 66 skipped, 1 xfailed; 10,865 collected across 316 `test_*.py` files in 281.73s |
 | Agent ownership | 0 unowned modules, 0 asymmetric declarations |
 
 The remediation queue now contains **no `repair` actions at all**: 10 `decide`,
@@ -137,7 +137,7 @@ measured from the tree, not estimated, and they set the agenda below.
 |---|---|
 | Source modules | 161 (149 `powerbi_import`, 12 `tableau_export`) |
 | Source lines | 96,919 |
-| Test files / lines | 312 `test_*.py` files / 119,084 (1.23x test-to-source) |
+| Test files / lines | 316 `test_*.py` files / 127,900 (1.23x test-to-source) |
 | CLI surface | 14 public commands over 142 flags, **0 inert**, in `migrate.py` |
 | Concentration | Top 6 modules hold 28,318 lines — **29.2% of all source** |
 | Production reachability | 147 modules reachable, **14 not reachable** (4,292 lines), 1 genuinely dead |

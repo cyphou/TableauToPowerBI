@@ -178,7 +178,7 @@ class TestDaxToMConverterExtended(unittest.TestCase):
     def test_int(self):
         result = _dax_to_m_expression("INT([Value])")
         self.assertIsNotNone(result)
-        self.assertIn("Number.RoundDown", result)
+        self.assertEqual("Number.RoundTowardZero([Value])", result)
 
     def test_sqrt(self):
         result = _dax_to_m_expression("SQRT([Value])")
@@ -504,7 +504,7 @@ class TestVisualDataRoles(unittest.TestCase):
     def test_card_roles(self):
         dim_roles, meas_roles = VISUAL_DATA_ROLES["card"]
         self.assertEqual(dim_roles, [])
-        self.assertIn("Fields", meas_roles)
+        self.assertEqual(meas_roles, ["Values"])
 
     def test_slicer_roles(self):
         dim_roles, meas_roles = VISUAL_DATA_ROLES["slicer"]

@@ -2,19 +2,6 @@
  "visual_count": 6,
  "visuals": [
   {
-   "fields": 0,
-   "has_format": false,
-   "height": 216,
-   "page": "Marketing Dashboard",
-   "title_font": "",
-   "title_size": "",
-   "type": "clusteredBarChart",
-   "width": 384,
-   "x": 0,
-   "y": 594,
-   "z": 3000
-  },
-  {
    "fields": 3,
    "has_format": true,
    "height": 486,
@@ -78,6 +65,19 @@
    "x": 0,
    "y": 0,
    "z": 0
+  },
+  {
+   "fields": 0,
+   "has_format": true,
+   "height": 216,
+   "page": "Marketing Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "textbox",
+   "width": 384,
+   "x": 0,
+   "y": 594,
+   "z": 3000
   }
  ]
 }

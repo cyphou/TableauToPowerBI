@@ -494,7 +494,7 @@ def read_hyper(file_path, max_rows=20):
 
     if magic[:6] == b'SQLite':
         result['format'] = 'sqlite'
-    elif magic[:4] == b'HyPe':
+    elif magic[:5] == b'Hyper':
         result['format'] = 'hyper'
 
     # Option A: Try tableauhyperapi first (handles all formats)

@@ -706,9 +706,25 @@ class TestPaddingAndBorder(unittest.TestCase):
         vid = os.listdir(visuals_dir)[0]
         with open(os.path.join(visuals_dir, vid, 'visual.json')) as f:
             vj = json.load(f)
-        objs = vj.get('visual', {}).get('objects', {})
-        self.assertIn('padding', objs)
-        self.assertIn('border', objs)
+        visual = vj['visual']
+        container_objects = visual['visualContainerObjects']
+        self.assertEqual(set(container_objects), {'title', 'padding', 'border'})
+        self.assertEqual(container_objects['padding'], [{
+            'properties': {
+                'left': {'expr': {'Literal': {'Value': '10D'}}},
+                'top': {'expr': {'Literal': {'Value': '5D'}}},
+            }
+        }])
+        self.assertEqual(container_objects['border'], [{
+            'properties': {
+                'show': {'expr': {'Literal': {'Value': 'true'}}},
+                'color': {'solid': {
+                    'color': {'expr': {'Literal': {'Value': "'#000000'"}}}
+                }},
+            }
+        }])
+        self.assertNotIn('padding', visual['objects'])
+        self.assertNotIn('border', visual['objects'])
 
 
 # ─── Sort definition (lines 421-444) ────────────────────────────────
@@ -837,8 +853,20 @@ class TestDynamicReferenceLines(unittest.TestCase):
         formatting = {}
         objects = {}
         gen._build_analytics_objects(objects, ws_data, 'clusteredBarChart', formatting)
-        # Should have a reference line in valueAxis
-        self.assertIn('valueAxis', objects)
+        self.assertEqual(objects, {
+            'y1AxisReferenceLine': [{
+                'properties': {
+                    'value': {'expr': {'Literal': {'Value': '100.0D'}}},
+                    'show': {'expr': {'Literal': {'Value': 'true'}}},
+                    'displayName': {'expr': {'Literal': {'Value': "'Target'"}}},
+                    'lineColor': {'solid': {
+                        'color': {'expr': {'Literal': {'Value': "'#00FF00'"}}}
+                    }},
+                    'style': {'expr': {'Literal': {'Value': "'solid'"}}},
+                },
+                'selector': {'id': '0'},
+            }]
+        })
 
 
 # ─── Number format conversion (line 2740) ───────────────────────────

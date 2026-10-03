@@ -359,7 +359,7 @@ The original 8-agent model had two overloaded agents:
 6. (Optional) @assessor → readiness report
 7. (Optional) @merger → shared semantic model
 8. (Optional) @deployer → Fabric/PBI workspace
-9. @tester validates all steps; latest full run: 10,553 passed, 66 skipped, 1 xfailed (10,620 collected across 312 test files)
+9. @tester validates all steps; latest full run: 10,798 passed, 66 skipped, 1 xfailed (10,865 collected across 316 test files)
 ```
 
 ## Handoff Protocol

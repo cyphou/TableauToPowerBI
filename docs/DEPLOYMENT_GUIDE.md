@@ -104,8 +104,19 @@ $output = "C:\Client\migration_output"
   --output-dir $output --qa --quality-report --verify-open --quiet
 & $py scripts/probe_projects.py $output `
   --shots "$output\opening_validation\screenshots" `
-  --json "$output\opening_validation\opening_report.json"
+  --json "$output\opening_validation\opening_report.json" `
+  --html "$output\DESKTOP_OPENING_VALIDATION.html"
 ```
+
+The probe presses **Home > Refresh > Schema and data** for each report, waits
+for rows in the local model, and labels each screenshot *data verified* or
+*data not verified*. Data files embedded in a `.twbx` are exported to each
+project's `Data/` folder. Files the workbook links instead are searched for, by
+file name, in this order: the workbook's folder, its subfolders, its parent
+folder, then the batch root. Matches are copied into `Data/` and `DataFolder`
+points there. When several copies share a name but differ in content, none is
+copied. Files that cannot be found must be placed in `Data/` before the refresh
+can load them.
 
 `POWERBI_DESKTOP_PATH` must point to an existing `PBIDesktop.exe`; an invalid
 explicit path fails closed. Reports and screenshots remain beside the external

@@ -519,7 +519,7 @@ def _detect_many_to_many(model, datasources):
 def _fix_relationship_type_mismatches(model):
     """
     Fix type mismatches between relationship key columns.
-    Aligns the toColumn ('one' side) to the fromColumn ('many' side) type.
+    Preserve text identifiers; for purely numeric keys align the toColumn type.
     """
     tables = {t.get('name', ''): t for t in model['model']['tables']}
 
@@ -556,30 +556,36 @@ def _fix_relationship_type_mismatches(model):
         if from_type == to_type:
             continue
 
+        if to_type.lower() == 'string' and from_type.lower() != 'string':
+            target_table, target_col, target_name = from_table, from_col, from_col_name
+            desired_type = to_type
+        else:
+            target_table, target_col, target_name = to_table, to_col, to_col_name
+            desired_type = from_type
+
         print(f"  \u26a0\ufe0f  Type mismatch: {rel.get('fromTable')}.{from_col_name} ({from_type}) "
-              f"-> {rel.get('toTable')}.{to_col_name} ({to_type}). Aligning to {from_type}.")
+              f"-> {rel.get('toTable')}.{to_col_name} ({to_type}). Aligning to {desired_type}.")
 
-        old_type = to_type
-        to_col['dataType'] = from_type
+        old_type = target_col.get('dataType', 'string')
+        target_col['dataType'] = desired_type
 
-        if from_type.lower() == 'string':
-            to_col['summarizeBy'] = 'none'
-            if 'formatString' in to_col:
-                del to_col['formatString']
+        if desired_type.lower() == 'string':
+            target_col['summarizeBy'] = 'none'
+            target_col.pop('formatString', None)
 
         old_m_type = pbi_to_m.get(old_type, '')
-        new_m_type = pbi_to_m.get(from_type, '')
+        new_m_type = pbi_to_m.get(desired_type, '')
         if old_m_type and new_m_type:
-            for partition in to_table.get('partitions', []):
+            for partition in target_table.get('partitions', []):
                 source = partition.get('source', {})
                 if isinstance(source, dict) and 'expression' in source:
                     expr = source['expression']
-                    old_pattern = f'"{to_col_name}", {old_m_type}'
-                    new_pattern = f'"{to_col_name}", {new_m_type}'
+                    old_pattern = f'"{target_name}", {old_m_type}'
+                    new_pattern = f'"{target_name}", {new_m_type}'
                     if old_pattern in expr:
                         source['expression'] = expr.replace(old_pattern, new_pattern)
         else:
-            print(f"    \u26a0\ufe0f  Cannot map M types for {to_col_name}: {repr(old_type)} / {repr(from_type)}")
+            print(f"    \u26a0\ufe0f  Cannot map M types for {target_name}: {repr(old_type)} / {repr(desired_type)}")
 
 
 def _deactivate_ambiguous_paths(model):

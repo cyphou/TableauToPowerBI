@@ -1419,7 +1419,8 @@ def _write_partition(lines, table_name, partition):
                 lines.append(f"\t\tsource = {expr_clean}")
         else:
             # Strip inline // comments and fix corrupted patterns before writing
-            expression = _strip_m_inline_comments(expression)
+            if '\n' not in expression:
+                expression = _strip_m_inline_comments(expression)
             # Validate M if/else balance before writing
             expression = _fix_m_if_else_balance(expression)
             lines.append(f"\t\tsource =")

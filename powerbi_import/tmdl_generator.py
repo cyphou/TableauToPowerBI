@@ -74,6 +74,7 @@ from powerbi_import.tmdl_m_conversion import (  # noqa: F401
     _strip_m_inline_comments,
     _build_m_transform_steps,
     m_rename_map,
+    rename_m_column_refs,
     _fix_m_if_else_balance,
     _wrap_date_subtraction_in_duration_days,
 )
@@ -93,6 +94,7 @@ from powerbi_import.tmdl_dax_postprocess import (  # noqa: E402,F401
     _wrap_bare_ref_expression,
     resolve_table_for_column,
     resolve_table_for_formula,
+    retarget_dax_column_refs,
 )
 
 
@@ -291,6 +293,7 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
     actual_bim_measures = set()
     actual_bim_symbols = set()
     actual_bim_column_types = {}  # (tname, cname) -> normalized dataType (lowercase)
+    actual_bim_column_categories = {}  # (tname, cname) -> dataCategory (lowercase)
     actual_bim_measure_types = {}  # (tname, mname) -> inferred return type
     total_columns = 0
     total_measures = 0
@@ -305,6 +308,9 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
                 ct = (c.get('dataType') or '').strip().lower()
                 if ct:
                     actual_bim_column_types[(tname, cname)] = ct
+                cat = (c.get('dataCategory') or '').strip().lower()
+                if cat:
+                    actual_bim_column_categories[(tname, cname)] = cat
         total_columns += len(t.get('columns', []))
         total_hierarchies += len(t.get('hierarchies', []))
     # Second pass: infer measure return types — especially for parameter
@@ -430,12 +436,15 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         'actual_bim_measures': actual_bim_measures,
         'actual_bim_symbols': actual_bim_symbols,
         'actual_bim_column_types': actual_bim_column_types,
+        'actual_bim_column_categories': actual_bim_column_categories,
         'actual_bim_measure_types': actual_bim_measure_types,
         'self_heal_repairs': repair_count,
         'recovery_summary': recovery.get_summary() if recovery.has_repairs else None,
         'm_validation_issues': m_validation_issues,
         'lineage': lineage,
         'table_rename_map': model.get('_table_rename_map', {}),
+        'measure_rename_map': model.get('_measure_rename_map', {}),
+        'column_rename_map': model.get('_column_rename_map', {}),
     }
     if ir_result:
         stats['incremental_refresh'] = ir_result
@@ -507,6 +516,10 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
 
     # Phase 3: Create tables
     _create_semantic_tables(model, ctx, datasources, extra_objects)
+
+    # A captioned column is named after what its partition produces, so every
+    # expression written against the Tableau name has to follow it.
+    retarget_dax_column_refs(model)
 
     # Phase 4: Create and validate relationships
     _create_and_validate_relationships(model, datasources)
@@ -963,6 +976,7 @@ def _collect_semantic_context(datasources, extra_objects):
 
     return {
         'best_tables': best_tables,
+        'table_ds_origin': table_ds_origin,
         'm_query_overrides': m_query_overrides,
         'all_calculations': all_calculations,
         'col_metadata_map': col_metadata_map,
@@ -986,6 +1000,7 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
     ds_main_table = ctx['ds_main_table']
     dax_context = ctx['dax_context']
     col_metadata_map = ctx['col_metadata_map']
+    table_ds_origin = ctx.get('table_ds_origin', {})
     m_query_overrides = ctx['m_query_overrides']
     datasource_table_map = ctx['datasource_table_map']
 
@@ -1001,6 +1016,35 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
                         hyper_table_data[tname.lower()] = hrt
 
     for table_name, (table, table_conn) in best_tables.items():
+        owner = next((ds for ds in datasources
+                      if ds.get('name') == table_ds_origin.get(table_name)), None)
+        table_metadata = {}
+        if owner is not None:
+            for column in table.get('columns', []):
+                name = column.get('name', '').strip('[]')
+                if not name:
+                    continue
+                matches = [meta for meta in owner.get('columns', [])
+                           if meta.get('name', '').strip('[]').casefold() == name.casefold()]
+                declared = column.get('datatype')
+                matching_type = next((meta for meta in matches
+                                      if meta.get('datatype') == declared), None)
+                metadata = dict(matching_type or (matches[0] if matches else column))
+                if declared:
+                    metadata['datatype'] = declared
+                matching = [meta for meta in matches if meta.get('datatype') == declared]
+                roles = {meta.get('semantic_role') for meta in matching
+                         if meta.get('semantic_role')}
+                if len(roles) == 1:
+                    metadata['semantic_role'] = next(iter(roles))
+                elif len(roles) > 1:
+                    metadata.pop('semantic_role', None)
+                if any(str(meta.get('hidden', '')).lower() == 'true' for meta in matching):
+                    metadata['hidden'] = True
+                table_metadata[name] = metadata
+                caption = metadata.get('caption')
+                if caption:
+                    table_metadata[caption] = metadata
         # An explicit table attribution wins: a merged model records which
         # table each calculation came from, and datasource routing alone would
         # send them all to the widest table in the merged datasource.
@@ -1050,7 +1094,7 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
             calculations=table_calculations,
             columns_metadata=[],
             dax_context=dax_context,
-            col_metadata_map=col_metadata_map,
+            col_metadata_map=table_metadata if owner is not None else col_metadata_map,
             extra_objects={},
             m_query_override=m_query_overrides.get(table_name, ''),
             model_mode=model.get('_model_mode', 'import'),
@@ -1071,6 +1115,12 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
                     if partitions:
                         partitions[0]['source']['expression'] = hyper_m
                         logger.debug("Hyper data inlined for table '%s'", table_name)
+
+        column_renames = tbl.pop('_column_renames', None)
+        if column_renames:
+            ledger = model.setdefault('_column_rename_map', {})
+            for _raw, _produced in column_renames.items():
+                ledger[(tbl.get('name', table_name), _raw)] = _produced
 
         model["model"]["tables"].append(tbl)
 
@@ -1127,7 +1177,7 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
                       main_table_name, column_table_map)
 
     # Phase 9b: Auto-generate measures for quick table calculations (% of total, running sum, etc.)
-    _create_quick_table_calc_measures(model, extra_objects.get('worksheets', []),
+    _create_quick_table_calc_measures(model, extra_objects.get('_worksheets', extra_objects.get('worksheets', [])),
                                       main_table_name, column_table_map)
 
     # Phase 9c: Auto-generate "Number of Records" COUNTROWS measure when
@@ -1157,6 +1207,7 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
     # fails to load.  Within a table, drop exact (case-insensitive)
     # duplicates; across tables, namespace the later measure with a
     # table-name suffix so both survive and the model still opens.
+    measure_rename_map = model.setdefault('_measure_rename_map', {})
     global_measure_names = set()  # case-folded names
     for table in model["model"]["tables"]:
         tname = table.get("name", "")
@@ -1181,6 +1232,10 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
                 print(f"  ⚕ Self-heal: Renamed colliding measure '{mname}' → '{new_name}'")
                 _rewrite_bare_measure_references(model, mname, new_name)
                 measure["name"] = new_name
+                for rename_key, renamed_name in measure_rename_map.items():
+                    if rename_key[0] == tname and renamed_name == mname:
+                        measure_rename_map[rename_key] = new_name
+                measure_rename_map[(tname, mname)] = new_name
                 key = nkey
             seen_in_table.add(key)
             global_measure_names.add(key)
@@ -1199,6 +1254,36 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
             cname = col.get("name", "")
             key = cname.casefold()
             if key in seen_cols:
+                previous = seen_cols[key]
+                physical = col if col.get('sourceColumn') and not col.get('expression') else (
+                    previous if previous.get('sourceColumn') and not previous.get('expression') else None)
+                calculated = col if col.get('expression') else (
+                    previous if previous.get('expression') else None)
+                if physical is not None and calculated is not None:
+                    new_name = f"{physical['name']} (source)"
+                    counter = 2
+                    while new_name.casefold() in seen_cols:
+                        new_name = f"{physical['name']} (source {counter})"
+                        counter += 1
+                    physical['name'] = new_name
+                    seen_cols[new_name.casefold()] = physical
+                    seen_cols[key] = calculated
+                    if physical is col:
+                        unique_cols.append(col)
+                    else:
+                        unique_cols.append(calculated)
+                    continue
+                if (previous.get('sourceColumn') and col.get('sourceColumn')
+                        and previous['sourceColumn'] != col['sourceColumn']):
+                    new_name = f"{cname} (source)"
+                    counter = 2
+                    while new_name.casefold() in seen_cols:
+                        new_name = f"{cname} (source {counter})"
+                        counter += 1
+                    col['name'] = new_name
+                    seen_cols[new_name.casefold()] = col
+                    unique_cols.append(col)
+                    continue
                 # Duplicate column name (case-insensitive) → skip
                 print(f"  ⚕ Self-heal: Dropped duplicate column '{cname}' in '{tname}'")
                 continue
@@ -1749,10 +1834,18 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
     # Track column names (avoid duplicates within the table)
     column_name_counts = {}
+    # {Tableau column name: name carried by the model} for the callers that
+    # still address columns by their Tableau name.
+    column_renames = {}
 
     # Add columns
     for col in columns:
-        original_col_name = col.get('name', 'Column')
+        raw_name = col.get('name', 'Column')
+        # Power BI Desktop resolves a column by the name the partition emits,
+        # so a model name that differs from it leaves every report reference
+        # dangling.  Naming the column after the produced name keeps the
+        # partition, the model and the report on one identifier.
+        original_col_name = rename_map.get(raw_name.strip('[]'), raw_name)
 
         # Handle duplicate column names by adding a suffix
         if original_col_name in column_name_counts:
@@ -1761,11 +1854,13 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         else:
             column_name_counts[original_col_name] = 0
             unique_col_name = original_col_name
+        if unique_col_name != raw_name:
+            column_renames[raw_name] = unique_col_name
 
         # Determine data type — prefer DS-level metadata over table-level
         # because Tableau's datasource XML carries the semantic type override
         # (e.g. a hyper column typed 'string' may actually be 'real' in the DS).
-        col_meta = col_metadata_map.get(unique_col_name, col_metadata_map.get(col.get('name', ''), {}))
+        col_meta = col_metadata_map.get(raw_name, col_metadata_map.get(unique_col_name, {}))
         col_datatype = col.get('datatype', 'string')
         ds_datatype = col_meta.get('datatype', '')
         if ds_datatype and ds_datatype != col_datatype:
@@ -1773,8 +1868,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
         # The partition renames a captioned column, so the model has to ask
         # the partition for the name it actually produces.
-        raw_col_name = col.get('name', 'Column')
-        source_col = rename_map.get(raw_col_name.strip('[]'), raw_col_name)
+        source_col = rename_map.get(raw_name.strip('[]'), raw_name)
 
         bim_column = {
             "name": unique_col_name,
@@ -2071,8 +2165,9 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             # Dependency check: if the M expression references a calc column
             # that stayed as DAX (not converted to M), we must fall back to DAX
             if m_expr is not None:
+                m_expr = rename_m_column_refs(m_expr, rename_map)
                 # Columns available in M: physical source columns + previously created M steps
-                m_available_cols = set(_this_table_columns)
+                m_available_cols = {rename_map.get(_c, _c) for _c in _this_table_columns}
                 for step_name, _ in m_calc_steps:
                     # Step names are like '#"Added ColName"' — extract the column name
                     sm = re.match(r'#"Added (.+?)"', step_name)
@@ -2143,7 +2238,21 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                     existing_idx = idx
                     break
             if existing_idx is not None:
-                result_table["columns"][existing_idx] = bim_calc_col
+                existing = result_table["columns"][existing_idx]
+                if (existing.get('name') != caption and existing.get('sourceColumn')
+                        and not existing.get('expression')):
+                    original = existing['name']
+                    candidate = f'{original} (source)'
+                    counter = 2
+                    names = {col.get('name', '').casefold()
+                             for col in result_table['columns']}
+                    while candidate.casefold() in names:
+                        candidate = f'{original} (source {counter})'
+                        counter += 1
+                    existing['name'] = candidate
+                    result_table['columns'].append(bim_calc_col)
+                else:
+                    result_table["columns"][existing_idx] = bim_calc_col
             else:
                 result_table["columns"].append(bim_calc_col)
             # Track the calc column name so subsequent measures can detect
@@ -2197,6 +2306,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         result_table['_source_workbooks'] = table['_source_workbooks']
     if table.get('_merge_action'):
         result_table['_merge_action'] = table['_merge_action']
+    if column_renames:
+        result_table['_column_renames'] = column_renames
 
     return result_table
 
@@ -2507,7 +2618,9 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
             if tc_type == 'pcto':
                 measure_name = f"% of Total {field_name}"
                 if measure_name not in existing_measures:
-                    expr = f"DIVIDE({agg_func}('{tbl}'[{field_name}]), CALCULATE({agg_func}('{tbl}'[{field_name}]), ALL('{tbl}')))"
+                    base = (f"COUNTROWS('{tbl}')" if field_name == 'Number of Records'
+                        else f"{agg_func}('{tbl}'[{field_name}])")
+                    expr = f"DIVIDE({base}, CALCULATE({base}, ALL('{tbl}')))"
                     target_table.setdefault("measures", []).append({
                         "name": measure_name,
                         "expression": expr,

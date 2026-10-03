@@ -15,7 +15,7 @@ All agents MUST follow these rules. They apply to every file in the project.
 
 - **Source**: `tableau_export/` — extraction + DAX converter + M query builder
 - **Target**: `powerbi_import/` — TMDL generator + PBIR report + visual generator + Fabric generators
-- **Tests**: `tests/` — latest full run: 10,553 passed, 66 skipped, 1 xfailed (10,620 collected across 312 test files)
+- **Tests**: `tests/` — latest full run: 10,798 passed, 66 skipped, 1 xfailed (10,865 collected across 316 test files)
 - **Docs**: `docs/` — architecture, known limitations, deployment, agent surface, references, roadmap
 - **Release gates**: `docs/ROADMAP.md` is authoritative for current scope and gates.
 

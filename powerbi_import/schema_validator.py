@@ -59,7 +59,7 @@ _ACCEPTABLE_VERSIONS = {
 
 KNOWN_VISUAL_TYPES: Set[str] = {
     # Standard visuals
-    'actionButton', 'areaChart', 'barChart', 'basicShape',
+    'actionButton', 'areaChart', 'azureMap', 'barChart', 'basicShape',
     'boxAndWhisker', 'card', 'cardVisual', 'clusteredBarChart',
     'clusteredColumnChart', 'columnChart', 'comboChart',
     'decompositionTree', 'donutChart', 'filledMap', 'funnel',

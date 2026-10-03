@@ -302,6 +302,11 @@ def _heal_visual_off_canvas(state, recovery=None) -> int:
                 w = float(pos.get('width', 0)); h = float(pos.get('height', 0))
             except (TypeError, ValueError):
                 continue
+            if x > cw - _MIN_VISUAL_W or y > ch - _MIN_VISUAL_H:
+                _record(recovery, 'visual_off_canvas_unresolved', visual['name'],
+                        'warning', 'Visual origin cannot fit its minimum size on the page',
+                        'Left layout unchanged', follow_up='Review Tableau zone layout and page dimensions')
+                continue
             changed = False
             if x < 0:
                 pos['x'] = 0; changed = True
@@ -1156,14 +1161,13 @@ def _heal_invalid_visualtype(state, recovery=None) -> int:
     which canonicalises through ``VISUAL_TYPE_MAP`` / ``APPROXIMATION_MAP``.
     """
     try:
-        from visual_generator import (
+        from powerbi_import.visual_generator import (
             VISUAL_TYPE_MAP,
             APPROXIMATION_MAP,
             resolve_visual_type,
         )
     except ImportError:
-        # Resolved via sys.path rather than the package, so surface the miss
-        # instead of reporting "0 repairs" as if the healer had run.
+        # Surface the miss instead of reporting "0 repairs" as if the healer had run.
         logger.error("visual_generator unavailable; invalid-visual-type healing skipped")
         return 0
 

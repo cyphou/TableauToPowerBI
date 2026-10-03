@@ -504,6 +504,34 @@ def _check_visual_bindings(project_dir) -> CheckResult:
     return CheckResult("visual_bindings", not issues, "error", issues)
 
 
+def _check_model_column_projection(project_dir) -> CheckResult:
+    """Catch TMDL source columns removed by the last Power Query selection."""
+    issues = []
+    for model_dir in glob.glob(os.path.join(project_dir, '*.SemanticModel')):
+        for path in glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
+            try:
+                with open(path, encoding='utf-8') as stream:
+                    content = stream.read()
+            except OSError as exc:
+                issues.append(f'{os.path.relpath(path, project_dir)}: {exc}')
+                continue
+            selection = re.search(
+                r'#"Model Columns"\s*=\s*Table\.SelectColumns\([^\n]*?\{([^}]*)\}',
+                content,
+            )
+            if not selection:
+                continue
+            selected = {name.replace('""', '"') for name in
+                        re.findall(r'"((?:[^"]|"")*)"', selection.group(1))}
+            sources = re.findall(r'(?m)^\s*sourceColumn:\s*(.+?)\s*$', content)
+            for source in sources:
+                name = source[1:-1].replace("''", "'") if source.startswith("'") else source
+                if name not in selected:
+                    issues.append(f'{os.path.relpath(path, project_dir)}: sourceColumn '
+                                  f'{name!r} is removed by #"Model Columns"')
+    return CheckResult('model_column_projection', not issues, 'error', issues)
+
+
 def _check_schema(project_dir) -> CheckResult:
     errors = []
     warnings = []
@@ -912,6 +940,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_data_files_present(project_dir),
         _check_executable_tmdl_dax(project_dir),
         _check_visual_bindings(project_dir),
+        _check_model_column_projection(project_dir),
         _check_references(project_dir),
         _check_report_structure(project_dir),
         _check_schema(project_dir),

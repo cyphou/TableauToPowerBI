@@ -270,17 +270,29 @@ class TestGenerateSetActionArtifacts(unittest.TestCase):
             'target_set': 'S', 'target_field': 'F',
             'assign_behavior': 'assign'
         }]
-        self._run(actions)
+        count, bookmarks = self._run(actions)
+        self.assertEqual(count, 2)
+        self.assertEqual(len(bookmarks), 2)
+        self.assertEqual(bookmarks[0]['displayName'], 'Pick (Apply)')
+        self.assertTrue(bookmarks[0]['name'])
         for d in os.listdir(self.visuals_dir):
             vpath = os.path.join(self.visuals_dir, d, 'visual.json')
             if os.path.exists(vpath):
                 with open(vpath) as f:
                     data = json.load(f)
                 if data.get('visual', {}).get('visualType') == 'actionButton':
-                    action_props = data['visual']['objects']['action'][0]['properties']
+                    visual_links = data['visual']['visualContainerObjects']['visualLink']
+                    self.assertEqual(len(visual_links), 1)
+                    action_props = visual_links[0]['properties']
+                    self.assertEqual(
+                        action_props['show']['expr']['Literal']['Value'], 'true')
                     self.assertEqual(
                         action_props['type']['expr']['Literal']['Value'],
                         "'Bookmark'")
+                    self.assertEqual(
+                        action_props['bookmark']['expr']['Literal']['Value'],
+                        f"'{bookmarks[0]['name']}'")
+                    self.assertNotIn('action', data['visual'].get('objects', {}))
                     return
         self.fail('No action button found')
 
@@ -370,16 +382,25 @@ class TestGenerateNavigationButtons(unittest.TestCase):
         count = self.gen._generate_navigation_buttons(
             self.visuals_dir, actions, 0, page_map)
         self.assertEqual(count, 1)
-        # Check destinationPage property
         for d in os.listdir(self.visuals_dir):
             vpath = os.path.join(self.visuals_dir, d, 'visual.json')
             if os.path.exists(vpath):
                 with open(vpath) as f:
                     data = json.load(f)
-                action_props = data['visual']['objects']['action'][0]['properties']
-                dest = action_props.get('destinationPage', {})
-                self.assertIn('ReportSection_Detail',
-                              dest.get('expr', {}).get('Literal', {}).get('Value', ''))
+                self.assertEqual(data['visual']['visualType'], 'actionButton')
+                visual_links = data['visual']['visualContainerObjects']['visualLink']
+                self.assertEqual(len(visual_links), 1)
+                action_props = visual_links[0]['properties']
+                self.assertEqual(
+                    action_props['show']['expr']['Literal']['Value'], 'true')
+                self.assertEqual(
+                    action_props['type']['expr']['Literal']['Value'],
+                    "'PageNavigation'")
+                dest = action_props['navigationSection']
+                self.assertEqual(
+                    dest['expr']['Literal']['Value'], "'ReportSection_Detail'")
+                self.assertNotIn('action', data['visual'].get('objects', {}))
+                self.assertNotIn('destinationPage', action_props)
                 return
         self.fail('No nav button found')
 

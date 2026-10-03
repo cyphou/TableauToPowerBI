@@ -951,7 +951,21 @@ class TestSelfHealDataTypeFormatMismatch(unittest.TestCase):
         repairs = _self_heal_model(model)
         self.assertGreaterEqual(repairs, 1)
         col = model['model']['tables'][0]['columns'][0]
-        self.assertEqual(col['dataType'], 'Double')
+        self.assertEqual(col['dataType'], 'String')
+        self.assertNotIn('formatString', col)
+        self.assertEqual(col['summarizeBy'], 'none')
+
+    def test_postal_code_stays_text_when_tableau_format_looks_numeric(self):
+        from powerbi_import.tmdl_generator import _self_heal_model
+        model = self._make_model([{
+            'name': 'Postal Code', 'dataType': 'String',
+            'formatString': '00000', 'sourceColumn': 'Postal Code',
+            'summarizeBy': 'none',
+        }])
+        _self_heal_model(model)
+        column = model['model']['tables'][0]['columns'][0]
+        self.assertEqual(column['dataType'], 'String')
+        self.assertNotIn('formatString', column)
 
     def test_string_without_format_untouched(self):
         from powerbi_import.tmdl_generator import _self_heal_model

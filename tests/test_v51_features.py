@@ -17,7 +17,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
-from tableau_export.m_query_builder import _gen_m_fallback
+from tableau_export.m_query_builder import (
+    _gen_m_fallback,
+    wrap_source_with_try_otherwise,
+)
 from tableau_export.prep_flow_parser import _PREP_AGG_MAP, _PREP_JOIN_MAP
 from powerbi_import.visual_generator import create_filters_config
 from powerbi_import.assessment import run_assessment, _check_migration_scope
@@ -283,11 +286,15 @@ class TestPrepFlowJoinMapping(unittest.TestCase):
 class TestMQueryFallback(unittest.TestCase):
     """M query fallback generator improvements."""
 
-    def test_fallback_has_try_otherwise(self):
+    def test_fallback_gains_try_otherwise_from_its_caller(self):
+        # tmdl_generator wraps every partition, so the guard is end-to-end
+        # even though the generator itself no longer emits it.
         columns = [{'name': 'ID', 'datatype': 'integer'}, {'name': 'Name', 'datatype': 'string'}]
-        result = _gen_m_fallback({'_conn_type': 'CustomDB'}, 'MyTable', columns)
-        self.assertIn('try', result)
-        self.assertIn('otherwise', result)
+        raw = _gen_m_fallback({'_conn_type': 'CustomDB'}, 'MyTable', columns)
+        wrapped = wrap_source_with_try_otherwise(raw, ['ID', 'Name'])
+        self.assertIn('try', wrapped)
+        self.assertIn('otherwise', wrapped)
+        self.assertIn('#table({"ID", "Name"}, {})', wrapped)
 
     def test_fallback_has_conn_type(self):
         columns = [{'name': 'Col1', 'datatype': 'string'}]
@@ -299,10 +306,11 @@ class TestMQueryFallback(unittest.TestCase):
         result = _gen_m_fallback({'_conn_type': 'Unknown'}, 'T', columns)
         self.assertIn('TODO', result)
 
-    def test_fallback_empty_table_on_error(self):
-        columns = [{'name': 'A', 'datatype': 'string'}]
+    def test_fallback_invents_no_rows(self):
+        columns = [{'name': 'A', 'datatype': 'string'}, {'name': 'B', 'datatype': 'integer'}]
         result = _gen_m_fallback({}, 'T', columns)
-        self.assertIn('Empty table on error', result)
+        self.assertIn('#table({"A", "B"}, {})', result)
+        self.assertNotIn('Sample', result)
 
     def test_fallback_has_column_names(self):
         columns = [{'name': 'Revenue', 'datatype': 'real'}, {'name': 'Qty', 'datatype': 'integer'}]

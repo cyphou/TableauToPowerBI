@@ -81,6 +81,13 @@ def determine_chart_type(worksheet):
     if card_type:
         return card_type
 
+    cols = worksheet.find('./table/cols')
+    rows = worksheet.find('./table/rows')
+    if (cols is not None and rows is not None
+            and 'Longitude (generated)' in (cols.text or '')
+            and 'Latitude (generated)' in (rows.text or '')):
+        return 'map'
+
     # For explicit mark types, use the mapping directly
     if mark_class.lower() != 'automatic':
         pbi_type = _map_tableau_mark_to_type(mark_class)

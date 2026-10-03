@@ -24,7 +24,7 @@ def extract_worksheet_fields(worksheet):
 
     # Regex for Tableau derivation prefixes (none, sum, avg, count, usr, yr, etc.)
     derivation_re = r'^(none|sum|avg|count|cnt|ctd|countd|min|max|usr|yr|mn|dy|qr|wk|attr|md|mdy|hms|hr|mt|sc|thr|trunc|tyr|tqr|tmn|tdy|twk):'
-    suffix_re = r':(nk|qk|ok|fn|tn)$'
+    suffix_re = r':(nk|qk|ok|fn|tn)(?::\d+)?$'
     # Quick table calc prefixes (pcto = % of total, pctd = % difference, running_*)
     table_calc_re = r'^(pcto|pctd|diff|running_sum|running_avg|running_count|running_min|running_max|rank|rank_unique|rank_dense):(sum|avg|count|min|max|countd)?:?'
 
@@ -131,13 +131,20 @@ def extract_worksheet_fields(worksheet):
                     # Extract [datasource].[field]
                     col_refs = re.findall(r'\[([^\]]+)\]\.\[([^\]]+)\]', column)
                     if col_refs:
-                        clean = re.sub(derivation_re, '', col_refs[0][1])
+                        raw = col_refs[0][1]
+                        table_calc_match = re.match(table_calc_re, raw)
+                        clean = re.sub(table_calc_re, '', raw)
+                        clean = re.sub(derivation_re, '', clean)
                         clean = re.sub(suffix_re, '', clean)
-                        fields.append({
+                        entry = {
                             'name': clean,
                             'shelf': enc_type,
                             'datasource': col_refs[0][0]
-                        })
+                        }
+                        if table_calc_match:
+                            entry['table_calc'] = table_calc_match.group(1)
+                            entry['table_calc_agg'] = table_calc_match.group(2) or 'sum'
+                        fields.append(entry)
 
     # â”€â”€ Slice fields (Detail shelf of Marks card) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # ``<slices><column>[ds].[derivation:Field:suffix]</column></slices>``

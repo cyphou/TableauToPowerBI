@@ -20,6 +20,7 @@ from powerbi_import.qa_suite import (
     run_qa_suite, generate_qa_html,
     STRAY_SENTINELS, SENTINEL_NAMES,
     _check_no_stray_sentinels, _check_no_empty_visuals,
+        _check_visual_role_contract,
     _check_format_coverage, _check_zones_matched, _check_no_orphan_filters,
     _iter_visual_files, _find_report_dir, _encoded_field_count,
     _has_static_content, _text_run_values, _filter_has_field,
@@ -31,9 +32,13 @@ from powerbi_import.qa_suite import (
 def _chart_visual(projections=2, vtype="clusteredBarChart", with_format=True):
     """A data-bearing chart visual with `projections` projected fields."""
     proj = [{"field": {"Column": {"Property": f"c{i}"}}} for i in range(projections)]
+    query_state = {"Category": {"projections": proj}}
+    if vtype not in ("slicer", "table", "tableEx", "textbox", "image"):
+        query_state["Y"] = {"projections": [{"field": {"Column": {
+            "Property": "value"}}}]}
     visual = {
         "visualType": vtype,
-        "query": {"queryState": {"Category": {"projections": proj}}},
+        "query": {"queryState": query_state},
     }
     if with_format:
         visual["objects"] = {"general": [{"properties": {}}]}
@@ -118,7 +123,7 @@ class TestHelpers(unittest.TestCase):
         self.assertIn("ABC", vals)
 
     def test_encoded_field_count(self):
-        self.assertEqual(_encoded_field_count(_chart_visual(3)), 3)
+        self.assertEqual(_encoded_field_count(_chart_visual(3)), 4)
         self.assertEqual(_encoded_field_count(_empty_visual()), 0)
 
     def test_has_static_content_textbox(self):
@@ -291,6 +296,21 @@ class TestOrphanFilters(_ProjectFixture):
 
 class TestQAReportAggregate(_ProjectFixture):
 
+    def test_invalid_visual_role_contract_fails(self):
+        self.add_visual("p1", "v1", {
+            "visual": {
+                "visualType": "scatterChart",
+                "query": {"queryState": {
+                    "Y": {"projections": [{"field": {"Column": {
+                        "Property": "Amount"}}}]}
+                }},
+                "objects": {"general": [{}]},
+            }
+        })
+        check = _check_visual_role_contract(self.tmp)
+        self.assertFalse(check.passed)
+        self.assertTrue(any("missing required role" in item for item in check.evidence))
+
     def test_clean_project_overall_pass(self):
         self.add_visual("p1", "v1", _chart_visual(2))
         self.add_visual("p1", "v2", _textbox_visual("Title"))
@@ -407,7 +427,7 @@ class TestAutoplayQAStep(_ProjectFixture):
         self.assertIn("6_qa_report", results["steps"])
         s6 = results["steps"]["6_qa_report"]
         self.assertIn(s6["status"], ("pass", "warn", "fail", "skip"))
-        self.assertEqual(s6.get("total"), 4)
+        self.assertEqual(s6.get("total"), 5)
 
     def test_autoplay_qa_error_fails_overall(self):
         from scripts.autoplay import run_autoplay

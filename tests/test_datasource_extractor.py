@@ -404,6 +404,328 @@ class TestExtractTablesWithColumns(unittest.TestCase):
         self.assertEqual(tables[0]['columns'][0]['name'], 'CustID')
         self.assertFalse(tables[0]['columns'][0]['nullable'])
 
+    def test_phase3_metadata_merge_recovers_worksheet_dependency(self):
+        """A worksheet dependency must survive a metadata-only parent alias."""
+        xml = '''
+        <workbook>
+          <datasources>
+            <datasource name="SyntheticSource">
+              <connection class="federated">
+                <relation type="table" name="FactRelation">
+                  <columns>
+                    <column name="Amount" datatype="real" ordinal="0" />
+                  </columns>
+                </relation>
+                <metadata-records>
+                  <metadata-record class="column">
+                    <local-name>Category</local-name>
+                    <remote-name>Category</remote-name>
+                    <parent-name>UpstreamTable</parent-name>
+                    <local-type>string</local-type>
+                    <ordinal>1</ordinal>
+                  </metadata-record>
+                </metadata-records>
+              </connection>
+              <column name="[Amount]" datatype="real" role="measure" />
+            </datasource>
+          </datasources>
+          <worksheets>
+            <worksheet name="SyntheticSheet">
+              <table>
+                <view>
+                  <datasource-dependencies datasource="SyntheticSource">
+                    <column name="[Category]" datatype="string"
+                            role="dimension" type="nominal" />
+                  </datasource-dependencies>
+                </view>
+                <rows>[SyntheticSource].[none:Category:nk]</rows>
+              </table>
+            </worksheet>
+          </worksheets>
+        </workbook>
+        '''
+        workbook = ET.fromstring(xml)
+        dependencies = workbook.findall(
+            './worksheets/worksheet/table/view/datasource-dependencies/column')
+        self.assertEqual([column.get('name') for column in dependencies],
+                         ['[Category]'])
+        ds = workbook.findall('./datasources/datasource')[0]
+        self.assertIsNone(ds.find('./column[@name="[Category]"]'))
+
+        tables = extract_tables_with_columns(ds)
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(tables[0]['name'], 'FactRelation')
+        self.assertEqual(
+            [(column['name'], column['datatype'], column['role'])
+             for column in tables[0]['columns']],
+            [('Amount', 'real', 'measure'), ('Category', 'string', 'dimension')])
+
+    def test_phase3_metadata_merge_parent_alias_populates_empty_singleton(self):
+        xml = '''
+        <datasource>
+          <connection class="federated">
+            <relation type="table" name="FactRelation" />
+            <metadata-records>
+              <metadata-record class="column">
+                <local-name>[Category]</local-name>
+                <remote-name>Category</remote-name>
+                <parent-name>[UpstreamTable]</parent-name>
+                <local-type>string</local-type>
+                <ordinal>1</ordinal>
+                <contains-null>false</contains-null>
+              </metadata-record>
+            </metadata-records>
+          </connection>
+        </datasource>
+        '''
+        tables = extract_tables_with_columns(ET.fromstring(xml))
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(tables[0]['name'], 'FactRelation')
+        self.assertEqual(tables[0]['columns'], [{
+            'name': 'Category', 'datatype': 'string', 'role': 'dimension',
+            'ordinal': 1, 'length': None, 'nullable': False,
+        }])
+
+    def test_phase3_metadata_merge_exact_parent_selects_owning_table(self):
+        xml = '''
+        <datasource>
+          <connection class="federated">
+            <relation type="join" join="left">
+              <relation type="table" name="FactRelation">
+                <columns><column name="Amount" datatype="real" /></columns>
+              </relation>
+              <relation type="table" name="DimensionRelation">
+                <columns><column name="ItemID" datatype="integer" /></columns>
+              </relation>
+            </relation>
+            <metadata-records>
+              <metadata-record class="column">
+                <local-name>[Category]</local-name>
+                <remote-name>Category</remote-name>
+                <parent-name>[DimensionRelation]</parent-name>
+                <local-type>string</local-type>
+                <ordinal>1</ordinal>
+              </metadata-record>
+            </metadata-records>
+          </connection>
+        </datasource>
+        '''
+        tables = extract_tables_with_columns(ET.fromstring(xml))
+        self.assertEqual(len(tables), 2)
+        self.assertEqual(
+            {table['name']: [column['name'] for column in table['columns']]
+             for table in tables},
+            {'FactRelation': ['Amount'],
+             'DimensionRelation': ['ItemID', 'Category']})
+        category = next(table for table in tables
+                        if table['name'] == 'DimensionRelation')['columns'][1]
+        self.assertEqual((category['datatype'], category['role']),
+                         ('string', 'dimension'))
+
+    def test_phase3_metadata_merge_unassigned_multi_table_stays_unassigned(self):
+        """An unowned record or declaration cannot supply either table's schema."""
+        xml = '''
+        <datasource>
+          <connection class="federated">
+            <relation type="table" name="FactRelation">{fact_columns}</relation>
+            <relation type="table" name="DimensionRelation">{dim_columns}</relation>
+            <metadata-records>
+              <metadata-record class="column">
+                <local-name>[Category]</local-name>
+                <remote-name>Category</remote-name>
+                {parent_xml}
+                <local-type>string</local-type>
+              </metadata-record>
+            </metadata-records>
+          </connection>
+          {declaration}
+        </datasource>
+        '''
+        for populated in (True, False):
+            for declared in (False, True):
+                for parent_xml in (
+                        '<parent-name>[UpstreamTable]</parent-name>',
+                        '<parent-name />', ''):
+                    with self.subTest(populated=populated, declared=declared,
+                                      parent_xml=parent_xml):
+                        ds = ET.fromstring(xml.format(
+                            fact_columns=(
+                                '<columns><column name="Amount" datatype="real" />'
+                                '</columns>' if populated else ''),
+                            dim_columns=(
+                                '<columns><column name="ItemID" datatype="integer" />'
+                                '</columns>' if populated else ''),
+                            parent_xml=parent_xml,
+                            declaration=(
+                                '<column name="[Category]" datatype="string" '
+                                'role="dimension" />' if declared else ''),
+                        ))
+                        tables = extract_tables_with_columns(ds)
+                        self.assertEqual(len(tables), 2)
+                        self.assertEqual(
+                            {table['name']: [column['name']
+                                            for column in table['columns']]
+                             for table in tables},
+                            {'FactRelation': ['Amount'] if populated else [],
+                             'DimensionRelation': ['ItemID'] if populated else []})
+
+    def test_phase3_metadata_merge_preserves_unicode_names(self):
+        xml = '''
+        <datasource>
+          <connection class="federated">
+            <relation type="table" name="Faits été">
+              <columns><column name="Montant (€)" datatype="real" /></columns>
+            </relation>
+            <metadata-records>
+              <metadata-record class="column">
+                <local-name>[Catégorie / état]</local-name>
+                <remote-name>Catégorie / état</remote-name>
+                <parent-name>[Table amont]</parent-name>
+                <local-type>string</local-type>
+                <ordinal>1</ordinal>
+              </metadata-record>
+            </metadata-records>
+          </connection>
+        </datasource>
+        '''
+        tables = extract_tables_with_columns(ET.fromstring(xml))
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(tables[0]['name'], 'Faits été')
+        self.assertEqual(
+            [(column['name'], column['datatype'], column['role'])
+             for column in tables[0]['columns']],
+            [('Montant (€)', 'real', 'measure'),
+             ('Catégorie / état', 'string', 'dimension')])
+
+    def test_phase3_metadata_merge_keeps_case_distinct_names(self):
+        xml = '''
+        <datasource>
+          <connection class="federated">
+            <relation type="table" name="FactRelation">
+              <columns><column name="Category" datatype="string" /></columns>
+            </relation>
+            <relation type="table" name="factrelation">
+              <columns><column name="Amount" datatype="real" /></columns>
+            </relation>
+            <metadata-records>
+              <metadata-record class="column">
+                <local-name>[Category]</local-name>
+                <parent-name>[FactRelation]</parent-name>
+                <local-type>integer</local-type>
+              </metadata-record>
+              <metadata-record class="column">
+                <local-name>[category]</local-name>
+                <parent-name>[FactRelation]</parent-name>
+                <local-type>string</local-type>
+                <ordinal>1</ordinal>
+              </metadata-record>
+              <metadata-record class="column">
+                <local-name>[category]</local-name>
+                <parent-name>[FactRelation]</parent-name>
+                <local-type>real</local-type>
+                <ordinal>2</ordinal>
+              </metadata-record>
+              <metadata-record class="column">
+                <local-name>[CATEGORY]</local-name>
+                <parent-name>[factrelation]</parent-name>
+                <local-type>string</local-type>
+                <ordinal>1</ordinal>
+              </metadata-record>
+            </metadata-records>
+          </connection>
+        </datasource>
+        '''
+        tables = extract_tables_with_columns(ET.fromstring(xml))
+        self.assertEqual(len(tables), 2)
+        self.assertEqual(
+            {table['name']: [(column['name'], column['datatype'], column['role'])
+                            for column in table['columns']]
+             for table in tables},
+            {'FactRelation': [('Category', 'string', 'dimension'),
+                              ('category', 'string', 'dimension')],
+             'factrelation': [('Amount', 'real', 'measure'),
+                              ('CATEGORY', 'string', 'dimension')]})
+
+    def test_phase3_metadata_merge_preserves_existing_column_metadata(self):
+        xml = '''
+        <datasource>
+          <connection class="federated">
+            <relation type="table" name="FactRelation">
+              <columns>
+                <column name="Amount" datatype="real" ordinal="7" length="8"
+                        nullable="false" default-format="#,##0.00" />
+              </columns>
+            </relation>
+            <metadata-records>
+              <metadata-record class="column">
+                <local-name>[Amount]</local-name>
+                <parent-name>[FactRelation]</parent-name>
+                <local-type>string</local-type>
+                <ordinal>0</ordinal>
+                <contains-null>true</contains-null>
+              </metadata-record>
+              <metadata-record class="column">
+                <local-name>[Category]</local-name>
+                <parent-name>[FactRelation]</parent-name>
+                <local-type>string</local-type>
+                <ordinal>1</ordinal>
+              </metadata-record>
+            </metadata-records>
+          </connection>
+          <column name="[Amount]" datatype="real" role="dimension"
+                  default-format="#,##0.00" />
+        </datasource>
+        '''
+        tables = extract_tables_with_columns(ET.fromstring(xml))
+        self.assertEqual(len(tables), 1)
+        self.assertEqual([column['name'] for column in tables[0]['columns']],
+                         ['Amount', 'Category'])
+        self.assertEqual(tables[0]['columns'][0], {
+            'name': 'Amount', 'datatype': 'real', 'role': 'dimension',
+            'ordinal': 7, 'length': '8', 'nullable': False,
+            'default_format': '#,##0.00',
+        })
+
+    def test_phase3_metadata_merge_honors_datasource_declarations(self):
+        xml = '''
+        <datasource>
+          <connection class="federated">
+            <relation type="table" name="FactRelation">
+              <columns><column name="Amount" datatype="real" /></columns>
+            </relation>
+            <metadata-records>
+              <metadata-record class="column">
+                <local-name>[Code]</local-name>
+                <parent-name>[UpstreamTable]</parent-name>
+                <local-type>real</local-type>
+                <ordinal>1</ordinal>
+              </metadata-record>
+              <metadata-record class="column">
+                <local-name>[Category]</local-name>
+                <parent-name>[UpstreamTable]</parent-name>
+                <local-type>integer</local-type>
+                <ordinal>2</ordinal>
+              </metadata-record>
+            </metadata-records>
+          </connection>
+          <column name="[Code]" datatype="integer" role="dimension"
+                  default-format="0000" />
+          <column name="[Category]" datatype="string" role="dimension"
+                  default-format="@" />
+        </datasource>
+        '''
+        tables = extract_tables_with_columns(ET.fromstring(xml))
+        self.assertEqual(len(tables), 1)
+        self.assertEqual([column['name'] for column in tables[0]['columns']],
+                         ['Amount', 'Code', 'Category'])
+        columns = {column['name']: column for column in tables[0]['columns']}
+        for name, datatype, default_format in (
+                ('Code', 'integer', '0000'), ('Category', 'string', '@')):
+            with self.subTest(name=name):
+                self.assertEqual(columns[name]['datatype'], datatype)
+                self.assertEqual(columns[name]['role'], 'dimension')
+                self.assertEqual(columns[name]['default_format'], default_format)
+
     def test_phase4_last_resort_ds_columns(self):
         """Tables with no columns after phase 3 use ds-level <column> elements."""
         xml = '''

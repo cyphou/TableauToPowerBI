@@ -1220,13 +1220,16 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
                 if cname in ds_role_overrides:
                     col['role'] = ds_role_overrides[cname]
 
-    # Phase 3: For tables STILL with no columns, extract from
-    # <metadata-records><metadata-record class='column'>.
-    # This is the primary column source for SQL Server and similar
-    # connections where <relation> elements are self-closing (no nested
-    # <columns>) and no <cols><map> entries exist.
-    still_needing = [t for t in raw_tables.values() if not t['columns']]
-    if still_needing:
+    # Phase 3: Merge missing metadata-record columns into physical tables.
+    # Unmatched parent aliases are safe only when the datasource has one table.
+    if raw_tables:
+        column_declarations = {
+            _reverse_tableau_bracket_escape(col_elem.get('name', '').strip('[]')): col_elem
+            for col_elem in datasource_elem.findall('./column')
+            if col_elem.find('.//calculation') is None
+            and col_elem.get('user:auto-column', '') != 'sheet_link'
+        }
+        singleton_name = next(iter(raw_tables)) if len(raw_tables) == 1 else None
         metadata_table_cols = {}
         for mr in datasource_elem.findall('.//metadata-record[@class="column"]'):
             remote_name = (mr.findtext('remote-name') or '').strip()
@@ -1236,9 +1239,17 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
             ordinal_text = (mr.findtext('ordinal') or '0').strip()
             contains_null = (mr.findtext('contains-null') or 'true').strip()
 
-            col_name = local_name.strip('[]') if local_name else remote_name
-            if not col_name or not parent_name:
+            col_name = _reverse_tableau_bracket_escape(local_name.strip('[]') if local_name else remote_name)
+            if not col_name:
                 continue
+            if parent_name not in raw_tables:
+                if singleton_name is None:
+                    continue
+                parent_name = singleton_name
+
+            declaration = column_declarations.get(col_name)
+            if declaration is not None:
+                local_type = declaration.get('datatype', local_type)
 
             try:
                 ordinal_val = int(ordinal_text)
@@ -1253,20 +1264,25 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
                 'length': None,
                 'nullable': contains_null == 'true',
             }
+            if declaration is not None:
+                col['role'] = declaration.get('role') or col['role']
+                col['default_format'] = declaration.get('default-format', '')
             metadata_table_cols.setdefault(parent_name, []).append(col)
 
-        for table in still_needing:
+        for table in raw_tables.values():
             tname = table['name']
             meta_cols = metadata_table_cols.get(tname, [])
-            if meta_cols:
-                meta_cols.sort(key=lambda c: c['ordinal'])
-                table['columns'] = meta_cols
+            existing_names = {col['name'] for col in table['columns']}
+            for col in sorted(meta_cols, key=lambda c: c['ordinal']):
+                if col['name'] not in existing_names:
+                    table['columns'].append(col)
+                    existing_names.add(col['name'])
 
-    # Phase 4: Last-resort fallback — if a table still has no columns,
+    # Phase 4: Last-resort fallback — if the sole table still has no columns,
     # populate from datasource-level <column> elements that are NOT
     # calculations (physical columns only).
     final_needing = [t for t in raw_tables.values() if not t['columns']]
-    if final_needing:
+    if final_needing and len(raw_tables) == 1:
         ds_phys_cols = []
         ordinal = 0
         for col_elem in datasource_elem.findall('./column'):

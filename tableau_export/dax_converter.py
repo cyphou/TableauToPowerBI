@@ -352,6 +352,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_find(dax)
     dax = _convert_str_to_format(dax)
     dax = _convert_float_to_convert(dax)
+    dax = _convert_int_tolerant(dax)
     dax = _convert_datename(dax)
     dax = _convert_dateadd(dax)
     dax = _convert_dateparse(dax)
@@ -582,7 +583,9 @@ def _convert_case_structure(text):
     Tableau: CASE [field] WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 0 END
     DAX:     SWITCH([field], "A", 1, "B", 2, 0)
     """
-    max_iter = 20
+    # Each iteration consumes exactly one CASE...END, so budget by content:
+    # a fixed cap silently leaves raw Tableau syntax in long chains.
+    max_iter = len(re.findall(r'\bCASE\b', text, re.IGNORECASE)) + 20
     for _ in range(max_iter):
         m = re.search(
             r'\bCASE\s+((?:(?!\bCASE\b|\bEND\b).)*?)\s+WHEN\s+((?:(?!\bCASE\b|\bEND\b).)*?)\s+END\b',
@@ -641,7 +644,9 @@ def _convert_if_structure(text):
         text = _RE_ELSEIF.sub('ELSE IF', text)
         text = text.rstrip() + ' END' * elseif_count
     
-    max_iter = 30
+    # Each iteration consumes exactly one IF...END, so budget by content:
+    # a fixed cap silently leaves raw Tableau syntax in long chains.
+    max_iter = len(re.findall(r'\bEND\b', text, re.IGNORECASE)) + 30
     for _ in range(max_iter):
         # IF cond THEN val ELSE val2 END (innermost)
         # Note: the anchor ``\bIF\b\s*`` (not ``\bIF\s+``) lets Tableau's
@@ -649,7 +654,7 @@ def _convert_if_structure(text):
         # The content lookaheads keep ``\bIF\s`` (keyword form only) so an
         # already-converted inner ``IF(...)`` does NOT block the outer IF.
         m = re.search(
-            r'\bIF\b\s*((?:(?!\bIF\s|\bEND\b).)*?)\s+THEN\s+((?:(?!\bIF\s|\bEND\b).)*?)\s+ELSE\s+((?:(?!\bIF\s|\bEND\b).)*?)\s+END\b',
+            r'\bIF\b\s*((?:(?!\bIF\s|\bEND\b).)*?)\s+THEN\s+((?:(?!\bIF\s|\bEND\b).)*?)\s+ELSE\s+((?:(?!\bIF\s|\bEND\b).)*?)\s*END\b',
             text, re.IGNORECASE | re.DOTALL
         )
         if m:
@@ -659,7 +664,7 @@ def _convert_if_structure(text):
         
         # IF cond THEN val END (no ELSE)
         m = re.search(
-            r'\bIF\b\s*((?:(?!\bIF\s|\bEND\b).)*?)\s+THEN\s+((?:(?!\bIF\s|\bEND\b).)*?)\s+END\b',
+            r'\bIF\b\s*((?:(?!\bIF\s|\bEND\b).)*?)\s+THEN\s+((?:(?!\bIF\s|\bEND\b).)*?)\s*END\b',
             text, re.IGNORECASE | re.DOTALL
         )
         if m:
@@ -988,6 +993,16 @@ def _convert_find(dax):
 def _convert_str_to_format(dax):
     """STR(expr) → FORMAT(expr, "0")"""
     return _transform_func_call(dax, 'STR', lambda args, inner: f'FORMAT({inner.strip()}, "0")')
+
+
+def _convert_int_tolerant(dax):
+    """INT(expr) -> IFERROR(INT(expr), BLANK())
+
+    Tableau's INT() yields Null when the argument is not numeric; DAX's raises
+    and poisons the whole column, so the cast has to be guarded to keep parity.
+    """
+    return _transform_func_call(
+        dax, 'INT', lambda args, inner: f'IFERROR(INT({inner.strip()}), BLANK())')
 
 
 def _convert_float_to_convert(dax):
@@ -2940,6 +2955,9 @@ def _convert_agg_expr_to_aggx(dax_text, table_name):
             return True
         return False
 
+    def _is_numeric_constant(expr):
+        return bool(re.fullmatch(r"[-+]?\d+(?:\.\d+)?", expr.strip()))
+
     def _process_map(dax, mapping, unwrap_inner_agg=False):
         for agg, aggx in mapping.items():
             pattern = _get_func_pattern(agg)
@@ -2966,6 +2984,10 @@ def _convert_agg_expr_to_aggx(dax_text, table_name):
                 inner = dax[paren_start + 1:pos - 1].strip()
 
                 if _is_single_column(inner):
+                    continue
+
+                if _is_numeric_constant(inner):
+                    dax = dax[:m.start()] + inner + dax[pos:]
                     continue
 
                 # For statistical iterators, collapse a redundant inner agg:

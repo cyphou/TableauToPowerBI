@@ -127,6 +127,93 @@ class TestExtractPbiVisualInfo(unittest.TestCase):
 
 
 class TestDiffWorksheet(unittest.TestCase):
+    def test_source_chart_type_and_fields_disambiguate_shared_titles(self):
+        def visual(visual_type, role, field):
+            return {'visual': {'visualType': visual_type, 'query': {'queryState': {
+                role: {'projections': [{'field': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'T'}}, 'Property': field}}}]}
+            }}, 'visualContainerObjects': {'title': [{'properties': {
+                'text': {'expr': {'Literal': {'Value': "'Shared heading'"}}}
+            }}]}}}
+        source = {'name': 'Source map', 'chart_type': 'map', 'mark_type': 'Circle',
+                  'fields': [{'name': 'Revenue', 'shelf': 'tooltip'},
+                             {'name': 'City', 'shelf': 'detail'}]}
+        result = _diff_worksheet(source, [visual('clusteredBarChart', 'Y', 'Revenue'),
+                                          visual('azureMap', 'Location', 'City')])
+        self.assertEqual(result['actual_pbi_type'], 'azureMap')
+        self.assertEqual(result['tooltips_in_main_roles'], [])
+        self.assertEqual(result['missing_tooltips'], ['Revenue'])
+
+    def test_captioned_source_tooltip_promoted_to_value_is_not_missing(self):
+        source = {'name': 'Bar', 'chart_type': 'clusteredBarChart',
+                  'fields': [{'name': 'Calculation_1', 'shelf': 'tooltip'}]}
+        target = {'visual': {'visualType': 'clusteredBarChart',
+                             'query': {'queryState': {'Y': {'projections': [{
+                                 'field': {'Column': {'Expression': {'SourceRef': {'Entity': 'T'}},
+                                                      'Property': 'Amount'}}
+                             }]}}}}}
+        result = _diff_worksheet(source, [target], {'Calculation_1': 'Amount'})
+        self.assertEqual(result['missing_tooltips'], [])
+        self.assertEqual(result['tooltips_in_main_roles'], ['Amount'])
+
+    def test_pcto_tooltip_compares_to_generated_measure(self):
+        source = {'name': 'Shares', 'chart_type': 'pieChart',
+                  'fields': [{'name': 'Sales', 'shelf': 'tooltip',
+                              'table_calc': 'pcto'}]}
+        target = {'visual': {'visualType': 'pieChart',
+                             'query': {'queryState': {'Tooltips': {'projections': [{
+                                 'field': {'Measure': {'Expression': {'SourceRef': {'Entity': 'T'}},
+                                                       'Property': '% of Total Sales'}}
+                             }]}}}}}
+        result = _diff_worksheet(source, [target])
+        self.assertEqual(result['tableau_fields'], ['Sales'])
+        self.assertEqual(result['missing_tooltips'], [])
+        self.assertEqual(result['tableau_tooltips'], ['% of Total Sales'])
+
+    def test_calculation_caption_brackets_and_spaces_match_real_tooltip(self):
+        source = {'name': 'Records', 'chart_type': 'clusteredBarChart',
+                  'fields': [{'name': 'Number of Records', 'shelf': 'tooltip'},
+                             {'name': 'Amount', 'shelf': 'tooltip'}]}
+        target = {'visual': {'visualType': 'clusteredBarChart',
+                             'query': {'queryState': {'Tooltips': {'projections': [
+                                 {'field': {'Column': {'Expression': {'SourceRef': {'Entity': 'T'}},
+                                                        'Property': 'Number of Records'}}},
+                                 {'field': {'Column': {'Expression': {'SourceRef': {'Entity': 'T'}},
+                                                        'Property': 'Amount'}}},
+                             ]}}}}}
+        result = _diff_worksheet(source, [target],
+                                 {'Number of Records': '[Number of Records]',
+                                  'Amount': 'Amount '})
+        self.assertEqual(result['missing_tooltips'], [])
+
+    def test_unplaced_source_sheet_is_not_matched_to_unrelated_map(self):
+        from powerbi_import.visual_diff import generate_visual_diff_json
+        source = {
+            'worksheets': [
+                {'name': 'Placed', 'chart_type': 'map', 'fields': []},
+                {'name': 'Not Placed', 'chart_type': 'map',
+                 'fields': [{'name': 'Distance', 'shelf': 'tooltip'}]},
+            ],
+            'dashboards': [{'objects': [
+                {'type': 'worksheetReference', 'worksheetName': 'Placed'}]}],
+        }
+        with tempfile.TemporaryDirectory() as project:
+            result = generate_visual_diff_json(source, project)
+        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['source_only_worksheets'], ['Not Placed'])
+
+    def test_explicit_project_roots_prioritize_later_review_copy(self):
+        from scripts.compare_source_fidelity import _discover_projects
+        with tempfile.TemporaryDirectory() as root:
+            first = os.path.join(root, 'a')
+            later = os.path.join(root, 'longer')
+            for folder in (first, later):
+                os.makedirs(folder)
+                with open(os.path.join(folder, 'Demo.pbip'), 'w', encoding='utf-8') as stream:
+                    stream.write('{}')
+            result = _discover_projects([first, later])
+        self.assertEqual(result['demo'], os.path.join(later, 'Demo.pbip'))
+
     def test_exact_match(self):
         ws = {
             'name': 'Sales',

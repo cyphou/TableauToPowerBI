@@ -55,12 +55,20 @@ def validate_visual_data_roles(visual_json: Dict[str, Any]) -> Dict[str, Any]:
                 "field_kind": field_kind,
                 "query_ref": projection.get("queryRef"),
             })
+    required_roles = {
+        "azureMap": ["Category"],
+        "scatterChart": ["X", "Y"],
+        "treemap": ["Values"],
+        "lineClusteredColumnComboChart": ["Category"],
+        "lineStackedColumnComboChart": ["Category"],
+    }.get(visual_type, allowed_dimensions[:1] + allowed_measures[:1])
     required = []
     if visual_type not in {"textbox", "image", "actionButton"}:
-        if allowed_dimensions and not any(role in query_state for role in allowed_dimensions[:1]):
-            required.append(allowed_dimensions[0])
-        if allowed_measures and not any(role in query_state for role in allowed_measures[:1]):
-            required.append(allowed_measures[0])
+        for role in required_roles:
+            state = query_state.get(role)
+            if not isinstance(state, dict) or not state.get("projections"):
+                required.append(role)
+    required = list(dict.fromkeys(required))
     issues = [f"invalid role: {role}" for role in invalid_roles]
     issues.extend(f"malformed projections: {role}" for role in sorted(set(malformed)))
     issues.extend(f"missing required role: {role}" for role in required)

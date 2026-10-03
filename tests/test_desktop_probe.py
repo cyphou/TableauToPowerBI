@@ -168,5 +168,27 @@ class TestProbe(unittest.TestCase):
         self.assertEqual(result.status, 'crashed')
 
 
+class TestRefreshReport(unittest.TestCase):
+    def test_applies_pending_changes_after_schema_refresh(self):
+        from powerbi_import import desktop_probe as dp
+        clicked = []
+
+        def invoke(_hwnd, names):
+            clicked.append(tuple(names))
+            return 1 if tuple(names) == dp._APPLY_CHANGES_NAMES else 0
+
+        verified = dp._data_load_result("verified", checked=1, nonempty=1, rows=5)
+        with mock.patch.object(dp, "_invoke_schema_refresh", return_value=1), \
+             mock.patch.object(dp, "_click_button", side_effect=invoke), \
+             mock.patch.object(dp, "_invoke_button", return_value=0), \
+             mock.patch.object(dp, "verify_desktop_data", return_value=verified), \
+             mock.patch.object(dp.time, "sleep"):
+            result = dp.refresh_report(1, "P.pbip", 1, timeout=60, poll=0)
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["mode"], "schema_and_data")
+        self.assertTrue(result["applied_changes"])
+        self.assertEqual(clicked.count(dp._APPLY_CHANGES_NAMES), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

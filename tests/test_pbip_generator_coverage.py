@@ -516,12 +516,315 @@ class TestBuildVisualQuery(unittest.TestCase):
         ws = {'chart_type': chart_type, 'fields': fields}
         return self.gen._build_visual_query(ws)
 
-    def test_scatter_uses_details_for_point_grouping(self):
-        query = self._query('scatter', [
-            {'name': 'Player'}, {'name': 'ASST'}, {'name': 'BLK'},
+    def test_tooltip_uses_unique_model_owner_when_mapping_is_wrong(self):
+        self.gen._field_map['Remote Note'] = ('Sales', 'Remote Note')
+        self.gen._actual_bim_symbols = {('Sales', 'Region'), ('Sales', 'Revenue'),
+                                         ('Notes', 'Remote Note')}
+        result = self._query('clusteredBarChart', [
+            {'name': 'Region'}, {'name': 'Revenue'},
+            {'name': 'Remote Note', 'shelf': 'tooltip'},
         ])
-        self.assertIn('Details', query['queryState'])
-        self.assertNotIn('Category', query['queryState'])
+        projection = result['queryState']['Tooltips']['projections'][0]
+        self.assertEqual(set(result['queryState']), {'Category', 'Y', 'Tooltips'})
+        self.assertEqual(projection, {
+            'field': {'Aggregation': {
+                'Expression': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Notes'}},
+                    'Property': 'Remote Note',
+                }},
+                'Function': 3,
+            }},
+            'queryRef': 'Min(Notes.Remote Note)',
+            'nativeQueryRef': 'Remote Note',
+            'active': True,
+        })
+
+    def test_tooltip_with_multiple_other_model_owners_is_not_guessed(self):
+        self.gen._field_map['Remote Note'] = ('Sales', 'Remote Note')
+        self.gen._actual_bim_symbols = {('Sales', 'Region'), ('Sales', 'Revenue'),
+                                         ('Notes', 'Remote Note'), ('Archive', 'Remote Note')}
+        result = self._query('clusteredBarChart', [
+            {'name': 'Region'}, {'name': 'Revenue'},
+            {'name': 'Remote Note', 'shelf': 'tooltip'},
+        ])
+        self.assertNotIn('Tooltips', result['queryState'])
+
+    def test_collision_override_cannot_move_tooltip_to_table_without_field(self):
+        self.gen._field_map['Distance'] = ('Sites', 'Distance')
+        self.gen._collision_tables = {'Sites', 'SitesRenamed'}
+        self.gen._ds_table_map = {'source': 'SitesRenamed'}
+        self.gen._actual_bim_symbols = {('Sites', 'Distance'),
+                                         ('Sites', 'Region'), ('Sites', 'Revenue')}
+        result = self._query('clusteredBarChart', [
+            {'name': 'Region'}, {'name': 'Revenue'},
+            {'name': 'Distance', 'shelf': 'tooltip', 'datasource': 'source'},
+        ])
+        projection = result['queryState']['Tooltips']['projections'][0]
+        self.assertEqual(set(result['queryState']), {'Category', 'Y', 'Tooltips'})
+        self.assertEqual(projection, {
+            'field': {'Aggregation': {
+                'Expression': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Sites'}},
+                    'Property': 'Distance',
+                }},
+                'Function': 3,
+            }},
+            'queryRef': 'Min(Sites.Distance)',
+            'nativeQueryRef': 'Distance',
+            'active': True,
+        })
+
+    def test_same_field_on_rows_and_tooltip_keeps_primary_role_once(self):
+        result = self._query('clusteredBarChart', [
+            {'name': 'Region', 'shelf': 'rows'},
+            {'name': 'Revenue', 'shelf': 'columns'},
+            {'name': 'Region', 'shelf': 'tooltip'},
+            {'name': 'Region', 'shelf': 'tooltip'},
+        ])
+        roles = result['queryState']
+        self.assertEqual(len(roles['Category']['projections']), 1)
+        self.assertEqual(
+            roles['Category']['projections'][0]['field']['Column']['Property'],
+            'Region',
+        )
+        self.assertEqual(len(roles['Y']['projections']), 1)
+        self.assertEqual(
+            roles['Y']['projections'][0]['field']['Measure']['Property'],
+            'Revenue',
+        )
+        self.assertNotIn('Tooltips', roles)
+
+    def test_primary_roles_unchanged_when_tooltips_repeat_bound_fields(self):
+        self.gen._field_map['Segment Tooltip'] = ('Sales', 'Segment')
+        primary_fields = [
+            {'name': 'Region', 'shelf': 'rows'},
+            {'name': 'Segment', 'shelf': 'color'},
+            {'name': 'Revenue', 'shelf': 'columns'},
+        ]
+        primary_roles = self._query('clusteredBarChart', primary_fields)['queryState']
+        result = self._query('clusteredBarChart', primary_fields + [
+            {'name': 'Region', 'shelf': 'tooltip'},
+            {'name': 'Segment', 'shelf': 'tooltip'},
+            {'name': 'Revenue', 'shelf': 'tooltip'},
+            {'name': 'Segment Tooltip', 'shelf': 'tooltip'},
+        ])
+        roles = result['queryState']
+        self.assertEqual(set(primary_roles), {'Category', 'Series', 'Y'})
+        self.assertEqual(roles, primary_roles)
+        self.assertNotIn('Tooltips', roles)
+
+    def test_independent_tooltip_measure_and_column_survive_redundant_fields(self):
+        primary_fields = [
+            {'name': 'Region', 'shelf': 'rows'},
+            {'name': 'Segment', 'shelf': 'color'},
+            {'name': 'Revenue', 'shelf': 'columns'},
+        ]
+        primary_roles = self._query('clusteredBarChart', primary_fields)['queryState']
+        result = self._query('clusteredBarChart', primary_fields + [
+            {'name': 'Region', 'shelf': 'tooltip'},
+            {'name': 'Segment', 'shelf': 'tooltip'},
+            {'name': 'Revenue', 'shelf': 'tooltip'},
+            {'name': 'Profit', 'shelf': 'tooltip'},
+            {'name': 'Note', 'shelf': 'tooltip'},
+        ])
+        roles = result['queryState']
+        self.assertEqual(
+            {role: value for role, value in roles.items() if role != 'Tooltips'},
+            primary_roles,
+        )
+        self.assertEqual(set(roles), {'Category', 'Series', 'Y', 'Tooltips'})
+        self.assertEqual(
+            roles['Tooltips']['projections'],
+            [
+                {'field': {'Measure': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': 'Profit',
+                }}, 'queryRef': 'Sales.Profit', 'nativeQueryRef': 'Profit',
+                 'active': True},
+                {'field': {'Aggregation': {
+                    'Expression': {'Column': {
+                        'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                        'Property': 'Note',
+                    }},
+                    'Function': 3,
+                }}, 'queryRef': 'Min(Sales.Note)', 'nativeQueryRef': 'Note',
+                 'active': True},
+            ],
+        )
+
+    def test_tooltip_min_scalar_preserves_distinct_column_without_primary_duplicates(self):
+        self.gen._field_map.update({
+            'Region Tooltip': ('Sales', 'Region'),
+            'Note Tooltip': ('Notes', 'Supplementary / Note (%)'),
+            'Supplementary / Note (%)': ('Notes', 'Supplementary / Note (%)'),
+        })
+        self.gen._actual_bim_symbols = {
+            ('Sales', 'Region'), ('Sales', 'Revenue'),
+            ('Notes', 'Supplementary / Note (%)'),
+        }
+        roles = self._query('clusteredBarChart', [
+            {'name': 'Region', 'shelf': 'rows'},
+            {'name': 'Revenue', 'shelf': 'columns'},
+            {'name': 'Region', 'shelf': 'tooltip'},
+            {'name': 'Region Tooltip', 'shelf': 'tooltip'},
+            {'name': 'Revenue', 'shelf': 'tooltip'},
+            {'name': 'Supplementary / Note (%)', 'shelf': 'tooltip'},
+            {'name': 'Note Tooltip', 'shelf': 'tooltip'},
+            {'name': 'Supplementary / Note (%)', 'shelf': 'tooltip'},
+            {'name': 'Supplementary / Note (%)', 'shelf': 'tooltip',
+             'aggregation': 'min'},
+        ])['queryState']
+        self.assertEqual(roles, {
+            'Category': {'projections': [{
+                'field': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': 'Region',
+                }},
+                'queryRef': 'Sales.Region', 'nativeQueryRef': 'Region',
+                'active': True,
+            }]},
+            'Y': {'projections': [{
+                'field': {'Measure': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': 'Revenue',
+                }},
+                'queryRef': 'Sales.Revenue', 'nativeQueryRef': 'Revenue',
+                'active': True,
+            }]},
+            'Tooltips': {'projections': [{
+                'field': {'Aggregation': {
+                    'Expression': {'Column': {
+                        'Expression': {'SourceRef': {'Entity': 'Notes'}},
+                        'Property': 'Supplementary / Note (%)',
+                    }},
+                    'Function': 3,
+                }},
+                'queryRef': 'Min(Notes.Supplementary / Note (%))',
+                'nativeQueryRef': 'Supplementary / Note (%)',
+                'active': True,
+            }]},
+        })
+
+    def test_tooltip_same_physical_column_with_different_aggregation_is_preserved(self):
+        self.gen._measure_names.add('Quantity')
+        result = self._query('clusteredBarChart', [
+            {'name': 'Region', 'shelf': 'rows'},
+            {'name': 'Quantity', 'shelf': 'columns', 'aggregation': 'sum'},
+            {'name': 'Quantity', 'shelf': 'tooltip', 'aggregation': 'avg'},
+        ])
+        roles = result['queryState']
+        self.assertEqual(len(roles['Y']['projections']), 1)
+        self.assertEqual(len(roles['Tooltips']['projections']), 1)
+        primary = roles['Y']['projections'][0]['field']['Aggregation']
+        tooltip = roles['Tooltips']['projections'][0]['field']['Aggregation']
+        self.assertEqual(
+            primary['Expression'],
+            {'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                        'Property': 'Quantity'}},
+        )
+        self.assertEqual(tooltip['Expression'], primary['Expression'])
+        self.assertEqual(primary['Function'], 0)
+        self.assertEqual(tooltip['Function'], 1)
+
+    def test_tooltips_deduplicate_identical_field_expressions(self):
+        self.gen._field_map.update({
+            'Profit Tooltip': ('Sales', 'Profit'),
+            'Note Tooltip': ('Sales', 'Note'),
+        })
+        primary_fields = [
+            {'name': 'Region', 'shelf': 'rows'},
+            {'name': 'Revenue', 'shelf': 'columns'},
+        ]
+        tooltip_fields = [
+            {'name': 'Profit', 'shelf': 'tooltip'},
+            {'name': 'Note', 'shelf': 'tooltip'},
+        ]
+        expected_roles = self._query(
+            'clusteredBarChart', primary_fields + tooltip_fields,
+        )['queryState']
+        result = self._query('clusteredBarChart', primary_fields + tooltip_fields + [
+            {'name': 'Profit Tooltip', 'shelf': 'tooltip'},
+            {'name': 'Note Tooltip', 'shelf': 'tooltip'},
+        ] + tooltip_fields)
+        self.assertEqual(len(expected_roles['Tooltips']['projections']), 2)
+        self.assertEqual(result['queryState'], expected_roles)
+
+    def test_multiple_tooltip_aggregations_deduplicate_only_identical_expressions(self):
+        self.gen._field_map.setdefault('Amount', ('Sales', 'Amount'))
+        self.gen._actual_bim_column_types = {('Sales', 'Amount'): 'double'}
+        fields = [
+            {'name': 'Category', 'shelf': 'rows'},
+            {'name': 'Amount', 'shelf': 'columns', 'aggregation': 'sum'},
+        ] + [
+            {'name': 'Amount', 'shelf': 'tooltip', 'aggregation': aggregation}
+            for aggregation in ('avg', 'min', 'max', 'avg', 'min', 'max', 'sum')
+        ]
+        roles = self._query('clusteredBarChart', fields)['queryState']
+        self.assertEqual(set(roles), {'Category', 'Y', 'Tooltips'})
+        self.assertEqual(roles['Tooltips']['projections'], [{
+            'field': {'Aggregation': {
+                'Expression': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': 'Amount',
+                }},
+                'Function': function,
+            }},
+            'queryRef': 'Sales.Amount',
+            'nativeQueryRef': 'Amount',
+            'active': True,
+        } for function in (1, 3, 4)])
+        self.assertEqual(roles['Y']['projections'][0]['field'], {
+            'Aggregation': {
+                'Expression': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': 'Amount',
+                }},
+                'Function': 0,
+            },
+        })
+
+    def test_multi_row_card_preserves_text_field_on_tooltip_shelf(self):
+        result = self._query('multiRowCard', [
+            {'name': 'Region', 'shelf': 'text'},
+            {'name': 'Region', 'shelf': 'tooltip'},
+            {'name': 'Revenue', 'shelf': 'tooltip'},
+        ])
+        self.assertEqual(len(result['queryState']['Values']['projections']), 2)
+        self.assertNotIn('Tooltips', result['queryState'])
+
+    def test_pcto_tooltip_binds_generated_measure_not_source_column(self):
+        self.gen._actual_bim_symbols = {('Sales', 'Region'), ('Sales', 'Revenue'),
+                                         ('Sales', '% of Total Revenue')}
+        self.gen._actual_bim_measure_names = {'% of Total Revenue'}
+        self.gen._bim_measure_names = {'% of Total Revenue'}
+        result = self._query('clusteredBarChart', [
+            {'name': 'Region'}, {'name': 'Revenue'},
+            {'name': 'Revenue', 'shelf': 'tooltip', 'table_calc': 'pcto'},
+        ])
+        projection = result['queryState']['Tooltips']['projections'][0]
+        self.assertEqual(projection['field']['Measure']['Property'], '% of Total Revenue')
+
+    def test_scatter_uses_details_for_point_grouping(self):
+        worksheet = {'chart_type': 'scatter', 'fields': [
+            {'name': 'Player'}, {'name': 'ASST'}, {'name': 'BLK'},
+        ]}
+        query = self.gen._build_visual_query(worksheet)
+        self.assertEqual(query, {'queryState': {
+            'Values': {'projections': [{
+                'field': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': name,
+                }},
+                'queryRef': f'Sales.{name}', 'nativeQueryRef': name,
+                'active': True,
+            } for name in ('Player', 'ASST', 'BLK')]},
+        }})
+        self.assertNotIn('X', query['queryState'])
+        self.assertNotIn('Y', query['queryState'])
+        self.assertEqual(worksheet['_override_visual_type'], 'tableEx')
+        self.assertEqual(worksheet['_visual_fallback_note'],
+                         'Scatter has no second resolved axis; '
+                         'source fields were preserved as a table.')
 
     def test_detail_field_is_not_promoted_to_series(self):
         query = self._query('clusteredBarChart', [
@@ -600,8 +903,251 @@ class TestBuildVisualQuery(unittest.TestCase):
         fields = [{'name': 'Region'}, {'name': 'Revenue'}]
         result = self._query('map', fields)
         qs = result['queryState']
-        self.assertIn('Location', qs)
-        self.assertIn('Size', qs)  # Azure Maps uses Location + Size
+        self.assertEqual(set(qs), {'Category', 'Size'})
+        self.assertEqual(qs['Category']['projections'][0]['field'], {
+            'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                       'Property': 'Region'},
+        })
+
+    def test_catalog_roles_align_with_shared_visual_generator(self):
+        from powerbi_import.visual_generator import VISUAL_DATA_ROLES
+
+        expected_roles = {
+            'card': ([], ['Values']),
+            'multiRowCard': ([], ['Values']),
+            'scatterChart': (['Category', 'Series'], ['X', 'Y', 'Size']),
+            'azureMap': (['Category', 'Series'], ['Y', 'X', 'Size']),
+        }
+        for visual_type, (dimension_roles, measure_roles) in expected_roles.items():
+            with self.subTest(visual_type=visual_type):
+                self.assertEqual(self.gen._VISUAL_DATA_ROLES[visual_type],
+                                 (dimension_roles, measure_roles))
+                shared_dimension_roles = (dimension_roles + ['Tooltips']
+                                          if visual_type in ('azureMap', 'scatterChart')
+                                          else dimension_roles)
+                self.assertEqual(VISUAL_DATA_ROLES[visual_type],
+                                 (shared_dimension_roles, measure_roles))
+
+    def test_catalog_azure_map_coordinates_are_averaged_beside_location(self):
+        # Desktop refuses a Location beside raw coordinates and asks for them
+        # averaged, so 'sum' on the Northing pill must be overridden to avg.
+        self.gen._measure_names.update({'Northing', 'Easting'})
+        self.gen._actual_bim_symbols = {
+            ('Sales', name) for name in
+            ('Northing', 'Easting', 'Record Label', 'Segment', 'Revenue')
+        }
+        fields = [
+            {'name': 'Northing', 'shelf': 'rows', 'semantic_role': 'latitude',
+             'aggregation': 'sum'},
+            {'name': 'Easting', 'shelf': 'columns', 'semantic_role': 'longitude',
+             'aggregation': 'avg'},
+            {'name': 'Record Label', 'shelf': 'detail'},
+            {'name': 'Segment', 'shelf': 'color'},
+            {'name': 'Revenue', 'shelf': 'size'},
+        ]
+        for bim_coordinates in (False, True):
+            with self.subTest(bim_coordinates=bim_coordinates):
+                if bim_coordinates:
+                    self.gen._bim_measure_names.update({'Northing', 'Easting'})
+                roles = self._query('azureMap', fields)['queryState']
+                self.assertEqual(set(roles), {'Category', 'Y', 'X', 'Series', 'Size'})
+                for role, name in (('Y', 'Northing'), ('X', 'Easting')):
+                    projections = roles[role]['projections']
+                    self.assertEqual(len(projections), 1)
+                    field = projections[0]['field']
+                    if bim_coordinates:
+                        # A coordinate that is already a model measure carries
+                        # its own aggregation; azureMap Y/X take GroupingOrMeasure.
+                        self.assertEqual(field, {
+                            'Measure': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                        'Property': name},
+                        })
+                    else:
+                        self.assertEqual(field, {
+                            'Aggregation': {
+                                'Expression': {'Column': {
+                                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                    'Property': name}},
+                                'Function': 1,
+                            },
+                        })
+                        # Sum (0) is the failure mode that blanked the map.
+                        self.assertNotEqual(field['Aggregation']['Function'], 0)
+                for role, name in (('Category', 'Record Label'),
+                                   ('Series', 'Segment')):
+                    projections = roles[role]['projections']
+                    self.assertEqual(len(projections), 1)
+                    self.assertEqual(projections[0]['field'], {
+                        'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                   'Property': name},
+                    })
+                self.assertEqual(roles['Size']['projections'][0]['field'], {
+                    'Measure': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                'Property': 'Revenue'},
+                })
+
+    def test_catalog_azure_map_category_label_uses_each_supported_shelf(self):
+        self.gen._measure_names.update({'Northing', 'Easting'})
+        self.gen._actual_bim_symbols = {
+            ('Sales', name) for name in
+            ('Northing', 'Easting', 'Record Label', 'Revenue')
+        }
+        for shelf in ('rows', 'columns', 'detail', 'text', 'tooltip'):
+            with self.subTest(shelf=shelf):
+                roles = self._query('azureMap', [
+                    {'name': 'Northing', 'shelf': 'rows', 'semantic_role': 'latitude'},
+                    {'name': 'Easting', 'shelf': 'columns', 'semantic_role': 'longitude'},
+                    {'name': 'Record Label', 'shelf': shelf},
+                    {'name': 'Revenue', 'shelf': 'size'},
+                ])['queryState']
+                self.assertEqual(set(roles), {'Category', 'Y', 'X', 'Size'})
+                self.assertEqual(len(roles['Category']['projections']), 1)
+                self.assertEqual(roles['Category']['projections'][0]['field'], {
+                    'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                               'Property': 'Record Label'},
+                })
+
+    def test_catalog_azure_map_label_not_repeated_and_extra_tooltip_deduplicated(self):
+        self.gen._measure_names.update({'Northing', 'Easting'})
+        self.gen._field_map.update({
+            'Label Alias': ('Sales', 'Record Label'),
+            'Note Alias': ('Sales', 'Record Note'),
+        })
+        self.gen._actual_bim_symbols = {
+            ('Sales', name) for name in
+            ('Northing', 'Easting', 'Record Label', 'Record Note')
+        }
+        roles = self._query('azureMap', [
+            {'name': 'Northing', 'shelf': 'rows', 'semantic_role': 'latitude'},
+            {'name': 'Easting', 'shelf': 'columns', 'semantic_role': 'longitude'},
+            {'name': 'Record Label', 'shelf': 'tooltip'},
+            {'name': 'Record Label', 'shelf': 'tooltip'},
+            {'name': 'Label Alias', 'shelf': 'tooltip'},
+            {'name': 'Record Note', 'shelf': 'tooltip'},
+            {'name': 'Record Note', 'shelf': 'tooltip'},
+            {'name': 'Note Alias', 'shelf': 'tooltip'},
+        ])['queryState']
+        self.assertEqual(set(roles), {'Category', 'Y', 'X', 'Tooltips'})
+        self.assertEqual(roles['Category']['projections'][0]['field'], {
+            'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                       'Property': 'Record Label'},
+        })
+        self.assertEqual(roles['Tooltips']['projections'], [{
+            'field': {'Aggregation': {
+                'Expression': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': 'Record Note',
+                }},
+                'Function': 3,
+            }},
+            'queryRef': 'Min(Sales.Record Note)',
+            'nativeQueryRef': 'Record Note',
+            'active': True,
+        }])
+
+    def test_catalog_azure_map_without_coordinates_requires_geographic_category(self):
+        self.gen._actual_bim_symbols = {
+            ('Sales', name) for name in ('Record Label', 'Geo Label', 'Revenue')
+        }
+        for has_geographic_dimension in (False, True):
+            with self.subTest(has_geographic_dimension=has_geographic_dimension):
+                fields = [{'name': 'Record Label', 'shelf': 'rows'},
+                          {'name': 'Revenue', 'shelf': 'size'}]
+                if has_geographic_dimension:
+                    fields.append({'name': 'Geo Label', 'shelf': 'detail',
+                                   'semantic_role': 'city'})
+                worksheet = {'chart_type': 'azureMap', 'fields': fields}
+                roles = self.gen._build_visual_query(worksheet)['queryState']
+                self.assertNotIn('Y', roles)
+                self.assertNotIn('X', roles)
+                self.assertNotIn('Location', roles)
+                self.assertNotIn('_visual_fallback_note', worksheet)
+                if has_geographic_dimension:
+                    self.assertEqual(set(roles), {'Category', 'Size'})
+                    self.assertEqual(worksheet['chart_type'], 'azureMap')
+                    self.assertNotIn('_override_visual_type', worksheet)
+                    self.assertEqual(roles['Category']['projections'][0]['field'], {
+                        'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                   'Property': 'Geo Label'},
+                    })
+                    self.assertNotIn('_visual_mapping_note', worksheet)
+                else:
+                    # azureMap declares requiredRoles ['Category']; a map with
+                    # no geography at all would render blank, so it degrades.
+                    self.assertEqual(set(roles), {'Values'})
+                    self.assertEqual(worksheet['_override_visual_type'], 'tableEx')
+                    # The note carries both causes: the specific geography
+                    # failure, then the generic contract degradation it
+                    # triggered -- the specific cause is no longer lost.
+                    note = worksheet['_visual_mapping_note']
+                    geography_cause = (
+                        'No resolved geographic location or coordinate pair; '
+                        'source geography is required for this map.')
+                    contract_cause = (
+                        'azureMap needs Category; source fields could not '
+                        'fill that role, shown as a table instead')
+                    self.assertIn(geography_cause, note)
+                    self.assertIn(contract_cause, note)
+                    self.assertLess(note.index(geography_cause),
+                                    note.index(contract_cause))
+                    self.assertEqual(
+                        note, '%s; %s' % (geography_cause, contract_cause))
+                    self.assertEqual(
+                        [projection['field']
+                         for projection in roles['Values']['projections']], [
+                            {'Column': {
+                                'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                'Property': 'Record Label'}},
+                            {'Measure': {
+                                'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                'Property': 'Revenue'}},
+                        ])
+
+    def test_create_visual_worksheet_promotes_legacy_map_to_azure_map(self):
+        self.gen._field_map['Geo Label'] = ('Sales', 'Geo Label')
+        self.gen._actual_bim_symbols = {
+            ('Sales', 'Geo Label'), ('Sales', 'Revenue'),
+        }
+        worksheet = {
+            'chart_type': 'map',
+            'fields': [
+                {'name': 'Geo Label', 'shelf': 'detail', 'semantic_role': 'city'},
+                {'name': 'Revenue', 'shelf': 'size'},
+            ],
+            'map_options': {'style': 'normal'},
+        }
+        with patch('powerbi_import.pbip_generator._write_json') as write_json, \
+                patch('powerbi_import.pbip_generator.os.makedirs'):
+            self.gen._create_visual_worksheet(
+                self.gen.output_dir, worksheet,
+                {'worksheetName': 'Synthetic Geographic Map', 'position': {}},
+                1, 1, 0, [], {},
+            )
+        write_json.assert_called_once()
+        payload = write_json.call_args.args[1]
+        visual = payload['visual']
+        self.assertEqual(worksheet['chart_type'], 'azureMap')
+        self.assertEqual(visual['visualType'], 'azureMap')
+        roles = visual['query']['queryState']
+        self.assertEqual(set(roles), {'Category', 'Size'})
+        self.assertEqual(roles['Category']['projections'], [{
+            'field': {'Column': {
+                'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                'Property': 'Geo Label',
+            }},
+            'queryRef': 'Sales.Geo Label', 'nativeQueryRef': 'Geo Label',
+            'active': True,
+        }])
+        self.assertNotIn('_override_visual_type', worksheet)
+        self.assertNotIn('_visual_fallback_note', worksheet)
+        self.assertNotIn('_visual_mapping_note', worksheet)
+        self.assertNotIn('annotations', payload)
+        self.assertNotIn('mapControl', visual['objects'])
+        self.assertEqual(visual['objects']['mapControls'], [{
+            'properties': {'defaultStyle': {
+                'expr': {'Literal': {'Value': "'road'"}},
+            }},
+        }])
 
     def test_table_type(self):
         fields = [{'name': 'Region'}, {'name': 'Revenue'}]
@@ -612,18 +1158,101 @@ class TestBuildVisualQuery(unittest.TestCase):
 
     def test_scatter_chart(self):
         fields = [{'name': 'Region'}, {'name': 'Revenue'}, {'name': 'Profit'}]
-        result = self._query('scatterChart', fields)
+        worksheet = {'chart_type': 'scatterChart', 'fields': fields}
+        result = self.gen._build_visual_query(worksheet)
         qs = result['queryState']
-        self.assertIn('Details', qs)
-        self.assertIn('X', qs)
-        self.assertIn('Y', qs)
+        self.assertEqual(qs, {
+            role: {'projections': [{
+                'field': {wrapper: {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': name,
+                }},
+                'queryRef': f'Sales.{name}', 'nativeQueryRef': name,
+                'active': True,
+            }]}
+            for role, wrapper, name in (
+                ('Category', 'Column', 'Region'),
+                ('X', 'Measure', 'Revenue'), ('Y', 'Measure', 'Profit'),
+            )
+        })
+        self.assertNotIn('_override_visual_type', worksheet)
+        self.assertNotIn('_visual_fallback_note', worksheet)
+        with patch('powerbi_import.pbip_generator._write_json') as write_json, \
+                patch('powerbi_import.pbip_generator.os.makedirs'):
+            self.gen._create_visual_worksheet(
+                self.gen.output_dir, worksheet,
+                {'worksheetName': 'Synthetic Scatter', 'position': {}},
+                1, 1, 0, [], {},
+            )
+        write_json.assert_called_once()
+        visual = write_json.call_args.args[1]
+        self.assertEqual(visual['$schema'],
+                         'https://developer.microsoft.com/json-schemas/fabric/item/'
+                         'report/definition/visualContainer/2.5.0/schema.json')
+        self.assertEqual(visual['visual']['visualType'], 'scatterChart')
+        self.assertEqual(visual['visual']['query'], result)
 
     def test_scatter_chart_one_measure(self):
         fields = [{'name': 'Region'}, {'name': 'Revenue'}]
+        worksheet = {'chart_type': 'scatterChart', 'fields': fields}
+        result = self.gen._build_visual_query(worksheet)
+        qs = result['queryState']
+        self.assertEqual(qs, {'Values': {'projections': [{
+            'field': {wrapper: {
+                'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                'Property': name,
+            }},
+            'queryRef': f'Sales.{name}', 'nativeQueryRef': name,
+            'active': True,
+        } for wrapper, name in (('Column', 'Region'), ('Measure', 'Revenue'))]}})
+        self.assertNotIn('X', qs)
+        self.assertNotIn('Y', qs)
+        self.assertEqual(worksheet['_override_visual_type'], 'tableEx')
+        fallback_note = ('Scatter has no second resolved axis; '
+                         'source fields were preserved as a table.')
+        self.assertEqual(worksheet['_visual_fallback_note'], fallback_note)
+        with patch('powerbi_import.pbip_generator._write_json') as write_json, \
+                patch('powerbi_import.pbip_generator.os.makedirs'):
+            self.gen._create_visual_worksheet(
+                self.gen.output_dir, worksheet,
+                {'worksheetName': 'Synthetic Scatter', 'position': {}},
+                1, 1, 0, [], {},
+            )
+        write_json.assert_called_once()
+        visual = write_json.call_args.args[1]
+        self.assertEqual(visual['$schema'],
+                         'https://developer.microsoft.com/json-schemas/fabric/item/'
+                         'report/definition/visualContainer/2.5.0/schema.json')
+        self.assertEqual(visual['visual']['visualType'], 'tableEx')
+        self.assertEqual(visual['visual']['query'], result)
+        self.assertIn({'name': 'MigrationNote', 'value': fallback_note},
+                      visual['annotations'])
+        self.assertNotIn('annotations', visual['visual'])
+        self.assertNotIn('_override_visual_type', worksheet)
+        self.assertNotIn('_visual_fallback_note', worksheet)
+
+    def test_scatter_uses_tooltip_fields_for_missing_axes_and_detail(self):
+        fields = [
+            {'name': 'Revenue', 'shelf': 'rows'},
+            {'name': 'Profit', 'shelf': 'tooltip'},
+            {'name': 'Region', 'shelf': 'tooltip'},
+        ]
         result = self._query('scatterChart', fields)
         qs = result['queryState']
-        self.assertIn('Y', qs)
-        self.assertNotIn('X', qs)
+        self.assertEqual(qs, {
+            role: {'projections': [{
+                'field': {wrapper: {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': name,
+                }},
+                'queryRef': f'Sales.{name}', 'nativeQueryRef': name,
+                'active': True,
+            }]}
+            for role, wrapper, name in (
+                ('Category', 'Column', 'Region'),
+                ('X', 'Measure', 'Revenue'), ('Y', 'Measure', 'Profit'),
+            )
+        })
 
     def test_scatter_chart_three_measures_size(self):
         """Third measure → Size (bubble)."""
@@ -633,7 +1262,67 @@ class TestBuildVisualQuery(unittest.TestCase):
                   {'name': 'Profit'}, {'name': 'Quantity'}]
         result = self._query('scatterChart', fields)
         qs = result['queryState']
-        self.assertIn('Size', qs)
+        self.assertEqual(qs, {
+            role: {'projections': [{
+                'field': {wrapper: {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': name,
+                }},
+                'queryRef': f'Sales.{name}', 'nativeQueryRef': name,
+                'active': True,
+            }]}
+            for role, wrapper, name in (
+                ('Category', 'Column', 'Region'),
+                ('X', 'Measure', 'Revenue'), ('Y', 'Measure', 'Profit'),
+                ('Size', 'Measure', 'Quantity'),
+            )
+        })
+
+    def test_scatter_keeps_all_source_tooltips(self):
+        fields = ([{'name': 'Region'}, {'name': 'Revenue'}, {'name': 'Profit'}]
+                  + [{'name': f'Tooltip {index}', 'shelf': 'tooltip'}
+                     for index in range(11)])
+        result = self._query('scatterChart', fields)
+        self.assertEqual(set(result['queryState']), {'Category', 'X', 'Y', 'Tooltips'})
+        self.assertEqual(result['queryState']['Tooltips']['projections'], [{
+            'field': {'Aggregation': {
+                'Expression': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': f'Tooltip {index}',
+                }},
+                'Function': 3,
+            }},
+            'queryRef': f'Min(Sales.Tooltip {index})',
+            'nativeQueryRef': f'Tooltip {index}',
+            'active': True,
+        } for index in range(11)])
+
+    def test_map_and_bar_keep_all_source_tooltips(self):
+        tooltips = [{'name': f'Tooltip {index}', 'shelf': 'tooltip'}
+                    for index in range(7)]
+        for visual_type in ('azureMap', 'clusteredBarChart'):
+            fields = [{'name': 'Region'}, {'name': 'Revenue'}] + tooltips
+            result = self._query(visual_type, fields)
+            self.assertEqual(result['queryState']['Tooltips']['projections'], [{
+                'field': {'Aggregation': {
+                    'Expression': {'Column': {
+                        'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                        'Property': f'Tooltip {index}',
+                    }},
+                    'Function': 3,
+                }},
+                'queryRef': f'Min(Sales.Tooltip {index})',
+                'nativeQueryRef': f'Tooltip {index}',
+                'active': True,
+            } for index in range(7)], visual_type)
+
+    def test_combo_chart_keeps_source_tooltips(self):
+        result = self._query('lineClusteredColumnComboChart', [
+            {'name': 'Region', 'shelf': 'columns'},
+            {'name': 'Revenue', 'shelf': 'rows'},
+            {'name': 'Profit', 'shelf': 'tooltip'},
+        ])
+        self.assertEqual(len(result['queryState']['Tooltips']['projections']), 1)
 
     def test_gauge_type(self):
         fields = [{'name': 'Revenue'}, {'name': 'Profit'}, {'name': 'Region'}]
@@ -647,14 +1336,170 @@ class TestBuildVisualQuery(unittest.TestCase):
         fields = [{'name': 'Revenue'}]
         result = self._query('card', fields)
         qs = result['queryState']
-        self.assertIn('Fields', qs)  # PBIR card uses 'Fields' role
+        self.assertEqual(set(qs), {'Values'})
+        self.assertEqual(len(qs['Values']['projections']), 1)
+        self.assertEqual(qs['Values']['projections'][0]['field'], {
+            'Measure': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                        'Property': 'Revenue'},
+        })
 
     def test_card_dims_only(self):
         """Card with no measures → uses dims."""
         fields = [{'name': 'Region'}]
         result = self._query('card', fields)
         qs = result['queryState']
-        self.assertIn('Fields', qs)  # PBIR card uses 'Fields' role
+        self.assertEqual(set(qs), {'Values'})
+        self.assertEqual(len(qs['Values']['projections']), 1)
+        self.assertEqual(qs['Values']['projections'][0]['field'], {
+            'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                       'Property': 'Region'},
+        })
+
+    def test_catalog_card_string_column_overrides_without_aggregation(self):
+        # A card's Values role is measure-only, so the string column is
+        # unbindable there. The card is downgraded to a multiRowCard, whose
+        # Values role accepts columns, and the contract judges that already
+        # downgraded type -- so the higher-fidelity target is kept rather than
+        # being clobbered to a table. The column must survive as a bare,
+        # unaggregated reference.
+        self.gen._actual_bim_symbols = {('Sales', 'Record Label')}
+        self.gen._actual_bim_column_types = {('Sales', 'Record Label'): 'string'}
+        fields = [{'name': 'Record Label', 'shelf': 'text'}]
+        worksheet = {'chart_type': 'card', 'fields': fields}
+        roles = self.gen._build_visual_query(worksheet)['queryState']
+        self.assertEqual(worksheet['_override_visual_type'], 'multiRowCard')
+        self.assertNotIn('_visual_mapping_note', worksheet)
+        self.assertNotIn('_visual_fallback_note', worksheet)
+        self.assertEqual(set(roles), {'Values'})
+        # No loss: the single source field still reaches Values.
+        self.assertEqual(len(roles['Values']['projections']), len(fields))
+        self.assertEqual([projection['field']
+                          for projection in roles['Values']['projections']], [
+            {'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                        'Property': 'Record Label'}},
+        ])
+        self.assertEqual(self._query('multiRowCard', fields)['queryState'], roles)
+
+    def test_catalog_card_date_column_defaults_to_max(self):
+        self.gen._actual_bim_symbols = {('Sales', 'Observed Date')}
+        for shelf in ('text', 'rows', 'columns', 'tooltip'):
+            with self.subTest(shelf=shelf):
+                worksheet = {'chart_type': 'card', 'fields': [
+                    {'name': 'Observed Date', 'shelf': shelf},
+                ]}
+                roles = self.gen._build_visual_query(worksheet)['queryState']
+                self.assertEqual(set(roles), {'Values'})
+                self.assertEqual(len(roles['Values']['projections']), 1)
+                self.assertEqual(roles['Values']['projections'][0]['field'], {
+                    'Aggregation': {
+                        'Expression': {'Column': {
+                            'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                            'Property': 'Observed Date',
+                        }},
+                        'Function': 4,
+                    },
+                })
+                self.assertNotIn('_override_visual_type', worksheet)
+
+    def test_catalog_card_date_column_retains_explicit_min(self):
+        self.gen._actual_bim_symbols = {('Sales', 'Observed Date')}
+        for shelf in ('text', 'tooltip', 'rows', 'columns'):
+            with self.subTest(shelf=shelf):
+                roles = self._query('card', [
+                    {'name': 'Observed Date', 'shelf': shelf, 'aggregation': 'min'},
+                ])['queryState']
+                self.assertEqual(set(roles), {'Values'})
+                self.assertEqual(len(roles['Values']['projections']), 1)
+                self.assertEqual(roles['Values']['projections'][0]['field'], {
+                    'Aggregation': {
+                        'Expression': {'Column': {
+                            'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                            'Property': 'Observed Date',
+                        }},
+                        'Function': 3,
+                    },
+                })
+
+    def test_catalog_card_date_measure_keeps_actual_measure_wrapper(self):
+        self.gen._measure_names.add('Latest Date')
+        self.gen._bim_measure_names.add('Latest Date')
+        self.gen._actual_bim_measure_names = {'Latest Date'}
+        self.gen._actual_bim_symbols = {('Sales', 'Latest Date')}
+        for aggregation in ('', 'min', 'max'):
+            with self.subTest(aggregation=aggregation):
+                roles = self._query('card', [
+                    {'name': 'Latest Date', 'shelf': 'text', 'aggregation': aggregation},
+                ])['queryState']
+                self.assertEqual(set(roles), {'Values'})
+                self.assertEqual(len(roles['Values']['projections']), 1)
+                self.assertEqual(roles['Values']['projections'][0]['field'], {
+                    'Measure': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                'Property': 'Latest Date'},
+                })
+                self.assertEqual(roles['Values']['projections'][0]['queryRef'],
+                                 'Sales.Latest Date')
+
+    def test_catalog_date_column_default_aggregation_is_scalar_card_only(self):
+        self.gen._actual_bim_symbols = {('Sales', 'Observed Date'),
+                                        ('Sales', 'Revenue')}
+        date_pill = {'name': 'Observed Date', 'shelf': 'rows'}
+        # clusteredBarChart requires a Y role, so it is given a measure; the
+        # date pill must still reach Category as a bare column.
+        for visual_type, role, fields in (
+                ('tableEx', 'Values', [date_pill]),
+                ('multiRowCard', 'Values', [date_pill]),
+                ('clusteredBarChart', 'Category',
+                 [date_pill, {'name': 'Revenue', 'shelf': 'columns'}])):
+            with self.subTest(visual_type=visual_type):
+                worksheet = {'chart_type': visual_type, 'fields': fields}
+                roles = self.gen._build_visual_query(worksheet)['queryState']
+                self.assertNotIn('_override_visual_type', worksheet)
+                self.assertEqual(len(roles[role]['projections']), 1)
+                self.assertEqual(roles[role]['projections'][0]['field'], {
+                    'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                               'Property': 'Observed Date'},
+                })
+
+    def test_catalog_card_multiple_measures_override_without_target_loss(self):
+        names = [f'Metric {index}' for index in range(1, 9)]
+        self.gen._measure_names.update(names)
+        self.gen._bim_measure_names.update(names)
+        self.gen._actual_bim_measure_names = set(names)
+        self.gen._actual_bim_symbols = {('Sales', name) for name in names}
+        fields = [{'name': name, 'shelf': 'text'} for name in names]
+        worksheet = {'chart_type': 'card', 'fields': fields}
+        roles = self.gen._build_visual_query(worksheet)['queryState']
+        self.assertEqual(worksheet['_override_visual_type'], 'multiRowCard')
+        self.assertEqual(set(roles), {'Values'})
+        self.assertEqual(len(roles['Values']['projections']), len(names))
+        self.assertEqual([projection['field']
+                          for projection in roles['Values']['projections']], [
+            {'Measure': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                         'Property': name}} for name in names
+        ])
+        self.assertEqual(self._query('multiRowCard', fields)['queryState'], roles)
+
+    def test_catalog_card_multiple_dimensions_override_without_target_loss(self):
+        # Several targets downgrade the card to a multiRowCard, whose Values
+        # role accepts columns; the contract judges that downgraded type and
+        # leaves it alone. Every target must still be projected.
+        names = ['Record Label', 'Batch Label']
+        self.gen._actual_bim_symbols = {('Sales', name) for name in names}
+        fields = [{'name': name, 'shelf': 'rows'} for name in names]
+        worksheet = {'chart_type': 'card', 'fields': fields}
+        roles = self.gen._build_visual_query(worksheet)['queryState']
+        self.assertEqual(worksheet['_override_visual_type'], 'multiRowCard')
+        self.assertNotIn('_visual_mapping_note', worksheet)
+        self.assertNotIn('_visual_fallback_note', worksheet)
+        self.assertEqual(set(roles), {'Values'})
+        # No loss: every source field still reaches Values, unaggregated.
+        self.assertEqual(len(roles['Values']['projections']), len(names))
+        self.assertEqual([projection['field']
+                          for projection in roles['Values']['projections']], [
+            {'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                        'Property': name}} for name in names
+        ])
+        self.assertEqual(self._query('multiRowCard', fields)['queryState'], roles)
 
     def test_pie_chart(self):
         fields = [{'name': 'Region'}, {'name': 'Revenue'}]
@@ -699,11 +1544,29 @@ class TestBuildVisualQuery(unittest.TestCase):
 
     def test_combo_chart(self):
         fields = [{'name': 'Month'}, {'name': 'Revenue'}, {'name': 'Profit'}]
-        result = self._query('lineClusteredColumnComboChart', fields)
-        qs = result['queryState']
-        self.assertIn('Category', qs)
-        self.assertIn('ColumnY', qs)
-        self.assertIn('LineY', qs)
+        for visual_type in ('lineClusteredColumnComboChart',
+                            'lineStackedColumnComboChart'):
+            with self.subTest(visual_type=visual_type):
+                qs = self._query(visual_type, fields)['queryState']
+                self.assertEqual(set(qs), {'Category', 'Y', 'Y2'})
+                self.assertEqual(
+                    {role: [projection['field'] for projection in value['projections']]
+                     for role, value in qs.items()},
+                    {
+                        'Category': [{'Column': {
+                            'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                            'Property': 'Month',
+                        }}],
+                        'Y': [{'Measure': {
+                            'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                            'Property': 'Revenue',
+                        }}],
+                        'Y2': [{'Measure': {
+                            'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                            'Property': 'Profit',
+                        }}],
+                    },
+                )
 
     def test_waterfall_chart(self):
         fields = [{'name': 'Region'}, {'name': 'Month'}, {'name': 'Revenue'}]
@@ -721,14 +1584,24 @@ class TestBuildVisualQuery(unittest.TestCase):
         self.assertIn('Value', qs)
 
     def test_standard_chart_dim_fallback(self):
-        """No measures → last dim used as Y."""
+        """Without measures, source dimensions are preserved as a table."""
         self.gen._measure_names.clear()
         self.gen._bim_measure_names.clear()
         fields = [{'name': 'Region'}, {'name': 'State'}]
-        result = self._query('clusteredBarChart', fields)
-        qs = result['queryState']
-        self.assertIn('Category', qs)
-        self.assertIn('Y', qs)
+        for visual_type in ('clusteredBarChart', 'lineChart'):
+            with self.subTest(visual_type=visual_type):
+                worksheet = {'chart_type': visual_type, 'fields': fields}
+                qs = self.gen._build_visual_query(worksheet)['queryState']
+                self.assertEqual(set(qs), {'Values'})
+                self.assertEqual([projection['field']
+                                  for projection in qs['Values']['projections']], [
+                    {'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                'Property': name}} for name in ('Region', 'State')
+                ])
+                self.assertEqual(worksheet['_override_visual_type'], 'tableEx')
+                self.assertEqual(worksheet['_visual_fallback_note'],
+                                 'No resolved value field for this chart; '
+                                 'source dimensions were preserved as a table.')
 
     def test_deduplicate_fields(self):
         """Same field from multiple shelves is deduplicated."""
@@ -829,6 +1702,100 @@ class TestBuildVisualQuery(unittest.TestCase):
         self.assertIn('Series', qs)
         self.assertIn('Y', qs)
 
+    def test_explicit_axis_aggregation_classifies_physical_columns_as_measures(self):
+        self.gen._field_map.setdefault('Amount', ('Sales', 'Amount'))
+        self.gen._actual_bim_column_types = {('Sales', 'Amount'): 'double'}
+        for shelf, dimension_shelf, measure_bucket, dimension_bucket in (
+            ('rows', 'columns', 'rows_meas', 'cols_dims'),
+            ('columns', 'rows', 'cols_meas', 'rows_dims'),
+        ):
+            for aggregation, function in (('sum', 0), ('avg', 1), ('min', 3), ('max', 4)):
+                with self.subTest(shelf=shelf, aggregation=aggregation):
+                    dimension = {'name': 'Category', 'shelf': dimension_shelf}
+                    measure = {'name': 'Amount', 'shelf': shelf,
+                               'aggregation': aggregation}
+                    fields = [dimension, measure]
+                    classified = self.gen._classify_shelf_fields(fields)
+                    self.assertEqual(classified[measure_bucket], [measure])
+                    self.assertEqual(classified[dimension_bucket], [dimension])
+                    self.assertEqual(sum(len(bucket) for bucket in classified.values()), 2)
+                    roles = self._query('clusteredBarChart', fields)['queryState']
+                    self.assertEqual(set(roles), {'Category', 'Y'})
+                    self.assertEqual(roles['Category']['projections'][0]['field'], {
+                        'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                   'Property': 'Category'},
+                    })
+                    self.assertEqual(roles['Y']['projections'][0]['field'], {
+                        'Aggregation': {
+                            'Expression': {'Column': {
+                                'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                'Property': 'Amount',
+                            }},
+                            'Function': function,
+                        },
+                    })
+                    self.assertEqual(len(roles['Category']['projections']), 1)
+                    self.assertEqual(len(roles['Y']['projections']), 1)
+                    self.assertEqual(measure, {'name': 'Amount', 'shelf': shelf,
+                                               'aggregation': aggregation})
+
+    def test_unknown_axis_aggregation_keeps_region_dimension(self):
+        self.gen._field_map['Region'] = ('Sales', 'Region')
+        self.gen._actual_bim_column_types = {}
+        for shelf, dimension_bucket in (('rows', 'rows_dims'), ('columns', 'cols_dims')):
+            for aggregation in ('sum', 'avg', 'min', 'max', 'count', 'countd'):
+                with self.subTest(shelf=shelf, aggregation=aggregation):
+                    field = {'name': 'Region', 'shelf': shelf,
+                             'aggregation': aggregation}
+                    fields = [field]
+                    classified = self.gen._classify_shelf_fields(fields)
+                    self.assertEqual(classified[dimension_bucket], [
+                        {'name': 'Region', 'shelf': shelf},
+                    ])
+                    self.assertEqual(classified['rows_meas'], [])
+                    self.assertEqual(classified['cols_meas'], [])
+                    self.assertEqual(sum(len(bucket) for bucket in classified.values()), 1)
+                    self.assertEqual(fields, [
+                        {'name': 'Region', 'shelf': shelf, 'aggregation': aggregation},
+                    ])
+                    self.assertIs(fields[0], field)
+
+    def test_date_axis_grain_keeps_min_aggregation_on_tooltips(self):
+        for shelf, measure_shelf, dimension_bucket in (
+            ('rows', 'columns', 'rows_dims'),
+            ('columns', 'rows', 'cols_dims'),
+        ):
+            with self.subTest(shelf=shelf):
+                date = {'name': 'Observed Date', 'shelf': shelf, 'aggregation': 'min'}
+                classified = self.gen._classify_shelf_fields([date])
+                self.assertEqual(classified[dimension_bucket], [
+                    {'name': 'Observed Date', 'shelf': shelf},
+                ])
+                self.assertEqual(classified['rows_meas'], [])
+                self.assertEqual(classified['cols_meas'], [])
+                roles = self._query('clusteredBarChart', [
+                    date,
+                    {'name': 'Revenue', 'shelf': measure_shelf},
+                    {'name': 'Observed Date', 'shelf': 'tooltip', 'aggregation': 'min'},
+                    {'name': 'Observed Date', 'shelf': 'tooltip', 'aggregation': 'min'},
+                ])['queryState']
+                self.assertEqual(set(roles), {'Category', 'Y', 'Tooltips'})
+                column = {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': 'Observed Date',
+                }}
+                self.assertEqual([projection['field']
+                                  for projection in roles['Category']['projections']],
+                                 [column])
+                self.assertEqual(roles['Tooltips']['projections'], [{
+                    'field': {'Aggregation': {'Expression': column, 'Function': 3}},
+                    'queryRef': 'Sales.Observed Date',
+                    'nativeQueryRef': 'Observed Date',
+                    'active': True,
+                }])
+                self.assertEqual(date, {'name': 'Observed Date', 'shelf': shelf,
+                                       'aggregation': 'min'})
+
     def test_color_shelf_dim_overrides_axis_series(self):
         """Color dim has priority for Series over second axis dim."""
         fields = [
@@ -870,15 +1837,15 @@ class TestBuildVisualQuery(unittest.TestCase):
         self.assertEqual(len(qs['Y']['projections']), 1)
 
     def test_map_uses_location_role(self):
-        """Map visual must use the Azure Maps Location role."""
+        """Map visuals use the catalog Category role for the Location well."""
         fields = [{'name': 'City', 'shelf': 'rows'}, {'name': 'Revenue'}]
         result = self._query('map', fields)
         qs = result['queryState']
-        self.assertIn('Location', qs)
-        self.assertNotIn('Category', qs)
+        self.assertIn('Category', qs)
+        self.assertNotIn('Location', qs)
 
     def test_map_multiple_geo_dims_in_location(self):
-        """Map: the first geo dim → the single-value Location role."""
+        """The first geographic dimension fills the single-value Category role."""
         fields = [
             {'name': 'Country', 'shelf': 'rows'},
             {'name': 'City', 'shelf': 'rows'},
@@ -886,7 +1853,10 @@ class TestBuildVisualQuery(unittest.TestCase):
         ]
         result = self._query('map', fields)
         qs = result['queryState']
-        self.assertEqual(len(qs['Location']['projections']), 1)
+        self.assertEqual(len(qs['Category']['projections']), 1)
+        self.assertEqual(qs['Category']['projections'][0]['field']['Column']['Property'],
+                         'Country')
+        self.assertNotIn('Location', qs)
 
     def test_filled_map_legend_from_color_dim(self):
         """FilledMap: color dim → Series role."""
@@ -901,7 +1871,7 @@ class TestBuildVisualQuery(unittest.TestCase):
         self.assertIn('Series', qs)
 
     def test_treemap_non_date_dims_first(self):
-        """Treemap: non-date dims sorted before date dims in Group role."""
+        """Treemap: non-date dims precede date dims across Group and Details."""
         fields = [
             {'name': 'Date', 'shelf': 'columns'},
             {'name': 'Category', 'shelf': 'rows'},
@@ -909,13 +1879,23 @@ class TestBuildVisualQuery(unittest.TestCase):
         ]
         result = self._query('treemap', fields)
         qs = result['queryState']
-        projs = qs['Group']['projections']
-        self.assertEqual(len(projs), 2)
-        # Category (non-date) should be first
-        self.assertEqual(projs[0]['field']['Column']['Property'], 'Category')
+        self.assertEqual(qs, {
+            role: {'projections': [{
+                'field': {wrapper: {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': name,
+                }},
+                'queryRef': f'Sales.{name}', 'nativeQueryRef': name,
+                'active': True,
+            }]}
+            for role, wrapper, name in (
+                ('Group', 'Column', 'Category'), ('Details', 'Column', 'Date'),
+                ('Values', 'Measure', 'Revenue'),
+            )
+        })
 
     def test_treemap_multiple_group_levels(self):
-        """Treemap: all dims become Group hierarchy levels."""
+        """Treemap: two grouping levels use one Group and one Details field."""
         fields = [
             {'name': 'Region', 'shelf': 'rows'},
             {'name': 'Category', 'shelf': 'rows'},
@@ -923,21 +1903,100 @@ class TestBuildVisualQuery(unittest.TestCase):
         ]
         result = self._query('treemap', fields)
         qs = result['queryState']
-        self.assertEqual(len(qs['Group']['projections']), 2)
+        self.assertEqual(qs, {
+            role: {'projections': [{
+                'field': {wrapper: {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': name,
+                }},
+                'queryRef': f'Sales.{name}', 'nativeQueryRef': name,
+                'active': True,
+            }]}
+            for role, wrapper, name in (
+                ('Group', 'Column', 'Region'), ('Details', 'Column', 'Category'),
+                ('Values', 'Measure', 'Revenue'),
+            )
+        })
+
+    def test_treemap_extra_dimensions_use_min_scalar_tooltips_and_migration_note(self):
+        for dimension_count in (3, 4):
+            with self.subTest(dimension_count=dimension_count):
+                fields = [
+                    {'name': 'Date', 'shelf': 'rows'},
+                    {'name': 'Region', 'shelf': 'rows'},
+                    {'name': 'Category', 'shelf': 'rows'},
+                ]
+                if dimension_count == 4:
+                    fields.append({'name': 'Segment Label (%) / Code', 'shelf': 'color'})
+                fields.append({'name': 'Revenue'})
+                worksheet = {'chart_type': 'treemap', 'fields': fields}
+                with patch('powerbi_import.pbip_generator._write_json') as write_json, \
+                        patch('powerbi_import.pbip_generator.os.makedirs'):
+                    self.gen._create_visual_worksheet(
+                        self.gen.output_dir, worksheet,
+                        {'worksheetName': 'Synthetic Treemap', 'position': {}},
+                        1, 1, 0, [], {},
+                    )
+                write_json.assert_called_once()
+                visual = write_json.call_args.args[1]
+                self.assertEqual(visual['visual']['visualType'], 'treemap')
+                expected_roles = {
+                    role: {'projections': [{
+                        'field': {wrapper: {
+                            'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                            'Property': name,
+                        }},
+                        'queryRef': f'Sales.{name}', 'nativeQueryRef': name,
+                        'active': True,
+                    }]}
+                    for role, wrapper, name in (
+                        ('Group', 'Column', 'Region'), ('Details', 'Column', 'Category'),
+                        ('Values', 'Measure', 'Revenue'),
+                    )
+                }
+                tooltip_names = (('Date',) if dimension_count == 3
+                                 else ('Segment Label (%) / Code', 'Date'))
+                expected_roles['Tooltips'] = {'projections': [{
+                    'field': {'Aggregation': {
+                        'Expression': {'Column': {
+                            'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                            'Property': name,
+                        }},
+                        'Function': 3,
+                    }},
+                    'queryRef': f'Min(Sales.{name})', 'nativeQueryRef': name,
+                    'active': True,
+                } for name in tooltip_names]}
+                self.assertEqual(visual['visual']['query']['queryState'], expected_roles)
+                self.assertIn({
+                    'name': 'MigrationNote',
+                    'value': 'Treemap supports two grouping levels; '
+                             'additional source attributes remain in tooltips.',
+                }, visual['annotations'])
+                self.assertNotIn('annotations', visual['visual'])
 
     def test_series_not_set_without_measures(self):
-        """Without measures, 2nd axis dim falls back to Y (not Series)."""
+        """Without measures, axis dimensions stay in Values, not Series or Y."""
         self.gen._measure_names.clear()
         self.gen._bim_measure_names.clear()
         fields = [{'name': 'Region'}, {'name': 'State'}]
-        result = self._query('clusteredBarChart', fields)
-        qs = result['queryState']
-        self.assertIn('Category', qs)
-        self.assertIn('Y', qs)
+        worksheet = {'chart_type': 'clusteredBarChart', 'fields': fields}
+        qs = self.gen._build_visual_query(worksheet)['queryState']
+        self.assertEqual(set(qs), {'Values'})
+        self.assertEqual([projection['field']
+                          for projection in qs['Values']['projections']], [
+            {'Column': {'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                        'Property': name}} for name in ('Region', 'State')
+        ])
         self.assertNotIn('Series', qs)
+        self.assertNotIn('Y', qs)
+        self.assertEqual(worksheet['_override_visual_type'], 'tableEx')
+        self.assertEqual(worksheet['_visual_fallback_note'],
+                         'No resolved value field for this chart; '
+                         'source dimensions were preserved as a table.')
 
     def test_scatter_all_dims_in_details(self):
-        """Scatter: all dims (axis + color) → Details."""
+        """Scatter uses one Category and one Series for its two dimensions."""
         fields = [
             {'name': 'Region', 'shelf': 'rows'},
             {'name': 'Segment', 'shelf': 'color'},
@@ -946,21 +2005,400 @@ class TestBuildVisualQuery(unittest.TestCase):
         ]
         result = self._query('scatterChart', fields)
         qs = result['queryState']
-        self.assertEqual(len(qs['Details']['projections']), 2)
+        self.assertEqual(qs, {
+            role: {'projections': [{
+                'field': {wrapper: {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': name,
+                }},
+                'queryRef': f'Sales.{name}', 'nativeQueryRef': name,
+                'active': True,
+            }]}
+            for role, wrapper, name in (
+                ('Category', 'Column', 'Region'), ('Series', 'Column', 'Segment'),
+                ('X', 'Measure', 'Revenue'), ('Y', 'Measure', 'Profit'),
+            )
+        })
+
+    def test_scatter_extra_dimensions_use_min_scalar_tooltips(self):
+        roles = self._query('scatterChart', [
+            {'name': 'Region', 'shelf': 'rows'},
+            {'name': 'Segment', 'shelf': 'rows'},
+            {'name': 'Group', 'shelf': 'rows'},
+            {'name': 'Subgroup', 'shelf': 'color'},
+            {'name': 'Revenue', 'shelf': 'columns'},
+            {'name': 'Profit', 'shelf': 'rows'},
+            {'name': 'Region', 'shelf': 'tooltip'},
+            {'name': 'Segment', 'shelf': 'tooltip'},
+            {'name': 'Group', 'shelf': 'tooltip'},
+        ])['queryState']
+        expected_roles = {
+            role: {'projections': [{
+                'field': {wrapper: {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': name,
+                }},
+                'queryRef': f'Sales.{name}', 'nativeQueryRef': name,
+                'active': True,
+            }]}
+            for role, wrapper, name in (
+                ('Category', 'Column', 'Region'), ('Series', 'Column', 'Segment'),
+                ('X', 'Measure', 'Revenue'), ('Y', 'Measure', 'Profit'),
+            )
+        }
+        expected_roles['Tooltips'] = {'projections': [{
+            'field': {'Aggregation': {
+                'Expression': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': name,
+                }},
+                'Function': 3,
+            }},
+            'queryRef': f'Min(Sales.{name})', 'nativeQueryRef': name,
+            'active': True,
+        } for name in ('Group', 'Subgroup')]}
+        self.assertEqual(roles, expected_roles)
 
     def test_combo_chart_with_series(self):
-        """Combo chart: color dim → Series, 2 measures → ColumnY + LineY."""
+        """Combo chart: color dim → Series, 2 measures → Y + Y2."""
         fields = [
             {'name': 'Month', 'shelf': 'columns'},
             {'name': 'Segment', 'shelf': 'color'},
             {'name': 'Revenue', 'shelf': 'rows'},
             {'name': 'Profit', 'shelf': 'rows'},
         ]
-        result = self._query('lineClusteredColumnComboChart', fields)
-        qs = result['queryState']
-        self.assertIn('Series', qs)
-        self.assertIn('ColumnY', qs)
-        self.assertIn('LineY', qs)
+        for visual_type in ('lineClusteredColumnComboChart',
+                            'lineStackedColumnComboChart'):
+            with self.subTest(visual_type=visual_type):
+                qs = self._query(visual_type, fields)['queryState']
+                self.assertEqual(set(qs), {'Category', 'Series', 'Y', 'Y2'})
+                for role, wrapper, prop in (
+                    ('Category', 'Column', 'Month'),
+                    ('Series', 'Column', 'Segment'),
+                    ('Y', 'Measure', 'Revenue'),
+                    ('Y2', 'Measure', 'Profit'),
+                ):
+                    with self.subTest(role=role):
+                        self.assertEqual(
+                            [projection['field'] for projection in qs[role]['projections']],
+                            [{wrapper: {
+                                'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                                'Property': prop,
+                            }}],
+                        )
+
+
+class TestDatasourceScopedFieldBindings(unittest.TestCase):
+    def setUp(self):
+        output_dir = self.enterContext(tempfile.TemporaryDirectory())
+        self.gen = _make_generator(output_dir)
+        _init_field_map(
+            self.gen,
+            {'Category': ('TableA', 'Category'),
+             'Amount': ('TableA', 'Amount'),
+             'RevenueA': ('TableA', 'RevenueA'),
+             'RevenueB': ('TableB', 'RevenueB')},
+            measure_names=['Amount', 'RevenueA', 'RevenueB'],
+            bim_measure_names=['RevenueA', 'RevenueB'],
+            main_table='TableA',
+            datasources_ref=[
+                {'name': 'source_a', 'tables': [{'name': 'TableA'}]},
+                {'name': 'source_b', 'tables': [{'name': 'TableB'}]},
+            ],
+        )
+        self.gen._actual_bim_symbols = {
+            ('TableA', 'Category'), ('TableA', 'Amount'), ('TableA', 'RevenueA'),
+            ('TableB', 'Category'), ('TableB', 'Amount'), ('TableB', 'RevenueB'),
+        }
+        self.gen._actual_bim_measure_names = {'RevenueA', 'RevenueB'}
+        self.gen._ds_table_map = {'source_a': 'TableA', 'source_b': 'TableB'}
+
+    def test_homonymous_dimension_and_measure_bind_to_owning_datasource(self):
+        for datasource, table, measure in (
+            ('source_a', 'TableA', 'RevenueA'),
+            ('source_b', 'TableB', 'RevenueB'),
+        ):
+            with self.subTest(datasource=datasource):
+                worksheet = {'chart_type': 'clusteredBarChart', 'fields': [
+                    {'name': 'Category', 'shelf': 'rows', 'datasource': datasource},
+                    {'name': measure, 'shelf': 'columns', 'datasource': datasource},
+                ]}
+                query = self.gen._build_visual_query(worksheet)
+                self.assertIsNotNone(query)
+                roles = query['queryState']
+                self.assertEqual(set(roles), {'Category', 'Y'})
+                self.assertEqual(roles['Category']['projections'][0]['field'], {
+                    'Column': {'Expression': {'SourceRef': {'Entity': table}},
+                               'Property': 'Category'},
+                })
+                self.assertEqual(roles['Y']['projections'][0]['field'], {
+                    'Measure': {'Expression': {'SourceRef': {'Entity': table}},
+                                'Property': measure},
+                })
+                self.assertNotIn('_unresolved_source_fields', worksheet)
+
+    def test_resolver_scopes_clean_mapped_and_calculation_captions(self):
+        self.gen._field_map.update({
+            'category_alias': ('TableA', 'Category'),
+            'Calculation_1': ('TableA', 'Foreign Caption'),
+        })
+        self.gen._actual_bim_symbols.add(('TableA', 'Foreign Caption'))
+        self.gen._datasources_ref[0]['calculations'] = [
+            {'name': '[Calculation_1]', 'caption': 'Foreign Caption'},
+        ]
+        self.gen._datasources_ref[1]['calculations'] = [
+            {'name': '[Calculation_1]', 'caption': 'Category'},
+        ]
+        for field in ('Category', '[category_alias]', '[Calculation_1]'):
+            with self.subTest(field=field):
+                self.assertEqual(
+                    self.gen._resolve_field_entity(field, datasource='source_b'),
+                    ('TableB', 'Category'),
+                )
+
+    def test_namespaced_measure_provenance_binds_card_to_owning_datasource(self):
+        calculation_id = 'Calculation_Shared'
+        for caption in ('Shared Calculation Caption', 'Montant  réalisé (%)'):
+            with self.subTest(caption=caption):
+                namespaced_caption = f'{caption} (TableB)'
+                self.gen._field_map.update({
+                    calculation_id: ('TableA', caption),
+                    caption: ('TableA', caption),
+                })
+                for source in self.gen._datasources_ref:
+                    source['calculations'] = [
+                        {'name': f'[{calculation_id}]', 'caption': caption},
+                    ]
+                self.gen._measure_names.update({
+                    calculation_id, caption, namespaced_caption,
+                })
+                self.gen._bim_measure_names.update({caption, namespaced_caption})
+                self.gen._actual_bim_measure_names.update({caption, namespaced_caption})
+                self.gen._actual_bim_symbols.update({
+                    ('TableA', caption), ('TableB', namespaced_caption),
+                })
+                self.gen._measure_rename_map = {
+                    ('TableB', caption): namespaced_caption,
+                }
+                for datasource, table, measure in (
+                    ('source_a', 'TableA', caption),
+                    ('source_b', 'TableB', namespaced_caption),
+                ):
+                    for field in (f'[{calculation_id}]', caption):
+                        with self.subTest(datasource=datasource, field=field):
+                            self.assertEqual(
+                                self.gen._resolve_field_entity(field, datasource=datasource),
+                                (table, measure),
+                            )
+                            worksheet = {'chart_type': 'card', 'fields': [
+                                {'name': field, 'shelf': 'text', 'datasource': datasource},
+                            ]}
+                            query = self.gen._build_visual_query(worksheet)
+                            self.assertIsNotNone(query)
+                            self.assertEqual(query['queryState'], {
+                                'Values': {'projections': [{
+                                    'field': {'Measure': {
+                                        'Expression': {'SourceRef': {'Entity': table}},
+                                        'Property': measure,
+                                    }},
+                                    'queryRef': f'{table}.{measure}',
+                                    'nativeQueryRef': measure,
+                                    'active': True,
+                                }]},
+                            })
+                            self.assertNotIn('_unresolved_source_fields', worksheet)
+                self.assertEqual(self.gen._field_map[calculation_id], ('TableA', caption))
+                self.assertEqual(self.gen._field_map[caption], ('TableA', caption))
+
+    def test_source_specific_filters_use_scoped_entity_and_caption(self):
+        self.gen._field_map['category_alias'] = ('TableA', 'Category')
+        self.gen._datasources_ref[1]['calculations'] = [
+            {'name': '[Calculation_1]', 'caption': 'Category'},
+        ]
+        for datasource, field, table in (
+            ('source_a', 'Category', 'TableA'),
+            ('source_b', 'Category', 'TableB'),
+            ('source_b', '[category_alias]', 'TableB'),
+            ('source_b', '[Calculation_1]', 'TableB'),
+        ):
+            with self.subTest(datasource=datasource, field=field):
+                filters = self.gen._create_visual_filters([
+                    {'field': field, 'datasource': datasource, 'values': ['Group A']},
+                ])
+                self.assertEqual(len(filters), 1)
+                self.assertEqual(filters[0]['field'], {
+                    'Column': {'Expression': {'SourceRef': {'Entity': table}},
+                               'Property': 'Category'},
+                })
+                self.assertEqual(filters[0]['filter']['From'], [
+                    {'Name': 't', 'Entity': table, 'Type': 0},
+                ])
+                condition = filters[0]['filter']['Where'][0]['Condition']['In']
+                self.assertEqual(condition['Expressions'], [
+                    {'Column': {'Expression': {'SourceRef': {'Source': 't'}},
+                                'Property': 'Category'}},
+                ])
+
+    def test_missing_source_dimension_cannot_borrow_foreign_homonym(self):
+        self.gen._actual_bim_symbols.remove(('TableB', 'Category'))
+        self.gen._actual_bim_symbols.add(('LookupB', 'Lookup Key'))
+        self.assertEqual(
+            self.gen._resolve_field_entity('Category', datasource='source_b'),
+            ('TableB', 'Category'),
+        )
+        for source_tables in (
+            [{'name': 'TableB'}],
+            [{'name': 'TableB'}, {'name': 'LookupB'}],
+        ):
+            with self.subTest(source_tables=source_tables):
+                self.gen._datasources_ref[1]['tables'] = source_tables
+                worksheet = {'chart_type': 'tableEx', 'fields': [
+                    {'name': 'Category', 'datasource': 'source_b'},
+                ]}
+                self.assertIsNone(self.gen._build_visual_query(worksheet))
+                self.assertEqual(worksheet['_unresolved_source_fields'], ['Category'])
+                self.assertEqual(self.gen._create_visual_filters([
+                    {'field': 'Category', 'datasource': 'source_b', 'values': ['Group A']},
+                ]), [])
+
+    def test_known_source_blocks_foreign_unique_owner_and_records_once(self):
+        self.gen._field_map['Remote Dimension'] = ('TableB', 'Remote Dimension')
+        self.gen._actual_bim_symbols.add(('TableA', 'Remote Dimension'))
+        raw_name = 'none:Remote Dimension:nk'
+        worksheet = {'chart_type': 'clusteredBarChart', 'fields': [
+            {'name': 'Category', 'shelf': 'rows', 'datasource': 'source_b'},
+            {'name': 'RevenueB', 'shelf': 'columns', 'datasource': 'source_b'},
+            {'name': raw_name, 'shelf': 'rows', 'datasource': 'source_b'},
+            {'name': raw_name, 'shelf': 'tooltip', 'datasource': 'source_b'},
+        ]}
+        query = self.gen._build_visual_query(worksheet)
+        self.assertIsNotNone(query)
+        roles = query['queryState']
+        self.assertEqual(set(roles), {'Category', 'Y'})
+        self.assertEqual(len(roles['Category']['projections']), 1)
+        self.assertEqual(roles['Category']['projections'][0]['field'], {
+            'Column': {'Expression': {'SourceRef': {'Entity': 'TableB'}},
+                       'Property': 'Category'},
+        })
+        self.assertEqual(worksheet['_unresolved_source_fields'], [raw_name])
+
+    def test_renamed_collisions_scope_all_tables_in_the_datasource(self):
+        self.gen._datasources_ref[0]['tables'] = [{'name': 'Shared'}]
+        self.gen._datasources_ref[1]['tables'] = [
+            {'name': 'Shared'}, {'name': 'Lookup'},
+        ]
+        self.gen._table_rename_map = {
+            ('source_a', 'Shared'): 'TableA',
+            ('source_b', 'Shared'): 'TableB',
+            ('source_b', 'Lookup'): 'LookupB',
+        }
+        self.gen._collision_tables = {'Shared', 'TableA', 'TableB', 'LookupB'}
+        self.gen._field_map['Category'] = ('Shared', 'Category')
+        self.gen._field_map['Lookup Label'] = ('TableA', 'Lookup Label')
+        self.gen._actual_bim_symbols.update({
+            ('TableA', 'Lookup Label'), ('LookupB', 'Lookup Label'),
+        })
+        for datasource, dimension, table, measure, measure_table in (
+            ('source_a', 'Category', 'TableA', 'RevenueA', 'TableA'),
+            ('source_b', 'Category', 'TableB', 'RevenueB', 'TableB'),
+            ('source_b', 'Lookup Label', 'LookupB', 'RevenueB', 'TableB'),
+        ):
+            with self.subTest(datasource=datasource, dimension=dimension):
+                self.assertEqual(
+                    self.gen._resolve_field_entity(dimension, datasource=datasource),
+                    (table, dimension),
+                )
+                query = self.gen._build_visual_query({
+                    'chart_type': 'clusteredBarChart', 'fields': [
+                        {'name': dimension, 'shelf': 'rows', 'datasource': datasource},
+                        {'name': measure, 'shelf': 'columns', 'datasource': datasource},
+                    ],
+                })
+                self.assertIsNotNone(query)
+                roles = query['queryState']
+                self.assertEqual(roles['Category']['projections'][0]['field'], {
+                    'Column': {'Expression': {'SourceRef': {'Entity': table}},
+                               'Property': dimension},
+                })
+                self.assertEqual(roles['Y']['projections'][0]['field'], {
+                    'Measure': {'Expression': {'SourceRef': {'Entity': measure_table}},
+                                'Property': measure},
+                })
+
+    def test_scatter_preserves_resolved_column_and_measure_pairs(self):
+        self.gen._field_map['RevenueB'] = ('TableA', 'RevenueA')
+        query = self.gen._build_visual_query({
+            'chart_type': 'scatterChart', 'fields': [
+                {'name': 'Category', 'shelf': 'detail', 'datasource': 'source_b'},
+                {'name': 'Amount', 'shelf': 'columns', 'datasource': 'source_b',
+                 'aggregation': 'avg'},
+                {'name': 'RevenueB', 'shelf': 'rows', 'datasource': 'source_b'},
+            ],
+        })
+        self.assertIsNotNone(query)
+        roles = query['queryState']
+        self.assertEqual(set(roles), {'Category', 'X', 'Y'})
+        for role in ('Category', 'X', 'Y'):
+            self.assertEqual(len(roles[role]['projections']), 1)
+        self.assertEqual(roles['Category']['projections'][0]['field'], {
+            'Column': {'Expression': {'SourceRef': {'Entity': 'TableB'}},
+                       'Property': 'Category'},
+        })
+        self.assertEqual(roles['X']['projections'][0]['field'], {
+            'Aggregation': {
+                'Expression': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'TableB'}},
+                    'Property': 'Amount',
+                }},
+                'Function': 1,
+            },
+        })
+        self.assertEqual(roles['Y']['projections'][0]['field'], {
+            'Measure': {'Expression': {'SourceRef': {'Entity': 'TableB'}},
+                        'Property': 'RevenueB'},
+        })
+        for role, name in (('Category', 'Category'), ('X', 'Amount'), ('Y', 'RevenueB')):
+            with self.subTest(role=role):
+                projection = roles[role]['projections'][0]
+                self.assertEqual(projection['queryRef'], f'TableB.{name}')
+                self.assertEqual(projection['nativeQueryRef'], name)
+                self.assertIs(projection['active'], True)
+        self.gen._collision_tables = {'TableA', 'TableB'}
+        self.gen._ds_table_map['source_b'] = 'TableA'
+        for name, role in (('Amount', 'X'), ('RevenueB', 'Y')):
+            with self.subTest(name=name):
+                entry = self.gen._make_scatter_axis_entry({
+                    'name': name, 'datasource': 'source_b', 'aggregation': 'avg',
+                    '_resolved_pair': ('TableB', name),
+                })
+                self.assertIsNotNone(entry)
+                self.assertEqual(entry['field'], roles[role]['projections'][0]['field'])
+                self.assertEqual(entry['queryRef'], f'TableB.{name}')
+
+    def test_unresolved_source_fields_emit_root_migration_note(self):
+        self.gen._field_map['Remote Dimension'] = ('TableA', 'Remote Dimension')
+        self.gen._actual_bim_symbols.add(('TableA', 'Remote Dimension'))
+        worksheet = {'chart_type': 'clusteredBarChart', 'fields': [
+            {'name': 'Category', 'shelf': 'rows', 'datasource': 'source_b'},
+            {'name': 'RevenueB', 'shelf': 'columns', 'datasource': 'source_b'},
+            {'name': 'Remote Dimension', 'shelf': 'tooltip', 'datasource': 'source_b'},
+        ]}
+        with patch('powerbi_import.pbip_generator._write_json') as write_json, \
+                patch('powerbi_import.pbip_generator.os.makedirs'):
+            self.gen._create_visual_worksheet(
+                self.gen.output_dir, worksheet,
+                {'worksheetName': 'Synthetic Sheet', 'position': {}},
+                1, 1, 0, [], {},
+            )
+        write_json.assert_called_once()
+        visual = write_json.call_args.args[1]
+        self.assertIn({
+            'name': 'MigrationNote',
+            'value': 'Unresolved Tableau datasource fields: Remote Dimension',
+        }, visual['annotations'])
+        self.assertNotIn('annotations', visual['visual'])
+        self.assertEqual(set(visual['visual']['query']['queryState']), {'Category', 'Y'})
+        self.assertNotIn('_unresolved_source_fields', worksheet)
 
 
 class TestFieldMappingDuplicateColumns(unittest.TestCase):
@@ -1046,6 +2484,34 @@ class TestMakeProjectionEntry(unittest.TestCase):
         self.assertTrue(entry['active'])
         self.assertEqual(entry['queryRef'], 'T.Col')
 
+    def test_native_query_ref_preserves_resolved_property_for_all_wrappers(self):
+        entity = 'Données synthétiques'
+        prop = 'Montant réalisé (%)'
+        column = {'Column': {
+            'Expression': {'SourceRef': {'Entity': entity}},
+            'Property': prop,
+        }}
+        for wrapper in ('Column', 'Measure', 'Aggregation'):
+            with self.subTest(wrapper=wrapper):
+                _init_field_map(
+                    self.gen, {'metric_id': (entity, prop)},
+                    bim_measure_names=['metric_id'] if wrapper == 'Measure' else [],
+                )
+                field = {'name': 'metric_id'}
+                if wrapper == 'Aggregation':
+                    field['aggregation'] = 'sum'
+                    expected_field = {'Aggregation': {
+                        'Expression': column, 'Function': 0,
+                    }}
+                else:
+                    expected_field = {wrapper: column['Column']}
+                self.assertEqual(self.gen._make_projection_entry(field), {
+                    'field': expected_field,
+                    'queryRef': f'{entity}.{prop}',
+                    'nativeQueryRef': prop,
+                    'active': True,
+                })
+
 
 # ─── _make_scatter_axis_entry ────────────────────────────────────────
 
@@ -1075,6 +2541,31 @@ class TestMakeScatterAxisEntry(unittest.TestCase):
                         ]}])
         entry = self.gen._make_scatter_axis_entry({'name': 'x_calc'})
         self.assertEqual(entry['field']['Aggregation']['Expression']['Column']['Property'], 'X Value')
+
+    def test_native_query_ref_preserves_scatter_property_and_aggregation(self):
+        entity = 'Données synthétiques'
+        prop = 'Valeur mesurée (%)'
+        for is_measure in (False, True):
+            with self.subTest(is_measure=is_measure):
+                _init_field_map(
+                    self.gen, {'axis_id': (entity, prop)},
+                    bim_measure_names=['axis_id'] if is_measure else [],
+                )
+                field_ref = {
+                    'Expression': {'SourceRef': {'Entity': entity}},
+                    'Property': prop,
+                }
+                expected_field = ({'Measure': field_ref} if is_measure else {
+                    'Aggregation': {'Expression': {'Column': field_ref}, 'Function': 1},
+                })
+                self.assertEqual(self.gen._make_scatter_axis_entry({
+                    'name': 'axis_id', 'aggregation': 'avg',
+                }), {
+                    'field': expected_field,
+                    'queryRef': f'{entity}.{prop}',
+                    'nativeQueryRef': prop,
+                    'active': True,
+                })
 
 
 # ─── _build_label_objects ───────────────────────────────────────────
@@ -1360,14 +2851,22 @@ class TestBuildVisualStylingObjects(unittest.TestCase):
         ws = {'formatting': {'background_color': '#FFFFFF'}, 'fields': []}
         self.gen._build_visual_styling_objects(
             objects, ws, 'bar', ws['formatting'], {})
-        self.assertIn('visualContainerStyle', objects)
+        self.assertEqual(objects['background'], [{'properties': {
+            'color': {'solid': {'color': _L("'#FFFFFF'")}},
+        }}])
+        self.assertNotIn('visualContainerStyle', objects)
+        self.assertNotIn('visualContainerPadding', objects)
 
     def test_background_from_pane(self):
         objects = {}
         ws = {'formatting': {'pane': {'background-color': '#EEE'}}, 'fields': []}
         self.gen._build_visual_styling_objects(
             objects, ws, 'bar', ws['formatting'], {})
-        self.assertIn('visualContainerStyle', objects)
+        self.assertEqual(objects['background'], [{'properties': {
+            'color': {'solid': {'color': _L("'#EEE'")}},
+        }}])
+        self.assertNotIn('visualContainerStyle', objects)
+        self.assertNotIn('visualContainerPadding', objects)
 
     def test_table_header_formatting(self):
         objects = {}
@@ -1433,7 +2932,11 @@ class TestBuildVisualStylingObjects(unittest.TestCase):
               'padding': {'padding_top': 5, 'padding_left': 10}}
         self.gen._build_visual_styling_objects(
             objects, ws, 'bar', {}, {})
-        self.assertIn('visualContainerPadding', objects)
+        self.assertEqual(objects['padding'], [{'properties': {
+            'top': _L('5L'), 'left': _L('10L'),
+        }}])
+        self.assertNotIn('visualContainerStyle', objects)
+        self.assertNotIn('visualContainerPadding', objects)
 
 
 # ─── _build_color_encoding_objects ──────────────────────────────────
@@ -1529,14 +3032,88 @@ class TestBuildAnalyticsObjects(unittest.TestCase):
         self.gen._main_table = 'Sales'
 
     def test_constant_reference_line(self):
-        objects = {}
-        ws = {'formatting': {}, 'reference_lines': [
-            {'value': 100, 'label': 'Target', 'color': '#FF0000',
-             'style': 'dashed', 'type': 'constant'}
-        ]}
-        self.gen._build_analytics_objects(objects, ws, 'bar', {})
-        ref = objects['valueAxis'][0]['properties']['referenceLine']
-        self.assertEqual(ref[0]['type'], 'Constant')
+        for visual_type in ('clusteredColumnChart', 'clusteredBarChart'):
+            with self.subTest(visual_type=visual_type):
+                objects = {}
+                ws = {'formatting': {}, 'reference_lines': [
+                    {'value': 100, 'label': 'Target', 'color': '#FF0000',
+                     'style': 'dashed', 'type': 'constant'}
+                ]}
+                self.gen._build_analytics_objects(objects, ws, visual_type, {})
+                self.assertEqual(objects, {'y1AxisReferenceLine': [{
+                    'properties': {
+                        'value': _L('100.0D'),
+                        'displayName': _L("'Target'"),
+                        'lineColor': {'solid': {'color': _L("'#FF0000'")}},
+                        'style': _L("'dashed'"),
+                        'show': _L('true'),
+                    },
+                    'selector': {'id': '0'},
+                }]})
+                self.assertNotIn('valueAxis', objects)
+                self.assertNotIn('_unresolved_reference_lines', ws)
+
+    def test_constant_reference_line_zero(self):
+        for value in (0, 0.0, '0'):
+            with self.subTest(value=value):
+                objects = {}
+                ws = {'formatting': {}, 'reference_lines': [
+                    {'value': value, 'label': 'Zero', 'style': 'solid',
+                     'type': 'constant'}
+                ]}
+                self.gen._build_analytics_objects(
+                    objects, ws, 'clusteredColumnChart', {})
+                self.assertEqual(objects, {'y1AxisReferenceLine': [{
+                    'properties': {
+                        'value': _L('0.0D'),
+                        'displayName': _L("'Zero'"),
+                        'lineColor': {'solid': {'color': _L("'#666666'")}},
+                        'style': _L("'solid'"),
+                        'show': _L('true'),
+                    },
+                    'selector': {'id': '0'},
+                }]})
+                self.assertNotIn('valueAxis', objects)
+                self.assertNotIn('_unresolved_reference_lines', ws)
+
+    def test_constant_reference_line_invalid_values(self):
+        for value in ('', ' ', None, 'not numeric', '$1,250.50'):
+            with self.subTest(value=value):
+                objects = {}
+                reference_line = {
+                    'value': value, 'label': 'Target', 'type': 'constant',
+                }
+                ws = {'formatting': {}, 'reference_lines': [reference_line]}
+                self.gen._build_analytics_objects(
+                    objects, ws, 'clusteredColumnChart', {})
+                self.assertEqual(objects, {})
+                self.assertEqual(ws['_unresolved_reference_lines'],
+                                 [reference_line])
+
+    def test_constant_reference_line_currency_and_apostrophe_labels(self):
+        for label, literal in (
+            ('Target ($)', "'Target ($)'"),
+            ("Owner's target ($)", "'Owner''s target ($)'"),
+        ):
+            with self.subTest(label=label):
+                objects = {}
+                ws = {'formatting': {}, 'reference_lines': [
+                    {'value': '1250.50', 'label': label, 'style': 'dotted',
+                     'type': 'constant'}
+                ]}
+                self.gen._build_analytics_objects(
+                    objects, ws, 'clusteredColumnChart', {})
+                self.assertEqual(objects, {'y1AxisReferenceLine': [{
+                    'properties': {
+                        'value': _L('1250.5D'),
+                        'displayName': _L(literal),
+                        'lineColor': {'solid': {'color': _L("'#666666'")}},
+                        'style': _L("'dotted'"),
+                        'show': _L('true'),
+                    },
+                    'selector': {'id': '0'},
+                }]})
+                self.assertNotIn('valueAxis', objects)
 
     def test_trend_line(self):
         objects = {}
@@ -2357,6 +3934,222 @@ class TestBuildVisualObjectsOrchestrator(unittest.TestCase):
         objects = gen._build_visual_objects('Sheet', ws, 'bar')
         self.assertIn('labels', objects)
 
+    def test_non_cartesian_objects_do_not_contain_cartesian_axes(self):
+        gen = _make_generator()
+        self.addCleanup(shutil.rmtree, gen.output_dir, ignore_errors=True)
+        _init_field_map(gen, main_table='Synthetic')
+        worksheet = {
+            'formatting': {'axis': {'display': 'true'}},
+            'axes': {'x': {'title': 'Category'}, 'y': {'title': 'Amount'}},
+        }
+        for visual_type in (
+            'card', 'multiRowCard', 'tableEx', 'table', 'matrix', 'pivotTable',
+            'pieChart', 'donutChart', 'azureMap', 'map', 'filledMap', 'shapeMap',
+            'treemap', 'gauge', 'kpi',
+        ):
+            with self.subTest(visual_type=visual_type):
+                objects = gen._build_visual_objects('Synthetic', worksheet, visual_type)
+                self.assertNotIn('categoryAxis', objects)
+                self.assertNotIn('valueAxis', objects)
+
+    def test_cartesian_objects_keep_axis_configuration(self):
+        gen = _make_generator()
+        self.addCleanup(shutil.rmtree, gen.output_dir, ignore_errors=True)
+        _init_field_map(gen, main_table='Synthetic')
+        worksheet = {
+            'formatting': {'axis': {'display': 'true'}},
+            'axes': {'y': {'auto_range': False, 'range_min': 0, 'range_max': 100}},
+        }
+        for visual_type in ('clusteredBarChart', 'clusteredColumnChart', 'lineChart',
+                            'areaChart', 'scatterChart', 'lineClusteredColumnComboChart',
+                            'lineStackedColumnComboChart'):
+            with self.subTest(visual_type=visual_type):
+                objects = gen._build_visual_objects('Synthetic', worksheet, visual_type)
+                self.assertEqual(objects['categoryAxis'][0]['properties']['show'],
+                                 _L('true'))
+                properties = objects['valueAxis'][0]['properties']
+                self.assertEqual(properties['show'], _L('true'))
+                self.assertEqual(properties['start'], _L('0D'))
+                self.assertEqual(properties['end'], _L('100D'))
+
+    def test_card_label_font_is_preserved_without_show_property(self):
+        gen = _make_generator()
+        self.addCleanup(shutil.rmtree, gen.output_dir, ignore_errors=True)
+        _init_field_map(gen, main_table='Synthetic')
+        objects = gen._build_visual_objects('Synthetic', {
+            'formatting': {
+                'mark': {'mark-labels-show': 'true'},
+                'font': {'family': 'Georgia', 'size': '13pt'},
+            },
+            'mark_encoding': {'label': {'show': True}},
+        }, 'card')
+        self.assertEqual(objects, {'labels': [{'properties': {
+            'fontFamily': _L("'Georgia'"), 'fontSize': _L('13D'),
+        }}]})
+
+    def test_multi_row_card_remaps_label_font_to_data_labels(self):
+        gen = _make_generator()
+        self.addCleanup(shutil.rmtree, gen.output_dir, ignore_errors=True)
+        _init_field_map(gen, main_table='Synthetic')
+        objects = gen._build_visual_objects('Synthetic', {
+            'formatting': {
+                'font': {'family': 'Georgia', 'size': '13pt'},
+                'label': {'color': '#234567'},
+            },
+        }, 'multiRowCard')
+        self.assertEqual(objects, {'dataLabels': [{'properties': {
+            'fontFamily': _L("'Georgia'"),
+            'fontSize': _L('13D'),
+            'color': {'solid': {'color': _L("'#234567'")}},
+        }}]})
+
+    def test_table_values_font_preserves_banding_without_chart_objects(self):
+        gen = _make_generator()
+        self.addCleanup(shutil.rmtree, gen.output_dir, ignore_errors=True)
+        _init_field_map(gen, main_table='Synthetic')
+        objects = gen._build_visual_objects('Synthetic', {
+            'formatting': {
+                'mark': {'mark-labels-show': 'true'},
+                'font': {'family': 'Georgia', 'size': '13pt'},
+                'label': {'color': '#234567'},
+                'worksheet_style': {'band-color': '#E8EEF0'},
+            },
+            'mark_encoding': {'color': {
+                'field': 'Category', 'type': 'quantitative',
+                'palette_colors': ['#23567A', '#7AB1C2'],
+            }},
+        }, 'tableEx')
+        self.assertEqual(objects, {'values': [{'properties': {
+            'backColor': {'solid': {'color': _L("'#E8EEF0'")}},
+            'fontFamily': _L("'Georgia'"),
+            'fontSize': _L('13D'),
+            'fontColor': {'solid': {'color': _L("'#234567'")}},
+        }}]})
+
+
+class TestWorksheetContainerObjects(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.gen = _make_generator(self.tmpdir.name)
+        _init_field_map(self.gen, main_table='Synthetic')
+        self.worksheet = {'chart_type': 'clusteredBarChart', 'fields': []}
+        self.zone = {
+            'worksheetName': 'Synthetic Chart',
+            'position': {'x': 0, 'y': 0, 'w': 400, 'h': 300},
+        }
+
+    def _create_worksheet_visual(self):
+        self.gen._create_visual_worksheet(
+            self.tmpdir.name, self.worksheet, self.zone,
+            1.0, 1.0, 0, [self.worksheet], {},
+        )
+        visual_files = list(Path(self.tmpdir.name).rglob('visual.json'))
+        self.assertEqual(len(visual_files), 1)
+        return json.loads(visual_files[0].read_text(encoding='utf-8'))
+
+    def _bind_chart_fields(self):
+        """Fill the Category and Y roles clusteredBarChart requires, so the
+        visual stays a chart; chrome is meaningless on a textbox fallback."""
+        self.gen._measure_names = {'Revenue'}
+        self.gen._bim_measure_names = {'Revenue'}
+        self.worksheet['fields'] = [
+            {'name': 'Region', 'shelf': 'rows'},
+            {'name': 'Revenue', 'shelf': 'columns'},
+        ]
+
+    def test_unresolved_reference_lines_add_migration_note(self):
+        self.worksheet['reference_lines'] = [
+            {'value': '', 'label': 'Empty target', 'type': 'constant'},
+            {'value': 'not numeric', 'label': 'Invalid target',
+             'type': 'constant'},
+        ]
+        payload = self._create_worksheet_visual()
+        self.assertIn({
+            'name': 'MigrationNote',
+            'value': '2 reference line(s) have no numeric value; review required.',
+        }, payload.get('annotations', []))
+        objects = payload['visual']['objects']
+        self.assertNotIn('y1AxisReferenceLine', objects)
+        for value_axis in objects.get('valueAxis', []):
+            self.assertNotIn('referenceLine', value_axis['properties'])
+        self.assertNotIn('_unresolved_reference_lines', self.worksheet)
+
+    def test_worksheet_routes_chrome_to_visual_container_objects(self):
+        self._bind_chart_fields()
+        container_objects = {
+            'background': [{'properties': {
+                'show': _L('true'),
+                'color': {'solid': {'color': _L("'#102030'")}},
+            }}],
+            'border': [{'properties': {
+                'show': _L('true'), 'width': _L('2D'),
+                'color': {'solid': {'color': _L("'#405060'")}},
+            }}],
+            'padding': [{'properties': {'top': _L('5D'), 'left': _L('7D')}}],
+            'dropShadow': [{'properties': {'show': _L('true')}}],
+        }
+        chart_objects = {
+            'categoryAxis': [{'properties': {'show': _L('true')}}],
+            'labels': [{'properties': {'fontSize': _L('12D')}}],
+        }
+        with patch.object(self.gen, '_build_visual_objects',
+                          return_value={**container_objects, **chart_objects}) as mock_build:
+            payload = self._create_worksheet_visual()
+        mock_build.assert_called_once_with('Synthetic Chart', self.worksheet,
+                                           'clusteredBarChart')
+        self.assertNotIn('visualContainerObjects', payload)
+        visual = payload['visual']
+        self.assertEqual(visual['visualType'], 'clusteredBarChart')
+        self.assertEqual(visual['objects'], chart_objects)
+        self.assertEqual(visual['visualContainerObjects'], {
+            'title': [{'properties': {
+                'show': _L('true'), 'text': _L("'Synthetic Chart'"),
+            }}],
+            **container_objects,
+        })
+
+    def test_zone_padding_overrides_worksheet_padding_in_container_objects(self):
+        self._bind_chart_fields()
+        self.worksheet['padding'] = {'padding_top': 5, 'padding_left': 7}
+        self.zone['padding'] = {
+            'padding-left': 0, 'padding-right': 9,
+            'padding-top': 3, 'padding-bottom': 8,
+        }
+        with patch.object(self.gen, '_build_visual_objects', return_value={
+            'padding': [{'properties': {'top': _L('5D'), 'left': _L('7D')}}],
+        }):
+            visual = self._create_worksheet_visual()['visual']
+        self.assertEqual(visual['visualType'], 'clusteredBarChart')
+        self.assertEqual(set(visual['visualContainerObjects']), {'title', 'padding'})
+        self.assertEqual(visual['visualContainerObjects']['padding'], [{'properties': {
+            'left': _L('0D'), 'right': _L('9D'), 'top': _L('3D'), 'bottom': _L('8D'),
+        }}])
+        self.assertEqual(visual['objects'], {})
+
+    def test_worksheet_formatting_background_and_padding_use_container_objects(self):
+        self.worksheet['formatting'] = {'background_color': '#102030'}
+        self.worksheet['padding'] = {'padding_top': 5, 'padding_left': 7}
+        visual = self._create_worksheet_visual()['visual']
+        container_objects = visual['visualContainerObjects']
+        self.assertEqual(set(container_objects), {'title', 'background', 'padding'})
+        self.assertEqual(container_objects['background'][0]['properties']['color'],
+                         {'solid': {'color': _L("'#102030'")}})
+        self.assertEqual(container_objects['padding'], [{'properties': {
+            'top': _L('5L'), 'left': _L('7L'),
+        }}])
+        for name in ('background', 'padding', 'visualContainerStyle', 'visualContainerPadding'):
+            self.assertNotIn(name, visual['objects'])
+
+    def test_zone_border_is_written_as_container_object(self):
+        self.zone['padding'] = {'border_style': 'solid', 'border_color': '#405060'}
+        visual = self._create_worksheet_visual()['visual']
+        self.assertEqual(set(visual['visualContainerObjects']), {'title', 'border'})
+        self.assertEqual(visual['visualContainerObjects']['border'], [{'properties': {
+            'show': _L('true'), 'color': {'solid': {'color': _L("'#405060'")}},
+        }}])
+        self.assertNotIn('border', visual['objects'])
+
 
 # ─── _create_action_visuals ─────────────────────────────────────────
 
@@ -2373,6 +4166,42 @@ class TestCreateActionVisuals(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
+    def test_normalize_action_visual_preserves_targets(self):
+        cases = (
+            ('WebUrl', 'webUrl', 'https://example.com', 'webUrl',
+             'ArrowRight', 'rightArrow'),
+            ('Bookmark', 'bookmark', 'Bookmark1', 'bookmark',
+             'Filter', 'bookmarks'),
+            ('PageNavigation', 'destinationPage', 'ReportSection2', 'navigationSection',
+             'ArrowRight', 'rightArrow'),
+        )
+        for (action_type, target_property, target, expected_property,
+             icon, expected_icon) in cases:
+            with self.subTest(action_type=action_type):
+                container = {'visual': {
+                    'visualType': 'actionButton',
+                    'objects': {
+                        'action': [{'properties': {
+                            'type': _L(f"'{action_type}'"),
+                            target_property: _L(f"'{target}'"),
+                        }}],
+                        'icon': [{'properties': {'shapeType': _L(f"'{icon}'")}}],
+                    },
+                }}
+                self.gen._normalize_action_visual(container)
+                visual = container['visual']
+                self.assertNotIn('action', visual['objects'])
+                self.assertEqual(visual['visualContainerObjects']['visualLink'],
+                                 [{'properties': {
+                                     'type': _L(f"'{action_type}'"),
+                                     expected_property: _L(f"'{target}'"),
+                                     'show': _L('true'),
+                                 }}])
+                self.assertNotIn('destinationPage',
+                                 visual['visualContainerObjects']['visualLink'][0]['properties'])
+                self.assertEqual(visual['objects']['icon'],
+                                 [{'properties': {'shapeType': _L(f"'{expected_icon}'")}}])
+
     def test_url_action(self):
         actions = [{'type': 'url', 'url': 'https://example.com',
                     'name': 'Go'}]
@@ -2381,6 +4210,19 @@ class TestCreateActionVisuals(unittest.TestCase):
         self.assertEqual(count, 1)
         subdirs = os.listdir(self.visuals_dir)
         self.assertEqual(len(subdirs), 1)
+        with open(os.path.join(self.visuals_dir, subdirs[0], 'visual.json'),
+                  encoding='utf-8') as stream:
+            visual = json.load(stream)['visual']
+        self.assertEqual(visual['visualType'], 'actionButton')
+        self.assertNotIn('action', visual['objects'])
+        self.assertEqual(visual['visualContainerObjects']['visualLink'],
+                         [{'properties': {
+                             'type': _L("'WebUrl'"),
+                             'webUrl': _L("'https://example.com'"),
+                             'show': _L('true'),
+                         }}])
+        self.assertEqual(visual['objects']['icon'][0]['properties']['shapeType'],
+                         _L("'rightArrow'"))
 
     def test_navigate_action(self):
         actions = [{'type': 'sheet-navigate', 'name': 'Nav',

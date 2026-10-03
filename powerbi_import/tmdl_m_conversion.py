@@ -257,7 +257,7 @@ def _dax_to_m_expression(dax_expr, table_name=''):
         ('TRIM', 'Text.Trim'), ('LEN', 'Text.Length'),
         ('YEAR', 'Date.Year'), ('MONTH', 'Date.Month'),
         ('DAY', 'Date.Day'), ('QUARTER', 'Date.QuarterOfYear'),
-        ('ABS', 'Number.Abs'), ('INT', 'Number.RoundDown'),
+        ('ABS', 'Number.Abs'), ('INT', 'Number.RoundTowardZero'),
         ('SQRT', 'Number.Sqrt'),
     ]
     for dax_fn, m_fn in _SINGLE:
@@ -548,7 +548,9 @@ def _inject_m_steps_into_partition(table, steps):
         source = partition.get('source', {})
         if source.get('type') == 'm' and source.get('expression'):
             # Also strip // comments from the existing M expression before injection
-            source['expression'] = _strip_m_inline_comments(source['expression'])
+            # Engine-generated multiline M keeps its diagnostic comments.
+            if '\n' not in source['expression']:
+                source['expression'] = _strip_m_inline_comments(source['expression'])
             source['expression'] = inject_m_steps(source['expression'], sanitized_steps)
             # Phase 3: inline M validation after step injection
             try:
@@ -566,21 +568,50 @@ def _inject_m_steps_into_partition(table, steps):
     return False
 
 
+def rename_m_column_refs(m_expr, renames):
+    """Retarget column references onto the names the partition produces.
+
+    Calculated steps are injected after ``Table.RenameColumns``, so a reference
+    to the original source name resolves to nothing at that point.
+    """
+    if not m_expr or not renames:
+        return m_expr
+
+    def _swap(match):
+        quoted, bare = match.group(1), match.group(2)
+        name = quoted.replace('""', '"') if quoted is not None else bare
+        target = renames.get(name)
+        return f'[{target}]' if target else match.group(0)
+
+    swapped = re.sub(r'\[#"((?:[^"]|"")+)"\]|\[([^\[\]]+)\]', _swap, m_expr)
+    return _quote_m_identifiers(swapped)
+
+
 def m_rename_map(columns, col_metadata_map):
     """Return {raw column name: caption} for the columns the partition renames.
 
     The model must ask the partition for the name it actually produces, so
     both the rename step and every sourceColumn are derived from this one
     map rather than each recomputing the rule.
+
+    A caption that another column already answers to is skipped: renaming
+    onto it would leave the table with two columns of the same name, which
+    the partition cannot produce and the model cannot load.
     """
+    taken = {col.get('name', '').strip('[]') for col in columns}
     renames = {}
     for col in columns:
         col_name = col.get('name', '')
         meta = col_metadata_map.get(col_name, {})
         caption = meta.get('caption', '')
         clean_name = col_name.strip('[]')
-        if caption and caption != clean_name and caption != col_name:
-            renames[clean_name] = caption
+        if not caption or caption == clean_name or caption == col_name:
+            continue
+        if caption in taken:
+            continue
+        taken.discard(clean_name)
+        taken.add(caption)
+        renames[clean_name] = caption
     return renames
 
 

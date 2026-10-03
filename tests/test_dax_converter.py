@@ -193,6 +193,11 @@ class TestSimpleFunctionConversions(unittest.TestCase):
         result = convert_tableau_formula_to_dax("MAX([Value])")
         self.assertIn("MAX", result)
 
+    def test_constant_aggregate_is_not_an_iterator(self):
+        result = convert_tableau_formula_to_dax("MAX(1)")
+        self.assertNotIn("MAXX", result)
+        self.assertIn("1", result)
+
     def test_sum_aggregation(self):
         result = convert_tableau_formula_to_dax("SUM([Amount])")
         self.assertIn("SUM", result)

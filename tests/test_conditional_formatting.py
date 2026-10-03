@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 from powerbi_import import visual_generator as vg
+from powerbi_import.pbip_generator import PowerBIProjectGenerator
 from powerbi_import.tmdl_generator import generate_theme_json
 from powerbi_import.assessment import _check_visuals
 
@@ -299,6 +300,124 @@ class TestAssessmentFormattingCoverage(unittest.TestCase):
         fmt_checks = [c for c in checks
                        if 'format' in (c.detail or '').lower()]
         self.assertTrue(len(fmt_checks) >= 1)
+
+
+# ── Quantitative Gradient FillRule (PBIR dataPoint) ───────────────
+
+class TestQuantitativeFillRule(unittest.TestCase):
+    """A continuous Tableau colour must survive as a PBIR FillRule driven by
+    the same measure. Without it the visual keeps a flat fill and the colour
+    meaning is lost.
+    """
+
+    TABLE = 'Sales'
+    MEASURE = 'Profit Ratio'
+
+    def _generator(self, symbols=None):
+        gen = PowerBIProjectGenerator.__new__(PowerBIProjectGenerator)
+        gen._field_map = {}
+        gen._main_table = self.TABLE
+        gen._measure_names = {self.MEASURE}
+        gen._bim_measure_names = {self.MEASURE}
+        gen._actual_bim_measure_names = {self.MEASURE}
+        gen._actual_bim_symbols = (set(symbols) if symbols is not None
+                                   else {(self.TABLE, self.MEASURE)})
+        gen._datasources_ref = []
+        gen._collision_tables = set()
+        gen._unavailable_parameter_names = set()
+        return gen
+
+    def _objects(self, color_encoding, symbols=None,
+                 visual_type='clusteredBarChart'):
+        objects = {}
+        ws = {'name': 'S1', 'fields': [], 'totals': {}, 'padding': {}}
+        mark_encoding = ({'color': color_encoding} if color_encoding is not None
+                         else {})
+        self._generator(symbols)._build_color_encoding_objects(
+            objects, ws, visual_type, mark_encoding)
+        return objects
+
+    def _measure_ref(self):
+        return {'Measure': {
+            'Expression': {'SourceRef': {'Entity': self.TABLE}},
+            'Property': self.MEASURE,
+        }}
+
+    def _gradient(self, low, high):
+        return {'linearGradient2': {
+            'min': {'color': {'Literal': {'Value': "'%s'" % low}}},
+            'max': {'color': {'Literal': {'Value': "'%s'" % high}}},
+        }}
+
+    def _expected_fill(self, low, high):
+        return {'solid': {'color': {'expr': {'FillRule': {
+            'Input': self._measure_ref(),
+            'FillRule': self._gradient(low, high),
+        }}}}}
+
+    def test_default_gradient_structure_and_literals(self):
+        objects = self._objects({'type': 'quantitative', 'field': self.MEASURE})
+        self.assertEqual(objects['dataPoint'],
+                         [{'properties': {'fill': self._expected_fill(
+                             '#F2F2F2', '#4472C4')}}])
+
+    def test_gradient_input_is_the_colour_measure(self):
+        objects = self._objects({'type': 'quantitative', 'field': self.MEASURE})
+        rule = objects['dataPoint'][0]['properties']['fill']['solid']['color']['expr']['FillRule']
+        self.assertEqual(rule['Input'], self._measure_ref())
+
+    def test_palette_uses_first_and_last_colour(self):
+        objects = self._objects({
+            'type': 'quantitative',
+            'field': self.MEASURE,
+            'palette_colors': ['#FFF5EB', '#FDD0A2', '#7F3B08'],
+        })
+        self.assertEqual(objects['dataPoint'],
+                         [{'properties': {'fill': self._expected_fill(
+                             '#FFF5EB', '#7F3B08')}}])
+
+    def test_single_palette_colour_keeps_default_high_stop(self):
+        objects = self._objects({
+            'type': 'quantitative',
+            'field': self.MEASURE,
+            'palette_colors': ['#FFF5EB'],
+        })
+        self.assertEqual(objects['dataPoint'],
+                         [{'properties': {'fill': self._expected_fill(
+                             '#FFF5EB', '#4472C4')}}])
+
+    def _fill_rules(self, objects):
+        return [rule for rule in objects.get('dataPoint', [])
+                if 'FillRule' in json.dumps(
+                    rule.get('properties', {}).get('fill', {}))]
+
+    def test_no_colour_encoding_emits_no_data_point(self):
+        self.assertEqual(self._objects(None), {})
+
+    def test_empty_colour_encoding_emits_no_data_point(self):
+        self.assertNotIn('dataPoint', self._objects({}))
+
+    def test_quantitative_without_field_emits_no_fill_rule(self):
+        objects = self._objects({'type': 'quantitative'})
+        self.assertEqual(self._fill_rules(objects), [])
+
+    def test_unresolved_colour_field_emits_no_fill_rule(self):
+        # The measure is absent from the model, so no projection can be
+        # built; emitting a FillRule would reference a deleted column.
+        objects = self._objects({'type': 'quantitative', 'field': 'Ghost Ratio'},
+                                symbols={(self.TABLE, 'Other Measure')})
+        self.assertEqual(self._fill_rules(objects), [])
+        self.assertNotIn('dataPoint', objects)
+
+    def test_unresolved_colour_field_with_palette_falls_back_to_flat_fill(self):
+        objects = self._objects(
+            {'type': 'quantitative', 'field': 'Ghost Ratio',
+             'palette_colors': ['#FFF5EB', '#7F3B08']},
+            symbols={(self.TABLE, 'Other Measure')})
+        self.assertEqual(self._fill_rules(objects), [])
+        self.assertEqual(
+            objects['dataPoint'][0]['properties']['fill']['solid']['color'],
+            {'expr': {'Literal': {'Value': "'#FFF5EB'"}}})
 
 
 if __name__ == '__main__':

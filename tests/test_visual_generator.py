@@ -141,7 +141,7 @@ class TestDataRoles(unittest.TestCase):
     def test_card_has_no_dimensions(self):
         dim_roles, meas_roles = VISUAL_DATA_ROLES["card"]
         self.assertEqual(dim_roles, [])
-        self.assertIn("Fields", meas_roles)
+        self.assertEqual(meas_roles, ["Values"])
 
     def test_slicer_has_only_dimensions(self):
         dim_roles, meas_roles = VISUAL_DATA_ROLES["slicer"]
@@ -157,7 +157,19 @@ class TestDataRoles(unittest.TestCase):
         dim_roles, meas_roles = VISUAL_DATA_ROLES["scatterChart"]
         self.assertIn("X", meas_roles)
         self.assertIn("Y", meas_roles)
-        self.assertIn("Details", dim_roles)
+        self.assertIn("Size", meas_roles)
+        self.assertIn("Category", dim_roles)
+        self.assertIn("Series", dim_roles)
+        self.assertNotIn("Details", dim_roles)
+
+    def test_catalog_combo_chart_measure_roles(self):
+        for visual_type in ("lineClusteredColumnComboChart",
+                            "lineStackedColumnComboChart"):
+            with self.subTest(visual_type=visual_type):
+                dim_roles, meas_roles = VISUAL_DATA_ROLES[visual_type]
+                self.assertEqual(meas_roles, ["Y", "Y2"])
+                self.assertEqual(set(dim_roles + meas_roles),
+                                 {"Category", "Series", "Tooltips", "Y", "Y2"})
 
 
 class TestConfigTemplates(unittest.TestCase):
@@ -198,6 +210,14 @@ class TestConfigTemplates(unittest.TestCase):
     def test_table_template_has_auto_select(self):
         config = _get_config_template("tableEx")
         self.assertTrue(config.get("autoSelectVisualType"))
+
+    def test_catalog_table_template_uses_values_font_object(self):
+        objects = _get_config_template("tableEx")["objects"]
+        self.assertNotIn("labelFont", objects)
+        self.assertNotIn("labels", objects)
+        self.assertEqual(objects["values"], [{"properties": {
+            "bold": {"expr": {"Literal": {"Value": "false"}}},
+        }}])
 
     def test_templates_use_pbir_expressions(self):
         """Verify templates use PBIR expression objects, not plain values."""
@@ -402,7 +422,8 @@ class TestBuildQueryState(unittest.TestCase):
         meas = [{"expression": "Sum(Revenue)", "name": "Total Revenue"}]
         ctm = {"Revenue": "Sales"}
         qs = build_query_state("card", [], meas, ctm, {})
-        self.assertIn("Fields", qs)
+        self.assertEqual(set(qs), {"Values"})
+        self.assertEqual(len(qs["Values"]["projections"]), 1)
 
     def test_table_uses_values_role(self):
         dims = [{"field": "Name", "name": "Name"}]
@@ -419,9 +440,65 @@ class TestBuildQueryState(unittest.TestCase):
         meas = [{"name": "Total Sales"}]
         ml = {"Total Sales": ("Sales", "SUM('Sales'[Revenue])")}
         qs = build_query_state("card", [], meas, {}, ml)
-        self.assertIn("Fields", qs)
-        proj = qs["Fields"]["projections"][0]
+        self.assertEqual(set(qs), {"Values"})
+        proj = qs["Values"]["projections"][0]
         self.assertIn("Measure", proj["field"])
+
+    def test_catalog_combo_query_binds_column_and_line_measures_separately(self):
+        measures = [{"name": "Column Metric"}, {"name": "Line Metric"}]
+        lookup = {
+            "Column Metric": ("Synthetic", "SUM('Synthetic'[Amount])"),
+            "Line Metric": ("Synthetic", "SUM('Synthetic'[Quantity])"),
+        }
+        for visual_type in ("lineClusteredColumnComboChart",
+                            "lineStackedColumnComboChart"):
+            with self.subTest(visual_type=visual_type):
+                qs = build_query_state(visual_type, [], measures, {}, lookup)
+                self.assertEqual(set(qs), {"Y", "Y2"})
+                for role, prop in (("Y", "Column Metric"), ("Y2", "Line Metric")):
+                    with self.subTest(role=role):
+                        self.assertEqual(qs[role]["projections"], [{
+                            "field": {"Measure": {
+                                "Expression": {"SourceRef": {"Entity": "Synthetic"}},
+                                "Property": prop,
+                            }},
+                            "queryRef": f"Synthetic.{prop}",
+                            "nativeQueryRef": prop,
+                            "displayName": prop,
+                        }])
+
+    def test_native_query_ref_is_raw_property_for_each_projection_wrapper(self):
+        dimensions = [{"field": "Zone synthétique", "name": "Category label"}]
+        measures = [
+            {"name": "measure_id", "label": "Résultat mesuré"},
+            {"name": "Total quantity", "expression": "Sum(Quantité)"},
+        ]
+        qs = build_query_state(
+            "tableEx", dimensions, measures,
+            {"Zone synthétique": "Synthetic", "Quantité": "Synthetic"},
+            {"Résultat mesuré": ("Synthetic", "SUM('Synthetic'[Quantité])")},
+        )
+        self.assertEqual(set(qs), {"Values"})
+        projections = qs["Values"]["projections"]
+        self.assertEqual(len(projections), 3)
+        for projection, wrapper, prop, query_ref in zip(
+            projections,
+            ("Column", "Measure", "Aggregation"),
+            ("Zone synthétique", "Résultat mesuré", "Quantité"),
+            ("Synthetic.Zone synthétique", "Synthetic.Résultat mesuré",
+             "Sum(Synthetic.Quantité)"),
+        ):
+            with self.subTest(wrapper=wrapper):
+                field_ref = {
+                    "Expression": {"SourceRef": {"Entity": "Synthetic"}},
+                    "Property": prop,
+                }
+                expected_field = ({"Aggregation": {
+                    "Expression": {"Column": field_ref}, "Function": 0,
+                }} if wrapper == "Aggregation" else {wrapper: field_ref})
+                self.assertEqual(projection["field"], expected_field)
+                self.assertEqual(projection["queryRef"], query_ref)
+                self.assertEqual(projection["nativeQueryRef"], prop)
 
 
 class TestGenerateVisualContainers(unittest.TestCase):

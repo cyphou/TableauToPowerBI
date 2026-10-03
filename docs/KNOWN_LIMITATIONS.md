@@ -19,6 +19,13 @@ This document lists known limitations and approximations in the Tableau to Power
 
 ## Generation Limitations
 
+Automatic generation and static validation do not establish rendered parity.
+In a focused Desktop recheck, removing identical Tooltip projections already
+bound in primary roles resolved a repeated-index visual error: bars rendered,
+table row counts were unchanged, and no accessible visual-error elements were
+found. This evidence is limited to that recheck; maps remain under investigation
+and require Desktop review.
+
 | Area | Limitation | Impact |
 |------|-----------|--------|
 | **Visual positioning** | ✅ IMPROVED — Grid-snapping + scaled zone mapping preserve most real-world layout/sizing. | One known caveat remains: floating legend overlays can still render side-by-side instead of overlaying chart corners in some dashboards. |
@@ -61,7 +68,8 @@ This document lists known limitations and approximations in the Tableau to Power
 | Gantt Bar / Lollipop | ✅ `ganttChart` (custom visual GUID) | Custom visual; time-axis semantics preserved |
 | Butterfly / Waffle | hundredPercentStackedBarChart | ✅ IMPROVED — negate-one-measure hint in approximation note |
 | Calendar Heat Map | matrix | ✅ IMPROVED — auto-enables conditional formatting properties + migration note |
-| Packed Bubble / Strip Plot | scatterChart | ✅ FIXED — size encoding from `mark_encoding` auto-injected into Size data role |
+| Explicit Packed Bubble / Strip Plot | scatterChart | Explicit marks may use scatter; size encoding can populate Size, but required scatter roles need review |
+| Shelfless inferred packed bubble | treemap | Empty Rows/Columns shelves, one Size measure + Colour dimension; approximation does not preserve bubble geometry |
 | Bump Chart / Slope | lineChart | ✅ IMPROVED — Auto-generated RANKX measure for ranking semantics |
 | Motion chart (animated) | Not handled | No PBI play-axis animation |
 | Violin plot | ✅ `boxAndWhisker` + custom visual (`ViolinPlot1.0.0`) | Maps to Box & Whisker; AppSource custom visual GUID available |
@@ -98,7 +106,7 @@ This document lists known limitations and approximations in the Tableau to Power
 
 | Area | Limitation |
 |------|------------|
-| **PBIR schema versions** | Generated output targets PBIR v4.0 with report schema 2.0.0, page schema 2.0.0, and visualContainer schema 2.5.0. Compatible with PBI Desktop April 2025+ (v2.142.928.0). Use `--check-schema` to verify forward-compatibility with newer PBI Desktop versions |
+| **PBIR schema versions** | Documented PBIR v4.0 baseline: report schema 2.0.0, page schema 2.0.0, visualContainer schema 2.5.0, and `CY25SU03` for PBI Desktop March 2025+. Validate generated projects in Desktop; `--check-schema` checks schemas, not runtime compatibility |
 
 ## Shared Semantic Model Limitations
 

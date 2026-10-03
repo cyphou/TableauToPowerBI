@@ -76,6 +76,34 @@ class TestProbeProjects(unittest.TestCase):
         self.assertEqual(written[0]["screenshot"], "diagnostic.png")
         self.assertEqual(written[0]["data_load"]["status"], "unavailable")
 
+    def test_refresh_is_on_by_default_and_can_be_disabled(self):
+        _, probe, _ = self._run([_report(window_loaded=True, data_status="verified")])
+        self.assertTrue(probe.call_args.kwargs["refresh"])
+        self.assertTrue(probe.call_args.kwargs["capture_unverified"])
+        _, probe, _ = self._run([_report(window_loaded=True, data_status="verified")],
+                                "--no-refresh")
+        self.assertFalse(probe.call_args.kwargs["refresh"])
+
+    def test_html_report_has_status_cards_and_relative_screenshots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shot = os.path.join(tmp, "shots", "A.png")
+            os.makedirs(os.path.dirname(shot))
+            open(shot, "wb").close()
+            html_path = os.path.join(tmp, "DESKTOP_OPENING_VALIDATION.html")
+            text = probe_projects._html_report([
+                {"pbip_path": "C:/p/A.pbip", "window_loaded": True, "screenshot": shot,
+                 "screenshot_data_verified": True,
+                 "refresh": {"mode": "schema_and_data", "status": "verified"},
+                 "data_load": {"status": "verified", "tables_checked": 2,
+                               "tables_nonempty": 2, "total_rows": 9}},
+                {"pbip_path": "C:/p/B.pbip", "window_loaded": False},
+            ], html_path)
+        self.assertIn('class="card ok">OPENED', text)
+        self.assertIn('class="card ko">CRASHED', text)
+        self.assertIn('src="shots/A.png"', text)
+        self.assertIn("schema_and_data", text)
+        self.assertNotIn(tmp, text)
+
 
 if __name__ == "__main__":
     unittest.main()

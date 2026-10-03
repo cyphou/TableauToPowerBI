@@ -677,10 +677,13 @@ class TestVisualObjectExtensions(unittest.TestCase):
     def test_padding(self):
         ws = {'padding': {'padding_top': 10, 'padding_bottom': 5}}
         objs = self._build(ws)
-        self.assertIn("visualContainerPadding", objs)
-        props = objs["visualContainerPadding"][0]["properties"]
-        self.assertIn("top", props)
-        self.assertIn("bottom", props)
+        self.assertEqual(objs["padding"], [{
+            "properties": {
+                "top": {"expr": {"Literal": {"Value": "10L"}}},
+                "bottom": {"expr": {"Literal": {"Value": "5L"}}},
+            }
+        }])
+        self.assertNotIn("visualContainerPadding", objs)
 
     def test_reference_bands(self):
         ws = {'analytics_stats': [

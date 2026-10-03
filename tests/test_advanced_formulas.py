@@ -254,9 +254,11 @@ class TestAzureMapsVisualMapping:
 
     def test_azure_map_data_roles(self):
         dims, measures = VISUAL_DATA_ROLES["azureMap"]
-        assert "Latitude" in dims
-        assert "Longitude" in dims
-        assert "Size" in measures or "Color" in measures
+        assert {"Category", "Series"} <= set(dims)
+        assert {"Y", "X", "Size"} <= set(measures)
+        assert {"Location", "Latitude", "Longitude", "Color"}.isdisjoint(
+            set(dims) | set(measures)
+        )
 
     def test_azure_map_fallback(self):
         assert VISUAL_FALLBACK_CASCADE["azureMap"] == "map"

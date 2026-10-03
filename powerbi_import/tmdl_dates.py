@@ -59,6 +59,23 @@ _DATE_PART_PATTERNS = re.compile(
     r')$', re.IGNORECASE
 )
 
+_TECHNICAL_DATE = re.compile(
+    r'(?:^|[_ .-])(maj|mise[ _-]?a?jour|update|refresh|load|etl|insert|extract|'
+    r'modif|modified|timestamp|time_stamp|ts)(?:$|[_ .-])', re.IGNORECASE)
+
+
+def _date_column_score(name):
+    """Prefer business dates over operational refresh timestamps."""
+    lowered = str(name).casefold().replace('é', 'e').replace('è', 'e')
+    score = 0
+    if _TECHNICAL_DATE.search(lowered):
+        score -= 10
+    if re.search(r'(?:^|[_ .-])(date|jour|day|datum)(?:$|[_ .-])', lowered):
+        score += 4
+    if re.search(r'(?:^|[_ .-])(annee|year|month|mois|quarter|trimestre)', lowered):
+        score += 2
+    return score
+
 
 def _is_date_table(table):
     """Detect whether a table is a date/calendar dimension table.
@@ -271,12 +288,19 @@ def _add_date_table(model):
         tname = t.get("name", "")
         if tname == "Calendar":
             continue
+        candidates = []
         for col in t.get("columns", []):
             if col.get("dataType") == "DateTime" or col.get("dataCategory") == "DateTime":
                 date_col_name = col.get("name", "")
                 if date_col_name and not col.get("isCalculated", False):
-                    cal_candidates.append((tname, date_col_name))
-                    break  # one date column per table is enough
+                    candidates.append((
+                        _date_column_score(date_col_name),
+                        date_col_name,
+                    ))
+        if candidates:
+            _score, date_col_name = max(
+                candidates, key=lambda item: (item[0], item[1].casefold()))
+            cal_candidates.append((tname, date_col_name))
 
     # When multiple tables connect to Calendar, use bothDirections so
     # Calendar acts as a shared dimension that bridges cross-table

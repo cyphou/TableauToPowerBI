@@ -1505,35 +1505,35 @@ def _build_matrix_config(row_subtotals=True, column_subtotals=True,
 
 VISUAL_DATA_ROLES = {
     # (dimension_roles, measure_roles)
-    "card":                              ([], ["Fields"]),
+    "card":                              ([], ["Values"]),
     "multiRowCard":                      ([], ["Values"]),
     "kpi":                               ([], ["Indicator", "TrendAxis"]),
-    "clusteredBarChart":                 (["Category"], ["Y"]),
+    "clusteredBarChart":                 (["Category", "Series", "Tooltips"], ["Y"]),
     "stackedBarChart":                   (["Category", "Series"], ["Y"]),
     "hundredPercentStackedBarChart":     (["Category", "Series"], ["Y"]),
-    "clusteredColumnChart":              (["Category"], ["Y"]),
+    "clusteredColumnChart":              (["Category", "Series", "Tooltips"], ["Y"]),
     "stackedColumnChart":                (["Category", "Series"], ["Y"]),
     "hundredPercentStackedColumnChart":  (["Category", "Series"], ["Y"]),
-    "lineChart":                         (["Category"], ["Y"]),
-    "areaChart":                         (["Category"], ["Y"]),
-    "stackedAreaChart":                  (["Category", "Series"], ["Y"]),
-    "hundredPercentStackedAreaChart":    (["Category", "Series"], ["Y"]),
-    "pieChart":                          (["Category"], ["Y"]),
-    "donutChart":                        (["Category"], ["Y"]),
+    "lineChart":                         (["Category", "Series", "Tooltips"], ["Y"]),
+    "areaChart":                         (["Category", "Series", "Tooltips"], ["Y"]),
+    "stackedAreaChart":                  (["Category", "Series", "Tooltips"], ["Y"]),
+    "hundredPercentStackedAreaChart":    (["Category", "Series", "Tooltips"], ["Y"]),
+    "pieChart":                          (["Category", "Series", "Tooltips"], ["Y"]),
+    "donutChart":                        (["Category", "Series", "Tooltips"], ["Y"]),
     "waterfallChart":                    (["Category"], ["Y"]),
     "funnel":                            (["Category"], ["Y"]),
     "gauge":                             ([], ["Y", "MinValue", "MaxValue", "TargetValue"]),
-    "treemap":                           (["Group"], ["Values"]),
+    "treemap":                           (["Group", "Details", "Tooltips"], ["Values"]),
     "sunburst":                          (["Group"], ["Values"]),
-    "scatterChart":                      (["Details"], ["X", "Y", "Size"]),
+    "scatterChart":                      (["Category", "Series", "Tooltips"], ["X", "Y", "Size"]),
     "tableEx":                           (["Values"], ["Values"]),
     "matrix":                            (["Rows", "Columns"], ["Values"]),
     "pivotTable":                        (["Rows", "Columns"], ["Values"]),
     "slicer":                            (["Values"], []),
-    "lineStackedColumnComboChart":       (["Category"], ["ColumnY", "LineY"]),
-    "lineClusteredColumnComboChart":     (["Category"], ["ColumnY", "LineY"]),
+    "lineStackedColumnComboChart":       (["Category", "Series", "Tooltips"], ["Y", "Y2"]),
+    "lineClusteredColumnComboChart":     (["Category", "Series", "Tooltips"], ["Y", "Y2"]),
     "map":                               (["Category", "Location"], ["Size", "Color"]),
-    "azureMap":                           (["Location", "Latitude", "Longitude"], ["Size", "Color"]),
+    "azureMap":                           (["Category", "Series", "Tooltips"], ["Y", "X", "Size"]),
     "filledMap":                         (["Location"], ["Color"]),
     "shapeMap":                          (["Location"], ["Color"]),
     "ribbonChart":                       (["Category", "Series"], ["Y"]),
@@ -1785,8 +1785,8 @@ def _get_config_template(visual_type):
 
 # Aggregation function mapping
 _AGG_FUNC_MAP = {
-    "sum": 1, "min": 2, "max": 3, "count": 4,
-    "countnonnull": 5, "avg": 6, "average": 6,
+    "sum": 0, "min": 3, "max": 4, "count": 2,
+    "countnonnull": 5, "avg": 1, "average": 1,
     "distinctcount": 7,
 }
 
@@ -3254,7 +3254,7 @@ def build_query_state(pbi_type, dimensions, measures, col_table_map,
         else:
             func_name, col_name = '', _norm_name(expr.strip() if expr else '')
 
-        func_id = _AGG_FUNC_MAP.get(func_name, 1)
+        func_id = _AGG_FUNC_MAP.get(func_name, 0)
         table_name = col_table_map.get(col_name, '')
         if not table_name and col_table_map:
             table_name = next(iter(col_table_map.values()), 'Table')
