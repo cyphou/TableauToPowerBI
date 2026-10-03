@@ -157,14 +157,37 @@ class TestOffCanvas(unittest.TestCase):
         self.assertEqual(_heal_visual_off_canvas(state), 1)
         self.assertLessEqual(v['json']['position']['x'] + v['json']['position']['width'], 1280)
 
-    def test_origin_outside_minimum_room_is_escalated_without_mutation(self):
+    def test_origin_too_close_to_the_edge_slides_back_in_at_full_size(self):
+        """Leaving the visual where Tableau put it means Power BI clips it and
+        the PBIR validator reports it out of bounds. Sliding it inside keeps
+        every pixel of its content, which shrinking would not."""
         v = _visual('v1', {'position': {'x': 0, 'y': 700, 'width': 100, 'height': 60}})
         state = _make_state(pages=[_page('p1', [v])])
         recovery = RecoveryReport('test')
+        self.assertEqual(_heal_visual_off_canvas(state, recovery), 1)
+        pos = v['json']['position']
+        self.assertEqual(pos['height'], 60)
+        self.assertEqual(pos['y'], 660)
+        self.assertLessEqual(pos['y'] + pos['height'], 720)
+        # Idempotent: nothing left to repair on a second pass.
         self.assertEqual(_heal_visual_off_canvas(state, recovery), 0)
+
+    def test_a_page_smaller_than_a_visual_minimum_is_escalated_without_mutation(self):
+        v = _visual('v1', {'position': {'x': 0, 'y': 0, 'width': 100, 'height': 60}})
+        state = _make_state(pages=[_page('p1', [v], page_json={'width': 10, 'height': 10})])
+        recovery = RecoveryReport('test')
         self.assertEqual(_heal_visual_off_canvas(state, recovery), 0)
-        self.assertEqual(v['json']['position']['y'], 700)
+        self.assertEqual(v['json']['position'], {'x': 0, 'y': 0, 'width': 100, 'height': 60})
         self.assertEqual(recovery.repairs[0]['repair_type'], 'visual_off_canvas_unresolved')
+
+    def test_a_visual_wider_than_the_page_is_shrunk_not_slid(self):
+        v = _visual('v1', {'position': {'x': 100, 'y': 0, 'width': 1500, 'height': 100}})
+        state = _make_state(pages=[_page('p1', [v])])
+        self.assertEqual(_heal_visual_off_canvas(state), 1)
+        pos = v['json']['position']
+        self.assertEqual(pos['x'], 100, 'sliding cannot help a visual wider than the page')
+        self.assertEqual(pos['width'], 1180)
+        self.assertLessEqual(pos['x'] + pos['width'], 1280)
 
     def test_within_canvas_unchanged(self):
         v = _visual('v1', {'position': {'x': 0, 'y': 0, 'width': 100, 'height': 100}})

@@ -302,16 +302,26 @@ def _heal_visual_off_canvas(state, recovery=None) -> int:
                 w = float(pos.get('width', 0)); h = float(pos.get('height', 0))
             except (TypeError, ValueError):
                 continue
-            if x > cw - _MIN_VISUAL_W or y > ch - _MIN_VISUAL_H:
+            if cw < _MIN_VISUAL_W or ch < _MIN_VISUAL_H:
                 _record(recovery, 'visual_off_canvas_unresolved', visual['name'],
-                        'warning', 'Visual origin cannot fit its minimum size on the page',
+                        'warning', 'Page is smaller than the minimum visual size',
                         'Left layout unchanged', follow_up='Review Tableau zone layout and page dimensions')
                 continue
             changed = False
             if x < 0:
-                pos['x'] = 0; changed = True
+                pos['x'] = 0; x = 0; changed = True
             if y < 0:
-                pos['y'] = 0; changed = True
+                pos['y'] = 0; y = 0; changed = True
+            # Slide back inside first so the visual keeps its size; shrinking is
+            # only for a visual genuinely larger than the page.
+            if x + w > cw and w <= cw:
+                x = cw - w
+                pos['x'] = int(x)
+                changed = True
+            if y + h > ch and h <= ch:
+                y = ch - h
+                pos['y'] = int(y)
+                changed = True
             if x + w > cw:
                 pos['width'] = max(_MIN_VISUAL_W, cw - max(0, int(x)))
                 changed = True

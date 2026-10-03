@@ -2573,6 +2573,26 @@ def _remove_conflicting_number_of_records_measures(model):
             table['measures'] = filtered
 
 
+#: DAX refuses SUM and AVERAGE on a text column; a table calc over one has to
+#: count instead. MIN and MAX are legal on text, so they are left alone.
+_NUMERIC_ONLY_AGGS = {'SUM', 'AVERAGE'}
+_NUMERIC_DATA_TYPES = {'int64', 'double', 'decimal'}
+
+
+def _agg_for_column(model, table_name, column_name, agg_func):
+    """Returns an aggregation the column's data type can actually support."""
+    if agg_func not in _NUMERIC_ONLY_AGGS:
+        return agg_func
+    for table in model.get('model', {}).get('tables', []):
+        if table.get('name') != table_name:
+            continue
+        for column in table.get('columns', []):
+            if column.get('name') == column_name:
+                data_type = str(column.get('dataType', '')).lower()
+                return agg_func if data_type in _NUMERIC_DATA_TYPES else 'COUNTA'
+    return agg_func
+
+
 def _create_quick_table_calc_measures(model, worksheets, main_table_name, column_table_map):
     """Auto-generate DAX measures for Tableau quick table calculations.
     
@@ -2614,6 +2634,7 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
             tc_agg = field.get('table_calc_agg', 'sum')
             agg_func = _AGG_MAP.get(tc_agg, 'SUM')
             tbl = column_table_map.get(field_name, main_table_name)
+            agg_func = _agg_for_column(model, tbl, field_name, agg_func)
             
             if tc_type == 'pcto':
                 measure_name = f"% of Total {field_name}"

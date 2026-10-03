@@ -8,6 +8,7 @@ including all the files needed to open the project in Power BI Desktop.
 import os
 import json
 import logging
+import math
 import shutil
 import time
 from datetime import datetime
@@ -95,6 +96,15 @@ _MEASURE_ONLY_ROLES = {
     'treemap': ('Values',),
     'waterfallChart': ('Y',),
 }
+#: Visuals exposing a Tooltips role, per the Power BI visual catalog. Card,
+#: matrix, multiRowCard, pivotTable and tableEx deliberately have none.
+_TOOLTIP_CAPABLE_VISUALS = frozenset({
+    'areaChart', 'azureMap', 'clusteredBarChart', 'clusteredColumnChart',
+    'donutChart', 'filledMap', 'funnel', 'gauge',
+    'hundredPercentStackedBarChart', 'lineChart',
+    'lineClusteredColumnComboChart', 'map', 'pieChart', 'ribbonChart',
+    'scatterChart', 'shapeMap', 'treemap', 'waterfallChart',
+})
 
 
 def _is_bindable_coordinate(field):
@@ -217,6 +227,8 @@ def _L(v):
 
 #: Schemes a Power BI action button will actually navigate to.
 _STATIC_URL_SCHEMES = ('http://', 'https://', 'mailto:', '//')
+#: Power BI's own padding above and below a textbox's text.
+_TEXTBOX_VERTICAL_PADDING = 16
 
 #: A Tableau URL action interpolates fields as ``<field>`` or ``<[ds].[col]>``.
 _URL_FIELD_PLACEHOLDER = re.compile(r'<[^>]+>')
@@ -1526,6 +1538,26 @@ class PowerBIProjectGenerator:
             paragraphs.append(para)
         return paragraphs
 
+    def _textbox_height_floor(self, paragraphs):
+        """Smallest height that renders the largest run without a scrollbar.
+
+        A point is 4/3 px at 96 dpi and Power BI leaves 8px of padding above and
+        below; below this the textbox clips its own text.
+        """
+        largest = 0.0
+        for paragraph in paragraphs or []:
+            for run in paragraph.get('textRuns') or []:
+                size = (run.get('textStyle') or {}).get('fontSize')
+                if not size:
+                    continue
+                try:
+                    largest = max(largest, float(str(size).rstrip('pt')))
+                except ValueError:
+                    continue
+        if largest <= 0:
+            return 0
+        return int(math.ceil(largest * 4 / 3 * 1.2)) + _TEXTBOX_VERTICAL_PADDING
+
     def _create_visual_textbox(self, visuals_dir, obj, scale_x, scale_y, visual_count):
         """Create a textbox visual from a Tableau text object.
 
@@ -1543,10 +1575,15 @@ class PowerBIProjectGenerator:
         if vertical:
             general_props["verticalAlignment"] = vertical
 
+        position = self._make_visual_position(pos, scale_x, scale_y, visual_count)
+        floor = self._textbox_height_floor(paragraphs)
+        if floor and position.get('height', 0) < floor:
+            position['height'] = floor
+
         visual_json = {
             "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
             "name": visual_id,
-            "position": self._make_visual_position(pos, scale_x, scale_y, visual_count),
+            "position": position,
             "visual": {
                 "visualType": "textbox",
                 "objects": {
@@ -4115,10 +4152,37 @@ class PowerBIProjectGenerator:
             else:
                 del query_state['Tooltips']
 
+        self._preserve_size_measures(query_state, visual_type, size_fields)
+
         query_state = self._enforce_role_contract(
             query_state, visual_type, ws_data, fallback_dims + fallback_meas)
 
         return {"queryState": query_state} if query_state else None
+
+    def _preserve_size_measures(self, query_state, visual_type, size_fields):
+        """Keeps a Tableau size-shelf measure that the target visual cannot size by.
+
+        Only scatter and map expose a Size role; elsewhere the measure would be
+        dropped outright, so it moves to Tooltips rather than being lost.
+        """
+        if not size_fields or not query_state:
+            return
+        if 'Size' in (_MEASURE_ONLY_ROLES.get(visual_type) or ()):
+            return
+        if visual_type not in _TOOLTIP_CAPABLE_VISUALS:
+            return
+
+        bound = [p['field'] for role in query_state.values()
+                 for p in (role.get('projections') or []) if p.get('field')]
+        tooltips = query_state.setdefault('Tooltips', {'projections': []})
+        for measure in size_fields:
+            entry = self._make_projection_entry(measure)
+            if entry.get('field') in bound:
+                continue
+            tooltips['projections'].append(entry)
+            bound.append(entry['field'])
+        if not tooltips['projections']:
+            del query_state['Tooltips']
 
     def _enforce_role_contract(self, query_state, visual_type, ws_data, all_fields):
         """Drop bindings the visual cannot render, and degrade when a required
