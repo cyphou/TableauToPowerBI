@@ -157,7 +157,9 @@ class TestDownloadEndpoint(_ServerTestBase):
         with open(os.path.join(tmpdir, 'test.txt'), 'w') as f:
             f.write('hello')
         job_id = _new_job('/tmp/test.twbx')
-        _update_job(job_id, status='completed', output_dir=tmpdir)
+        # Completed jobs now need their recorded private job boundary; an
+        # arbitrary output directory is intentionally not downloadable.
+        _update_job(job_id, status='completed', job_dir=tmpdir, output_dir=tmpdir)
 
         url = self.base_url + f'/download/{job_id}'
         req = urllib.request.Request(url)
