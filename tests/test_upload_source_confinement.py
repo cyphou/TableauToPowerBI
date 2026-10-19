@@ -5,7 +5,6 @@ process-global and cannot be removed once installed.
 """
 
 import io
-from email.message import Message
 import os
 import shutil
 import stat
@@ -17,8 +16,8 @@ import unittest
 import urllib.request
 import urllib.response
 import zipfile
+from email.message import Message
 from unittest.mock import patch
-
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -110,7 +109,7 @@ class TestUploadRootHelpers(UploadTreeTestCase):
     def test_confine_rejects_parent_traversal_even_when_target_exists(self):
         outside = tempfile.TemporaryDirectory(prefix='outside_upload_root_')
         self.addCleanup(outside.cleanup)
-        source = _write(os.path.join(outside.name, 'secret.csv'), 'private')
+        _write(os.path.join(outside.name, 'secret.csv'), 'private')
         traversal = os.path.join(self.root, '..', os.path.basename(outside.name), 'secret.csv')
         self.assertTrue(os.path.exists(traversal))
         with self.assertRaises(ValueError):
@@ -129,7 +128,7 @@ class TestUploadRootHelpers(UploadTreeTestCase):
     def test_confine_rejects_symlinked_parent_directory(self):
         target_dir = tempfile.TemporaryDirectory(prefix='outside_link_target_')
         self.addCleanup(target_dir.cleanup)
-        target = _write(os.path.join(target_dir.name, 'source.csv'), 'x')
+        _write(os.path.join(target_dir.name, 'source.csv'), 'x')
         link_dir = os.path.join(self.root, 'linked')
         try:
             os.symlink(target_dir.name, link_dir, target_is_directory=True)

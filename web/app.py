@@ -28,8 +28,11 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from powerbi_import.api_server import (
-    _confined_path, _uploaded_filename, _run_upload_worker, _write_output_archive,
+    _confined_path,
     _parse_multipart,
+    _run_upload_worker,
+    _uploaded_filename,
+    _write_output_archive,
 )
 
 logger = logging.getLogger('tableau_to_powerbi.web')

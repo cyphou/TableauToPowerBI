@@ -138,6 +138,7 @@ def _validate_uploaded_workbook(path, boundary=None):
     """Validate bindings *before* extraction/generation can open local sources."""
     import ntpath
     import stat
+
     from powerbi_import.security_validator import safe_parse_xml
 
     def xml_bindings(data, members=None):
