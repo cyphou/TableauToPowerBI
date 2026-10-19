@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import
 
 from tableau_export.extract_tableau_data import TableauExtractor
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
+from unittest.mock import patch
 
 
 def _make_extractor():
@@ -515,6 +516,48 @@ class TestGenerateParameterActionSlicers(unittest.TestCase):
                 self.assertTrue(any('Top N' in n for n in notes))
                 return
         self.fail('No slicer found')
+
+
+class TestDashboardActionRouting(unittest.TestCase):
+    def test_set_and_parameter_actions_follow_page_sources(self):
+        scenarios = (
+            ({'source_dashboards': ['First']}, [0]),
+            ({'source_worksheets': ['SecondSheet']}, [1]),
+            ({'source_dashboards': ['First'],
+              'source_worksheets': ['SecondSheet']}, [0]),
+            ({'source_dashboards': ['Elsewhere']}, []),
+            ({}, [0, 1]),
+        )
+        for kind in ('set-value', 'param'):
+            for source, expected_pages in scenarios:
+                with self.subTest(kind=kind, source=source), tempfile.TemporaryDirectory() as tmp:
+                    generator = _make_generator()
+                    action = dict(source, type=kind, name='Synthetic action')
+                    dashboards = [
+                        {'name': name, 'objects': [
+                            {'type': 'worksheetReference', 'worksheetName': sheet}]}
+                        for name, sheet in (('First', 'FirstSheet'),
+                                            ('Second', 'SecondSheet'))
+                    ]
+                    with (
+                        patch.object(generator, '_create_visual_worksheet'),
+                        patch.object(generator, '_generate_set_action_artifacts',
+                                     return_value=(0, [])) as sets,
+                        patch.object(generator, '_generate_parameter_action_slicers',
+                                     return_value=0) as params,
+                    ):
+                        pages = generator._create_dashboard_pages(
+                            tmp, dashboards, [], {'actions': [action]}, {})
+                    consumer = sets if kind == 'set-value' else params
+                    other = params if kind == 'set-value' else sets
+                    other.assert_not_called()
+                    self.assertEqual(consumer.call_count, len(expected_pages))
+                    actual_dirs = [call.args[0] for call in consumer.call_args_list]
+                    self.assertEqual(actual_dirs, [
+                        os.path.join(tmp, pages[index], 'visuals')
+                        for index in expected_pages])
+                    for call in consumer.call_args_list:
+                        self.assertEqual(call.args[1], [action])
 
 
 if __name__ == '__main__':

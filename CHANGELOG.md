@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed page routing for set-value and parameter actions to use source dashboards
+  and worksheets consistently with URL/navigation actions. Removed unreachable
+  DAX optimizer code containing undefined references flagged by F821.
+
 - Added MCP owner-pull handoff and `agent_handoff_ack`. Owners can retrieve only
   their findings; `applied` ACKs require changed PBIP definition artifacts and
   a fresh quality report where the finding is gone. ACKs are in-memory only and
