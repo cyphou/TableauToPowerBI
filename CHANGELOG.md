@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Updated the CLI command reference for folder-based bulk generation and
+  separate diagnostics. Corrected the `deploy` help text: the batch alias
+  generates Fabric artifacts but does not deploy or execute a pipeline.
+
 - Clarify that `openable=true` reports a static verdict, not successful Desktop
   loading or refresh. Native failures take precedence over a static pass.
   The relationship-triggered refresh failure reported in #84 remains

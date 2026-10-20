@@ -74,28 +74,35 @@ pip install tableauhyperapi           # .hyper extract file reading (v2+ format)
 
 The public CLI has **14 commands**. These cover the normal workflows:
 
-```bash
+```powershell
 # Migration generation is batch-only; a folder may contain one workbook.
 python migrate.py assess workbook.twbx
-python migrate.py batch folder/ --output-dir ./output
+python migrate.py migrate .\workbooks --output-dir .\output
+python migrate.py batch .\workbooks --output-dir .\output
 python migrate.py server https://tableau.example "Sales Dashboard"
 python migrate.py merge wb1.twbx wb2.twbx --model-name "Sales"
-python migrate.py fabric ./workbooks --output-dir ./fabric-output
+python migrate.py fabric .\workbooks --output-dir .\fabric-output
 # Deployment is a separate step using the MCP deploy tool (preview first).
-python migrate.py qa ./workbooks
+python migrate.py qa .\workbooks
 python migrate.py quality workbook.twbx
 python migrate.py parity workbook.twbx
-python migrate.py portfolio ./workbooks
+python migrate.py portfolio .\workbooks
 python migrate.py plan https://tableau.example
-python migrate.py lineage ./prep_flows
-python migrate.py package ./workbooks
+python migrate.py lineage .\prep_flows
+python migrate.py package .\workbooks
 ```
 
-Generation commands (`batch`, `fabric`, and deployment) take a source folder;
+Generation commands (`migrate`, `batch`, and `fabric`) take a source folder;
 put a single workbook in that folder when migrating only one. `assess` and
 `parity` can inspect an individual workbook file. `quality` inspects an existing
 migrated project for that workbook and requires its extraction data. `plan`
 takes a Tableau Server/Cloud URL and requires valid server access.
+
+`migrate FOLDER` and `batch FOLDER` both use bulk generation. The legacy
+`deploy FOLDER WORKSPACE_ID` alias currently generates Fabric artifacts only:
+the batch dispatcher does not forward deployment or pipeline-execution flags.
+Use the separate deployment workflow described in the
+[deployment guide](docs/DEPLOYMENT_GUIDE.md).
 
 Use `python migrate.py quality workbook.twbx` after migrating that workbook to
 inspect its combined assessment, feature parity, data coverage, interface

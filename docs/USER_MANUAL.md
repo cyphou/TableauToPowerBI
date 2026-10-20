@@ -46,6 +46,35 @@ Use assessment before migration when the workbook has many data sources, custom 
 
 ## 3. Common Workflows
 
+### CLI command reference
+
+Run commands from the repository root. On Windows, use
+`.\.venv\Scripts\python.exe` in place of `python` to select the project runtime.
+
+| Command | Input and effect |
+|---|---|
+| `migrate FOLDER` / `batch FOLDER` | Bulk PBIP generation; a folder with one workbook is valid |
+| `fabric FOLDER` | Generate local Fabric artifacts; no remote deployment |
+| `server URL WORKBOOK` | Download a Server/Cloud workbook into an isolated batch |
+| `merge WORKBOOK...` | Build a shared model from multiple workbook files |
+| `assess WORKBOOK` | Readiness assessment, no project generation |
+| `quality WORKBOOK` | Inspect existing migrated output and its extraction data |
+| `parity WORKBOOK` | Source feature scorecard, no project generation |
+| `portfolio FOLDER` | Portfolio assessment, no migration |
+| `plan SERVER_URL` | Server migration planning; authorized access required |
+| `lineage FLOW_OR_FOLDER...` | Prep-flow lineage analysis |
+| `qa FOLDER` / `package FOLDER` | Batch generation with the normal quality/evidence outputs; not the legacy specialized suites |
+| `deploy FOLDER WORKSPACE_ID` | Legacy Fabric generation alias; batch does not perform remote deployment or pipeline execution |
+
+```powershell
+.\.venv\Scripts\python.exe migrate.py --help
+.\.venv\Scripts\python.exe migrate.py --advanced-help
+```
+
+For deployment, use the separate authorized workflow in the
+[deployment guide](DEPLOYMENT_GUIDE.md). Do not interpret successful local
+generation as successful deployment or refresh.
+
 ### Migrate Workbooks
 
 ```bash

@@ -213,6 +213,8 @@ class TestArgumentParserHelpers(unittest.TestCase):
         self.assertEqual(exit_context.exception.code, 0)
         self.assertIn('14 simple commands', output.getvalue())
         self.assertIn('deploy FOLDER WORKSPACE_ID', output.getvalue())
+        self.assertIn('batch does not deploy or run a pipeline', output.getvalue())
+        self.assertNotIn('deploy them, and run the pipeline', output.getvalue())
         self.assertIn('quality WORKBOOK', output.getvalue())
         self.assertIn('lineage FLOW_OR_FOLDER...', output.getvalue())
         self.assertNotIn('--server-preserve-folders', output.getvalue())
