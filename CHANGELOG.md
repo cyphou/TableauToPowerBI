@@ -195,6 +195,9 @@
   itself. The legacy `POST /migrate` endpoint returns HTTP 410; submit a ZIP to
   `POST /migrate/batch` instead. File-based assessment and diagnostic commands
   remain supported.
+- Fixed page routing for set-value and parameter actions to use source dashboards
+  and worksheets consistently with URL/navigation actions. Removed unreachable
+  DAX optimizer code containing undefined references flagged by F821.
 
 - Added MCP owner-pull handoff and `agent_handoff_ack`. Owners can retrieve only
   their findings; `applied` ACKs require changed PBIP definition artifacts and
