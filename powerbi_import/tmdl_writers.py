@@ -84,16 +84,20 @@ def _safe_filename(name, base_dir=None, suffix=''):
     safe = re.sub(r'[<>:"/\\|?*]', '_', name)
     if base_dir is None:
         return safe
-    budget = PBI_MAX_PATH - len(os.path.join(os.path.abspath(base_dir), '')) \
-        - len(suffix) - 1
-    if len(safe) <= budget:
+    from powerbi_import.desktop_paths import path_units
+    budget = PBI_MAX_PATH - path_units(os.path.join(os.path.abspath(base_dir), '')) \
+        - path_units(suffix) - 1
+    if path_units(safe) <= budget:
         return safe
     digest = hashlib.sha256(name.encode('utf-8')).hexdigest()[:8]
     keep = budget - len(digest) - 1
     if keep < 1:
         # Nothing of the name survives; the hash alone still identifies it.
         return digest
-    return safe[:keep].rstrip() + '_' + digest
+    prefix = safe[:keep]
+    while path_units(prefix) > keep:
+        prefix = prefix[:-1]
+    return prefix.rstrip() + '_' + digest
 
 
 def _write_tmdl_files(model_data, output_dir):
@@ -180,6 +184,10 @@ def _write_tmdl_files(model_data, output_dir):
         try:
             _write_table_tmdl(tables_dir, table)
         except (OSError, ValueError, KeyError, TypeError) as exc:
+            if isinstance(exc, OSError):
+                # Never turn filesystem failures into a "successful" model
+                # with omitted tables (notably Windows ERROR_FILENAME_EXCED_RANGE).
+                raise
             table_name = table.get('name', 'Table')
             failed_table_names.append(table_name)
             logger.exception("TMDL table write failed for %s; continuing", table_name)

@@ -61,7 +61,7 @@ class PowerBIImporter:
             self.last_generation_timings = import_timings.finish()
             print(f"  [ERROR] No datasources found in {os.path.join(self.source_dir, 'datasources.json')}")
             print("     Run extraction first: python migrate.py <file>")
-            return
+            raise ValueError("Cannot generate a project without datasources")
         
         # Determine report name
         if not report_name:
@@ -211,7 +211,10 @@ class PowerBIImporter:
             print(f"  [OK] Power BI Project created: {project_path}")
             
         except Exception as e:
-            print(f"  [WARN] Error generating Power BI Project: {str(e)}")
+            print(f"  [ERROR] Error generating Power BI Project: {str(e)}")
+            # A partial directory is not a generated project. In particular,
+            # WinError 206 must reach run_generation's failure result.
+            raise
 
     def import_shared_model(self, model_name, all_converted_objects,
                             workbook_names, output_dir=None,

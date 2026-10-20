@@ -63,8 +63,14 @@ class ThinReportGenerator:
         if field_mapping:
             converted_objects = self._remap_fields(converted_objects, field_mapping)
 
-        report_dir = os.path.join(self.output_dir, f"{report_name}.Report")
+        from .desktop_paths import validate_desktop_report, validate_desktop_tree
+        report_dir = validate_desktop_report(self.output_dir, report_name)
         os.makedirs(report_dir, exist_ok=True)
+        # As for full PBIP generation, a stale entry point is not a success
+        # marker for this attempt. Publish only after content and path checks.
+        pbip_path = os.path.join(self.output_dir, f"{report_name}.pbip")
+        if os.path.isfile(pbip_path):
+            os.remove(pbip_path)
 
         # 1. Create .platform
         self._write_platform(report_dir, report_name)
@@ -72,11 +78,12 @@ class ThinReportGenerator:
         # 2. Create definition.pbir → byPath to shared model
         self._write_definition_pbir(report_dir)
 
-        # 3. Create .pbip file for this report
-        self._write_pbip(report_name)
-
-        # 4. Generate report content (pages, visuals, filters) using pbip_generator
+        # 3. Generate report content (pages, visuals, filters) using pbip_generator
         self._generate_report_content(report_dir, report_name, converted_objects)
+        validate_desktop_tree(report_dir)
+
+        # 4. Publish the completed report
+        self._write_pbip(report_name)
 
         logger.info("Thin report generated: %s", report_dir)
         return report_dir

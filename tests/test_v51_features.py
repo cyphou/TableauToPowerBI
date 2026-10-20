@@ -286,14 +286,14 @@ class TestPrepFlowJoinMapping(unittest.TestCase):
 class TestMQueryFallback(unittest.TestCase):
     """M query fallback generator improvements."""
 
-    def test_fallback_gains_try_otherwise_from_its_caller(self):
-        # tmdl_generator wraps every partition, so the guard is end-to-end
-        # even though the generator itself no longer emits it.
+    def test_unsupported_placeholder_is_not_wrapped_by_compatibility_helper(self):
+        # Unsupported-connector placeholders are independent of Source guards.
         columns = [{'name': 'ID', 'datatype': 'integer'}, {'name': 'Name', 'datatype': 'string'}]
         raw = _gen_m_fallback({'_conn_type': 'CustomDB'}, 'MyTable', columns)
         wrapped = wrap_source_with_try_otherwise(raw, ['ID', 'Name'])
-        self.assertIn('try', wrapped)
-        self.assertIn('otherwise', wrapped)
+        self.assertEqual(wrapped, raw)
+        self.assertNotIn('try', wrapped)
+        self.assertNotIn('otherwise', wrapped)
         self.assertIn('#table({"ID", "Name"}, {})', wrapped)
 
     def test_fallback_has_conn_type(self):

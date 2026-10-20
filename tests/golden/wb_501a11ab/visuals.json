@@ -15,13 +15,13 @@
    "z": 2000
   },
   {
-   "fields": 3,
+   "fields": 4,
    "has_format": true,
    "height": 432,
    "page": "Enterprise Sales Dashboard",
    "title_font": "",
    "title_size": "",
-   "type": "lineClusteredColumnComboChart",
+   "type": "lineChart",
    "width": 1152,
    "x": 0,
    "y": 648,

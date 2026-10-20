@@ -2,7 +2,7 @@
 
 The module reads as the visual builder, and its tests reinforce that: 38 of its
 55 top-level functions are named by a test while no migration ever calls them.
-Production imports ten names from it — three lookup maps and seven helpers —
+Production imports eleven names from it — three lookup maps and eight helpers —
 and builds its visuals in ``pbip_generator``. Pinning that surface means the
 day someone wires a builder in is a decision, not an accident.
 """
@@ -22,6 +22,7 @@ EXPECTED_SURFACE = {
     'VISUAL_TYPE_MAP',
     '_build_dynamic_reference_line',
     '_build_motion_chart_bookmarks',
+    'build_categorical_color_objects',
     'clear_auto_generated_measures',
     'generate_script_visual',
     'get_approximation_note',
@@ -73,6 +74,21 @@ class TestVisualGeneratorSurface(unittest.TestCase):
         # A scan that silently finds nothing would pass the equality above
         # only if EXPECTED_SURFACE were emptied too; guard both at once.
         self.assertTrue(_imported_names())
+
+    def test_categorical_color_helper_is_used_by_the_report_generator(self):
+        self.assertEqual(_imported_names()['build_categorical_color_objects'],
+                         {'pbip_generator.py'})
+        with open(os.path.join(_REPO, 'powerbi_import', 'pbip_generator.py'),
+                  encoding='utf-8-sig') as handle:
+            tree = ast.parse(handle.read())
+        calls = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name)
+                 and node.func.id == 'build_categorical_color_objects']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0].args), 2)
+        self.assertEqual({kw.arg for kw in calls[0].keywords},
+                         {'resolve_field', 'clean_field'})
 
 
 class TestNoByteOrderMark(unittest.TestCase):

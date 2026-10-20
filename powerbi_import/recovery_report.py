@@ -58,7 +58,7 @@ class RecoveryReport:
         Args:
             category: Area of repair ('tmdl', 'visual', 'm_query', 'relationship')
             repair_type: Machine-readable repair code (e.g. 'broken_column_ref',
-                         'visual_fallback', 'try_otherwise_wrap')
+                         'visual_fallback', 'validation_warning')
             description: What went wrong
             action: What the engine did to fix it
             severity: 'info', 'warning', or 'error'

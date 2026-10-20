@@ -191,9 +191,21 @@ class TestOpenability(unittest.TestCase):
             _write_project(d, _tmdl_with_m(["let x=1 in x"]))
             data = check_openability(d).to_dict()
             for key in ("project_dir", "openable", "blocking_count",
-                        "warning_count", "blocking_issues", "warnings", "checks"):
+                        "warning_count", "blocking_issues", "warnings", "checks",
+                        "verified_scope", "refresh_verification", "limitation",
+                        "diagnostics"):
                 self.assertIn(key, data)
-            self.assertEqual(len(data["checks"]), 22)
+            self.assertEqual(len(data["checks"]), 23)
+            self.assertEqual(data["verified_scope"], "static_project_checks")
+            self.assertEqual(data["refresh_verification"], "not_run")
+            self.assertIn("Desktop loading and refresh were not run",
+                          data["limitation"])
+            self.assertEqual(set(data["diagnostics"]), {
+                "relationship_endpoints", "partition_risks", "limitation"})
+            self.assertEqual(data["diagnostics"]["relationship_endpoints"], [])
+            self.assertEqual(data["diagnostics"]["partition_risks"], [])
+            for check in data["checks"]:
+                self.assertEqual(set(check), {"name", "ok", "severity", "issues"})
 
     def test_check_names_present(self):
         with tempfile.TemporaryDirectory() as d:
@@ -209,7 +221,28 @@ class TestOpenability(unittest.TestCase):
                                      "bookmarks_index",
                                      "literal_grammar",
                                      "data_files_present", "model_column_projection",
-                                     "pbip_contract"})
+                                     "pbip_contract", "refresh_diagnostics"})
+
+    def test_refresh_diagnostics_are_advisory_not_a_runtime_verdict(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(d, _tmdl_with_m([
+                'let Source = #table({"A"}, {{"sample"}}) in Source']))
+            report = check_openability(d)
+            diagnostic = next(c for c in report.checks
+                              if c.name == "refresh_diagnostics")
+            self.assertFalse(diagnostic.ok)
+            self.assertEqual(diagnostic.severity, "warning")
+            self.assertTrue(report.openable)
+            self.assertEqual(report.blocking_issues, [])
+            self.assertTrue(any("[refresh_diagnostics]" in warning
+                                for warning in report.warnings))
+            self.assertEqual(report.to_dict()["refresh_verification"], "not_run")
+            self.assertEqual(report.diagnostics["partition_risks"], [{
+                "model": "P.SemanticModel",
+                "table": "Sales",
+                "partition": "Sales-guid",
+                "signals": ["literal_table_may_be_placeholder_or_intentional"],
+            }])
 
     def test_final_model_columns_cannot_drop_a_visual_source_column(self):
         with tempfile.TemporaryDirectory() as project:

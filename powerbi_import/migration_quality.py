@@ -1084,6 +1084,55 @@ def _artifact_evidence(project_dir: str) -> Dict[str, Any]:
     return {"status": "generated" if any(families.values()) else "missing", "families": families}
 
 
+def resolve_quality_report_name(project_dir: str) -> str:
+    """Resolve the generated identity, never the source filename or first match.
+
+    Artifacts and migration metadata must agree. Missing artifacts can still be
+    diagnosed when metadata supplies the identity; absent or ambiguous identity
+    is an explicit error rather than a misleading quality report.
+    """
+    from powerbi_import.qa_suite import _find_report_dir
+
+    identities = set()
+    reports = []
+    for entry in os.listdir(project_dir):
+        path = os.path.join(project_dir, entry)
+        stem, suffix = os.path.splitext(entry)
+        if suffix == '.pbip' and os.path.isfile(path):
+            identities.add(stem)
+        elif suffix in {'.Report', '.SemanticModel', '.Lakehouse'} and os.path.isdir(path):
+            if suffix == '.Report':
+                reports.append(entry)
+            else:
+                identities.add(stem)
+    if len(reports) > 1:
+        raise ValueError("Ambiguous project identity: multiple .Report artifacts")
+    if reports:
+        # Reuse the report-directory discovery helper only after ruling out
+        # its first-match behaviour for ambiguous projects.
+        report_dir = _find_report_dir(project_dir)
+        identities.add(os.path.basename(report_dir)[:-len('.Report')])
+
+    metadata_path = os.path.join(project_dir, 'migration_metadata.json')
+    if os.path.isfile(metadata_path):
+        with open(metadata_path, encoding='utf-8') as stream:
+            metadata = json.load(stream)
+        name = metadata.get('report_name') if isinstance(metadata, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Project metadata has no valid report_name")
+        identities.add(name)
+    if not identities:
+        raise ValueError("Project identity unavailable: no named artifacts or metadata")
+    if len(identities) != 1:
+        raise ValueError(
+            "Ambiguous project identity: artifacts/metadata disagree: "
+            + ', '.join(sorted(identities)))
+    name = identities.pop()
+    if name in {'.', '..'} or any(c in name for c in '/\\\x00:'):
+        raise ValueError("Invalid project identity")
+    return name
+
+
 def build_quality_report(extracted: Dict, project_dir: str,
                          report_name: str, *, source_path: Optional[str] = None,
                          checkpoint_path: Optional[str] = None,

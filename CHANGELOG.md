@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Preserve authored `m_query_override` partitions through local-source auditing:
+  missing inputs/stale connection metadata remain diagnostics, without replacing
+  the query or claiming refresh success. Generated missing sources still fail
+  explicitly. MCP and CLI quality inspection resolve the generated identity from
+  project artifacts/metadata (including `P_<hash>`), rejecting ambiguity instead
+  of reporting false missing artifacts under the source filename.
+
+- Fix batch `--resume` to look up the same planned `P_<hash>` identity used by
+  generation, retaining safe legacy-name markers and rechecking Desktop paths.
+  Separate generator root validation from full-project validation so flat thin
+  reports (shared models and Fabric) are not rejected for a layout they do not
+  create; publish their `.pbip` only after content and actual path checks.
+  Single-file checkpoints now complete only after postprocessing and the final
+  path guard. Failed postprocessing/path checks invalidate the entry point and
+  generation checkpoint. Resumed outputs are rechecked even with
+  `--no-verify-open`; older single-file generation checkpoints are regenerated
+  once because they do not prove postprocessing completed.
+
+- Stop injecting Power Query `Source = try ... otherwise #table(...)` guards
+  during semantic-model generation and self-healing, for all connectors.
+  Connection and navigation failures now propagate instead of reporting a
+  successful empty refresh. Keep `wrap_source_with_try_otherwise()` as a
+  documented compatibility no-op; preserve authored M and targeted value-level
+  `try` handling. Spatial-file routing recognizes unwrapped generated sources
+  without relying on fallback-table metadata. Existing generated projects are
+  not rewritten by this change.
+
 - Updated the CLI command reference for folder-based bulk generation and
   separate diagnostics. Corrected the `deploy` help text: the batch alias
   generates Fabric artifacts but does not deploy or execute a pipeline.

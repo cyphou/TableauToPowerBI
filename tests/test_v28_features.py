@@ -581,14 +581,42 @@ class TestWebUI(unittest.TestCase):
     def test_zip_directory(self):
         from web.app import _zip_directory
         import zipfile
-        with tempfile.TemporaryDirectory() as src:
+        with tempfile.TemporaryDirectory() as job:
+            src = os.path.join(job, 'output')
+            os.mkdir(src)
             with open(os.path.join(src, 'test.txt'), 'w') as f:
                 f.write('hello')
-            zip_path = os.path.join(src, 'test.zip')
-            _zip_directory(src, zip_path)
+            with open(os.path.join(job, 'private.txt'), 'w') as f:
+                f.write('not downloadable')
+            zip_path = os.path.join(job, 'test.zip')
+            _zip_directory(src, zip_path, job_dir=job)
             self.assertTrue(os.path.exists(zip_path))
             with zipfile.ZipFile(zip_path, 'r') as zf:
-                self.assertIn('test.txt', zf.namelist())
+                self.assertEqual(zf.namelist(), ['test.txt'])
+                self.assertEqual(zf.read('test.txt'), b'hello')
+
+    def test_zip_directory_requires_private_job(self):
+        from web.app import _zip_directory
+        with tempfile.TemporaryDirectory() as src:
+            zip_path = os.path.join(src, 'test.zip')
+            with self.assertRaisesRegex(
+                    ValueError, 'Missing server-owned private job directory'):
+                _zip_directory(src, zip_path)
+            self.assertFalse(os.path.exists(zip_path))
+
+    def test_zip_directory_rejects_paths_outside_private_job(self):
+        from web.app import _zip_directory
+        with tempfile.TemporaryDirectory() as job, \
+                tempfile.TemporaryDirectory() as outside:
+            src = os.path.join(job, 'output')
+            os.mkdir(src)
+            for source, destination in (
+                    (outside, os.path.join(job, 'test.zip')),
+                    (src, os.path.join(outside, 'test.zip'))):
+                with self.subTest(source=source, destination=destination):
+                    with self.assertRaises(ValueError):
+                        _zip_directory(source, destination, job_dir=job)
+                    self.assertFalse(os.path.exists(destination))
 
     def test_run_migration_pipeline_no_file(self):
         from web.app import _run_migration_pipeline

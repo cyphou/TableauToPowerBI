@@ -2501,7 +2501,12 @@ class TableauExtractor:
         repeated_axes = any(
             sum(axis.get('type') == kind for axis in axes) > 1
             for kind in ('x', 'y'))
-        if repeated_axes or panes:
+        # Some Tableau versions identify pane axes by ordinal rather than
+        # type. Explicit synchronization is evidence of an overlay; merely
+        # having two axes (the ordinary X/Y pair) is not.
+        synchronized_axes = len(axes) > 1 and any(
+            axis.get('synchronized') == 'true' for axis in axes)
+        if repeated_axes or panes or synchronized_axes:
             dual_axis['enabled'] = True
             # Check for synchronized axes
             for axis in axes:
@@ -2769,11 +2774,31 @@ class TableauExtractor:
                 if deep_results:
                     # Merge deep data (actual row counts, richer sample rows)
                     deep_map = {}
+                    legacy_map = {}
                     for dr in deep_results:
                         key = dr.get('archive_path', '')
-                        deep_map.setdefault(key, []).append(dr)
+                        if key:
+                            deep_map.setdefault(key, []).append(dr)
+                        else:
+                            # Older readers expose only the basename. Never
+                            # replace an explicit archive path with this
+                            # compatibility lookup, or merge ambiguous names.
+                            legacy_map.setdefault(
+                                dr.get('original_filename', ''), []).append(dr)
                     for entry in hyper_files:
                         matches = deep_map.get(entry.get('path', ''), [])
+                        if not matches:
+                            filename = entry.get('filename', '')
+                            same_name = [
+                                item for item in hyper_files
+                                if item.get('filename') == filename]
+                            named_results = [
+                                item for item in deep_results
+                                if (os.path.basename(item.get('archive_path', ''))
+                                    or item.get('original_filename')) == filename]
+                            if (filename and len(same_name) == 1
+                                    and len(named_results) == 1):
+                                matches = legacy_map.get(filename, [])
                         deep = matches[0] if len(matches) == 1 else None
                         if deep and deep.get('tables'):
                             entry['hyper_reader_tables'] = deep['tables']

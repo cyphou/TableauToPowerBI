@@ -385,17 +385,14 @@ in
         self.assertIn('Table.ReplaceErrorValues', result)
 
     def test_wrap_source_with_try_otherwise(self):
-        """wrap_source_with_try_otherwise wraps Source step."""
+        """The compatibility helper must not mask SQL/navigation failures."""
         m_query = '''let
     Source = Sql.Database("server", "db"),
     #"Nav" = Source{[Schema="dbo", Item="Orders"]}[Data]
 in
     #"Nav"'''
         result = wrap_source_with_try_otherwise(m_query, ['OrderID', 'Sales'])
-        self.assertIn('try', result)
-        self.assertIn('otherwise', result)
-        self.assertIn('"OrderID"', result)
-        self.assertIn('"Sales"', result)
+        self.assertEqual(result, m_query)
 
     def test_wrap_source_no_columns(self):
         """A file-backed Excel failure must not become a successful empty load."""
@@ -408,14 +405,13 @@ in
         self.assertNotIn('otherwise', result)
         self.assertNotIn('#table(', result)
 
-    def test_wrap_non_file_source_no_columns_retains_legacy_empty_table(self):
+    def test_wrap_non_file_source_no_columns_keeps_errors_visible(self):
         m_query = '''let
     Source = Sql.Database("synthetic-server", "synthetic-db")
 in
     Source'''
         result = wrap_source_with_try_otherwise(m_query)
-        self.assertIn('try', result)
-        self.assertIn('#table({}, {})', result)
+        self.assertEqual(result, m_query)
 
     def test_wrap_source_no_match(self):
         """wrap_source_with_try_otherwise returns unchanged if no Source step."""
@@ -426,14 +422,8 @@ in
         result = wrap_source_with_try_otherwise(m_query)
         self.assertEqual(result, m_query)
 
-    def test_wrap_source_escapes_quotes_in_column_names(self):
-        """Column names containing double quotes must be escaped for the M engine.
-
-        An unescaped quote closes the string literal early, so the parser meets
-        an identifier where it expects a separator and reports
-        "Token ',' expected", which makes Power BI Desktop refuse to load the
-        model even though the TMDL itself is well-formed.
-        """
+    def test_wrap_source_ignores_legacy_fallback_columns(self):
+        """Legacy column arguments must not inject a fallback for any source."""
         m_query = '''let
     Source = Csv.Document(File.Contents("data.csv")),
     #"Promoted" = Table.PromoteHeaders(Source)
@@ -444,7 +434,7 @@ in
         self.assertEqual(result, m_query)
         self.assertNotIn('otherwise', result)
 
-        # Non-file sources retain the legacy fallback, including M escaping.
+        # Non-file sources are also preserved verbatim.
         legacy_query = '''let
     Source = Sql.Database("synthetic-server", "synthetic-db"),
     #"Nav" = Source{[Schema="dbo", Item="Synthetic"]}[Data]
@@ -452,11 +442,19 @@ in
     #"Nav"'''
         result = wrap_source_with_try_otherwise(
             legacy_query, ['Revenue "net" total', 'Plain Column'])
-        self.assertIn('"Revenue ""net"" total"', result)
-        self.assertNotIn('"Revenue "net" total"', result)
-        # And no bare quote remains inside the fallback column list.
-        fallback = result[result.index('otherwise'):]
-        self.assertEqual(fallback.count('"') % 2, 0)
+        self.assertEqual(result, legacy_query)
+
+    def test_wrap_source_preserves_authored_try_and_targeted_value_handling(self):
+        for query in (
+            'let\n    Source = try Sql.Database("s", "d") otherwise #table({}, {})\nin Source',
+            'let\n    Source = Sql.Database("s", "d"),\n'
+            '    Parsed = Table.AddColumn(Source, "Value", '
+            'each try Number.FromText([Text]) otherwise null)\nin Parsed',
+            'let\n    Source = error Error.Record("Connection.Error", "offline", [])\nin Source',
+            '',
+        ):
+            with self.subTest(query=query):
+                self.assertEqual(wrap_source_with_try_otherwise(query, ['Ignored']), query)
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•

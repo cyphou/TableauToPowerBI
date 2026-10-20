@@ -95,9 +95,10 @@ class TestImportAll(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_no_datasources_prints_error(self):
-        """import_all with no datasources should print error and return early."""
+        """Missing input must not be reported to the CLI as a successful import."""
         with patch('builtins.print') as mock_print:
-            self.imp.import_all()
+            with self.assertRaisesRegex(ValueError, 'without datasources'):
+                self.imp.import_all()
         calls = [str(c) for c in mock_print.call_args_list]
         error_found = any('[ERROR]' in c for c in calls)
         self.assertTrue(error_found)
@@ -168,16 +169,17 @@ class TestGeneratePowerBIProject(unittest.TestCase):
         # On Windows, os.path.abspath('/custom/out') adds drive letter
         self.assertIn('custom', str(call_kwargs).lower())
 
-    def test_exception_handled_gracefully(self):
+    def test_exception_is_logged_and_propagated(self):
         imp = PowerBIImporter()
         converted = {'datasources': [{'name': 'ds'}]}
         with patch('import_to_powerbi.PowerBIProjectGenerator') as MockGen:
             MockGen.side_effect = Exception('test error')
             with patch('builtins.print') as mock_print:
-                imp.generate_powerbi_project('Report', converted)
+                with self.assertRaisesRegex(Exception, 'test error'):
+                    imp.generate_powerbi_project('Report', converted)
             calls = [str(c) for c in mock_print.call_args_list]
-            warn_found = any('WARN' in c for c in calls)
-            self.assertTrue(warn_found)
+            self.assertTrue(any('[ERROR]' in c for c in calls))
+            self.assertFalse(any('[OK]' in c for c in calls))
 
     def test_passes_calendar_params(self):
         imp = PowerBIImporter()

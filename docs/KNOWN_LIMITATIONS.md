@@ -19,6 +19,41 @@ This document lists known limitations and approximations in the Tableau to Power
 
 ## Generation Limitations
 
+### Windows / Power BI Desktop path lengths
+
+For workbook batch migrations, the orchestrator budgets the full absolute path
+**before generation**, including both occurrences of the workbook name. When
+necessary it chooses a deterministic `P_<hash>` project name and uses that same
+name for the project folder, `.pbip`, `.Report`, `.SemanticModel`, references and
+postprocessing. Table filenames are capped separately; logical table names are
+unchanged. No late `R.Report` rename is performed.
+
+If even that compact identity does not fit, generation fails explicitly: choose
+a shorter `--output-dir` (for example `C:\PBI`). Direct generator/shared-model
+callers must supply a name and root that fit the preflight budget; they are not
+silently renamed. Optional artifacts and staged data may need additional room;
+a final path check is still required. Existing projects are not relocated.
+
+This is **not** extended Windows `\\?\` write support. Such output roots are
+rejected; enabling Windows long paths or adding that prefix does not lift
+Desktop's own limits (files below 260 UTF-16 code units, directories below 248).
+Static path checks do not prove successful native Desktop loading or refresh.
+Filesystem/generation errors, including WinError 206, fail generation rather than
+reporting a partial model as successful. The `.pbip` entry point is written only
+after artifact generation and the final path check; partial artifact directories
+can remain after failure for diagnosis.
+
+Batch resume uses the planned identity, including `P_<hash>`, with compatible
+legacy-name markers accepted only when their actual paths fit. Thin reports use
+their flat report-only layout rather than the nested full-project forecast;
+their actual generated paths are checked before publishing the `.pbip`.
+Single-file completion checkpoints include postprocessing and the final path
+guard. Postprocessing/path failures remove the `.pbip` entry point and prevent
+generation reuse. Resume rechecks actual Desktop paths even with
+`--no-verify-open`; that flag skips the broader static openability suite, not
+path safety. Older single-file generation checkpoints are regenerated once
+(their extraction snapshot can still be reused).
+
 Automatic generation and static validation do not establish rendered parity.
 They also do not establish successful native Desktop loading or refresh.
 `openable=true` is a compatibility name for a static verdict; refresh remains

@@ -7,12 +7,7 @@ these names for backward compatibility.
 """
 
 import logging
-import os
 import re
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
-from m_query_builder import wrap_source_with_try_otherwise  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -134,13 +129,16 @@ def _self_heal_model(model, recovery=None):
       4. Empty table names → skip
       5. Circular relationships → log deactivated
       6. Bare column refs in measures → wrap with MAX()
-      7. M partitions without try/otherwise → wrap for error handling
+      7. M source expressions → preserve (no automatic Source fallback)
       8. Data type / formatString mismatch → fix dataType
       9. Duplicate column names → auto-suffix with _2, _3, ...
       10. Tables with zero columns → add placeholder or remove
       11. Missing relationship endpoints → remove broken relationships
       12. Measures with empty expressions → remove
       13. Cross-table DAX broken refs → hide measure + MigrationNote
+
+    M source errors and authored try/otherwise expressions are left unchanged;
+    no automatic Source fallback is added.
 
     Args:
         model: Complete semantic model dict
@@ -695,31 +693,6 @@ def _self_heal_model(model, recovery=None):
                                     action="Wrapped bare column references in MAX()",
                                     severity='info',
                                     follow_up=f"Review measure '{mname}' — MAX() may not be the best aggregation")
-
-    # 7. M query self-repair — ensure all M partitions have try/otherwise wrapping
-    for t in model.get('model', {}).get('tables', []):
-        tname = t.get('name', '')
-        for part in t.get('partitions', []):
-            src = part.get('source', {})
-            if src.get('type') != 'm':
-                continue
-            m_expr = src.get('expression', '')
-            if not m_expr or 'try' in m_expr:
-                continue  # Already wrapped or empty
-            # Only wrap partitions that have a 'let ... in' structure
-            if 'let' not in m_expr.lower():
-                continue
-            col_names = [c.get('name', '') for c in t.get('columns', []) if c.get('name')]
-            wrapped = wrap_source_with_try_otherwise(m_expr, col_names)
-            if wrapped != m_expr:
-                src['expression'] = wrapped
-                repairs += 1
-                if recovery:
-                    recovery.record('m_query', 'try_otherwise_wrap',
-                                    item_name=tname,
-                                    description=f"M partition for '{tname}' lacks error handling",
-                                    action="Wrapped Source with try...otherwise fallback",
-                                    severity='info')
 
     # 8. Data type / formatString consistency
     #    A numeric formatString on a String column causes PBI Desktop to

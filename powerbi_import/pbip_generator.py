@@ -408,14 +408,15 @@ class PowerBIProjectGenerator:
     """Generates Power BI Project (.pbip) files"""
     
     def __init__(self, output_dir='artifacts/powerbi_projects/'):
-        self.output_dir = os.path.abspath(output_dir)
+        from powerbi_import.desktop_paths import validate_desktop_root
+        # Content-only callers (thin reports) do not create the nested project
+        # layout. Validate that layout only in generate_project, before writes.
+        self.output_dir = validate_desktop_root(output_dir)
         self._relationship_inference_cache = {}
         self._fidelity_preprocess_summary = {}
         self._equivalence_report = None
         self.last_phase_timings = None
         
-        os.makedirs(self.output_dir, exist_ok=True)
-    
     def generate_project(self, report_name, converted_objects, calendar_start=None,
                          calendar_end=None, culture=None, model_mode='import',
                          output_format='pbip', paginated=False, languages=None,
@@ -440,6 +441,10 @@ class PowerBIProjectGenerator:
         from powerbi_import.telemetry import PhaseTimingCollector
 
         phase_timings = PhaseTimingCollector().start()
+        from powerbi_import.desktop_paths import validate_desktop_project
+        # Validate before any artifact is written. The orchestrator chooses a
+        # short identity up front; silently renaming here breaks its helpers.
+        validate_desktop_project(self.output_dir, report_name)
         print(f"\nðŸ”¨ Generating Power BI Project: {report_name}")
         
         # Store options for downstream use
@@ -472,11 +477,11 @@ class PowerBIProjectGenerator:
         # Create project structure
         project_dir = os.path.join(self.output_dir, report_name)
         os.makedirs(project_dir, exist_ok=True)
-        
-        # 1. Create the .pbip file
-        with phase_timings.phase('project_manifest'):
-            pbip_file = self.create_pbip_file(project_dir, report_name)
-        print(f"  âœ“ .pbip file created: {pbip_file}")
+        # The entry point is a completion marker, not an optimistic promise.
+        # Remove a stale marker on regeneration and publish it only at the end.
+        pbip_file = os.path.join(project_dir, f"{report_name}.pbip")
+        if os.path.isfile(pbip_file):
+            os.remove(pbip_file)
         
         # 2. Create the SemanticModel structure
         if self._output_format in ('pbip', 'tmdl'):
@@ -521,6 +526,11 @@ class PowerBIProjectGenerator:
             self._run_equivalence_checks(
                 project_dir, report_name, converted_objects,
             )
+        from powerbi_import.desktop_paths import validate_desktop_tree
+        validate_desktop_tree(project_dir)
+        with phase_timings.phase('project_manifest'):
+            pbip_file = self.create_pbip_file(project_dir, report_name)
+        print(f"  âœ“ .pbip file created: {pbip_file}")
         self.last_phase_timings = phase_timings.finish()
         
         print(f"\nâœ… Power BI Project generated: {project_dir}")
@@ -855,6 +865,7 @@ class PowerBIProjectGenerator:
             print(f"  \u26a0 Error during TMDL generation: {e}")
             import traceback
             traceback.print_exc()
+            raise
     
     def _read_related_month_bindings(self, sm_dir):
         """Find verified month columns behind active, exact date relationships.

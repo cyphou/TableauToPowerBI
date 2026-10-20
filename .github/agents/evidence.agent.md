@@ -16,6 +16,9 @@ You are the **Evidence** agent for the Tableau to Power BI migration project. Yo
 - `powerbi_import/validation_contract.py` — validation contract surface
 - `powerbi_import/qa_suite.py` — real-world QA report card
 - `powerbi_import/corpus_certification.py`, `release_readiness.py`
+- `powerbi_import/desktop_comparison.py` — paired Desktop capture evidence and comparison reports
+- `powerbi_import/local_pixel_comparison.py` — local non-semantic PNG pixel metrics
+- `powerbi_import/report_localization.py` — authored bilingual report interface strings
 
 ### Parity & coverage
 - `powerbi_import/parity_registry.py` — versioned feature parity registry and scoring

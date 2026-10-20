@@ -188,11 +188,12 @@ class TestWriteJson(unittest.TestCase):
 
 
 class TestGeneratorInit(unittest.TestCase):
-    def test_creates_output_dir(self):
-        d = os.path.join(tempfile.mkdtemp(), 'new_subdir')
-        gen = PowerBIProjectGenerator(output_dir=d)
-        self.assertTrue(os.path.isdir(gen.output_dir))
-        shutil.rmtree(d, ignore_errors=True)
+    def test_defers_output_creation_until_layout_validation(self):
+        with tempfile.TemporaryDirectory() as root:
+            d = os.path.join(root, 'new_subdir')
+            gen = PowerBIProjectGenerator(output_dir=d)
+            self.assertEqual(gen.output_dir, os.path.abspath(d))
+            self.assertFalse(os.path.exists(gen.output_dir))
 
 
 # ─── _create_basic_model_bim ────────────────────────────────────────
@@ -3849,8 +3850,8 @@ class TestCreatePaginatedReport(unittest.TestCase):
 class TestCreateTmdlModelError(unittest.TestCase):
     """Error path in create_tmdl_model — try/except with traceback."""
 
-    def test_error_does_not_crash(self):
-        """When TMDL generation raises, should print error not crash."""
+    def test_error_propagates_instead_of_publishing_partial_model(self):
+        """TMDL failure must reach the caller, not produce a false success."""
         gen = _make_generator()
         gen._calendar_start = None
         gen._calendar_end = None
@@ -3863,8 +3864,8 @@ class TestCreateTmdlModelError(unittest.TestCase):
         # Patch tmdl_generator.generate_tmdl to raise an error
         with patch('powerbi_import.pbip_generator.tmdl_generator') as mock_tmdl:
             mock_tmdl.generate_tmdl.side_effect = ValueError('test error')
-            # Should NOT raise — error is caught internally
-            gen.create_tmdl_model(sm_dir, 'Test', {})
+            with self.assertRaisesRegex(ValueError, 'test error'):
+                gen.create_tmdl_model(sm_dir, 'Test', {})
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 

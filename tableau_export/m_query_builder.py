@@ -2131,131 +2131,15 @@ def m_transform_try_otherwise(step_name, expression, fallback_expression):
 
 
 def wrap_source_with_try_otherwise(m_query, empty_table_columns=None):
+    """Compatibility no-op: return the M query unchanged.
+
+    Automatic Source fallbacks used to turn connection/navigation errors into
+    successful empty refreshes. They are no longer injected for any connector.
+    Keep this helper and its signature for existing callers; the legacy
+    ``empty_table_columns`` argument is ignored. Authored ``try`` expressions
+    and targeted value-level error handling are preserved verbatim.
     """
-    Wrap the Source step of an M query with try...otherwise for graceful error handling.
-
-    File-backed Excel/CSV queries and explicit source errors are left unchanged:
-    a missing file or worksheet must remain an error, not a successful empty
-    refresh. Other connectors retain their legacy fallback.
-
-    When the step immediately after Source is a key-based navigation on Source
-    (e.g. ``Source{[Item="Sheet1",Kind="Sheet"]}[Data]``), the navigation step is
-    absorbed into the try block so the fallback replaces the full chain.
-
-    Args:
-        m_query: str — Complete M query (let ... in ...)
-        empty_table_columns: optional list of column name strings for the fallback table
-    Returns:
-        str — Modified M query with Source wrapped in try...otherwise
-    """
-    import re as _re
-
-    if (_re.search(r'\bFile\.Contents\s*\(', m_query, _re.IGNORECASE)
-            and _re.search(r'\b(?:Excel\.Workbook|Csv\.Document)\s*\(', m_query, _re.IGNORECASE)):
-        return m_query
-
-    # Find "Source = ..." line
-    match = _re.search(r'(\n\s*)(Source\s*=\s*)', m_query)
-    if not match:
-        return m_query
-
-    indent = match.group(1)
-    source_assign = match.group(2)
-    after_assign = m_query[match.end():]
-
-    if _re.match(r'\s*error\b', after_assign):
-        return m_query
-
-    # Skip if Source is already wrapped with try...otherwise
-    if after_assign.strip().startswith('try'):
-        return m_query
-
-    # Find the end of the Source expression (next line starting with a step name or 'in')
-    lines = after_assign.split('\n')
-    # Find how many lines belong to the Source expression
-    # Track nesting depth to avoid matching option keys inside [...] or (...)
-    source_lines = []
-    remaining_idx = len(lines)
-    nesting = 0
-    for idx, line in enumerate(lines):
-        stripped = line.strip()
-        # Update nesting based on brackets/parens in this line
-        for ch in line:
-            if ch in ('(', '['):
-                nesting += 1
-            elif ch in (')', ']'):
-                nesting -= 1
-        if idx > 0 and nesting <= 0 and (stripped.startswith('#"') or stripped.startswith('Result')
-                        or stripped == 'in' or _re.match(r'\w+\s*=', stripped)):
-            remaining_idx = idx
-            break
-        source_lines.append(line)
-
-    source_expr = '\n'.join(source_lines).rstrip().rstrip(',')
-    consumed_lines = len(source_lines)
-
-    # Check if the NEXT step is a key-based navigation on Source.
-    # Pattern: <step_name> = Source{[...]}[Data],
-    # If so, absorb it into the try block so the fallback replaces both.
-    nav_step_name = None
-    if remaining_idx < len(lines):
-        next_stripped = lines[remaining_idx].strip()
-        nav_match = _re.match(
-            r'(#"[^"]+"|[\w]+)\s*=\s*Source\s*\{',
-            next_stripped,
-        )
-        if nav_match:
-            nav_step_name = nav_match.group(1)
-            # Find boundaries of the navigation step (it might span multiple lines)
-            nav_lines = []
-            nav_nesting = 0
-            for nav_idx in range(remaining_idx, len(lines)):
-                for ch in lines[nav_idx]:
-                    if ch in ('(', '[', '{'):
-                        nav_nesting += 1
-                    elif ch in (')', ']', '}'):
-                        nav_nesting -= 1
-                nav_lines.append(lines[nav_idx])
-                if nav_nesting <= 0:
-                    break
-
-            nav_expr = '\n'.join(nav_lines).rstrip().rstrip(',')
-            # Combine Source + navigation into a single let...in expression
-            # so the try wraps the full chain
-            source_expr = (
-                f'let\n'
-                f'{indent}        _src = {source_expr.strip()},\n'
-                f'{indent}        _nav = _src' +
-                nav_expr[nav_expr.index('Source') + len('Source'):].strip() +
-                f'\n{indent}    in _nav'
-            )
-            consumed_lines += len(nav_lines)
-            remaining_idx += len(nav_lines)
-
-    remaining_start = len('\n'.join(lines[:consumed_lines]))
-
-    # Build fallback table
-    if empty_table_columns:
-        col_list = ', '.join([f'"{_m_escape_col_name(c)}"' for c in empty_table_columns])
-        fallback = f'#table({{{col_list}}}, {{}})'
-    else:
-        fallback = '#table({}, {})'
-
-    # Check if there are more steps after Source (before 'in')
-    has_more_steps = remaining_idx < len(lines) and lines[remaining_idx].strip() != 'in'
-    trailing = ',' if has_more_steps else ''
-
-    # When we absorbed a navigation step, downstream steps reference nav_step_name
-    # instead of Source. Replace those references with Source.
-    after_text = after_assign[remaining_start:]
-    if nav_step_name:
-        # Replace step references like #"Sheet1 Sheet" or TableName with Source
-        after_text = after_text.replace(nav_step_name, 'Source')
-
-    # Wrap with try...otherwise
-    new_source = f'{indent}{source_assign}try\n{indent}    {source_expr.strip()}\n{indent}otherwise\n{indent}    {fallback}{trailing}'
-
-    return m_query[:match.start()] + new_source + after_text
+    return m_query
 
 
 # ── Hyper data integration ────────────────────────────────────────────────────

@@ -1682,6 +1682,90 @@ class TestLocalSourceErrorRegressions(unittest.TestCase):
         self.assertNotIn("otherwise #table", written)
 
 
+class TestSourceErrorsRemainVisible(unittest.TestCase):
+    """Generated M must propagate connector/navigation errors at refresh."""
+
+    connectors = (
+        ('SQL Server', 'Sql.Database'),
+        ('Oracle', 'Oracle.Database'),
+        ('PostgreSQL', 'PostgreSQL.Database'),
+        ('Snowflake', 'Snowflake.Databases'),
+        ('OData', 'OData.Feed'),
+        ('Web', 'Web.Contents'),
+        ('Excel', 'Excel.Workbook'),
+        ('CSV', 'Csv.Document'),
+    )
+
+    @staticmethod
+    def _connection(connector):
+        return {'type': connector, 'details': {
+            'server': 'unavailable.invalid', 'database': 'missing_database',
+            'service': 'missing_service', 'warehouse': 'missing_warehouse',
+            'url': 'https://example.invalid/data', 'filename': 'missing.csv',
+        }}
+
+    @staticmethod
+    def _table():
+        return {'name': 'Orders', 'source_table': 'MissingOrders', 'columns': [
+            {'name': 'ID', 'datatype': 'integer'},
+        ]}
+
+    def test_build_table_never_wraps_generated_connector_or_navigation_steps(self):
+        from powerbi_import.tmdl_generator import _build_table, generate_power_query_m
+        from tableau_export.m_query_builder import wrap_source_with_try_otherwise
+        for connector, native_function in self.connectors:
+            for mode in ('import', 'directquery', 'composite'):
+                with self.subTest(connector=connector, mode=mode):
+                    connection = self._connection(connector)
+                    table = self._table()
+                    raw = generate_power_query_m(connection, table)
+                    self.assertEqual(wrap_source_with_try_otherwise(raw), raw)
+                    self.assertEqual(wrap_source_with_try_otherwise(
+                        raw, ['Ignored "fallback" column']), raw)
+                    result = _build_table(table, connection, [], [], model_mode=mode)
+                    expr = result['partitions'][0]['source']['expression']
+                    self.assertIn(native_function, expr)
+                    self.assertNotIn('otherwise', expr)
+                    self.assertNotIn('#table(', expr)
+                    self.assertEqual(expr, raw)
+
+    def test_prep_override_preserves_authored_source_try_and_value_try(self):
+        from powerbi_import.tmdl_generator import _build_table, _self_heal_model
+        for expr in (
+            'let\n    Source = Sql.Database("s", "d")\nin Source',
+            'let\n    Source = try Oracle.Database("s") otherwise #table({"ID"}, {})\nin Source',
+            'let\n    Source = Sql.Database("s", "d"),\n'
+            '    Parsed = Table.AddColumn(Source, "Value", '
+            'each try Number.FromText([Text]) otherwise null)\nin Parsed',
+            'let\n    Source = error Error.Record("Connection.Error", "offline", [])\nin Source',
+        ):
+            with self.subTest(expr=expr):
+                table = _build_table(self._table(), self._connection('SQL Server'),
+                                     [], [], m_query_override=expr)
+                _self_heal_model({'model': {'tables': [table], 'relationships': []}})
+                self.assertEqual(table['partitions'][0]['source']['expression'], expr)
+
+    def test_public_generation_persists_native_sources_without_empty_fallback(self):
+        from contextlib import redirect_stdout
+        for connector, native_function in self.connectors[:6]:
+            with self.subTest(connector=connector), tempfile.TemporaryDirectory() as output:
+                datasources = [{
+                    'name': 'SourceDS', 'connection': self._connection(connector),
+                    'tables': [self._table()], 'calculations': [],
+                    'columns': [], 'relationships': [],
+                }]
+                with redirect_stdout(io.StringIO()):
+                    generate_tmdl(datasources, 'Synthetic', None, output)
+                with open(os.path.join(output, 'definition', 'tables', 'Orders.tmdl'),
+                          encoding='utf-8') as stream:
+                    written = stream.read()
+                self.assertIn(native_function, written)
+                self.assertIn('unavailable.invalid' if connector != 'Web'
+                              else 'example.invalid', written)
+                self.assertNotIn('otherwise', written)
+                self.assertNotIn('#table(', written)
+
+
 class TestGenerateTmdl(unittest.TestCase):
     """Integration test for generate_tmdl entry point."""
 

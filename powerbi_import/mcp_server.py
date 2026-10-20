@@ -621,10 +621,14 @@ class MigrationTools:
         project_dir = args.get("project_dir")
         if not project_dir or not os.path.isdir(project_dir):
             return {"ok": False, "error": f"project_dir not found: {project_dir}"}
-        from powerbi_import.migration_quality import build_quality_report
+        from powerbi_import.migration_quality import (
+            build_quality_report, resolve_quality_report_name)
+        try:
+            name = resolve_quality_report_name(project_dir)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
         with tempfile.TemporaryDirectory(prefix="ttpbi_mcp_quality_") as tmp:
             _, converted = _extract_to_dir(args["file"], tmp)
-            name = os.path.splitext(os.path.basename(args["file"]))[0]
             report = build_quality_report(converted, project_dir, name)
             payload = report.to_dict()
         self.report_store["quality"] = payload

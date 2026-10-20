@@ -53,7 +53,6 @@ from m_query_builder import (
     m_transform_filter_values,
     m_transform_filter_nulls,
     m_transform_add_column,
-    wrap_source_with_try_otherwise,
     generate_m_from_hyper,
     map_tableau_to_m_type,
 )
@@ -475,13 +474,14 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
 
 
 def _audit_local_partition_sources(model, output_dir, datasources=None):
-    """Report generated file-source queries that cannot resolve in the PBIP.
+    """Report file-source references that cannot resolve in the PBIP.
 
-    Source M currently wraps some failures in an empty-table fallback.  That
-    keeps a model loadable but can make a missing file or worksheet appear to
-    have loaded successfully.  Audit concrete ``DataFolder`` file references
-    before writing so callers receive a deterministic warning/report without
-    guessing alternate files or worksheets.
+    Audit concrete ``DataFolder`` file references before writing so callers
+    receive a deterministic warning/report without guessing alternate files or
+    worksheets. Source failures must remain visible, not become empty refreshes.
+    For authored overrides these are static diagnostics only: neither stale
+    connection metadata nor a missing optional input proves the query fails
+    (or succeeds) at refresh.
     """
     from pathlib import Path
 
@@ -713,6 +713,12 @@ def _fail_unavailable_local_sources(model, source_issues):
         for partition in table.get('partitions', []):
             source = partition.get('source') or {}
             if source.get('type') != 'm':
+                continue
+            if partition.get('_expression_origin') == 'authored_override':
+                # The caller supplied the complete query. It may intentionally
+                # handle an unavailable input, or not use the old connection at
+                # all. Keep audit diagnostics, but never replace its semantics.
+                # This is provenance-based, not a blanket exemption for `try`.
                 continue
             source['expression'] = error_expression
             logger.warning(
@@ -1714,6 +1720,10 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
             tbl['hyper_identity'] = {
                 key: hyper_identity[key] for key in identity_fields
             }
+            if not m_query_overrides.get(table_name):
+                for partition in tbl.get('partitions', []):
+                    if partition.get('source', {}).get('type') == 'm':
+                        partition['_expression_origin'] = 'generated_hyper'
 
         # Sprint 109: If this is a hyper/extract table with no Prep override,
         # try to inject inline data from extracted .hyper files
@@ -2688,13 +2698,6 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         if m_steps:
             m_query = inject_m_steps(m_query, m_steps)
 
-        # Wrap Source step with try...otherwise for graceful error handling
-        # Exact Hyper identities must fail until staged, never turn a pending
-        # export (or a failed staged CSV load) into a successful empty table.
-        if not _has_exact_hyper_identity(table.get('hyper_identity')):
-            col_names = [c.get('name', '') for c in columns if c.get('name')]
-            m_query = wrap_source_with_try_otherwise(m_query, col_names)
-
         if (not m_query_override
                 and connection.get('type', '').lower() in ('hyper', 'extract', 'dataengine')):
             # The legacy Hyper metadata-only fallback (and its otherwise
@@ -2759,6 +2762,12 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         partition = {
             "name": f"Partition-{table_name}",
             "mode": partition_mode,
+            # Internal provenance only; writers serialize known TMDL properties.
+            # Preserve this through transformations so source auditing cannot
+            # mistake an authored query for a generated connection expression.
+            "_expression_origin": (
+                "authored_override" if m_query_override else "generated"
+            ),
             "source": {
                 "type": "m",
                 "expression": m_query,

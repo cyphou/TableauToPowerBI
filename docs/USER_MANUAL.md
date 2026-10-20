@@ -167,6 +167,22 @@ evidence outside the source repository when it contains customer information.
 
 Static validation is intentionally conservative. It must not claim Desktop or Fabric success unless those environments actually supplied evidence.
 
+### Power Query source errors
+
+Generation and self-healing do not add `try ... otherwise #table(...)` around
+`Source`, for any connector (including SQL Server, Oracle and file sources).
+Connection, authentication and navigation failures remain refresh errors in
+Power BI instead of becoming successful empty loads. Configure credentials,
+gateway access and the exact source objects before refreshing.
+
+Existing authored M `try` expressions and targeted value conversions/regex
+error handling are preserved. The legacy Python helper
+`wrap_source_with_try_otherwise(m_query, empty_table_columns=None)` remains
+importable but returns the query unchanged; its column argument is ignored.
+This change does not rewrite already generated projects or remove independent
+unsupported-connector placeholders. Regenerate a project to remove previously
+automatic guards, or review its existing M manually.
+
 ### Tableau and Power BI screenshots (optional local diagnostic)
 
 The paired Desktop diagnostic is included in the source tree, separate from

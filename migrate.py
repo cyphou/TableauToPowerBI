@@ -641,6 +641,18 @@ def _run_fabric_generation(report_name=None, output_dir=None, source_dir=None,
         return False
 
 
+def _desktop_project_name(basename, output_dir=None, output_format='pbip'):
+    """Choose one identity for generation, references and ALL postprocessors."""
+    if output_format == 'fabric':
+        return basename
+    from powerbi_import.desktop_paths import plan_desktop_project_name
+    root = output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    name = plan_desktop_project_name(root, basename)
+    if name != basename:
+        print(f"  Path budget: project name shortened: {basename} → {name}")
+    return name
+
+
 def run_generation(report_name=None, output_dir=None, calendar_start=None,
                    calendar_end=None, culture=None, model_mode='import',
                    output_format='pbip', paginated=False, languages=None,
@@ -1544,6 +1556,12 @@ def _run_batch_config(args):
         paginated = entry.get('paginated', getattr(args, 'paginated', False))
 
         file_results = {}
+        try:
+            basename = _desktop_project_name(basename, out_dir)
+        except ValueError as exc:
+            results[raw_file] = {'success': False, 'error': str(exc)}
+            logger.error("Output path planning failed for %s: %s", raw_file, exc)
+            continue
 
         # Extract
         if not skip:
@@ -1804,6 +1822,14 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     if _is_prep_standalone:
         return _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, display_name)
 
+    # This name is then used unchanged by staging, generation, reports,
+    # partition repairs, quality checks and metadata paths.
+    try:
+        basename = _desktop_project_name(basename, workbook_output_dir, output_format)
+    except ValueError as exc:
+        return {'success': False, 'error': str(exc), 'report_name': basename,
+                'output_dir': workbook_output_dir}
+
     file_results = {}
     extracted_objects = {}
 
@@ -1883,7 +1909,8 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         _restrict_file_partitions_to_model(project_dir, basename)
         _sync_final_calendar_source_expressions(project_dir, basename)
         _export_power_query_files(project_dir, basename)
-        _shorten_report_artifact_path(project_dir, basename)
+        if output_format != 'fabric':
+            _shorten_report_artifact_path(project_dir, basename)
 
     if file_results.get('generation') and verify_open:
         project_dir = os.path.join(workbook_output_dir, basename)
@@ -2428,9 +2455,33 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             bn = os.path.splitext(os.path.basename(twb))[0]
             rel = os.path.relpath(os.path.dirname(twb), batch_dir)
             out_base = os.path.join(migrated_root, rel) if rel != '.' else migrated_root
-            pbip_path = os.path.join(out_base, bn, f'{bn}.pbip')
-            fabric_model = os.path.join(out_base, bn, f'{bn}.SemanticModel')
-            completed_path = fabric_model if output_format == 'fabric' else pbip_path
+            try:
+                planned = (
+                    bn if os.path.splitext(twb)[1].lower() in ('.tfl', '.tflx')
+                    else _desktop_project_name(bn, out_base, output_format)
+                )
+            except ValueError:
+                # Let the isolated worker report an impossible output path.
+                filtered.append(twb)
+                continue
+            # Prefer the identity generation uses. Retain marker compatibility
+            # for outputs predating name planning, but never skip an unsafe tree.
+            completed_path = None
+            for identity in dict.fromkeys((planned, bn)):
+                project = os.path.join(out_base, identity)
+                pbip_path = os.path.join(project, f'{identity}.pbip')
+                marker = (os.path.join(project, f'{identity}.SemanticModel')
+                          if output_format == 'fabric' else pbip_path)
+                if not os.path.exists(marker):
+                    continue
+                if output_format != 'fabric':
+                    from powerbi_import.desktop_paths import DesktopPathError, validate_desktop_tree
+                    try:
+                        validate_desktop_tree(project)
+                    except DesktopPathError:
+                        continue
+                completed_path = marker
+                break
             state_key = os.path.relpath(twb, batch_dir)
             state = checkpoint.get(state_key, {})
             checkpoint_valid = (
@@ -2438,10 +2489,10 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 and state.get('source_signature') == _source_signature(twb)
                 and state.get('config_signature') == checkpoint_config
             )
-            if checkpoint_valid and os.path.exists(completed_path):
+            if checkpoint_valid and completed_path:
                 logger.info("Resume: skipping already-completed %s", bn)
                 _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': pbip_path})
-            elif not checkpoint and os.path.exists(completed_path):
+            elif not checkpoint and completed_path:
                 # Backward-compatible fallback for batches created before checkpoints.
                 logger.info("Resume: skipping legacy completed %s", bn)
                 _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': pbip_path,
@@ -2568,6 +2619,17 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         """Isolate setup and migration failures to this workbook."""
         extract_dir = task.get('extract_dir')
         try:
+            # Plan before extraction as well: its per-workbook directory used
+            # to repeat the full source filename under .migration_extract.
+            if os.path.splitext(task['tableau_file'])[1].lower() not in ('.tfl', '.tflx'):
+                original = task['basename']
+                task['basename'] = _desktop_project_name(
+                    original, task['workbook_output_dir'], task['output_format'])
+                if extract_dir and original != task['basename']:
+                    extract_dir = os.path.join(
+                        os.path.dirname(extract_dir),
+                        task['basename'] + os.path.splitext(task['tableau_file'])[1])
+                    task['extract_dir'] = extract_dir
             if extract_dir:
                 os.makedirs(extract_dir, exist_ok=True)
                 _extract_dir_local.path = extract_dir
@@ -5887,7 +5949,8 @@ def _run_quality_report(args, source_basename):
     """Run the unified post-generation quality report."""
     try:
         from powerbi_import.migration_quality import (
-            add_ai_summary, apply_desktop_probe, build_quality_report)
+            add_ai_summary, apply_desktop_probe, build_quality_report,
+            resolve_quality_report_name)
 
         extracted = {}
         json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
@@ -5903,8 +5966,9 @@ def _run_quality_report(args, source_basename):
         out_base = args.output_dir or os.path.join(
             'artifacts', 'powerbi_projects', 'migrated')
         project_dir = os.path.join(out_base, source_basename)
+        report_name = resolve_quality_report_name(project_dir)
         report = build_quality_report(
-            extracted, project_dir, source_basename,
+            extracted, project_dir, report_name,
             source_path=getattr(args, 'tableau_file', None),
             checkpoint_path=os.path.join(
                 os.path.dirname(project_dir),
@@ -6540,6 +6604,12 @@ def _run_single_inspection(args):
     if not assessment and not parity:
         out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
         project_dir = os.path.join(out_base, source_basename)
+        # Preserve inspection of existing legacy projects; only look up the
+        # planned identity if the original directory is absent.
+        if not os.path.isdir(project_dir):
+            source_basename = _desktop_project_name(
+                source_basename, out_base, getattr(args, 'output_format', 'pbip'))
+            project_dir = os.path.join(out_base, source_basename)
         if not os.path.isdir(project_dir):
             print(f"Error: Quality inspection requires an existing project: {project_dir}")
             print("Generate projects with --batch DIR first; inspection never generates a project.")
@@ -8910,8 +8980,8 @@ def _route_spatial_partitions(project_dir, source_basename):
     if not folder or not os.path.isdir(folder):
         return stats
     block = _re.compile(
-        r'Source\s*=\s*try\s+Json\.Document\(File\.Contents\(DataFolder\s*&\s*"\\{0,2}([^"]+)"\)\)'
-        r'\s+otherwise\s+#table\(\{([^}]*)\},\s*\{\s*\}\),')
+        r'Source\s*=\s*(?:try\s+)?Json\.Document\(File\.Contents\(DataFolder\s*&\s*"\\{0,2}([^"]+)"\)\)'
+        r'(?:\s+otherwise\s+#table\(\{([^}]*)\},\s*\{\s*\}\))?,')
     csv_names = None
     headers = None
     for tmdl in _glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
@@ -8932,7 +9002,24 @@ def _route_spatial_partitions(project_dir, source_basename):
         ref_path = os.path.join(folder, ref)
         if ext != '.shp' and os.path.isfile(ref_path):
             continue  # a real GeoJSON file loads as generated
-        expected = [c.replace('""', '"') for c in _re.findall(r'"((?:[^"]|"")*)"', match.group(2))]
+        # New queries have no Source fallback. Read their declared property
+        # names from the generated expansion step, not from a synthetic table.
+        # Still recognize legacy generated partitions for existing projects.
+        property_names = match.group(2)
+        if property_names is None:
+            properties = _re.search(
+                r'#"Expanded properties"\s*=\s*Table\.ExpandRecordColumn\('
+                r'#"Expanded Column1",\s*"properties",\s*\{((?:"(?:[^"]|"")*"|\s|,)*)\}\)',
+                content[match.end():])
+            if not properties:
+                continue
+            property_names = properties.group(1)
+        expected = [c.replace('""', '"') for c in _re.findall(r'"((?:[^"]|"")*)"', property_names)]
+        if match.group(2) is None and _re.search(
+                r'#"Renamed Geometry"\s*=\s*Table\.RenameColumns\('
+                r'#"Geometry to Text",\s*\{\{"geometry",\s*"Geometry"\}\}\)',
+                content[match.end():]):
+            expected.append('Geometry')
         chosen = None
         dbf = os.path.splitext(ref_path)[0] + '.dbf'
         if ext == '.shp' and os.path.isfile(dbf):
@@ -8965,7 +9052,7 @@ def _route_spatial_partitions(project_dir, source_basename):
         if not chosen or not types:
             stats['unresolved'] += 1
             logger.warning("Spatial source '%s' has no readable file or matching extract; "
-                           "table stays empty", ref)
+                           "source remains unresolved", ref)
             continue
         line_start = content.rfind('\n', 0, match.start()) + 1
         indent = content[line_start:match.start()]
@@ -8995,41 +9082,19 @@ def _route_spatial_partitions(project_dir, source_basename):
     if stats['spatial']:
         print(f"  🗺️  Spatial sources: {stats['spatial']} checked, {stats['shapefile_csv']} "
               f"shapefile(s) read from .dbf, {stats['extract_csv']} served by their extract, "
-              f"{stats['unresolved']} left empty")
+              f"{stats['unresolved']} unresolved")
     return stats
 
 
 def _shorten_report_artifact_path(project_dir, source_basename):
-    """Shorten only the PBIR folder when Desktop's MAX_PATH limit is exceeded."""
-    import json as _json
-    report_dir = os.path.join(project_dir, f'{source_basename}.Report')
-    if not os.path.isdir(report_dir):
-        return False
-    paths = [os.path.join(root, name)
-             for root, _dirs, files in os.walk(report_dir)
-             for name in files]
-    if not any(len(path) >= 260 for path in paths):
-        return False
-    short_name = 'R.Report'
-    short_dir = os.path.join(project_dir, short_name)
-    if os.path.exists(short_dir):
-        shutil.rmtree(short_dir)
-    os.replace(report_dir, short_dir)
-    pbip_path = os.path.join(project_dir, f'{source_basename}.pbip')
-    try:
-        with open(pbip_path, 'r', encoding='utf-8') as stream:
-            manifest = _json.load(stream)
-        for artifact in manifest.get('artifacts', []):
-            report = artifact.get('report')
-            if report and report.get('path') == f'{source_basename}.Report':
-                report['path'] = short_name
-        with open(pbip_path, 'w', encoding='utf-8') as stream:
-            _json.dump(manifest, stream, indent=2, ensure_ascii=False)
-    except (OSError, ValueError) as exc:
-        logger.warning("Could not update PBIP report path after shortening: %s", exc)
-        return False
-    print(f"  📏 Shortened report artifact path: {source_basename}.Report → {short_name}")
-    return True
+    """Compatibility hook: validate final paths, never rename artifacts late.
+
+    Naming is now planned before generation for both Report and SemanticModel.
+    Late renaming cannot repair WinError 206 and breaks basename-based helpers.
+    """
+    from powerbi_import.desktop_paths import validate_desktop_tree
+    validate_desktop_tree(project_dir)
+    return False
 
 
 def _stage_declared_local_sources(source_path, project_dir, source_dir=None):
@@ -9583,7 +9648,8 @@ def _extract_twbx_data_files(args, source_basename):
     _restrict_file_partitions_to_model(project_dir, source_basename)
     _sync_final_calendar_source_expressions(project_dir, source_basename)
     _export_power_query_files(project_dir, source_basename)
-    _shorten_report_artifact_path(project_dir, source_basename)
+    if getattr(args, 'output_format', 'pbip') != 'fabric':
+        _shorten_report_artifact_path(project_dir, source_basename)
 
 
 def _run_post_generation_reports(args, source_basename, results):
@@ -9924,6 +9990,12 @@ def _run_single_migration(args):
     # Step 1: Extraction
     source_basename = os.path.splitext(os.path.basename(args.tableau_file))[0]
     out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+    try:
+        source_basename = _desktop_project_name(
+            source_basename, out_base, getattr(args, 'output_format', 'pbip'))
+    except ValueError as exc:
+        logger.error("Output path planning failed: %s", exc)
+        return ExitCode.GENERAL_ERROR
     checkpoint_path = os.path.join(
         out_base, f'.{source_basename}.migration_checkpoint.json')
     checkpoint_config = {
@@ -9944,6 +10016,38 @@ def _run_single_migration(args):
         source_signature,
         MigrationCheckpoint.hash_config(checkpoint_config),
     )
+    project_dir = os.path.join(out_base, source_basename)
+    pbip_path = os.path.join(project_dir, f'{source_basename}.pbip')
+
+    def _generation_failed(exc):
+        # The generator publishes its entry point before CLI postprocessing.
+        # Do not leave that marker advertising an incomplete/unsafe project.
+        if os.path.isfile(pbip_path):
+            os.remove(pbip_path)
+        checkpoint.mark('generation', 'failed', error=str(exc))
+        results['generation'] = False
+        progress.fail("Generation or final output validation failed")
+        logger.error("Generation/postprocessing failed: %s", exc)
+
+    reuse_generation = (
+        not args.dry_run
+        and getattr(args, 'resume', False)
+        and checkpoint.completed('generation')
+        # Old checkpoints were written BEFORE postprocessing. They cannot
+        # establish that a complete project exists, even with verify-open off.
+        and checkpoint.stages.get('generation', {}).get('postprocessed') is True
+        and (os.path.isdir(os.path.join(project_dir, f'{source_basename}.SemanticModel'))
+             if getattr(args, 'output_format', 'pbip') == 'fabric'
+             else os.path.isfile(pbip_path))
+    )
+    if reuse_generation and getattr(args, 'output_format', 'pbip') != 'fabric':
+        from powerbi_import.desktop_paths import DesktopPathError, validate_desktop_tree
+        try:
+            validate_desktop_tree(project_dir)
+        except DesktopPathError as exc:
+            _generation_failed(exc)
+            reuse_generation = False
+
     extract_snapshot = f'{checkpoint_path}.extract'
     checkpoint_reused = (
         getattr(args, 'resume', False)
@@ -10022,42 +10126,43 @@ def _run_single_migration(args):
         results['generation'] = True
         progress.start("Generating Power BI project")
         progress.complete("Dry run — skipped")
-    elif (getattr(args, 'resume', False)
-          and checkpoint.completed('generation')
-          and os.path.isdir(os.path.join(out_base, source_basename))):
+    elif reuse_generation:
+        # Downstream optional steps must finish again before completion is
+        # committed; an interrupted/failed attempt must not remain complete.
+        checkpoint.mark('generation', 'running')
         results['generation'] = True
         progress.start("Generating Power BI project")
         progress.complete(f"Resume — reused generated {source_basename}")
     else:
         progress.start("Generating Power BI project")
-        _stage_declared_local_sources(
-            args.tableau_file, os.path.join(out_base, source_basename))
-        results['generation'] = run_generation(
-            report_name=source_basename,
-            output_dir=args.output_dir,
-            calendar_start=args.calendar_start,
-            calendar_end=args.calendar_end,
-            culture=args.culture,
-            model_mode=args.mode,
-            output_format=args.output_format,
-            paginated=getattr(args, 'paginated', False),
-            languages=getattr(args, 'languages', None),
-            composite_threshold=getattr(args, 'composite_threshold', None),
-            agg_tables=getattr(args, 'agg_tables', 'none'),
-            incremental_refresh=getattr(args, 'incremental_refresh', False),
-            incremental_refresh_months=getattr(args, 'incremental_refresh_months', 12),
-            parameterize=getattr(args, 'parameterize', True),
-            optimize_dax=getattr(args, 'optimize_dax', False),
-            time_intelligence=getattr(args, 'time_intelligence', 'none'),
-        )
-        if results['generation']:
-            checkpoint.mark(
-                'generation', output_dir=os.path.join(out_base, source_basename))
-            progress.complete(f"Generated {source_basename}")
-            # Extract embedded data files from TWBX into PBI output
+        checkpoint.mark('generation', 'running')
+        try:
+            _stage_declared_local_sources(args.tableau_file, project_dir)
+            results['generation'] = run_generation(
+                report_name=source_basename,
+                output_dir=args.output_dir,
+                calendar_start=args.calendar_start,
+                calendar_end=args.calendar_end,
+                culture=args.culture,
+                model_mode=args.mode,
+                output_format=args.output_format,
+                paginated=getattr(args, 'paginated', False),
+                languages=getattr(args, 'languages', None),
+                composite_threshold=getattr(args, 'composite_threshold', None),
+                agg_tables=getattr(args, 'agg_tables', 'none'),
+                incremental_refresh=getattr(args, 'incremental_refresh', False),
+                incremental_refresh_months=getattr(args, 'incremental_refresh_months', 12),
+                parameterize=getattr(args, 'parameterize', True),
+                optimize_dax=getattr(args, 'optimize_dax', False),
+                time_intelligence=getattr(args, 'time_intelligence', 'none'),
+            )
+            if not results['generation']:
+                raise RuntimeError("Generation failed")
             _extract_twbx_data_files(args, source_basename)
-        else:
-            progress.fail("Generation failed")
+            progress.complete(f"Generated and postprocessed {source_basename}")
+        except Exception as exc:
+            _generation_failed(exc)
+            return ExitCode.GENERAL_ERROR
 
     # Step 3: Incremental merge (optional)
     if getattr(args, 'incremental', None) and results.get('generation'):
@@ -10283,6 +10388,17 @@ def _run_single_migration(args):
             monitor.flush()
         except Exception as exc:
             logger.warning("Monitoring error: %s", exc)
+
+    # Unconditional final Desktop budget check, including optional artifacts
+    # and resumed output. --no-verify-open only skips the openability suite.
+    if results.get('generation') and not args.dry_run:
+        try:
+            if getattr(args, 'output_format', 'pbip') != 'fabric':
+                _shorten_report_artifact_path(project_dir, source_basename)
+            checkpoint.mark('generation', output_dir=project_dir, postprocessed=True)
+        except Exception as exc:
+            _generation_failed(exc)
+            return ExitCode.GENERAL_ERROR
 
     # Final report
     all_success = _print_migration_summary(results, report_summary, start_time)

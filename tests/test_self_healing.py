@@ -523,7 +523,7 @@ class TestVisualFallbackInContainer(unittest.TestCase):
 # ════════════════════════════════════════════════════════════════════
 
 class TestMQuerySelfRepair(unittest.TestCase):
-    """Test M query try/otherwise wrapping in self-heal."""
+    """Self-heal must not conceal source errors or rewrite authored M."""
 
     def _make_model_with_m_partition(self, m_expr, col_names=None):
         return {'model': {
@@ -540,13 +540,25 @@ class TestMQuerySelfRepair(unittest.TestCase):
             'relationships': [],
         }}
 
-    def test_unwrapped_partition_gets_wrapped(self):
+    def test_connector_and_navigation_errors_remain_visible(self):
         from powerbi_import.tmdl_generator import _self_heal_model
-        m = 'let\n    Source = Sql.Database("server", "db"),\n    T = Source{[Name="dbo"]}[Data]\nin\n    T'
-        model = self._make_model_with_m_partition(m)
-        repairs = _self_heal_model(model)
-        expr = model['model']['tables'][0]['partitions'][0]['source']['expression']
-        self.assertIn('try', expr)
+        for source in (
+            'Sql.Database("server", "db")',
+            'Oracle.Database("server:1521/service")',
+            'PostgreSQL.Database("server", "db")',
+            'Snowflake.Databases("server", "warehouse")',
+            'OData.Feed("https://example.invalid/feed")',
+            'Json.Document(Web.Contents("https://example.invalid/data"))',
+            'Excel.Workbook(File.Contents("missing.xlsx"))',
+            'Csv.Document(File.Contents("missing.csv"))',
+            'error Error.Record("Connection.Error", "offline", [])',
+        ):
+            with self.subTest(source=source):
+                m = f'let\n    Source = {source},\n    T = Source{{[Name="dbo"]}}[Data]\nin\n    T'
+                model = self._make_model_with_m_partition(m)
+                _self_heal_model(model)
+                expr = model['model']['tables'][0]['partitions'][0]['source']['expression']
+                self.assertEqual(expr, m)
 
     def test_already_wrapped_not_double_wrapped(self):
         from powerbi_import.tmdl_generator import _self_heal_model
@@ -554,7 +566,17 @@ class TestMQuerySelfRepair(unittest.TestCase):
         model = self._make_model_with_m_partition(m)
         repairs = _self_heal_model(model)
         expr = model['model']['tables'][0]['partitions'][0]['source']['expression']
-        self.assertEqual(expr.count('try'), 1)
+        self.assertEqual(expr, m)
+
+    def test_targeted_cast_handling_is_preserved(self):
+        from powerbi_import.tmdl_generator import _self_heal_model
+        m = ('let\n    Source = Sql.Database("s", "d"),\n'
+             '    Parsed = Table.AddColumn(Source, "Value", '
+             'each try Number.FromText([Text]) otherwise null)\nin Parsed')
+        model = self._make_model_with_m_partition(m)
+        _self_heal_model(model)
+        self.assertEqual(
+            model['model']['tables'][0]['partitions'][0]['source']['expression'], m)
 
     def test_non_let_expression_not_wrapped(self):
         from powerbi_import.tmdl_generator import _self_heal_model
@@ -564,7 +586,7 @@ class TestMQuerySelfRepair(unittest.TestCase):
         expr = model['model']['tables'][0]['partitions'][0]['source']['expression']
         self.assertNotIn('try', expr)
 
-    def test_recovery_report_records_wrap(self):
+    def test_recovery_report_does_not_claim_source_wrapping(self):
         from powerbi_import.tmdl_generator import _self_heal_model
         from powerbi_import.recovery_report import RecoveryReport
         m = 'let\n    Source = Sql.Database("s", "d")\nin\n    Source'
@@ -572,8 +594,9 @@ class TestMQuerySelfRepair(unittest.TestCase):
         recovery = RecoveryReport("Test")
         _self_heal_model(model, recovery=recovery)
         m_repairs = [r for r in recovery.repairs if r['category'] == 'm_query']
-        self.assertTrue(len(m_repairs) >= 1)
-        self.assertEqual(m_repairs[0]['repair_type'], 'try_otherwise_wrap')
+        self.assertFalse(any(r['repair_type'] == 'try_otherwise_wrap' for r in m_repairs))
+        self.assertEqual(
+            model['model']['tables'][0]['partitions'][0]['source']['expression'], m)
 
 
 # ════════════════════════════════════════════════════════════════════

@@ -36,6 +36,7 @@ CLI_ENTRY = "migrate.py"
 DECLARED_ENTRY_POINTS = {
     "powerbi_import.api_server": "Dockerfile",
     "powerbi_import.desktop_feedback_healing": "scripts/probe_projects.py",
+    "powerbi_import.desktop_comparison": "scripts/compare_desktop_reports.py",
     "powerbi_import.mcp_server": "powerbi_import/mcp_server.py",
     "powerbi_import.notebook_api": "powerbi_import/notebook_api.py",
     "powerbi_import.plugin_sdk": "examples/plugins",
