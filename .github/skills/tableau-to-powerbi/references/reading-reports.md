@@ -13,11 +13,18 @@ HTML reports; here's how to interpret them.
 - Each check has `severity` (pass/info/warn/fail), a `detail`, and a
   `recommendation`. Act on `warn`/`fail` first.
 
-## QA report card (`--qa`)
+## Real-world QA report card (MCP `qa`)
 
-- Runs against the generated `.pbip`. Checks: no stray sentinels, no empty
-  visuals, format coverage, zones matched, no orphan filters.
-- `error`-severity failures are CI-gating; `warning` are advisory.
+- Runs against an existing generated `.pbip`; pass its `project_dir` and,
+  optionally, its `extraction_dir` to the MCP `qa` tool. The `qa FOLDER`
+  shortcut performs batch migration and does not run this report card.
+- Checks for stray sentinels, empty visuals, visual data-well contract issues,
+  format coverage, dashboard zones, and orphan filters. The first three checks
+  report errors; the remaining checks report warnings. The tool returns a
+  report but does not gate batch migration or CI.
+- The legacy `--qa` and `--qa-strict` flags are not available through the
+  supported batch-only CLI workflow. Batch migration instead writes its
+  unified quality JSON/HTML reports and batch summary.
 
 ## Remediation report (v44)
 

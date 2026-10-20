@@ -1454,7 +1454,7 @@ class TestIntegrationSetsCombinedGroupsBins(unittest.TestCase):
         })
 
     def test_combined_group_cross_table_via_generate(self):
-        """L1812-1815: combined group with field from different table → RELATED()."""
+        """Unproved cross-table uniqueness must fail, not invent a scalar key."""
         # Need a second table for cross-table
         datasources = [
             {
@@ -1490,7 +1490,9 @@ class TestIntegrationSetsCombinedGroupsBins(unittest.TestCase):
         }
         tmp = tempfile.mkdtemp()
         try:
-            generate_tmdl(datasources, 'test', extra, tmp)
+            with self.assertRaisesRegex(
+                    ValueError, "Combined group 'CrossGrp'.*unambiguous active to-one source"):
+                generate_tmdl(datasources, 'test', extra, tmp)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

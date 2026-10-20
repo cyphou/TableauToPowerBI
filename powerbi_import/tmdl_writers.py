@@ -143,7 +143,8 @@ def _write_tmdl_files(model_data, output_dir):
         )
     else:
         _write_expressions_tmdl(def_dir, tables, datasources=model_data.get('_datasources'),
-                                incremental_params=model_data.get('_incremental_params'))
+                                incremental_params=model_data.get('_incremental_params'),
+                                expressions=model.get('expressions'))
 
     # 5. roles.tmdl
     if roles:
@@ -709,6 +710,9 @@ def _write_model_tmdl(def_dir, model, tables, roles=None, relationships=None):
     # Ref the storage expression used by every table partition.
     expression_name = 'DatabaseQuery' if model.get('defaultMode') == 'directLake' else 'DataFolder'
     lines.append(f"ref expression {expression_name}")
+    for expression in model.get('expressions', []):
+        if expression.get('name') and expression['name'] != expression_name:
+            lines.append(f"ref expression {_quote_name(expression['name'])}")
     lines.append("")
 
     # Ref roles (RLS)
@@ -781,7 +785,8 @@ def _common_ancestor(dirs):
     return '/'.join(shared)
 
 
-def _write_expressions_tmdl(def_dir, tables, datasources=None, incremental_params=None):
+def _write_expressions_tmdl(def_dir, tables, datasources=None, incremental_params=None,
+                            expressions=None):
     """Generate expressions.tmdl with M parameters.
 
     Creates parameterized data source expressions:
@@ -872,6 +877,28 @@ def _write_expressions_tmdl(def_dir, tables, datasources=None, incremental_param
         for param_name, param_expr in incremental_params:
             lines.append(f'expression {param_name} = {param_expr}')
             lines.append("")
+
+    for expression in expressions or []:
+        name = expression.get('name')
+        if not name or expression.get('kind', 'm').lower() != 'm':
+            continue
+        body = expression.get('expression', '')
+        if isinstance(body, list):
+            body = '\n'.join(body)
+        lines.append(f'expression {_quote_name(name)} =')
+        # A shared expression's metadata lives at depth one. Its multiline M
+        # value must be deeper, so the following annotation terminates the
+        # expression rather than becoming another token in the M program.
+        # Keep this contract aligned with post-serialization Calendar syncing.
+        lines.extend('\t\t' + line for line in body.splitlines())
+        if expression.get('_calendar_source_table'):
+            # Persist the exact binding for post-serialization source repairs.
+            # JSON handles dots, apostrophes and Unicode without inferring
+            # identity from an expression name or a sanitized table filename.
+            lines.append('\tannotation Migration_CalendarSourceTable = '
+                         + json.dumps(expression['_calendar_source_table'],
+                                      ensure_ascii=False))
+        lines.append("")
 
     content = '\n'.join(lines) + '\n'
 
@@ -1291,8 +1318,11 @@ def _write_column(lines, column):
         _write_column_properties(lines, column)
 
         source_col = column.get('sourceColumn', col_name)
-        source_col_quoted = _quote_name(source_col) if re.search(r'[^a-zA-Z0-9_]', source_col) else source_col
-        lines.append(f"\t\tsourceColumn: {source_col_quoted}")
+        # This is a source binding string, not an object identifier. Match
+        # Desktop's own serializer: `sourceColumn: Order Date`. Added single
+        # OR double quotes can survive Desktop schema refresh as literal
+        # source-column characters, renaming columns and dropping relationships.
+        lines.append(f"\t\tsourceColumn: {source_col}")
         _write_column_flags(lines, column)
 
 

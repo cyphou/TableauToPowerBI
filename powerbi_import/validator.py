@@ -318,7 +318,6 @@ class ArtifactValidator:
         (r'\bZN\s*\(', 'ZN (use IF(ISBLANK(...)))'),
         (r'\bIFNULL\s*\(', 'IFNULL (use IF(ISBLANK(...)))'),
         (r'\bATTR\s*\(', 'ATTR (use VALUES)'),
-        (r'(?<![<>!])={2}(?!=)', 'Double-equals == (use single =)'),
         (r'\bELSEIF\b', 'ELSEIF (use nested IF)'),
         (r'(?<!\{)\{(?:FIXED|INCLUDE|EXCLUDE)\s', 'LOD expression {FIXED/INCLUDE/EXCLUDE}'),
         (r'\bDATETRUNC\s*\(', 'DATETRUNC (use STARTOF*)'),

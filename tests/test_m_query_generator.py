@@ -2,7 +2,10 @@
 Tests for powerbi_import.m_query_generator — sample data M query generation.
 """
 
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from powerbi_import.m_query_generator import (
     generate_m_query_from_datasource,
@@ -13,7 +16,166 @@ from powerbi_import.m_query_generator import (
     generate_json_query,
     generate_sample_data_query,
     get_column_type_mapping,
+    extract_m_partitions_from_tmdl,
+    export_final_power_query_files,
+    sync_final_calendar_source_expressions,
 )
+
+
+class TestFinalPowerQueryExport(unittest.TestCase):
+    """Exports are literal final partitions, never reconstructed M queries."""
+
+    EXPRESSION = (
+        'let\n'
+        '    // a source comment containing let / in and \\\\ escapes\n'
+        '    Source = let\n'
+        '        Source = Csv.Document(File.Contents(DataFolder & "\\\\facts.csv"), '
+        '[Delimiter=";", Encoding=65001, QuoteStyle=QuoteStyle.Csv])\n'
+        '    in Source,\n'
+        '    Aliases = Table.DuplicateColumn(Source, "Label", "Label (other.csv)"),\n'
+        '    Result = Table.SelectColumns(Aliases, {"Label", "Label (other.csv)"}, MissingField.UseNull)\n'
+        'in\n'
+        '    Result'
+    )
+
+    def partition(self, name, expression, fenced=False):
+        source = "\t\tsource = ```\n" if fenced else "\t\tsource =\n"
+        body = "\n".join("\t\t\t\t" + line for line in expression.splitlines())
+        return (f"\tpartition '{name}' = m\n\t\tmode: import\n" + source
+                + body + ("\n\t\t```" if fenced else "") + "\n")
+
+    def test_nested_fenced_and_unfenced_partitions_preserve_literal_m(self):
+        for fenced in (False, True):
+            with self.subTest(fenced=fenced):
+                content = ("table Facts\n"
+                           + self.partition("Owner''s source", self.EXPRESSION, fenced)
+                           + "\tannotation PBI_ResultType = Table\n")
+                self.assertEqual(extract_m_partitions_from_tmdl(content),
+                                 [("Owner's source", self.EXPRESSION)])
+
+    def test_multiple_inline_partitions_ignore_non_m_and_stop_at_metadata(self):
+        content = (
+            "table Facts\n"
+            "\tpartition Calculated = calculated\n\t\tsource = ROW(\"x\", 1)\n"
+            "\tpartition First = m\n\t\tsource = #table({\"x\"}, {{1}})\n"
+            "\tannotation End = true\n"
+            + self.partition("Second", self.EXPRESSION))
+        self.assertEqual(extract_m_partitions_from_tmdl(content), [
+            ("First", '#table({"x"}, {{1}})'), ("Second", self.EXPRESSION)])
+
+    def test_exports_all_partitions_without_colliding_with_real_table_names(self):
+        with tempfile.TemporaryDirectory() as root:
+            definition = Path(root, "Synthetic.SemanticModel", "definition")
+            tables = definition / "tables"
+            tables.mkdir(parents=True)
+            (tables / "Facts.tmdl").write_text(
+                "table Facts\n" + self.partition("One", self.EXPRESSION)
+                + self.partition("Two", "let x = 2 in x"), encoding="utf-8-sig")
+            (tables / "Facts__partition_2.tmdl").write_text(
+                "table Facts__partition_2\n" + self.partition("One", "let x = 3 in x"),
+                encoding="utf-8")
+            shared = 'expression DataFolder = "C:\\\\synthetic"\n'
+            (definition / "expressions.tmdl").write_text(shared, encoding="utf-8-sig")
+            self.assertEqual(export_final_power_query_files(root, "Synthetic"), 4)
+            exports = {p.name: p.read_text(encoding="utf-8")
+                       for p in Path(root, "PowerQuery").glob("*.pq")}
+            self.assertEqual(exports, {
+                "Facts.pq": self.EXPRESSION, "Facts__partition_2.pq": "let x = 3 in x",
+                "Facts__partition_3.pq": "let x = 2 in x",
+                "_expressions.pq": shared.strip()})
+            # The second invocation must read the new on-disk final partition.
+            corrected = self.EXPRESSION.replace('Delimiter=";"', 'Delimiter="|"')
+            (tables / "Facts.tmdl").write_text(
+                "table Facts\n" + self.partition("One", corrected)
+                + self.partition("Two", "let x = 2 in x"), encoding="utf-8")
+            self.assertEqual(export_final_power_query_files(root, "Synthetic"), 4)
+            self.assertEqual(Path(root, "PowerQuery", "Facts.pq").read_text(encoding="utf-8"),
+                             corrected)
+
+    def test_read_failure_propagates_without_partially_overwriting_exports(self):
+        with tempfile.TemporaryDirectory() as root:
+            tables = Path(root, "Synthetic.SemanticModel", "definition", "tables")
+            tables.mkdir(parents=True)
+            for name in ("A", "B"):
+                (tables / f"{name}.tmdl").write_text(
+                    f"table {name}\n" + self.partition("One", self.EXPRESSION),
+                    encoding="utf-8")
+            export_final_power_query_files(root, "Synthetic")
+            destination = Path(root, "PowerQuery", "A.pq")
+            destination.write_text("previous successful export", encoding="utf-8")
+            read_text = Path.read_text
+
+            def fail_second(path, *args, **kwargs):
+                if path.name == "B.tmdl":
+                    raise OSError("synthetic read failure")
+                return read_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", fail_second):
+                with self.assertRaisesRegex(OSError, "synthetic read failure"):
+                    export_final_power_query_files(root, "Synthetic")
+            self.assertEqual(destination.read_text(encoding="utf-8"), "previous successful export")
+
+    def test_missing_model_is_a_noop(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(export_final_power_query_files(root, "Synthetic"), 0)
+            self.assertFalse(Path(root, "PowerQuery").exists())
+
+    def test_calendar_sync_uses_exact_json_provenance_not_expression_or_filename(self):
+        import json
+        with tempfile.TemporaryDirectory() as root:
+            definition = Path(root, "Synthetic.SemanticModel", "definition")
+            tables = definition / "tables"
+            tables.mkdir(parents=True)
+            name = "Owner's.fact é"
+            (tables / "shortened_hash.tmdl").write_text(
+                "table 'Owner''s.fact é'\n" + self.partition("One", self.EXPRESSION),
+                encoding="utf-8")
+            unrelated = 'expression \'Calendar Source decoy\' =\r\n\t"unchanged"\r\n'
+            annotation = "\tannotation Migration_CalendarSourceTable = " + json.dumps(name, ensure_ascii=False)
+            shared = definition / "expressions.tmdl"
+            original = (unrelated + "\r\nexpression 'Private unrelated name' =\r\n"
+                        "\tlet old = 1 in old\r\n" + annotation
+                        + "\r\n\tannotation Keep = preserved\r\n")
+            shared.write_bytes(b"\xef\xbb\xbf" + original.encode("utf-8"))
+            self.assertEqual(sync_final_calendar_source_expressions(root, "Synthetic"), 1)
+            updated = shared.read_bytes()
+            self.assertTrue(updated.startswith(b"\xef\xbb\xbf"))
+            text = updated.decode("utf-8-sig")
+            self.assertIn(unrelated, text)
+            self.assertIn(annotation, text)
+            self.assertIn("\tannotation Keep = preserved\r\n", text)
+            self.assertIn("\t\t" + self.EXPRESSION.replace("\n", "\r\n\t\t"), text)
+            from tests.test_tmdl_dates import _read_shared_expressions
+            self.assertEqual(
+                _read_shared_expressions(text)["Private unrelated name"], self.EXPRESSION)
+            self.assertNotIn("let old = 1", text)
+            self.assertEqual(sync_final_calendar_source_expressions(root, "Synthetic"), 0)
+            self.assertEqual(shared.read_bytes(), updated)
+
+    def test_invalid_or_ambiguous_calendar_provenance_fails_before_any_write(self):
+        for annotation, duplicate_table in (
+            ('"Missing"', False), ('{"not": "a string"}', False),
+            ('"Facts"', True), ('not-json', False),
+        ):
+            with self.subTest(annotation=annotation, duplicate_table=duplicate_table):
+                with tempfile.TemporaryDirectory() as root:
+                    definition = Path(root, "Synthetic.SemanticModel", "definition")
+                    tables = definition / "tables"
+                    tables.mkdir(parents=True)
+                    body = "table Facts\n" + self.partition("One", self.EXPRESSION)
+                    (tables / "Facts.tmdl").write_text(body, encoding="utf-8")
+                    if duplicate_table:
+                        (tables / "Duplicate.tmdl").write_text(body, encoding="utf-8")
+                    shared = definition / "expressions.tmdl"
+                    original = (
+                        'expression Good =\n\tlet x = 0 in x\n'
+                        '\tannotation Migration_CalendarSourceTable = "Facts"\n'
+                        'expression Invalid =\n\tlet x = 0 in x\n'
+                        '\tannotation Migration_CalendarSourceTable = ' + annotation + "\n")
+                    shared.write_text(original, encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        sync_final_calendar_source_expressions(root, "Synthetic")
+                    self.assertEqual(shared.read_text(encoding="utf-8"), original)
 
 
 class TestGenerateSqlQuery(unittest.TestCase):

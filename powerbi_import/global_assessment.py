@@ -37,6 +37,11 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 try:
+    from powerbi_import.report_localization import text, render, attributes, selector, script
+except ImportError:
+    from report_localization import text, render, attributes, selector, script
+
+try:
     from powerbi_import.shared_model import (
         MergeAssessment,
         assess_merge,
@@ -494,13 +499,14 @@ def generate_global_html_report(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Global Assessment — Merge Analysis</title>
+<title {attributes(text("Global Assessment — Merge Analysis", "Évaluation globale — Analyse de fusion"))}>Global Assessment — Merge Analysis</title>
 <style>{get_report_css()}</style>
 </head>
 <body>
+{selector()}
 <div class="report-header">
-    <h1>Global Assessment — Cross-Workbook Merge Analysis</h1>
-    <div class="subtitle">{n} workbooks analyzed</div>
+    <h1>{render(text("Global Assessment — Cross-Workbook Merge Analysis", "Évaluation globale — Analyse de fusion entre classeurs"))}</h1>
+    <div class="subtitle">{render(text(f"{n} workbooks analyzed", f"{n} classeurs analysés"))}</div>
     <div class="meta">
         <span>&#128197; {now}</span>
         <span>&#9881; v{_esc(tool_version)}</span>
@@ -516,43 +522,41 @@ def generate_global_html_report(
     iso_count = len(result.isolated_workbooks)
     clustered_count = sum(len(c.workbooks) for c in result.merge_clusters)
 
-    html += """
+    html += f"""
 <div class="section-header" onclick="toggleSection('exec')">
     <span class="section-icon">&#128200;</span>
-    <h2>Executive Summary</h2>
+    <h2>{render(text("Executive Summary", "Synthèse"))}</h2>
     <span class="toggle-arrow" id="exec-arrow">&#9660;</span>
 </div>
 <div class="section-body" id="exec">
 """
     html += '<div class="stat-grid">'
-    html += f'<div class="stat-card accent-blue"><div class="stat-value">{n}</div><div class="stat-label">Workbooks</div></div>'
-    html += f'<div class="stat-card accent-blue"><div class="stat-value">{result.total_tables}</div><div class="stat-label">Total Tables</div></div>'
-    html += f'<div class="stat-card accent-purple"><div class="stat-value">{result.total_measures}</div><div class="stat-label">Total Measures</div></div>'
-    html += f'<div class="stat-card accent-success"><div class="stat-value">{merge_count}</div><div class="stat-label">Merge Clusters</div></div>'
-    html += f'<div class="stat-card accent-success"><div class="stat-value">{clustered_count}</div><div class="stat-label">Workbooks in Clusters</div></div>'
-    html += f'<div class="stat-card"><div class="stat-value">{iso_count}</div><div class="stat-label">Isolated Workbooks</div></div>'
+    html += f'<div class="stat-card accent-blue"><div class="stat-value">{n}</div><div class="stat-label">{render(text("Workbooks", "Classeurs"))}</div></div>'
+    html += f'<div class="stat-card accent-blue"><div class="stat-value">{result.total_tables}</div><div class="stat-label">{render(text("Total Tables", "Total des tables"))}</div></div>'
+    html += f'<div class="stat-card accent-purple"><div class="stat-value">{result.total_measures}</div><div class="stat-label">{render(text("Total Measures", "Total des mesures"))}</div></div>'
+    html += f'<div class="stat-card accent-success"><div class="stat-value">{merge_count}</div><div class="stat-label">{render(text("Merge Clusters", "Groupes de fusion"))}</div></div>'
+    html += f'<div class="stat-card accent-success"><div class="stat-value">{clustered_count}</div><div class="stat-label">{render(text("Workbooks in Clusters", "Classeurs regroupés"))}</div></div>'
+    html += f'<div class="stat-card"><div class="stat-value">{iso_count}</div><div class="stat-label">{render(text("Isolated Workbooks", "Classeurs isolés"))}</div></div>'
     html += '</div>'
     # Recommendation summary
     if merge_count:
         html += '<div class="card" style="margin-top:15px">'
-        html += '<h3>Recommended Actions</h3><ul>'
+        html += f'<h3>{render(text("Recommended Actions", "Actions recommandées"))}</h3><ul>'
         for cluster in result.merge_clusters:
             wbs = ", ".join(f"<strong>{_esc(w)}</strong>" for w in cluster.workbooks)
             html += (f'<li>{_rec_badge(cluster.recommendation)} &nbsp; '
                      f'{wbs} &nbsp; '
-                     f'(score: {cluster.avg_score}/100, '
-                     f'{len(cluster.shared_tables)} shared tables)</li>')
+                     f'{render(text(f"(score: {cluster.avg_score}/100, {len(cluster.shared_tables)} shared tables)", f"(score : {cluster.avg_score}/100, {len(cluster.shared_tables)} tables partagées)"))}</li>')
         if result.isolated_workbooks:
             iso_list = ", ".join(
                 f"<strong>{_esc(w)}</strong>" for w in result.isolated_workbooks
             )
             html += (f'<li><span class="isolated-tag">STANDALONE</span> &nbsp; '
-                     f'{iso_list} &nbsp; (migrate individually)</li>')
+                     f'{iso_list} &nbsp; {render(text("(migrate individually)", "(migrer individuellement)"))}</li>')
         html += '</ul></div>'
     else:
         html += ('<div class="card" style="margin-top:15px"><p>'
-                 'No merge clusters detected — all workbooks should be '
-                 'migrated individually.</p></div>')
+                 f'{render(text("No merge clusters detected — all workbooks should be migrated individually.", "Aucun groupe de fusion détecté — tous les classeurs doivent être migrés individuellement."))}</p></div>')
     html += '</div>'
 
     # ══════════════════════════════════════════════════════════
@@ -561,16 +565,16 @@ def generate_global_html_report(
     html += f"""
 <div class="section-header" onclick="toggleSection('inv')">
     <span class="section-icon">&#128214;</span>
-    <h2>Workbook Inventory</h2>
+    <h2>{render(text("Workbook Inventory", "Inventaire des classeurs"))}</h2>
     <span class="toggle-arrow" id="inv-arrow">&#9660;</span>
 </div>
 <div class="section-body" id="inv">
 <div class="card">
 <table>
 <tr>
-    <th>Workbook</th><th>Connectors</th><th>Tables</th><th>Columns</th>
-    <th>Measures</th><th>Calc Columns</th><th>Relationships</th>
-    <th>Worksheets</th><th>Dashboards</th><th>Status</th>
+    <th>{render(text("Workbook", "Classeur"))}</th><th>{render(text("Connectors", "Connecteurs"))}</th><th>{render(text("Tables", "Tables"))}</th><th>{render(text("Columns", "Colonnes"))}</th>
+    <th>{render(text("Measures", "Mesures"))}</th><th>{render(text("Calc Columns", "Colonnes calculées"))}</th><th>{render(text("Relationships", "Relations"))}</th>
+    <th>{render(text("Worksheets", "Feuilles"))}</th><th>{render(text("Dashboards", "Tableaux de bord"))}</th><th>{render(text("Status", "Statut"))}</th>
 </tr>
 """
     # Pre-compute which workbooks are clustered
@@ -588,9 +592,9 @@ def generate_global_html_report(
         ) or "—"
         if p.name in clustered_set:
             cid = wb_cluster_map[p.name] + 1
-            status = f'<span class="success-tag">Cluster #{cid}</span>'
+            status = f'<span class="success-tag">{render(text(f"Cluster #{cid}", f"Groupe n° {cid}"))}</span>'
         else:
-            status = '<span class="isolated-tag">Standalone</span>'
+            status = f'<span class="isolated-tag">{render(text("Standalone", "Autonome"))}</span>'
         html += f"""<tr>
     <td><strong>{_esc(p.name)}</strong></td>
     <td>{conn_html}</td>
@@ -603,7 +607,7 @@ def generate_global_html_report(
 
     # Totals
     html += f"""<tr style="background:#e8f0fe;font-weight:bold">
-    <td>TOTAL</td><td></td>
+    <td>{render(text("TOTAL", "TOTAL"))}</td><td></td>
     <td>{sum(p.tables for p in profiles)}</td>
     <td>{sum(p.columns for p in profiles)}</td>
     <td>{sum(p.measures for p in profiles)}</td>
@@ -622,7 +626,7 @@ def generate_global_html_report(
         html += f"""
 <div class="section-header" onclick="toggleSection('matrix')">
     <span class="section-icon">&#127922;</span>
-    <h2>Pairwise Merge Score Matrix</h2>
+    <h2>{render(text("Pairwise Merge Score Matrix", "Matrice des scores de fusion par paire"))}</h2>
     <span class="toggle-arrow" id="matrix-arrow">&#9660;</span>
 </div>
 <div class="section-body" id="matrix">
@@ -648,6 +652,7 @@ def generate_global_html_report(
                         bg = _score_bg(ps.merge_score)
                         html += (f'<td class="matrix-cell" '
                                  f'style="background:{bg}" '
+                                 f'{attributes(text(f"{name_a} <-> {name_b}: {ps.shared_tables} shared tables", f"{name_a} <-> {name_b} : {ps.shared_tables} tables partagées"), "title")} '
                                  f'title="{_esc(name_a)} &lt;-&gt; '
                                  f'{_esc(name_b)}: '
                                  f'{ps.shared_tables} shared tables">'
@@ -657,10 +662,7 @@ def generate_global_html_report(
             html += '</tr>'
         html += '</table>'
         html += ('<p style="font-size:0.8em;color:#a19f9d;margin-top:8px">'
-                 'Green = merge recommended (60+) &nbsp;|&nbsp; '
-                 'Yellow = partial merge (30-59) &nbsp;|&nbsp; '
-                 'Red = keep separate (&lt;30) &nbsp;|&nbsp; '
-                 'Hover for details</p>')
+                 f'{render(text("Green = merge recommended (60+) | Yellow = partial merge (30-59) | Red = keep separate (<30) | Hover for details", "Vert = fusion recommandée (60+) | Jaune = fusion partielle (30-59) | Rouge = conserver séparément (<30) | Survolez pour les détails"))}</p>')
         html += '</div></div>'
 
     # ══════════════════════════════════════════════════════════
@@ -670,7 +672,7 @@ def generate_global_html_report(
         html += f"""
 <div class="section-header" onclick="toggleSection('clusters')">
     <span class="section-icon">&#128279;</span>
-    <h2>Merge Clusters</h2>
+    <h2>{render(text("Merge Clusters", "Groupes de fusion"))}</h2>
     <span class="toggle-arrow" id="clusters-arrow">&#9660;</span>
 </div>
 <div class="section-body" id="clusters">
@@ -678,14 +680,14 @@ def generate_global_html_report(
         for cluster in result.merge_clusters:
             border_class = cluster.recommendation
             html += f'<div class="cluster-card {border_class}">'
-            html += (f'<h3 style="margin-top:0">Cluster #{cluster.cluster_id + 1} '
+            html += (f'<h3 style="margin-top:0">{render(text(f"Cluster #{cluster.cluster_id + 1}", f"Groupe n° {cluster.cluster_id + 1}"))} '
                      f'— {_rec_badge(cluster.recommendation)} '
-                     f'&nbsp; avg score: '
+                     f'&nbsp; {render(text("avg score:", "score moyen :"))} '
                      f'<span style="color:{_score_color(cluster.avg_score)}">'
                      f'{cluster.avg_score}/100</span></h3>')
 
             # Workbooks in cluster
-            html += '<p><strong>Workbooks:</strong> '
+            html += f'<p><strong>{render(text("Workbooks:", "Classeurs :"))}</strong> '
             html += " ".join(
                 f'<span class="connector-tag">{_esc(w)}</span>'
                 for w in cluster.workbooks
@@ -694,7 +696,7 @@ def generate_global_html_report(
 
             # Shared tables
             if cluster.shared_tables:
-                html += '<p><strong>Shared tables:</strong> '
+                html += f'<p><strong>{render(text("Shared tables:", "Tables partagées :"))}</strong> '
                 html += ", ".join(
                     f'<span class="success-tag">{_esc(t)}</span>'
                     for t in cluster.shared_tables
@@ -708,7 +710,7 @@ def generate_global_html_report(
             )
             cmd = (f'python migrate.py --shared-model {wbs_arg} '
                    f'--model-name "Cluster{cluster.cluster_id + 1}Model"')
-            html += f'<p style="margin-top:10px"><strong>Run:</strong></p>'
+            html += f'<p style="margin-top:10px"><strong>{render(text("Run:", "Exécuter :"))}</strong></p>'
             html += f'<div class="cmd-box">{_esc(cmd)}</div>'
 
             # Cluster merge details (if assessment available)
@@ -718,9 +720,9 @@ def generate_global_html_report(
                 # Merge candidates table
                 if a.merge_candidates:
                     html += ('<table class="detail-table">'
-                             '<tr><th>Table</th><th>Workbooks</th>'
-                             '<th>Column Overlap</th>'
-                             '<th>Conflicts</th></tr>')
+                             f'<tr><th>{render(text("Table", "Table"))}</th><th>{render(text("Workbooks", "Classeurs"))}</th>'
+                             f'<th>{render(text("Column Overlap", "Recoupement des colonnes"))}</th>'
+                             f'<th>{render(text("Conflicts", "Conflits"))}</th></tr>')
                     for mc in a.merge_candidates:
                         wb_list = ", ".join(s[0] for s in mc.sources)
                         conflict_html = ""
@@ -731,7 +733,7 @@ def generate_global_html_report(
                             )
                         else:
                             conflict_html = ('<span class="success-tag">'
-                                             'None</span>')
+                                             f'{render(text("None", "Aucun"))}</span>')
                         html += (f'<tr><td><strong>{_esc(mc.table_name)}'
                                  f'</strong></td>'
                                  f'<td>{_esc(wb_list)}</td>'
@@ -741,10 +743,10 @@ def generate_global_html_report(
 
                 # Measure conflicts
                 if a.measure_conflicts:
-                    html += '<h4 style="margin-top:12px">Measure Conflicts</h4>'
+                    html += f'<h4 style="margin-top:12px">{render(text("Measure Conflicts", "Conflits de mesures"))}</h4>'
                     html += ('<table class="detail-table">'
-                             '<tr><th>Measure</th><th>Workbook</th>'
-                             '<th>Formula</th></tr>')
+                             f'<tr><th>{render(text("Measure", "Mesure"))}</th><th>{render(text("Workbook", "Classeur"))}</th>'
+                             f'<th>{render(text("Formula", "Formule"))}</th></tr>')
                     for mc in a.measure_conflicts:
                         first = True
                         for wb, formula in mc.variants.items():
@@ -768,12 +770,12 @@ def generate_global_html_report(
                 # Stats line
                 html += (f'<p style="font-size:0.85em;color:{PBI_GRAY};'
                          f'margin-top:10px">'
-                         f'Measures deduped: {a.measure_duplicates_removed} '
+                         f'{render(text("Measures deduped:", "Mesures dédupliquées :"))} {a.measure_duplicates_removed} '
                          f'&nbsp;|&nbsp; '
-                         f'Relationships deduped: '
+                         f'{render(text("Relationships deduped:", "Relations dédupliquées :"))} '
                          f'{a.relationship_duplicates_removed} '
                          f'&nbsp;|&nbsp; '
-                         f'Parameters deduped: '
+                         f'{render(text("Parameters deduped:", "Paramètres dédupliqués :"))} '
                          f'{a.parameter_duplicates_removed}</p>')
                 html += '</div>'
 
@@ -788,16 +790,15 @@ def generate_global_html_report(
         html += f"""
 <div class="section-header" onclick="toggleSection('isolated')">
     <span class="section-icon">&#128683;</span>
-    <h2>Isolated Workbooks</h2>
+    <h2>{render(text("Isolated Workbooks", "Classeurs isolés"))}</h2>
     <span class="toggle-arrow" id="isolated-arrow">&#9660;</span>
 </div>
 <div class="section-body" id="isolated">
 <div class="card">
-<p>These workbooks share no tables with others and should be migrated
-individually.</p>
+<p>{render(text("These workbooks share no tables with others and should be migrated individually.", "Ces classeurs ne partagent aucune table avec les autres et doivent être migrés individuellement."))}</p>
 <table class="detail-table">
-<tr><th>Workbook</th><th>Tables</th><th>Measures</th><th>Worksheets</th>
-    <th>Connectors</th><th>Command</th></tr>
+<tr><th>{render(text("Workbook", "Classeur"))}</th><th>{render(text("Tables", "Tables"))}</th><th>{render(text("Measures", "Mesures"))}</th><th>{render(text("Worksheets", "Feuilles"))}</th>
+    <th>{render(text("Connectors", "Connecteurs"))}</th><th>{render(text("Command", "Commande"))}</th></tr>
 """
         for wb_name in result.isolated_workbooks:
             p = next(
@@ -825,14 +826,14 @@ individually.</p>
         html += f"""
 <div class="section-header" onclick="toggleSection('pairs')">
     <span class="section-icon">&#128295;</span>
-    <h2>Pairwise Detail</h2>
+    <h2>{render(text("Pairwise Detail", "Détail par paire"))}</h2>
     <span class="toggle-arrow" id="pairs-arrow">&#9660;</span>
 </div>
 <div class="section-body" id="pairs">
 <div class="card">
 <table>
-<tr><th>Workbook A</th><th>Workbook B</th><th>Score</th>
-    <th>Shared Tables</th><th>Recommendation</th></tr>
+<tr><th>{render(text("Workbook A", "Classeur A"))}</th><th>{render(text("Workbook B", "Classeur B"))}</th><th>{render(text("Score", "Score"))}</th>
+    <th>{render(text("Shared Tables", "Tables partagées"))}</th><th>{render(text("Recommendation", "Recommandation"))}</th></tr>
 """
         for ps in sorted(result.pairwise_scores,
                          key=lambda x: x.merge_score, reverse=True):
@@ -851,15 +852,16 @@ individually.</p>
     # ══════════════════════════════════════════════════════════
     html += f"""
 <div class="report-footer">
-    Tableau &#8594; Power BI Migration Tool v{_esc(tool_version)} &nbsp;|&nbsp;
-    Global Assessment generated: {now} &nbsp;|&nbsp;
-    {n} workbooks analyzed
+    {render(text("Tableau → Power BI Migration Tool", "Outil de migration Tableau → Power BI"))} v{_esc(tool_version)} &nbsp;|&nbsp;
+    {render(text("Global Assessment generated:", "Évaluation globale générée le :"))} {now} &nbsp;|&nbsp;
+    {render(text(f"{n} workbooks analyzed", f"{n} classeurs analysés"))}
 </div>
 
 </div><!-- /.container -->
 
 <script>
 {get_report_js()}
+{script()}
 </script>
 </body>
 </html>"""
@@ -1112,6 +1114,11 @@ def generate_governance_report(
     # Build wave summary from server assessment
     total_effort = 0
     wave_data = []
+    wave_labels = {
+        "Easy (quick wins)": text("Easy (quick wins)", "Facile (gains rapides)"),
+        "Medium (standard migration)": text("Medium (standard migration)", "Moyen (migration standard)"),
+        "Complex (manual review recommended)": text("Complex (manual review recommended)", "Complexe (examen manuel recommandé)"),
+    }
     if server_assessment:
         for wave in getattr(server_assessment, 'waves', []):
             label = getattr(wave, 'label', '')
@@ -1119,8 +1126,9 @@ def generate_governance_report(
             effort = getattr(wave, 'total_effort', 0)
             total_effort += effort
             wave_data.append([
-                f'Wave {getattr(wave, "wave_number", "?")}',
-                esc(label), str(count), f'{effort:.1f}h',
+                render(text(f'Wave {getattr(wave, "wave_number", "?")}',
+                            f'Vague {getattr(wave, "wave_number", "?")}')),
+                render(wave_labels.get(label, label)), str(count), f'{effort:.1f}h',
             ])
 
     # Risk matrix
@@ -1129,47 +1137,47 @@ def generate_governance_report(
     red = getattr(server_assessment, 'red_count', 0) if server_assessment else 0
 
     now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-    html = html_open('Migration Governance Report',
-                     f'{total} workbooks analyzed', now_str)
+    html = html_open(text('Migration Governance Report', 'Rapport de gouvernance de migration'),
+                     text(f'{total} workbooks analyzed', f'{total} classeurs analysés'), now_str)
 
     # Executive Summary
-    html += section_open('exec-summary', 'Executive Summary')
+    html += section_open('exec-summary', text('Executive Summary', 'Synthèse'))
     html += stat_grid([
-        stat_card('Total Workbooks', str(total)),
-        stat_card('Merge Clusters', str(len(clusters)), accent='teal'),
-        stat_card('Standalone', str(len(isolated)), accent='purple'),
-        stat_card('Estimated Effort', f'{total_effort:.0f}h', accent='orange'),
+        stat_card(str(total), text('Total Workbooks', 'Total des classeurs')),
+        stat_card(str(len(clusters)), text('Merge Clusters', 'Groupes de fusion'), accent='teal'),
+        stat_card(str(len(isolated)), text('Standalone', 'Autonomes'), accent='purple'),
+        stat_card(f'{total_effort:.0f}h', text('Estimated Effort', 'Effort estimé'), accent='orange'),
     ])
     html += section_close()
 
     # Risk Matrix
-    html += section_open('risk-matrix', 'Risk Matrix')
+    html += section_open('risk-matrix', text('Risk Matrix', 'Matrice des risques'))
     risk_rows = [
-        [badge('GREEN (ready)', 'green'), str(green),
+        [badge(text('GREEN (ready)', 'GREEN (prêt)'), 'green'), str(green),
          f'{green / max(total, 1) * 100:.0f}%'],
-        [badge('YELLOW (review)', 'yellow'), str(yellow),
+        [badge(text('YELLOW (review)', 'YELLOW (à examiner)'), 'yellow'), str(yellow),
          f'{yellow / max(total, 1) * 100:.0f}%'],
-        [badge('RED (complex)', 'red'), str(red),
+        [badge(text('RED (complex)', 'RED (complexe)'), 'red'), str(red),
          f'{red / max(total, 1) * 100:.0f}%'],
     ]
-    html += data_table(['Status', 'Count', 'Percentage'], risk_rows)
+    html += data_table([text('Status', 'Statut'), text('Count', 'Nombre'), text('Percentage', 'Pourcentage')], risk_rows)
     html += section_close()
 
     # Migration Waves
-    html += section_open('migration-waves', 'Migration Waves')
+    html += section_open('migration-waves', text('Migration Waves', 'Vagues de migration'))
     if wave_data:
-        html += data_table(['Wave', 'Label', 'Workbooks', 'Effort'], wave_data,
+        html += data_table([text('Wave', 'Vague'), text('Label', 'Libellé'), text('Workbooks', 'Classeurs'), text('Effort', 'Effort')], wave_data,
                            sortable=True)
     else:
-        html += '<p>No wave data available</p>\n'
+        html += f'<p>{render(text("No wave data available", "Aucune donnée de vague disponible"))}</p>\n'
     html += section_close()
 
     # Model Consolidation
-    html += section_open('consolidation', 'Model Consolidation')
+    html += section_open('consolidation', text('Model Consolidation', 'Consolidation des modèles'))
     cluster_rows = []
     for c in clusters:
         cluster_rows.append([
-            f'Cluster {c.cluster_id}',
+            render(text(f'Cluster {c.cluster_id}', f'Groupe {c.cluster_id}')),
             esc(', '.join(c.workbooks)),
             str(len(c.shared_tables)),
             f'{c.avg_score:.0f}',
@@ -1177,10 +1185,10 @@ def generate_governance_report(
         ])
     if cluster_rows:
         html += data_table(
-            ['Cluster', 'Workbooks', 'Shared Tables', 'Avg Score', 'Recommendation'],
+            [text('Cluster', 'Groupe'), text('Workbooks', 'Classeurs'), text('Shared Tables', 'Tables partagées'), text('Avg Score', 'Score moyen'), text('Recommendation', 'Recommandation')],
             cluster_rows, sortable=True)
     else:
-        html += '<p>No merge clusters detected</p>\n'
+        html += f'<p>{render(text("No merge clusters detected", "Aucun groupe de fusion détecté"))}</p>\n'
     html += section_close()
 
     html += html_close()

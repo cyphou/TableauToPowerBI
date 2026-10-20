@@ -18,34 +18,37 @@ Reference documentation for the Tableau to Power BI migration engine.
 - [ROADMAP.md](ROADMAP.md) — Release gates, verified evidence, and active semantic-validation work
 - [WINDOWS_APP.md](WINDOWS_APP.md) — Portable Windows application, EXE build, and runtime requirements
 - [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) — Fabric deployment and client-side Desktop opening validation
+- [SERVER_MIGRATION_GUIDE.md](SERVER_MIGRATION_GUIDE.md) — Server/Cloud migration and optional official Tableau MCP evidence
 
 ## Quick Reference
 
 ### CLI Commands
 
 ```bash
-python migrate.py migrate file.twbx
+python migrate.py batch ./workbooks --output-dir /tmp/out
 python migrate.py assess file.twbx
 python migrate.py batch dir/ --output-dir /tmp/out
 python migrate.py server https://tableau.example "Sales Dashboard"
 python migrate.py merge wb1.twbx wb2.twbx
-python migrate.py fabric file.twbx
-python migrate.py deploy file.twbx WORKSPACE_ID
-python migrate.py qa file.twbx
+python migrate.py fabric dir/ --output-dir /tmp/fabric-out
+# Deploy generated projects separately with the MCP deploy tool (preview first).
+python migrate.py qa ./workbooks
 python migrate.py quality file.twbx
 python migrate.py parity file.twbx
 python migrate.py portfolio ./workbooks
-python migrate.py plan file.twbx
+python migrate.py plan https://tableau.example
 python migrate.py lineage ./prep_flows
-python migrate.py package file.twbx
+python migrate.py package ./workbooks
 ```
 
-Use `python migrate.py quality file.twbx` for the combined assessment, parity,
-data, interface, and openability report. Add `--quality-policy report|enterprise|production`
+Use `python migrate.py quality file.twbx` after migrating the workbook to
+inspect the combined assessment, parity, data, interface, and openability report.
+`plan` requires a Tableau Server/Cloud URL. Add `--quality-policy report|enterprise|production`
 to control escalation of static semantic diagnostics and unresolved lineage.
 Use `python migrate.py --help` for the
-concise command list; existing flag-based automation remains compatible through
-`python migrate.py --advanced-help`.
+concise command list. Supported flag-based automation remains available through
+batch mode; direct single-file project generation has been retired.
+`python migrate.py --advanced-help` lists advanced and legacy options.
 
 Semantic-context checks for converted LOD expressions are available through
 `powerbi_import.semantic_execution_validator`. They are static diagnostics only;
@@ -54,11 +57,14 @@ executor and records bounded DAX query evidence as `not_run`, `passed`, or
 `failed`. The unified quality report continues to label live semantic execution
 as `not_run` until an authorized execution environment supplies evidence.
 
-Quality-surface coverage is explicit: the concise single-workbook CLI and MCP
-`quality_report` tool run the unified report; `qa` remains the specialized
-real-world report card. Batch and Notebook workflows currently expose their own
-migration/assessment operations and do not implicitly run the unified quality
-report for every item.
+Quality-surface coverage is explicit: the file-based diagnostic CLI and MCP
+`quality_report` tool run the unified report. The `qa FOLDER` shortcut follows
+batch migration and does not invoke the legacy specialized QA report card; the
+legacy `--qa` flag is retained but does not invoke that report card in batch mode.
+Generation is batch-only; one-workbook migrations use a folder containing just
+that workbook. Batch migration writes unified quality reports by default.
+Notebook workflows expose their own migration/assessment operations and do not
+implicitly run the unified quality report for every item.
 
 In an MCP session, an owning agent can then call `agent_handoff` with its own
 agent name to pull only its matching quality priorities. The packet is
@@ -128,6 +134,6 @@ CLI, batch, MCP, Notebook, and Fabric outputs on the same provenance contract.
 | `migrate.py` | CLI entry point, batch support, logging |
 | `tableau_export/` | Tableau XML parsing, DAX conversion, Power Query M generation |
 | `powerbi_import/` | .pbip generation, TMDL, visuals, validation, deployment |
-| `tests/` | 10,798 passed, 66 skipped, 1 xfailed; 316 test files in latest full run |
+| `tests/` | Unit, integration, and regression tests; see CI for current results |
 | `artifacts/` | Generated .pbip projects |
 | `.github/workflows/` | CI/CD pipeline (lint, test, validate, deploy) |

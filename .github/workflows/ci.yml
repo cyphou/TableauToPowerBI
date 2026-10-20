@@ -241,7 +241,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Cache pip packages
         uses: actions/cache@v4
@@ -257,7 +257,12 @@ jobs:
           for twb in examples/tableau_samples/*.twb; do
             TOTAL=$((TOTAL + 1))
             echo "=== Migrating $(basename $twb) ==="
-            if ! python migrate.py "$twb" --output-dir /tmp/pbi_validate; then
+            sample_name="twb_$(basename "$twb" .twb)"
+            source_dir="/tmp/pbi_validate_sources/$sample_name"
+            output_dir="/tmp/pbi_validate/$sample_name"
+            mkdir -p "$source_dir"
+            cp "$twb" "$source_dir/"
+            if ! python migrate.py --batch "$source_dir" --output-dir "$output_dir"; then
               echo "FAIL: Migration failed for $(basename $twb)"
               FAILED=$((FAILED + 1))
             fi
@@ -276,7 +281,12 @@ jobs:
             [ -f "$twbx" ] || continue
             TOTAL=$((TOTAL + 1))
             echo "=== Migrating $(basename $twbx) ==="
-            if ! python migrate.py "$twbx" --output-dir /tmp/pbi_validate; then
+            sample_name="twbx_$(basename "$twbx" .twbx)"
+            source_dir="/tmp/pbi_validate_sources/$sample_name"
+            output_dir="/tmp/pbi_validate/$sample_name"
+            mkdir -p "$source_dir"
+            cp "$twbx" "$source_dir/"
+            if ! python migrate.py --batch "$source_dir" --output-dir "$output_dir"; then
               echo "WARN: Migration failed for $(basename $twbx)"
               FAILED=$((FAILED + 1))
             fi
@@ -291,8 +301,14 @@ jobs:
         run: |
           python -c "
           import sys
+          from pathlib import Path
           from powerbi_import.validator import ArtifactValidator
-          results = ArtifactValidator.validate_directory('/tmp/pbi_validate')
+          projects = sorted(Path('/tmp/pbi_validate').rglob('*.pbip'))
+          results = {
+              str(project.parent.relative_to('/tmp/pbi_validate')):
+                  ArtifactValidator.validate_project(project.parent)
+              for project in projects
+          }
           passed = sum(1 for r in results.values() if r.get('valid'))
           total = len(results)
           print(f'Validation: {passed}/{total} projects valid')

@@ -22,6 +22,11 @@ import shutil
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+try:
+    from powerbi_import.report_localization import render, text
+except ImportError:
+    from report_localization import render, text
+
 logger = logging.getLogger(__name__)
 
 
@@ -524,17 +529,26 @@ def generate_cutover_dashboard(
         'failed': 'red',
     }
 
-    parts = [html_open("Cutover Dashboard")]
+    parts = [html_open(text("Cutover Dashboard", "Tableau de bascule"))]
 
     # Summary
+    cutover_date = cutover_plan.get('cutover_date', 'TBD')[:10]
+    cutover_date_card = stat_card(
+        cutover_date, text("Cutover Date", "Date de bascule"), accent="purple")
+    if 'cutover_date' not in cutover_plan:
+        cutover_date_card = cutover_date_card.replace(
+            '<div class="stat-value">TBD</div>',
+            f'<div class="stat-value">{render(text("TBD", "À déterminer"))}</div>',
+            1,
+        )
     parts.append(stat_grid([
-        stat_card(badge(status.upper(), status_colors.get(status, 'blue')), "Status"),
-        stat_card(str(cutover_plan.get('total_workbooks', 0)), "Workbooks", accent="blue"),
-        stat_card(cutover_plan.get('cutover_date', 'TBD')[:10], "Cutover Date", accent="purple"),
+        stat_card(badge(status.upper(), status_colors.get(status, 'blue')), text("Status", "État")),
+        stat_card(str(cutover_plan.get('total_workbooks', 0)), text("Workbooks", "Classeurs"), accent="blue"),
+        cutover_date_card,
     ]))
 
     # Pre-checks
-    parts.append(section_open("prechecks", "Pre-Cutover Checklist"))
+    parts.append(section_open("prechecks", text("Pre-Cutover Checklist", "Liste de vérification avant bascule")))
     check_rows = []
     for check in cutover_plan.get('pre_checks', []):
         status_badge = {
@@ -544,21 +558,21 @@ def generate_cutover_dashboard(
             'needs_verification': badge('VERIFY', 'yellow'),
         }.get(check.get('status', 'pending'), badge('?', 'blue'))
 
-        req = '✅ Required' if check.get('required') else 'Optional'
+        req = text('✅ Required', '✅ Obligatoire') if check.get('required') else text('Optional', 'Facultatif')
         check_rows.append([
             esc(check.get('label', '')),
             req,
             status_badge,
         ])
     parts.append(data_table(
-        headers=["Check", "Required", "Status"],
+        headers=[text("Check", "Vérification"), text("Required", "Obligatoire"), text("Status", "État")],
         rows=check_rows,
     ))
     parts.append(section_close())
 
     # Stage progress
     if execution_result:
-        parts.append(section_open("stages", "Stage Execution"))
+        parts.append(section_open("stages", text("Stage Execution", "Exécution des étapes")))
         stage_rows = []
         for stage in execution_result.get('stages', []):
             s_status = stage.get('status', 'pending')
@@ -577,21 +591,21 @@ def generate_cutover_dashboard(
                 esc(errors[:100]),
             ])
         parts.append(data_table(
-            headers=["Stage", "Status", "Notes"],
+            headers=[text("Stage", "Étape"), text("Status", "État"), text("Notes", "Notes")],
             rows=stage_rows,
         ))
         parts.append(section_close())
 
     # Parallel run results
     if parallel_results:
-        parts.append(section_open("parallel", "Parallel Run Validation"))
+        parts.append(section_open("parallel", text("Parallel Run Validation", "Validation de l’exécution parallèle")))
         pr_status = parallel_results.get('status', 'unknown')
         parts.append(stat_grid([
             stat_card(f"{parallel_results.get('match_rate', 0)}%",
-                      "Match Rate",
+                      text("Match Rate", "Taux de concordance"),
                       accent="success" if pr_status == 'pass' else "fail"),
-            stat_card(str(parallel_results.get('matches', 0)), "Matches", accent="success"),
-            stat_card(str(parallel_results.get('mismatches', 0)), "Mismatches", accent="fail"),
+            stat_card(str(parallel_results.get('matches', 0)), text("Matches", "Concordances"), accent="success"),
+            stat_card(str(parallel_results.get('mismatches', 0)), text("Mismatches", "Écarts"), accent="fail"),
         ]))
 
         # Mismatch details
@@ -606,7 +620,8 @@ def generate_cutover_dashboard(
                     f"{mm.get('diff_pct', 0)}%",
                 ])
             parts.append(data_table(
-                headers=["Measure", "Tableau Value", "PBI Value", "Diff %"],
+                headers=[text("Measure", "Mesure"), text("Tableau Value", "Valeur Tableau"),
+                         text("PBI Value", "Valeur Power BI"), text("Diff %", "Écart %")],
                 rows=mm_rows,
             ))
         parts.append(section_close())

@@ -159,7 +159,8 @@ class TestArgumentParserHelpers(unittest.TestCase):
         quality = migrate._parse_cli_args(parser, ['quality', 'sales.twbx'])
         parity = migrate._parse_cli_args(parser, ['parity', 'sales.twbx'])
         portfolio = migrate._parse_cli_args(parser, ['portfolio', 'workbooks'])
-        plan = migrate._parse_cli_args(parser, ['plan', 'sales.twbx'])
+        plan = migrate._parse_cli_args(
+            parser, ['plan', 'https://tableau.example'])
         package = migrate._parse_cli_args(parser, ['package', 'sales.twbx'])
 
         self.assertTrue(assess.assess)
@@ -170,6 +171,8 @@ class TestArgumentParserHelpers(unittest.TestCase):
         self.assertTrue(parity.parity)
         self.assertEqual(portfolio.bulk_assess, 'workbooks')
         self.assertTrue(plan.plan_migration)
+        self.assertEqual(plan.server, 'https://tableau.example')
+        self.assertIsNone(plan.tableau_file)
         self.assertTrue(package.report_package)
 
         lineage = migrate._parse_cli_args(
@@ -209,7 +212,7 @@ class TestArgumentParserHelpers(unittest.TestCase):
 
         self.assertEqual(exit_context.exception.code, 0)
         self.assertIn('14 simple commands', output.getvalue())
-        self.assertIn('deploy WORKBOOK WORKSPACE_ID', output.getvalue())
+        self.assertIn('deploy FOLDER WORKSPACE_ID', output.getvalue())
         self.assertIn('quality WORKBOOK', output.getvalue())
         self.assertIn('lineage FLOW_OR_FOLDER...', output.getvalue())
         self.assertNotIn('--server-preserve-folders', output.getvalue())
@@ -221,7 +224,7 @@ class TestArgumentParserHelpers(unittest.TestCase):
             migrate._parse_cli_args(self._get_parser(), ['deploy', '--help'])
 
         self.assertEqual(exit_context.exception.code, 0)
-        self.assertIn('deploy WORKBOOK WORKSPACE_ID', output.getvalue())
+        self.assertIn('deploy FOLDER WORKSPACE_ID', output.getvalue())
 
 
 # ── _run_single_migration helper tests ───────────────────────────────────────

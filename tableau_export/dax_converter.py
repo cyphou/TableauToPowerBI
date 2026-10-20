@@ -61,7 +61,6 @@ _SIMPLE_FUNCTION_MAP = [
 
     # Null/logic
     (r'\bISNULL\b', 'ISBLANK'),
-    (r'\bNULL\s*\(\)', 'BLANK()'),  # Bug #20: NULL() is not valid DAX
     (r'\bISNUMBER\s*\(', 'ISNUMBER('),
     (r'\bNOT\s*\(', 'NOT('),
 
@@ -154,8 +153,7 @@ _SIMPLE_FUNCTION_MAP = [
     (r'\bINT\s*\(', 'INT('),
     # FLOAT handled by _convert_float_to_convert (needs DOUBLE type arg)
     # STR handled by _convert_str_to_format (needs format string arg)
-    (r'\bDATE\s*\(', 'DATE('),
-    (r'\bDATETIME\s*\(', 'DATE('),
+    # DATE / DATETIME casts handled by _convert_date_casts (arity-sensitive)
 
     # Aggregation (generic)
     (r'\bSUM\s*\(', 'SUM('),
@@ -210,6 +208,16 @@ _RE_ISMEMBEROF = re.compile(
 _RE_OR = re.compile(r'\bor\b', re.IGNORECASE)
 _RE_AND = re.compile(r'\band\b', re.IGNORECASE)
 _RE_NEWLINES = re.compile(r'[\r\n]+\s*')
+# Consume identifiers and quoted tokens before considering NULL literals.
+# Doubled delimiters and Tableau backslash escapes stay inside their token.
+_RE_NULL_PROTECTED_TOKEN = re.compile(
+    r'''"(?:[^"\\]|\\.|"")*"|'(?:[^'\\]|\\.|'')*'|\[(?:[^\]]|\]\])*\]'''
+)
+_RE_NULL_LITERAL = re.compile(
+    _RE_NULL_PROTECTED_TOKEN.pattern
+    + r'|(?P<null>(?<![\w.])NULL\b(?:\s*\(\s*\))?(?!\s*[\[(.]))',
+    re.IGNORECASE,
+)
 # Escape-aware: a Tableau bracketed identifier may contain a literal ']'
 # encoded as ']]' and literal '[' characters (e.g. a parameter caption like
 # "AIP [Indicateur nationaux][detail]").  Match the full span so the whole
@@ -313,6 +321,10 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # Tableau comments may contain apostrophes and Tableau function names.
     # Remove them before quote conversion and validation.
     dax = _strip_tableau_comments(dax)
+    # Tableau's standalone NULL (and legacy NULL()) is a DAX BLANK().
+    # Normalize before resolving references so captions/parameter values
+    # introduced later cannot be mistaken for source-language literals.
+    dax = _convert_null_literals(dax)
     
     # === Phase 0: Strip secondary-datasource prefixes ===
     # Tableau data blends use [federated.xxxID].[Column] references.
@@ -356,6 +368,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_datename(dax)
     dax = _convert_dateadd(dax)
     dax = _convert_dateparse(dax)
+    dax = _convert_date_casts(dax)
     dax = _convert_isdate(dax)
     dax = _convert_corr_covar(dax, table_name)
     dax = _convert_endswith(dax)
@@ -466,6 +479,14 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # === Phase 6b: Fix date literals ===
     dax = _fix_date_literals(dax)
 
+    # NULLIF emits DAX strict equality; keep it after Tableau == normalization.
+    dax = _convert_nullif(dax)
+
+    # Tableau undefined ratios are NULL, not the NaN/Infinity produced by /.
+    # Parse operators rather than matching slashes in strings/identifiers.
+    dax = _convert_measure_ref_ratio(dax, measure_names)
+    dax = _convert_safe_division(dax)
+
     # === Phase 7: Optional conversion guard validation (Phase 3 foundation) ===
     if validate_output:
         try:
@@ -484,7 +505,196 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     return dax
 
 
-# ── Comment handling ─────────────────────────────────────────────────────────
+# ── Literal and comment handling ─────────────────────────────────────────────
+
+def _convert_measure_ref_ratio(dax, measure_names):
+    """Use DIVIDE for two bare measures, allowing grouping parentheses.
+
+    Tokenize only references, parentheses and slash; reject everything else.
+    In particular, slashes inside identifiers are not operators, and strings,
+    qualified columns, functions and compound arithmetic are left untouched.
+    """
+    if '/' not in dax or not measure_names:
+        return dax
+    tokens = []
+    end = 0
+    for match in re.finditer(r'\s+|\[(?:[^\]]|\]\])+\]|[()/]', dax):
+        if match.start() != end:
+            return dax
+        end = match.end()
+        if not match.group().isspace():
+            tokens.append(match.group())
+    if end != len(dax):
+        return dax
+
+    stack = []
+    pairs = {}
+    slashes = []
+    for index, token in enumerate(tokens):
+        if token == '(':
+            stack.append(index)
+        elif token == ')':
+            if not stack:
+                return dax
+            pairs[stack.pop()] = index
+        elif token == '/':
+            slashes.append(index)
+    if stack or len(slashes) != 1:
+        return dax
+
+    def ungroup(start, stop):
+        while start < stop and tokens[start] == '(' and pairs.get(start) == stop - 1:
+            start += 1
+            stop -= 1
+        return start, stop
+
+    start, stop = ungroup(0, len(tokens))
+    slash = slashes[0]
+    if not start < slash < stop - 1:
+        return dax
+    operands = []
+    for left, right in ((start, slash), (slash + 1, stop)):
+        left, right = ungroup(left, right)
+        if right - left != 1 or not tokens[left].startswith('['):
+            return dax
+        ref = tokens[left]
+        if ref[1:-1].replace(']]', ']') not in measure_names:
+            return dax
+        operands.append(ref)
+    return f'DIVIDE({operands[0]}, {operands[1]})'
+
+
+def _convert_safe_division(dax):
+    """Rewrite division in supported scalar DAX expressions, including LODs.
+
+    A small, fail-closed expression parser retains source spans and precedence.
+    It supports calls, qualified refs, literals, grouping and scalar operators;
+    unsupported syntax (e.g. VAR/RETURN or table constructors) is left intact.
+    Quoted tokens, escaped brackets and comments are never slash operators.
+    No alternate result is supplied: zero/BLANK denominators yield BLANK.
+    """
+    if '/' not in dax:
+        return dax
+
+    token_pattern = re.compile(
+        r'\s+|/\*[\s\S]*?\*/|//[^\r\n]*'
+        + '|' + _RE_NULL_PROTECTED_TOKEN.pattern
+        + r'|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'
+        + r'|[^\W\d]\w*(?:\.\w+)*'
+        + r'|==|<>|!=|<=|>=|&&|\|\||[()+\-*/^&=<>!,]',
+    )
+    tokens = []
+    end = 0
+    for match in token_pattern.finditer(dax):
+        if match.start() != end:
+            return dax
+        end = match.end()
+        value = match.group()
+        if not value.isspace() and not value.startswith(('/*', '//')):
+            tokens.append((value, match.start(), match.end()))
+    if end != len(dax) or not any(t[0] == '/' for t in tokens):
+        return dax
+
+    # DAX scalar precedence, from weakest to strongest. Operators at each
+    # level are left-associative, including chained multiplication/division.
+    precedence = {
+        '||': 10, '&&': 20,
+        '=': 30, '==': 30, '<>': 30, '!=': 30,
+        '<': 30, '>': 30, '<=': 30, '>=': 30,
+        '&': 40, '+': 50, '-': 50,
+        '*': 60, '/': 60, '^': 80,
+    }
+    position = 0
+
+    class Unsupported(ValueError):
+        pass
+
+    def peek():
+        return tokens[position][0] if position < len(tokens) else None
+
+    def take(value=None):
+        nonlocal position
+        if position >= len(tokens) or (value is not None and peek() != value):
+            raise Unsupported()
+        token = tokens[position]
+        position += 1
+        return token
+
+    def node(start, stop, children=()):
+        # Keep all original spelling/spacing except the rewritten subtrees.
+        parts = []
+        cursor = start
+        for left, right, text in children:
+            parts.extend((dax[cursor:left], text))
+            cursor = right
+        parts.append(dax[cursor:stop])
+        return start, stop, ''.join(parts)
+
+    def expression(minimum=0):
+        token, start, stop = take()
+        if token in ('+', '-') or token.upper() == 'NOT':
+            child = expression(25 if token.upper() == 'NOT' else 70)
+            left = node(start, child[1], (child,))
+        elif token == '(':
+            child = expression()
+            close = take(')')
+            left = node(start, close[2], (child,))
+        elif token[0] in ('"', "'", '[') or re.match(r'\w|\.\d', token):
+            # A quoted/unquoted table plus bracketed field is one operand.
+            if peek() and peek().startswith('[') and not token.startswith(('"', '[')):
+                stop = take()[2]
+            if peek() == '(' and not token.startswith(('"', "'", '[')):
+                take('(')
+                children = []
+                if peek() != ')':
+                    while True:
+                        # DAX permits omitted optional function arguments.
+                        if peek() not in (',', ')'):
+                            children.append(expression())
+                        if peek() != ',':
+                            break
+                        take(',')
+                stop = take(')')[2]
+                left = node(start, stop, children)
+            else:
+                left = node(start, stop)
+        else:
+            raise Unsupported()
+
+        while peek() in precedence and precedence[peek()] >= minimum:
+            operator, op_start, op_stop = take()
+            right = expression(precedence[operator] + 1)
+            if operator == '/':
+                # Retain comments adjacent to the operator (including a line
+                # comment's terminating newline), not the slash itself.
+                before = dax[left[1]:op_start]
+                after = dax[op_stop:right[0]]
+                before = before if before.strip() else ''
+                after = after if after.strip() else ''
+                left = (
+                    left[0], right[1],
+                    f'DIVIDE({left[2]}{before}, {after}{right[2]})',
+                )
+            else:
+                left = node(left[0], right[1], (left, right))
+        return left
+
+    try:
+        result = expression()
+        if position != len(tokens):
+            return dax
+        return dax[:result[0]] + result[2] + dax[result[1]:]
+    except (Unsupported, RecursionError):
+        return dax
+
+
+def _convert_null_literals(text):
+    """Convert NULL tokens without rewriting strings or field/table names."""
+    return _RE_NULL_LITERAL.sub(
+        lambda match: 'BLANK()' if match.group('null') else match.group(0),
+        text,
+    )
+
 
 def _strip_tableau_comments(text):
     """Remove Tableau comments while preserving // and /* inside strings."""
@@ -802,6 +1012,43 @@ def _convert_ifnull(dax):
             replacement = dax[start:end]
         dax = dax[:start] + replacement + dax[end:]
     return dax
+
+
+def _convert_nullif(dax):
+    """NULLIF(a, b) → blank when strictly equal, otherwise a (including zero)."""
+    if not _get_func_pattern('NULLIF').search(dax):
+        return dax
+
+    # Hide quotes/brackets from the existing balanced-call/argument helpers:
+    # commas, parentheses and function names within these tokens are data.
+    prefix = '__nullif_token_'
+    while prefix in dax:
+        prefix = '_' + prefix
+    tokens = []
+
+    def protect(match):
+        tokens.append(match.group(0))
+        return f'{prefix}{len(tokens) - 1}__'
+
+    masked = _RE_NULL_PROTECTED_TOKEN.sub(protect, dax)
+
+    def rewrite(text):
+        def transform(args, inner):
+            if len(args) != 2 or not all(args):
+                return f'NULLIF({inner})'
+            left, right = (rewrite(arg) for arg in args)
+            # Loose DAX equality conflates BLANK with 0 and empty text.
+            # Parenthesize arbitrary argument expressions to retain precedence.
+            return f'IF(({left}) == ({right}), BLANK(), ({left}))'
+
+        return _transform_func_call(text, 'NULLIF', transform)
+
+    converted = rewrite(masked)
+    return re.sub(
+        re.escape(prefix) + r'(\d+)__',
+        lambda match: tokens[int(match.group(1))],
+        converted,
+    )
 
 
 def _convert_previous_value(dax, table_name, compute_using=None, column_table_map=None):
@@ -1300,20 +1547,97 @@ _DATE_FORMAT_MAP = {
     'EEEE': 'DDDD', 'EEE': 'DDD',
 }
 
+def _transform_date_func_call(dax, func_name, transformer_fn):
+    """Transform date calls, including nested calls, but never quoted tokens.
+
+    The generic call/argument helpers count delimiters in raw text.  Mask
+    literals and identifiers here so embedded commas, parentheses and function
+    names remain data, without changing the other conversion paths.
+    """
+    prefix = '__date_token_'
+    while prefix in dax:
+        prefix = '_' + prefix
+    tokens = []
+
+    def protect(match):
+        tokens.append(match.group(0))
+        return f'{prefix}{len(tokens) - 1}__'
+
+    masked = _RE_NULL_PROTECTED_TOKEN.sub(protect, dax)
+
+    def restore(text):
+        return re.sub(
+            re.escape(prefix) + r'(\d+)__',
+            lambda match: tokens[int(match.group(1))],
+            text,
+        )
+
+    pattern = _get_func_pattern(func_name)
+
+    def rewrite(text):
+        match = pattern.search(text)
+        while match:
+            depth, end = 1, match.end()
+            while end < len(text) and depth:
+                if text[end] == '(':
+                    depth += 1
+                elif text[end] == ')':
+                    depth -= 1
+                end += 1
+            if depth:
+                break
+            inner = rewrite(text[match.end():end - 1])
+            replacement = transformer_fn(_split_args(inner), inner, restore)
+            if replacement is None:
+                # Preserve constructors verbatim, except any nested casts.
+                replacement = text[match.start():match.end()] + inner + ')'
+            text = text[:match.start()] + replacement + text[end:]
+            match = pattern.search(text, match.start() + len(replacement))
+        return text
+
+    return restore(rewrite(masked))
+
+
+def _convert_date_casts(dax):
+    """Convert one-argument Tableau casts, not DAX DATE(y, m, d).
+
+    CONVERT accepts text, numeric serials and already-typed dates.  DATE
+    discards the time fraction; the final conversion keeps the result typed
+    as datetime rather than leaving the integer serial returned by INT.
+    DATETIME retains the time component.
+    """
+    def date_cast(args, inner, restore):
+        if len(args) == 1 and args[0].strip():
+            return f'CONVERT(INT(CONVERT({args[0]}, DATETIME)), DATETIME)'
+        return None
+
+    def datetime_cast(args, inner, restore):
+        if len(args) == 1 and args[0].strip():
+            return f'CONVERT({args[0]}, DATETIME)'
+        return None
+
+    dax = _transform_date_func_call(dax, 'DATE', date_cast)
+    return _transform_date_func_call(dax, 'DATETIME', datetime_cast)
+
+
 def _convert_dateparse(dax):
-    """DATEPARSE(format, string) → DATEVALUE(string).
+    """DATEPARSE(format, string) → a typed date.
 
     Tableau's format arg tells *how to parse* the input string — it is a
     parsing hint, NOT an output format.  DAX DATEVALUE() returns a date
     value, which is what downstream date arithmetic expects.  Using FORMAT()
-    would return a string, breaking any date calculations.
+    would return a string, breaking any date calculations.  A year-only
+    pattern must construct January 1 explicitly rather than rely on the
+    locale-dependent interpretation of a bare year by DATEVALUE.
     """
-    def _xf(args, inner):
+    def _xf(args, inner, restore):
         if len(args) >= 2:
             expr = args[1].strip()
+            if restore(args[0]).strip() in ('"yyyy"', "'yyyy'"):
+                return f'DATE(VALUE({expr}), 1, 1)'
             return f'DATEVALUE({expr})'
         return f'DATEVALUE({inner})'
-    return _transform_func_call(dax, 'DATEPARSE', _xf)
+    return _transform_date_func_call(dax, 'DATEPARSE', _xf)
 
 
 def _convert_isdate(dax):
@@ -2815,6 +3139,12 @@ def _convert_agg_if_to_aggx(dax_text, table_name):
                 iter_table = _infer_iteration_table(inner, table_name)
                 inner = _wrap_cross_table_related(inner, iter_table)
                 replacement = f"{aggx}('{iter_table}', {inner})"
+                if agg == 'COUNT':
+                    # Tableau COUNT is zero when every conditional value is
+                    # NULL (or the input is empty); DAX COUNTX returns BLANK.
+                    # Normalize the count, not a surrounding SUM or ratio:
+                    # DIVIDE still returns BLANK for a zero denominator.
+                    replacement = f"COALESCE({replacement}, 0)"
                 dax_text = dax_text[:start] + replacement + dax_text[pos:]
             m = pattern.search(dax_text, start + len(aggx))
 
@@ -3637,4 +3967,3 @@ def convert_ismemberof_to_rls(formula, groups=None):
         dax = dax[:match.start()] + 'TRUE()' + dax[match.end():]
 
     return {'dax': dax, 'rls_roles': rls_roles}
-

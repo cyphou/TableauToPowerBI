@@ -33,6 +33,8 @@ import json
 import logging
 import shutil
 import time
+import zipfile
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,7 @@ from m_query_builder import (
     m_transform_add_column,
     wrap_source_with_try_otherwise,
     generate_m_from_hyper,
+    map_tableau_to_m_type,
 )
 
 
@@ -243,6 +246,8 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
                                   model_mode=model_mode,
                                   composite_threshold=composite_threshold,
                                   agg_tables=agg_tables)
+    source_issues = _audit_local_partition_sources(model, output_dir, datasources)
+    _fail_unavailable_local_sources(model, source_issues)
 
     # Optimize before self-healing, so rewritten DAX still passes the same
     # validation and repair gates as directly converted DAX.
@@ -256,6 +261,12 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
     from powerbi_import.recovery_report import RecoveryReport
     recovery = RecoveryReport(report_name)
     repair_count = _self_heal_model(model, recovery=recovery)
+
+    # Materialize only provenance-checked FIXED classifiers, after generic
+    # healing (which intentionally promotes arbitrary measure-dependent columns).
+    # Do this before collecting symbols so report grouping binds to a Column,
+    # never a category-valued aggregate measure.
+    dimension_columns = _materialize_fixed_dimension_columns(model)
 
     # Step 1b2: Incremental refresh detection & wiring (Sprint 120)
     ir_result = None
@@ -275,6 +286,7 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
     # M expression is parsed before write; issues are logged to the recovery
     # report so operators can triage without blocking the migration.
     m_validation_issues = _validate_m_partitions(model, recovery=recovery)
+    _refresh_calendar_source_expressions(model)
 
     # Attach languages metadata for _write_tmdl_files
     if languages:
@@ -438,10 +450,21 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         'actual_bim_column_types': actual_bim_column_types,
         'actual_bim_column_categories': actual_bim_column_categories,
         'actual_bim_measure_types': actual_bim_measure_types,
+        'materialized_dimension_columns': dimension_columns,
         'self_heal_repairs': repair_count,
         'recovery_summary': recovery.get_summary() if recovery.has_repairs else None,
         'm_validation_issues': m_validation_issues,
+        'source_issues': source_issues,
         'lineage': lineage,
+        # Final generated table name → exact extractor-provided identity.
+        # Kept separate from TMDL annotations; staging must join identity to
+        # its authoritative export manifest, never infer it from names/columns.
+        'hyper_identities': {
+            table.get('name', ''): dict(table['hyper_identity'])
+            for table in tables
+            if table.get('name') and _has_exact_hyper_identity(
+                table.get('hyper_identity'))
+        },
         'table_rename_map': model.get('_table_rename_map', {}),
         'measure_rename_map': model.get('_measure_rename_map', {}),
         'column_rename_map': model.get('_column_rename_map', {}),
@@ -449,6 +472,253 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
     if ir_result:
         stats['incremental_refresh'] = ir_result
     return stats
+
+
+def _audit_local_partition_sources(model, output_dir, datasources=None):
+    """Report generated file-source queries that cannot resolve in the PBIP.
+
+    Source M currently wraps some failures in an empty-table fallback.  That
+    keeps a model loadable but can make a missing file or worksheet appear to
+    have loaded successfully.  Audit concrete ``DataFolder`` file references
+    before writing so callers receive a deterministic warning/report without
+    guessing alternate files or worksheets.
+    """
+    from pathlib import Path
+
+    output_path = Path(output_dir)
+    data_dir = next(
+        (parent / 'Data' for parent in (output_path, *output_path.parents)
+         if (parent / 'Data').is_dir()),
+        None,
+    )
+    file_ref_re = re.compile(
+        r'File\.Contents\s*\(\s*DataFolder\s*&\s*"((?:[^"]|"")*)"\s*\)',
+        re.IGNORECASE,
+    )
+    sheet_ref_re = re.compile(
+        r'\[Item="((?:[^"]|"")*)",\s*Kind="Sheet"\]',
+        re.IGNORECASE,
+    )
+    namespace = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+    issues = []
+
+    for table in model.get('model', {}).get('tables', []):
+        table_name = table.get('name', '')
+        if _has_exact_hyper_identity(table.get('hyper_identity')):
+            # Its source expression is temporary: authoritative staging
+            # will route the exact packaged Hyper identity after TMDL.
+            continue
+        for partition in table.get('partitions', []):
+            expression = (partition.get('source') or {}).get('expression', '')
+            if not isinstance(expression, str) or not expression:
+                continue
+            file_matches = list(file_ref_re.finditer(expression))
+            sheet_matches = list(sheet_ref_re.finditer(expression))
+            for match in file_matches:
+                # M uses doubled backslashes in the file literal.  Windows
+                # accepts either form, but normalize before checking the path.
+                relative_name = match.group(1).replace('""', '"')
+                relative_name = relative_name.replace('\\\\', '\\').lstrip('\\/')
+                source_path = (
+                    data_dir.joinpath(*relative_name.replace('/', '\\').split('\\'))
+                    if data_dir is not None else None
+                )
+                if source_path is None or not source_path.is_file():
+                    issues.append({
+                        'table': table_name,
+                        'source': relative_name,
+                        'issue': 'file_not_found',
+                    })
+                    continue
+
+                if source_path.suffix.lower() != '.xlsx':
+                    continue
+                # Generated single-source Excel partitions have one relevant
+                # navigation.  Avoid attributing a navigation to the wrong
+                # workbook in custom multi-source M expressions.
+                if len(file_matches) != 1 or len(sheet_matches) != 1:
+                    continue
+                sheet_match = sheet_matches[0]
+                requested_sheet = sheet_match.group(1).replace('""', '"')
+                try:
+                    with zipfile.ZipFile(source_path) as workbook:
+                        workbook_xml = ET.fromstring(workbook.read('xl/workbook.xml'))
+                    available_sheets = {
+                        sheet.get('name', '')
+                        for sheet in workbook_xml.iter(f'{namespace}sheet')
+                    }
+                except (OSError, KeyError, ET.ParseError, zipfile.BadZipFile) as exc:
+                    issues.append({
+                        'table': table_name,
+                        'source': relative_name,
+                        'issue': 'invalid_xlsx',
+                        'detail': str(exc),
+                    })
+                    continue
+                if requested_sheet not in available_sheets:
+                    issues.append({
+                        'table': table_name,
+                        'source': relative_name,
+                        'issue': 'worksheet_not_found',
+                        'worksheet': requested_sheet,
+                        'available_worksheets': sorted(available_sheets),
+                    })
+
+    # Source-table identities are part of the binding contract too.  A
+    # generated query that happens to find a same-named sheet/file is still
+    # not trustworthy when Tableau supplied no connection for that relation,
+    # or when the relation names a different CSV than the connection does.
+    rename_map = model.get('_table_rename_map', {})
+    existing_tables = {
+        table.get('name', '') for table in model.get('model', {}).get('tables', [])
+    }
+    # The authoritative post-generation Hyper router rewrites these exact
+    # identities to staged CSVs. The original relation source can be absent
+    # before that staging pass, so do not turn its temporary M into a terminal
+    # source error here. The router must fail closed if no exact export exists.
+    hyper_identity_tables = {
+        table.get('name', '') for table in model.get('model', {}).get('tables', [])
+        if _has_exact_hyper_identity(table.get('hyper_identity'))
+    }
+    for datasource in datasources or []:
+        ds_name = datasource.get('name', '')
+        connection_map = datasource.get('connection_map', {}) or {}
+        for source_table in datasource.get('tables', []) or []:
+            relation = str(source_table.get('source_table') or '')
+            table_name = source_table.get('name', '')
+            if not table_name:
+                continue
+            model_table_name = rename_map.get((ds_name, table_name), table_name)
+            if model_table_name in hyper_identity_tables:
+                continue
+            connection_ref = source_table.get('connection', '')
+            binding = (
+                connection_map.get(connection_ref)
+                or source_table.get('connection_details')
+                or datasource.get('connection')
+                or {}
+            )
+            binding_type = (binding.get('type') or '').casefold()
+            details = binding.get('details') or {}
+            issue = None
+
+            if not relation and binding_type in {
+                    'excel', 'csv', 'textscan', 'geojson', 'shapefile'}:
+                issue = {
+                    'issue': 'source_provenance_unverified',
+                    'source': '',
+                    'detail': 'File-backed table has no explicit source_table identity',
+                }
+            elif (
+                '].[' in relation
+                and not connection_ref
+                and not source_table.get('connection_details')
+            ):
+                issue = {
+                    'issue': 'source_provenance_unverified',
+                    'source': relation,
+                    'detail': 'Qualified relation has no table-level connection binding',
+                }
+            elif binding_type in {'csv', 'textscan'} and details.get('filename'):
+                relation_name = relation.rsplit('].[', 1)[-1].strip().strip('[]')
+                if relation_name.casefold().endswith('#csv'):
+                    relation_name = relation_name[:-4] + '.csv'
+                connection_name = str(details.get('filename')).replace('\\', '/').rsplit('/', 1)[-1]
+                if relation_name and relation_name.casefold() != connection_name.casefold():
+                    issue = {
+                        'issue': 'source_relation_mismatch',
+                        'source': relation,
+                        'detail': (
+                            f"Relation identifies {relation_name!r} but its "
+                            f"connection is bound to {connection_name!r}"
+                        ),
+                    }
+
+            if issue:
+                model_table = model_table_name
+                if model_table not in existing_tables:
+                    continue
+                issues.append({'table': model_table, **issue})
+
+    # Keep the first concrete issue per table.  Later issues are redundant for
+    # the refresh guard and can obscure the primary binding failure.
+    deduplicated = []
+    seen_tables = set()
+    for issue in issues:
+        table_name = issue.get('table')
+        if table_name in seen_tables:
+            continue
+        seen_tables.add(table_name)
+        deduplicated.append(issue)
+
+    for issue in deduplicated:
+        logger.warning(
+            "Local partition source unavailable or unverifiable for table %r: %s",
+            issue.get('table'), issue,
+        )
+    return deduplicated
+
+
+def _has_exact_hyper_identity(identity):
+    """True only for the extractor's complete, explicit physical identity."""
+    fields = ('workbook', 'archive_member', 'schema', 'table')
+    return (
+        isinstance(identity, dict)
+        and all(isinstance(identity.get(key), str) and identity[key]
+                for key in fields)
+    )
+
+
+def _fail_unavailable_local_sources(model, source_issues):
+    """Make known-bad local file partitions fail refresh instead of loading empty.
+
+    The check is deliberately limited to tables with a concrete file/worksheet
+    issue found by ``_audit_local_partition_sources``.  It does not infer a
+    replacement source, and valid empty files/tables are left alone.
+    """
+    issues_by_table = {}
+    for issue in source_issues or []:
+        table_name = issue.get('table')
+        if table_name:
+            issues_by_table.setdefault(table_name, []).append(issue)
+
+    def m_text(value):
+        return '"' + str(value).replace('"', '""') + '"'
+
+    for table in model.get('model', {}).get('tables', []):
+        if _has_exact_hyper_identity(table.get('hyper_identity')):
+            continue
+        table_issues = issues_by_table.get(table.get('name', ''))
+        if not table_issues:
+            continue
+        issue = table_issues[0]
+        reason = issue.get('issue', 'source_unverifiable')
+        detail = (
+            f"Local source check failed ({reason}) for "
+            f"{issue.get('source', '<unknown source>')}"
+        )
+        if issue.get('worksheet'):
+            detail += f"; worksheet={issue['worksheet']}"
+        record_fields = [
+            f"Table = {m_text(table.get('name', ''))}",
+            f"Source = {m_text(issue.get('source', ''))}",
+            f"Reason = {m_text(reason)}",
+        ]
+        if issue.get('worksheet'):
+            record_fields.append(f"Worksheet = {m_text(issue['worksheet'])}")
+        error_expression = (
+            'error Error.Record("Migration.SourceUnavailable", '
+            f'{m_text(detail)}, [{", ".join(record_fields)}])'
+        )
+        for partition in table.get('partitions', []):
+            source = partition.get('source') or {}
+            if source.get('type') != 'm':
+                continue
+            source['expression'] = error_expression
+            logger.warning(
+                "Partition %r for table %r will fail refresh: %s",
+                partition.get('name'), table.get('name'), detail,
+            )
 
 
 # Lineage mapping lives in tmdl_lineage; re-exported here so existing
@@ -513,9 +783,12 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
 
     # Phase 1-2c: Collect tables, build context mappings
     ctx = _collect_semantic_context(datasources, extra_objects)
+    _prepare_logical_relationship_measures(ctx, datasources, extra_objects, model)
 
     # Phase 3: Create tables
     _create_semantic_tables(model, ctx, datasources, extra_objects)
+    # Date selection and report bindings must use the same datasource rename map.
+    model['_table_rename_map'] = ctx.get('table_rename_map', {})
 
     # A captioned column is named after what its partition produces, so every
     # expression written against the Tableau name has to follow it.
@@ -527,6 +800,7 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
     # Phases 5-12: Enrichments (sets, date table, hierarchies, params, RLS, etc.)
     _apply_semantic_enrichments(model, extra_objects, ctx['main_table_name'],
                                 ctx['column_table_map'], datasources)
+    _apply_source_measure_formats(model, datasources, extra_objects, ctx)
 
     # Phase 13: Composite model post-processing
     if (model_mode or 'import') == 'composite':
@@ -538,6 +812,283 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
     model['_table_rename_map'] = ctx.get('table_rename_map', {})
 
     return model
+
+
+def _prepare_logical_relationship_measures(ctx, datasources, extra_objects, model):
+    """Plan non-equi SUM closures before any generic calculation is emitted.
+
+    Policies are datasource-scoped source evidence, not model-name heuristics.
+    Supply ``extra_objects['logical_relationship_policies']`` or the same JSON
+    object in ``TTPBI_LOGICAL_RELATIONSHIP_POLICIES`` for existing batch callers.
+    ``case_encoding_verified`` asserts that the bound source text fields have
+    been checked for distinctions lost by the target model's string encoding.
+    The four scopes explicitly assert the source/context filter-order policy;
+    an empty filter list is not silently treated as evidence of no filters.
+    Missing evidence and independently used pair scalars fail before healing.
+    """
+    from powerbi_import.tmdl_dax_postprocess import compile_logical_relationship_sum
+
+    policies = extra_objects.get('logical_relationship_policies')
+    if policies is None:
+        raw_policy = os.environ.get('TTPBI_LOGICAL_RELATIONSHIP_POLICIES', '{}')
+        try:
+            policies = json.loads(raw_policy)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Invalid TTPBI_LOGICAL_RELATIONSHIP_POLICIES JSON") from exc
+    if not isinstance(policies, dict):
+        raise ValueError("logical_relationship_policies must be a datasource-keyed object")
+    worksheets = extra_objects.get('_worksheets', extra_objects.get('worksheets', []))
+    for ds in datasources:
+        metadata = ds.get('relation_metadata', {})
+        relationships = metadata.get('logical_relationships', [])
+        non_equi = [(i, rel) for i, rel in enumerate(relationships)
+                    if rel.get('requires_materialization')]
+        if not non_equi:
+            continue
+        dsn = ds.get('name', '')
+        calculations = ds.get('calculations', [])
+        by_id = {c['name'].strip('[]'): c for c in calculations}
+        aliases_by_name = {}
+        for ident, calc in by_id.items():
+            for name in (ident, calc.get('caption', ident)):
+                aliases_by_name.setdefault(name, set()).add(ident)
+        provenance = ds.get('col_local_name_map', {})
+
+        def dependencies(calc):
+            return set(re.findall(r'\[([^\]]+)\]', calc.get('formula', '')))
+
+        def closure(ident, active=None):
+            active = set() if active is None else active
+            if ident in active:
+                raise ValueError(f"Cyclic logical calculation in {dsn}: {ident}")
+            used, fields = {ident}, set()
+            for ref in dependencies(by_id[ident]):
+                ids = aliases_by_name.get(ref, set())
+                if len(ids) == 1:
+                    sub, physical = closure(next(iter(ids)), active | {ident})
+                    used.update(sub)
+                    fields.update(physical)
+                elif ref in provenance:
+                    fields.add(provenance[ref])
+            return used, fields
+
+        # Route single-source expressions to their proven current-row host.
+        # A wider previous-row alias is never evidence for hosting ML measures.
+        routed = {}
+        for ident, calc in by_id.items():
+            _, fields = closure(ident)
+            if len(fields) == 1:
+                alias = next(iter(fields))
+                host = ctx['table_rename_map'].get((dsn, alias), alias)
+                if host in ctx['best_tables']:
+                    routed[ident] = dict(calc, table=host)
+                    for name in (ident, calc.get('caption', ident)):
+                        if name in ctx['column_table_map']:
+                            ctx['column_table_map'][name] = host
+
+        consumed, compiled = set(), {}
+        for index, rel in non_equi:
+            aliases = [rel.get(side, {}).get('tables', []) for side in ('left', 'right')]
+            if any(len(side) != 1 for side in aliases):
+                raise ValueError(f"Unsupported logical endpoints in datasource {dsn}")
+            left, right = aliases[0][0], aliases[1][0]
+            hosts = [ctx['table_rename_map'].get((dsn, a), a) for a in (left, right)]
+            model.setdefault('_logical_predicate_pairs', []).append(hosts)
+            candidates = []
+            for ident, calc in by_id.items():
+                used, fields = closure(ident)
+                if (fields == {left, right}
+                        and re.match(r'^\s*SUM\s*\(', calc.get('formula', ''), re.I)):
+                    candidates.append((ident, used))
+            if not candidates:
+                # Keep the downstream guard for unsupported predicates/calcs.
+                continue
+            policy = policies.get(dsn, {})
+            if not isinstance(policy, dict):
+                raise ValueError(f"Logical relationship policy for {dsn} must be an object")
+            required = ('contains_case_sensitive', 'comparison_case_sensitive',
+                        'case_encoding_verified', 'unmatched_left', 'row_scopes')
+            if any(key not in policy for key in required) or policy.get('case_encoding_verified') is not True:
+                raise ValueError(
+                    f"Logical SUM in {dsn} requires explicit logical_relationship_policies: "
+                    "four lineage-preserving row_scopes, unmatched_left, source CONTAINS/"
+                    "comparison case policies and case_encoding_verified=True. Inspect "
+                    "source/context filters and source string collisions; do not guess.")
+            bindings, types, refs = {}, {}, {}
+            for alias, host in zip((left, right), hosts):
+                entry = ctx['best_tables'].get(host)
+                if entry is None:
+                    raise ValueError(f"Logical alias {alias} has no emitted table")
+                table = entry[0]
+                # Use the same exact metadata/type preference as table creation.
+                column_metadata = {}
+                for column in table.get('columns', []):
+                    local = column['name'].strip('[]')
+                    matches = [c for c in ds.get('columns', [])
+                               if c.get('name', '').strip('[]') == local]
+                    meta = next((c for c in matches
+                                 if c.get('datatype') == column.get('datatype')),
+                                matches[0] if matches else column)
+                    column_metadata[local] = meta
+                renames = m_rename_map(table.get('columns', []), column_metadata)
+                emitted = set()
+                for column in table.get('columns', []):
+                    local = column['name'].strip('[]')
+                    if provenance.get(local) != alias:
+                        continue
+                    target = renames.get(local, column['name'])
+                    if target in emitted:
+                        raise ValueError(f"Ambiguous emitted logical field {host}.{target}")
+                    emitted.add(target)
+                    bindings[alias, local] = (host, target)
+                    types[alias, local] = column.get('datatype')
+                    refs[local] = (alias, local)
+            for ident, used in candidates:
+                result = compile_logical_relationship_sum(
+                    root_calculation=ident, calculations=calculations,
+                    relation_metadata=metadata, field_bindings=bindings,
+                    field_types=types, reference_bindings=refs,
+                    row_scopes=policy['row_scopes'],
+                    unmatched_left=policy['unmatched_left'],
+                    contains_case_sensitive=policy['contains_case_sensitive'],
+                    comparison_case_sensitive=policy['comparison_case_sensitive'],
+                    relationship_index=index)
+                if result['status'] != 'supported':
+                    raise ValueError(f"Unsupported logical SUM {dsn}.{ident}: {result['reason']}")
+                if ident in compiled:
+                    raise ValueError(f"Logical SUM {ident} requires several relationship domains")
+                compiled[ident] = dict(by_id[ident], table=result['home_table'],
+                                      _logical_expression=result['expression'])
+                consumed.update(result['consumed_calculations'])
+                model.setdefault('_logical_relationship_compilations', []).append({
+                    'datasource': dsn, 'root': ident, 'relationship_index': index,
+                    'grain': result['grain'], 'consumed': result['consumed_calculations'],
+                    'field_bindings': [
+                        {'alias': alias, 'local_column': local,
+                         'table': target[0], 'column': target[1]}
+                        for (alias, local), target in sorted(bindings.items())
+                    ],
+                    'policy': policy,
+                })
+
+        # Independently used intermediates are not scalar lookups. Only a
+        # direct SUM of the exact same row expression may reuse the pair SUM.
+        intermediates = consumed - compiled.keys()
+        for ident in intermediates:
+            calc = by_id[ident]
+            names = {ident, calc.get('caption', ident)}
+            external = [c for key, c in by_id.items() if key not in consumed
+                        and dependencies(c) & names]
+            if external:
+                raise ValueError(f"Logical intermediate {calc.get('caption', ident)} has "
+                                 "independent model dependencies; aggregate them explicitly")
+            uses = []
+            for ws in worksheets:
+                field_uses = []
+                for field in ws.get('fields', []) + ws.get('slices', []):
+                    if (field.get('datasource', dsn) == dsn
+                            and field.get('name') in names):
+                        uses.append(field)
+                        field_uses.append(field)
+                # Ignore color_values dictionaries: they contain the entire
+                # datasource palette, not actual visual field dependencies.
+                for channel in ws.get('mark_encoding', {}).values():
+                    if (isinstance(channel, dict) and channel.get('field') in names
+                            and not field_uses):
+                        uses.append(channel)
+                for filt in ws.get('filters', []):
+                    if any(ref in names for ref in re.findall(r'\[([^\]]+)\]', str(filt))):
+                        raise ValueError(f"Logical intermediate {ident} used as a visual filter")
+                # These are independently evaluated uses, not SUM shelf
+                # bindings. They must not survive as dangling scalar fields.
+                for key in ('axes', 'tooltips', 'pages_shelf', 'table_calcs',
+                            'reference_lines', 'annotations', 'dynamic_title'):
+                    payload = json.dumps(ws.get(key, {}), ensure_ascii=False)
+                    refs_in_payload = set(re.findall(r'\[([^\]]+)\]', payload))
+                    refs_in_payload.update(re.findall(r'"([^"]+)"', payload))
+                    if any(_clean_tableau_field_ref(ref) in names
+                           for ref in refs_in_payload):
+                        raise ValueError(f"Logical intermediate {ident} has unsupported "
+                                         f"worksheet {key} use")
+            for key in ('groups', 'bins', 'sets', 'hierarchies'):
+                payload = json.dumps(extra_objects.get(key, []), ensure_ascii=False)
+                refs_in_payload = set(re.findall(r'\[([^\]]+)\]', payload))
+                refs_in_payload.update(re.findall(r'"([^"]+)"', payload))
+                if any(_clean_tableau_field_ref(ref) in names for ref in refs_in_payload):
+                    raise ValueError(f"Logical intermediate {ident} has unsupported {key} use")
+            if uses:
+                aggregates = [root for root in compiled.values()
+                              if re.fullmatch(
+                                  r'\s*SUM\s*\(\s*\[(' + '|'.join(re.escape(n) for n in names)
+                                  + r')\]\s*\)\s*', root.get('formula', ''), re.I)]
+                if (not aggregates or any(u.get('aggregation', '').lower() != 'sum'
+                                          for u in uses)):
+                    raise ValueError(f"Logical intermediate {ident} has an unsupported direct "
+                                     "visual use (only explicit SUM is supported)")
+                compiled[ident] = dict(calc, table=aggregates[0]['table'],
+                                      _logical_expression=aggregates[0]['_logical_expression'])
+        def effective_hosts(ident):
+            if ident in compiled:
+                return {compiled[ident]['table']}
+            hosts = set()
+            for ref in dependencies(by_id[ident]):
+                ids = aliases_by_name.get(ref, set())
+                if len(ids) == 1:
+                    hosts.update(effective_hosts(next(iter(ids))))
+                elif ref in provenance:
+                    alias = provenance[ref]
+                    hosts.add(ctx['table_rename_map'].get((dsn, alias), alias))
+            return hosts
+
+        # The compiled root is an aggregate boundary. Dependents such as
+        # TC success rate belong with that measure, not with its hidden
+        # previous-row dependencies.
+        for ident, calc in by_id.items():
+            if ident in consumed:
+                continue
+            hosts = effective_hosts(ident)
+            if len(hosts) == 1:
+                routed[ident] = dict(calc, table=next(iter(hosts)))
+
+        measure_ids = set(compiled)
+        aggregate = re.compile(
+            r'\b(SUM|AVG|MIN|MAX|COUNT|COUNTD|MEDIAN|ATTR|FIRST|LAST)\s*\(|'
+            r'\{\s*(FIXED|INCLUDE|EXCLUDE)\b', re.I)
+        measure_ids.update(ident for ident, calc in by_id.items()
+                           if ident not in intermediates
+                           and aggregate.search(calc.get('formula', '')))
+        changed = True
+        while changed:
+            changed = False
+            for ident, calc in by_id.items():
+                refs_in_calc = dependencies(calc)
+                if (ident not in measure_ids and ident not in intermediates and refs_in_calc
+                        and all(len(aliases_by_name.get(ref, set())) == 1
+                                and next(iter(aliases_by_name[ref])) in measure_ids
+                                for ref in refs_in_calc)):
+                    measure_ids.add(ident)
+                    changed = True
+        for ident in measure_ids:
+            caption = by_id[ident].get('caption', ident)
+            ctx['measure_names'].add(caption)
+            for name in (ident, caption):
+                ctx['column_table_map'].pop(name, None)
+        replacement = {**routed, **compiled}
+        ctx['all_calculations'] = [
+            replacement.get(c.get('name', '').strip('[]'), c)
+            if c.get('datasource_name') == dsn or c in calculations else c
+            for c in ctx['all_calculations']
+            if not ((c.get('datasource_name') == dsn or c in calculations)
+                    and c.get('name', '').strip('[]') in consumed - compiled.keys())
+        ]
+        for ident in consumed:
+            caption = by_id[ident].get('caption', ident)
+            for name in (ident, caption):
+                ctx['column_table_map'].pop(name, None)
+            if ident in compiled:
+                ctx['measure_names'].add(caption)
+            else:
+                ctx['measure_names'].discard(caption)
 
 
 
@@ -612,6 +1163,22 @@ def _generate_aggregation_tables(model):
         new_tables.append(agg_table)
 
     model['model']['tables'].extend(new_tables)
+
+
+def _calculation_identity(calc):
+    """Return the raw key and caption without mistaking fallback delimiters for text.
+
+    Extracted captions can repeat the bracketed Tableau identifier when no
+    display caption exists. Only that exact repetition is a fallback; an
+    explicit caption with different text (including brackets) is preserved.
+    Remove one outer pair, not every bracket, so literal name text survives.
+    """
+    name = calc.get('name', '')
+    raw = name[1:-1] if name.startswith('[') and name.endswith(']') else name
+    caption = calc.get('caption') or raw
+    if caption == name:
+        caption = raw
+    return raw, caption
 
 
 def _collect_semantic_context(datasources, extra_objects):
@@ -749,8 +1316,7 @@ def _collect_semantic_context(datasources, extra_objects):
     # Phase 2b: Build context mappings for DAX conversion
     calc_map = {}
     for calc in all_calculations:
-        raw = calc.get('name', '').replace('[', '').replace(']', '')
-        caption = calc.get('caption', raw)
+        raw, caption = _calculation_identity(calc)
         if raw and raw != caption:
             calc_map[raw] = caption
 
@@ -760,8 +1326,7 @@ def _collect_semantic_context(datasources, extra_objects):
     for ds in datasources:
         if ds.get('name', '') == 'Parameters':
             for calc in ds.get('calculations', []):
-                raw = calc.get('name', '').replace('[', '').replace(']', '')
-                caption = calc.get('caption', raw)
+                raw, caption = _calculation_identity(calc)
                 if raw:
                     param_map[raw] = caption
     # Source 2: From extracted parameters (new Tableau format)
@@ -806,7 +1371,7 @@ def _collect_semantic_context(datasources, extra_objects):
         r'VAR|VARP|PERCENTILE|ATTR|CORR|COVAR|COVARP|COLLECT)\s*\(',
         re.IGNORECASE)
     for calc in all_calculations:
-        caption = calc.get('caption', calc.get('name', '').replace('[', '').replace(']', ''))
+        _, caption = _calculation_identity(calc)
         if not caption:
             continue
         role = calc.get('role', 'measure')
@@ -855,7 +1420,7 @@ def _collect_semantic_context(datasources, extra_objects):
         re.IGNORECASE,
     )
     for calc in all_calculations:
-        caption = calc.get('caption', calc.get('name', '').replace('[', '').replace(']', ''))
+        _, caption = _calculation_identity(calc)
         formula = calc.get('formula', '').strip()
         if caption and formula and '[' not in formula:
             # Apply basic Tableau→DAX replacements so inlined values
@@ -962,7 +1527,7 @@ def _collect_semantic_context(datasources, extra_objects):
         formula = calc.get('formula', '').strip()
         if not formula:
             continue
-        caption = calc.get('caption', calc.get('name', '').replace('[', '').replace(']', ''))
+        _, caption = _calculation_identity(calc)
         if not caption or caption in column_table_map:
             continue
         has_agg = bool(_agg_pat.search(formula))
@@ -1020,12 +1585,19 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
                       if ds.get('name') == table_ds_origin.get(table_name)), None)
         table_metadata = {}
         if owner is not None:
+            caption_metadata = {}
             for column in table.get('columns', []):
                 name = column.get('name', '').strip('[]')
                 if not name:
                     continue
+                # Hyper can contain distinct case-sensitive fields (e.g.
+                # Siren and siren).  Type matching must not select metadata
+                # from the other exact field merely because it casefolds alike.
                 matches = [meta for meta in owner.get('columns', [])
-                           if meta.get('name', '').strip('[]').casefold() == name.casefold()]
+                           if meta.get('name', '').strip('[]') == name]
+                if not matches:
+                    matches = [meta for meta in owner.get('columns', [])
+                               if meta.get('name', '').strip('[]').casefold() == name.casefold()]
                 declared = column.get('datatype')
                 matching_type = next((meta for meta in matches
                                       if meta.get('datatype') == declared), None)
@@ -1044,7 +1616,10 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
                 table_metadata[name] = metadata
                 caption = metadata.get('caption')
                 if caption:
-                    table_metadata[caption] = metadata
+                    caption_metadata[caption] = metadata
+            # Caption aliases must never overwrite another field's raw name.
+            for caption, metadata in caption_metadata.items():
+                table_metadata.setdefault(caption, metadata)
         # An explicit table attribution wins: a merged model records which
         # table each calculation came from, and datasource routing alone would
         # send them all to the widest table in the merged datasource.
@@ -1088,6 +1663,37 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
             c for c in table_calculations if c not in attributed
         ]
 
+        hyper_identity = table.get('hyper_identity')
+        identity_fields = ('workbook', 'archive_member', 'schema', 'table')
+        m_query_override = m_query_overrides.get(table_name, '')
+        if _has_exact_hyper_identity(hyper_identity) and not m_query_override:
+            # Seed the pending source BEFORE building the table.  Staging
+            # replaces only this Error.Record expression, leaving physical
+            # renames, captions, calculated columns and later sets/bins intact.
+            staged_identity = json.dumps(
+                {key: hyper_identity[key] for key in identity_fields},
+                ensure_ascii=False, separators=(',', ':')
+            ).replace('"', '""')
+            table_literal = str(table_name).replace('"', '""')
+            pending_error = (
+                'error Error.Record("Migration.HyperExportRequired", '
+                '"Packaged Hyper export has not been staged to a CSV", '
+                f'[Table = "{table_literal}", Identity = "{staged_identity}"])'
+            )
+            m_query_override = f'let\n    Source = {pending_error}\nin\n    Source'
+            # Only the extractor's explicit physical -> logical binding is
+            # authoritative.  Apply it before caption renames/calculations.
+            physical_renames = {
+                physical: logical
+                for physical, logical in (table.get('cols_physical_map') or {}).items()
+                if physical != logical
+            }
+            if physical_renames:
+                _, rename_expression = m_transform_rename(physical_renames)
+                m_query_override = inject_m_steps(m_query_override, [
+                    ('#"Renamed Hyper Columns"', rename_expression),
+                ])
+
         tbl = _build_table(
             table=table,
             connection=table_conn,
@@ -1096,15 +1702,24 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
             dax_context=dax_context,
             col_metadata_map=table_metadata if owner is not None else col_metadata_map,
             extra_objects={},
-            m_query_override=m_query_overrides.get(table_name, ''),
+            m_query_override=m_query_override,
             model_mode=model.get('_model_mode', 'import'),
             composite_threshold=model.get('_composite_threshold'),
         )
 
+        # Preserve packaged Hyper provenance on the semantic table.  Do not
+        # infer it from the datasource caption, source_table, or columns: only
+        # the extractor's exact four-part identity is authoritative.
+        if _has_exact_hyper_identity(hyper_identity):
+            tbl['hyper_identity'] = {
+                key: hyper_identity[key] for key in identity_fields
+            }
+
         # Sprint 109: If this is a hyper/extract table with no Prep override,
         # try to inject inline data from extracted .hyper files
         conn_type = table_conn.get('type', '')
-        if conn_type.lower() in ('hyper', 'extract', 'dataengine') \
+        if (conn_type.lower() in ('hyper', 'extract', 'dataengine')
+                and not _has_exact_hyper_identity(table.get('hyper_identity'))) \
                 and not m_query_overrides.get(table_name):
             hrt = hyper_table_data.get(table_name.lower())
             if hrt:
@@ -1127,6 +1742,67 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
 
 
 
+def _validate_combined_group_relationships(model, extra_objects):
+    """Require a unique to-one row path for cross-table combined group fields.
+
+    A concatenated row key cannot choose one of several remote rows. In
+    particular, name-based relationship inference and a many-to-many
+    LOOKUPVALUE substitution are not evidence of a scalar source field.
+    """
+    combined = {
+        group.get('name') for group in extra_objects.get('groups', [])
+        if group.get('group_type') == 'combined'
+    }
+    if not combined:
+        return
+    tables = {table['name']: table for table in model['model']['tables']}
+    graph = {}
+    for rel in model['model'].get('relationships', []):
+        if (not rel.get('isActive', True) or rel.get('joinType') == 'full'
+                or rel.get('name', '').startswith('inferred_')):
+            continue
+        left, right = rel.get('fromTable'), rel.get('toTable')
+        if rel.get('toCardinality', 'one') == 'one':
+            graph.setdefault(left, []).append(right)
+        if rel.get('fromCardinality') == 'one':
+            graph.setdefault(right, []).append(left)
+
+    def path_count(home, target, visited):
+        if home == target:
+            return 1
+        count = 0
+        for neighbor in graph.get(home, []):
+            if neighbor not in visited:
+                count += path_count(neighbor, target, visited | {neighbor})
+                if count > 1:
+                    return 2
+        return count
+
+    # Tokenize literals as well as RELATED so labels cannot become dependencies.
+    refs = re.compile(
+        r'"(?:[^"]|"")*"|'
+        r"\bRELATED\s*\(\s*'(?P<table>(?:[^']|'')+)'\s*"
+        r"\[(?P<column>(?:[^\]]|\]\])*)\]\s*\)",
+        re.IGNORECASE)
+    for home, table in tables.items():
+        for column in table.get('columns', []):
+            if column.get('name') not in combined or column.get('displayFolder') != 'Groups':
+                continue
+            for match in refs.finditer(column.get('expression', '')):
+                if match['table'] is None:
+                    continue
+                target = match['table'].replace("''", "'")
+                field = match['column'].replace(']]', ']')
+                available = {col['name'] for col in tables.get(target, {}).get('columns', [])}
+                if field not in available or path_count(home, target, {home}) != 1:
+                    raise ValueError(
+                        f"Combined group {column['name']!r}: field "
+                        f"{target!r}[{field}] from {home!r} requires one unambiguous "
+                        "active to-one source relationship path; missing fields, "
+                        "inferred matches and many-to-many lookups cannot define "
+                        "a scalar row key")
+
+
 def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_table_map, datasources):
     """Phases 5-12: Sets, date table, hierarchies, parameters, RLS, cross-table inference, perspectives."""
     is_direct_lake = model.get('_model_mode', '').lower() == 'directlake'
@@ -1134,6 +1810,11 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
     # Phase 5: Add sets, groups, bins as calculated columns
     if not is_direct_lake:
         _process_sets_groups_bins(model, extra_objects, main_table_name, column_table_map)
+        # Groups are created after the initial retarget pass. Follow the exact
+        # table-scoped partition rename ledger before inspecting their refs.
+        retarget_dax_column_refs(model)
+        # Check before inference can fabricate a row path for a combined key.
+        _validate_combined_group_relationships(model, extra_objects)
 
     # Phase 6: Automatic date table if date columns detected
     # Skip if the source already has a date/calendar table (name-based or column-heuristic)
@@ -1151,7 +1832,12 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
             if has_date_columns:
                 break
     if has_date_columns and not has_existing_date_table and not is_direct_lake:
-        _add_date_table(model)
+        _add_date_table(
+            model,
+            worksheets=extra_objects.get('_worksheets', extra_objects.get('worksheets', [])),
+            hyper_files=extra_objects.get('hyper_files', []),
+            table_rename_map=model.get('_table_rename_map', {}),
+        )
 
     # Phase 7: Hierarchies from Tableau drill-paths
     _apply_hierarchies(model, extra_objects.get('hierarchies', []), column_table_map)
@@ -1194,6 +1880,8 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
 
     # Phase 10b: Detect cardinality (runs AFTER Phase 10 so inferred rels are included)
     _detect_many_to_many(model, datasources)
+    # Cardinality detection can demote a previously to-one source edge.
+    _validate_combined_group_relationships(model, extra_objects)
 
     # Phase 10c: Replace RELATED() with LOOKUPVALUE() for manyToMany
     _fix_related_for_many_to_many(model)
@@ -1733,6 +2421,222 @@ def _inject_dynamic_format_measures(model):
 
 
 
+def _m_row_dependencies_available(expression, available_columns):
+    """Accept only row fields available before this calculated M step.
+
+    Tokenize field selectors before strings so escaped quoted identifiers are
+    decoded as single fields, while "[not a field]" is ignored. Unsupported
+    bracket syntax fails closed to the existing DAX fallback.
+    """
+    tokens = re.finditer(
+        r'//[^\r\n]*|/\*[\s\S]*?\*/'
+        r'|\[(?:#"((?:[^"]|"")*)"|([^\[\]"]+))\]'
+        r'|"(?:[^"]|"")*"|[\[\]]',
+        expression,
+    )
+    for token in tokens:
+        quoted, bare = token.group(1), token.group(2)
+        if quoted is not None:
+            name = quoted.replace('""', '"')
+        elif bare is not None:
+            name = bare
+        elif token.group(0) in ('[', ']'):
+            return False
+        else:
+            continue
+        if name not in available_columns:
+            return False
+    return True
+
+
+def _plan_fixed_dimension_columns(calculations):
+    """Find categorical dimensions driven only by explicit, same-grain FIXEDs.
+
+    This is source classification, not formula conversion. Be conservative:
+    no parameters, arbitrary aggregate dependencies, nested LODs, or dynamic
+    functions. Keep unsupported cases as measures rather than inventing a
+    grouping grain. Final local-column/measure checks happen after healing.
+    """
+    from dax_converter import _strip_tableau_comments
+
+    def code(calc):
+        return _strip_tableau_comments(calc.get('formula', '')).strip()
+
+    def without_strings(text):
+        return re.sub(r'"(?:[^"\\]|\\.|"")*"|\'(?:[^\'\\]|\\.|\'\')*\'', '""', text)
+
+    def refs(text):
+        return set(re.findall(r'\[([^\]]+)\]', without_strings(text)))
+
+    by_alias = {}
+    for calc in calculations:
+        for alias in (calc.get('name', '').strip('[]'), calc.get('caption', '')):
+            if alias:
+                by_alias.setdefault(alias, []).append(calc)
+    fixed = {}
+    for alias, matches in by_alias.items():
+        # Repeated name/caption for the very same object is not ambiguity.
+        unique = {id(calc): calc for calc in matches}
+        if len(unique) != 1:
+            continue
+        calc = next(iter(unique.values()))
+        match = re.fullmatch(r'\{\s*FIXED\s+((?:\[[^\]]+\]\s*,?\s*)+):([^{}]+)\}',
+                             code(calc), re.I | re.S)
+        if not match:
+            continue
+        keys = tuple(re.findall(r'\[([^\]]+)\]', match[1]))
+        body = without_strings(match[2])
+        if re.search(r'\b(?:USERNAME|FULLNAME|ISMEMBEROF|TODAY|NOW|LOOKUP|'
+                     r'WINDOW_\w+|RUNNING_\w+|RANK\w*)\s*\(', body, re.I):
+            continue
+        fixed[alias] = (calc.get('caption') or calc.get('name', '').strip('[]'), keys)
+
+    plans = []
+    for calc in calculations:
+        if (calc.get('role') != 'dimension'
+                or calc.get('datatype', '').lower() not in ('string', 'boolean')):
+            continue
+        formula = code(calc)
+        scalar = without_strings(formula)
+        if not re.match(r'^(?:IF|CASE|IIF)\b', scalar, re.I):
+            continue
+        calls = set(re.findall(r'\b([A-Za-z_]\w*)\s*\(', scalar))
+        if any(call.upper() not in {'IF', 'IIF', 'ELSEIF', 'ISNULL', 'ISBLANK',
+                                    'IFNULL', 'ZN', 'ABS', 'ROUND', 'INT'}
+               for call in calls):
+            continue
+        dependencies = refs(formula)
+        if not dependencies or not dependencies.issubset(fixed):
+            continue
+        grains = {fixed[alias][1] for alias in dependencies}
+        if len(grains) != 1:
+            continue
+        aliases = {calc.get('name', '').strip('[]'), calc.get('caption', '')} - {''}
+        # Other formulas have already been converted as measure consumers.
+        # Do not silently reinterpret their references as scalar columns.
+        if any(other is not calc and refs(code(other)) & aliases for other in calculations):
+            continue
+        plans.append({
+            'name': calc.get('caption') or calc.get('name', '').strip('[]'),
+            'source_field': calc.get('name', '').strip('[]'),
+            'data_type': map_tableau_to_powerbi_type(calc['datatype']),
+            'grain_columns': list(next(iter(grains))),
+            'fixed_measures': sorted({fixed[alias][0] for alias in dependencies}),
+        })
+    return plans
+
+
+def _materialize_fixed_dimension_columns(model):
+    """Finalize supported refresh-time grouping columns with constrained context.
+
+    An explicit ALLEXCEPT limits context transition to the source FIXED keys,
+    avoiding dependencies on every column of the fact table (and on sibling
+    calculated columns). No DAX is reconverted here: use the validated scalar
+    classifier and inline its verified FIXED dependency closure. The emitted
+    column must not call measures: even an explicitly constrained measure call
+    is rejected by the calculated-column dependency gate.
+
+    Returns the Visual contract keyed by (table, caption). These names occur
+    in actual_bim_symbols/actual_bim_column_types, not actual_bim_measures.
+    """
+    contract = {}
+    renames = model.get('_column_rename_map', {})
+    for table in model.get('model', {}).get('tables', []):
+        plans = table.get('_fixed_dimension_candidates', [])
+        if not plans or any(p.get('mode', 'import').lower() != 'import'
+                            for p in table.get('partitions', [])):
+            continue
+        tname = table['name']
+        owner = "'" + tname.replace("'", "''") + "'"
+        columns = {c.get('name'): c for c in table.get('columns', [])}
+        measures = {m.get('name'): m for m in table.get('measures', [])}
+        for plan in plans:
+            name = plan['name']
+            measure = measures.get(name)
+            if not measure or name in columns:
+                continue
+            keys = [renames.get((tname, key), key) for key in plan['grain_columns']]
+            if any(key not in columns or columns[key].get('expression') for key in keys):
+                continue
+            key_refs = [f'{owner}[{key}]' for key in keys]
+            grain = f"ALLEXCEPT({owner}, {', '.join(key_refs)})"
+            supported = True
+            fixed_expressions = {}
+            for dependency in plan['fixed_measures']:
+                expression = measures.get(dependency, {}).get('expression', '')
+                # Verify the outer context modifier, not merely a matching
+                # substring somewhere inside a different aggregation context.
+                body = _extract_function_body(expression.strip(), 'CALCULATE')
+                args = _split_dax_args(body) if body is not None else []
+                if (len(args) != 2 or 'TODO:' in expression
+                        or re.sub(r'\s+', '', args[1]) != re.sub(r'\s+', '', grain)):
+                    supported = False
+                    break
+                # No cross-table, measure, or DAX-column dependencies at refresh.
+                code = re.sub(r'"(?:[^"]|"")*"', '""', expression)
+                for ref in re.finditer(
+                        r"(?P<owner>'(?:[^']|'')+'|\b[A-Za-z_]\w*)?\[(?P<col>[^\]]+)\]",
+                        code):
+                    ref_owner = ref['owner']
+                    column = columns.get(ref['col'])
+                    if (ref_owner != owner or not column or column.get('expression')):
+                        supported = False
+                        break
+                fixed_expressions[dependency] = expression.strip()
+            if not supported:
+                continue
+            expression = measure.get('expression', '')
+            if not expression or 'TODO:' in expression:
+                continue
+            # The converted classifier must still call only its planned FIXEDs.
+            scalar = re.sub(r'"(?:[^"]|"")*"', '""', expression)
+            refs = re.findall(
+                r"(?P<owner>'(?:[^']|'')+'|\b[A-Za-z_]\w*)?\[(?P<col>[^\]]+)\]",
+                scalar)
+            if (not refs or any(ref_owner or col not in plan['fixed_measures']
+                                for ref_owner, col in refs)):
+                continue
+            # This supported closure has physical local-column leaves only;
+            # the checks above reject further measures, calculated columns,
+            # cross-table references and mismatched FIXED grains. Parentheses
+            # preserve scalar precedence without relying on implicit measure
+            # context transition. Match strings as tokens so a label such as
+            # "[Entity ratio]" is never rewritten as a dependency.
+            tokens = re.compile(
+                r'(?P<literal>"(?:[^"]|"")*")|'
+                r"(?P<owner>'(?:[^']|'')+'|\b[A-Za-z_]\w*)?\[(?P<col>[^\]]+)\]")
+
+            def inline_fixed(match):
+                if match['literal'] is not None:
+                    return match.group(0)
+                return '(' + fixed_expressions[match['col']] + ')'
+
+            expression = tokens.sub(inline_fixed, expression)
+            column = {key: value for key, value in measure.items()
+                      if key in ('name', 'description', 'displayFolder', 'isHidden')}
+            column.update({
+                'dataType': plan['data_type'],
+                'expression': f'CALCULATE({expression}, {grain})',
+                'isCalculated': True,
+                'summarizeBy': 'none',
+                'annotations': [
+                    {'name': 'Migration_Dimension_Grain', 'value': json.dumps(
+                        {'columns': keys, 'fixedMeasures': plan['fixed_measures']},
+                        ensure_ascii=False)},
+                    {'name': 'MigrationNote', 'value':
+                     'Source dimension classified at its explicit FIXED grain; '
+                     'verified FIXED expressions inlined with physical-column '
+                     'leaves only; evaluated at refresh, not as an aggregate '
+                     'category measure.'},
+                ],
+            })
+            table['columns'].append(column)
+            table['measures'].remove(measure)
+            columns[name] = column
+            contract[(tname, name)] = dict(plan, grain_columns=keys)
+    return contract
+
+
 def _build_table(table, connection, calculations, columns_metadata, dax_context=None,
                  col_metadata_map=None, extra_objects=None, m_query_override='',
                  model_mode='import', composite_threshold=None):
@@ -1785,8 +2689,44 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             m_query = inject_m_steps(m_query, m_steps)
 
         # Wrap Source step with try...otherwise for graceful error handling
-        col_names = [c.get('name', '') for c in columns if c.get('name')]
-        m_query = wrap_source_with_try_otherwise(m_query, col_names)
+        # Exact Hyper identities must fail until staged, never turn a pending
+        # export (or a failed staged CSV load) into a successful empty table.
+        if not _has_exact_hyper_identity(table.get('hyper_identity')):
+            col_names = [c.get('name', '') for c in columns if c.get('name')]
+            m_query = wrap_source_with_try_otherwise(m_query, col_names)
+
+        if (not m_query_override
+                and connection.get('type', '').lower() in ('hyper', 'extract', 'dataengine')):
+            # The legacy Hyper metadata-only fallback (and its otherwise
+            # branch) declares names but no types. Type only an exact empty
+            # literal with this source schema; do not replace unavailable-source
+            # errors, populated extracts, overrides with a different schema, or
+            # introduce a synthetic row. Exact staged identities keep their
+            # fail-closed source expression unchanged.
+            source_columns = [col for col in columns if col.get('name')]
+            if source_columns and not _has_exact_hyper_identity(table.get('hyper_identity')):
+                source_names = [col['name'] for col in source_columns]
+                schema = ', '.join(
+                    '#"' + col['name'].replace('"', '""') + '" = '
+                    + map_tableau_to_m_type(col.get('datatype', 'string'))
+                    for col in source_columns
+                )
+
+                def type_empty_hyper(match):
+                    names = [
+                        value.replace('""', '"')
+                        for value in re.findall(r'"((?:[^"]|"")*)"', match['names'])
+                    ]
+                    if names != source_names:
+                        return match.group(0)
+                    return match['prefix'] + '#table(type table [' + schema + '], {})'
+
+                m_query = re.sub(
+                    r'(?P<prefix>^\s*(?:Source\s*=\s*(?:try\s*)?|otherwise\s*))'
+                    r'#table\s*\(\s*\{(?P<names>\s*"(?:[^"]|"")*"'
+                    r'(?:\s*,\s*"(?:[^"]|"")*")*\s*)\}\s*,\s*\{\s*\}\s*\)',
+                    type_empty_hyper, m_query, flags=re.MULTILINE,
+                )
 
     # Whatever the partition renames, the model must ask for the produced
     # name; deriving both from one map stops the two sides drifting apart.
@@ -1918,6 +2858,22 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     param_values = dax_context.get('param_values', {})
     measure_names_ctx = dax_context.get('measure_names', set())
 
+    # Pair-grain measures are already compiled from source provenance. Do not
+    # pass them (or consumed row intermediates) through generic conversion.
+    generic_calculations = []
+    for calc in calculations:
+        if '_logical_expression' not in calc:
+            generic_calculations.append(calc)
+            continue
+        result_table['measures'].append({
+            'name': _calculation_identity(calc)[1],
+            'expression': calc['_logical_expression'],
+            'formatString': _get_format_string(calc.get('datatype', 'integer')),
+            'displayFolder': 'Measures',
+            '_logical_relationship_pair_measure': True,
+        })
+    calculations = generic_calculations
+
     # Pre-compiled aggregation pattern (reused in pre-classification and main loop)
     _agg_pattern = re.compile(
         r'\b(SUM|COUNT|COUNTA|COUNTD|COUNTROWS|AVERAGE|AVG|MIN|MAX|MEDIAN|'
@@ -1947,8 +2903,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     prelim_calc_col_captions = set()
     prelim_calc_col_raws = set()
     for _pc in calculations:
-        _pc_name = _pc.get('name', '').replace('[', '').replace(']', '')
-        _pc_caption = _pc.get('caption', _pc_name)
+        _pc_name, _pc_caption = _calculation_identity(_pc)
         _pc_formula = _pc.get('formula', '').strip()
         _pc_role = _pc.get('role', 'measure')
         _pc_is_literal = _pc_formula and '[' not in _pc_formula
@@ -1981,8 +2936,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     while _fixup_changed:
         _fixup_changed = False
         for _pc in calculations:
-            _pc_name = _pc.get('name', '').replace('[', '').replace(']', '')
-            _pc_caption = _pc.get('caption', _pc_name)
+            _pc_name, _pc_caption = _calculation_identity(_pc)
             if _pc_name not in prelim_calc_col_raws:
                 continue
             _pc_formula = _pc.get('formula', '').strip()
@@ -2008,7 +2962,10 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 _fixup_changed = True
 
     m_calc_steps = []  # Accumulated M Table.AddColumn steps (replaces DAX calc cols)
-    dax_only_calc_cols = set()  # Names of calc columns that stayed as DAX (not converted to M)
+    # Keep M row availability separate from _this_table_columns, which also
+    # grows to include DAX-only calculated columns for DAX name resolution.
+    m_available_cols = {c["sourceColumn"] for c in result_table["columns"]}
+    m_calc_step_indexes = {}
 
     # Build column name sets in a single pass — _this_table_columns for
     # same-table ref resolution, _bool_table_columns for type-aware wrapping
@@ -2023,9 +2980,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 _bool_table_columns.add(_cn)
 
     for calc in calculations:
-        calc_name = calc.get('name', '').replace('[', '').replace(']', '')
-        caption = calc.get('caption', '') or calc_name
-        caption = caption.replace('[', '').replace(']', '')
+        calc_name, caption = _calculation_identity(calc)
         formula = calc.get('formula', '').strip()
         role = calc.get('role', 'measure')
         datatype = calc.get('datatype', 'string')
@@ -2162,28 +3117,13 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
             # ── Try to push the calculated column into Power Query M ──
             m_expr = _dax_to_m_expression(dax_formula, table_name)
-            # Dependency check: if the M expression references a calc column
-            # that stayed as DAX (not converted to M), we must fall back to DAX
+            # M row fields must exist in the physical source or an earlier
+            # accepted M step, never merely in the DAX model/measure namespace.
             if m_expr is not None:
                 m_expr = rename_m_column_refs(m_expr, rename_map)
-                # Columns available in M: physical source columns + previously created M steps
-                m_available_cols = {rename_map.get(_c, _c) for _c in _this_table_columns}
-                for step_name, _ in m_calc_steps:
-                    # Step names are like '#"Added ColName"' — extract the column name
-                    sm = re.match(r'#"Added (.+?)"', step_name)
-                    if sm:
-                        m_available_cols.add(sm.group(1))
-                col_refs = re.findall(r'\[#?"?([^\]"]+)"?\]', m_expr)
-                for ref in col_refs:
-                    if ref in dax_only_calc_cols:
-                        m_expr = None
-                        break
-                    # M queries can only reference physical columns or prior M step columns.
-                    # If a ref doesn't exist in M-available columns, it's likely a
-                    # measure or DAX calc column — fall back to DAX.
-                    if ref not in m_available_cols:
-                        m_expr = None
-                        break
+                if (is_direct_lake
+                        or not _m_row_dependencies_available(m_expr, m_available_cols)):
+                    m_expr = None
             if m_expr is not None:
                 m_type = _DAX_TO_M_TYPE.get(
                     map_tableau_to_powerbi_type(datatype), 'type text')
@@ -2192,16 +3132,13 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                         m_expr, columns, col_metadata_map)
                 new_step = m_transform_add_column(caption, f'each {m_expr}', m_type)
                 # Dedup: replace existing M step for the same column name
-                existing_m_idx = None
-                for mi, (sn, _) in enumerate(m_calc_steps):
-                    sm2 = re.match(r'#"Added (.+?)"', sn)
-                    if sm2 and sm2.group(1).lower() == caption.lower():
-                        existing_m_idx = mi
-                        break
+                existing_m_idx = m_calc_step_indexes.get(caption.lower())
                 if existing_m_idx is not None:
                     m_calc_steps[existing_m_idx] = new_step
                 else:
+                    m_calc_step_indexes[caption.lower()] = len(m_calc_steps)
                     m_calc_steps.append(new_step)
+                m_available_cols.add(caption)
                 bim_calc_col = {
                     "name": caption,
                     "dataType": map_tableau_to_powerbi_type(datatype),
@@ -2210,7 +3147,6 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 }
             else:
                 # Fallback: keep as DAX calculated column
-                dax_only_calc_cols.add(caption)
                 bim_calc_col = {
                     "name": caption,
                     "dataType": map_tableau_to_powerbi_type(datatype),
@@ -2296,6 +3232,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     _unwrap_aggregations_of_measures(result_table)
     _wrap_bare_cross_table_refs(result_table)
     _validate_measures_after_rewrites(result_table)
+    result_table['_fixed_dimension_candidates'] = _plan_fixed_dimension_columns(calculations)
 
     # Inject accumulated M steps into the partition (replaces DAX calc cols)
     if m_calc_steps:
@@ -2450,6 +3387,128 @@ from powerbi_import.tmdl_rls import (  # noqa: E402,F401
 )
 
 
+def _apply_source_measure_formats(model, datasources, extra_objects, ctx):
+    """Carry source-declared percentage masks onto actual bound measures.
+
+    Tableau's Multiple Values is a shelf, not a model field. Its mask applies
+    only to the worksheet's explicit measure_value bindings. Do not infer
+    percentages from captions, formulas, values, or unscoped cell formatting.
+    Axis declarations take precedence over table/card display precision;
+    conflicting equally authoritative masks retain the existing model format.
+    This changes formatting metadata only, never the underlying fractions.
+    """
+    tables = {t['name']: t for t in model['model']['tables']}
+    declarations = {}
+    aliases = {}
+    nonnumeric = set()
+    for ds in datasources:
+        dsn = ds.get('name', '')
+        for calc in ds.get('calculations', []):
+            caption = calc.get('caption') or calc.get('name', '').strip('[]')
+            if calc.get('datatype', '').lower() in ('date', 'datetime', 'string', 'boolean'):
+                nonnumeric.add((dsn, caption))
+            for alias in {caption, calc.get('name', '').strip('[]')} - {''}:
+                aliases.setdefault((dsn, alias), set()).add(caption)
+
+    def field_identity(raw, default_ds=''):
+        parts = re.findall(r'\[([^\]]+)\]', raw or '')
+        return ((parts[0] if len(parts) > 1 else default_ds),
+                _clean_tableau_field_ref(parts[-1] if parts else raw or ''))
+
+    def percent_mask(raw):
+        if not isinstance(raw, str):
+            return ''
+        # Require placeholders and a percentage suffix. Numeric widths such
+        # as "7", font names and date masks in old field_formats are not masks.
+        if not re.fullmatch(r'p?[0#][0#.,]*%', raw.strip()):
+            return ''
+        return _convert_tableau_format_to_pbi(raw)
+
+    def resolve(dsn, field):
+        captions = aliases.get((dsn, field), set())
+        if not captions and not dsn:
+            captions = set().union(*(values for (source, alias), values in aliases.items()
+                                     if alias == field))
+        captions = captions or {field}
+        captions = {caption for caption in captions if (dsn, caption) not in nonnumeric}
+        source_tables = {name for name, sources in ctx.get('table_datasource_set', {}).items()
+                         if dsn in sources} if dsn else set(tables)
+        matches = [(tname, measure['name']) for tname in source_tables
+                   if tname in tables for measure in tables[tname].get('measures', [])
+                   if measure['name'] in captions]
+        return matches[0] if len(matches) == 1 else None
+
+    def declare(pair, rank, mask):
+        if pair and mask:
+            declarations.setdefault(pair, []).append((rank, mask))
+
+    # A measure default is more authoritative than a worksheet override.
+    for ds in datasources:
+        for calc in ds.get('calculations', []):
+            declare(resolve(ds.get('name', ''), calc.get('name', '').strip('[]')),
+                    40, percent_mask(calc.get('default_format', '')))
+        for col in ds.get('columns', []):
+            declare(resolve(ds.get('name', ''), col.get('name', '').strip('[]')),
+                    40, percent_mask(col.get('default_format', '')))
+
+    for worksheet in extra_objects.get('_worksheets', extra_objects.get('worksheets', [])):
+        fields = worksheet.get('fields', [])
+        formatting = worksheet.get('formatting', {})
+        formats = list(formatting.get('field_formats', {}).items())
+        cell = formatting.get('cell', {})
+        if isinstance(cell, dict) and cell.get('field') and cell.get('text-format'):
+            formats.append((cell['field'], cell['text-format']))
+        # Typed cell metadata repairs field_formats entries overwritten by
+        # unrelated style attributes (for example font-size "7"). Resolve
+        # duplicate declarations before applying the synthetic shelf default.
+        individual_masks = {}
+        for raw_field, raw_mask in formats:
+            mask = percent_mask(raw_mask)
+            source, field_name = field_identity(raw_field)
+            if mask and field_name.lstrip(':') not in ('Multiple Values', 'Measure Values'):
+                individual_masks[(source, field_name)] = mask
+        for raw_field, raw_mask in formats:
+            mask = percent_mask(raw_mask)
+            if not mask:
+                continue
+            dsn, name = field_identity(raw_field)
+            multiple = name.lstrip(':') in ('Multiple Values', 'Measure Values')
+            if not multiple and mask != individual_masks.get((dsn, name)):
+                continue
+            for field in fields:
+                source, field_name = field_identity(field.get('name', ''),
+                                                    field.get('datasource', ''))
+                if dsn and source != dsn:
+                    continue
+                if multiple:
+                    if field.get('shelf') != 'measure_value':
+                        continue
+                    # A shelf is a default, never an override of an explicitly
+                    # formatted constituent measure in this worksheet.
+                    if ((source, field_name) in individual_masks
+                            or ('', field_name) in individual_masks):
+                        continue
+                    axis = any(field_identity(f.get('name', ''))[1].lstrip(':')
+                               in ('Multiple Values', 'Measure Values')
+                               and f.get('shelf') in ('rows', 'columns')
+                               for f in fields)
+                else:
+                    if field_name != name:
+                        continue
+                    axis = field.get('shelf') in ('rows', 'columns')
+                # A table's row headers are not a quantitative chart axis.
+                chart = worksheet.get('chart_type', '').lower()
+                axis = axis and chart not in ('table', 'tableex', 'matrix', 'pivottable')
+                declare(resolve(source, field_name), 30 if axis else 20, mask)
+
+    for (tname, name), choices in declarations.items():
+        rank = max(priority for priority, _ in choices)
+        masks = {mask for priority, mask in choices if priority == rank}
+        if len(masks) == 1:
+            measure = next(m for m in tables[tname]['measures'] if m['name'] == name)
+            measure['formatString'] = masks.pop()
+
+
 def _get_format_string(datatype):
     """Return the Power BI format string for a given type."""
     format_map = {
@@ -2480,6 +3539,10 @@ def _convert_tableau_format_to_pbi(tableau_format):
         return ''
 
     fmt = tableau_format.strip()
+    # Tableau's compact percentage token is a format-kind prefix, not a
+    # literal "p" in Power BI's format string.
+    if re.fullmatch(r'p[0#][0#.,]*%', fmt):
+        fmt = fmt[1:]
 
     # Already a PBI-compatible format
     if fmt in ('0', '#,0', '#,0.00', '0.00%', '$#,0.00', 'General Date', 'Short Date'):
@@ -2719,6 +3782,7 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
 # re-exported here so existing imports keep working.
 from powerbi_import.tmdl_dates import (  # noqa: E402,F401
     _add_date_table,
+    _refresh_calendar_source_expressions,
     _DATE_PART_PATTERNS,
     _DATE_TABLE_NAMES,
     _is_date_table,
@@ -2946,9 +4010,3 @@ from powerbi_import.tmdl_refresh_policy import (  # noqa: E402
     _DATE_TYPE_KEYWORDS,
     _DATE_COL_KEYWORDS,
 )
-
-
-
-
-
-

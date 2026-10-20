@@ -20,6 +20,10 @@ import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from powerbi_import.quality_grades import color as _grade_color
+from powerbi_import.report_localization import (
+    LocalizedText, text, render as ui, attributes as i18n_attrs,
+    selector as language_selector, script as localization_script,
+)
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Design tokens — Fluent / Power BI design language
@@ -86,6 +90,11 @@ def get_report_css() -> str:
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    .report-language { padding: 10px 24px; background: var(--pbi-surface);
+        color: var(--pbi-dark); display: flex; gap: 10px; align-items: center; }
+    .report-language select { font: inherit; padding: 6px 10px; color: inherit;
+        background: var(--pbi-surface); border: 1px solid #8a8886; border-radius: 4px; }
+    .report-language select:focus-visible { outline: 3px solid var(--pbi-blue); outline-offset: 2px; }
 
     body {
         font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
@@ -835,10 +844,22 @@ function toggleTheme() {
     var isDark = html.classList.toggle('dark');
     var btn = document.getElementById('theme-toggle-btn');
     if (btn) {
-        btn.innerHTML = isDark ? '&#9788; Light' : '&#9790; Dark';
+        btn.textContent = themeLabel(isDark);
     }
     try { localStorage.setItem('pbi-theme', isDark ? 'dark' : 'light'); } catch(e) {}
 }
+
+function themeLabel(isDark) {
+    var en = isDark ? '☼ Light' : '☾ Dark';
+    var fr = isDark ? '☼ Clair' : '☾ Sombre';
+    return window.ReportI18n ? ReportI18n.format(en, fr)
+        : (document.documentElement.lang === 'fr' ? fr : en);
+}
+function updateThemeLabel() {
+    var btn = document.getElementById('theme-toggle-btn');
+    if (btn) btn.textContent = themeLabel(document.documentElement.classList.contains('dark'));
+}
+document.addEventListener('reportlanguagechange', updateThemeLabel);
 
 (function initTheme() {
     var saved = null;
@@ -847,12 +868,11 @@ function toggleTheme() {
         document.documentElement.classList.add('dark');
     }
     // Update button label once DOM is ready
-    document.addEventListener('DOMContentLoaded', function() {
-        var btn = document.getElementById('theme-toggle-btn');
-        if (btn && document.documentElement.classList.contains('dark')) {
-            btn.innerHTML = '&#9788; Light';
-        }
-    });
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', updateThemeLabel);
+    } else {
+        updateThemeLabel();
+    }
 })();
 """
 
@@ -866,6 +886,7 @@ def html_open(
     subtitle: str = "",
     timestamp: str = "",
     version: str = "",
+    language: str = "en",
 ) -> str:
     """Return the opening HTML (doctype → header → container start)."""
     if not timestamp:
@@ -879,19 +900,20 @@ def html_open(
     meta_html = "\n        ".join(meta_parts)
 
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="{language if language in ('fr', 'en') else 'en'}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{esc(title)}</title>
+<title{(' ' + i18n_attrs(title)) if isinstance(title, LocalizedText) else ''}>{esc(title.fr if isinstance(title, LocalizedText) and language == 'fr' else title)}</title>
 <style>{get_report_css()}</style>
 <script>(function(){{var s=null;try{{s=localStorage.getItem('pbi-theme')}}catch(e){{}}if(s==='dark')document.documentElement.classList.add('dark')}})();</script>
 </head>
 <body>
-<button id="theme-toggle-btn" class="theme-toggle" onclick="toggleTheme()">&#9790; Dark</button>
+{language_selector(language)}
+<button id="theme-toggle-btn" class="theme-toggle" aria-label="Switch color theme" {i18n_attrs(text("Switch color theme", "Changer le thème de couleurs"), "aria-label")} title="Switch color theme" {i18n_attrs(text("Switch color theme", "Changer le thème de couleurs"), "title")} onclick="toggleTheme()">&#9790; {"Sombre" if language == "fr" else "Dark"}</button>
 <div class="report-header">
-    <h1>{esc(title)}</h1>
-    {"<div class='subtitle'>" + esc(subtitle) + "</div>" if subtitle else ""}
+    <h1>{ui(title, language)}</h1>
+    {"<div class='subtitle'>" + ui(subtitle, language) + "</div>" if subtitle else ""}
     <div class="meta">
         {meta_html}
     </div>
@@ -905,19 +927,21 @@ def html_close(version: str = "", timestamp: str = "") -> str:
     if not timestamp:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    footer_parts = ["Tableau &#8594; Power BI Migration Tool"]
+    footer_parts = [ui(text("Tableau → Power BI Migration Tool", "Outil de migration Tableau → Power BI"))]
     if version:
         footer_parts[0] += f" v{esc(version)}"
-    footer_parts.append(f"Report generated {esc(timestamp)}")
+    footer_parts.append(ui(text(f"Report generated {timestamp}", f"Rapport généré le {timestamp}")))
 
     return f"""
 </div> <!-- /container -->
 <div class="report-footer">
     <p>{" &nbsp;|&nbsp; ".join(footer_parts)}</p>
-    <p>Open .pbip files in Power BI Desktop (Developer Mode) to validate</p>
+    <p>{ui(text("Open .pbip files in Power BI Desktop (Developer Mode) to validate", "Ouvrez les fichiers .pbip dans Power BI Desktop (mode développeur) pour valider"))}</p>
+    <p>{ui(text("Names and raw technical evidence remain in their original language.", "Les noms et les preuves techniques brutes restent dans leur langue d’origine."))}</p>
 </div>
 <script>
 {get_report_js()}
+{localization_script()}
 </script>
 </body>
 </html>"""
@@ -945,7 +969,7 @@ def stat_card(
     style = f' style="color:{color}"' if color else ""
     return f"""<div class="stat-card{accent_cls}">
     <div class="stat-value"{style}>{esc(str(value))}</div>
-    <div class="stat-label">{esc(label)}</div>
+    <div class="stat-label">{ui(label)}</div>
 </div>"""
 
 
@@ -966,7 +990,7 @@ def section_open(
     return f"""
 <div class="section-header" onclick="toggleSection('{section_id}')">
     <span class="section-icon">{icon}</span>
-    <h2>{title}</h2>
+    <h2>{ui(title) if isinstance(title, LocalizedText) else title}</h2>
     <span class="toggle-arrow{arrow_cls}" id="{section_id}-arrow">&#9660;</span>
 </div>
 <div class="section-body{body_cls}" id="{section_id}">
@@ -980,7 +1004,7 @@ def section_close() -> str:
 
 def card(content: str = "", title: str = "") -> str:
     """Return a card wrapper with optional title."""
-    h = f"<h3>{esc(title)}</h3>" if title else ""
+    h = f"<h3>{ui(title)}</h3>" if title else ""
     return f'<div class="card">{h}\n{content}\n</div>'
 
 
@@ -1005,7 +1029,7 @@ def badge(score: str, level: str = "") -> str:
         cls = (_PRESENTATION_BADGE.get(text.upper())
                or _grade_color(text)
                or "gray")
-    return f'<span class="badge badge-{cls}">{esc(str(score))}</span>'
+    return f'<span class="badge badge-{cls}">{ui(score)}</span>'
 
 
 def fidelity_bar(pct: float) -> str:
@@ -1097,16 +1121,16 @@ def data_table(
         search_id = f"search-{tid}"
         html += f"""<div class="table-search">
     <label>&#128269;</label>
-    <input type="text" id="{search_id}" placeholder="Filter rows..." oninput="filterTable('{search_id}', '{tid}')">
+    <input type="text" id="{search_id}" placeholder="Filter rows..." aria-label="Filter rows" {i18n_attrs(text("Filter rows...", "Filtrer les lignes…"), "placeholder")} {i18n_attrs(text("Filter rows", "Filtrer les lignes"), "aria-label")} oninput="filterTable('{search_id}', '{tid}')">
 </div>\n"""
 
     detail_cls = ' class="detail-table"' if detail else ''
     html += f'<div class="table-container"><table id="{tid}"{detail_cls}>\n<thead><tr>\n'
     for i, h in enumerate(headers):
         if sortable:
-            html += f'<th class="sortable" onclick="sortTable(\'{tid}\', {i})">{esc(h)} <span class="sort-icon">&#8693;</span></th>\n'
+            html += f'<th class="sortable" onclick="sortTable(\'{tid}\', {i})">{ui(h)} <span class="sort-icon">&#8693;</span></th>\n'
         else:
-            html += f'<th>{esc(h)}</th>\n'
+            html += f'<th>{ui(h)}</th>\n'
     html += '</tr></thead>\n<tbody>\n'
     for row in rows:
         html += '<tr>' + ''.join(f'<td>{cell}</td>' for cell in row) + '</tr>\n'
@@ -1124,7 +1148,7 @@ def tab_bar(group_id: str, tabs: List[Tuple[str, str, bool]]) -> str:
     html = '<div class="tab-bar">\n'
     for tab_id, label, active in tabs:
         cls = " active" if active else ""
-        html += f'<div class="tab{cls}" data-tab-group="{group_id}" data-tab-name="{tab_id}" onclick="switchTab(\'{group_id}\', \'{tab_id}\')">{label}</div>\n'
+        html += f'<div class="tab{cls}" data-tab-group="{group_id}" data-tab-name="{tab_id}" onclick="switchTab(\'{group_id}\', \'{tab_id}\')">{ui(label) if isinstance(label, LocalizedText) else label}</div>\n'
     html += '</div>\n'
     return html
 

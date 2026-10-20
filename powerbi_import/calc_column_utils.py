@@ -105,7 +105,22 @@ def tableau_formula_to_m(formula):
     m = re.sub(r'\bABS\s*\(', 'Number.Abs(', m, flags=re.IGNORECASE)
     m = re.sub(r'\bINT\s*\(', 'Int64.From(', m, flags=re.IGNORECASE)
 
-    return normalize_m_numeric_literals(m.strip())
+    return normalize_m_boolean_literals(normalize_m_numeric_literals(m.strip()))
+
+
+def normalize_m_boolean_literals(expr):
+    """Lower boolean literals, leaving strings and field/table names intact."""
+    parts = re.split(
+        r'("(?:[^"]|"")*"|\'(?:[^\']|\'\')*\'|\[(?:[^\]]|\]\])*\])',
+        expr,
+    )
+    for i in range(0, len(parts), 2):
+        parts[i] = re.sub(
+            r'\b(TRUE|FALSE)\b(?:\s*\(\s*\))?',
+            lambda match: match.group(1).lower(),
+            parts[i], flags=re.IGNORECASE,
+        )
+    return ''.join(parts)
 
 
 # Characters invalid in M generalized identifiers (must use [#"name"] quoting).

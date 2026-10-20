@@ -121,7 +121,7 @@ If you used `--batch` on `.tfl`/`.tflx` files:
 - [ ] Review the cross-flow lineage report (`prep_lineage/prep_lineage_report.html`)
 - [ ] Follow merge recommendations (chain collapse, source dedup) where applicable
 - [ ] For YELLOW/RED flows: review script nodes and manual transformation steps
-- [ ] If pairing with a workbook: use `python migrate.py workbook.twbx --prep flow.tfl`
+- [ ] If pairing with a workbook: place that workbook in a source folder and use `python migrate.py batch /one_workbook/ --prep flow.tfl`
 
 ## 13. Bulk Assessment (`--bulk-assess`)
 

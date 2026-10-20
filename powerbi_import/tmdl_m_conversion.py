@@ -98,7 +98,18 @@ from powerbi_import.calc_column_utils import (
     _M_SPECIAL as _M_SPECIAL_CHARS,
     _quote_m_ids as _quote_m_identifiers,
     normalize_m_numeric_literals,
+    normalize_m_boolean_literals,
 )
+
+
+def _is_known_m_date_expression(expr):
+    """Recognize only date/datetime results whose type this bridge proves."""
+    inner = _extract_function_body(expr, '')
+    if inner is not None:
+        return _is_known_m_date_expression(inner.strip())
+    return any(_extract_function_body(expr, function) is not None for function in (
+        'DateTime.LocalNow', 'Date.From', 'DateTime.From', '#date', 'Date.AddDays',
+    ))
 
 
 def _split_top_level_binop(expr, ops):
@@ -153,6 +164,13 @@ def _split_top_level_binop(expr, ops):
                     matched = op
                     break
             if matched:
+                # A leading sign (or a sign after another operator) is
+                # unary, not an arithmetic split point.
+                if matched in ('+', '-'):
+                    before = expr[:i].rstrip()
+                    if not before or before[-1] in '(,+-*/^&=<>':
+                        i += len(matched)
+                        continue
                 matches.append((i, matched))
                 i += len(matched)
                 continue
@@ -166,18 +184,36 @@ def _split_top_level_binop(expr, ops):
 def _dax_to_m_expression(dax_expr, table_name=''):
     """Convert a DAX calculated-column expression to Power Query M.
 
-    Handles IF, SWITCH, FLOOR, ISBLANK, IN {}, string/date/math functions,
+    Handles IF, SWITCH, DIVIDE, FLOOR, ISBLANK, IN {}, string/date/math functions,
     simple arithmetic, column references, and boolean operators.
 
     Returns the M expression string on success, or *None* if the expression
     contains cross-table references or DAX constructs with no M equivalent
-    (RELATED, LOOKUPVALUE, CALCULATE, etc.).
+    (RELATED, LOOKUPVALUE, CALCULATE, etc.). Comment-bearing expressions
+    remain in DAX, preserving conversion diagnostics rather than pushing
+    their fallback values into M.
     """
     if not dax_expr:
         return dax_expr
     expr = dax_expr.strip()
     if not expr:
         return expr
+
+    # The scalar converter does not parse DAX comments. In particular, the
+    # upstream validation guard returns /* TODO: ... */ BLANK(). Splitting
+    # its / and * as arithmetic turns diagnostic text into executable M.
+    # Fail closed before recursive parsing; do not strip the comment and
+    # silently promote a failed conversion to a successful null column.
+    # Skip literals and identifiers so comment-like text there stays data.
+    tokens = re.finditer(
+        r'"(?:[^"]|"")*"|'
+        r"'(?:[^']|'')*'|"
+        r'\[(?:[^\]]|\]\])*\]|'
+        r'/\*|//|--',
+        expr,
+    )
+    if any(token.group(0) in ('/*', '//', '--') for token in tokens):
+        return None
 
     # ── Reject unconvertible patterns ───────────────────────────────
     upper = expr.upper()
@@ -190,6 +226,13 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     # Any remaining cross-table refs → bail
     if re.search(r"'[^']+'\[", expr):
         return None
+
+    # Unwrap only parentheses spanning the entire expression, then retain
+    # their grouping around the recursively converted operand.
+    body = _extract_function_body(expr, '')
+    if body is not None:
+        inner = _dax_to_m_expression(body, table_name)
+        return f'({inner})' if inner is not None else None
 
     # ── IF(cond, true_val [, false_val]) ────────────────────────────
     body = _extract_function_body(expr, 'IF')
@@ -227,16 +270,38 @@ def _dax_to_m_expression(dax_expr, table_name=''):
             return ' else '.join(parts) + f' else {default_v}'
         return None
 
+    # DIVIDE uses its alternate only for a zero/BLANK denominator.
+    # A BLANK numerator with a nonzero denominator stays BLANK (M null);
+    # do not replace it with the alternate or catch unrelated source errors.
+    body = _extract_function_body(expr, 'DIVIDE')
+    if body is not None:
+        args = _split_dax_args(body)
+        if len(args) not in (2, 3):
+            return None
+        converted = [_dax_to_m_expression(arg, table_name) for arg in args]
+        if any(value is None for value in converted):
+            return None
+        numerator, denominator = converted[:2]
+        alternate = converted[2] if len(converted) == 3 else 'null'
+        # Group arbitrary operands (including IF/let expressions), retaining
+        # an existing enclosing pair so composed bin expressions stay stable.
+        def grouped(value):
+            return value if _extract_function_body(value, '') is not None else f'({value})'
+        numerator = grouped(numerator)
+        denominator = grouped(denominator)
+        return (f'(if {denominator} = null or {denominator} = 0 '
+                f'then ({alternate}) else {numerator} / {denominator})')
+
     # ── FLOOR(x, n) → Number.RoundDown(x / n) * n ──────────────────
     body = _extract_function_body(expr, 'FLOOR')
     if body is not None:
         args = _split_dax_args(body)
         if len(args) == 2:
             x = _dax_to_m_expression(args[0], table_name)
-            if x is None:
+            n = _dax_to_m_expression(args[1], table_name)
+            if x is None or n is None:
                 return None
-            n = args[1].strip()
-            return f'Number.RoundDown({x} / {n}) * {n}'
+            return f'(Number.RoundDown({x} / {n}) * {n})'
         return None
 
     # ── ISBLANK(x) → (x = null) ────────────────────────────────────
@@ -350,14 +415,14 @@ def _dax_to_m_expression(dax_expr, table_name=''):
                 return f'Date.From({inner})'
         return None
 
-    # ── DATEVALUE(text) → Date.From(text) ──────────────────────────
+    # DATEVALUE is not equivalent to M's Date.From(text): DAX uses the
+    # model locale (and can supply missing date components), whereas M
+    # uses the refresh culture and different parsing rules. In particular,
+    # DATEPARSE("yyyy", ...) may already have lost its format on the way
+    # to DAX. Do not guess a month/day for year-only text here. Retain DAX
+    # until the source parsing semantics can be represented explicitly.
     body = _extract_function_body(expr, 'DATEVALUE')
     if body is not None:
-        args = _split_dax_args(body)
-        if len(args) == 1:
-            inner = _dax_to_m_expression(args[0], table_name)
-            if inner is not None:
-                return f'Date.From({inner})'
         return None
 
     # ── [expr] IN {val1, val2, …} → List.Contains({…}, expr) ───────
@@ -400,17 +465,55 @@ def _dax_to_m_expression(dax_expr, table_name=''):
             return f'{l_m} {op} {r_m}'
         return None
 
-    # ── Leaf expression (literals, column refs, operators) ──────────
-    result = expr
-    result = result.replace('&&', ' and ').replace('||', ' or ')
-    result = re.sub(r'\bTRUE\s*\(\s*\)', 'true', result, flags=re.IGNORECASE)
-    result = re.sub(r'\bFALSE\s*\(\s*\)', 'false', result, flags=re.IGNORECASE)
-    result = re.sub(r'\bBLANK\s*\(\s*\)', 'null', result, flags=re.IGNORECASE)
+    # ── Arithmetic (lowest precedence first, left-associative) ─────
+    # Recurse so calls nested in arithmetic reach the handlers above.
+    # Group each arithmetic expression so it remains a single operand
+    # when composed with its parent expression.
+    for ops in (['&'], ['+', '-'], ['*', '/']):
+        split = _split_top_level_binop(expr, ops)
+        if split:
+            left, op, right = split
+            l_m = _dax_to_m_expression(left, table_name)
+            r_m = _dax_to_m_expression(right, table_name)
+            if l_m is not None and r_m is not None:
+                l_date = _is_known_m_date_expression(l_m)
+                r_date = _is_known_m_date_expression(r_m)
+                if l_date or r_date:
+                    # DAX offsets are numbers of days; M requires a date
+                    # function or duration, never datetime +/- number.
+                    # Without column type metadata, accept only a proven
+                    # date and a numeric literal (including fractional days).
+                    number = r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)'
+                    if l_date and op in ('+', '-') and re.fullmatch(number, r_m):
+                        days = r_m if op == '+' else f'-({r_m})'
+                        return f'Date.AddDays({l_m}, {days})'
+                    if r_date and op == '+' and re.fullmatch(number, l_m):
+                        return f'Date.AddDays({r_m}, {l_m})'
+                    return None
+                return f'({l_m} {op} {r_m})'
+            return None
 
-    # Remaining DAX function calls → not convertible
-    if re.search(r'\b[A-Z_]{2,}\s*\(', result):
-        return None
-    return _quote_m_identifiers(normalize_m_numeric_literals(result))
+    # ── Leaf expression (literals, column refs, operators) ──────────
+    # Protect double-quoted literals (DAX/M both escape quotes with "").
+    # Function-looking text is data, not an unsupported call. Apply leaf
+    # rewrites only outside literals as well, so e.g. "BLANK()" stays text.
+    parts = re.split(
+        r'("(?:[^"]|"")*"|\[(?:[^\]]|\]\])*\])',
+        normalize_m_boolean_literals(expr),
+    )
+    for i in range(1, len(parts), 2):
+        if parts[i].startswith('['):
+            parts[i] = _quote_m_identifiers(parts[i])
+    for i in range(0, len(parts), 2):
+        result = parts[i]
+        result = result.replace('&&', ' and ').replace('||', ' or ')
+        result = re.sub(r'\bBLANK\s*\(\s*\)', 'null', result, flags=re.IGNORECASE)
+
+        # Remaining DAX function calls → not convertible.
+        if re.search(r'\b[A-Z_]{2,}\s*\(', result):
+            return None
+        parts[i] = _quote_m_identifiers(normalize_m_numeric_literals(result))
+    return ''.join(parts)
 
 
 _DATE_DATATYPES = frozenset({
@@ -532,6 +635,31 @@ def _strip_m_inline_comments(m_expr):
     return ''.join(result)
 
 
+def _coerce_m_datetime_step(step_expr):
+    """Convert generated AddColumn values to their declared datetime type.
+
+    Table.AddColumn's type argument declares a type; it does not convert
+    values. For example, #date(...) remains an M date even when the column
+    is declared ``type datetime`` and fails the engine's row type check.
+    Coerce at the column boundary, not inside the DAX expression converter:
+    date-valued subexpressions must still compose with other M date values.
+
+    Match only the generator's ``{prev}`` / ``each`` AddColumn shape.
+    DateTime.From preserves null and lets invalid values fail explicitly;
+    this is deliberately not a try/otherwise-null repair.
+    """
+    match = re.fullmatch(
+        r'(\s*Table\.AddColumn\(\s*\{prev\}\s*,\s*"(?:[^"]|"")*"\s*,\s*each\s+)'
+        r'(.+)'
+        r'(,\s*type\s+datetime\s*\)\s*)',
+        step_expr,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return step_expr
+    return f'{match[1]}DateTime.From({match[2]}){match[3]}'
+
+
 def _inject_m_steps_into_partition(table, steps):
     """Inject M transformation steps into a table's M partition.
 
@@ -543,7 +671,8 @@ def _inject_m_steps_into_partition(table, steps):
     # Sanitize step expressions: strip // comments and fix corrupted patterns
     sanitized_steps = []
     for step_name, step_expr in steps:
-        sanitized_steps.append((step_name, _strip_m_inline_comments(step_expr)))
+        step_expr = _strip_m_inline_comments(step_expr)
+        sanitized_steps.append((step_name, _coerce_m_datetime_step(step_expr)))
     for partition in table.get('partitions', []):
         source = partition.get('source', {})
         if source.get('type') == 'm' and source.get('expression'):

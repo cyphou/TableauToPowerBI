@@ -7,11 +7,8 @@ Pipeline:
 2. Generate the Power BI project (.pbip) with TMDL model
 3. Generate migration report with per-item fidelity tracking
 
-Supports:
-- Single workbook migration:  python migrate.py workbook.twbx
-- Batch migration:            python migrate.py --batch folder/
-- Custom output directory:    python migrate.py workbook.twbx --output-dir out/
-- Verbose logging:            python migrate.py workbook.twbx --verbose
+Generation is batch-only: place one or more workbooks in a source folder.
+File-based assessment and diagnostic commands remain available.
 """
 
 import os
@@ -27,6 +24,7 @@ import zipfile
 import concurrent.futures
 import threading
 import shutil
+import time
 from datetime import datetime
 from enum import IntEnum
 
@@ -68,13 +66,217 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
 def _get_extract_dir():
     """Return the directory for intermediate extraction JSON files.
 
-    Checks the ``TTPBI_EXTRACT_DIR`` environment variable first, falling
-    back to the ``tableau_export/`` subdirectory next to this script.
+    A per-thread directory takes precedence so parallel batch workers never
+    read or overwrite another workbook's extraction.
     """
+    thread_dir = getattr(_extract_dir_local, 'path', None)
+    if thread_dir:
+        return thread_dir
     env = os.environ.get('TTPBI_EXTRACT_DIR')
     if env:
         return env
     return os.path.join(os.path.dirname(__file__), 'tableau_export')
+
+
+_extract_dir_local = threading.local()
+_upload_security_violation = False
+
+
+class UploadSecurityError(SecurityError, ValueError, OSError):
+    """An uploaded job attempted to cross its server-owned file boundary."""
+
+    winerror = None
+
+
+def _upload_root():
+    """Server-owned context, inherited by workers; absent for trusted local CLI."""
+    root = os.environ.get('TTPBI_UPLOAD_ROOT')
+    return os.path.realpath(root) if root else None
+
+
+def _confine_upload_path(path, *roots):
+    """Check canonical containment and reject symlinks / Windows reparse points."""
+    import stat
+    absolute = os.path.abspath(os.fsdecode(path))
+    resolved = os.path.realpath(absolute)
+    for root in roots:
+        root = os.path.abspath(root)
+        try:
+            if (os.path.commonpath([os.path.normcase(resolved),
+                                    os.path.normcase(os.path.realpath(root))])
+                    != os.path.normcase(os.path.realpath(root))
+                    or os.path.commonpath([os.path.normcase(absolute),
+                                           os.path.normcase(root)])
+                    != os.path.normcase(root)):
+                continue
+        except ValueError:
+            continue
+        current = absolute
+        while True:
+            if os.path.lexists(current):
+                info = os.lstat(current)
+                if (stat.S_ISLNK(info.st_mode)
+                        or getattr(info, 'st_file_attributes', 0) & 0x400):
+                    raise UploadSecurityError("Links/reparse points in uploaded sources are forbidden")
+            if os.path.normcase(current) == os.path.normcase(root):
+                return resolved
+            current = os.path.dirname(current)
+    raise UploadSecurityError("Upload file is outside its authorized directory")
+
+
+def _upload_relative_path(path):
+    """References from uploaded content cannot select absolute paths or parents."""
+    import ntpath
+    portable = str(path).replace('\\', '/')
+    if (not portable or portable.startswith('/') or '\0' in portable or ntpath.splitdrive(portable)[0]
+            or ntpath.isabs(portable) or '..' in portable.split('/')
+            or ':' in portable):
+        raise UploadSecurityError("Uploaded source references must be relative, without parent traversal")
+    return portable
+
+
+def _validate_uploaded_workbook(path, boundary=None):
+    """Validate bindings before extraction/generation can open local sources."""
+    import ntpath
+    import stat
+    from powerbi_import.security_validator import safe_parse_xml
+
+    def xml_bindings(data, members=None):
+        if b'<!DOCTYPE' in data.upper() or b'<!ENTITY' in data.upper():
+            raise UploadSecurityError("DTD/entity declarations are forbidden in uploaded XML")
+        try:
+            root = safe_parse_xml(data)
+        except Exception as exc:
+            raise UploadSecurityError("Invalid uploaded XML") from exc
+        for node in root.iter():
+            attributes = node.attrib
+            for key in ('filename', 'directory', 'original-filename', 'original_filename'):
+                value = attributes.get(key)
+                if value:
+                    _upload_relative_path(value)
+            local_class = attributes.get('class', '').lower()
+            if local_class in {'hyper', 'dataengine', 'excel-direct', 'excel',
+                               'textscan', 'spatial', 'stat-direct', 'sqlite'}:
+                value = attributes.get('dbname')
+                if value:
+                    _upload_relative_path(value)
+            filename = attributes.get('filename')
+            if not filename and local_class in {'hyper', 'dataengine', 'sqlite', 'spatial'}:
+                filename = attributes.get('dbname')
+            if filename:
+                reference = _upload_relative_path(ntpath.join(
+                    attributes.get('directory') or '', filename))
+                if members is None:
+                    _confine_upload_path(os.path.join(os.path.dirname(path), reference),
+                                         boundary or _upload_root() or os.path.dirname(path))
+
+    if path.lower().endswith(('.twbx', '.tdsx', '.tflx')):
+        with zipfile.ZipFile(path) as archive:
+            for member in archive.infolist():
+                _upload_relative_path(member.filename)
+                if stat.S_ISLNK(member.external_attr >> 16):
+                    raise UploadSecurityError("Archive symlinks are forbidden")
+            for member in archive.infolist():
+                if member.filename.lower().endswith(('.twb', '.tds', '.tfl')):
+                    xml_bindings(archive.read(member), archive.namelist())
+    else:
+        with open(path, 'rb') as stream:
+            xml_bindings(stream.read())
+
+
+def _validate_upload_tree(root):
+    """Check even directory reparse points that os.walk would otherwise skip."""
+    if not _upload_root():
+        return
+    _confine_upload_path(root, _upload_root())
+    for current, dirs, files in os.walk(root):
+        for name in dirs + files:
+            _confine_upload_path(os.path.join(current, name), _upload_root())
+        for name in files:
+            if name.lower().endswith(('.twb', '.twbx', '.tds', '.tdsx', '.tfl', '.tflx')):
+                _validate_uploaded_workbook(os.path.join(current, name), _upload_root())
+
+
+def _install_upload_copy_guard(output_dir):
+    """Process-wide read/copy defense, only in a dedicated upload subprocess."""
+    root = _upload_root()
+    if not root:
+        return
+    if not output_dir:
+        raise UploadSecurityError("Uploads require an explicit output directory")
+    output = os.path.realpath(output_dir)
+    roots = (root, output)
+    code_root = os.path.dirname(os.path.abspath(__file__))
+    runtime_roots = tuple(os.path.realpath(p) for p in
+                          (sys.prefix, sys.base_prefix) if p)
+
+    def enforce(event, args):
+        if event == 'ttpbi.upload_denied':
+            raise UploadSecurityError(str(args[0]))
+        elif event in {'shutil.copyfile', 'shutil.copytree', 'shutil.move'}:
+            _confine_upload_path(args[0], *roots)
+            _confine_upload_path(args[1], output)
+        elif event in {'os.rename', 'os.link', 'os.symlink'}:
+            _confine_upload_path(args[0], *roots)
+            _confine_upload_path(args[1], output)
+            if event != 'os.rename':
+                raise UploadSecurityError("Uploaded jobs cannot create filesystem links")
+        elif event == 'open' and isinstance(args[0], (str, bytes, os.PathLike)):
+            path, mode, flags = args
+            writing = ((isinstance(mode, str) and any(c in mode for c in 'wax+'))
+                       or flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC))
+            if writing:
+                _confine_upload_path(path, output)
+                return
+            try:
+                _confine_upload_path(path, *roots)
+                return
+            except UploadSecurityError:
+                pass
+            for runtime in runtime_roots:
+                try:
+                    _confine_upload_path(path, runtime)
+                    return
+                except UploadSecurityError:
+                    pass
+            extension = os.path.splitext(os.fsdecode(path))[1].lower()
+            if extension in {'.py', '.pyc', '.pyd', '.dll'}:
+                _confine_upload_path(path, code_root)
+                return
+            if extension == '.json':
+                _confine_upload_path(path, os.path.join(code_root, 'powerbi_import', 'config'))
+                return
+            raise UploadSecurityError("Reading files outside the uploaded job is forbidden")
+
+    def guard(event, args):
+        global _upload_security_violation
+        try:
+            enforce(event, args)
+        except UploadSecurityError:
+            _upload_security_violation = True
+            raise
+
+    sys.dont_write_bytecode = True
+    sys.addaudithook(guard)
+    original_copy2 = shutil.copy2
+
+    def confined_copy2(source, destination, *, follow_symlinks=True):
+        guard('shutil.copyfile', (source, destination))
+        if os.path.isdir(destination):
+            guard('shutil.copyfile',
+                  (source, os.path.join(destination, os.path.basename(source))))
+        return original_copy2(source, destination, follow_symlinks=follow_symlinks)
+
+    shutil.copy2 = confined_copy2
+    winapi = getattr(shutil, '_winapi', None)
+    native_copy = getattr(winapi, 'CopyFile2', None)
+    if native_copy is not None:
+        def confined_native_copy(source, destination, flags):
+            guard('shutil.copyfile', (source, destination))
+            return native_copy(source, destination, flags)
+
+        winapi.CopyFile2 = confined_native_copy
+    tempfile.tempdir = output
 
 
 # ── Structured logging setup ────────────────────────────────────────
@@ -151,7 +353,32 @@ class MigrationStats:
         return {k: v for k, v in self.__dict__.items()}
 
 
-_stats = MigrationStats()
+class _StatsProxy:
+    """Keep existing _stats attribute access isolated to the current worker."""
+
+    def __init__(self):
+        object.__setattr__(self, '_local', threading.local())
+        self._local.value = MigrationStats()
+
+    def _get_current_stats(self):
+        if not hasattr(self._local, 'value'):
+            self._local.value = MigrationStats()
+        return self._local.value
+
+    def reset(self):
+        self._local.value = MigrationStats()
+
+    def __getattr__(self, name):
+        return getattr(self._get_current_stats(), name)
+
+    def __setattr__(self, name, value):
+        if name == '_local':
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._get_current_stats(), name, value)
+
+
+_stats = _StatsProxy()
 
 
 def print_header(text):
@@ -169,8 +396,11 @@ def print_step(step_num, total_steps, text):
     print("-" * 80)
 
 
-def run_extraction(tableau_file, hyper_max_rows=None):
+def run_extraction(tableau_file, hyper_max_rows=None, output_dir=None):
     """Run Tableau extraction with path validation."""
+    if _upload_root():
+        _confine_upload_path(tableau_file, _upload_root())
+        _validate_uploaded_workbook(tableau_file)
     print_step(1, 2, "TABLEAU OBJECTS EXTRACTION")
 
     # Security: validate file path
@@ -224,7 +454,8 @@ def run_extraction(tableau_file, hyper_max_rows=None):
     try:
         from extract_tableau_data import TableauExtractor
 
-        extractor = TableauExtractor(tableau_file, hyper_max_rows=hyper_max_rows)
+        extractor = TableauExtractor(
+            tableau_file, output_dir=output_dir, hyper_max_rows=hyper_max_rows)
         success = extractor.extract_all()
 
         if success:
@@ -352,7 +583,7 @@ def _resolve_published_datasources(args):
     return True
 
 
-def _run_fabric_generation(report_name=None, output_dir=None,
+def _run_fabric_generation(report_name=None, output_dir=None, source_dir=None,
                            calendar_start=None, calendar_end=None,
                            culture=None, languages=None):
     """Generate Fabric-native artifacts (Lakehouse + Dataflow Gen2 +
@@ -365,7 +596,7 @@ def _run_fabric_generation(report_name=None, output_dir=None,
         from powerbi_import.import_to_powerbi import PowerBIImporter
 
         # Load extracted JSON files
-        loader = PowerBIImporter()
+        loader = PowerBIImporter(source_dir=source_dir)
         extracted = loader._load_converted_objects()
 
         if not extracted.get('datasources'):
@@ -415,7 +646,8 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
                    output_format='pbip', paginated=False, languages=None,
                    composite_threshold=None, agg_tables='none',
                    incremental_refresh=False, incremental_refresh_months=12,
-                   parameterize=True, optimize_dax=False, time_intelligence='none'):
+                   parameterize=True, optimize_dax=False, time_intelligence='none',
+                   source_dir=None):
     """Generate Power BI project (.pbip) from extracted data
 
     Args:
@@ -436,6 +668,7 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
     if output_format == 'fabric':
         return _run_fabric_generation(
             report_name=report_name, output_dir=output_dir,
+            source_dir=source_dir,
             calendar_start=calendar_start, calendar_end=calendar_end,
             culture=culture, languages=languages,
         )
@@ -444,7 +677,7 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
     try:
         from import_to_powerbi import PowerBIImporter
 
-        importer = PowerBIImporter()
+        importer = PowerBIImporter(source_dir=source_dir)
         importer.import_all(generate_pbip=True, report_name=report_name, output_dir=output_dir,
                             calendar_start=calendar_start, calendar_end=calendar_end,
                             culture=culture, model_mode=model_mode,
@@ -909,6 +1142,10 @@ def run_prep_flow(prep_file, datasources_json=None):
 
         # Parse the Prep flow
         prep_datasources = parse_prep_flow(prep_file)
+        if not prep_datasources:
+            raise ValueError("Prep flow produced zero outputs")
+        if not any(ds.get('m_query_override', '').strip() for ds in prep_datasources):
+            raise ValueError("Prep flow produced no output M queries")
         print(f"\n  [OK] {len(prep_datasources)} Prep output(s) parsed")
 
         # Load existing TWB datasources
@@ -923,6 +1160,31 @@ def run_prep_flow(prep_file, datasources_json=None):
         # Merge Prep transforms into TWB datasources
         merged = merge_prep_with_workbook(prep_datasources, twb_datasources)
 
+        # The parser appends unmatched Prep tables too; that is not a merge
+        # into the workbook. Verify its exact table-name/caption matches and
+        # the per-table m_query_overrides it actually installs on TWB sources.
+        prep_aliases = {}
+        for ds in prep_datasources:
+            query = ds.get('m_query_override', '')
+            for table in ds.get('tables') or []:
+                if table.get('name') and query:
+                    prep_aliases[table['name']] = query
+                    if ds.get('caption'):
+                        prep_aliases[ds['caption']] = query
+                        prep_aliases[ds['caption'].replace(' ', '_')] = query
+        matched = sum(
+            1 for ds in twb_datasources for table in ds.get('tables') or []
+            if table.get('name') in prep_aliases
+            and (ds.get('m_query_overrides') or {}).get(table['name'])
+            == prep_aliases[table['name']]
+        )
+        if not matched:
+            raise ValueError(
+                "Prep flow did not match any workbook tables by exact name/caption; "
+                "only unmatched standalone tables would be appended. "
+                "Explicit datasource provenance is required for differently named sources."
+            )
+
         # Save merged datasources back
         with open(datasources_json, 'w', encoding='utf-8') as f:
             _json.dump(merged, f, indent=2, ensure_ascii=False)
@@ -931,7 +1193,7 @@ def run_prep_flow(prep_file, datasources_json=None):
         print("\n[OK] Prep flow parsing completed successfully")
         return True
 
-    except (ImportError, OSError, json.JSONDecodeError) as e:
+    except (ImportError, OSError, ValueError) as e:
         logger.error("Prep flow parsing failed: %s", e, exc_info=True)
         print(f"\nError during Prep flow parsing: {str(e)}")
         return False
@@ -966,6 +1228,10 @@ def run_standalone_prep(prep_file):
 
         # Parse the Prep flow → list of datasource dicts with M queries
         prep_datasources = parse_prep_flow(prep_file)
+        if not prep_datasources:
+            logger.error("Standalone Prep flow produced zero outputs")
+            print("\nError: Standalone Prep flow produced zero outputs")
+            return False
         print(f"  [OK] {len(prep_datasources)} Prep output(s) parsed")
 
         # Write synthetic extraction JSON files
@@ -993,7 +1259,7 @@ def run_standalone_prep(prep_file):
         print("\n[OK] Prep flow standalone extraction completed")
         return True
 
-    except (ImportError, OSError, json.JSONDecodeError) as e:
+    except (ImportError, OSError, ValueError) as e:
         logger.error("Standalone Prep flow parsing failed: %s", e, exc_info=True)
         print(f"\nError during Prep flow parsing: {str(e)}")
         return False
@@ -1233,6 +1499,10 @@ def _run_batch_config(args):
         print("Error: Batch config must be a JSON array of objects")
         return ExitCode.GENERAL_ERROR
 
+    if getattr(args, 'dry_run', False):
+        print(f"[DRY RUN] Would process {len(entries)} batch-config entries from {config_path}; no files written.")
+        return ExitCode.SUCCESS
+
     config_dir = os.path.dirname(os.path.abspath(config_path))
 
     print_header("TABLEAU TO POWER BI BATCH-CONFIG MIGRATION")
@@ -1262,7 +1532,7 @@ def _run_batch_config(args):
         print(f"  [{i}/{len(entries)}] Migrating: {basename}")
         print(f"{'=' * 80}")
 
-        _stats = MigrationStats()
+        _stats.reset()
 
         # Per-entry overrides (fall back to CLI args)
         skip = entry.get('skip_extraction', args.skip_extraction)
@@ -1288,6 +1558,15 @@ def _run_batch_config(args):
         if prep:
             ppath = prep if os.path.isabs(prep) else os.path.join(config_dir, prep)
             file_results['prep'] = run_prep_flow(ppath)
+            if not file_results['prep']:
+                results[basename] = {'success': False, 'error': 'prep'}
+                continue
+
+        # Stage declared files before generation's fail-closed source audit.
+        _stage_declared_local_sources(
+            tableau_file,
+            os.path.join(out_dir or os.path.join(
+                'artifacts', 'powerbi_projects', 'migrated'), basename))
 
         # Generate
         file_results['generation'] = run_generation(
@@ -1390,7 +1669,34 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
         logger.warning("Failed to analyze %s: %s", display_name, exc)
         print(f"  ⚠ Analysis failed: {exc}")
         return {'success': False, 'error': 'analysis', 'report_name': basename,
-                'output_dir': workbook_output_dir}
+                'output_dir': workbook_output_dir, 'error_details': str(exc)}
+
+    failure = profile.assessment.get('conversion_error')
+    if not failure and not profile.outputs:
+        failure = "Prep flow produced zero outputs"
+    if not failure and not profile.m_queries:
+        failure = "Prep flow produced no output M queries"
+    if not failure:
+        # The analyzer keys queries by table name, so duplicate output names
+        # can silently overwrite a query. Fail closed until outputs have
+        # unambiguous identities rather than exporting incomplete coverage.
+        output_names = [output.name.replace(' ', '_') for output in profile.outputs]
+        if len(set(output_names)) != len(output_names):
+            failure = f"Duplicate Prep output table names would lose M query coverage: {output_names!r}"
+        else:
+            missing = [name for name in output_names if not profile.m_queries.get(name, '').strip()]
+            if missing:
+                failure = f"Prep outputs have no M queries: {missing!r}"
+    if not failure:
+        query_files = [name.replace('/', '_').replace('\\', '_').casefold()
+                       for name in profile.m_queries]
+        if len(set(query_files)) != len(query_files):
+            failure = "Prep M query filenames collide; exporting would overwrite queries"
+    if failure:
+        logger.error("Prep conversion failed for %s: %s", display_name, failure)
+        print(f"  [FAIL] Prep conversion failed: {failure}")
+        return {'success': False, 'error': 'conversion', 'error_details': failure,
+                'report_name': basename, 'output_dir': workbook_output_dir}
 
     grade = profile.assessment.get('grade', '?')
     print(f"  → {len(profile.inputs)} inputs, {len(profile.outputs)} outputs, "
@@ -1480,7 +1786,8 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
 def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, display_name,
                              skip_extraction, wb_prep, wb_cal_start, wb_cal_end, wb_culture,
                              verify_open=True, output_format='pbip',
-                             quality_policy='report', data_search_root=None):
+                             quality_policy='report', data_search_root=None,
+                             model_mode='import'):
     """Migrate a single workbook — used by both sequential and parallel batch modes.
 
     For .tfl/.tflx files, delegates to _migrate_single_prep_flow() which produces
@@ -1490,8 +1797,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     Returns:
         dict: Result dict with success, stats, fidelity, report_name, output_dir, metadata_path
     """
-    global _stats
-    _stats = MigrationStats()
+    _stats.reset()
 
     # ── Standalone Prep flow: lineage + M + sources (no .pbip) ──
     _is_prep_standalone = os.path.splitext(tableau_file)[1].lower() in ('.tfl', '.tflx')
@@ -1503,7 +1809,8 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
 
     # Step 1: Extract
     if not skip_extraction:
-        file_results['extraction'] = run_extraction(tableau_file)
+        file_results['extraction'] = run_extraction(
+            tableau_file, output_dir=_get_extract_dir())
         if not file_results['extraction']:
             logger.warning("Extraction failed for %s, skipping", display_name)
             return {'success': False, 'error': 'extraction', 'report_name': basename,
@@ -1521,6 +1828,15 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     # Step 1b: Prep flow (optional)
     if wb_prep:
         file_results['prep'] = run_prep_flow(wb_prep)
+        if not file_results['prep']:
+            logger.error("Prep flow failed for %s; migration aborted", display_name)
+            return {'success': False, 'error': 'prep', 'report_name': basename,
+                    'output_dir': workbook_output_dir,
+                    'error_details': f"Prep flow parsing or merge failed: {wb_prep}"}
+
+    # The semantic audit must see actual declared files, not an empty Data/.
+    _stage_declared_local_sources(
+        tableau_file, os.path.join(workbook_output_dir, basename))
 
     # Step 2: Generate
     file_results['generation'] = run_generation(
@@ -1529,7 +1845,9 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         calendar_start=wb_cal_start,
         calendar_end=wb_cal_end,
         culture=wb_culture,
+        model_mode=model_mode,
         output_format=output_format,
+        source_dir=_get_extract_dir(),
     )
 
     # Step 3: Migration report
@@ -1541,14 +1859,16 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         )
 
     # Step 4: Extract embedded data files and Power Query M expressions from TWBX
-    if file_results.get('generation') and tableau_file.lower().endswith('.twbx'):
+    if file_results.get('generation'):
         project_dir = os.path.join(workbook_output_dir, basename)
-        _process_twbx_post_generation(tableau_file, project_dir, basename)
-
-    # Step 4b: For TWB files, ensure DataFolder points to a local Data/ folder
-    if file_results.get('generation') and not tableau_file.lower().endswith('.twbx'):
-        project_dir = os.path.join(workbook_output_dir, basename)
-        _fix_twb_data_folder(project_dir, basename)
+        if tableau_file.lower().endswith('.twbx'):
+            if zipfile.is_zipfile(tableau_file):
+                _process_twbx_post_generation(tableau_file, project_dir, basename)
+            else:
+                _process_twbx_post_generation(tableau_file, project_dir, basename)
+                _fix_twb_data_folder(project_dir, basename)
+        else:
+            _fix_twb_data_folder(project_dir, basename)
 
     # Step 4c: Sources kept beside the workbook (or linked, not embedded)
     if file_results.get('generation'):
@@ -1561,6 +1881,8 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         _reconcile_csv_partitions(project_dir, basename)
         _wire_shapefile_map_coordinates(project_dir, basename)
         _restrict_file_partitions_to_model(project_dir, basename)
+        _sync_final_calendar_source_expressions(project_dir, basename)
+        _export_power_query_files(project_dir, basename)
         _shorten_report_artifact_path(project_dir, basename)
 
     if file_results.get('generation') and verify_open:
@@ -1868,6 +2190,7 @@ def _run_full_lineage(batch_results, migrated_root):
         # Check in extraction dir
         for candidate in [
             os.path.join(out_dir, 'datasources.json'),
+            os.path.join(res.get('extraction_dir', ''), 'datasources.json'),
             os.path.join(_get_extract_dir(), 'datasources.json'),
             os.path.join(out_dir, wb_name, 'datasources.json'),
         ]:
@@ -1914,7 +2237,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                         calendar_start=None, calendar_end=None, culture=None,
                         parallel=None, resume=False, jsonl_log=None, manifest=None,
                         full_lineage=False, verify_open=True, output_format='pbip',
-                        quality_policy='report'):
+                        quality_policy='report', dry_run=False, model_mode='import'):
     """Batch migrate all .twb/.twbx files in a directory (recursive).
 
     Searches the directory tree recursively for Tableau workbooks and
@@ -1946,6 +2269,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         return 1
 
     batch_dir = os.path.abspath(batch_dir)
+    _validate_upload_tree(batch_dir)
 
     # Find all Tableau workbooks recursively
     tableau_files = []
@@ -1962,10 +2286,16 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
 
     # Output root: honour --output-dir or default to <batch_dir>/migrated
     migrated_root = output_dir if output_dir else os.path.join(batch_dir, 'migrated')
+    if dry_run:
+        print(f"[DRY RUN] Found {len(tableau_files)} batch source candidate(s):")
+        for path in tableau_files:
+            print(f"  {os.path.relpath(path, batch_dir)}")
+        print(f"  Output: {migrated_root}; no extraction or generation performed.")
+        return ExitCode.SUCCESS
     os.makedirs(migrated_root, exist_ok=True)
 
     checkpoint_path = os.path.join(migrated_root, '.migration_batch_state.json')
-    checkpoint_lock = threading.Lock()
+    checkpoint_lock = threading.RLock()
 
     def _checkpoint_config():
         return json.dumps({
@@ -1973,6 +2303,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'calendar_start': calendar_start,
             'calendar_end': calendar_end,
             'culture': culture,
+            'model_mode': model_mode,
             'skip_extraction': skip_extraction,
             'prep_file': os.path.abspath(prep_file) if prep_file else None,
         }, sort_keys=True, default=str)
@@ -2000,11 +2331,26 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
     checkpoint = _load_checkpoint()
 
     def _save_checkpoint():
-        temp_path = f'{checkpoint_path}.tmp'
         with checkpoint_lock:
-            with open(temp_path, 'w', encoding='utf-8') as handle:
-                json.dump(checkpoint, handle, indent=2, default=str)
-            os.replace(temp_path, checkpoint_path)
+            fd, temp_path = tempfile.mkstemp(
+                prefix='.migration_batch_state_', suffix='.tmp', dir=migrated_root)
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                    json.dump(checkpoint, handle, indent=2, default=str)
+                for attempt in range(3):
+                    try:
+                        os.replace(temp_path, checkpoint_path)
+                        break
+                    except PermissionError:
+                        if attempt == 2:
+                            logger.exception(
+                                "Could not replace batch checkpoint after 3 attempts: %s",
+                                checkpoint_path)
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
 
     def _set_checkpoint(task, status, result=None, duration_sec=0.0, error=''):
         key = os.path.relpath(task['tableau_file'], batch_dir)
@@ -2020,18 +2366,19 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             stages['quality'] = str(result['quality_status']).lower()
         if result.get('prep_flow'):
             stages['prep'] = 'completed' if result.get('success') else 'failed'
-        checkpoint[key] = {
-            'source_signature': _source_signature(task['tableau_file']),
-            'config_signature': checkpoint_config,
-            'output_format': task['output_format'],
-            'status': status,
-            'duration_sec': round(duration_sec, 3),
-            'result': result,
-            'stages': stages,
-            'error': error,
-            'updated_at': datetime.now().isoformat(),
-        }
-        _save_checkpoint()
+        with checkpoint_lock:
+            checkpoint[key] = {
+                'source_signature': _source_signature(task['tableau_file']),
+                'config_signature': checkpoint_config,
+                'output_format': task['output_format'],
+                'status': status,
+                'duration_sec': round(duration_sec, 3),
+                'result': result,
+                'stages': stages,
+                'error': error,
+                'updated_at': datetime.now().isoformat(),
+            }
+            _save_checkpoint()
 
     print_header("TABLEAU TO POWER BI BATCH MIGRATION")
     print(f"  Source:     {batch_dir}")
@@ -2047,6 +2394,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
 
     # ── JSONL structured logging ──────────────────────────────
     jsonl_fh = None
+    jsonl_lock = threading.Lock()
     if jsonl_log:
         jsonl_fh = open(jsonl_log, 'a', encoding='utf-8')
 
@@ -2060,8 +2408,9 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'event': event_type,
             **data,
         }
-        jsonl_fh.write(_json.dumps(record, default=str) + '\n')
-        jsonl_fh.flush()
+        with jsonl_lock:
+            jsonl_fh.write(_json.dumps(record, default=str) + '\n')
+            jsonl_fh.flush()
 
     _write_jsonl('batch_start', {
         'source_dir': batch_dir,
@@ -2158,9 +2507,14 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'output_format': output_format,
             'quality_policy': quality_policy,
             'search_root': batch_dir,
+            'extract_dir': (
+                os.path.join(migrated_root, '.migration_extract',
+                             os.path.relpath(tableau_file, batch_dir))
+                if not skip_extraction else None
+            ),
         })
 
-    def _run_task(task):
+    def _run_task_in_context(task):
         """Execute a single workbook migration task."""
         print(f"\n{'=' * 80}")
         print(f"  [{task['index']}/{len(tasks)}] Migrating: {task['display_name']}")
@@ -2190,6 +2544,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 verify_open=verify_open,
                 quality_policy=task['quality_policy'],
                 data_search_root=task.get('search_root'),
+                model_mode=model_mode,
             )
         except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
             wb_result = {'success': False, 'error': str(exc), 'error_category': 'exception'}
@@ -2205,7 +2560,44 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'stats': wb_result.get('stats', {}),
             'checkpoint_status': status,
         })
+        if task.get('extract_dir'):
+            wb_result.setdefault('extraction_dir', task['extract_dir'])
         return task['display_name'], wb_result
+
+    def _run_task(task):
+        """Isolate setup and migration failures to this workbook."""
+        extract_dir = task.get('extract_dir')
+        try:
+            if extract_dir:
+                os.makedirs(extract_dir, exist_ok=True)
+                _extract_dir_local.path = extract_dir
+            return _run_task_in_context(task)
+        except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
+            display_name = task['display_name']
+            logger.exception("Could not prepare or record migration for %s", display_name)
+            result = {
+                'success': False,
+                'error': str(exc),
+                'error_category': 'exception',
+            }
+            try:
+                _set_checkpoint(task, 'failed', result, error=str(exc))
+            except Exception:  # noqa: BLE001 - retain the original task failure
+                logger.exception("Could not record failure checkpoint for %s", display_name)
+            try:
+                _write_jsonl('workbook_end', {
+                    'workbook': display_name,
+                    'success': False,
+                    'error': str(exc),
+                    'checkpoint_status': 'failed',
+                })
+            except Exception:  # noqa: BLE001 - logging must not abort the batch
+                logger.exception("Could not write failure event for %s", display_name)
+            result.setdefault('extraction_dir', extract_dir)
+            return display_name, result
+        finally:
+            if hasattr(_extract_dir_local, 'path'):
+                del _extract_dir_local.path
 
     # ── Execute tasks (sequential or parallel) ────────────────
     if parallel and parallel > 1 and len(tasks) > 1:
@@ -2254,7 +2646,7 @@ def _add_source_args(parser):
         'tableau_file',
         nargs='?',
         default=None,
-        help='Path to the Tableau file (.twb or .twbx)'
+        help='Source folder for batch generation, or a Tableau file for diagnostic-only assessment/parity/quality inspection'
     )
 
     parser.add_argument(
@@ -3492,36 +3884,36 @@ _SIMPLE_HELP = textwrap.dedent("""\
 Tableau to Power BI - 14 simple commands
 
 Usage:
-  python migrate.py migrate WORKBOOK [options]
+  python migrate.py migrate FOLDER [options]
   python migrate.py assess WORKBOOK [options]
   python migrate.py batch FOLDER [options]
   python migrate.py server URL WORKBOOK [options]
   python migrate.py merge WORKBOOK... [options]
-  python migrate.py fabric WORKBOOK [options]
-  python migrate.py deploy WORKBOOK WORKSPACE_ID [options]
-    python migrate.py qa WORKBOOK [options]
+  python migrate.py fabric FOLDER [options]
+  python migrate.py deploy FOLDER WORKSPACE_ID [options]
+    python migrate.py qa FOLDER [options]
     python migrate.py quality WORKBOOK [options]
     python migrate.py parity WORKBOOK [options]
     python migrate.py portfolio FOLDER [options]
-    python migrate.py plan SOURCE [options]
+    python migrate.py plan SERVER_URL [options]
     python migrate.py lineage FLOW_OR_FOLDER... [options]
-    python migrate.py package WORKBOOK [options]
+    python migrate.py package FOLDER [options]
 
 Commands:
-  migrate   Convert one Tableau workbook to a validated PBIP project
+  migrate   Generate PBIP projects from a source folder in batch mode
   assess    Assess migration readiness without generating a project
   batch     Migrate every workbook and Prep flow in a folder
-  server    Download and migrate one Tableau Server/Cloud workbook
+  server    Download a Tableau Server/Cloud workbook into an isolated batch
   merge     Build one shared semantic model from multiple workbooks
   fabric    Generate Lakehouse, Dataflow, Notebook, model, report, pipeline
   deploy    Generate Fabric artifacts, deploy them, and run the pipeline
-    qa        Migrate a workbook and generate the QA report card
-    quality   Migrate a workbook and generate the unified quality report
+    qa        Batch migration (batch quality reports are generated by default)
+    quality   Inspect an existing migrated project without regenerating it
     parity    Scan Tableau feature usage and generate a parity scorecard
     portfolio Assess a folder of workbooks and Prep flows without migrating
-    plan      Generate migration waves, effort estimates, and timeline
+    plan      Plan Tableau Server migration waves, effort, and timeline
     lineage   Analyze Prep-flow lineage and merge recommendations
-    package   Migrate a workbook and create the stakeholder report package
+    package   Batch migration from a source folder
 
 Common options:
   --output-dir PATH   Choose the output folder
@@ -3529,7 +3921,8 @@ Common options:
   --config FILE       Load advanced settings from JSON
 
 Compatibility:
-  Existing flag-based commands still work unchanged.
+  Project generation requires a source folder, --batch, --batch-config,
+  --manifest, or --shared-model. Direct single-file generation is retired.
   Use "python migrate.py --advanced-help" for every legacy option.
     Power BI Desktop opens only when --desktop-probe is explicitly provided.
 """).strip().replace("\n    python migrate", "\n  python migrate").replace(
@@ -3550,10 +3943,15 @@ def _expand_simple_command(argv):
 
     command = args[0]
     values = args[1:]
-    if command in {'migrate', 'assess', 'fabric', 'qa', 'quality', 'parity',
-                   'plan', 'package'}:
+    if command == 'plan':
         if not values or values[0].startswith('-'):
-            raise ValueError(f"'{command}' requires a Tableau workbook path")
+            raise ValueError("'plan' requires a Tableau Server/Cloud URL")
+        return ['--server', values[0], '--plan-migration', *values[1:]]
+
+    if command in {'migrate', 'assess', 'fabric', 'qa', 'quality', 'parity',
+                   'package'}:
+        if not values or values[0].startswith('-'):
+            raise ValueError(f"'{command}' requires a source path (a folder for project generation)")
         source, options = values[0], values[1:]
         fixed = {
             'migrate': [],
@@ -3562,7 +3960,6 @@ def _expand_simple_command(argv):
             'qa': ['--qa'],
             'quality': ['--quality-report'],
             'parity': ['--parity'],
-            'plan': ['--plan-migration'],
             'package': ['--report-package'],
         }[command]
         return [source, *fixed, *options]
@@ -3605,7 +4002,7 @@ def _expand_simple_command(argv):
 
     if command == 'deploy':
         if len(values) < 2 or any(value.startswith('-') for value in values[:2]):
-            raise ValueError("'deploy' requires workbook path and workspace ID")
+            raise ValueError("'deploy' requires source folder and workspace ID")
         return [
             values[0], '--output-format', 'fabric',
             '--deploy', values[1], '--deploy-refresh', *values[2:],
@@ -3898,7 +4295,7 @@ def _download_from_server(args):
     """Download workbooks from Tableau Server/Cloud.
 
     Returns ExitCode on failure, None on success (caller should continue).
-    Mutates args.tableau_file or args.batch.
+    Sets args.batch to an isolated download directory.
     """
     try:
         from tableau_export.server_client import TableauServerClient
@@ -3914,9 +4311,7 @@ def _download_from_server(args):
         )
         ts_client.sign_in()
 
-        download_dir = os.path.join(
-            tempfile.gettempdir(), 'tableau_server_downloads'
-        )
+        download_dir = tempfile.mkdtemp(prefix='tableau_server_downloads_')
 
         if getattr(args, 'server_batch', None):
             # Batch: download assets from a project
@@ -4046,6 +4441,7 @@ def _download_from_server(args):
                 return ExitCode.EXTRACTION_FAILED
             # Switch to batch mode
             args.batch = download_dir
+            args.tableau_file = None
         elif getattr(args, 'workbook', None):
             # Single workbook download
             print(f"  Workbook: {args.workbook}")
@@ -4101,7 +4497,8 @@ def _download_from_server(args):
             ts_client.download_workbook(match['id'], twbx_path)
             ts_client.sign_out()
             print(f"  Downloaded: {twbx_path}")
-            args.tableau_file = twbx_path
+            args.batch = download_dir
+            args.tableau_file = None
         else:
             ts_client.sign_out()
             print("  Specify --workbook NAME or --server-batch PROJECT")
@@ -5562,7 +5959,7 @@ def _run_quality_report(args, source_basename):
 def _run_assessment_mode(args, results):
     """Run pre-migration assessment and strategy analysis. Returns ExitCode."""
     try:
-        from powerbi_import.assessment import run_assessment, print_assessment_report, save_assessment_report
+        from powerbi_import.assessment import run_assessment, print_assessment_report
         from powerbi_import.strategy_advisor import recommend_strategy, print_recommendation
 
         # Load extracted data
@@ -5587,7 +5984,11 @@ def _run_assessment_mode(args, results):
         os.makedirs(out_dir, exist_ok=True)
         source_basename = os.path.splitext(os.path.basename(args.tableau_file))[0]
         assess_path = os.path.join(out_dir, f'assessment_{source_basename}.json')
-        save_assessment_report(report, assess_path)
+        # The isolated UI worker consumes this stable filename. The assessment
+        # module's saver accepts a DIRECTORY, not a filename; passing assess_path
+        # to it creates a directory ending in .json instead of the worker result.
+        with open(assess_path, 'w', encoding='utf-8') as handle:
+            json.dump(report.to_dict(), handle, indent=2, ensure_ascii=False)
         print(f"\n  Assessment saved to: {assess_path}")
 
         # Persist the strategy before optional packaging so a fresh package
@@ -5865,6 +6266,7 @@ def main():
     """Main entry point — orchestrates the full migration pipeline."""
     parser = _build_argument_parser()
     args = _parse_cli_args(parser)
+    _install_upload_copy_guard(args.output_dir)
 
     # --qa-strict implies --qa
     if getattr(args, 'qa_strict', False):
@@ -5883,6 +6285,22 @@ def main():
             return ExitCode.SUCCESS
         args = wizard_to_args(config)
 
+    # A positional folder is shorthand for --batch, including shared-model
+    # discovery. Do not reinterpret diagnostic-only file inputs.
+    if args.tableau_file and os.path.isdir(args.tableau_file):
+        if getattr(args, 'assess', False):
+            args.bulk_assess = args.tableau_file
+            args.tableau_file = None
+        elif (getattr(args, 'parity', False)
+              or getattr(args, 'parity_strict', False)
+              or getattr(args, 'quality_report', False)):
+            parser.error('Single-file parity/quality inspection requires a source file, not a folder')
+        else:
+            if args.batch and os.path.abspath(args.batch) != os.path.abspath(args.tableau_file):
+                parser.error('Conflicting source folders: use either a positional folder or --batch DIR')
+            args.batch = args.tableau_file
+            args.tableau_file = None
+
     # ── Web UI mode ───────────────────────────────────────────
     if getattr(args, 'web_ui', False):
         from web.app import launch_web_ui
@@ -5890,7 +6308,7 @@ def main():
         return ExitCode.SUCCESS
 
     # Setup structured logging
-    setup_logging(verbose=args.verbose, log_file=args.log_file,
+    setup_logging(verbose=args.verbose, log_file=None if args.dry_run else args.log_file,
                   quiet=getattr(args, 'quiet', False))
 
     if getattr(args, 'm_emitter_matrix', False):
@@ -6092,13 +6510,70 @@ def main():
             verify_open=getattr(args, 'verify_open', True),
             output_format=getattr(args, 'output_format', 'pbip'),
             quality_policy=getattr(args, 'quality_policy', 'report'),
+            dry_run=getattr(args, 'dry_run', False),
+            model_mode=getattr(args, 'mode', 'import'),
         )
 
-    # ── Single file migration ─────────────────────────────────
+    # ── Single-file diagnostics only (never project generation) ──
     if not args.tableau_file:
-        parser.error('tableau_file is required (or use --batch DIR)')
+        parser.error('Project generation requires --batch DIR (or a positional source folder), --batch-config FILE, --manifest FILE, or --shared-model')
 
-    return _run_single_migration(args)
+    if (getattr(args, 'assess', False)
+            or getattr(args, 'parity', False)
+            or getattr(args, 'parity_strict', False)
+            or getattr(args, 'quality_report', False)):
+        return _run_single_inspection(args)
+
+    parser.error(
+        'Direct single-file project generation has been retired. '
+        'Place the source in a folder and use --batch DIR (even for one workbook), '
+        'or use --shared-model. Single-file --assess, --parity, and '
+        '--quality-report inspection remain available.'
+    )
+
+
+def _run_single_inspection(args):
+    """Inspect one source (and optionally an existing project), without generation."""
+    source_basename = os.path.splitext(os.path.basename(args.tableau_file))[0]
+    assessment = getattr(args, 'assess', False)
+    parity = getattr(args, 'parity', False) or getattr(args, 'parity_strict', False)
+    if not assessment and not parity:
+        out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        project_dir = os.path.join(out_base, source_basename)
+        if not os.path.isdir(project_dir):
+            print(f"Error: Quality inspection requires an existing project: {project_dir}")
+            print("Generate projects with --batch DIR first; inspection never generates a project.")
+            return ExitCode.GENERAL_ERROR
+
+    if args.dry_run:
+        print(f"[DRY RUN] Would inspect {args.tableau_file}; no project will be generated.")
+        return ExitCode.SUCCESS
+
+    results = {'extraction': True}
+    if not args.skip_extraction:
+        results['extraction'] = run_extraction(
+            args.tableau_file, hyper_max_rows=getattr(args, 'hyper_rows', None))
+        if not results['extraction']:
+            return ExitCode.EXTRACTION_FAILED
+        if getattr(args, 'resolve_published_ds', False):
+            _resolve_published_datasources(args)
+    if args.prep:
+        results['prep'] = run_prep_flow(args.prep)
+        if not results['prep']:
+            logger.error("Prep flow parsing or merge failed; inspection aborted")
+            return ExitCode.EXTRACTION_FAILED
+
+    if assessment:
+        return _run_assessment_mode(args, results)
+    if parity:
+        return _run_parity_mode(args)
+
+    report = _run_quality_report(args, source_basename)
+    if report is None:
+        return ExitCode.GENERAL_ERROR
+    if getattr(args, 'quality_strict', False) and report.status == 'FAIL':
+        return ExitCode.VALIDATION_FAILED
+    return ExitCode.SUCCESS
 
 
 def _print_single_migration_header(args):
@@ -6803,57 +7278,18 @@ def _run_qa_suite(args, source_basename):
         logger.warning("QA report update failed: %s", exc)
 
 
+def _sync_final_calendar_source_expressions(project_dir, source_basename):
+    """Persist Calendar sources from fact partitions after final on-disk repairs."""
+    from powerbi_import.m_query_generator import sync_final_calendar_source_expressions
+
+    return sync_final_calendar_source_expressions(project_dir, source_basename)
+
+
 def _export_power_query_files(project_dir, source_basename):
-    """Extract Power Query M expressions from TMDL table files into standalone ``.pq`` files.
+    """Export final on-disk M partitions and shared expressions as ``.pq`` files."""
+    from powerbi_import.m_query_generator import export_final_power_query_files
 
-    Walks ``{project}.SemanticModel/definition/tables/*.tmdl``, parses each
-    ``partition ... = m`` block, and writes the M expression into
-    ``{project}/PowerQuery/{table_name}.pq``.
-    Also exports ``expressions.tmdl`` shared expressions (e.g. DataFolder).
-    """
-    import glob as _glob
-
-    tables_dir = os.path.join(
-        project_dir,
-        f'{source_basename}.SemanticModel',
-        'definition',
-        'tables',
-    )
-    if not os.path.isdir(tables_dir):
-        return
-
-    pq_dir = os.path.join(project_dir, 'PowerQuery')
-    exported = 0
-
-    for tmdl_path in _glob.glob(os.path.join(tables_dir, '*.tmdl')):
-        table_name = os.path.splitext(os.path.basename(tmdl_path))[0]
-        m_expr = _extract_m_from_tmdl(tmdl_path)
-        if m_expr:
-            os.makedirs(pq_dir, exist_ok=True)
-            pq_path = os.path.join(pq_dir, f'{table_name}.pq')
-            with open(pq_path, 'w', encoding='utf-8') as f:
-                f.write(m_expr)
-            exported += 1
-
-    # Also export shared expressions (DataFolder parameter, etc.)
-    expr_path = os.path.join(
-        project_dir,
-        f'{source_basename}.SemanticModel',
-        'definition',
-        'expressions.tmdl',
-    )
-    if os.path.isfile(expr_path):
-        try:
-            with open(expr_path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-            if content:
-                os.makedirs(pq_dir, exist_ok=True)
-                with open(os.path.join(pq_dir, '_expressions.pq'), 'w', encoding='utf-8') as f:
-                    f.write(content)
-                exported += 1
-        except OSError:
-            pass
-
+    exported = export_final_power_query_files(project_dir, source_basename)
     if exported:
         print(f"  📂 PowerQuery/ folder: {exported} M expression file(s) exported")
 
@@ -7038,7 +7474,111 @@ def _widen_csv_field_limit(csv_module):
     return csv_module.field_size_limit()
 
 
-def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
+def _hyper_identity_key(identity):
+    """Exact packaged physical identity; captions/filenames are not identities."""
+    fields = ('workbook', 'archive_member', 'schema', 'table')
+    if not isinstance(identity, dict) or set(identity) != set(fields):
+        return None
+    values = tuple(identity.get(field) for field in fields)
+    return values if all(isinstance(v, str) and v for v in values) else None
+
+
+class _HyperCsvExports(dict):
+    """Legacy stem map plus lossless physical export records.
+
+    Only ``exports`` is authoritative. The dict view is retained for standalone
+    legacy callers, never for packaged table selection.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.exports = []
+
+
+def _stage_pending_hyper_partition(content, data_dir, export_records):
+    """Resolve only the semantic producer's exact identity-bearing error.
+
+    The final TMDL table declaration and the error's Table must agree. Neither
+    the filename, captions nor column overlap may select a physical export.
+    Invalid/ambiguous placeholders remain refresh-visible errors.
+    """
+    import re
+    from tableau_export.m_query_builder import _m_literal
+
+    marker = 'Migration.HyperExportRequired'
+    if marker not in content:
+        return content
+    declaration = re.search(
+        r"(?m)^table[ \t]+('(?:[^']|'')*'|[^\r\n]+)[ \t]*$", content)
+    if not declaration or content.count(marker) != 1:
+        return content
+    table_name = declaration.group(1).strip()
+    if table_name.startswith("'") and table_name.endswith("'"):
+        table_name = table_name[1:-1].replace("''", "'")
+    m_string = r'"((?:[^"]|"")*)"'
+    pending = re.search(
+        r'error\s+Error\.Record\(\s*"Migration\.HyperExportRequired"\s*,\s*'
+        + m_string + r'\s*,\s*\[\s*Table\s*=\s*'
+        + m_string + r'\s*,\s*Identity\s*=\s*'
+        + m_string + r'\s*\]\s*\)', content)
+    if not pending:
+        return content
+    pending_table = pending.group(2).replace('""', '"')
+    try:
+        identity = json.loads(pending.group(3).replace('""', '"'))
+    except (TypeError, ValueError):
+        return content
+    key = _hyper_identity_key(identity)
+    if key is None or pending_table != table_name:
+        return content
+    matches = [record for record in export_records
+               if isinstance(record, dict)
+               and _hyper_identity_key(record.get('identity')) == key]
+    if len(matches) != 1:
+        return content
+    record = matches[0]
+    filename = record.get('csv_filename')
+    if (not isinstance(filename, str) or not filename
+            or '/' in filename or '\\' in filename
+            or os.path.basename(filename) != filename
+            or not os.path.isfile(os.path.join(data_dir, filename))):
+        return content
+    columns = record.get('columns')
+    if (not isinstance(columns, list) or not columns
+            or not all(isinstance(column, str) for column in columns)
+            or len(set(columns)) != len(columns)):
+        return content
+    # Resolve the already chosen file; headers validate its declared schema,
+    # never provide evidence to choose a different export.
+    import csv
+    try:
+        with open(os.path.join(data_dir, filename), newline='',
+                  encoding='utf-8') as stream:
+            if next(csv.reader(stream), []) != columns:
+                return content
+    except (OSError, csv.Error):
+        return content
+    expression = (
+        'Table.PromoteHeaders(Csv.Document(File.Contents(DataFolder & '
+        + _m_literal('\\' + filename)
+        + '), [Delimiter=",", Encoding=65001, QuoteStyle=QuoteStyle.Csv]), '
+        '[PromoteAllScalars=true])')
+    # Source columns in the model are physical names; captions remain model
+    # metadata. Restore only the physical exported columns' scalar types.
+    type_changes = _hyper_csv_type_changes(content, columns, {})
+    if type_changes:
+        expression = ('Table.TransformColumnTypes(' + expression + ', {'
+                      + ', '.join(type_changes) + '}, "en-US")')
+    updated = content[:pending.start()] + expression + content[pending.end():]
+    binding = {'table': table_name, 'csv_filename': filename}
+    staged = record.setdefault('staged_files', [])
+    if binding not in staged:
+        staged.append(binding)
+    return updated
+
+
+def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
+                                  packaged_hyper=None):
     """Convert .hyper files in *data_dir* to CSV and patch TMDL M expressions.
 
     When a TWBX contains only Hyper extracts (no Excel files), the generated M
@@ -7053,13 +7593,39 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
 
     _widen_csv_field_limit(_csv)
 
+    # An explicit package context is authoritative even when no reader succeeds.
+    # Never promote an old, similarly named CSV to a physical identity.
+    authoritative = packaged_hyper is not None
+    export_records = []
+    manifest_path = os.path.join(data_dir, 'hyper_exports.json')
+    if not authoritative:
+        authoritative = os.path.isfile(manifest_path)
+        try:
+            with open(manifest_path, encoding='utf-8') as stream:
+                manifest = json.load(stream)
+            if manifest.get('version') == 1:
+                records = manifest.get('exports', [])
+                if isinstance(records, list):
+                    export_records = [r for r in records if isinstance(r, dict)]
+        except (OSError, ValueError, AttributeError):
+            pass
     hyper_files = []
-    for root, _dirs, files in os.walk(data_dir):
-        for fname in files:
-            if fname.lower().endswith('.hyper'):
-                hyper_files.append(os.path.join(root, fname))
-    if not hyper_files:
+    package_context = {}
+    if packaged_hyper is not None:
+        for member in packaged_hyper:
+            hyper_files.append(member['path'])
+            package_context[member['path']] = member['identity']
+    elif not authoritative:
+        for root, _dirs, files in os.walk(data_dir):
+            for fname in files:
+                if fname.lower().endswith('.hyper'):
+                    hyper_files.append(os.path.join(root, fname))
+    if not hyper_files and not authoritative:
         return
+
+    if authoritative:
+        # Archive members need not live under Data/; their CSV destination does.
+        os.makedirs(data_dir, exist_ok=True)
 
     # Convert every extract whose CSV is not already on disk. Workbooks mixing
     # native CSV/Excel sources with extracts still need their extracts.
@@ -7070,7 +7636,7 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
         existing = [f for f in os.listdir(data_dir)
                     if f.lower().endswith('.csv')
                     and os.path.splitext(f)[0].lower().startswith(stem.lower())]
-        if existing:
+        if existing and not authoritative:
             csv_map.update({os.path.splitext(f)[0]: f for f in existing})
             if os.path.dirname(os.path.abspath(hyper_path)) != os.path.abspath(data_dir):
                 try:
@@ -7079,10 +7645,17 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
                     logger.warning("Converted Hyper remains in Data subfolder %s: %s",
                                    os.path.basename(hyper_path), exc)
             continue
-        converted = _hyper_to_csv_files(hyper_path, data_dir, source_basename, _csv)
+        if authoritative:
+            converted = _hyper_to_csv_files(
+                hyper_path, data_dir, source_basename, _csv,
+                identity=package_context[hyper_path])
+            export_records.extend(converted.exports)
+        else:
+            converted = _hyper_to_csv_files(hyper_path, data_dir, source_basename, _csv)
         converted_now += len(converted)
         csv_map.update(converted)
-        if converted and os.path.dirname(os.path.abspath(hyper_path)) != os.path.abspath(data_dir):
+        if (converted and not authoritative
+                and os.path.dirname(os.path.abspath(hyper_path)) != os.path.abspath(data_dir)):
             try:
                 os.unlink(hyper_path)
             except OSError as exc:
@@ -7091,6 +7664,21 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
     if converted_now:
         print(f"  📊 Converted Hyper → {converted_now} CSV file(s)")
 
+    if authoritative:
+        os.makedirs(data_dir, exist_ok=True)
+        if packaged_hyper is not None:
+            with open(manifest_path, 'w', encoding='utf-8') as stream:
+                json.dump({'version': 1, 'exports': export_records}, stream,
+                          ensure_ascii=False, indent=2)
+        # Validate the artifact location, not its basename/header resemblance.
+        csv_map = {
+            str(i): record['csv_filename']
+            for i, record in enumerate(export_records)
+            if _hyper_identity_key(record.get('identity'))
+            and isinstance(record.get('csv_filename'), str)
+            and os.path.basename(record['csv_filename']) == record['csv_filename']
+            and os.path.isfile(os.path.join(data_dir, record['csv_filename']))
+        }
     if not csv_map:
         return
 
@@ -7110,12 +7698,12 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
     # from extraction metadata (datasources.json).
     # e.g. "Opportunities" → source_table="Opportunity" → "Opportunity.csv"
     tmdl_to_csv = {}  # tmdl_table_name → csv_filename
+    tmdl_identity_candidates = {}
     # Also build per-table physical→display column name mapping from
     # the cols_physical_map field stored during extraction (<cols><map> entries).
     tmdl_col_remote = {}  # tmdl_table_name → {physical_name: display_name}
-    _ds_json_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), 'tableau_export', 'datasources.json'
-    )
+    tmdl_col_types = {}  # tmdl_table_name → physical/caption column types
+    _ds_json_path = os.path.join(_get_extract_dir(), 'datasources.json')
     try:
         with open(_ds_json_path, 'r', encoding='utf-8') as f:
             _ds_data = json.load(f)
@@ -7123,7 +7711,16 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
             for tbl in ds.get('tables', []):
                 tbl_name = tbl.get('name', '')
                 src_table = tbl.get('source_table', '')
-                if tbl_name and src_table:
+                if authoritative and tbl_name:
+                    key = _hyper_identity_key(tbl.get('hyper_identity'))
+                    matches = [record['csv_filename'] for record in export_records
+                               if key is not None
+                               and _hyper_identity_key(record.get('identity')) == key
+                               and record.get('csv_filename') in csv_map.values()]
+                    if len(matches) == 1:
+                        tmdl_identity_candidates.setdefault(tbl_name, set()).add(
+                            (key, matches[0]))
+                elif tbl_name and src_table:
                     # Match source_table to a CSV filename (case-insensitive)
                     for csv_table_name, csv_fname in csv_map.items():
                         if csv_table_name.lower() == src_table.lower():
@@ -7133,8 +7730,22 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
                 pm = tbl.get('cols_physical_map')
                 if pm and tbl_name:
                     tmdl_col_remote[tbl_name] = pm
-    except (OSError, ValueError):
-        pass
+                if tbl_name:
+                    types = tmdl_col_types.setdefault(tbl_name, {})
+                    for col in tbl.get('columns', []):
+                        if col.get('name') and col.get('datatype'):
+                            types[col['name']] = col['datatype']
+                            if pm and col['name'] in pm:
+                                types[pm[col['name']]] = col['datatype']
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not load extraction metadata for Hyper routing: %s", exc)
+
+    if authoritative:
+        tmdl_to_csv = {
+            name: next(iter(candidates))[1]
+            for name, candidates in tmdl_identity_candidates.items()
+            if len(candidates) == 1
+        }
 
     csv_headers_by_file = _csv_header_sets(data_dir, csv_map.values())
 
@@ -7148,6 +7759,15 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
         # An Excel source whose workbook was not packaged is served by the one
         # converted extract that carries every column the partition expects.
         original = content
+        if authoritative and 'Migration.HyperExportRequired' in content:
+            content = _stage_pending_hyper_partition(
+                content, data_dir, export_records)
+            if content != original:
+                with open(tmdl_path, 'w', encoding='utf-8') as stream:
+                    stream.write(content)
+            # Failed identity validation must not fall through to any legacy
+            # routing path, even if this file also contains a #table fallback.
+            continue
         excel_block = _re.search(
             r'Source\s*=\s*try\s+'
             r'let\s+'
@@ -7161,7 +7781,9 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
                 os.path.join(data_dir, excel_block.group(1).replace('\\\\', '\\'))):
             expected = [c.replace('""', '"') for c in
                         _re.findall(r'"((?:[^"]|"")*)"', excel_block.group(2))]
-            chosen = _pick_csv_for_columns(expected, csv_headers_by_file)
+            table_name = os.path.splitext(os.path.basename(tmdl_path))[0]
+            chosen = (tmdl_to_csv.get(table_name) if authoritative else
+                      _pick_csv_for_columns(expected, csv_headers_by_file))
             if chosen:
                 replacement = (
                     f'Source = Csv.Document(File.Contents(DataFolder & "\\\\{chosen}"), '
@@ -7179,7 +7801,7 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
             # Derive TMDL table name from filename
             tmdl_table_name = os.path.splitext(os.path.basename(tmdl_path))[0]
             matched_csv = tmdl_to_csv.get(tmdl_table_name)
-            if not matched_csv:
+            if not matched_csv and not authoritative:
                 inline_cols = _re.search(r'Source\s*=\s*try\s+#table\(\s*\{([^}]*)\}', content)
                 if inline_cols:
                     matched_csv = _pick_csv_for_columns(
@@ -7204,11 +7826,8 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
                 tmdl_cols = []
                 if col_match:
                     raw = col_match.group(1)
-                    tmdl_cols = [
-                        c.strip().strip('"')
-                        for c in raw.split(',')
-                        if c.strip().strip('"')
-                    ]
+                    tmdl_cols = [c.replace('""', '"') for c in
+                                 _re.findall(r'"((?:[^"]|"")*)"', raw)]
 
                 # Read original CSV (raw Hyper column names)
                 csv_path = os.path.join(data_dir, matched_csv)
@@ -7253,6 +7872,11 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
                     # Write to a table-specific CSV so multiple TMDL tables
                     # sharing the same Hyper table get their own file.
                     table_csv_name = f'{tmdl_table_name}.csv'
+                    if authoritative:
+                        digest = hashlib.sha256(json.dumps(
+                            [matched_csv, tmdl_table_name],
+                            ensure_ascii=False).encode('utf-8')).hexdigest()
+                        table_csv_name = f'hyper_staged_{digest}.csv'
                     table_csv_path = os.path.join(data_dir, table_csv_name)
                     # Build column index: tmdl_col → csv_col_idx (or None)
                     col_idx = {}
@@ -7275,27 +7899,49 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
                                     else:
                                         new_row.append('')
                                 writer.writerow(new_row)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        logger.warning("Could not stage Hyper CSV %s: %s",
+                                       table_csv_name, exc)
+                        continue
 
-                    # Simple M expression — CSV already has correct headers
+                    # CSV has caption headers, but Csv.Document returns text.
+                    # Restore physical types at Source, BEFORE downstream
+                    # calculations (and Desktop's schema discovery) see it.
+                    type_changes = _hyper_csv_type_changes(
+                        content, tmdl_cols,
+                        tmdl_col_types.get(tmdl_table_name, {}))
                     csv_replacement = (
                         f'Source = Table.PromoteHeaders('
                         f'Csv.Document('
                         f'File.Contents(DataFolder & '
-                        f'"\\\\{table_csv_name}"), '
+                        f'"\\\\{table_csv_name.replace(chr(34), chr(34) * 2)}"), '
                         f'[Delimiter=",", Encoding=65001, '
                         f'QuoteStyle=QuoteStyle.Csv]),'
                         f' [PromoteAllScalars=true])'
                     )
+                    if type_changes:
+                        # Hyper CSVs are serialized with invariant decimal
+                        # points and ISO dates, regardless of model culture.
+                        csv_replacement = (
+                            f'Source = Table.TransformColumnTypes('
+                            f'{csv_replacement[len("Source = "):]}, '
+                            f'{{{", ".join(type_changes)}}}, "en-US")')
                     new_content = _re.sub(
                         htable_pattern,
-                        csv_replacement,
+                        lambda _match: csv_replacement,
                         content,
                         flags=_re.DOTALL,
                     )
                     if new_content != content:
                         content = new_content
+                        if authoritative:
+                            for record in export_records:
+                                if record.get('csv_filename') == matched_csv:
+                                    staged = record.setdefault('staged_files', [])
+                                    binding = {'table': tmdl_table_name,
+                                               'csv_filename': table_csv_name}
+                                    if binding not in staged:
+                                        staged.append(binding)
 
         if content != original:
             try:
@@ -7303,6 +7949,58 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir):
                     f.write(content)
             except OSError:
                 pass
+
+    if authoritative:
+        with open(manifest_path, 'w', encoding='utf-8') as stream:
+            json.dump({'version': 1, 'exports': export_records}, stream,
+                      ensure_ascii=False, indent=2)
+
+
+def _hyper_csv_type_changes(content, physical_columns, source_types):
+    """M type entries for CSV source columns, excluding derived columns.
+
+    Prefer extraction metadata (which retains date versus datetime, etc.).
+    Model sourceColumn/dataType declarations provide a fallback when the
+    extraction snapshot is unavailable. Only columns in the original Source
+    schema are eligible; measures/calculated columns must not be pre-typed.
+    """
+    import re
+    from tableau_export.m_query_builder import _m_literal, map_tableau_to_m_type
+
+    model_types = {}
+    scalar_types = {
+        'string': 'type text', 'int64': 'Int64.Type',
+        'double': 'type number', 'decimal': 'Currency.Type',
+        'boolean': 'type logical', 'datetime': 'type datetime',
+        'date': 'type date', 'time': 'type time',
+        'binary': 'type binary', 'datetimezone': 'type datetimezone',
+        'duration': 'type duration',
+    }
+    for block in re.finditer(
+            r"(?m)^[ \t]+column[ \t]+('(?:[^']|'')*'|[^\r\n]+)\r?\n"
+            r"(.*?)(?=^[ \t]+(?:column|measure|partition|hierarchy)\b|\Z)",
+            content, re.DOTALL):
+        body = block.group(2)
+        dtype = re.search(r'(?m)^\s*dataType:\s*(\w+)', body)
+        source = re.search(r'(?m)^\s*sourceColumn:\s*(.*?)\s*$', body)
+        if dtype and source:
+            name = source.group(1)
+            if name.startswith("'") and name.endswith("'"):
+                name = name[1:-1].replace("''", "'")
+            model_types[name] = scalar_types.get(dtype.group(1).lower())
+    entries = []
+    for name in physical_columns:
+        datatype = source_types.get(name)
+        if datatype:
+            datatype = datatype.lower()
+            m_type = (scalar_types[datatype] if datatype in
+                      ('datetimezone', 'duration') else
+                      map_tableau_to_m_type(datatype))
+        else:
+            m_type = model_types.get(name)
+        if m_type:
+            entries.append('{' + _m_literal(name) + ', ' + m_type + '}')
+    return entries
 
 
 def _norm_col(name):
@@ -7341,17 +8039,34 @@ def _pick_csv_for_columns(expected, headers_by_file):
     return None
 
 
-def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
-    """Convert a single Hyper file to CSV(s). Returns {table_name: csv_filename}.
+def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None):
+    """Export CSVs with exact reader schema/table identity in ``.exports``.
 
-    Every workbook extract names its table ``Extract``, so CSVs are named after
-    the Hyper file itself or several extracts would overwrite one another.
+    ``identity`` supplies the workbook and exact archive member, never inferred
+    from a flattened local path. Packaged filenames are opaque bounded hashes:
+    schema/table punctuation, case and length remain intact in metadata.
     """
-    results = {}
+    results = _HyperCsvExports()
     stem = os.path.splitext(os.path.basename(hyper_path))[0]
 
-    def _csv_name(table, count):
+    def _physical_identity(schema, table):
+        return dict(identity or {}, schema=schema, table=table)
+
+    def _csv_name(schema, table, count):
+        if identity is not None:
+            key = _physical_identity(schema, table)
+            digest = hashlib.sha256(json.dumps(
+                key, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+            return f"hyper_{digest}.csv"
         return f"{stem}.csv" if count == 1 else f"{stem}_{table}.csv"
+
+    def _record(schema, table, csv_name, columns):
+        results[os.path.splitext(csv_name)[0]] = csv_name
+        results.exports.append({
+            'identity': _physical_identity(schema, table),
+            'csv_filename': csv_name,
+            'columns': list(columns),
+        })
 
     # Tier 1: tableauhyperapi
     try:
@@ -7366,13 +8081,15 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
                     cols = conn.catalog.get_table_definition(table).columns
                     col_names = [c.name.unescaped for c in cols]
                     rows = conn.execute_list_query(f"SELECT * FROM {table}")
-                    csv_name = _csv_name(table.name.unescaped, len(tables))
+                    schema = table.schema_name.name.unescaped
+                    name = table.name.unescaped
+                    csv_name = _csv_name(schema, name, len(tables))
                     csv_path = os.path.join(out_dir, csv_name)
                     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
                         writer = _csv.writer(f)
                         writer.writerow(col_names)
                         writer.writerows(rows)
-                    results[os.path.splitext(csv_name)[0]] = csv_name
+                    _record(schema, name, csv_name, col_names)
             finally:
                 conn.close()
         finally:
@@ -7387,6 +8104,8 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
         except Exception:
             pass
 
+    # A failed reader must not mix its partial catalog with a fallback reader.
+    results = _HyperCsvExports()
     # Tier 2: sqlite3
     conn = None
     try:
@@ -7396,18 +8115,19 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [row[0] for row in cur.fetchall()]
         for tname in tables:
-            cur.execute(f'PRAGMA table_info("{tname}")')
+            quoted = tname.replace('"', '""')
+            cur.execute(f'PRAGMA table_info("{quoted}")')
             col_names = [c[1] for c in cur.fetchall()]
-            cur.execute(f'SELECT * FROM "{tname}"')
+            cur.execute(f'SELECT * FROM "{quoted}"')
             rows = cur.fetchall()
             if rows:
-                csv_name = _csv_name(tname, len(tables))
+                csv_name = _csv_name('main', tname, len(tables))
                 csv_path = os.path.join(out_dir, csv_name)
                 with open(csv_path, 'w', newline='', encoding='utf-8') as f:
                     writer = _csv.writer(f)
                     writer.writerow(col_names)
                     writer.writerows(rows)
-                results[os.path.splitext(csv_name)[0]] = csv_name
+                _record('main', tname, csv_name, col_names)
         return results
     except Exception:
         pass
@@ -7415,6 +8135,7 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
         if conn is not None:
             conn.close()
 
+    results = _HyperCsvExports()
     # Tier 3: project hyper_reader
     try:
         from tableau_export.hyper_reader import read_hyper, export_hyper_to_csv
@@ -7423,10 +8144,12 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv):
         for tbl in tbls:
             if tbl.get('sample_rows'):
                 name = tbl.get('table', 'data')
-                csv_name = _csv_name(name, len(tbls))
+                schema = tbl.get('schema', '')
+                csv_name = _csv_name(schema, name, len(tbls))
                 csv_path = export_hyper_to_csv(tbl, out_dir, csv_filename=csv_name)
                 if csv_path:
-                    results[os.path.splitext(csv_name)[0]] = csv_name
+                    _record(schema, name, csv_name,
+                            [c['name'] for c in tbl.get('columns', [])])
     except Exception:
         pass
 
@@ -7482,8 +8205,7 @@ def _fix_twb_data_folder(project_dir, source_basename):
         print(f"  📂 DataFolder updated → {abs_data}")
         print(f"  ℹ️  Place your data files in: {abs_data}")
 
-    # Also export Power Query M files and DAX measures
-    _export_power_query_files(project_dir, source_basename)
+    # Export DAX measures; M files are exported after final partition reconciliation.
     _export_dax_files(project_dir, source_basename)
 
 
@@ -7497,7 +8219,18 @@ def _read_data_folder(expr_path):
     match = _re.search(r'expression\s+DataFolder\s*=\s*"([^"]*)"', content)
     if not match:
         return content, None
-    return content, match.group(1).replace('\\\\', '\\')
+    folder = match.group(1).replace('\\\\', '\\')
+    if _upload_root() and folder:
+        model_dir = os.path.dirname(os.path.dirname(expr_path))
+        roots = [_upload_root()]
+        if model_dir.lower().endswith('.semanticmodel'):
+            roots.append(os.path.dirname(model_dir))
+        folder = _confine_upload_path(folder, *roots)
+        # Reject escaping reparse points before later spatial/CSV readers run.
+        for current, dirs, files in os.walk(folder):
+            for name in dirs + files:
+                _confine_upload_path(os.path.join(current, name), folder)
+    return content, folder
 
 
 def _referenced_data_files(model_dir):
@@ -7509,9 +8242,18 @@ def _referenced_data_files(model_dir):
     for tmdl in _glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
         try:
             with open(tmdl, 'r', encoding='utf-8') as f:
-                refs.update(m.group(1) for m in pattern.finditer(f.read()))
+                text = f.read()
+                if _upload_root():
+                    for match in _re.finditer(r'DataFolder\s*&\s*"([^"]*)"', text):
+                        # Generated M uses one or two leading separators.
+                        suffix = _re.sub(r'^\\{1,2}', '', match.group(1))
+                        _upload_relative_path(suffix)
+                refs.update(m.group(1) for m in pattern.finditer(text))
         except OSError:
             continue
+    if _upload_root():
+        for ref in refs:
+            _upload_relative_path(ref)
     return sorted(refs)
 
 
@@ -7532,10 +8274,20 @@ def _local_data_candidates(source_path, wanted, max_files=20000, max_depth=4,
     found = {}
     src_dir = os.path.dirname(os.path.abspath(source_path))
     parent = os.path.dirname(src_dir)
+    if _upload_root():
+        _confine_upload_path(source_path, _upload_root())
+        for name in wanted:
+            _upload_relative_path(name)
+        if search_root:
+            _confine_upload_path(search_root, _upload_root())
 
     def _scan(root, recursive, depth_limit=max_depth):
         hits, seen = {}, 0
         for current, dirs, files in os.walk(root):
+            if _upload_root():
+                _confine_upload_path(current, _upload_root())
+                for name in dirs + files:
+                    _confine_upload_path(os.path.join(current, name), _upload_root())
             depth = os.path.relpath(current, root).count(os.sep)
             if _is_generated_dir(current, files + dirs) and current != root:
                 dirs[:] = []
@@ -7556,7 +8308,7 @@ def _local_data_candidates(source_path, wanted, max_files=20000, max_depth=4,
         return hits
 
     tiers = [(src_dir, False, max_depth), (src_dir, True, max_depth)]
-    if parent and parent != src_dir:
+    if parent and parent != src_dir and not _upload_root():
         tiers.append((parent, False, max_depth))
     if search_root and os.path.isdir(search_root):
         tiers.append((os.path.abspath(search_root), True, 8))
@@ -7638,6 +8390,9 @@ def _reconcile_csv_partitions(project_dir, source_basename):
         original = content
         for match in list(csv_call.finditer(content))[::-1]:
             fname = match.group(1).replace('\\\\', '\\')
+            if _upload_root():
+                _upload_relative_path(fname)
+                _confine_upload_path(os.path.join(folder, fname), folder)
             sniff = _sniff_csv(os.path.join(folder, fname))
             if not sniff:
                 continue
@@ -8170,6 +8925,9 @@ def _route_spatial_partitions(project_dir, source_basename):
             continue
         stats['spatial'] += 1
         ref = match.group(1).replace('\\\\', '\\')
+        if _upload_root():
+            _upload_relative_path(ref)
+            _confine_upload_path(os.path.join(folder, ref), folder)
         ext = os.path.splitext(ref)[1].lower()
         ref_path = os.path.join(folder, ref)
         if ext != '.shp' and os.path.isfile(ref_path):
@@ -8274,6 +9032,216 @@ def _shorten_report_artifact_path(project_dir, source_basename):
     return True
 
 
+def _stage_declared_local_sources(source_path, project_dir, source_dir=None):
+    """Stage exact declared file bindings before semantic source validation.
+
+    Unlike post-generation discovery, this uses extraction metadata, so an
+    error partition cannot erase the source references we need. Exact declared
+    archive members take precedence over workbook-relative loose files.
+    Loose files retain declared sibling directory semantics. No recursive,
+    basename or header search is used to select a replacement binding.
+    """
+    import ntpath
+    import re
+
+    upload_root = _upload_root()
+    if upload_root:
+        _confine_upload_path(source_path, upload_root)
+    stats = {'referenced': 0, 'copied': 0, 'already_present': 0, 'not_found': 0}
+    metadata = os.path.join(source_dir or _get_extract_dir(), 'datasources.json')
+    try:
+        with open(metadata, encoding='utf-8') as stream:
+            datasources = json.load(stream)
+    except (OSError, ValueError) as exc:
+        if upload_root:
+            raise SecurityError(f"Cannot validate uploaded source bindings: {exc}") from exc
+        logger.warning("Could not pre-stage declared local sources: %s", exc)
+        return stats
+    source_root = os.path.dirname(os.path.abspath(source_path))
+    bindings = {}
+    archive_bindings = {}
+    # Content detection preserves XML workbooks misnamed as .twbx.
+    archive_members = {}
+    if zipfile.is_zipfile(source_path):
+        with zipfile.ZipFile(source_path) as archive:
+            for member in archive.infolist():
+                if not member.is_dir():
+                    key = member.filename.replace('\\', '/')
+                    archive_members.setdefault(key, []).append(member.filename)
+    local_types = {'csv', 'textscan', 'excel', 'excel-direct', 'geojson',
+                   'ogrdirect', 'json', 'xml', 'pdf', 'parquet'}
+    for datasource in datasources:
+        connections = datasource.get('connection_map') or {}
+        for table in datasource.get('tables', []):
+            if _hyper_identity_key(table.get('hyper_identity')):
+                continue
+            connection = (connections.get(table.get('connection'))
+                          or table.get('connection_details')
+                          or datasource.get('connection') or {})
+            kind = str(connection.get('type', '')).lower()
+            if kind not in local_types:
+                continue
+            details = connection.get('details') or {}
+            filename = details.get('filename', '')
+            if kind in {'csv', 'textscan'}:
+                relation = str(table.get('source_table') or '').strip()
+                if relation.startswith('[') and relation.endswith(']'):
+                    relation = relation[1:-1].replace(']]', ']')
+                elif (len(relation) >= 2 and relation[0] in ('"', "'")
+                      and relation[-1] == relation[0]):
+                    quote = relation[0]
+                    relation = relation[1:-1].replace(quote * 2, quote)
+                relation = re.sub(r'#(csv|tsv|txt|tab)$', r'.\1', relation,
+                                  flags=re.IGNORECASE)
+                if re.search(r'\.(csv|tsv|txt|tab)$', relation, re.IGNORECASE):
+                    filename = relation
+            if not isinstance(filename, str) or not filename or '\0' in filename:
+                if upload_root:
+                    raise SecurityError(f"Invalid uploaded source filename: {filename!r}")
+                continue
+            directory = str(details.get('directory') or '')
+            declared = filename if ntpath.isabs(filename) else ntpath.join(
+                directory, filename)
+            if upload_root:
+                _upload_relative_path(declared)
+            basename = ntpath.basename(filename)
+            if basename in ('', '.', '..'):
+                continue
+            if archive_members and not ntpath.isabs(declared):
+                member_key = declared.replace('\\', '/')
+                if '..' in member_key.split('/') or ntpath.splitdrive(declared)[0]:
+                    raise SecurityError(
+                        f"Unsafe declared archive source: {declared!r}")
+                members = archive_members.get(member_key, [])
+                if len(members) > 1:
+                    raise ValueError(
+                        f"Ambiguous declared archive source: {declared!r}")
+                if members:
+                    archive_bindings.setdefault(basename, set()).add(members[0])
+                    bindings.setdefault(basename, set())
+                    if basename.lower().endswith('.shp'):
+                        for extension in _SHAPEFILE_SIDECARS:
+                            sidecar = ntpath.splitext(declared)[0] + extension
+                            sidecar_members = archive_members.get(
+                                sidecar.replace('\\', '/'), [])
+                            if len(sidecar_members) > 1:
+                                raise ValueError(
+                                    f"Ambiguous declared archive source: {sidecar!r}")
+                            if sidecar_members:
+                                sidecar_name = ntpath.basename(sidecar)
+                                archive_bindings.setdefault(sidecar_name, set()).add(
+                                    sidecar_members[0])
+                                bindings.setdefault(sidecar_name, set())
+                    continue
+            # Preserve absolute source paths; relative paths are workbook-relative.
+            local = declared.replace('\\', os.sep).replace('/', os.sep)
+            if not ntpath.isabs(declared):
+                local = os.path.join(source_root, local)
+            if upload_root:
+                local = _confine_upload_path(local, upload_root)
+            bindings.setdefault(basename, set()).add(os.path.abspath(local))
+            if basename.lower().endswith('.shp'):
+                for extension in _SHAPEFILE_SIDECARS:
+                    bindings.setdefault(ntpath.splitext(basename)[0] + extension,
+                                        set()).add(os.path.splitext(local)[0] + extension)
+
+    # A relocated workbook may retain absolute author-machine directories.
+    # Establish a root mapping only from a declared path containing the exact
+    # workbook folder AND its named parent. Apply that same mapping to sibling
+    # references; never search for a matching basename in another folder.
+    anchor = (os.path.basename(os.path.dirname(source_root)),
+              os.path.basename(source_root))
+    relocations = set()
+    for paths in (() if upload_root else bindings.values()):
+        for path in paths:
+            parts = path.replace('\\', '/').split('/')
+            for index in range(len(parts) - 2):
+                if tuple(parts[index:index + 2]) == anchor:
+                    old_root = '/'.join(parts[:index])
+                    new_root = os.path.dirname(os.path.dirname(source_root))
+                    if old_root and os.path.normcase(os.path.normpath(old_root)) != \
+                            os.path.normcase(os.path.normpath(new_root)):
+                        relocations.add((old_root, new_root))
+    resolved_bindings = {}
+    for basename, paths in bindings.items():
+        resolved = set()
+        for path in paths:
+            if os.path.isfile(path):
+                resolved.add(path)
+                continue
+            portable = path.replace('\\', '/')
+            candidates = set()
+            for old_root, new_root in relocations:
+                if portable.startswith(old_root.rstrip('/') + '/'):
+                    suffix = portable[len(old_root):].lstrip('/')
+                    candidate = os.path.join(new_root, *suffix.split('/'))
+                    if os.path.isfile(candidate):
+                        candidates.add(os.path.abspath(candidate))
+            if len(candidates) > 1:
+                raise ValueError(f"Ambiguous declared source relocation for {basename!r}")
+            resolved.update(candidates or {path})
+        resolved_bindings[basename] = resolved
+
+    data_dir = os.path.join(project_dir, 'Data')
+    from contextlib import ExitStack
+
+    try:
+        with ExitStack() as stack:
+            archive = None
+            if archive_bindings:
+                archive = stack.enter_context(zipfile.ZipFile(source_path))
+                if upload_root:
+                    os.makedirs(project_dir, exist_ok=True)
+                staging_dir = stack.enter_context(tempfile.TemporaryDirectory(
+                    prefix='tableau_declared_sources_',
+                    dir=project_dir if upload_root else None))
+            for basename, paths in resolved_bindings.items():
+                stats['referenced'] += 1
+                if upload_root:
+                    for path in paths:
+                        _confine_upload_path(path, upload_root)
+                existing = sorted(path for path in paths if os.path.isfile(path))
+                missing = len(existing) != len(paths)
+                for member in sorted(archive_bindings.get(basename, ())):
+                    content = safe_zip_extract_member(
+                        archive, member, target_dir=project_dir)
+                    # Temporary names are unrelated to untrusted archive paths.
+                    with tempfile.NamedTemporaryFile(
+                            dir=staging_dir, delete=False) as staged:
+                        staged.write(content)
+                        existing.append(staged.name)
+                if not existing:
+                    stats['not_found'] += 1
+                    if upload_root:
+                        raise SecurityError(
+                            f"Declared uploaded source not found in package/directory: {basename!r}")
+                    logger.warning(
+                        "Declared local source %r unavailable before semantic audit; "
+                        "checked exact archive binding and declared paths: %s",
+                        basename, sorted(paths))
+                    continue
+                if missing or (len(existing) > 1 and not _same_content(existing)):
+                    raise ValueError(f"Conflicting declared local sources for {basename!r}")
+                destination = os.path.join(data_dir, basename)
+                if upload_root:
+                    _confine_upload_path(destination, project_dir)
+                if os.path.isfile(destination):
+                    if not _same_content([existing[0], destination]):
+                        raise ValueError(f"Staged file conflicts with declared source {basename!r}")
+                    stats['already_present'] += 1
+                    continue
+                os.makedirs(data_dir, exist_ok=True)
+                shutil.copy2(existing[0], destination)
+                stats['copied'] += 1
+    except (OSError, ValueError, zipfile.BadZipFile, SecurityError) as exc:
+        logger.error("Could not pre-stage declared sources from %s: %s",
+                     source_path, exc)
+        raise
+    if stats['referenced']:
+        logger.info("Pre-staged declared local sources: %s", stats)
+    return stats
+
+
 def _collect_local_data_files(source_path, project_dir, source_basename,
                               search_root=None):
     """Copy data files the model references from beside the workbook into Data/.
@@ -8295,6 +9263,13 @@ def _collect_local_data_files(source_path, project_dir, source_basename,
         return stats
 
     data_dir = os.path.abspath(os.path.join(project_dir, 'Data'))
+    if _upload_root():
+        _confine_upload_path(data_dir, project_dir)
+        for ref in refs:
+            _upload_relative_path(ref)
+            _confine_upload_path(os.path.join(data_dir, ref), project_dir)
+            if current:
+                _confine_upload_path(os.path.join(current, ref), _upload_root(), project_dir)
     current_abs = os.path.abspath(current) if current else ''
     in_data = [r for r in refs if os.path.isfile(os.path.join(data_dir, r))]
     in_current = [r for r in refs if current_abs and os.path.isfile(os.path.join(current_abs, r))]
@@ -8310,16 +9285,25 @@ def _collect_local_data_files(source_path, project_dir, source_basename,
             paths = candidates.get(ref, [])
         if not paths:
             stats['not_found'] += 1
+            if _upload_root():
+                raise SecurityError(
+                    f"Uploaded model source not found in package/directory: {ref!r}")
             continue
         if len(paths) > 1 and not _same_content(paths):
             stats['ambiguous'] += 1
+            if _upload_root():
+                raise SecurityError(f"Ambiguous uploaded model source: {ref!r}")
             logger.warning("Data file '%s' found in several places with different "
                            "content; not copied", ref)
             continue
         try:
+            if _upload_root():
+                _confine_upload_path(paths[0], _upload_root(), project_dir)
             shutil.copy2(paths[0], os.path.join(data_dir, ref))
             stats['copied'] += 1
         except OSError as exc:
+            if _upload_root():
+                raise SecurityError(f"Cannot copy uploaded source {ref!r}: {exc}") from exc
             stats['not_found'] += 1
             logger.warning("Could not copy data file %s: %s", ref, exc)
     stats['already_present'] = len(in_data)
@@ -8409,13 +9393,21 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename):
     if not source_path or not source_path.lower().endswith('.twbx'):
         return
     if not zipfile.is_zipfile(source_path):
-        return
+        try:
+            with open(source_path, 'rb') as source:
+                prefix = source.read(4096).lstrip(b'\xef\xbb\xbf \t\r\n')
+        except OSError as exc:
+            raise OSError(f"Could not inspect TWBX source: {exc}") from exc
+        if prefix.startswith(b'<'):
+            return
+        raise ValueError(f"Invalid TWBX archive: {source_path}")
 
     data_dir = os.path.join(project_dir, 'Data')
 
     # ── 1. Extract embedded files from TWBX into project dir ───────
     _SKIP_EXT = {'.twb', '.tds', '.twbr'}
     extracted_files = []
+    packaged_hyper = []
 
     try:
         with zipfile.ZipFile(source_path, 'r') as zf:
@@ -8430,9 +9422,16 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename):
                 with open(dest, 'wb') as dst:
                     dst.write(content)
                 extracted_files.append(entry)
+                if ext == '.hyper':
+                    packaged_hyper.append({
+                        'path': dest,
+                        'identity': {
+                            'workbook': os.path.abspath(source_path),
+                            'archive_member': entry,
+                        },
+                    })
     except (zipfile.BadZipFile, OSError, SecurityError, ValueError) as exc:
-        logger.warning("Could not extract TWBX data files: %s", exc)
-        return
+        raise RuntimeError(f"Could not extract TWBX data files: {exc}") from exc
 
     if not extracted_files:
         return
@@ -8440,7 +9439,8 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename):
     print(f"  📁 Extracted {len(extracted_files)} data file(s) from TWBX into {data_dir}")
 
     # ── 1b. Convert Hyper files to CSV so M queries can load data ────
-    _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir)
+    _convert_hyper_to_csv_in_data(
+        data_dir, source_basename, project_dir, packaged_hyper=packaged_hyper)
 
     # ── 1c. Canonicalise file tables for Fabric Notebook ingestion ──
     if os.path.isdir(os.path.join(project_dir, f'{source_basename}.Notebook')):
@@ -8514,8 +9514,7 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename):
         except OSError as exc:
             logger.warning("Could not update DataFolder: %s", exc)
 
-    # ── 3. Export standalone Power Query M files and DAX measures ────
-    _export_power_query_files(project_dir, source_basename)
+    # ── 3. Export DAX measures (M follows final partition reconciliation) ────
     _export_dax_files(project_dir, source_basename)
 
     # ── 4. Resolve embedded image references to base64 data URIs ────
@@ -8535,9 +9534,15 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename):
             img_ref = url_val.strip("'\"")
             if not img_ref or img_ref.startswith(('http://', 'https://', 'data:')):
                 continue
+            if _upload_root():
+                img_ref = _upload_relative_path(img_ref)
             img_file = os.path.join(data_dir, img_ref)
+            if _upload_root():
+                _confine_upload_path(img_file, project_dir)
             if not os.path.isfile(img_file):
                 img_file = os.path.join(project_dir, img_ref)
+                if _upload_root():
+                    _confine_upload_path(img_file, project_dir)
             if os.path.isfile(img_file):
                 ext = os.path.splitext(img_ref)[1].lower()
                 mime = _MIME_MAP.get(ext, 'application/octet-stream')
@@ -8576,6 +9581,8 @@ def _extract_twbx_data_files(args, source_basename):
     _reconcile_csv_partitions(project_dir, source_basename)
     _wire_shapefile_map_coordinates(project_dir, source_basename)
     _restrict_file_partitions_to_model(project_dir, source_basename)
+    _sync_final_calendar_source_expressions(project_dir, source_basename)
+    _export_power_query_files(project_dir, source_basename)
     _shorten_report_artifact_path(project_dir, source_basename)
 
 
@@ -8980,7 +9987,8 @@ def _run_single_migration(args):
         results['prep'] = run_prep_flow(args.prep)
         if not results['prep']:
             progress.fail("Prep flow parsing failed")
-            print("\n⚠ Prep flow parsing failed — continuing with TWB data only")
+            print("\nMigration aborted due to Prep flow parsing or merge failure")
+            return ExitCode.EXTRACTION_FAILED
         else:
             progress.complete("Prep flow merged")
 
@@ -9022,6 +10030,8 @@ def _run_single_migration(args):
         progress.complete(f"Resume — reused generated {source_basename}")
     else:
         progress.start("Generating Power BI project")
+        _stage_declared_local_sources(
+            args.tableau_file, os.path.join(out_base, source_basename))
         results['generation'] = run_generation(
             report_name=source_basename,
             output_dir=args.output_dir,
@@ -9292,6 +10302,10 @@ def _run_single_migration(args):
 if __name__ == '__main__':
     try:
         exit_code = main()
+        if _upload_security_violation:
+            print("Upload rejected: a file operation crossed the authorized job boundary",
+                  file=sys.stderr)
+            exit_code = ExitCode.GENERAL_ERROR
         sys.exit(exit_code)
     except KeyboardInterrupt:
         print("\n\nMigration interrupted by user")

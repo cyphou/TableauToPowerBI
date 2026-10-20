@@ -597,13 +597,12 @@ class TestVisualObjectExtensions(unittest.TestCase):
         objs = self._build(ws, 'clusteredBarChart')
         self.assertNotIn("mapControl", objs)
 
-    def test_per_value_colors(self):
+    def test_unbound_per_value_colors_are_not_emitted_as_global_fills(self):
         ws = {'mark_encoding': {
             'color': {'color_values': {'A': '#FF0000', 'B': '#00FF00'}}
         }}
         objs = self._build(ws)
-        self.assertIn("dataPoint", objs)
-        self.assertEqual(len(objs["dataPoint"]), 2)
+        self.assertNotIn("dataPoint", objs)
 
     def test_stepped_thresholds(self):
         ws = {'mark_encoding': {

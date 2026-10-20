@@ -47,13 +47,13 @@ class TestVisualTypeMapping(unittest.TestCase):
 
     def test_bar_types(self):
         self.assertEqual(resolve_visual_type("bar"), "clusteredBarChart")
-        self.assertEqual(resolve_visual_type("stacked-bar"), "stackedBarChart")
+        self.assertEqual(resolve_visual_type("stacked-bar"), "barChart")
         self.assertEqual(resolve_visual_type("100-stacked-bar"), "hundredPercentStackedBarChart")
 
     def test_column_types(self):
         self.assertEqual(resolve_visual_type("column"), "clusteredColumnChart")
         self.assertEqual(resolve_visual_type("histogram"), "clusteredColumnChart")
-        self.assertEqual(resolve_visual_type("stacked-column"), "stackedColumnChart")
+        self.assertEqual(resolve_visual_type("stacked-column"), "columnChart")
 
     def test_line_area(self):
         self.assertEqual(resolve_visual_type("line"), "lineChart")
@@ -410,6 +410,28 @@ class TestReferenceLines(unittest.TestCase):
 class TestBuildQueryState(unittest.TestCase):
     """Test the build_query_state function with role-based projections."""
 
+    def test_semantic_query_count_median_and_average_ids(self):
+        for aggregation, function in (
+            ('ctd', 2), ('countd', 2), ('cnt', 5), ('count', 5),
+            ('median', 6), ('avg', 1),
+        ):
+            with self.subTest(aggregation=aggregation):
+                state = build_query_state(
+                    'card', [],
+                    [{'name': 'Synthetic metric',
+                      'expression': f'{aggregation}(Value)'}],
+                    {'Value': 'Facts'}, {},
+                )
+                self.assertEqual(state['Values']['projections'][0]['field'], {
+                    'Aggregation': {
+                        'Expression': {'Column': {
+                            'Expression': {'SourceRef': {'Entity': 'Facts'}},
+                            'Property': 'Value',
+                        }},
+                        'Function': function,
+                    },
+                })
+
     def test_bar_chart_query_state(self):
         dims = [{"field": "Region", "name": "Region"}]
         meas = [{"expression": "Sum(Revenue)", "name": "Revenue"}]
@@ -568,6 +590,28 @@ class TestLegacyFunctions(unittest.TestCase):
         layout = create_page_layout([])
         self.assertEqual(layout["width"], 1280)
         self.assertEqual(layout["height"], 720)
+
+
+class TestNativeStackedIdentifiers(unittest.TestCase):
+    """Legacy stacked aliases must never escape as missing custom visuals."""
+
+    def test_stacked_aliases_resolve_to_desktop_native_identifiers(self):
+        for expected, aliases in (
+                ('barChart', ('stacked-bar', 'stackedbarchart',
+                              'stackedBarChart', 'barChart')),
+                ('columnChart', ('stacked-column', 'stackedcolumnchart',
+                                 'stackedColumnChart', 'columnChart'))):
+            for alias in aliases:
+                with self.subTest(alias=alias):
+                    self.assertEqual(resolve_visual_type(alias), expected)
+
+    def test_clustered_source_aliases_remain_clustered(self):
+        for alias, expected in (
+                ('bar', 'clusteredBarChart'), ('column', 'clusteredColumnChart'),
+                ('clusteredBarChart', 'clusteredBarChart'),
+                ('clusteredColumnChart', 'clusteredColumnChart')):
+            with self.subTest(alias=alias):
+                self.assertEqual(resolve_visual_type(alias), expected)
 
 
 if __name__ == '__main__':

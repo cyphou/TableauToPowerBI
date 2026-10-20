@@ -9,20 +9,20 @@ advanced options. Legacy flags remain supported for backward compatibility.
 
 | Workflow | Preferred command |
 |----------|-------------------|
-| Single workbook | `python migrate.py migrate WORKBOOK` |
+| Generate PBIP from one or more workbooks | `python migrate.py batch FOLDER` |
 | Readiness assessment | `python migrate.py assess WORKBOOK` |
 | Unified post-migration validation | `python migrate.py quality WORKBOOK` |
 | Feature parity scorecard | `python migrate.py parity WORKBOOK` |
 | Portfolio assessment | `python migrate.py portfolio FOLDER` |
-| Migration planning | `python migrate.py plan SOURCE` |
+| Migration planning | `python migrate.py plan SERVER_URL` |
 | Prep-flow lineage | `python migrate.py lineage FLOW_OR_FOLDER...` |
-| Stakeholder package | `python migrate.py package WORKBOOK` |
+| Batch quality/evidence handoff | `python migrate.py package FOLDER` |
 
 ## Core
 
 | Flag | Purpose |
 |------|---------|
-| `--output-dir DIR` | Where to write the `.pbip` (default `artifacts/`) |
+| `--output-dir DIR` | Where to write generated output (default `artifacts/`) |
 | `--verbose` | Detailed pipeline logging |
 | `--dry-run` | Parse/validate only, generate nothing |
 | `--output-format {pbip,fabric}` | PBIR+TMDL (default) or Fabric-native artifacts |
@@ -34,8 +34,8 @@ advanced options. Legacy flags remain supported for backward compatibility.
 | Flag | Purpose |
 |------|---------|
 | `--assess` | Pre-migration readiness report (no output written) |
-| `--qa` | Post-migration real-world QA report card |
-| `--qa-strict` | Fail the run on any error-severity QA check |
+| `--qa` | Legacy QA suite; unavailable through the supported batch-only workflow |
+| `--qa-strict` | Legacy QA failure gate; unavailable through the supported batch-only workflow |
 | `--quality-report` | Combined assessment, parity, data, interface, and openability report |
 | `--quality-strict` | Fail the run when the combined report has blockers |
 | `--quality-policy {report,enterprise,production}` | Control escalation of static semantic diagnostics and unresolved lineage; default `report` |
@@ -43,11 +43,18 @@ advanced options. Legacy flags remain supported for backward compatibility.
 | `--parity` | Feature parity scorecard |
 | `--bulk-assess DIR` | Assess every workbook in a folder |
 
+The `qa FOLDER` and `package FOLDER` shortcuts use batch migration. Batch mode
+already writes unified quality reports and evidence ZIPs, but does not run the
+specialized six-check QA suite or assessment report packager. The legacy flags
+`--qa`, `--qa-strict`, and `--report-package` are not available through the
+supported batch-only generation path; `--quality-report` is redundant for batch
+output and is not forwarded.
+
 ## Batch & shared model
 
 | Flag | Purpose |
 |------|---------|
-| `--batch DIR` | Migrate every workbook (and Prep flow) in a folder |
+| `--batch DIR` | Migrate every workbook (and Prep flow) in a folder; use a one-workbook folder to migrate just one |
 | `--shared-model wb1 wb2 …` | Build one shared semantic model |
 | `--assess-merge` | Score whether workbooks should merge |
 | `--global-assess --batch DIR` | Pairwise merge scoring across a portfolio |
@@ -81,8 +88,8 @@ metric exceeds the configured threshold; report generation still occurs first.
 
 | Flag | Purpose |
 |------|---------|
-| `--deploy WORKSPACE_ID` | Deploy to Power BI / Fabric workspace |
-| `--deploy-refresh` | Also configure scheduled refresh |
+| `--deploy WORKSPACE_ID` | Legacy flag; batch does not dispatch deployment. Use separate deployment |
+| `--deploy-refresh` | Legacy flag; batch does not dispatch refresh |
 | `--gateway-bind GATEWAY_ID` | Bind dataset to a data gateway |
 | `--create-workspace NAME` | Provision the workspace first |
 

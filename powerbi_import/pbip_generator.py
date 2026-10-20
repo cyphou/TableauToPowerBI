@@ -28,12 +28,16 @@ _RE_TABLE_CALC_PREFIX = re.compile(
 _RE_TYPE_SUFFIX = re.compile(r':(nk|qk|ok|fn|tn)$')
 
 # Tableau shelf aggregation prefix â†’ PBI Aggregation Function ID
-# 0=Sum, 1=Avg, 2=Count, 3=Min, 4=Max, 5=CountNonNull, 6=DistinctCount
+# Semantic-query enum (not the model's summarizeBy enum):
+# 2=Count (distinct values), 5=CountNonNull (populated rows), 6=Median.
 _TABLEAU_AGG_TO_PBI_FUNC = {
-    'sum': 0, 'avg': 1, 'cnt': 2, 'count': 2,
-    'min': 3, 'max': 4, 'ctd': 6, 'countd': 6,
-    'median': 0, 'attr': 0,
+    'sum': 0, 'avg': 1, 'average': 1, 'cnt': 5, 'count': 5,
+    'min': 3, 'max': 4, 'ctd': 2, 'countd': 2, 'distinctcount': 2,
+    'countnonnull': 5, 'median': 6, 'attr': 0,
 }
+_NUMERIC_MODEL_TYPES = frozenset({
+    'int64', 'double', 'decimal', 'integer', 'real', 'number', 'currency',
+})
 
 _LATITUDE_ROLES = frozenset({'latitude', 'lat'})
 _LONGITUDE_ROLES = frozenset({'longitude', 'lon', 'lng'})
@@ -70,6 +74,8 @@ _REQUIRED_VISUAL_ROLES = {
     'pivotTable': ('Values',),
     'ribbonChart': ('Category', 'Y'),
     'scatterChart': ('X', 'Y'),
+    'barChart': ('Category', 'Y'),
+    'columnChart': ('Category', 'Y'),
     'shapeMap': ('Category',),
     'tableEx': ('Values',),
     'treemap': ('Values',),
@@ -92,6 +98,8 @@ _MEASURE_ONLY_ROLES = {
     'pivotTable': ('Values',),
     'ribbonChart': ('Y',),
     'scatterChart': ('Size',),
+    'barChart': ('Y',),
+    'columnChart': ('Y',),
     'shapeMap': ('Value',),
     'treemap': ('Values',),
     'waterfallChart': ('Y',),
@@ -104,6 +112,7 @@ _TOOLTIP_CAPABLE_VISUALS = frozenset({
     'hundredPercentStackedBarChart', 'lineChart',
     'lineClusteredColumnComboChart', 'map', 'pieChart', 'ribbonChart',
     'scatterChart', 'shapeMap', 'treemap', 'waterfallChart',
+    'barChart', 'columnChart',
 })
 
 
@@ -549,7 +558,21 @@ class PowerBIProjectGenerator:
         if DualAxisBuilder and ReferenceLineBuilder:
             for ws in worksheets:
                 try:
-                    if DualAxisBuilder.detect_dual_axis_worksheet(ws):
+                    # Text, tooltip, colour and opposing scatter-axis measures
+                    # are not evidence of a Tableau dual axis. In particular,
+                    # preserving Text aggregation must not turn ordinary bars,
+                    # pies and lines into combo charts.
+                    axes = ws.get('axes') or {}
+                    dual = ws.get('dual_axis') or {}
+                    explicit_dual = (
+                        isinstance(dual, dict) and dual.get('enabled') is True
+                    ) or (
+                        isinstance(axes, dict)
+                        and (axes.get('dual_axis') is True
+                             or (isinstance(axes.get('dual_axis'), dict)
+                                 and axes['dual_axis'].get('enabled') is True))
+                    )
+                    if explicit_dual and DualAxisBuilder.detect_dual_axis_worksheet(ws):
                         if ws.get('chart_type') not in (
                             'lineClusteredColumnComboChart',
                             'lineStackedColumnComboChart',
@@ -811,6 +834,8 @@ class PowerBIProjectGenerator:
             self._actual_bim_column_categories = stats.get(
                 'actual_bim_column_categories', {})
             self._actual_bim_measure_types = stats.get('actual_bim_measure_types', {})
+            # Read the emitted model, never infer a calendar from field names.
+            self._related_month_bindings = self._read_related_month_bindings(sm_dir)
             self._measure_rename_map = stats.get('measure_rename_map', {})
 
             # Store table rename map for multi-datasource entity resolution.
@@ -831,6 +856,101 @@ class PowerBIProjectGenerator:
             import traceback
             traceback.print_exc()
     
+    def _read_related_month_bindings(self, sm_dir):
+        """Find verified month columns behind active, exact date relationships.
+
+        This is a read-only report binding index. The emitted M must define a
+        month number and month name from the relationship's target date, with
+        the name sorted by that number. A column merely called Month is not
+        evidence. Unknown/ambiguous definitions are deliberately left unbound.
+        """
+        identifier = r"(?:'(?:[^']|'')*'|[^\s.]+)"
+
+        def unquote(value):
+            value = value.strip()
+            return value[1:-1].replace("''", "'") if value.startswith("'") and value.endswith("'") else value
+
+        def endpoint(value):
+            match = re.fullmatch(rf"({identifier})\.({identifier})", value.strip())
+            return tuple(unquote(v) for v in match.groups()) if match else None
+
+        definition = os.path.join(sm_dir, 'definition')
+        tables_dir = os.path.join(definition, 'tables')
+        calendars = {}
+        symbols = getattr(self, '_actual_bim_symbols', set()) or set()
+        if not os.path.isdir(tables_dir):
+            return {}
+        for filename in sorted(os.listdir(tables_dir)):
+            if not filename.endswith('.tmdl'):
+                continue
+            try:
+                with open(os.path.join(tables_dir, filename), encoding='utf-8-sig') as stream:
+                    text = stream.read()
+            except (OSError, UnicodeError):
+                continue
+            table_match = re.search(rf'^table\s+({identifier})\s*$', text, re.MULTILINE)
+            if not table_match:
+                continue
+            table = unquote(table_match.group(1))
+            columns = {}
+            for match in re.finditer(
+                    rf'^\tcolumn\s+({identifier})\s*\n(.*?)(?=^\t(?:column|measure|partition|hierarchy)\s|\Z)',
+                    text, re.MULTILINE | re.DOTALL):
+                props = dict(re.findall(r'^\t\t(\w+):\s*(.+)$', match.group(2), re.MULTILINE))
+                columns[unquote(match.group(1))] = {k: unquote(v) for k, v in props.items()}
+
+            # Match the generated, non-calculated source columns to their M
+            # definitions, including renamed M columns and escaped identifiers.
+            month_sources = {}
+            for match in re.finditer(
+                    r'Table\.AddColumn\([^,\r\n]+,\s*"((?:[^"]|"")*)",\s*each\s+'
+                    r'Date\.(MonthName|Month)\(\s*\[(#"(?:[^"]|"")*"|[^\]]+)\]\s*(?:,\s*"[^"]*")?\s*\)',
+                    text):
+                output, operation, source = match.groups()
+                source = source[2:-1].replace('""', '"') if source.startswith('#"') else source
+                month_sources[output.replace('""', '"')] = (operation, source)
+            for date, date_props in columns.items():
+                if date_props.get('dataType', '').lower() != 'datetime':
+                    continue
+                date_source = date_props.get('sourceColumn')
+                if not date_source:
+                    continue
+                for name, props in columns.items():
+                    number = props.get('sortByColumn')
+                    number_props = columns.get(number, {})
+                    if (props.get('dataType', '').lower() != 'string'
+                            or number_props.get('dataType', '').lower() != 'int64'
+                            or month_sources.get(props.get('sourceColumn')) != ('MonthName', date_source)
+                            or month_sources.get(number_props.get('sourceColumn')) != ('Month', date_source)):
+                        continue
+                    if all((table, col) in symbols for col in (date, name, number)):
+                        calendars.setdefault((table, date), set()).add((table, name, number))
+
+        rel_path = os.path.join(definition, 'relationships.tmdl')
+        if not os.path.isfile(rel_path):
+            return {}
+        try:
+            with open(rel_path, encoding='utf-8-sig') as stream:
+                text = stream.read()
+        except (OSError, UnicodeError):
+            return {}
+        candidates = {}
+        for block in re.split(r'^relationship\s+.+$', text, flags=re.MULTILINE)[1:]:
+            props = dict(re.findall(r'^\s+(\w+):\s*(.+)$', block, re.MULTILINE))
+            if (props.get('isActive', 'true').lower() != 'true'
+                    or props.get('toCardinality', 'one').lower() != 'one'):
+                continue
+            source, target = endpoint(props.get('fromColumn', '')), endpoint(props.get('toColumn', ''))
+            if source not in symbols or source == target:
+                continue
+            if (getattr(self, '_actual_bim_column_types', {}).get(source, '').lower()
+                    != 'datetime'):
+                continue
+            for binding in calendars.get(target, ()):
+                candidates.setdefault(source, set()).add(binding)
+        return {source: next(iter(bindings)) for source, bindings in candidates.items()
+                if len(bindings) == 1}
+
     def _create_basic_model_bim(self, report_name, datasources):
         """Basic BIM generation in case of error (fallback)"""
         
@@ -1120,9 +1240,7 @@ class PowerBIProjectGenerator:
         # ``'bar'`` to valid PBI visualTypes (``'clusteredBarChart'``).
         # The extractor *should* already produce valid types, but this
         # guards against future regressions and external JSON inputs.
-        from visual_generator import resolve_visual_type as _rvt
-        _raw_ct = ws_data.get('chart_type') if ws_data else None
-        visual_type = _rvt(_raw_ct) if _raw_ct else 'clusteredBarChart'
+        visual_type = self._resolve_worksheet_visual_type(ws_data or {})
 
         # Check for custom visual GUID (higher-fidelity AppSource visual)
         guid_info = None
@@ -1285,7 +1403,8 @@ class PowerBIProjectGenerator:
                 visual_json["visual"]["query"] = query
                 # Apply sort state from extraction
                 sort_orders = ws_data.get('sort_orders', [])
-                if sort_orders and isinstance(sort_orders, list) and len(sort_orders) > 0:
+                if (sort_orders and isinstance(sort_orders, list) and len(sort_orders) > 0
+                        and not ws_data.get('_discrete_month_binding')):
                     sort_def = sort_orders[0]
                     sort_field = sort_def.get('field', '')
                     sort_dir = sort_def.get('direction', 'ASC')
@@ -1376,6 +1495,13 @@ class PowerBIProjectGenerator:
 
         # Visual objects: encodings (labels, legend, axes, colors)
         visual_objects = self._build_visual_objects(ws_name, ws_data, visual_type)
+        bound_state = visual_json["visual"].get("query", {}).get("queryState", {})
+        if ws_data and bound_state:
+            if visual_type not in ('tableEx', 'table'):
+                self._build_color_encoding_objects(
+                    visual_objects, ws_data, visual_type,
+                    ws_data.get('mark_encoding', {}), query_state=bound_state)
+            self._build_field_format_objects(visual_objects, ws_data, bound_state)
         unresolved_reference_lines = ws_data.pop('_unresolved_reference_lines', []) if ws_data else []
         if unresolved_reference_lines:
             visual_json.setdefault('annotations', []).append({
@@ -1685,12 +1811,49 @@ class PowerBIProjectGenerator:
         _write_json(os.path.join(visual_dir, 'visual.json'), visual_json, ensure_ascii=False)
 
     def _create_visual_image(self, visuals_dir, obj, scale_x, scale_y, visual_count):
-        """Create an image visual from a Tableau image object."""
+        """Create an image, or an honest note for a known missing resource.
+
+        Relative TWBX paths may be resolved by the packaging stage, so a path
+        which cannot be checked here is not evidence that an asset is missing.
+        The extraction/resource stage can explicitly set resource_missing
+        after checking the workbook directory or archive.
+        """
         visual_id = uuid.uuid4().hex[:8]
         visual_dir = os.path.join(visuals_dir, visual_id)
 
         pos = obj.get('position', {})
-        img_source = obj.get('source', '')
+        img_source = obj.get('source') or obj.get('url') or ''
+        missing_resource = (obj.get('resource_missing') is True
+                            or obj.get('source_exists') is False
+                            or not img_source
+                            or (os.path.isabs(img_source)
+                                and not os.path.isfile(img_source)))
+
+        if missing_resource:
+            # A broken image icon can be mistaken for migrated content. Keep
+            # the source placement but explicitly disclose the absent asset.
+            filename = os.path.basename(img_source.replace('\\', '/'))
+            note = 'Source image unavailable'
+            if filename:
+                note += ': ' + filename
+            logger.warning('%s', note)
+            visual_json = {
+                "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
+                "name": visual_id,
+                "position": self._make_visual_position(pos, scale_x, scale_y, visual_count),
+                "visual": {
+                    "visualType": "textbox",
+                    "objects": {"general": [{"properties": {
+                        "paragraphs": [{"textRuns": [{"value": note}]}]
+                    }}]},
+                },
+                "annotations": [{
+                    "name": "MigrationNote",
+                    "value": note + '. No replacement image was generated.',
+                }],
+            }
+            _write_json(os.path.join(visual_dir, 'visual.json'), visual_json, ensure_ascii=False)
+            return
 
         # For embedded TWBX images, convert to base64 data URI
         if img_source and not img_source.startswith(('http://', 'https://', 'data:')):
@@ -2655,7 +2818,9 @@ class PowerBIProjectGenerator:
         page_names = []
         for db_idx, db in enumerate(dashboards):
             page_name = f"ReportSection{uuid.uuid4().hex[:6]}" if db_idx > 0 else "ReportSection"
-            page_display_name = db.get('name', f'Page {db_idx + 1}')
+            page_display_name = db.get('name')
+            if not isinstance(page_display_name, str) or not page_display_name.strip():
+                page_display_name = f'Page {db_idx + 1}'
             page_names.append(page_name)
 
             # Create the page folder
@@ -2831,8 +2996,7 @@ class PowerBIProjectGenerator:
 
                 # Sprint 122: Set-value actions → hidden slicer + bookmarks + button
                 set_actions = [a for a in actions if a.get('type') == 'set-value'
-                               and (not a.get('source_worksheet') or a.get('source_worksheet') == db_name
-                                    or any(o.get('worksheetName') == a.get('source_worksheet') for o in db_objects))]
+                               and _action_belongs_to_page(a, page_display_name, page_worksheets)]
                 if set_actions:
                     set_created, set_bms = self._generate_set_action_artifacts(
                         visuals_dir, set_actions, visual_count,
@@ -2845,8 +3009,7 @@ class PowerBIProjectGenerator:
 
                 # Sprint 122: Parameter actions → slicer visuals
                 param_actions = [a for a in actions if a.get('type') == 'param'
-                                 and (not a.get('source_worksheet') or a.get('source_worksheet') == db_name
-                                      or any(o.get('worksheetName') == a.get('source_worksheet') for o in db_objects))]
+                                 and _action_belongs_to_page(a, page_display_name, page_worksheets)]
                 if param_actions:
                     param_created = self._generate_parameter_action_slicers(
                         visuals_dir, param_actions, visual_count, converted_objects)
@@ -2897,7 +3060,9 @@ class PowerBIProjectGenerator:
             page_name = "ReportSection" if idx == 0 else f"ReportSection{uuid.uuid4().hex[:6]}"
             page_names.append(page_name)
 
-            ws_name = ws.get('name', f'Sheet {idx+1}')
+            ws_name = ws.get('name')
+            if not isinstance(ws_name, str) or not ws_name.strip():
+                ws_name = f'Sheet {idx + 1}'
             page_dir = os.path.join(pages_dir, page_name)
             os.makedirs(page_dir, exist_ok=True)
 
@@ -3459,10 +3624,10 @@ class PowerBIProjectGenerator:
         "multiRowCard":                      ([], ["Values"]),
         "kpi":                               ([], ["Indicator", "TrendAxis"]),
         "clusteredBarChart":                 (["Category", "Series"], ["Y"]),
-        "stackedBarChart":                   (["Category", "Series"], ["Y"]),
+        "barChart":                          (["Category", "Series"], ["Y"]),
         "hundredPercentStackedBarChart":      (["Category", "Series"], ["Y"]),
         "clusteredColumnChart":              (["Category", "Series"], ["Y"]),
-        "stackedColumnChart":                (["Category", "Series"], ["Y"]),
+        "columnChart":                       (["Category", "Series"], ["Y"]),
         "hundredPercentStackedColumnChart":   (["Category", "Series"], ["Y"]),
         "lineChart":                         (["Category", "Series"], ["Y"]),
         "areaChart":                         (["Category", "Series"], ["Y"]),
@@ -3548,6 +3713,17 @@ class PowerBIProjectGenerator:
                           and f.get('aggregation') in _TABLEAU_AGG_TO_PBI_FUNC
                           and not self._is_date_field(f['name']))
                       or self._is_measure_field(f['name']))
+            # A Tableau calculation can be registered as a "measure" before
+            # the model materializes it as a date/text column. Its actual pair
+            # and type take precedence over that global name classification.
+            # In particular a discrete YEAR(calculation) belongs on the axis,
+            # never in Y as SUM(a dateTime column).
+            if (known_column_type is not None
+                    and known_column_type.lower() not in _NUMERIC_MODEL_TYPES
+                    and shelf in ('rows', 'columns', 'color', 'detail')
+                    and f.get('aggregation') not in
+                    ('cnt', 'count', 'ctd', 'countd', 'countnonnull', 'distinctcount')):
+                is_mea = False
 
             if shelf == 'measure_value':
                 result['expanded_meas'].append(f)
@@ -3582,6 +3758,61 @@ class PowerBIProjectGenerator:
                     result['other_dims'].append(_as_dim(f))
         return result
 
+    def _resolve_worksheet_visual_type(self, ws_data, classified=None):
+        """Resolve Automatic marks from shelves, not titles or field-name words.
+
+        Older extraction snapshots can call a two-axis scatter a combo chart,
+        or call Tableau's automatically stacked bars clustered bars. Only
+        unambiguous single-axis pairs are repaired; explicit mark choices and
+        real dual axes retain their supplied type.
+        """
+        from visual_generator import resolve_visual_type
+        raw_type = ws_data.get('chart_type')
+        visual_type = resolve_visual_type(raw_type) if raw_type else 'clusteredBarChart'
+        if ((ws_data.get('dual_axis') or {}).get('enabled')
+                or (ws_data.get('axes') or {}).get('dual_axis')):
+            # Do not reinterpret explicit bar/scatter overlays as bar+line.
+            # A line/table inference with declared dual axes can use the
+            # native combo approximation; pane mark metadata is still needed
+            # to recover the exact per-axis field assignment.
+            if visual_type in ('lineChart', 'tableEx', 'table'):
+                return 'lineClusteredColumnComboChart'
+            return visual_type
+        if (ws_data.get('original_mark_class') or '').lower() != 'automatic':
+            return visual_type
+        if classified is None:
+            classified = self._classify_shelf_fields([
+                {**f, 'name': self._clean_field_name(f.get('name', ''))}
+                for f in ws_data.get('fields', [])
+            ])
+        rd, rm = classified['rows_dims'], classified['rows_meas']
+        cd, cm = classified['cols_dims'], classified['cols_meas']
+        if (len(rm) == len(cm) == 1 and not rd and not cd
+                and not classified['expanded_meas']
+                and visual_type in ('scatterChart', 'tableEx',
+                                    'clusteredBarChart', 'clusteredColumnChart',
+                                    'lineClusteredColumnComboChart',
+                                    'lineStackedColumnComboChart')):
+            return 'scatterChart'
+
+        # A discrete colour partitions an Automatic bar's single value axis
+        # into stacked marks. A second dimension on the opposite shelf is
+        # instead a nested/category layout and must not trigger this rule.
+        horizontal = len(rd) == len(cm) == 1 and not rm and not cd
+        vertical = len(cd) == len(rm) == 1 and not cm and not rd
+        stack_off = any(
+            isinstance(fmt, dict) and str(fmt.get('stack-mode', '')).lower() == 'off'
+            for fmt in (ws_data.get('formatting') or {}).values()
+        )
+        if (visual_type in ('clusteredBarChart', 'clusteredColumnChart')
+                and classified['color_dims'] and not classified['expanded_meas']
+                and not stack_off):
+            if horizontal:
+                return 'barChart'
+            if vertical:
+                return 'columnChart'
+        return visual_type
+
     def _build_visual_query(self, ws_data):
         """Builds a query with queryState for a visual (PBIR v4.0 format).
 
@@ -3601,6 +3832,8 @@ class PowerBIProjectGenerator:
         fields = ws_data.get('fields', [])
         if not fields:
             return None
+        ws_data.pop('_discrete_month_binding', None)
+        ws_data.pop('_separate_text_label_approximation', None)
 
         # â”€â”€ Clean & de-duplicate field names â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         skip_names = {'Measure Names', 'Measure Values', 'Multiple Values',
@@ -3608,6 +3841,7 @@ class PowerBIProjectGenerator:
                       'Longitude (generated)', 'Latitude (generated)'}
         cleaned_fields = []
         seen_names = set()
+        seen_shelves = {}
         seen_tooltips = set()
         # Pre-compute set of valid model symbols for orphan field filtering
         _bim_sym = getattr(self, '_actual_bim_symbols', None) or set()
@@ -3633,8 +3867,17 @@ class PowerBIProjectGenerator:
                 continue
             # Deduplicate: same field from different shelves
             tooltip_identity = (clean, f.get('aggregation'), f.get('datasource'))
+            # Scatter may group by a numeric dimension on Detail while also
+            # plotting its aggregate. Those are different semantic expressions,
+            # and their presence must not depend on extraction field order.
+            preserve_scatter_detail = (
+                ws_data.get('chart_type', '').lower() in ('scatter', 'scatterchart', 'scatterplot')
+                and ((f.get('shelf') == 'detail' and not f.get('aggregation')
+                      and seen_shelves.get(clean, set()) & {'rows', 'columns'})
+                     or (f.get('shelf') in ('rows', 'columns')
+                         and 'detail' in seen_shelves.get(clean, set()))))
             if clean in seen_names and (f.get('shelf') != 'tooltip'
-                                        or tooltip_identity in seen_tooltips):
+                                        or tooltip_identity in seen_tooltips) and not preserve_scatter_detail:
                 continue
             # Skip fields that don't exist in the semantic model — validate
             # by (entity, property) pair for precision. Use _resolve_field_entity
@@ -3643,7 +3886,9 @@ class PowerBIProjectGenerator:
             resolved_pair = None
             if _bim_sym:
                 ds = f.get('datasource', '')
-                resolved_entity, resolved_prop = self._resolve_field_entity(clean, datasource=ds)
+                resolved_entity, resolved_prop = self._resolve_field_entity(
+                    clean, datasource=ds, source_table=f.get('source_table'),
+                    source_column=f.get('source_column'))
                 if ((resolved_entity, resolved_prop) not in _bim_sym
                         and (resolved_entity, resolved_prop.strip()) not in _bim_sym):
                     if ds and any(source.get('name') == ds
@@ -3660,12 +3905,15 @@ class PowerBIProjectGenerator:
                 else:
                     resolved_pair = (resolved_entity, resolved_prop)
             seen_names.add(clean)
+            seen_shelves.setdefault(clean, set()).add(f.get('shelf'))
             if f.get('shelf') == 'tooltip':
                 seen_tooltips.add(tooltip_identity)
             categories = getattr(self, '_actual_bim_column_categories', None) or {}
             pair = resolved_pair
             if pair is None and categories:
-                pair = self._resolve_field_entity(clean, datasource=f.get('datasource', ''))
+                pair = self._resolve_field_entity(
+                    clean, datasource=f.get('datasource', ''),
+                    source_table=f.get('source_table'), source_column=f.get('source_column'))
             category = categories.get(pair) if pair else None
             cleaned_fields.append({**f, 'name': clean,
                                    **({'_resolved_pair': resolved_pair} if resolved_pair else {}),
@@ -3673,6 +3921,30 @@ class PowerBIProjectGenerator:
 
         if not cleaned_fields:
             return None
+
+        for field in cleaned_fields:
+            # A Tableau discrete month datepart groups across years. Never
+            # substitute a related calendar for a continuous month truncation,
+            # or for another date column which happens to have a similar name.
+            if (field.get('shelf') not in ('rows', 'columns')
+                    or field.get('date_part') not in ('mn', 'month')
+                    or field.get('is_discrete') is False
+                    or field.get('is_continuous') is True
+                    or not (field.get('is_discrete') is True
+                            or field.get('is_continuous') is False)):
+                continue
+            source = field.get('_resolved_pair') or self._resolve_field_entity(
+                field['name'], datasource=field.get('datasource', ''))
+            binding = getattr(self, '_related_month_bindings', {}).get(source)
+            if binding:
+                table, month_name, month_number = binding
+                field['_resolved_pair'] = (table, month_name)
+                field.pop('aggregation', None)
+                ws_data['_discrete_month_binding'] = binding
+            else:
+                ws_data['_visual_mapping_note'] = (
+                    'Discrete month datepart has no unique validated active calendar '
+                    'relationship for its source date; raw date retained, month grouping requires review.')
 
         # â”€â”€ Shelf-aware field classification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         classified = self._classify_shelf_fields(cleaned_fields)
@@ -3709,10 +3981,8 @@ class PowerBIProjectGenerator:
 
         # Tooltip-grade fields: explicit tooltips + color measures + remaining text dims
         tip_fields = tooltip_fields + color_meas + text_fields
-        # Tableau Detail is metadata for mark grain, not a chart axis/series.
-        # Keep it available for future interaction contracts without adding
-        # every detail field to the visible Power BI data wells.
-        _ = detail_dims
+        # Detail is mark grain (used by scatter below), not a visible axis or
+        # legend for standard charts.
         # Legacy combined lists (for fallback logic)
         all_dims = axis_dims + color_dims
         all_meas = axis_meas + size_fields
@@ -3723,10 +3993,31 @@ class PowerBIProjectGenerator:
         fallback_dims = axis_dims + color_dims + detail_dims + tooltip_dims
         fallback_meas = axis_meas + size_fields + color_meas + tooltip_meas
 
-        from visual_generator import resolve_visual_type as _rvt
-        _raw_ct = ws_data.get('chart_type')
-        visual_type = _rvt(_raw_ct) if _raw_ct else 'clusteredBarChart'
+        visual_type = self._resolve_worksheet_visual_type(ws_data, classified)
         query_state = {}
+        if visual_type in ('pieChart', 'donutChart') and len(axis_meas) > 1:
+            # Shelfless pies often label both the value and its percent of
+            # total. A Text table calculation must not become another slice
+            # value simply because text measures were promoted above.
+            value_measures = [f for f in axis_meas if not f.get('table_calc')]
+            label_measures = [f for f in axis_meas if f.get('table_calc')
+                              and f.get('shelf') in ('text', 'label')]
+            if value_measures and label_measures:
+                axis_meas = [f for f in axis_meas if f not in label_measures]
+                tip_fields = tip_fields + label_measures
+        if visual_type == 'lineChart' and axis_meas:
+            axis_identities = {(f['name'], f.get('aggregation') or 'sum') for f in axis_meas}
+            separate_labels = [f for f in text_meas
+                               if (f['name'], f.get('aggregation') or 'sum') not in axis_identities]
+            if separate_labels:
+                # Native line data labels describe Y, not an independent Text
+                # measure. Preserve that measure in Tooltips, suppress false Y
+                # labels, and disclose the approximation rather than changing Y.
+                ws_data['_separate_text_label_approximation'] = True
+                note = ('Separate Tableau Text measure labels are shown in Tooltips; '
+                        'native line labels are suppressed because they would label Y instead.')
+                prior = ws_data.get('_visual_mapping_note')
+                ws_data['_visual_mapping_note'] = f'{prior}; {note}' if prior else note
 
         # â”€â”€ Per-visual-type role assignment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -3735,25 +4026,67 @@ class PowerBIProjectGenerator:
             #          cols measures â†’ X, rows measures â†’ Y, 3rd â†’ Size
             scatter_dims = axis_dims + color_dims
             if not scatter_dims and detail_dims:
-                scatter_dims = detail_dims
-            if not scatter_dims and tooltip_dims:
+                # Detail controls the mark grain, not the legend. Preserve
+                # the full grouping: keeping only its first field can collapse
+                # thousands of customer/product marks into a few group totals.
+                query_state["Category"] = {
+                    "projections": [self._make_projection_entry(d, force_column=True)
+                                    for d in detail_dims]
+                }
+                if len(detail_dims) > 1:
+                    ws_data['_visual_mapping_note'] = (
+                        'Scatter groups by all extracted Detail fields. '
+                        'Extraction must distinguish mark detail from filter-only slices '
+                        'to guarantee the original mark grain.')
+            if not scatter_dims and not detail_dims and tooltip_dims:
                 scatter_dims = tooltip_dims[:1]
             if scatter_dims:
                 query_state["Category"] = self._make_projection(scatter_dims[0])
                 if len(scatter_dims) > 1:
                     query_state['Series'] = self._make_projection(scatter_dims[1])
                     tip_fields = tip_fields + scatter_dims[2:]
+            if detail_dims:
+                # Colour is the legend, not a substitute for the mark grain.
+                # Previously the presence of a colour pill discarded every
+                # Detail field (e.g. Country/Region and Region in World Indicators).
+                query_state["Category"] = {
+                    "projections": [self._make_projection_entry(d, force_column=True)
+                                    for d in axis_dims + detail_dims]
+                }
+                query_state.pop('Series', None)
+                if color_dims:
+                    query_state['Series'] = {
+                        "projections": [self._make_projection_entry(
+                            color_dims[0], force_column=True)]
+                    }
+                    tip_fields = tip_fields + color_dims[1:]
             # In Tableau: columns = X-axis, rows = Y-axis.
             # Use cols_meas first for X, rows_meas for Y.
             scatter_meas = (cols_meas + rows_meas + expanded_meas
                             + other_meas + size_fields + tooltip_meas)
+            if (ws_data.get('original_mark_class', '').lower() in ('circle', 'shape')
+                    and bool(cols_meas) != bool(rows_meas)
+                    and not expanded_meas and not other_meas):
+                # A one-axis Tableau Circle plot is a dot/strip plot. A numeric
+                # tooltip does not constitute its missing axis. Do not invent a
+                # correlation (or a Size encoding) just to fill scatter wells.
+                projections = [self._make_projection_entry(f)
+                               for f in axis_dims + detail_dims + color_dims
+                               + cols_meas + rows_meas + tip_fields + size_fields]
+                query_state = {"Values": {
+                    "projections": [p for p in projections if p is not None]}}
+                ws_data['_override_visual_type'] = 'tableEx'
+                ws_data['_visual_fallback_note'] = (
+                    'Single-axis Tableau Circle/Shape plot has no second scatter axis; '
+                    'source values and mark detail were preserved as a table.')
+                return {'queryState': query_state}
             if len(scatter_meas) >= 2:
                 query_state["X"] = self._make_scatter_axis_projection(scatter_meas[0])
                 query_state["Y"] = self._make_scatter_axis_projection(scatter_meas[1])
             else:
                 query_state.clear()
                 fallback_projections = []
-                for field in scatter_dims + scatter_meas + tip_fields:
+                for field in (scatter_dims or detail_dims) + scatter_meas + tip_fields:
                     projection = self._make_projection_entry(field)
                     if projection is not None and not any(
                             item['field'] == projection['field'] for item in fallback_projections):
@@ -3766,7 +4099,8 @@ class PowerBIProjectGenerator:
                     'Scatter has no second resolved axis; source fields were preserved as a table.')
                 return {'queryState': query_state}
             # Size: 3rd axis measure or explicit size field or color measure
-            size_f = scatter_meas[2:3] or color_meas[:1]
+            size_f = size_fields[:1] or (
+                cols_meas + rows_meas + expanded_meas + other_meas)[2:3] or color_meas[:1]
             if size_f:
                 query_state["Size"] = self._make_scatter_axis_projection(size_f[0])
             if tip_fields:
@@ -3774,6 +4108,25 @@ class PowerBIProjectGenerator:
                     "projections": [self._make_projection_entry(f)
                                     for f in tip_fields]
                 }
+            # Desktop de-duplicates selects by queryRef, not by expression.
+            # A numeric column on Detail and AVG(the same column) on X must
+            # not share an identity, or whichever role is read first wins.
+            projections = [p for body in query_state.values()
+                           for p in body.get('projections', []) if p is not None]
+            for projection in projections:
+                aggregate = projection['field'].get('Aggregation')
+                if aggregate and any(
+                        p is not projection
+                        and p['queryRef'] == projection['queryRef']
+                        and p['field'] != projection['field'] for p in projections):
+                    column = aggregate['Expression']['Column']
+                    entity = column['Expression']['SourceRef']['Entity']
+                    aggregate_name = {
+                        0: 'Sum', 1: 'Avg', 2: 'Count', 3: 'Min', 4: 'Max',
+                        5: 'CountNonNull', 6: 'Median',
+                    }[aggregate['Function']]
+                    projection['queryRef'] = (
+                        f"{aggregate_name}({entity}.{column['Property']})")
 
         elif visual_type in ('tableEx', 'table'):
             # Table: all fields (dims + measures) â†’ Values
@@ -4093,9 +4446,9 @@ class PowerBIProjectGenerator:
         # (e.g. string-split fields that transitively reference SUM()).
         # Prefer tableEx (preserves all data columns).
         _NEEDS_CATEGORY = {
-            'clusteredBarChart', 'stackedBarChart',
+            'clusteredBarChart', 'barChart',
             'hundredPercentStackedBarChart',
-            'clusteredColumnChart', 'stackedColumnChart',
+            'clusteredColumnChart', 'columnChart',
             'hundredPercentStackedColumnChart',
             'lineChart', 'areaChart', 'stackedAreaChart',
             'hundredPercentStackedAreaChart',
@@ -4157,7 +4510,20 @@ class PowerBIProjectGenerator:
         query_state = self._enforce_role_contract(
             query_state, visual_type, ws_data, fallback_dims + fallback_meas)
 
-        return {"queryState": query_state} if query_state else None
+        if not query_state:
+            return None
+        query = {"queryState": query_state}
+        month_binding = ws_data.get('_discrete_month_binding')
+        if month_binding and query_state.get('Category', {}).get('projections'):
+            table, month_name, _ = month_binding
+            # MonthName's validated sortByColumn provides January–December
+            # order; an explicit category sort avoids the default value sort.
+            category = query_state['Category']['projections'][0]['field']
+            if category.get('Column') == {
+                    'Expression': {'SourceRef': {'Entity': table}}, 'Property': month_name}:
+                query['sortDefinition'] = {'sort': [
+                    {'field': category, 'direction': 'Ascending'}], 'isDefaultSort': True}
+        return query
 
     def _preserve_size_measures(self, query_state, visual_type, size_fields):
         """Keeps a Tableau size-shelf measure that the target visual cannot size by.
@@ -4177,6 +4543,8 @@ class PowerBIProjectGenerator:
         tooltips = query_state.setdefault('Tooltips', {'projections': []})
         for measure in size_fields:
             entry = self._make_projection_entry(measure)
+            if entry is None:
+                continue
             if entry.get('field') in bound:
                 continue
             tooltips['projections'].append(entry)
@@ -4233,82 +4601,49 @@ class PowerBIProjectGenerator:
     def _make_scatter_axis_projection(self, field):
         """Creates a projection for scatter chart X/Y/Size axes.
         BIM measures use Measure wrapper; physical columns use Aggregation
-        wrapper (Sum) since scatter axes require explicit aggregation."""
+        wrapper with the Tableau shelf aggregation and numeric type checks."""
         return {
             "projections": [self._make_scatter_axis_entry(field)]
         }
 
     def _make_scatter_axis_entry(self, field):
-        """Creates projection entry for scatter chart axes.
-        Named DAX measures â†’ Measure wrapper.
-        Physical columns â†’ Aggregation wrapper with shelf-aware Function ID."""
-        raw_name = field.get('name', 'Field')
-        clean_name = self._clean_field_name(raw_name)
+        """Bind a numeric scatter value, preserving the source aggregation.
 
-        if field.get('_resolved_pair'):
-            entity, prop = field['_resolved_pair']
-        elif hasattr(self, '_field_map') and clean_name in self._field_map:
-            entity, prop = self._field_map[clean_name]
+        Use the common resolver for renamed entities and canonical properties,
+        but distinguish actual model columns from named DAX measures. Known
+        non-numeric values cannot fill X/Y/Size (except numeric counts).
+        """
+        entry = self._make_projection_entry(field)
+        if entry is None:
+            return None
+        reference = entry['field']
+        if 'Aggregation' in reference:
+            column = reference['Aggregation']['Expression']['Column']
         else:
-            entity = getattr(self, '_main_table', 'Table')
-            prop = clean_name
-            for ds in getattr(self, '_datasources_ref', []):
-                for calc in ds.get('calculations', []):
-                    calc_id = calc.get('name', '').replace('[', '').replace(']', '')
-                    if calc_id == clean_name:
-                        prop = calc.get('caption', clean_name).strip()
-                        self._field_map[clean_name] = (entity, prop)
-                        break
+            column = reference.get('Column') or reference['Measure']
+        entity = column['Expression']['SourceRef']['Entity']
+        prop = column['Property']
+        pair = (entity, prop)
+        column_type = (getattr(self, '_actual_bim_column_types', {}) or {}).get(pair)
+        measure_type = (getattr(self, '_actual_bim_measure_types', {}) or {}).get(pair)
+        numeric_types = _NUMERIC_MODEL_TYPES
 
-        # Override entity for multi-datasource renamed tables
-        ds_ref = field.get('datasource', '')
-        collision = getattr(self, '_collision_tables', set())
-        if (not field.get('_resolved_pair') and ds_ref and entity in collision
-            and hasattr(self, '_ds_table_map') and ds_ref in self._ds_table_map):
-            ds_entity = self._ds_table_map[ds_ref]
-            if ds_entity != entity:
-                entity = ds_entity
-
-        is_bim_measure = hasattr(self, '_bim_measure_names') and (
-            clean_name in self._bim_measure_names or prop in self._bim_measure_names
-        )
-
-        shelf_agg = field.get('aggregation', '')
-        agg_func = _TABLEAU_AGG_TO_PBI_FUNC.get(shelf_agg, 0)
-
-        if is_bim_measure:
-            field_ref = {
-                "Measure": {
-                    "Expression": {"SourceRef": {"Entity": entity}},
-                    "Property": prop
-                }
-            }
-        else:
-            # Physical column: wrap as Aggregation with shelf-aware Function ID
-            field_ref = {
-                "Aggregation": {
-                    "Expression": {
-                        "Column": {
-                            "Expression": {"SourceRef": {"Entity": entity}},
-                            "Property": prop
-                        }
-                    },
-                    "Function": agg_func
-                }
-            }
-
-        # Final validation against semantic model
-        _bim_sym = getattr(self, '_actual_bim_symbols', None) or set()
-        if _bim_sym and (entity, prop) not in _bim_sym:
-            if (entity, prop.strip()) not in _bim_sym:
+        # Column metadata wins over global measure-name membership: two tables
+        # may contain a physical column and a measure with the same name.
+        if 'Measure' in reference and column_type is None:
+            if measure_type and measure_type.lower() not in numeric_types:
                 return None
-            prop = prop.strip()
+            return entry
 
+        aggregation = str(field.get('aggregation') or 'sum').lower()
+        agg_func = _TABLEAU_AGG_TO_PBI_FUNC.get(aggregation, 0)
+        if (column_type and column_type.lower() not in numeric_types
+                and agg_func not in (2, 5)):
+            return None
         return {
-            "field": field_ref,
-            "queryRef": f"{entity}.{prop}",
-            "nativeQueryRef": prop,
-            "active": True
+            **entry,
+            'field': {'Aggregation': {
+                'Expression': {'Column': column}, 'Function': agg_func}},
         }
     
     def _make_projection_entry(self, field, force_column=False):
@@ -4334,6 +4669,11 @@ class PowerBIProjectGenerator:
         # Resolve via mapping
         if field.get('_resolved_pair'):
             entity, prop = field['_resolved_pair']
+        elif field.get('datasource') or field.get('source_table'):
+            entity, prop = self._resolve_field_entity(
+                clean_name, datasource=field.get('datasource', ''),
+                source_table=field.get('source_table'),
+                source_column=field.get('source_column'))
         elif hasattr(self, '_field_map') and clean_name in self._field_map:
             entity, prop = self._field_map[clean_name]
         else:
@@ -4377,18 +4717,36 @@ class PowerBIProjectGenerator:
             prop = canonical_prop
         prop = prop.strip()
 
-        shelf_agg = field.get('aggregation', '')
+        shelf_agg = str(field.get('aggregation') or '').lower()
         explicit_agg_func = _TABLEAU_AGG_TO_PBI_FUNC.get(shelf_agg)
 
         # Determine wrapper type
-        is_bim_measure = hasattr(self, '_bim_measure_names') and (
-            clean_name in self._bim_measure_names or prop in self._bim_measure_names
-        )
+        pair = (entity, prop)
+        column_type = (getattr(self, '_actual_bim_column_types', {}) or {}).get(pair)
+        measure_types = getattr(self, '_actual_bim_measure_types', {}) or {}
+        is_bim_measure = column_type is None and (
+            pair in measure_types or (hasattr(self, '_bim_measure_names') and (
+                clean_name in self._bim_measure_names or prop in self._bim_measure_names
+            )))
         is_physical_measure = (
             not is_bim_measure
             and hasattr(self, '_measure_names')
             and (clean_name in self._measure_names or prop in self._measure_names)
+            and (column_type is None or column_type.lower() in _NUMERIC_MODEL_TYPES)
         )
+
+        if (not force_column and not is_bim_measure and column_type
+                and column_type.lower() not in _NUMERIC_MODEL_TYPES
+                and explicit_agg_func in (0, 1, 6)):
+            # Never disguise an invalid SUM/AVG/MEDIAN as a count, nor emit a
+            # numeric aggregate over a known text/date/bool column. ATTR has
+            # no exact native aggregate; preserve its column for table roles.
+            if shelf_agg == 'attr':
+                explicit_agg_func = None
+            else:
+                logger.warning("Cannot bind %s(%s[%s]): model column type is %s",
+                               shelf_agg, entity, prop, column_type)
+                return None
 
         if is_bim_measure and not force_column:
             # Named DAX measure â†’ Measure wrapper
@@ -4589,6 +4947,16 @@ class PowerBIProjectGenerator:
         shapes = converted_objects.get('custom_shapes', [])
         if not shapes:
             return
+        if os.environ.get('TTPBI_UPLOAD_ROOT'):
+            # This legacy search has no per-workbook extraction context. Never
+            # fall back to the application's shared tableau_export for uploads.
+            # Refuse explicitly until a private shape source is supplied.
+            from powerbi_import.security_validator import SecurityError
+            message = "Custom shapes require private extraction; shared shape lookup is forbidden for uploads"
+            # The importer can catch generation errors. Latch the subprocess
+            # violation so that a partial project never becomes a successful job.
+            sys.audit('ttpbi.upload_denied', message)
+            raise SecurityError(message)
 
         # Determine source shapes directory â€” typically tableau_export/shapes/
         # Search common extraction output locations
@@ -4684,7 +5052,8 @@ class PowerBIProjectGenerator:
         
         return report_filters
     
-    def _resolve_field_entity(self, field_name, datasource=''):
+    def _resolve_field_entity(self, field_name, datasource='', source_table=None,
+                              source_column=None):
         """Resolves a field name to (entity_table, property_name) via _field_map.
 
         Args:
@@ -4697,11 +5066,64 @@ class PowerBIProjectGenerator:
         collision = getattr(self, '_collision_tables', set())
         source = next((item for item in getattr(self, '_datasources_ref', [])
                        if datasource and item.get('name') == datasource), None)
+        # Authoritative physical lineage takes precedence over duplicate
+        # schemas and unscoped name maps. Apply model renames exactly once.
+        # Return even a missing pair: callers must disclose it, not silently
+        # substitute a same-named column from another join side.
+        if source_table:
+            table = source_table.strip('[]')
+            entity = getattr(self, '_table_rename_map', {}).get((datasource, table), table)
+            column = (source_column or clean).strip('[]')
+            prop = getattr(self, '_column_rename_map', {}).get((entity, column), column)
+            return (entity, prop)
         if source is not None:
             rename_map = getattr(self, '_table_rename_map', {})
+            column_renames = getattr(self, '_column_rename_map', {})
             source_tables = {rename_map.get((datasource, table.get('name')),
                                             table.get('name'))
                              for table in source.get('tables', []) if table.get('name')}
+            symbols = getattr(self, '_actual_bim_symbols', set()) or set()
+            # Resolve physical columns from their own datasource metadata,
+            # not the workbook-wide first/most-columns name lookup. Extracts
+            # often duplicate a connected table's schema without a connection
+            # or relationship; mixing those copies in one query is invalid.
+            column_candidates = set()
+            connected_candidates = set()
+            for table in source.get('tables', []):
+                entity = rename_map.get((datasource, table.get('name')), table.get('name'))
+                for column in table.get('columns', []):
+                    raw = column.get('name', '').strip('[]')
+                    caption = (column.get('caption') or '').strip()
+                    prop = column_renames.get((entity, raw), raw)
+                    if clean not in {raw, caption, prop}:
+                        continue
+                    pair = (entity, prop)
+                    if symbols and pair not in symbols:
+                        continue
+                    column_candidates.add(pair)
+                    if (table.get('connection')
+                            or (table.get('connection_details') or {}).get('type')):
+                        connected_candidates.add(pair)
+            local_table = (source.get('col_local_name_map') or {}).get(clean)
+            if local_table:
+                entity = rename_map.get((datasource, local_table.strip('[]')),
+                                        local_table.strip('[]'))
+                local_candidates = {pair for pair in column_candidates if pair[0] == entity}
+                if len(local_candidates) == 1:
+                    return next(iter(local_candidates))
+                # Declared lineage to a missing/ambiguous model column must
+                # not fall through to the other physical copy.
+                if not local_candidates:
+                    return (entity, column_renames.get((entity, clean), clean))
+                return (datasource, clean)
+            if len(connected_candidates) == 1:
+                return next(iter(connected_candidates))
+            if len(column_candidates) == 1:
+                return next(iter(column_candidates))
+            if column_candidates:
+                # No unique provenance: do not borrow a same-named column
+                # from another datasource or arbitrarily choose a join side.
+                return (datasource, clean)
             properties = {clean}
             mapped = getattr(self, '_field_map', {}).get(clean)
             if mapped:
@@ -4713,13 +5135,19 @@ class PowerBIProjectGenerator:
             properties.update(measure_renames[(table, prop)]
                               for table in source_tables for prop in tuple(properties)
                               if (table, prop) in measure_renames)
-            symbols = getattr(self, '_actual_bim_symbols', set()) or set()
+            canonical_properties = {name.strip() for name in properties}
             candidates = {(entity, prop) for entity, prop in symbols
-                          if entity in source_tables and prop in properties}
+                          if entity in source_tables
+                          and prop.strip() in canonical_properties}
             if len(candidates) == 1:
                 return next(iter(candidates))
             if not candidates:
                 return (next(iter(sorted(source_tables)), datasource), clean)
+            if mapped in candidates:
+                return mapped
+            # A datasource-qualified ambiguous field must not fall through
+            # to the unscoped map, even if a foreign pair exists in the model.
+            return (datasource, clean)
         if hasattr(self, '_field_map'):
             # Direct match
             if clean in self._field_map:
@@ -5128,7 +5556,9 @@ class PowerBIProjectGenerator:
         formatting = ws_data.get('formatting', {})
         mark_encoding = ws_data.get('mark_encoding', {})
 
-        self._build_label_objects(objects, formatting, mark_encoding)
+        self._build_label_objects(
+            objects, formatting, mark_encoding,
+            value_cell=visual_type in ('card', 'multiRowCard'))
         self._build_legend_objects(objects, mark_encoding, formatting)
         self._build_axis_objects(objects, ws_data, visual_type)
         self._build_visual_styling_objects(objects, ws_data, visual_type, formatting, mark_encoding)
@@ -5159,11 +5589,13 @@ class PowerBIProjectGenerator:
                 if properties:
                     objects.setdefault('values', [{'properties': {}}])[0]['properties'].update(properties)
 
+        if ws_data.get('_separate_text_label_approximation'):
+            objects['labels'] = [{'properties': {'show': _L('false')}}]
         return objects
 
     # â”€â”€ Visual-object sub-methods (extracted from _build_visual_objects) â”€â”€
 
-    def _build_label_objects(self, objects, formatting, mark_encoding):
+    def _build_label_objects(self, objects, formatting, mark_encoding, value_cell=False):
         """Data labels, label color, and font formatting."""
         # Data labels â€” from formatting.mark.mark-labels-show OR mark_encoding.label
         show_labels = False
@@ -5203,6 +5635,31 @@ class PowerBIProjectGenerator:
                 "solid": {"color": _L(f"'{label_fmt['color']}'")}
             }
 
+        # Tableau Text/card values are styled as cells, independently of the
+        # worksheet title. Do not let the theme's default grey replace these.
+        cell_fmt = formatting.get('cell', {})
+        if isinstance(cell_fmt, dict):
+            cell_props = {}
+            cell_color = cell_fmt.get('font-color') or cell_fmt.get('color')
+            if cell_color:
+                cell_props['color'] = {'solid': {'color': _L(f"'{cell_color}'")}}
+            if cell_fmt.get('font-family'):
+                cell_props['fontFamily'] = _L(f"'{cell_fmt['font-family']}'")
+            if cell_fmt.get('font-size'):
+                try:
+                    cell_props['fontSize'] = _L(f"{float(cell_fmt['font-size']):g}D")
+                except (TypeError, ValueError):
+                    pass
+            if cell_props:
+                label_props = objects.setdefault('labels', [{'properties': {}}])[0]['properties']
+                for key, value in cell_props.items():
+                    if value_cell:
+                        # Text/card cells are the value's own source scope.
+                        # Broader label defaults must not override that scope.
+                        label_props[key] = value
+                    else:
+                        label_props.setdefault(key, value)
+
         # Font formatting (family + size from extracted formatting)
         font_props = formatting.get('font', {})
         if isinstance(font_props, dict):
@@ -5211,9 +5668,9 @@ class PowerBIProjectGenerator:
             if font_family or font_size:
                 if "labels" not in objects:
                     objects["labels"] = [{"properties": {}}]
-                if font_family:
+                if font_family and not (value_cell and cell_fmt.get('font-family')):
                     objects["labels"][0]["properties"]["fontFamily"] = _L(f"'{font_family}'")
-                if font_size:
+                if font_size and not (value_cell and cell_fmt.get('font-size')):
                     try:
                         fs_val = int(float(str(font_size).replace('pt', '').replace('px', '').strip()))
                         objects["labels"][0]["properties"]["fontSize"] = _L(f"{fs_val}D")
@@ -5225,7 +5682,71 @@ class PowerBIProjectGenerator:
         if fmt_info:
             pbi_fmt = self._convert_number_format(fmt_info)
             if pbi_fmt and "labels" in objects:
-                objects["labels"][0]["properties"]["labelDisplayUnits"] = _L(f"'{pbi_fmt}'")
+                # Display units is numeric, not a number-format string.
+                # Actual formats are emitted as general.formatString below.
+                objects["labels"][0]["properties"]["labelDisplayUnits"] = _L("0D")
+
+    def _build_field_format_objects(self, objects, ws_data, query_state):
+        """Apply extracted field formats to their *bound* query references.
+
+        field_formats in older extraction snapshots also contains unrelated
+        cell attributes (e.g. 'bold' or '24'); accept only numeric masks here.
+        Never alter the model format or multiply the underlying percentage.
+        """
+        formatting = ws_data.get('formatting', {})
+        formats = {}
+        value_format = None
+        declared_formats = list(formatting.get('field_formats', {}).items())
+        # Older extractors flatten every field attribute into field_formats,
+        # so a later font-size can overwrite a text-format. The typed style
+        # retains the declared mask and field identity.
+        cell = formatting.get('cell', {})
+        if isinstance(cell, dict) and cell.get('field') and cell.get('text-format'):
+            declared_formats.append((cell['field'], cell['text-format']))
+        for raw_field, raw_format in declared_formats:
+            fmt = self._convert_number_format(raw_format)
+            if not fmt or not re.search(r'[0#]', fmt) or not re.fullmatch(
+                    r"""[0#.,%‰$€£+\-(); /\\'"]+""", fmt):
+                continue
+            parts = re.findall(r'\[([^\]]+)\]', raw_field)
+            name = self._clean_field_name(parts[-1] if parts else raw_field)
+            if name.lstrip(':') in ('Multiple Values', 'Measure Values'):
+                # Tableau's synthetic value shelf formats every bound value
+                # series, not a model field named "Multiple Values".
+                value_format = fmt
+                continue
+            ds_match = re.match(r'^\[([^\]]+)\]\.\[', raw_field)
+            pair = self._resolve_field_entity(
+                name, datasource=ds_match.group(1) if ds_match else '')
+            formats[pair] = fmt
+
+        general = objects.setdefault('general', [])
+        for role_name, role in query_state.items():
+            for projection in role.get('projections', []):
+                expr = projection.get('field', {})
+                if 'Aggregation' in expr:
+                    expr = expr['Aggregation'].get('Expression', {})
+                field = expr.get('Measure', expr.get('Column', {}))
+                pair = (field.get('Expression', {}).get('SourceRef', {}).get('Entity'),
+                        field.get('Property'))
+                fmt = formats.get(pair)
+                if not fmt and role_name in ('Y', 'Y2', 'Values', 'Indicator',
+                                              'Value', 'X', 'Size'):
+                    fmt = value_format
+                ref = projection.get('queryRef')
+                if fmt and ref and not any(
+                        item.get('selector', {}).get('metadata') == ref for item in general):
+                    general.append({
+                        'properties': {'formatString': _L("'" + fmt.replace("'", "''") + "'")},
+                        'selector': {'metadata': ref},
+                    })
+        default = self._convert_number_format(
+            formatting.get('number_format', formatting.get('format_string', '')))
+        if default:
+            general.insert(0, {'properties': {
+                'formatString': _L("'" + default.replace("'", "''") + "'")}})
+        if not general:
+            objects.pop('general', None)
 
     def _build_legend_objects(self, objects, mark_encoding, formatting):
         """Legend configuration from color encoding."""
@@ -5370,6 +5891,9 @@ class PowerBIProjectGenerator:
             elif ax.get('is_continuous') is False and axis_obj_key in objects:
                 objects[axis_obj_key][0]["properties"]["axisType"] = _L("'Categorical'")
 
+        if ws_data.get('_discrete_month_binding'):
+            objects.setdefault('categoryAxis', [{'properties': {}}])[0]['properties']['axisType'] = _L("'Categorical'")
+
         # Dual-axis synchronization (secShow / secAxisLabel)
         dual_axis = ws_data.get('dual_axis', {})
         if isinstance(dual_axis, dict) and dual_axis.get('enabled'):
@@ -5490,11 +6014,12 @@ class PowerBIProjectGenerator:
         rule = {"FillRule": {"Input": entry["field"], "FillRule": gradient}}
         return {"solid": {"color": {"expr": rule}}}
 
-    def _build_color_encoding_objects(self, objects, ws_data, visual_type, mark_encoding):
+    def _build_color_encoding_objects(self, objects, ws_data, visual_type, mark_encoding,
+                                     query_state=None):
         """Conditional formatting gradient, per-value colors, stepped thresholds."""
         color_enc = mark_encoding.get('color', {})
         color_mode = color_enc.get('type', '')  # 'quantitative' â†’ gradient, 'categorical' â†’ distinct
-        if color_mode == 'quantitative' or color_enc.get('palette', ''):
+        if color_mode == 'quantitative':
             # Data-driven color scale
             palette_colors = color_enc.get('palette_colors', [])
             gradient_fill = self._build_quantitative_fill(color_enc, palette_colors)
@@ -5511,17 +6036,13 @@ class PowerBIProjectGenerator:
 
         # Per-value color assignments (categorical color map)
         if not objects.get("dataPoint"):
-            color_values = color_enc.get('color_values', {})
-            if color_values:
-                dp_rules = []
-                for val, clr in list(color_values.items())[:20]:
-                    dp_rules.append({
-                        "properties": {
-                            "fill": {"solid": {"color": _L(f"'{clr}'")}}
-                        }
-                    })
-                if dp_rules:
-                    objects["dataPoint"] = dp_rules
+            from visual_generator import build_categorical_color_objects
+            dp_rules = build_categorical_color_objects(
+                color_enc, query_state or {},
+                resolve_field=self._resolve_field_entity,
+                clean_field=self._clean_field_name)
+            if dp_rules:
+                objects["dataPoint"] = dp_rules
 
         # Stepped color thresholds (discrete conditional formatting)
         # Produces PBI rules-based conditional formatting with numeric thresholds
@@ -5930,6 +6451,13 @@ class PowerBIProjectGenerator:
         if filter_mode == 'range':
             return 'Between'
 
+        # Prefer the model's actual type over a caption/name heuristic. A
+        # quantitative (:qk) date filter is a continuous range, not a list.
+        pair = self._resolve_field_entity(column_name)
+        dtype = (getattr(self, '_actual_bim_column_types', {}) or {}).get(pair, '').lower()
+        if dtype in ('date', 'datetime'):
+            return 'Between' if ':qk]' in param_ref else 'Date'
+
         # Check if this is a range parameter â†’ slider (Between)
         for param in converted_objects.get('parameters', []):
             p_name = param.get('name', '').replace('[', '').replace(']', '')
@@ -5949,7 +6477,7 @@ class PowerBIProjectGenerator:
                     if name == col_lower:
                         dtype = col.get('datatype', '').lower()
                         if dtype in ('date', 'datetime'):
-                            return 'Date'
+                            return 'Between' if ':qk]' in param_ref else 'Date'
                         if dtype in ('integer', 'real', 'float', 'number'):
                             return 'Between'
                         # Track cardinality hint
@@ -6039,6 +6567,10 @@ class PowerBIProjectGenerator:
         if not tableau_format or not isinstance(tableau_format, str):
             return ''
         fmt = tableau_format.strip()
+        # Tableau's numeric format discriminator is not part of the mask.
+        # In particular p0.0% must format 0.931 as 93.1%, not as a literal p.
+        if re.match(r'^[pn][0#]', fmt):
+            fmt = fmt[1:]
         # Already a PBI-compatible format
         if fmt in ('0', '0.0', '0.00', '#,0', '#,0.0', '#,0.00',
                    '0%', '0.0%', '0.00%'):

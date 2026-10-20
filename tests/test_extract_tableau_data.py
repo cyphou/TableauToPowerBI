@@ -132,6 +132,24 @@ class TestReadTableauFile(unittest.TestCase):
             ext = TableauExtractor(twb, output_dir=d)
             self.assertIsNotNone(ext.read_tableau_file())
 
+    def test_read_xml_with_twbx_extension(self):
+        with tempfile.TemporaryDirectory() as d:
+            twbx = os.path.join(d, 'test.twbx')
+            with open(twbx, 'wb') as f:
+                f.write(b'\xef\xbb\xbf \n<workbook/>')
+            ext = TableauExtractor(twbx, output_dir=d)
+            content = ext.read_tableau_file()
+            self.assertEqual(ET.fromstring(content).tag, 'workbook')
+
+    def test_non_xml_twbx_is_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            twbx = os.path.join(d, 'invalid.twbx')
+            with open(twbx, 'wb') as f:
+                f.write(b'not an archive or workbook')
+            ext = TableauExtractor(twbx, output_dir=d)
+            with self.assertRaisesRegex(ValueError, 'Invalid TWBX'):
+                ext.read_tableau_file()
+
     def test_unsupported_ext_returns_none(self):
         with tempfile.TemporaryDirectory() as d:
             bad = os.path.join(d, 'test.txt')
@@ -1840,6 +1858,303 @@ class TestExtractPublishedDatasources(unittest.TestCase):
         self.ext.extract_published_datasources(root)
         pub = self.ext.workbook_data['published_datasources']
         self.assertEqual(len(pub), 1)
+
+
+class TestWorksheetPillContract(unittest.TestCase):
+    """Public extraction separates mark grain from filter-only membership."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.ext = TableauExtractor(
+            os.path.join(self.temp.name, 'dummy.twb'), output_dir=self.temp.name)
+
+    def _date(self, pill, instance_type=None, derivation='Month'):
+        instance = (
+            f'<column-instance name="[{pill}]" column="[Event Date]" '
+            f'derivation="{derivation}" type="{instance_type}"/>'
+            if instance_type else '')
+        worksheet = ET.fromstring(f"""
+            <worksheet name="Q 18">
+                <table>
+                    <cols>[ds].[{pill}]</cols>
+                    <rows>[ds].[sum:A:qk]</rows>
+                    <view>
+                        <datasource-dependencies datasource="ds">
+                            <column name="[Event Date]" datatype="date"
+                                    role="dimension" type="ordinal"/>
+                            {instance}
+                        </datasource-dependencies>
+                    </view>
+                </table>
+            </worksheet>
+        """)
+        fields = self.ext.extract_worksheet_fields(worksheet)
+        dates = [field for field in fields
+                 if field['name'] == 'Event Date' and field['shelf'] == 'columns']
+        self.assertEqual(len(dates), 1)
+        return dates[0]
+
+    def test_discrete_month_preserves_datepart_and_discrete_metadata(self):
+        field = self._date('mn:Event Date:ok', 'ordinal')
+        self.assertEqual(field, {
+            'name': 'Event Date', 'shelf': 'columns', 'datasource': 'ds',
+            'derivation': 'Month', 'date_part': 'mn',
+            'is_discrete': True, 'is_continuous': False,
+            'datatype': 'date', 'role': 'dimension',
+        })
+
+    def test_continuous_month_truncation_is_not_discrete_month(self):
+        field = self._date('tmn:Event Date:qk', 'quantitative')
+        self.assertEqual(field, {
+            'name': 'Event Date', 'shelf': 'columns', 'datasource': 'ds',
+            'derivation': 'Month', 'date_part': 'tmn',
+            'is_discrete': False, 'is_continuous': True,
+            'datatype': 'date', 'role': 'dimension',
+        })
+
+    def test_suffix_fallback_preserves_month_flags_without_instance(self):
+        for pill, part, discrete in (
+                ('mn:Event Date:nk', 'mn', True),
+                ('mn:Event Date:ok', 'mn', True),
+                ('tmn:Event Date:qk', 'tmn', False)):
+            with self.subTest(pill=pill):
+                field = self._date(pill)
+                self.assertEqual(field['derivation'], 'Month')
+                self.assertEqual(field['date_part'], part)
+                self.assertIs(field['is_discrete'], discrete)
+                self.assertIs(field['is_continuous'], not discrete)
+
+    def test_instance_type_takes_precedence_over_suffix(self):
+        for instance_type, suffix, discrete in (
+                ('quantitative', 'ok', False), ('ordinal', 'qk', True)):
+            with self.subTest(instance_type=instance_type):
+                field = self._date(f'mn:Event Date:{suffix}', instance_type)
+                self.assertIs(field['is_discrete'], discrete)
+                self.assertIs(field['is_continuous'], not discrete)
+
+    def _scatter_xml(self):
+        return ET.fromstring("""
+            <worksheet name="Q 42">
+                <table>
+                    <cols>[ds].[sum:A:qk]</cols>
+                    <rows>[ds].[avg:B:qk]</rows>
+                    <view>
+                        <slices>
+                            <column>[ds].[none:Filter Only:nk]</column>
+                            <column>[ds].[none:E:nk]</column>
+                            <column>[ds].[none:Filter Only:nk]</column>
+                        </slices>
+                    </view>
+                    <panes><pane><mark class="Automatic"/>
+                        <encodings>
+                            <lod column="[ds].[none:E:nk]"/>
+                            <lod column="[ds].[none:F:nk]"/>
+                            <text column="[ds].[cnt:A:qk]"/>
+                        </encodings>
+                    </pane></panes>
+                </table>
+            </worksheet>
+        """)
+
+    def test_lod_remains_detail_but_slices_are_filter_only(self):
+        worksheet = self._scatter_xml()
+        before = ET.tostring(worksheet)
+        fields = self.ext.extract_worksheet_fields(worksheet)
+        self.assertEqual(
+            [f for f in fields if f['shelf'] == 'detail'],
+            [{'name': 'E', 'shelf': 'detail', 'datasource': 'ds'},
+             {'name': 'F', 'shelf': 'detail', 'datasource': 'ds'}])
+        self.assertNotIn('Filter Only', [f['name'] for f in fields])
+        self.assertFalse(any(f['shelf'] == 'filter' for f in fields))
+        self.assertEqual(self.ext.extract_worksheet_slices(worksheet), [
+            {'name': 'Filter Only', 'datasource': 'ds',
+             'shelf': 'filter', 'source': 'slices'},
+            {'name': 'E', 'datasource': 'ds',
+             'shelf': 'filter', 'source': 'slices'},
+        ])
+        self.assertEqual(ET.tostring(worksheet), before)
+        self.assertEqual(self.ext.extract_worksheet_fields(worksheet), fields)
+
+    def test_worksheet_output_stores_slices_outside_visual_fields(self):
+        root = ET.Element('workbook')
+        root.append(self._scatter_xml())
+        self.ext.extract_worksheets(root)
+        worksheets = self.ext.workbook_data['worksheets']
+        self.assertEqual(len(worksheets), 1)
+        worksheet = worksheets[0]
+        self.assertEqual(worksheet['slices'], [
+            {'name': 'Filter Only', 'datasource': 'ds',
+             'shelf': 'filter', 'source': 'slices'},
+            {'name': 'E', 'datasource': 'ds',
+             'shelf': 'filter', 'source': 'slices'},
+        ])
+        self.assertEqual(
+            [f['name'] for f in worksheet['fields'] if f['shelf'] == 'detail'],
+            ['E', 'F'])
+        self.assertNotIn('Filter Only', [f['name'] for f in worksheet['fields']])
+
+    def test_text_aggregation_is_independent_of_same_column_on_axis(self):
+        fields = self.ext.extract_worksheet_fields(self._scatter_xml())
+        self.assertEqual([f for f in fields if f['name'] == 'A'], [
+            {'name': 'A', 'shelf': 'columns', 'datasource': 'ds',
+             'aggregation': 'sum'},
+            {'name': 'A', 'shelf': 'text', 'datasource': 'ds',
+             'aggregation': 'cnt'},
+        ])
+
+
+class TestAuthoritativeWorkbookDefinitions(unittest.TestCase):
+    """Nested tab-shaped metadata is not an additional workbook definition."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.ext = TableauExtractor(
+            os.path.join(directory.name, 'synthetic.twb'),
+            output_dir=directory.name)
+
+    def _extract_tabs(self, root):
+        self.ext.extract_worksheets(root)
+        self.ext.extract_dashboards(root)
+        return self.ext.workbook_data
+
+    def test_nested_worksheet_references_do_not_duplicate_or_replace_definitions(self):
+        root = ET.fromstring("""
+            <workbook>
+              <worksheets>
+                <worksheet name="First"><table><cols>[ds].[sum:Sales:qk]</cols></table></worksheet>
+                <worksheet name="Second"><table><cols>[ds].[none:Region:nk]</cols></table></worksheet>
+              </worksheets>
+              <dashboards><dashboard name="Overview">
+                <zones><zone name="First">
+                  <extension><worksheet name="First"/><worksheet name="Ghost"/></extension>
+                </zone></zones>
+              </dashboard></dashboards>
+              <windows><window><worksheet name="Second"/></window></windows>
+            </workbook>
+        """)
+        before = ET.tostring(root)
+        data = self._extract_tabs(root)
+        self.assertEqual([ws['name'] for ws in data['worksheets']], ['First', 'Second'])
+        self.assertEqual(
+            [[field['name'] for field in ws['fields']] for ws in data['worksheets']],
+            [['Sales'], ['Region']])
+        self.assertEqual([db['name'] for db in data['dashboards']], ['Overview'])
+        self.assertEqual(ET.tostring(root), before)
+
+    def test_unnamed_and_named_nested_dashboard_fragments_are_not_tabs(self):
+        root = ET.fromstring("""
+            <workbook>
+              <worksheets><worksheet name="Sales"/></worksheets>
+              <dashboards>
+                <dashboard name="Overview"><size maxwidth="960" maxheight="540"/>
+                  <zones><zone><extension>
+                    <dashboard/><dashboard name="Overview"/><dashboard name="Ghost"/>
+                  </extension></zone></zones>
+                </dashboard>
+                <dashboard name="Details"><size maxwidth="800" maxheight="600"/></dashboard>
+              </dashboards>
+              <windows><window><dashboard name="Details"/></window></windows>
+            </workbook>
+        """)
+        data = self._extract_tabs(root)
+        self.assertEqual([db['name'] for db in data['dashboards']], ['Overview', 'Details'])
+        self.assertEqual([db['size'] for db in data['dashboards']], [
+            {'width': 960, 'height': 540}, {'width': 800, 'height': 600}])
+
+    def test_nested_collection_copies_are_not_authoritative(self):
+        root = ET.fromstring("""
+            <workbook>
+              <worksheets><worksheet name="Actual sheet"/></worksheets>
+              <dashboards><dashboard name="Actual dashboard"/></dashboards>
+              <extension>
+                <worksheets><worksheet name="Copied sheet"/></worksheets>
+                <dashboards><dashboard name="Copied dashboard"/></dashboards>
+              </extension>
+            </workbook>
+        """)
+        data = self._extract_tabs(root)
+        self.assertEqual([ws['name'] for ws in data['worksheets']], ['Actual sheet'])
+        self.assertEqual([db['name'] for db in data['dashboards']], ['Actual dashboard'])
+
+    def test_reference_only_workbook_does_not_invent_definitions(self):
+        root = ET.fromstring("""
+            <workbook><windows><window>
+              <worksheet name="Missing sheet"/><dashboard/>
+              <dashboard name="Missing dashboard"/>
+            </window></windows></workbook>
+        """)
+        data = self._extract_tabs(root)
+        self.assertEqual(data['worksheets'], [])
+        self.assertEqual(data['dashboards'], [])
+
+    def test_namespaced_collections_still_exclude_nested_references(self):
+        root = ET.fromstring("""
+            <workbook xmlns="urn:synthetic:tableau">
+              <worksheets><worksheet name="Actual sheet"/></worksheets>
+              <dashboards><dashboard name="Actual dashboard">
+                <extension><worksheet name="Actual sheet"/><dashboard/></extension>
+              </dashboard></dashboards>
+            </workbook>
+        """)
+        data = self._extract_tabs(root)
+        self.assertEqual([ws['name'] for ws in data['worksheets']], ['Actual sheet'])
+        self.assertEqual([db['name'] for db in data['dashboards']], ['Actual dashboard'])
+
+    def test_root_only_worksheet_fixture_remains_supported_without_nested_refs(self):
+        root = ET.fromstring("""
+            <workbook><worksheet name="Direct sheet">
+              <table><cols>[ds].[sum:Sales:qk]</cols></table>
+              <extension><worksheet name="Reference only"/></extension>
+            </worksheet></workbook>
+        """)
+        self.ext.extract_worksheets(root)
+        worksheets = self.ext.workbook_data['worksheets']
+        self.assertEqual([ws['name'] for ws in worksheets], ['Direct sheet'])
+        self.assertEqual([field['name'] for field in worksheets[0]['fields']], ['Sales'])
+
+    def test_root_only_dashboard_fixture_remains_supported_without_nested_refs(self):
+        root = ET.fromstring("""
+            <workbook><dashboard name="Direct dashboard">
+              <size maxwidth="640" maxheight="480"/>
+              <extension><dashboard/><dashboard name="Reference only"/></extension>
+            </dashboard></workbook>
+        """)
+        self.ext.extract_dashboards(root)
+        dashboards = self.ext.workbook_data['dashboards']
+        self.assertEqual([db['name'] for db in dashboards], ['Direct dashboard'])
+        self.assertEqual(dashboards[0]['size'], {'width': 640, 'height': 480})
+
+    def test_calculations_from_nested_worksheet_references_are_not_injected(self):
+        root = ET.fromstring("""
+            <workbook>
+              <datasources><datasource name="ds"/></datasources>
+              <worksheets><worksheet name="Actual sheet"><table>
+                <datasource-dependencies datasource="ds">
+                  <column name="[Calculation_101]" caption="Actual calculation">
+                    <calculation class="tableau" formula="1 + 2"/>
+                  </column>
+                </datasource-dependencies>
+              </table></worksheet></worksheets>
+              <dashboards><dashboard name="Overview"><extension>
+                <worksheet name="Actual sheet"><table>
+                  <datasource-dependencies datasource="ds">
+                    <column name="[Calculation_999]" caption="Reference metadata">
+                      <calculation class="tableau" formula="999"/>
+                    </column>
+                  </datasource-dependencies>
+                </table></worksheet>
+              </extension></dashboard></dashboards>
+            </workbook>
+        """)
+        self.ext.workbook_data['datasources'] = [{'name': 'ds', 'calculations': []}]
+        self.ext.extract_calculations(root)
+        calculations = self.ext.workbook_data['calculations']
+        self.assertEqual([calc['name'] for calc in calculations], ['[Calculation_101]'])
+        self.assertEqual(calculations[0]['formula'], '1 + 2')
+        self.assertEqual(
+            self.ext.workbook_data['datasources'][0]['calculations'], calculations)
 
 
 if __name__ == '__main__':

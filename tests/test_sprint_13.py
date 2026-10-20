@@ -65,7 +65,7 @@ class TestCustomVisualGUIDs(unittest.TestCase):
 
     def test_mekko_still_uses_builtin(self):
         pbi_type, note = APPROXIMATION_MAP['mekko']
-        self.assertEqual(pbi_type, 'stackedBarChart')
+        self.assertEqual(pbi_type, 'barChart')
         self.assertNotIn('AppSource', note)
 
     def test_resolve_visual_type_uses_approximation(self):

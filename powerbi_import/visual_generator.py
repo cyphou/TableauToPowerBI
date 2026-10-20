@@ -21,10 +21,82 @@ import uuid
 import json
 import hashlib
 import logging
+import re
 
 from powerbi_import.pbip_generator import _L
 
 logger = logging.getLogger(__name__)
+
+
+def build_categorical_color_objects(color_encoding, query_state,
+                                    resolve_field=None, clean_field=None):
+    """Bind explicit source swatches to series identities, never by list order.
+
+    A named categorical palette is not a quantitative gradient. Measure Names
+    swatches use the final queryRef; dimension swatches use a semantic identity
+    for the bound grouping column. Unbound workbook-wide entries are ignored.
+    """
+    values = color_encoding.get('color_values', {})
+    source_field = color_encoding.get('field', '')
+    if not values or not source_field:
+        return []
+
+    def clean(value):
+        parts = re.findall(r'\[([^\]]+)\]', value)
+        name = parts[-1] if parts else value
+        if clean_field:
+            return clean_field(name)
+        name = re.sub(r'^(?:usr|none|sum|avg|min|max|cnt|ctd):', '', name)
+        return re.sub(r':(?:qk|nk|ok)$', '', name)
+
+    projections = [p for role, state in query_state.items()
+                   for p in state.get('projections', [])
+                   if role not in ('Tooltips',)]
+    result = []
+    if clean(source_field).lstrip(':') == 'Measure Names':
+        for value, color in values.items():
+            name = clean(value)
+            ds = re.match(r'^\[([^\]]+)\]\.\[', value)
+            pair = (resolve_field(name, datasource=ds.group(1) if ds else '')
+                    if resolve_field else None)
+            for projection in projections:
+                expr = projection.get('field', {})
+                if 'Aggregation' in expr:
+                    expr = expr['Aggregation'].get('Expression', {})
+                field = expr.get('Measure', expr.get('Column', {}))
+                bound = (field.get('Expression', {}).get('SourceRef', {}).get('Entity'),
+                         field.get('Property'))
+                ref = projection.get('queryRef')
+                if ref and (bound == pair if pair else bound[1] == name):
+                    result.append({
+                        'selector': {'metadata': ref},
+                        'properties': {'fill': {'solid': {'color': _L(f"'{color}'")}}},
+                    })
+        return result
+
+    name = clean(source_field)
+    pair = resolve_field(name) if resolve_field else None
+    for role in ('Series', 'Category', 'Group', 'Legend', 'Details'):
+        for projection in query_state.get(role, {}).get('projections', []):
+            column = projection.get('field', {}).get('Column')
+            if not column:
+                continue
+            bound = (column.get('Expression', {}).get('SourceRef', {}).get('Entity'),
+                     column.get('Property'))
+            if not (bound == pair if pair else bound[1] == name):
+                continue
+            for value, color in values.items():
+                literal = "'" + str(value).replace("'", "''") + "'"
+                result.append({
+                    'selector': {'data': [{'scopeId': {'Comparison': {
+                        'ComparisonKind': 0,
+                        'Left': {'Column': column},
+                        'Right': {'Literal': {'Value': literal}},
+                    }}}]},
+                    'properties': {'fill': {'solid': {'color': _L(f"'{color}'")}}},
+                })
+            return result
+    return result
 
 # ── Auto-generated measures (e.g. RANKX for bump charts) ─────────────────────
 # Populated during visual generation; consumed by tmdl_generator to emit
@@ -62,16 +134,16 @@ VISUAL_TYPE_MAP = {
     # ── Bar charts ────────────────────────────────────────────
     "barchart": "clusteredBarChart",
     "bar": "clusteredBarChart",
-    "stackedbarchart": "stackedBarChart",
-    "stacked-bar": "stackedBarChart",
+    "stackedbarchart": "barChart",
+    "stacked-bar": "barChart",
     "100stackedbarchart": "hundredPercentStackedBarChart",
     "100-stacked-bar": "hundredPercentStackedBarChart",
 
     # ── Column charts ─────────────────────────────────────────
     "columnchart": "clusteredColumnChart",
     "column": "clusteredColumnChart",
-    "stackedcolumnchart": "stackedColumnChart",
-    "stacked-column": "stackedColumnChart",
+    "stackedcolumnchart": "columnChart",
+    "stacked-column": "columnChart",
     "100stackedcolumnchart": "hundredPercentStackedColumnChart",
     "100-stacked-column": "hundredPercentStackedColumnChart",
     "histogram": "clusteredColumnChart",
@@ -195,7 +267,7 @@ VISUAL_TYPE_MAP = {
     "word-cloud": "wordCloud",
     "ribbonchart": "ribbonChart",
     "ribbon": "ribbonChart",
-    "mekko": "stackedBarChart",
+    "mekko": "barChart",
     "sankey": "sankeyDiagram",
     "chord": "chordChart",
     "network": "networkNavigator",
@@ -215,9 +287,9 @@ VISUAL_TYPE_MAP = {
 
     # ── PBI pass-through (already correct) ─────────────────
     "clusteredbarchart": "clusteredBarChart",
-    "stackedbarchart": "stackedBarChart",
+    "stackedbarchart": "barChart",
     "clusteredcolumnchart": "clusteredColumnChart",
-    "stackedcolumnchart": "stackedColumnChart",
+    "stackedcolumnchart": "columnChart",
     "piechart": "pieChart",
     "areachart": "areaChart",
     "stackedareachart": "stackedAreaChart",
@@ -403,6 +475,8 @@ def resolve_custom_visual_type(tableau_mark, use_custom_visuals=True):
     ``guid_info`` is a dict from ``CUSTOM_VISUAL_GUIDS``; otherwise
     ``guid_info`` is ``None``.
     """
+    if tableau_mark in ('barChart', 'columnChart'):
+        return tableau_mark, None
     key = (tableau_mark or '').lower().replace(' ', '').replace('_', '')
     if use_custom_visuals and key in CUSTOM_VISUAL_GUIDS:
         guid_info = CUSTOM_VISUAL_GUIDS[key]
@@ -1509,10 +1583,10 @@ VISUAL_DATA_ROLES = {
     "multiRowCard":                      ([], ["Values"]),
     "kpi":                               ([], ["Indicator", "TrendAxis"]),
     "clusteredBarChart":                 (["Category", "Series", "Tooltips"], ["Y"]),
-    "stackedBarChart":                   (["Category", "Series"], ["Y"]),
+    "barChart":                          (["Category", "Series"], ["Y"]),
     "hundredPercentStackedBarChart":     (["Category", "Series"], ["Y"]),
     "clusteredColumnChart":              (["Category", "Series", "Tooltips"], ["Y"]),
-    "stackedColumnChart":                (["Category", "Series"], ["Y"]),
+    "columnChart":                       (["Category", "Series"], ["Y"]),
     "hundredPercentStackedColumnChart":  (["Category", "Series"], ["Y"]),
     "lineChart":                         (["Category", "Series", "Tooltips"], ["Y"]),
     "areaChart":                         (["Category", "Series", "Tooltips"], ["Y"]),
@@ -1556,6 +1630,7 @@ VISUAL_DATA_ROLES = {
 def _get_config_template(visual_type):
     """Return per-type visual configuration template with PBIR-native objects."""
 
+    visual_type = _canonical_stacked_type(visual_type)
     templates = {
         "tableEx": {
             "autoSelectVisualType": True,
@@ -1580,7 +1655,7 @@ def _get_config_template(visual_type):
                 "dataPoint": [{"properties": {"showAllDataPoints": _L("true")}}],
             },
         },
-        "stackedBarChart": {
+        "barChart": {
             "objects": {
                 "categoryAxis": [{"properties": {"show": _L("true")}}],
                 "valueAxis": [{"properties": {"show": _L("true")}}],
@@ -1601,7 +1676,7 @@ def _get_config_template(visual_type):
                 "dataPoint": [{"properties": {"showAllDataPoints": _L("true")}}],
             },
         },
-        "stackedColumnChart": {
+        "columnChart": {
             "objects": {
                 "categoryAxis": [{"properties": {"show": _L("true")}}],
                 "valueAxis": [{"properties": {"show": _L("true")}}],
@@ -1783,11 +1858,12 @@ def _get_config_template(visual_type):
     return templates.get(visual_type, {})
 
 
-# Aggregation function mapping
+# Semantic-query aggregation IDs. Count counts distinct values, whereas
+# CountNonNull counts populated rows; 6 is Median, 7 StandardDeviation.
 _AGG_FUNC_MAP = {
-    "sum": 0, "min": 3, "max": 4, "count": 2,
+    "sum": 0, "min": 3, "max": 4, "count": 5, "cnt": 5,
     "countnonnull": 5, "avg": 1, "average": 1,
-    "distinctcount": 7,
+    "distinctcount": 2, "countd": 2, "ctd": 2, "median": 6,
 }
 
 
@@ -1803,7 +1879,7 @@ _AGG_FUNC_MAP = {
 # can be attached to the generated visual.
 
 APPROXIMATION_MAP = {
-    "mekko":       ("stackedBarChart",                   "Mekko chart mapped to Stacked Bar — variable-width bars are not supported"),
+    "mekko":       ("barChart",                          "Mekko chart mapped to Stacked Bar — variable-width bars are not supported"),
     "sankey":      ("sankeyDiagram",                     "Sankey diagram mapped to custom visual (ChicagoITSankey1.1.0) — install from AppSource"),
     "chord":       ("chordChart",                        "Chord diagram mapped to custom visual (ChicagoITChord1.0.0) — install from AppSource"),
     "network":     ("networkNavigator",                  "Network graph mapped to custom visual (NetworkNavigator1.0.0) — install from AppSource"),
@@ -1820,6 +1896,15 @@ APPROXIMATION_MAP = {
     "pareto":      ("lineClusteredColumnComboChart",     "Pareto mapped to Line+Column Combo — cumulative line may need adjustment"),
     "dualaxis":    ("lineClusteredColumnComboChart",     "Dual axis mapped to Line+Column Combo"),
 }
+
+
+def _canonical_stacked_type(visual_type):
+    """Accept historical aliases, but never emit them as native PBIR IDs."""
+    return {'stackedBarChart': 'barChart',
+            'stackedColumnChart': 'columnChart',
+            'stackedbarchart': 'barChart', 'stacked-bar': 'barChart',
+            'stackedcolumnchart': 'columnChart',
+            'stacked-column': 'columnChart'}.get(visual_type, visual_type)
 
 
 def resolve_visual_type(source_type):
@@ -1841,6 +1926,11 @@ def resolve_visual_type(source_type):
     """
     if not source_type:
         return "tableEx"
+    # Native stacked IDs differ from Tableau/source-facing chart names.
+    # Preserve these exact PBIR identifiers before the lower-case source map
+    # (whose legacy "barchart"/"columnchart" aliases mean clustered charts).
+    if source_type in ("barChart", "columnChart"):
+        return source_type
     # Tableau source keys are authoritative when names overlap with PBI types.
     key = source_type.lower()
     if key in VISUAL_TYPE_MAP:
@@ -1897,12 +1987,12 @@ VISUAL_FALLBACK_CASCADE = {
     # Complex visuals → simpler alternatives
     'scatterChart':                      'tableEx',
     'lineClusteredColumnComboChart':     'clusteredBarChart',
-    'lineStackedColumnComboChart':       'stackedBarChart',
+    'lineStackedColumnComboChart':       'barChart',
     'boxAndWhisker':                     'clusteredColumnChart',
     'bulletChart':                       'clusteredBarChart',
     'decompositionTree':                 'tableEx',
     'waterfallChart':                    'clusteredColumnChart',
-    'ribbonChart':                       'stackedBarChart',
+    'ribbonChart':                       'barChart',
     'sunburst':                          'treemap',
     'treemap':                           'tableEx',
     'funnel':                            'clusteredBarChart',
@@ -1915,9 +2005,9 @@ VISUAL_FALLBACK_CASCADE = {
     'multiRowCard':                      'card',
     # Simple visuals → table as last resort
     'clusteredBarChart':                 'tableEx',
-    'stackedBarChart':                   'tableEx',
+    'barChart':                          'tableEx',
     'clusteredColumnChart':              'tableEx',
-    'stackedColumnChart':                'tableEx',
+    'columnChart':                       'tableEx',
     'lineChart':                         'tableEx',
     'areaChart':                         'tableEx',
     'pieChart':                          'tableEx',
@@ -1933,6 +2023,7 @@ def _validate_visual_data_roles(pbi_type, has_dimensions, has_measures):
 
     Returns True if the visual can render, False if it needs fallback.
     """
+    pbi_type = _canonical_stacked_type(pbi_type)
     roles = VISUAL_DATA_ROLES.get(pbi_type)
     if not roles:
         return True  # Unknown type — let PBI handle it
@@ -1972,6 +2063,7 @@ def _apply_visual_fallback(pbi_type, has_dimensions, has_measures, source_type='
     Returns:
         tuple: (new_pbi_type, fallback_note or None)
     """
+    pbi_type = _canonical_stacked_type(pbi_type)
     original = pbi_type
     visited = {pbi_type}
     max_depth = 5
@@ -2011,8 +2103,8 @@ def _apply_visual_fallback(pbi_type, has_dimensions, has_measures, source_type='
 # ═══════════════════════════════════════════════════════════════════
 
 SMALL_MULTIPLES_TYPES = {
-    'clusteredBarChart', 'stackedBarChart', 'hundredPercentStackedBarChart',
-    'clusteredColumnChart', 'stackedColumnChart', 'hundredPercentStackedColumnChart',
+    'clusteredBarChart', 'barChart', 'hundredPercentStackedBarChart',
+    'clusteredColumnChart', 'columnChart', 'hundredPercentStackedColumnChart',
     'lineChart', 'areaChart', 'stackedAreaChart', 'hundredPercentStackedAreaChart',
     'lineStackedColumnComboChart', 'lineClusteredColumnComboChart',
 }
@@ -2305,7 +2397,9 @@ def create_visual_container(worksheet, visual_id=None, x=10, y=10,
 
     # Sprint 78: Dual-axis detection → combo chart override
     axes_data = worksheet.get('axes', {})
-    if isinstance(axes_data, dict) and axes_data.get('dual_axis') and pbi_type not in (
+    dual_axis = worksheet.get('dual_axis') or {}
+    if ((isinstance(axes_data, dict) and axes_data.get('dual_axis'))
+            or (isinstance(dual_axis, dict) and dual_axis.get('enabled'))) and pbi_type not in (
             'lineClusteredColumnComboChart', 'lineStackedColumnComboChart'):
         pbi_type = 'lineClusteredColumnComboChart'
 
@@ -2662,9 +2756,9 @@ def _apply_visual_decorations(worksheet, visual_type, pbi_type, visual_name, ctm
 
     # ── Sprint 79: Advanced conditional formatting from color encoding ──
     mark_enc_color = worksheet.get('mark_encoding', {}).get('color', {})
-    if mark_enc_color and mark_enc_color.get('type'):
+    if mark_enc_color:
         visual_obj.setdefault("objects", {})
-        color_type = mark_enc_color['type']
+        color_type = mark_enc_color.get('type', '')
         thresholds = mark_enc_color.get('thresholds', [])
         palette_colors = mark_enc_color.get('palette_colors', [])
 
@@ -2716,20 +2810,12 @@ def _apply_visual_decorations(worksheet, visual_type, pbi_type, visual_name, ctm
                         }
                     }
                 }]
-        elif color_type == 'categorical' and palette_colors:
-            # Categorical color assignment (explicit color per category)
-            visual_obj["objects"]["dataPoint"] = [{
-                "properties": {
-                    "showAllDataPoints": _L("true"),
-                }
-            }]
-            # Store per-category colors as separate data point entries
-            for i, color in enumerate(palette_colors[:20]):
-                visual_obj["objects"].setdefault("sentimentColors", [{
-                    "properties": {}
-                }])
-                visual_obj["objects"]["sentimentColors"][0]["properties"][
-                    f"color{i+1}"] = {"solid": {"color": color}}
+        # Without category identities, swatch order alone is not a safe
+        # dataPoint mapping. Use the explicit source value map when available.
+        categorical = build_categorical_color_objects(
+            mark_enc_color, visual_obj.get('query', {}).get('queryState', {}))
+        if categorical and color_type != 'quantitative':
+            visual_obj.setdefault('objects', {})['dataPoint'] = categorical
 
     # ── Visual-level filters ─────────────────────────────────
     # NOTE: visual-level filters are applied in create_visual_container()
@@ -3187,6 +3273,7 @@ def build_query_state(pbi_type, dimensions, measures, col_table_map,
     """
     import re
 
+    pbi_type = _canonical_stacked_type(pbi_type)
     roles = VISUAL_DATA_ROLES.get(pbi_type)
     if not roles:
         return None

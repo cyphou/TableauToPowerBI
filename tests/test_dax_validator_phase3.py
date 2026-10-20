@@ -103,6 +103,38 @@ class TestDaxValidatorPhase3(unittest.TestCase):
             )
 
 
+class TestStrictEqualityValidatorRegression(unittest.TestCase):
+    """NULLIF's strict equality is valid DAX, not a repairable Tableau leak."""
+
+    def test_nullif_strict_equality_is_accepted_by_both_validators(self):
+        expression = "IF((0) == (BLANK()), BLANK(), (0))"
+        self.assertEqual(validate_dax_expression(expression), [])
+        self.assertEqual(ArtifactValidator.validate_dax_formula(expression), [])
+
+    def test_auto_repair_preserves_strict_equality_with_zero_repairs(self):
+        for expression in (
+            "IF((0) == (BLANK()), BLANK(), (0))",
+            'IF(("") == (BLANK()), BLANK(), (""))',
+        ):
+            with self.subTest(expression=expression):
+                fixed, repairs = ArtifactValidator.auto_fix_dax_leaks(expression)
+                self.assertEqual(fixed, expression)
+                self.assertEqual(repairs, [])
+                self.assertEqual(
+                    ArtifactValidator.auto_fix_dax_leaks(fixed), (expression, [])
+                )
+
+    def test_strict_equality_does_not_hide_genuine_countd_leak(self):
+        expression = (
+            "IF((0) == (BLANK()), BLANK(), COUNTD('Synthetic'[Id]))"
+        )
+        issues = ArtifactValidator.validate_dax_formula(expression)
+        self.assertTrue(any(
+            "Tableau function leak" in issue and "COUNTD" in issue
+            for issue in issues
+        ), issues)
+
+
 class TestMaskLiteralSpans(unittest.TestCase):
     """Masking keeps offsets so position-based messages stay accurate."""
 

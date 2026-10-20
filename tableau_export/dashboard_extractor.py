@@ -7,7 +7,11 @@ None of it touches extractor state, so it lives here as plain functions;
 Owned by **@extractor**.
 """
 
+import os
+import posixpath
 import re
+import stat
+import zipfile
 
 from extract_primitives import (
     _clean_field_ref,
@@ -55,7 +59,61 @@ def _map_vertical_alignment(value):
     return mapping.get(token, '')
 
 
-def extract_dashboard_objects(dashboard):
+def _image_resource_missing(source, workbook_path, archive_member=''):
+    """Tri-state existence check restricted to the workbook's resource scope.
+
+    Never probe remote/absolute paths or follow traversal/symlinks out of the
+    workbook directory. None means unknown, not missing. Archive resources can
+    be relative to either the package root or the packaged TWB directory.
+    """
+    if not source or not workbook_path:
+        return None
+    relative = source.replace('\\', '/')
+    if (relative.startswith('/') or ':' in relative
+            or '..' in relative.split('/')):
+        return None
+    try:
+        if zipfile.is_zipfile(workbook_path):
+            with zipfile.ZipFile(workbook_path) as archive:
+                candidates = {posixpath.normpath(relative)}
+                if archive_member:
+                    candidates.add(posixpath.normpath(posixpath.join(
+                        posixpath.dirname(archive_member.replace('\\', '/')),
+                        relative)))
+                for info in archive.infolist():
+                    name = info.filename.replace('\\', '/')
+                    if (name.startswith('/') or ':' in name
+                            or '..' in name.split('/')):
+                        continue
+                    if posixpath.normpath(name) not in candidates:
+                        continue
+                    # Do not call an unsafe or oversized entry absent.
+                    mode = info.external_attr >> 16
+                    if (stat.S_ISLNK(mode) or info.is_dir()
+                            or info.file_size > 200 * 1024 * 1024):
+                        return None
+                    return False
+                return True
+        if os.path.splitext(os.fspath(workbook_path))[1].lower() in ('.twbx', '.tdsx'):
+            return None
+        # Missing/unreadable workbooks do not establish a resource scope.
+        if not os.path.isfile(workbook_path):
+            return None
+        root = os.path.realpath(os.path.dirname(os.path.abspath(workbook_path)))
+        target = os.path.realpath(os.path.join(root, *relative.split('/')))
+        if os.path.commonpath([root, target]) != root:
+            return None
+        # stat distinguishes a confirmed absence from permission/I/O errors.
+        try:
+            return not stat.S_ISREG(os.stat(target).st_mode)
+        except FileNotFoundError:
+            return True
+    except (OSError, ValueError, zipfile.BadZipFile):
+        pass
+    return None
+
+
+def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
     """Extracts all dashboard objects: worksheets, text, images, web, filters, blank.
 
     Also detects floating vs tiled mode.
@@ -162,13 +220,16 @@ def extract_dashboard_objects(dashboard):
             if dedup_img in seen_names:
                 continue
             seen_names.add(dedup_img)
-            objects.append({
+            image = {
                 'type': 'image',
                 'name': zone_name or f'image_{zone_id}',
                 'source': img_src,
                 'position': pos,
                 'layout': layout_mode
-            })
+            }
+            if _image_resource_missing(img_src, workbook_path, archive_member) is True:
+                image['resource_missing'] = True
+            objects.append(image)
             continue
 
         # Page web

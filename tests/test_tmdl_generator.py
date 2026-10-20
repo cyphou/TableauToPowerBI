@@ -12,6 +12,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+import zipfile
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -36,7 +38,447 @@ from powerbi_import.tmdl_generator import (
     _write_table_tmdl,
     _rewrite_bare_measure_references,
     generate_tmdl,
+    _audit_local_partition_sources,
+    _fail_unavailable_local_sources,
 )
+
+
+class TestCombinedGroupSourceRelationshipContract(unittest.TestCase):
+    """A cross-table row key requires one active, non-inferred to-one path."""
+
+    extra = {'groups': [{'name': 'Combined key', 'group_type': 'combined'}]}
+
+    def model(self, relationships):
+        return {'model': {'tables': [
+            {'name': 'Events', 'columns': [
+                {'name': 'Combined key', 'displayFolder': 'Groups',
+                 'expression': 'RELATED(\'Lookup\'[Description Modification])'}]},
+            {'name': 'Lookup', 'columns': [{'name': 'Description Modification'}]},
+            {'name': 'Bridge', 'columns': [{'name': 'ID'}]},
+        ], 'relationships': relationships}}
+
+    def edge(self, home='Events', target='Lookup', **overrides):
+        edge = {'name': f'source_{home}_{target}', 'fromTable': home,
+                'toTable': target, 'fromCardinality': 'many',
+                'toCardinality': 'one', 'isActive': True}
+        edge.update(overrides)
+        return edge
+
+    def validate(self, model):
+        from powerbi_import.tmdl_generator import _validate_combined_group_relationships
+        return _validate_combined_group_relationships(model, self.extra)
+
+    def test_unique_explicit_active_to_one_source_path_is_accepted(self):
+        self.validate(self.model([self.edge()]))
+        self.validate(self.model([
+            self.edge(target='Bridge'), self.edge(home='Bridge')]))
+
+    def test_explicit_to_one_combined_group_processing_retargets_and_validates(self):
+        from powerbi_import.tmdl_sets import _process_sets_groups_bins
+        from powerbi_import.tmdl_dax_postprocess import retarget_dax_column_refs
+
+        model = self.model([self.edge()])
+        model['model']['tables'][0]['columns'] = [{'name': 'Event ID'}]
+        model['_column_rename_map'] = {
+            ('Lookup', '1006description_modification'): 'Description Modification'}
+        extra = {'groups': [{
+            'name': 'Combined key', 'group_type': 'combined',
+            'source_fields': ['Event ID', '1006description_modification'],
+        }]}
+        _process_sets_groups_bins(model, extra, 'Events', {
+            'Event ID': 'Events', '1006description_modification': 'Lookup'})
+        retarget_dax_column_refs(model)
+        self.validate(model)
+        groups = [column for column in model['model']['tables'][0]['columns']
+                  if column['name'] == 'Combined key']
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['displayFolder'], 'Groups')
+        self.assertIn("RELATED('Lookup'[Description Modification])",
+                      groups[0]['expression'])
+        self.assertIn("'Events'[Event ID]", groups[0]['expression'])
+        self.assertNotIn('1006description_modification', groups[0]['expression'])
+        self.assertNotIn('LOOKUPVALUE', groups[0]['expression'])
+
+    def test_missing_inferred_inactive_full_and_many_to_many_paths_are_rejected(self):
+        for relationships in (
+            [], [self.edge(name='inferred_Events_Lookup')],
+            [self.edge(isActive=False)], [self.edge(joinType='full')],
+            [self.edge(toCardinality='many')],
+        ):
+            with self.subTest(relationships=relationships):
+                with self.assertRaisesRegex(ValueError, 'unambiguous active to-one source'):
+                    self.validate(self.model(relationships))
+
+    def test_multiple_explicit_to_one_paths_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'unambiguous active to-one source'):
+            self.validate(self.model([
+                self.edge(), self.edge(target='Bridge'), self.edge(home='Bridge')]))
+
+    def test_wrong_direction_many_to_one_path_does_not_prove_reverse_scalar_access(self):
+        with self.assertRaisesRegex(ValueError, 'unambiguous active to-one source'):
+            self.validate(self.model([self.edge(home='Lookup', target='Events')]))
+
+    def test_missing_target_column_is_rejected_even_with_a_unique_path(self):
+        model = self.model([self.edge()])
+        model['model']['tables'][1]['columns'] = [{'name': 'Other'}]
+        with self.assertRaisesRegex(ValueError, 'missing fields'):
+            self.validate(model)
+
+    def test_quoted_related_text_is_not_a_cross_table_dependency(self):
+        model = self.model([])
+        model['model']['tables'][0]['columns'][0]['expression'] = (
+            '"RELATED(\'Missing\'[Not a column])"')
+        self.validate(model)
+
+    def test_cardinality_demotion_is_rejected_on_revalidation(self):
+        model = self.model([self.edge()])
+        self.validate(model)
+        model['model']['relationships'][0]['toCardinality'] = 'many'
+        with self.assertRaisesRegex(ValueError, 'many-to-many'):
+            self.validate(model)
+
+    def test_table_scoped_group_retarget_is_canonical_and_idempotent(self):
+        from copy import deepcopy
+        from powerbi_import.tmdl_dax_postprocess import retarget_dax_column_refs
+
+        model = self.model([self.edge()])
+        model['_column_rename_map'] = {
+            ('Lookup', '1006description_modification'): 'Description Modification',
+            ('Events', '1006description_modification'): 'Event description',
+        }
+        group = model['model']['tables'][0]['columns'][0]
+        group['expression'] = (
+            'RELATED(\'Lookup\'[1006description_modification]) & '
+            '"[1006description_modification]"')
+        self.assertEqual(retarget_dax_column_refs(model), 1)
+        self.assertEqual(group['expression'],
+                         'RELATED(\'Lookup\'[Description Modification]) & '
+                         '"[1006description_modification]"')
+        self.validate(model)
+        before = deepcopy(model)
+        self.assertEqual(retarget_dax_column_refs(model), 0)
+        self.validate(model)
+        self.assertEqual(model, before)
+
+    def test_single_table_combined_key_uses_partition_caption_bindings(self):
+        from copy import deepcopy
+        from powerbi_import.tmdl_sets import _process_sets_groups_bins
+        from powerbi_import.tmdl_dax_postprocess import retarget_dax_column_refs
+
+        bindings = {
+            '1006description_modification': 'Description Modification',
+            '1007code_modification': 'Code Modification',
+        }
+        datasource = {
+            'name': 'Synthetic',
+            'tables': [{'name': 'Events', 'columns': [
+                {'name': raw, 'datatype': 'string'} for raw in bindings]}],
+            'columns': [
+                {'name': f'[{raw}]', 'caption': caption, 'datatype': 'string'}
+                for raw, caption in bindings.items()],
+        }
+        extra = {'groups': [{
+            'name': 'Combined key', 'group_type': 'combined',
+            'source_fields': list(bindings),
+        }]}
+        model = _build_semantic_model([datasource], 'Synthetic', extra)
+        table = model['model']['tables'][0]
+        self.assertEqual(model['_column_rename_map'], {
+            ('Events', raw): caption for raw, caption in bindings.items()})
+        self.assertEqual([col['name'] for col in table['columns']],
+                         [*bindings.values(), 'Combined key'])
+        partition = table['partitions'][0]['source']['expression']
+        for raw, caption in bindings.items():
+            self.assertIn(f'{{"{raw}", "{caption}"}}', partition)
+            self.assertIn(f'[#"{caption}"]', partition)
+            self.assertNotIn(f'[{raw}]', partition)
+        before = deepcopy(model)
+        _process_sets_groups_bins(
+            model, extra, 'Events', {raw: 'Events' for raw in bindings})
+        self.assertEqual(retarget_dax_column_refs(model), 0)
+        self.assertEqual(model, before)
+
+
+class TestCalculationIdentitySemanticContext(unittest.TestCase):
+    """Fallback identifier delimiters must not become display-name brackets."""
+
+    def context(self, calculations):
+        from powerbi_import.tmdl_generator import _collect_semantic_context
+        return _collect_semantic_context([{
+            'name': 'Synthetic',
+            'tables': [{
+                'name': 'table',
+                'columns': [{'name': 'Mail', 'datatype': 'string'}],
+            }],
+            'calculations': calculations,
+        }], {})
+
+    def test_repeated_bracketed_fallback_uses_canonical_constant_identity(self):
+        context = self.context([{
+            'name': '[Number of Records]',
+            'caption': '[Number of Records]',
+            'formula': '1',
+        }])
+        dax = context['dax_context']
+        self.assertEqual(dax['param_values'], {'Number of Records': '1'})
+        self.assertEqual(dax['measure_names'], {'Number of Records'})
+        self.assertEqual(context['measure_names'], {'Number of Records'})
+        self.assertEqual(dax['calc_map'], {})
+        self.assertNotIn('[Number of Records]', dax['param_values'])
+        self.assertNotIn('[Number of Records]', dax['measure_names'])
+
+    def test_fallback_constant_reference_compiles_through_valid_dax_to_m(self):
+        from tableau_export.dax_converter import convert_tableau_formula_to_dax
+        from powerbi_import.dax_validator import validate_dax_expression
+        from powerbi_import.tmdl_m_conversion import _dax_to_m_expression
+
+        context = self.context([{
+            'name': '[Number of Records]',
+            'caption': '[Number of Records]',
+            'formula': '1',
+        }])['dax_context']
+        dax = convert_tableau_formula_to_dax(
+            'IF [Mail]="Mail" THEN [Number of Records] END',
+            column_name='Mails renseignés', table_name='table',
+            is_calc_column=True, validate_output=True, fallback_on_invalid=True,
+            **{key: context[key] for key in (
+                'calc_map', 'param_map', 'column_table_map',
+                'measure_names', 'param_values')})
+        self.assertEqual(dax, 'IF(\'table\'[Mail]="Mail", 1, BLANK())')
+        self.assertEqual(validate_dax_expression(dax), [])
+        self.assertEqual(_dax_to_m_expression(dax, 'table'),
+                         'if [Mail] = "Mail" then 1 else null')
+
+    def test_absent_empty_and_canonical_captions_share_the_same_identity(self):
+        for caption in (None, '', 'Number of Records', '[Number of Records]'):
+            with self.subTest(caption=caption):
+                calculation = {'name': '[Number of Records]', 'formula': '1'}
+                if caption is not None:
+                    calculation['caption'] = caption
+                context = self.context([calculation])['dax_context']
+                self.assertEqual(context['calc_map'], {})
+                self.assertEqual(context['param_values'], {'Number of Records': '1'})
+                self.assertEqual(context['measure_names'], {'Number of Records'})
+
+    def test_explicit_accented_and_punctuation_captions_are_preserved(self):
+        context = self.context([
+            {'name': '[Calculation_101]', 'caption': 'Écart %', 'formula': '1'},
+            {'name': '[Calculation_202]', 'caption': 'CA/Qté', 'formula': '2'},
+        ])['dax_context']
+        self.assertEqual(context['calc_map'], {
+            'Calculation_101': 'Écart %', 'Calculation_202': 'CA/Qté'})
+        self.assertEqual(context['param_values'], {'Écart %': '1', 'CA/Qté': '2'})
+        self.assertEqual(context['measure_names'], {'Écart %', 'CA/Qté'})
+
+    def test_genuine_bracket_symbols_in_different_explicit_captions_survive(self):
+        context = self.context([
+            {'name': '[Calculation_101]', 'caption': '[Budget]', 'formula': '1'},
+            {'name': '[Calculation_202]', 'caption': 'CA [HT]', 'formula': '2'},
+        ])['dax_context']
+        self.assertEqual(context['calc_map'], {
+            'Calculation_101': '[Budget]', 'Calculation_202': 'CA [HT]'})
+        self.assertEqual(context['param_values'], {'[Budget]': '1', 'CA [HT]': '2'})
+        self.assertEqual(context['measure_names'], {'[Budget]', 'CA [HT]'})
+        self.assertNotIn('Budget', context['param_values'])
+        self.assertNotIn('CA HT', context['measure_names'])
+
+    def test_fallback_removes_only_one_outer_pair_not_literal_inner_brackets(self):
+        context = self.context([{
+            'name': '[Metric [raw]]', 'caption': '[Metric [raw]]', 'formula': '1',
+        }])['dax_context']
+        self.assertEqual(context['calc_map'], {})
+        self.assertEqual(context['param_values'], {'Metric [raw]': '1'})
+        self.assertEqual(context['measure_names'], {'Metric [raw]'})
+
+
+class TestLogicalRelationshipIntegration(unittest.TestCase):
+    """Pair compilation must reach actual model measures before generic repair."""
+
+    def setUp(self):
+        from tests.logical_relationship_fixtures import synthetic_datasource, safe_policy
+        self.ds = synthetic_datasource()
+        self.policy = safe_policy()
+        self.environment = patch.dict(os.environ, {
+            "TTPBI_LOGICAL_RELATIONSHIP_POLICIES": "{}",
+        })
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def build(self, **extra):
+        options = {"logical_relationship_policies": {"Synthetic": self.policy}}
+        options.update(extra)
+        return _build_semantic_model([self.ds], "Synthetic report", options)
+
+    def measure(self, model, name):
+        matches = [(table, measure) for table in model["model"]["tables"]
+                   for measure in table.get("measures", [])
+                   if measure["name"] == name]
+        self.assertEqual(len(matches), 1, (name, matches))
+        return matches[0]
+
+    def test_actual_model_expression_executes_pair_bag_without_ordinary_inflation(self):
+        from tests.logical_relationship_fixtures import EmittedDax, bag_rows
+        model = self.build()
+        table, measure = self.measure(model, "Pair total")
+        self.assertEqual(table["name"], "Current")
+        self.assertEqual(EmittedDax(measure["expression"]).evaluate(bag_rows()), 4)
+        ordinary_table, ordinary = self.measure(model, "Ordinary amount")
+        self.assertEqual(ordinary_table["name"], "Current")
+        self.assertEqual(ordinary["expression"], "SUM('Current'[Amount])")
+        # Ordinary measures keep their own row domain, not a flattened pair SUM.
+        self.assertEqual(EmittedDax(ordinary["expression"]).evaluate(bag_rows()), 21)
+        self.assertNotIn("__lr", ordinary["expression"])
+        for table in model["model"]["tables"]:
+            self.assertFalse({"Pair score", "Latest qualifying tick", "Pair total"}
+                             & {c["name"] for c in table.get("columns", [])})
+            self.assertFalse({"Pair score", "Latest qualifying tick"}
+                             & {m["name"] for m in table.get("measures", [])})
+        self.assertEqual(model["model"]["relationships"], [])
+
+    def test_direct_visual_sum_of_row_calc_is_a_real_measure_not_calc_column(self):
+        from tests.logical_relationship_fixtures import EmittedDax, bag_rows
+        model = self.build(worksheets=[{
+            "name": "Synthetic chart",
+            "fields": [{"name": "row_score", "datasource": "Synthetic",
+                        "aggregation": "sum"}],
+        }])
+        _, root = self.measure(model, "Pair total")
+        table, direct = self.measure(model, "Pair score")
+        self.assertEqual(table["name"], "Current")
+        self.assertEqual(direct["expression"], root["expression"])
+        self.assertEqual(EmittedDax(direct["expression"]).evaluate(bag_rows()), 4)
+        self.assertNotIn("Pair score", [c["name"] for c in table["columns"]])
+
+    def test_public_generation_persists_executable_pair_expression_without_healing_collapse(self):
+        from tests.logical_relationship_fixtures import EmittedDax, bag_rows
+        with tempfile.TemporaryDirectory() as output:
+            stats = generate_tmdl(
+                [self.ds], "Synthetic report",
+                {"logical_relationship_policies": {"Synthetic": self.policy}},
+                output_dir=output)
+            path = os.path.join(output, "definition", "tables", "Current.tmdl")
+            with open(path, encoding="utf-8") as stream:
+                content = stream.read()
+        self.assertEqual(stats["relationships"], 0)
+        self.assertIn("\tmeasure 'Pair total' =", content)
+        self.assertNotIn("\tcolumn 'Pair score'", content)
+        # Read the serialized measure body, not the pre-write compiler result.
+        body = content.split("\tmeasure 'Pair total' =", 1)[1]
+        lines = []
+        for line in body.splitlines()[1:]:
+            if line.strip() == "```":
+                break
+            if line.startswith("\t\t\t"):
+                lines.append(line[3:])
+            elif lines:
+                break
+        self.assertTrue(lines, content)
+        self.assertEqual(EmittedDax("\n".join(lines)).evaluate(bag_rows()), 4)
+
+    def test_non_sum_visual_use_of_pair_scalar_fails_before_healing(self):
+        for aggregation in ("", "max", "min", "avg", "attr"):
+            with self.subTest(aggregation=aggregation):
+                with self.assertRaisesRegex(ValueError, "unsupported direct visual use"):
+                    self.build(worksheets=[{
+                        "fields": [{"name": "row_score", "datasource": "Synthetic",
+                                    "aggregation": aggregation}],
+                    }])
+
+    def test_independent_intermediate_dependency_fails_not_arbitrary_scalar(self):
+        self.ds["calculations"].append(dict(
+            name="[independent]", caption="Independent scalar", datatype="integer",
+            formula="[row_score] + 1"))
+        with self.assertRaisesRegex(ValueError, "independent model dependencies"):
+            self.build()
+
+    def test_absent_explicit_policy_fails_even_for_empty_filter_list(self):
+        with self.assertRaisesRegex(ValueError, "requires explicit logical_relationship_policies"):
+            _build_semantic_model([self.ds], extra_objects={"filters": []})
+
+    def test_policy_requires_verified_case_encoding_and_four_scopes(self):
+        for key in ("contains_case_sensitive", "comparison_case_sensitive",
+                    "case_encoding_verified", "unmatched_left", "row_scopes"):
+            with self.subTest(missing=key):
+                policy = dict(self.policy)
+                del policy[key]
+                with self.assertRaisesRegex(ValueError, "requires explicit"):
+                    self.build(logical_relationship_policies={"Synthetic": policy})
+        self.policy["case_encoding_verified"] = False
+        with self.assertRaisesRegex(ValueError, "requires explicit"):
+            self.build()
+
+    def test_environment_policy_and_explicit_extra_objects_have_same_expression(self):
+        expected = self.measure(self.build(), "Pair total")[1]["expression"]
+        with patch.dict(os.environ, {
+            "TTPBI_LOGICAL_RELATIONSHIP_POLICIES": json.dumps({"Synthetic": self.policy}),
+        }):
+            model = _build_semantic_model([self.ds])
+        self.assertEqual(self.measure(model, "Pair total")[1]["expression"], expected)
+
+    def test_explicit_policy_overrides_environment_not_merged_with_it(self):
+        with patch.dict(os.environ, {
+            "TTPBI_LOGICAL_RELATIONSHIP_POLICIES": "not JSON",
+        }):
+            self.measure(self.build(), "Pair total")
+        with patch.dict(os.environ, {
+            "TTPBI_LOGICAL_RELATIONSHIP_POLICIES": json.dumps({"Synthetic": self.policy}),
+        }):
+            with self.assertRaisesRegex(ValueError, "requires explicit"):
+                self.build(logical_relationship_policies={})
+
+    def test_invalid_environment_policy_fails_explicitly(self):
+        for raw, message in (("{", "Invalid TTPBI"), ("[]", "datasource-keyed")):
+            with self.subTest(raw=raw), patch.dict(os.environ, {
+                "TTPBI_LOGICAL_RELATIONSHIP_POLICIES": raw,
+            }):
+                with self.assertRaisesRegex(ValueError, message):
+                    _build_semantic_model([self.ds])
+
+    def test_explicit_original_relationship_survives_without_alias_inference(self):
+        # Independent dimension relationship is real source evidence. The
+        # non-equi Current/Prior relationship must NOT be replaced by a guessed
+        # shared RowID, Entity, Bucket or Tick equality.
+        self.ds["tables"].append({
+            "name": "Buckets", "source_table": "[Buckets]",
+            "columns": [{"name": "BucketID", "datatype": "string"}],
+        })
+        self.ds["relationships"] = [{
+            "type": "left",
+            "left": {"table": "Current", "column": "C_Group"},
+            "right": {"table": "Buckets", "column": "BucketID"},
+        }]
+        model = self.build()
+        relationships = model["model"]["relationships"]
+        self.assertEqual(len(relationships), 1, relationships)
+        rel = relationships[0]
+        self.assertEqual((rel["fromTable"], rel["fromColumn"],
+                          rel["toTable"], rel["toColumn"]),
+                         ("Current", "Bucket", "Buckets", "BucketID"))
+        self.assertFalse(rel["name"].startswith("inferred_"))
+
+    def test_explicit_original_equality_between_same_source_aliases_is_not_suppressed(self):
+        datasource = {
+            "name": "Synthetic equality",
+            "connection": self.ds["connection"],
+            "tables": [
+                {"name": alias, "source_table": "[Events]",
+                 "columns": [{"name": "RowID", "datatype": "integer"}]}
+                for alias in ("Current", "Prior")
+            ],
+            "relationships": [{
+                "type": "left",
+                "left": {"table": "Current", "column": "RowID"},
+                "right": {"table": "Prior", "column": "RowID"},
+            }],
+        }
+        model = _build_semantic_model([datasource])
+        relationships = model["model"]["relationships"]
+        self.assertEqual(len(relationships), 1, relationships)
+        rel = relationships[0]
+        self.assertEqual((rel["fromTable"], rel["fromColumn"],
+                          rel["toTable"], rel["toColumn"]),
+                         ("Current", "RowID", "Prior", "RowID"))
+        self.assertFalse(rel["name"].startswith("inferred_"))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1028,6 +1470,218 @@ class TestTmdlFileWriters(unittest.TestCase):
 # generate_tmdl Integration Test
 # ═══════════════════════════════════════════════════════════════════════
 
+class TestLocalSourceErrorRegressions(unittest.TestCase):
+    """Synthetic file/navigation audits must surface errors without guessing sources."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = os.path.join(self.tmp.name, "Data")
+        self.output = os.path.join(self.tmp.name, "Synthetic.SemanticModel")
+        os.makedirs(self.data)
+        os.makedirs(self.output)
+
+    @staticmethod
+    def _model(expression, name="Model"):
+        return {"model": {"tables": [{
+            "name": name, "partitions": [{
+                "name": "Source", "source": {"type": "m", "expression": expression},
+            }],
+        }]}}
+
+    @staticmethod
+    def _excel_expression(filename, sheet):
+        return (
+            'let Source = Excel.Workbook(File.Contents(DataFolder & "\\\\'
+            + filename.replace('"', '""') + '"), null, true), '
+            'Selected = Source{[Item="' + sheet.replace('"', '""')
+            + '",Kind="Sheet"]}[Data] in Selected'
+        )
+
+    def _xlsx(self, filename, sheets):
+        import xml.etree.ElementTree as ET
+        namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        workbook = ET.Element(f"{{{namespace}}}workbook")
+        children = ET.SubElement(workbook, f"{{{namespace}}}sheets")
+        for index, sheet in enumerate(sheets, 1):
+            ET.SubElement(children, f"{{{namespace}}}sheet",
+                          {"name": sheet, "sheetId": str(index)})
+        with zipfile.ZipFile(os.path.join(self.data, filename), "w") as archive:
+            archive.writestr("xl/workbook.xml", ET.tostring(workbook))
+
+    def test_missing_file_reports_and_replaces_empty_fallback_with_explicit_error(self):
+        model = self._model(
+            'let Source = try Csv.Document(File.Contents(DataFolder & "\\\\missing.csv")) '
+            'otherwise #table({"id"}, {}) in Source'
+        )
+        issues = _audit_local_partition_sources(model, self.output)
+        self.assertEqual(issues, [{
+            "table": "Model", "source": "missing.csv", "issue": "file_not_found",
+        }])
+        _fail_unavailable_local_sources(model, issues)
+        expression = model["model"]["tables"][0]["partitions"][0]["source"]["expression"]
+        self.assertTrue(expression.startswith('error Error.Record("Migration.SourceUnavailable",'))
+        self.assertIn('Source = "missing.csv"', expression)
+        self.assertIn('Reason = "file_not_found"', expression)
+        self.assertNotIn("otherwise", expression)
+        self.assertNotIn("#table(", expression)
+
+    def test_exact_worksheet_is_required_without_substituting_first_sheet(self):
+        self._xlsx("synthetic.xlsx", ["Other", "Exact"])
+        model = self._model(self._excel_expression("synthetic.xlsx", "exact"))
+        issues = _audit_local_partition_sources(model, self.output)
+        self.assertEqual(issues, [{
+            "table": "Model", "source": "synthetic.xlsx", "issue": "worksheet_not_found",
+            "worksheet": "exact", "available_worksheets": ["Exact", "Other"],
+        }])
+        _fail_unavailable_local_sources(model, issues)
+        expression = model["model"]["tables"][0]["partitions"][0]["source"]["expression"]
+        self.assertIn('Worksheet = "exact"', expression)
+        self.assertNotIn('Item="Other"', expression)
+
+    def test_exact_quoted_apostrophe_and_unicode_sheet_is_not_rewritten(self):
+        sheet = 'O\'Brien "réalisé"'
+        self._xlsx("synthetic.xlsx", [sheet])
+        expression = self._excel_expression("synthetic.xlsx", sheet)
+        model = self._model(expression)
+        issues = _audit_local_partition_sources(model, self.output)
+        self.assertEqual(issues, [])
+        _fail_unavailable_local_sources(model, issues)
+        self.assertEqual(
+            model["model"]["tables"][0]["partitions"][0]["source"]["expression"], expression
+        )
+
+    def test_invalid_xlsx_surfaces_concrete_issue_instead_of_empty_success(self):
+        for content in (b"not a ZIP", b""):
+            with self.subTest(content=content):
+                with open(os.path.join(self.data, "broken.xlsx"), "wb") as stream:
+                    stream.write(content)
+                model = self._model(self._excel_expression("broken.xlsx", "Exact"))
+                issues = _audit_local_partition_sources(model, self.output)
+                self.assertEqual(len(issues), 1)
+                self.assertEqual(issues[0]["issue"], "invalid_xlsx")
+                self.assertEqual(issues[0]["source"], "broken.xlsx")
+                self.assertTrue(issues[0]["detail"])
+
+    def test_valid_header_only_csv_remains_valid_empty_source(self):
+        with open(os.path.join(self.data, "empty.csv"), "w", encoding="utf-8") as stream:
+            stream.write("id,réalisé\n")
+        expression = 'Csv.Document(File.Contents(DataFolder & "\\\\empty.csv"))'
+        model = self._model(expression)
+        issues = _audit_local_partition_sources(model, self.output)
+        self.assertEqual(issues, [])
+        _fail_unavailable_local_sources(model, issues)
+        self.assertEqual(
+            model["model"]["tables"][0]["partitions"][0]["source"]["expression"], expression
+        )
+
+    def test_qualified_relation_without_connection_has_renamed_provenance_issue(self):
+        model = self._model("#table({}, {})", name="Renamed")
+        model["_table_rename_map"] = {("source-a", "Original"): "Renamed"}
+        issues = _audit_local_partition_sources(model, self.output, [{
+            "name": "source-a", "connection": {
+                "type": "Excel", "details": {"filename": "foreign.xlsx"},
+            },
+            "tables": [{"name": "Original", "source_table": "[namespace].[Exact]"}],
+        }])
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["table"], "Renamed")
+        self.assertEqual(issues[0]["issue"], "source_provenance_unverified")
+        self.assertEqual(issues[0]["source"], "[namespace].[Exact]")
+
+    def test_table_connection_binding_is_not_confused_with_datasource_default(self):
+        model = self._model("#table({}, {})")
+        issues = _audit_local_partition_sources(model, self.output, [{
+            "name": "source-a",
+            "connection_map": {"local": {
+                "type": "Excel", "details": {"filename": "synthetic.xlsx"},
+            }},
+            "tables": [{
+                "name": "Model", "source_table": "[namespace].[Exact]",
+                "connection": "local",
+            }],
+        }])
+        self.assertEqual(issues, [])
+
+    def test_csv_relation_mismatch_is_reported_but_matching_hash_relation_is_not(self):
+        for filename, expected in (("foreign.csv", "source_relation_mismatch"),
+                                   ("Exact.csv", None)):
+            with self.subTest(filename=filename):
+                issues = _audit_local_partition_sources(
+                    self._model("#table({}, {})"), self.output, [{
+                        "name": "source-a", "tables": [{
+                            "name": "Model", "source_table": "[Exact#csv]",
+                            "connection_details": {
+                                "type": "CSV", "details": {"filename": filename},
+                            },
+                        }],
+                    }],
+                )
+                self.assertEqual([issue["issue"] for issue in issues],
+                                 [expected] if expected else [])
+
+    def test_multi_source_queries_do_not_assign_sheet_navigation_to_wrong_file(self):
+        self._xlsx("one.xlsx", ["One"])
+        self._xlsx("two.xlsx", ["Two"])
+        expression = (
+            self._excel_expression("one.xlsx", "Unknown") + " & "
+            'Excel.Workbook(File.Contents(DataFolder & "\\\\two.xlsx"), null, true)'
+        )
+        self.assertEqual(
+            _audit_local_partition_sources(self._model(expression), self.output), []
+        )
+
+    def test_refresh_error_escapes_quotes_and_preserves_other_tables_and_calculated_partitions(self):
+        original = "#table({}, {})"
+        model = self._model(original, name='Réalisé "net"')
+        tables = model["model"]["tables"]
+        tables[0]["partitions"].append({
+            "name": "Calculated", "source": {"type": "calculated", "expression": "{1}"},
+        })
+        tables.append({"name": "Valid", "partitions": [{
+            "name": "Source", "source": {"type": "m", "expression": original},
+        }]})
+        _fail_unavailable_local_sources(model, [{
+            "table": 'Réalisé "net"', "source": 'a"b.xlsx',
+            "issue": "worksheet_not_found", "worksheet": 'O\'Brien "net"',
+        }])
+        expression = tables[0]["partitions"][0]["source"]["expression"]
+        self.assertIn('Table = "Réalisé ""net"""', expression)
+        self.assertIn('Source = "a""b.xlsx"', expression)
+        self.assertIn('Worksheet = "O\'Brien ""net"""', expression)
+        self.assertEqual(tables[0]["partitions"][1]["source"]["expression"], "{1}")
+        self.assertEqual(tables[1]["partitions"][0]["source"]["expression"], original)
+
+    def test_public_generation_returns_source_issue_and_persists_refresh_error(self):
+        from contextlib import redirect_stdout
+        connection = {"type": "Excel", "details": {"filename": "synthetic.xlsx"}}
+        self._xlsx("synthetic.xlsx", ["Other"])
+        datasources = [{
+            "name": "source-a", "connection": connection,
+            "connection_map": {"local": connection},
+            "tables": [{
+                "name": "Model", "source_table": "Exact$", "connection": "local",
+                "connection_details": connection,
+                "columns": [{"name": "id", "datatype": "integer"}],
+            }],
+            "calculations": [], "columns": [], "relationships": [],
+        }]
+        with redirect_stdout(io.StringIO()):
+            stats = generate_tmdl(datasources, "Synthetic", None, self.output)
+        self.assertEqual(stats["source_issues"], [{
+            "table": "Model", "source": "synthetic.xlsx",
+            "issue": "worksheet_not_found", "worksheet": "Exact",
+            "available_worksheets": ["Other"],
+        }])
+        with open(os.path.join(self.output, "definition", "tables", "Model.tmdl"),
+                  encoding="utf-8") as stream:
+            written = stream.read()
+        self.assertIn('error Error.Record("Migration.SourceUnavailable"', written)
+        self.assertIn('Worksheet = "Exact"', written)
+        self.assertNotIn('Item="Other"', written)
+        self.assertNotIn("otherwise #table", written)
+
+
 class TestGenerateTmdl(unittest.TestCase):
     """Integration test for generate_tmdl entry point."""
 
@@ -1306,6 +1960,88 @@ class TestColumnDeduplication(unittest.TestCase):
         measure_decls = re.findall(r'^\tmeasure .*Total', content, re.MULTILINE)
         self.assertEqual(len(measure_decls), 1,
                          f'Expected 1 measure, got: {measure_decls}')
+
+
+class TestWorksheetSupportedCalendarRegressions(unittest.TestCase):
+    """Calendar selection follows worksheet date axes, not column-name ties."""
+
+    def _build(self, axis='Order Date', **options):
+        from contextlib import redirect_stdout
+        datasource = {
+            'name': 'SalesDS',
+            'connection': {'type': 'CSV', 'details': {'filename': 'orders.csv'}},
+            'tables': [{
+                'name': 'Orders',
+                'columns': [
+                    {'name': 'Ship Date', 'datatype': 'date'},
+                    {'name': 'Order Date', 'datatype': 'date'},
+                    {'name': 'Quantity', 'datatype': 'integer'},
+                ],
+            }],
+            'calculations': [], 'relationships': [],
+        }
+        worksheet = {'name': 'Q', 'original_mark_class': 'Automatic',
+                     'fields': [
+                         {'name': axis, 'datasource': 'SalesDS', 'shelf': 'columns',
+                          'date_part': 'mn', 'derivation': 'Month',
+                          'is_discrete': True, 'is_continuous': False},
+                         {'name': 'Quantity', 'datasource': 'SalesDS',
+                          'shelf': 'rows', 'aggregation': 'sum'},
+                     ]}
+        with redirect_stdout(io.StringIO()):
+            return _build_semantic_model(
+                [datasource], extra_objects={'worksheets': [worksheet]}, **options)
+
+    def _calendar_m(self, model):
+        calendars = [t for t in model['model']['tables'] if t['name'] == 'Calendar']
+        self.assertEqual(len(calendars), 1)
+        return calendars[0]['partitions'][0]['source']['expression']
+
+    def test_order_date_axis_wins_over_ship_date_name_tie(self):
+        model = self._build()
+        active = [r for r in model['model']['relationships']
+                  if r['fromTable'] == 'Orders' and r['toTable'] == 'Calendar'
+                  and r.get('isActive', True)]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]['fromColumn'], 'Order Date')
+        self.assertEqual(active[0]['toColumn'], 'Date')
+
+    def test_ship_date_axis_is_honored_not_hardcoded_order_date(self):
+        model = self._build(axis='Ship Date')
+        active = [r for r in model['model']['relationships']
+                  if r['fromTable'] == 'Orders' and r['toTable'] == 'Calendar'
+                  and r.get('isActive', True)]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]['fromColumn'], 'Ship Date')
+
+    def test_default_calendar_bounds_reference_selected_source_date(self):
+        expression = self._calendar_m(self._build())
+        # No sample is supplied: covering unknown source years requires runtime
+        # source-date evidence rather than a fixed 2020–2030-only calendar.
+        self.assertIn('Orders', expression)
+        self.assertIn('Order Date', expression)
+        self.assertNotIn('StartDate = #date(2020, 1, 1)', expression)
+        self.assertNotIn('EndDate = #date(2030, 12, 31)', expression)
+
+    def test_explicit_calendar_bounds_remain_authoritative(self):
+        expression = self._calendar_m(
+            self._build(calendar_start=2000, calendar_end=2040))
+        self.assertIn('StartDate = #date(2000, 1, 1)', expression)
+        self.assertIn('EndDate = #date(2040, 12, 31)', expression)
+
+    def test_explicit_start_preserved_while_end_uses_source(self):
+        expression = self._calendar_m(self._build(calendar_start=2000))
+        self.assertIn('StartDate = #date(2000, 1, 1)', expression)
+        self.assertIn('Orders', expression)
+        self.assertIn('Order Date', expression)
+        self.assertNotIn('EndDate = #date(2030, 12, 31)', expression)
+
+    def test_explicit_end_preserved_while_start_uses_source(self):
+        expression = self._calendar_m(self._build(calendar_end=2040))
+        self.assertIn('EndDate = #date(2040, 12, 31)', expression)
+        self.assertIn('Orders', expression)
+        self.assertIn('Order Date', expression)
+        self.assertNotIn('StartDate = #date(2020, 1, 1)', expression)
 
 
 if __name__ == '__main__':

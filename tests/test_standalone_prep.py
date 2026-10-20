@@ -18,6 +18,10 @@ import unittest
 import zipfile
 from unittest.mock import patch, MagicMock
 from types import SimpleNamespace
+from contextlib import redirect_stdout
+import io
+
+from tests.prep_flow_fixtures import clean_chain, source, output, operation, write_flow
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -32,48 +36,27 @@ from migrate import (
 )
 
 
-# ── Minimal valid TFL XML for testing ────────────────────────────────────────
-
-MINIMAL_TFL_XML = """\
-<?xml version='1.0' encoding='utf-8'?>
-<flow-document xmlns:user="http://www.tableausoftware.com/xml/user" version="1.0">
-  <nodes>
-    <node id="n1" name="Input" nodeType=".v1.LoadCsv">
-      <properties>
-        <property key="filename">data.csv</property>
-      </properties>
-      <columns>
-        <column name="Category" type="string"/>
-        <column name="Sales" type="real"/>
-      </columns>
-    </node>
-  </nodes>
-  <connections/>
-</flow-document>
-"""
-
-
 def _make_tfl_file(directory, filename='flow.tfl'):
-    """Create a minimal .tfl file and return its path."""
-    path = os.path.join(directory, filename)
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(MINIMAL_TFL_XML)
-    return path
+    """Create a synthetic, valid Prep JSON flow."""
+    return write_flow(directory, clean_chain(), filename)
 
 
 def _make_tflx_file(directory, filename='flow.tflx'):
     """Create a minimal .tflx archive containing a .tfl file."""
-    tfl_content = MINIMAL_TFL_XML.encode('utf-8')
-    path = os.path.join(directory, filename)
-    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr('flow.tfl', tfl_content)
-    return path
+    return write_flow(directory, clean_chain(), filename, member='flow.tfl')
 
 
 # ── run_standalone_prep tests ────────────────────────────────────────────────
 
 class TestRunStandalonePrep(unittest.TestCase):
     """Test the run_standalone_prep() function."""
+
+    def setUp(self):
+        self.extraction = tempfile.TemporaryDirectory()
+        self.addCleanup(self.extraction.cleanup)
+        patcher = patch('migrate._get_extract_dir', return_value=self.extraction.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_file_not_found(self):
         """Return False when the prep file doesn't exist."""
@@ -84,7 +67,9 @@ class TestRunStandalonePrep(unittest.TestCase):
         """Successful parse writes datasources.json and placeholder JSONs."""
         with tempfile.TemporaryDirectory() as td:
             tfl_path = _make_tfl_file(td)
-            fake_ds = [{'name': 'Output', 'tables': [], 'columns': []}]
+            fake_ds = [{'name': 'Output',
+                        'tables': [{'name': 'Output', 'm_query': 'let Source = 1 in Source'}],
+                        'm_query_override': 'let Source = 1 in Source'}]
 
             with patch('prep_flow_parser.parse_prep_flow', return_value=fake_ds):
                 result = run_standalone_prep(tfl_path)
@@ -92,7 +77,7 @@ class TestRunStandalonePrep(unittest.TestCase):
             self.assertTrue(result)
 
             # datasources.json should contain our fake datasources
-            json_dir = os.path.join(os.path.dirname(__file__), '..', 'tableau_export')
+            json_dir = self.extraction.name
             ds_path = os.path.join(json_dir, 'datasources.json')
             self.assertTrue(os.path.exists(ds_path))
             with open(ds_path, encoding='utf-8') as f:
@@ -104,10 +89,9 @@ class TestRunStandalonePrep(unittest.TestCase):
         """All 16 placeholder JSON files are created."""
         with tempfile.TemporaryDirectory() as td:
             tfl_path = _make_tfl_file(td)
-            with patch('prep_flow_parser.parse_prep_flow', return_value=[]):
-                run_standalone_prep(tfl_path)
+            self.assertTrue(run_standalone_prep(tfl_path))
 
-            json_dir = os.path.join(os.path.dirname(__file__), '..', 'tableau_export')
+            json_dir = self.extraction.name
             expected_files = [
                 'worksheets.json', 'calculations.json', 'parameters.json',
                 'filters.json', 'stories.json', 'actions.json', 'sets.json',
@@ -126,6 +110,17 @@ class TestRunStandalonePrep(unittest.TestCase):
             with patch('prep_flow_parser.parse_prep_flow', side_effect=OSError("parse error")):
                 result = run_standalone_prep(tfl_path)
             self.assertFalse(result)
+
+    def test_empty_conversion_returns_false_without_completed_output(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = _make_tfl_file(td)
+            captured = io.StringIO()
+            with patch('prep_flow_parser.parse_prep_flow', return_value=[]), \
+                 redirect_stdout(captured):
+                result = run_standalone_prep(path)
+            self.assertFalse(result)
+            self.assertFalse(os.path.exists(os.path.join(self.extraction.name, 'datasources.json')))
+            self.assertNotIn('completed successfully', captured.getvalue())
 
 
 # ── TFL routing in _migrate_single_workbook ──────────────────────────────────
@@ -342,16 +337,80 @@ class TestMigrateSinglePrepFlow(unittest.TestCase):
             self.assertFalse(result['success'])
             self.assertEqual(result['error'], 'analysis')
 
-    def test_empty_m_queries(self):
-        """Flow with no M queries should still succeed."""
+    def test_empty_m_queries_fails_without_completed_output(self):
+        """An inventory-only profile cannot be reported as a completed export."""
         with tempfile.TemporaryDirectory() as td:
             tfl_path = _make_tfl_file(td)
             profile = self._make_fake_profile(m_queries={})
-            with patch('prep_flow_analyzer.analyze_flow', return_value=profile):
+            captured = io.StringIO()
+            with patch('prep_flow_analyzer.analyze_flow', return_value=profile), \
+                 redirect_stdout(captured):
                 result = _migrate_single_prep_flow(tfl_path, 'flow', td, 'flow')
 
+            self.assertFalse(result['success'])
+            self.assertNotIn('export completed', captured.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(td, 'flow', 'assessment.json')))
+            self.assertFalse(os.path.exists(os.path.join(td, 'flow', 'PowerQuery')))
+
+    def test_conversion_error_rejects_even_partial_queries(self):
+        with tempfile.TemporaryDirectory() as td:
+            profile = self._make_fake_profile()
+            profile.assessment.update(
+                conversion_error='ValueError: unsupported synthetic step',
+                grade='RED', status='error',
+            )
+            captured = io.StringIO()
+            with patch('prep_flow_analyzer.analyze_flow', return_value=profile), \
+                 redirect_stdout(captured):
+                result = _migrate_single_prep_flow(
+                    _make_tfl_file(td), 'failed', td, 'failed')
+            self.assertFalse(result['success'])
+            self.assertNotIn('export completed', captured.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(td, 'failed', 'PowerQuery')))
+            self.assertFalse(os.path.exists(os.path.join(td, 'failed', 'assessment.json')))
+
+    def test_no_declared_outputs_fails_even_with_queries(self):
+        with tempfile.TemporaryDirectory() as td:
+            profile = self._make_fake_profile(
+                num_outputs=0, m_queries={'Orphan': 'let Source = 1 in Source'})
+            captured = io.StringIO()
+            with patch('prep_flow_analyzer.analyze_flow', return_value=profile), \
+                 redirect_stdout(captured):
+                result = _migrate_single_prep_flow(
+                    _make_tfl_file(td), 'failed', td, 'failed')
+            self.assertFalse(result['success'])
+            self.assertNotIn('export completed', captured.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(td, 'failed', 'assessment.json')))
+            self.assertFalse(os.path.exists(os.path.join(td, 'failed', 'PowerQuery')))
+
+    def test_real_unsupported_conversion_batch_route_cannot_succeed(self):
+        with tempfile.TemporaryDirectory() as td:
+            flow = {'nodes': {
+                'input': source('bad'),
+                'bad': operation('SyntheticUnsupported', 'out'),
+                'out': output(),
+            }}
+            captured = io.StringIO()
+            with redirect_stdout(captured):
+                result = _migrate_single_workbook(
+                    write_flow(td, flow), 'failed', td, 'failed',
+                    False, None, None, None, None,
+                )
+            self.assertFalse(result['success'])
+            self.assertNotIn('export completed', captured.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(td, 'failed', 'PowerQuery')))
+
+    def test_real_container_exports_transformed_query(self):
+        with tempfile.TemporaryDirectory() as td:
+            result = _migrate_single_prep_flow(_make_tfl_file(td), 'flow', td, 'flow')
             self.assertTrue(result['success'])
-            self.assertEqual(result['m_query_count'], 0)
+            self.assertEqual(result['m_query_count'], 1)
+            with open(os.path.join(td, 'flow', 'PowerQuery', 'PublishedSales.pq'),
+                      encoding='utf-8') as stream:
+                query = stream.read()
+            for transform in ['RenameColumns', 'RemoveColumns', 'AddColumn',
+                              'TransformColumnTypes', 'SelectRows']:
+                self.assertIn('Table.' + transform, query)
 
     def test_profile_returned_in_result(self):
         """The prep_profile should be included in the result for cross-flow lineage."""

@@ -461,7 +461,7 @@ class TestWizardHelpers(unittest.TestCase):
 
     def test_wizard_to_args(self):
         config = {
-            'tableau_file': 'test.twbx',
+            'batch': 'workbooks/',
             'prep': None,
             'output_dir': 'out/',
             'output_format': 'pbip',
@@ -475,17 +475,19 @@ class TestWizardHelpers(unittest.TestCase):
             'assess': True,
         }
         args = wizard_to_args(config)
-        self.assertEqual(args.tableau_file, 'test.twbx')
+        self.assertEqual(args.batch, 'workbooks/')
+        self.assertIsNone(args.tableau_file)
         self.assertEqual(args.mode, 'import')
         self.assertTrue(args.rollback)
         self.assertEqual(args.output_dir, 'out/')
 
     def test_wizard_to_args_defaults(self):
         config = {
-            'tableau_file': 'x.twb',
+            'batch': 'workbooks/',
         }
         args = wizard_to_args(config)
-        self.assertEqual(args.tableau_file, 'x.twb')
+        self.assertEqual(args.batch, 'workbooks/')
+        self.assertIsNone(args.tableau_file)
         self.assertFalse(getattr(args, 'paginated', True))
 
 

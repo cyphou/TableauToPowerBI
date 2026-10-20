@@ -20,7 +20,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ── Golden contract ─────────────────────────────────────────────────
 GOLDEN_TOOLS = {
     "assess": {"file"},
-    "migrate": {"file"},
+    "migrate": {"directory"},
     "qa": {"project_dir"},
     "quality_report": {"file", "project_dir"},
     "agent_handoff": {"agent"},
@@ -78,7 +78,8 @@ class TestSkillCommandSurface(unittest.TestCase):
             self.text = fh.read()
 
     def test_documents_core_commands(self):
-        for token in ("migrate.py", "--assess", "--output-dir", "--qa", "--batch"):
+        for token in ("migrate.py batch", "migrate.py assess", "--output-dir",
+                      "migrate.py qa"):
             self.assertIn(token, self.text, f"skill missing {token}")
 
     def test_documents_ownership_map(self):

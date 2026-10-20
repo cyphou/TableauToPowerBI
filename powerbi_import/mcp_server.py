@@ -34,6 +34,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -64,6 +65,7 @@ INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
 _ALLOWED_INPUT_EXT = (".twb", ".twbx", ".tds", ".tdsx")
+_ALLOWED_BATCH_EXT = (".twb", ".twbx", ".tds", ".tdsx", ".tfl", ".tflx")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -89,17 +91,19 @@ def _tool_catalogue():
         {
             "name": "migrate",
             "description": "Run the full extract -> generate pipeline and produce a "
-                           ".pbip project (or Fabric-native artifacts).",
+                           "batch of .pbip projects (or Fabric-native artifacts) from "
+                           "a source directory.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "file": {"type": "string", "description": "Path to .twb/.twbx"},
+                    "directory": {"type": "string",
+                                  "description": "Source directory, searched recursively for Tableau files"},
                     "output_dir": {"type": "string", "description": "Output directory (optional)"},
                     "output_format": {"type": "string", "enum": ["pbip", "fabric"],
                                        "description": "Target format (default pbip)"},
                     "culture": {"type": "string", "description": "Locale, e.g. fr-FR (optional)"},
                 },
-                "required": ["file"],
+                "required": ["directory"],
             },
         },
         {
@@ -319,6 +323,47 @@ def _validate_input_file(path):
     return ""
 
 
+def _validate_input_directory(path):
+    """Validate a batch source tree before passing it to the batch engine."""
+    if not path or not isinstance(path, str):
+        return "missing 'directory'"
+    if "\x00" in path:
+        return "invalid directory path (null byte)"
+    absolute = os.path.abspath(path)
+    path_error = _validate_output_path(absolute)
+    if path_error:
+        return path_error
+    if os.path.islink(absolute) or not os.path.isdir(absolute):
+        return "directory must be a real directory"
+
+    found_input = False
+    walk_errors = []
+
+    def _on_walk_error(error):
+        walk_errors.append(error)
+
+    for current, dirs, filenames in os.walk(
+        absolute, followlinks=False, onerror=_on_walk_error
+    ):
+        if any(os.path.islink(os.path.join(current, name)) for name in dirs + filenames):
+            return "source directory must not contain symbolic links"
+        for filename in filenames:
+            if filename.startswith("~") or not filename.lower().endswith(_ALLOWED_BATCH_EXT):
+                continue
+            source_path = os.path.join(current, filename)
+            try:
+                if not stat.S_ISREG(os.stat(source_path, follow_symlinks=False).st_mode):
+                    return "Tableau inputs must be regular files"
+            except OSError:
+                return "source directory contains an unreadable Tableau input"
+            found_input = True
+    if walk_errors:
+        return "source directory contains an unreadable directory"
+    if not found_input:
+        return "source directory contains no supported Tableau inputs"
+    return ""
+
+
 def _validate_pbip_project_dir(path):
     """Validate a generated PBIP root before any MCP read or write."""
     if not path or not isinstance(path, str):
@@ -520,27 +565,42 @@ class MigrationTools:
 
     # -- migrate ------------------------------------------------------
     def migrate(self, args):
-        err = _validate_input_file(args.get("file"))
+        err = _validate_input_directory(args.get("directory"))
         if err:
             return {"ok": False, "error": err}
-        out_dir = args.get("output_dir") or tempfile.mkdtemp(prefix="ttpbi_mcp_out_")
-        output_error = _validate_output_path(out_dir)
-        if output_error:
-            return {"ok": False, "error": output_error}
+        source_dir = os.path.abspath(args["directory"])
+        requested_out_dir = args.get("output_dir")
+        if requested_out_dir is not None and (
+            not isinstance(requested_out_dir, str) or not requested_out_dir
+        ):
+            return {"ok": False, "error": "invalid output path"}
+        out_dir = os.path.abspath(requested_out_dir) if requested_out_dir else None
+        if out_dir:
+            output_error = _validate_output_path(out_dir)
+            if output_error:
+                return {"ok": False, "error": output_error}
         fmt = args.get("output_format", "pbip")
         if fmt not in ("pbip", "fabric"):
             return {"ok": False, "error": f"invalid output_format: {fmt}"}
-        with tempfile.TemporaryDirectory(prefix="ttpbi_mcp_extract_") as tmp:
-            importer, converted = _extract_to_dir(args["file"], tmp)
-            name = os.path.splitext(os.path.basename(args["file"]))[0]
-            importer.generate_powerbi_project(
-                report_name=name,
-                converted_objects=converted,
+        from migrate import run_batch_migration
+
+        # The batch engine emits progress to stdout; keep it off the MCP JSON-RPC
+        # transport while preserving its normal diagnostics on stderr.
+        with contextlib.redirect_stdout(sys.stderr):
+            result = run_batch_migration(
+                source_dir,
                 output_dir=out_dir,
                 culture=args.get("culture"),
                 output_format=fmt,
             )
-        return {"ok": True, "output_dir": out_dir, "report_name": name, "output_format": fmt}
+        actual_out_dir = out_dir or os.path.join(source_dir, "migrated")
+        return {
+            "ok": result == 0,
+            "output_dir": actual_out_dir,
+            "source_directory": source_dir,
+            "output_format": fmt,
+            "exit_code": result,
+        }
 
     # -- qa -----------------------------------------------------------
     def qa(self, args):

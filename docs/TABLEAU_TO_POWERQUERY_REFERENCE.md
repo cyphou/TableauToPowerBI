@@ -67,8 +67,18 @@ All connector conversions are implemented in `tableau_export/m_query_builder.py`
 | 15 | `authentication` | Power Query credential prompt | ⚠️ | Power BI handles auth separately |
 | 16 | `ssl-mode` | Implicit in connector | ⚠️ | Handled by Power BI gateway |
 | 17 | `username` / `password` | Credential manager | ❌ | Never stored in M query |
+
 | 18 | `initial-sql` | `[Query="..."]` option | ✅ | Via Custom SQL connector |
 | 19 | `one-time-sql` | `[Query="..."]` option | ⚠️ | Merged with initial-sql |
+
+For SQL Server, PostgreSQL, MySQL, Azure SQL, Azure Synapse, Oracle and
+Redshift, table navigation uses the physical Tableau relation
+(`source_table`), not the renamed semantic-model table. A qualified relation
+overrides the default schema; otherwise the connection's explicit schema is
+used. Refresh still requires a reachable server and credentials configured in
+Power BI. For local Excel/CSV sources, the generated project's `DataFolder`
+must contain the declared file; merely having it elsewhere on disk is not
+enough.
 
 ---
 

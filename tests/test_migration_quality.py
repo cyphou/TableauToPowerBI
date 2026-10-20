@@ -1,20 +1,268 @@
 """Tests for the unified deterministic migration quality report."""
 
 import json
+import html
 import os
+from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from unittest.mock import patch
+from urllib.parse import quote, unquote, urlsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.migration_quality import (
+    MigrationQualityReport,
     add_ai_summary,
     apply_desktop_probe,
+    build_consolidated_quality_html,
     build_quality_prompt,
     build_quality_report,
+    refresh_desktop_comparison_links,
 )
+
+
+class _ComparisonAnchors(HTMLParser):
+    """Read actual browser href values, not HTML-escaped source strings."""
+
+    def __init__(self, document):
+        super().__init__()
+        self.hrefs = []
+        self.feed(document)
+
+    def handle_starttag(self, tag, attrs):
+        href = dict(attrs).get("href", "")
+        if tag == "a" and href.endswith("/comparison.html"):
+            self.hrefs.append(href)
+
+
+class TestMigrationQualityDesktopComparisonLinks(unittest.TestCase):
+    """Offline regression coverage for portable, non-verdict capture links."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.output = self.root / "output"
+        self.output.mkdir()
+        self.report = MigrationQualityReport(
+            report_name="Sales & café",
+            assessment={}, parity={"parity_score": 73}, data={}, interface={},
+            openability={}, status="WARN", warnings=["Keep this warning"],
+        )
+        self.single = self.output / "division & café" / "Sales #100%" / "migration_quality_Sales.html"
+        self.consolidated = self.output / "migration_quality.html"
+        self.quality_json = self.single.with_suffix(".json")
+        self.report.save_json(str(self.quality_json))
+        self.render_quality()
+
+    def render_quality(self):
+        self.report.save_html(str(self.single))
+        build_consolidated_quality_html(
+            [str(self.quality_json)], str(self.consolidated))
+
+    def comparison(self, name="run-001", status="captured", manifest_text=None):
+        directory = self.output / "desktop_comparisons" / name
+        directory.mkdir(parents=True, exist_ok=True)
+        report = directory / "comparison.html"
+        report.write_text("<html>Separate capture evidence</html>", encoding="utf-8")
+        payload = {
+            "status": status,
+            # Discovery must use artifacts, not paths from the original host.
+            "run_dir": "Z:/missing original machine/run",
+            "output_root": "Z:/missing original machine",
+        }
+        (directory / "manifest.json").write_text(
+            json.dumps(payload) if manifest_text is None else manifest_text,
+            encoding="utf-8")
+        return report
+
+    def document(self, path):
+        return path.read_text(encoding="utf-8")
+
+    def assert_links(self, path, reports):
+        document = self.document(path)
+        hrefs = _ComparisonAnchors(document).hrefs
+        expected = [
+            quote(os.path.relpath(report, path.parent).replace("\\", "/"), safe="/.")
+            for report in reports
+        ]
+        self.assertCountEqual(hrefs, expected)
+        self.assertEqual(len(hrefs), len(set(hrefs)), "Duplicate comparison links")
+        for href in hrefs:
+            parsed = urlsplit(href)
+            self.assertEqual((parsed.scheme, parsed.netloc, parsed.query, parsed.fragment),
+                             ("", "", "", ""))
+            self.assertNotIn("\\", href)
+            self.assertFalse(href.startswith("/"))
+            self.assertTrue((path.parent / unquote(href)).is_file(), href)
+        return document
+
+    def test_no_comparison_directory_or_report_never_creates_broken_links(self):
+        for empty_directory in (False, True):
+            with self.subTest(empty_directory=empty_directory):
+                if empty_directory:
+                    # A manifest alone does not imply a browsable comparison.
+                    orphan = self.comparison()
+                    orphan.unlink()
+                self.render_quality()
+                before = {p: p.read_bytes() for p in (self.single, self.consolidated)}
+                self.assertEqual(refresh_desktop_comparison_links(str(self.output)), [])
+                for path in before:
+                    self.assert_links(path, [])
+                    self.assertNotIn("quality-desktop-comparisons", self.document(path))
+                    self.assertEqual(path.read_bytes(), before[path])
+
+    def test_relative_urls_escape_special_characters_and_nested_paths(self):
+        name = "run café & #'100%"
+        comparison = self.comparison(name)
+        self.render_quality()
+        for path, prefix in ((self.single, "../../"), (self.consolidated, "")):
+            with self.subTest(path=path):
+                document = self.assert_links(path, [comparison])
+                expected = prefix + "desktop_comparisons/" + quote(name, safe="") + "/comparison.html"
+                self.assertEqual(_ComparisonAnchors(document).hrefs, [expected])
+                # Apostrophes need not be escaped in link text (only in URLs).
+                self.assertIn(html.escape(name, quote=False), document)
+                self.assertNotIn("Z:/missing", document)
+                self.assertNotIn(str(self.output), document)
+
+    def test_links_remain_valid_when_output_bundle_is_moved(self):
+        comparison = self.comparison("run café & #100%")
+        self.render_quality()
+        moved = self.root / "downloaded bundle & #2"
+        shutil.copytree(self.output, moved)
+        shutil.rmtree(self.output)
+        for original in (self.single, self.consolidated):
+            path = moved / original.relative_to(self.output)
+            self.assert_links(path, [moved / comparison.relative_to(self.output)])
+        self.assertEqual(refresh_desktop_comparison_links(str(moved)), [])
+
+    def test_failed_and_successful_captures_are_not_parity_verdicts(self):
+        failed = self.comparison("run-failed", status="failed")
+        captured = self.comparison("run-captured")
+        self.render_quality()
+        for path in (self.single, self.consolidated):
+            document = self.assert_links(path, [failed, captured])
+            self.assertIn("Capture failure / incomplete — not parity success", document)
+            self.assertIn("Captures recorded — manual review required", document)
+            self.assertIn("not a parity verdict", document)
+            self.assertIn("even successful captures do not verify", document)
+            self.assertIn("Keep this warning", document)
+        self.assertEqual(json.loads(self.quality_json.read_text("utf-8")),
+                         self.report.to_dict())
+
+    def test_missing_malformed_or_unknown_manifest_status_is_unverified(self):
+        for payload in (None, "{broken", "[]", '{"status": "PASS"}',
+                        '{"status": ["captured"]}'):
+            with self.subTest(payload=payload):
+                report = self.comparison(manifest_text=payload)
+                if payload is None:
+                    (report.parent / "manifest.json").unlink()
+                self.render_quality()
+                for path in (self.single, self.consolidated):
+                    document = self.assert_links(path, [report])
+                    self.assertIn("not_run — capture status unavailable", document)
+                    self.assertNotIn("Captures recorded — manual review required", document)
+
+    def test_refresh_is_idempotent_preserves_quality_and_ignores_other_html(self):
+        originals = {p: p.read_bytes() for p in (self.single, self.consolidated)}
+        json_before = self.quality_json.read_bytes()
+        unrelated = self.output / "assessment.html"
+        unrelated.write_bytes(originals[self.single])
+        comparison = self.comparison()
+        comparison_before = comparison.read_bytes()
+        changed = refresh_desktop_comparison_links(str(self.output))
+        self.assertCountEqual(changed, [str(self.single), str(self.consolidated)])
+        refreshed = {p: p.read_bytes() for p in originals}
+        for _ in range(3):
+            self.assertEqual(refresh_desktop_comparison_links(str(self.output)), [])
+            for path in originals:
+                document = self.assert_links(path, [comparison])
+                self.assertEqual(document.count('id="quality-desktop-comparisons"'), 1)
+                self.assertEqual(path.read_bytes(), refreshed[path])
+        self.assertEqual(self.quality_json.read_bytes(), json_before)
+        self.assertEqual(unrelated.read_bytes(), originals[self.single])
+        self.assertEqual(comparison.read_bytes(), comparison_before)
+        # Removing the managed block must recover the original document exactly.
+        comparison.unlink()
+        self.assertCountEqual(refresh_desktop_comparison_links(str(self.output)),
+                              [str(self.single), str(self.consolidated)])
+        for path, original in originals.items():
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_regeneration_discovers_existing_comparisons_without_refresh(self):
+        comparison = self.comparison()
+        for _ in range(2):
+            self.render_quality()
+            for path in (self.single, self.consolidated):
+                self.assert_links(path, [comparison])
+            self.assertEqual(refresh_desktop_comparison_links(str(self.output)), [])
+
+    def test_refresh_removes_only_stale_reports_then_removes_empty_section(self):
+        first = self.comparison("run-001")
+        second = self.comparison("run-002")
+        self.render_quality()
+        first.unlink()  # Its manifest remains, but must no longer be linked.
+        self.assertCountEqual(refresh_desktop_comparison_links(str(self.output)),
+                              [str(self.single), str(self.consolidated)])
+        for path in (self.single, self.consolidated):
+            self.assert_links(path, [second])
+            self.assertNotIn("run-001", self.document(path))
+        second.unlink()
+        self.assertCountEqual(refresh_desktop_comparison_links(str(self.output)),
+                              [str(self.single), str(self.consolidated)])
+        for path in (self.single, self.consolidated):
+            self.assert_links(path, [])
+            self.assertNotIn("quality-desktop-comparisons", self.document(path))
+        self.assertEqual(refresh_desktop_comparison_links(str(self.output)), [])
+
+    def test_compare_finalization_refreshes_existing_quality_after_artifacts_exist(self):
+        from powerbi_import import desktop_comparison
+        from powerbi_import.tableau_desktop_probe import TableauProbeReport
+
+        source = self.root / "source"
+        source.mkdir()
+        workbook = source / "Sales.twb"
+        workbook.write_text("<workbook/>", encoding="utf-8")
+        pbip = self.output / "Sales" / "Sales.pbip"
+        pbip.parent.mkdir()
+        pbip.write_text("{}", encoding="utf-8")
+        json_before = self.quality_json.read_bytes()
+        finalized = []
+
+        def observed_refresh(output_root):
+            runs = list((self.output / "desktop_comparisons").iterdir())
+            latest = next(p for p in runs if p not in finalized)
+            self.assertTrue((latest / "comparison.html").is_file())
+            saved = json.loads((latest / "manifest.json").read_text("utf-8"))
+            self.assertEqual(saved["status"], "failed")
+            finalized.append(latest)
+            return refresh_desktop_comparison_links(output_root)
+
+        with patch.object(desktop_comparison, "probe_tableau_open",
+                          return_value=TableauProbeReport(str(workbook), status="unavailable")), \
+             patch.object(desktop_comparison, "_pbi_capture",
+                          return_value={"status": "unavailable", "screenshot": None}), \
+             patch.object(desktop_comparison, "_cleanup_comparison_processes"), \
+             patch("subprocess.Popen", side_effect=AssertionError("Never launch Desktop")), \
+             patch("powerbi_import.migration_quality.refresh_desktop_comparison_links",
+                   side_effect=observed_refresh) as refresh:
+            for _ in range(2):
+                manifest = desktop_comparison.compare_desktop_reports(str(source), str(self.output))
+                self.assertEqual(manifest["status"], "failed")
+                self.assertIsNone(manifest["parity_score"])
+                for path in (self.single, self.consolidated):
+                    document = self.assert_links(
+                        path, [run / "comparison.html" for run in finalized])
+                    self.assertIn("Capture failure / incomplete — not parity success", document)
+            self.assertEqual(refresh.call_count, 2)
+            refresh.assert_called_with(str(self.output.resolve()))
+        self.assertEqual(self.quality_json.read_bytes(), json_before)
+        self.assertEqual(refresh_desktop_comparison_links(str(self.output)), [])
 
 
 class _Assessment:

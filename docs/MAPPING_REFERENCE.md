@@ -17,14 +17,24 @@ source-to-target status without treating approximations as native parity.
 | Tableau Mark/Type | Power BI visualType | Notes |
 |-------------------|-------------------|-------|
 | Bar | clusteredBarChart | Standard horizontal bar |
-| Stacked Bar | stackedBarChart | |
+| Stacked Bar | barChart | Native stacked horizontal bar |
 | 100% Stacked Bar | hundredPercentStackedBarChart | Percentages |
 | Bar (Vertical) / Column | clusteredColumnChart | Vertical orientation |
-| Stacked Column | stackedColumnChart | |
+| Stacked Column | columnChart | Native stacked vertical column |
 | 100% Stacked Column | hundredPercentStackedColumnChart | |
 | Histogram | clusteredColumnChart | Binned data |
 | Gantt Bar / Lollipop | clusteredBarChart | Approximation |
 | Butterfly Chart / Waffle | hundredPercentStackedBarChart | |
+
+For Automatic marks, one dimension on Rows, one aggregated measure on Columns,
+and categorical Color select a horizontal stacked bar; reversing the shelves
+selects a stacked column. Explicit marks, dual-axis charts, and an extracted
+stack-mode of `off` do not use this inference. This does not infer percentage
+normalization.
+
+Historical `stackedBarChart` and `stackedColumnChart` inputs are normalized to
+the native `barChart` and `columnChart` IDs. They are not emitted as custom
+visual IDs; orientation changes preserve stacking.
 
 ### Line & Area Charts
 
@@ -36,6 +46,14 @@ source-to-target status without treating approximations as native parity.
 | Bump Chart / Slope Chart | lineChart | |
 | Timeline / Sparkline | lineChart | |
 | Ribbon | ribbonChart | |
+
+Discrete month-of-year pills bind to `Calendar[MonthName]`, sorted by
+`Calendar[Month]`, only when an active relationship connects Calendar to the
+exact source date column. A daily date binding is not equivalent to this grouping.
+
+An independent Text measure is retained in Tooltips with an approximation
+annotation, not substituted for the Y measure. Native Y labels are suppressed
+when they would misrepresent that separate Text encoding.
 
 ### Pie, Donut & Funnel
 
@@ -53,12 +71,22 @@ source-to-target status without treating approximations as native parity.
 | Combo / Pareto | lineClusteredColumnComboChart | |
 | Line + Stacked Column | lineStackedColumnComboChart | |
 
+Text aggregations alone do not establish dual-axis semantics; conversion to a
+combo chart requires explicit dual-axis evidence.
+
 ### Scatter & Bubble
 
 | Tableau Mark/Type | Power BI visualType | Notes |
 |-------------------|-------------------|-------|
 | Circle / Shape / Dot Plot | scatterChart | |
 | Packed Bubble / Strip Plot | scatterChart | Bubble variant |
+
+Automatic marks with opposing aggregated measure shelves retain scatter semantics
+even when older chart metadata classifies them as a combo: Columns bind X and Rows
+bind Y. Resolvable Detail fields supply point grouping; multiple extracted Detail
+fields are retained with a review annotation rather than silently dropping fields.
+True Detail shelf fields supply point grouping; filter-only slices are extracted
+separately and do not supply scatter point grain.
 
 ### Maps & Geography
 

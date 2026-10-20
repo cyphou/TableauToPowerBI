@@ -7,6 +7,7 @@ Extracted from ``tmdl_generator``, which re-exports these names.
 """
 
 import re
+from datetime import date, datetime
 
 
 # Well-known date table names (any language)
@@ -112,7 +113,206 @@ def _is_date_table(table):
     return date_part_count >= len(columns) * 0.5
 
 
-def _add_date_table(model):
+def _worksheet_date_usage(model, worksheets, table_rename_map):
+    """Resolve worksheet fields against their owning datasource, not globally.
+
+    Return axis/date-part support and total worksheet support per physical
+    date column. Repeated encodings in one worksheet count only once.
+    """
+    tables = {t['name']: t for t in model['model']['tables']}
+    sources = model.get('_datasources', [])
+    renames = model.get('_column_rename_map', {})
+    usage = {}
+    for ws in worksheets:
+        supported = {}
+        for field in ws.get('fields', []):
+            name = field.get('name', '').strip('[]')
+            ds_name = field.get('datasource', '')
+            explicit_table = field.get('table', '')
+            matches = set()
+            for ds in sources:
+                if ds_name and ds.get('name') != ds_name:
+                    continue
+                for source in ds.get('tables', []):
+                    raw_table = source.get('name', '')
+                    tname = table_rename_map.get((ds.get('name', ''), raw_table), raw_table)
+                    if explicit_table and explicit_table not in (raw_table, tname):
+                        continue
+                    for col in source.get('columns', []):
+                        raw = col.get('name', '').strip('[]')
+                        if name not in (raw, col.get('caption')):
+                            continue
+                        produced = renames.get((tname, raw), col.get('caption') or raw)
+                        matches.add((tname, produced))
+            # Legacy callers may supply worksheets without datasource metadata.
+            # Only use unqualified names when they identify exactly one table.
+            if not sources and not ds_name:
+                matches = {(tname, name) for tname, table in tables.items()
+                           if any(c.get('name') == name for c in table.get('columns', []))}
+            if not ds_name and not explicit_table and len(matches) > 1:
+                continue
+            axis = field.get('shelf') in ('rows', 'columns')
+            rank = 2 if axis and (field.get('date_part') or field.get('derivation')) else int(axis)
+            for key in matches:
+                table = tables.get(key[0], {})
+                if any(c.get('name') == key[1] and not c.get('isCalculated', False)
+                       and (c.get('dataType') == 'DateTime' or c.get('dataCategory') == 'DateTime')
+                       for c in table.get('columns', [])):
+                    supported[key] = max(supported.get(key, 0), rank)
+        for key, rank in supported.items():
+            counts = usage.setdefault(key, [0, 0, 0])
+            counts[0] += rank == 2
+            counts[1] += rank >= 1
+            counts[2] += 1
+    return usage
+
+
+def _source_date_years(model, hyper_files):
+    """Read typed date bounds/embedded rows; never reference fact M queries.
+
+    Statistics can cover the whole source; sample rows only cover the observed
+    values. Missing data retains the historical fallback rather than guessing
+    years from column names, numeric values, or unrelated text.
+    """
+    years = set()
+
+    def add(value):
+        if isinstance(value, (date, datetime)):
+            years.add(value.year)
+        elif isinstance(value, str) and re.match(r'^\d{4}-\d{2}-\d{2}(?:$|[T ])', value):
+            try:
+                years.add(date.fromisoformat(value[:10]).year)
+            except ValueError:
+                pass
+
+    def collect(table, stats_key):
+        names = {c.get('name', '').strip('[]') for c in table.get('columns', [])
+                 if str(c.get('datatype') or c.get('hyper_type') or c.get('dataType') or '').lower()
+                 in ('date', 'datetime', 'timestamp', 'timestamp without time zone',
+                     'timestamp with time zone', 'timestamptz')}
+        for name in names:
+            stats = table.get(stats_key, {}).get(name, {})
+            add(stats.get('min'))
+            add(stats.get('max'))
+        for row in table.get('sample_rows', []):
+            if isinstance(row, dict):
+                for name in names:
+                    add(row.get(name))
+
+    for ds in model.get('_datasources', []):
+        for table in ds.get('tables', []):
+            collect(table, 'hyper_column_stats')
+    for hf in hyper_files:
+        for table in hf.get('hyper_reader_tables', []) or hf.get('tables', []):
+            collect(table, 'column_stats')
+    return years
+
+
+def _calendar_candidates(model, usage):
+    """Choose one physical date per table for both bounds and relationships."""
+    chosen = []
+    for table in model['model']['tables']:
+        if table.get('name') == 'Calendar':
+            continue
+        candidates = [
+            (tuple(usage.get((table['name'], col['name']), (0, 0, 0))),
+             _date_column_score(col['name']), col['name'])
+            for col in table.get('columns', [])
+            if col.get('name') and not col.get('isCalculated', False)
+            and (col.get('dataType') == 'DateTime' or col.get('dataCategory') == 'DateTime')
+        ]
+        if candidates:
+            chosen.append((table['name'], max(
+                candidates, key=lambda item: (item[0], item[1], item[2].casefold()))[2]))
+    return chosen
+
+
+def _runtime_calendar_dates(model, candidates):
+    """Evaluate independent source copies through private shared M expressions.
+
+    Do not introduce references to fact queries. Conservatively decline source
+    expressions referencing semantic tables, or shared expressions that could
+    reference Calendar. This can duplicate source reads, but cannot introduce a
+    Calendar -> fact -> Calendar dependency. Each copied source keeps its own
+    lexical scope, unchanged. In particular, never rename nested let bindings:
+    identical step names in different sources are not collisions (and record
+    option names such as Csv.Document's Delimiter are not bindings at all).
+    """
+    tables = {t['name']: t for t in model['model']['tables']}
+
+    def references(expression, names):
+        if isinstance(expression, list):
+            expression = '\n'.join(expression)
+        # Retain quoted identifiers, remove string literals (e.g. source paths).
+        code = re.sub(r'#"(?:[^"]|"")*"|"(?:[^"]|"")*"',
+                      lambda match: match.group(0) if match.group(0).startswith('#') else '',
+                      expression)
+        return any(re.search(r'(?<![\w])(?:#"' + re.escape(name.replace('"', '""'))
+                             + r'"|' + re.escape(name) + r')(?![\w])', code)
+                   for name in names)
+
+    for expression in model['model'].get('expressions', []):
+        if references(expression.get('expression', ''), ['Calendar']):
+            return ''
+    steps = []
+    variables = []
+    shared = model['model'].setdefault('expressions', [])
+    reserved = {e.get('name', '').casefold() for e in shared}
+    reserved.update(name.casefold() for name in tables)
+    reserved.update({'datafolder', 'servername', 'databasename', 'rangestart', 'rangeend'})
+    for tname, cname in candidates:
+        partitions = tables[tname].get('partitions', [])
+        if len(partitions) != 1:
+            continue
+        partition = partitions[0]
+        source = partition.get('source', {})
+        expression = source.get('expression', '')
+        if isinstance(expression, list):
+            expression = '\n'.join(expression)
+        if (source.get('type') != 'm' or partition.get('mode', 'import') != 'import'
+                or not expression or references(expression, list(tables) + ['Calendar'])):
+            continue
+        identifier = '#"' + (tname + '.' + cname + ' Dates').replace('"', '""') + '"'
+        column = cname.replace('"', '""')
+        query_name = f'Calendar Source {tname}.{cname}'
+        base_name = query_name
+        suffix = 2
+        while query_name.casefold() in reserved:
+            query_name = f'{base_name} {suffix}'
+            suffix += 1
+        reserved.add(query_name.casefold())
+        shared.append({'name': query_name, 'kind': 'm', 'expression': expression,
+                       '_calendar_source_table': tname})
+        query_ref = '#"' + query_name.replace('"', '""') + '"'
+        steps.append(
+            f'    {identifier} = List.RemoveNulls(List.Transform(\n'
+            f'        Table.Column({query_ref}, "{column}"),\n'
+            '        each Date.From(_))),\n')
+        variables.append(identifier)
+    if not variables:
+        return ''
+    return ''.join(steps) + '    SourceDates = List.Combine({' + ', '.join(variables) + '}),\n'
+
+
+def _refresh_calendar_source_expressions(model):
+    """Keep private Calendar source copies aligned with final fact partitions.
+
+    Source staging, fail-closed source checks and partition healing may update
+    a fact after Calendar creation. Copy that final expression verbatim, without
+    treating nested bindings or record fields as a global identifier namespace.
+    """
+    tables = {t['name']: t for t in model.get('model', {}).get('tables', [])}
+    for expression in model.get('model', {}).get('expressions', []):
+        tname = expression.get('_calendar_source_table')
+        if not tname:
+            continue
+        partitions = tables.get(tname, {}).get('partitions', [])
+        if len(partitions) != 1 or partitions[0].get('source', {}).get('type') != 'm':
+            raise ValueError(f"Calendar source '{tname}' no longer has one M partition")
+        expression['expression'] = partitions[0]['source']['expression']
+
+
+def _add_date_table(model, worksheets=None, hyper_files=None, table_rename_map=None):
     """
     Add an automatic date table using Power Query M.
 
@@ -120,11 +320,13 @@ def _add_date_table(model):
     errors when TMDL relationships reference columns inside
     calculated-table partitions.
 
-    Links Calendar to ALL fact tables that have date columns
-    (not just the first one).
+    Links Calendar to all fact tables that have physical date columns,
+    preferring dates supported by worksheet axes over name heuristics.
 
     Supports customizable date range via model['_calendar_start'] and
-    model['_calendar_end'] (default: 2020–2030).
+    model['_calendar_end']. Unspecified bounds default to 2020–2030, widened
+    to include typed source statistics/embedded dates when available. Without
+    that metadata, safe import M sources are evaluated inline for date bounds.
 
     Skipped if the model already contains a table named 'Calendar'.
     """
@@ -132,15 +334,33 @@ def _add_date_table(model):
     existing_names = {t.get('name', '') for t in model['model']['tables']}
     if 'Calendar' in existing_names:
         return
-    cal_start = model.get('_calendar_start') or 2020
-    cal_end = model.get('_calendar_end') or 2030
+    source_years = _source_date_years(model, hyper_files or [])
+    cal_start = model.get('_calendar_start')
+    cal_end = model.get('_calendar_end')
+    if cal_start is None:
+        cal_start = min({2020} | source_years)
+    if cal_end is None:
+        cal_end = max({2030} | source_years)
+    usage = _worksheet_date_usage(model, worksheets or [], table_rename_map or {})
+    cal_candidates = _calendar_candidates(model, usage)
+    runtime_dates = ''
+    if model.get('_calendar_start') is None or model.get('_calendar_end') is None:
+        runtime_dates = _runtime_calendar_dates(model, cal_candidates)
+    start_expr = f'#date({cal_start}, 1, 1)'
+    end_expr = f'#date({cal_end}, 12, 31)'
+    if runtime_dates:
+        if model.get('_calendar_start') is None:
+            start_expr = f'Date.StartOfYear(List.Min(List.Combine({{SourceDates, {{{start_expr}}}}})))'
+        if model.get('_calendar_end') is None:
+            end_expr = f'Date.EndOfYear(List.Max(List.Combine({{SourceDates, {{{end_expr}}}}})))'
     cal_culture = model.get('model', {}).get('culture', 'en-US')
 
     calendar_m = (
         'let\n'
-        f'    StartDate = #date({cal_start}, 1, 1),\n'
-        f'    EndDate = #date({cal_end}, 12, 31),\n'
-        '    DayCount = Duration.Days(EndDate - StartDate) + 1,\n'
+        + runtime_dates +
+        f'    StartDate = {start_expr},\n'
+        f'    EndDate = {end_expr},\n'
+        '    DayCount = List.Max({0, Duration.Days(EndDate - StartDate) + 1}),\n'
         '    DateList = List.Dates(StartDate, DayCount, #duration(1, 0, 0, 0)),\n'
         '    #"Date Table" = Table.FromList(DateList, Splitter.SplitByNothing(), {"Date"}, null, ExtraValues.Error),\n'
         '    #"Changed Type" = Table.TransformColumnTypes(#"Date Table", {{"Date", type date}}),\n'
@@ -282,30 +502,17 @@ def _add_date_table(model):
 
     model["model"]["tables"].append(date_table)
 
-    # Add relationships: Calendar[Date] -> each table's first date column
-    cal_candidates = []
-    for t in model["model"]["tables"]:
-        tname = t.get("name", "")
-        if tname == "Calendar":
-            continue
-        candidates = []
-        for col in t.get("columns", []):
-            if col.get("dataType") == "DateTime" or col.get("dataCategory") == "DateTime":
-                date_col_name = col.get("name", "")
-                if date_col_name and not col.get("isCalculated", False):
-                    candidates.append((
-                        _date_column_score(date_col_name),
-                        date_col_name,
-                    ))
-        if candidates:
-            _score, date_col_name = max(
-                candidates, key=lambda item: (item[0], item[1].casefold()))
-            cal_candidates.append((tname, date_col_name))
-
     # When multiple tables connect to Calendar, use bothDirections so
     # Calendar acts as a shared dimension that bridges cross-table
     # filtering (star schema pattern).  This prevents
     # InvalidUnconstrainedJoin errors in multi-datasource workbooks.
+    # A previous/candidate logical alias is not a second fact at the current
+    # date grain. An automatic Calendar bridge would silently filter its
+    # candidate bag and thereby change a compiled range-predicate SUM.
+    candidate_aliases = {pair[1] for pair in model.get('_logical_predicate_pairs', [])
+                         if len(pair) == 2}
+    cal_candidates = [(table, column) for table, column in cal_candidates
+                      if table not in candidate_aliases]
     cross_dir = "bothDirections" if len(cal_candidates) > 1 else "oneDirection"
     for tname, date_col_name in cal_candidates:
         model["model"]["relationships"].append({

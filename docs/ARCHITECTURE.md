@@ -128,7 +128,7 @@ For environments without Mermaid rendering:
 | Module | Responsibility |
 |--------|---------------|
 | `extract_tableau_data.py` | Main orchestrator — parses TWB/TWBX XML, extracts 23 object types |
-| `datasource_extractor.py` | Datasource extraction (connections, tables, columns, calculations, relationships) |
+| `datasource_extractor.py` | Datasource extraction (connections, tables, columns, calculations, relationships), including exact packaged-Hyper binding for supported enabled single-object object-graph native/extract pairs while preserving logical-table and physical-column mappings and removing only proven duplicate Extract entries |
 | `dax_converter.py` | 133+ Tableau → DAX formula conversions (LOD, table calcs, security, etc.) |
 | `m_query_builder.py` | Power Query M generator (49 connector types + 43 transformation generators) |
 | `prep_flow_parser.py` | Tableau Prep flow parser (.tfl/.tflx → Power Query M) |
@@ -151,7 +151,7 @@ For environments without Mermaid rendering:
 | `shared_model.py` | Multi-workbook merge engine: fingerprint-based table matching, column overlap scoring, measure/column/parameter conflict resolution |
 | `merge_assessment.py` | Merge assessment reporter: JSON + console output, scoring (0–100), merge/partial/separate recommendation |
 | `thin_report_generator.py` | Thin report generator: PBIR `byPath` wiring, field remapping for namespaced measures |
-| `api_server.py` | REST API server: stdlib `http.server`, POST /migrate, GET /status, GET /download, GET /health, GET /jobs |
+| `api_server.py` | REST API server: stdlib `http.server`, POST /migrate/batch (ZIP upload), GET /batch/{id}, GET /status/{id}, GET /download/{id}, GET /health, GET /jobs; POST /migrate returns HTTP 410 |
 | `schema_drift.py` | Schema drift detection: compare extraction snapshots, detect added/removed/changed objects |
 | `prep_lineage.py` | Cross-flow lineage graph engine: build PrepLineageGraph from FlowProfile objects, match outputs→inputs |
 | `prep_lineage_report.py` | Lineage HTML report & merge advisor: 7-section interactive HTML, Mermaid diagram, merge recommendations |

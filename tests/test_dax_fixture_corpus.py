@@ -161,8 +161,8 @@ CORPUS = [
     # ── Numeric arithmetic ───────────────────────────────────────────
     ('[Sales] - [Profit]', ['[Sales]', '[Profit]'], {}),
     ('[Sales] * 1.1', ['1.1'], {}),
-    ('[Sales] / [Quantity]', ['/'], {}),
-    ('([Sales] - [Cost]) / [Sales]', ['[Sales]', '[Cost]'], {}),
+    ('[Sales] / [Quantity]', ['DIVIDE(', '[Sales]', '[Quantity]'], {}),
+    ('([Sales] - [Cost]) / [Sales]', ['DIVIDE(', '[Sales]', '[Cost]'], {}),
 
     # ── Nested IFs ───────────────────────────────────────────────────
     ('IF [A] > 1 THEN IF [B] > 1 THEN "X" ELSE "Y" END ELSE "Z" END',

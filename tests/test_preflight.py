@@ -181,6 +181,14 @@ class TestHappyPath(unittest.TestCase):
             r = run_preflight(p)
             self.assertTrue(r.ok, msg=r.format_console())
 
+    def test_xml_workbook_with_twbx_extension_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, 'workbook.twbx')
+            with open(p, 'wb') as stream:
+                stream.write(_MINIMAL_TWB)
+            r = run_preflight(p)
+            self.assertTrue(r.ok, msg=r.format_console())
+
     def test_duplicate_twb_members_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = _write_twbx(tmp, extra_files={'nested/second.twb': _MINIMAL_TWB})

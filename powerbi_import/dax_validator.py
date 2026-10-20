@@ -42,7 +42,8 @@ _TABLEAU_FUNC_LEAK = re.compile(
 TABLEAU_LEAK_REPLACEMENTS = (
     (r'\bCOUNTD\s*\(', 'DISTINCTCOUNT(', 'high'),
     (r'\bATTR\s*\(', 'VALUES(', 'medium'),
-    (r'(?<![<>!])={2}(?!=)', '=', 'high'),
+    # DAX == is strict equality, not a Tableau leak. Replacing it with =
+    # would conflate BLANK() with zero/empty text (including NULLIF output).
     (r'\bELSEIF\b', ',', 'low'),
     (r"\bDATETRUNC\s*\(\s*'month'\s*,\s*", 'STARTOFMONTH(', 'medium'),
     (r"\bDATETRUNC\s*\(\s*'quarter'\s*,\s*", 'STARTOFQUARTER(', 'medium'),

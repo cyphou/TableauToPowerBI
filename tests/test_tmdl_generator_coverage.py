@@ -826,7 +826,7 @@ class TestCreateQuickTableCalcMeasures(unittest.TestCase):
                       encoding='utf-8') as stream:
                 content = stream.read()
         self.assertIn("column 'Year Origin (source)'", content)
-        self.assertIn("sourceColumn: 'Year Origin'", content)
+        self.assertIn("sourceColumn: Year Origin\n", content)
         self.assertIn("column 'Year origin'", content)
 
     def test_distinct_physical_columns_differing_only_by_case_survive(self):

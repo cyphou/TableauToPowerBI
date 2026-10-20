@@ -607,8 +607,12 @@ class TestExtractZipSlipIntegration:
             zf.writestr("../escape.txt", "escaped")
 
         import migrate
-        migrate._process_twbx_post_generation(
-            twbx_path, str(project_dir), "malicious")
+        from powerbi_import.security_validator import SecurityError as MigrationSecurityError
+        with pytest.raises(
+                RuntimeError, match="Could not extract TWBX data files") as exc:
+            migrate._process_twbx_post_generation(
+                twbx_path, str(project_dir), "malicious")
+        assert isinstance(exc.value.__cause__, MigrationSecurityError)
 
         assert (project_dir / "Data" / "valid.csv").is_file()
         assert not outside.exists()

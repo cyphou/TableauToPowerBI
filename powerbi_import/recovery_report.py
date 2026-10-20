@@ -23,6 +23,11 @@ import json
 import os
 from datetime import datetime
 
+try:
+    from powerbi_import.report_localization import render, text
+except ImportError:
+    from report_localization import render, text
+
 
 class RecoveryReport:
     """Tracks every self-repair action taken during migration."""
@@ -203,23 +208,24 @@ class RecoveryReport:
 
         # ── Header / stat grid ──────────────────────────────────────────
         cards = [
-            ht.stat_card(total, 'Total Repairs',
+            ht.stat_card(total, text('Total Repairs', 'Réparations totales'),
                          accent='blue' if total else 'success'),
             ht.stat_card(summary['by_severity'].get(self.INFO, 0),
-                         'Info', accent='success'),
+                         text('Info', 'Information'), accent='success'),
             ht.stat_card(summary['by_severity'].get(self.WARNING, 0),
-                         'Warnings', accent='warn'),
+                         text('Warnings', 'Avertissements'), accent='warn'),
             ht.stat_card(summary['by_severity'].get(self.ERROR, 0),
-                         'Errors', accent='fail'),
+                         text('Errors', 'Erreurs'), accent='fail'),
             ht.stat_card(summary['needs_follow_up'],
-                         'Need Follow-Up',
+                         text('Need Follow-Up', 'Suivi nécessaire'),
                          accent='warn' if summary['needs_follow_up'] else 'success'),
         ]
 
         parts = [
             ht.html_open(
-                title='Self-Healing Recovery Report',
-                subtitle=f'Migration: {self.report_name}',
+                title=text('Self-Healing Recovery Report', 'Rapport de récupération automatique'),
+                subtitle=text(f'Migration: {self.report_name}',
+                              f'Migration : {self.report_name}'),
                 timestamp=self.created_at[:16].replace('T', ' '),
             ),
             ht.stat_grid(cards),
@@ -227,8 +233,7 @@ class RecoveryReport:
 
         if total == 0:
             parts.append(
-                '<div class="card"><p>&#9989; No automatic repairs were '
-                'required during this migration.</p></div>'
+                f'<div class="card"><p>&#9989; {render(text("No automatic repairs were required during this migration.", "Aucune réparation automatique n’a été nécessaire pendant cette migration."))}</p></div>'
             )
             parts.append(ht.html_close())
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -237,20 +242,20 @@ class RecoveryReport:
 
         # ── Repairs by category ─────────────────────────────────────────
         parts.append(ht.section_open(
-            'by-category', 'Repairs by Category', icon='&#128202;'))
+            'by-category', text('Repairs by Category', 'Réparations par catégorie'), icon='&#128202;'))
         cat_rows = [
             [ht.esc(cat), str(count)]
             for cat, count in sorted(summary['by_category'].items(),
                                      key=lambda kv: -kv[1])
         ]
         parts.append(ht.data_table(
-            ['Category', 'Count'], cat_rows,
+            [text('Category', 'Catégorie'), text('Count', 'Nombre')], cat_rows,
             table_id='cat-table', sortable=True))
         parts.append(ht.section_close())
 
         # ── Per-artifact repair audit ───────────────────────────────────
         parts.append(ht.section_open(
-            'audit', 'Per-Artifact Repair Audit', icon='&#128270;'))
+            'audit', text('Per-Artifact Repair Audit', 'Audit des réparations par artefact'), icon='&#128270;'))
 
         sev_badge_level = {self.INFO: 'green', self.WARNING: 'yellow',
                            self.ERROR: 'red'}
@@ -267,7 +272,8 @@ class RecoveryReport:
                 if follow else '<span style="color:var(--muted)">—</span>'
             )
             rows.append([
-                ht.esc(r.get('item_name', '') or '<unnamed>'),
+                (ht.esc(r.get('item_name', '')) if r.get('item_name')
+                 else render(text('<unnamed>', '<sans nom>'))),
                 ht.esc(r.get('category', '')),
                 ht.esc(r.get('repair_type', '')),
                 badge_html,
@@ -279,8 +285,11 @@ class RecoveryReport:
             ])
 
         parts.append(ht.data_table(
-            ['Item', 'Category', 'Repair Type', 'Severity',
-             'Description', 'Action', 'Original', 'Repaired', 'Follow-Up'],
+            [text('Item', 'Élément'), text('Category', 'Catégorie'),
+             text('Repair Type', 'Type de réparation'), text('Severity', 'Gravité'),
+             text('Description', 'Description'), text('Action', 'Action'),
+             text('Original', 'Valeur d’origine'), text('Repaired', 'Valeur réparée'),
+             text('Follow-Up', 'Suivi')],
             rows,
             table_id='audit-table',
             sortable=True,

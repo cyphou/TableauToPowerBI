@@ -27,6 +27,11 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 try:
+    from powerbi_import.report_localization import text, render
+except ImportError:
+    from report_localization import text, render
+
+try:
     from powerbi_import.shared_model import MergeAssessment
 except ImportError:
     from shared_model import MergeAssessment
@@ -191,61 +196,65 @@ def generate_merge_html_report(
     score = assessment.merge_score
     tables_saved = assessment.total_tables - assessment.unique_table_count
     rec_labels = {
-        "merge": "MERGE RECOMMENDED",
-        "partial": "PARTIAL MERGE (review conflicts)",
-        "separate": "KEEP SEPARATE (low overlap)",
+        "merge": text("MERGE RECOMMENDED", "FUSION RECOMMANDÉE"),
+        "partial": text("PARTIAL MERGE (review conflicts)", "FUSION PARTIELLE (examiner les conflits)"),
+        "separate": text("KEEP SEPARATE (low overlap)", "CONSERVER SÉPARÉMENT (faible recoupement)"),
     }
     rec = rec_labels.get(assessment.recommendation, assessment.recommendation)
 
-    html = html_open('Shared Semantic Model — Merge Assessment',
-                     f'Workbooks: {", ".join(assessment.workbooks)}')
+    html = html_open(text('Shared Semantic Model — Merge Assessment',
+                          'Modèle sémantique partagé — Évaluation de fusion'),
+                     text(f'Workbooks: {", ".join(assessment.workbooks)}',
+                          f'Classeurs : {", ".join(assessment.workbooks)}'))
 
     # Summary stats
     score_level = 'green' if score >= 60 else ('yellow' if score >= 30 else 'red')
     html += stat_grid([
-        stat_card('Merge Score', f'{score}/100', accent=score_level),
-        stat_card('Total Tables', str(assessment.total_tables)),
-        stat_card('Tables Saved', str(tables_saved), accent='green'),
-        stat_card('Measure Conflicts', str(len(assessment.measure_conflicts)),
+        stat_card(f'{score}/100', text('Merge Score', 'Score de fusion'), accent=score_level),
+        stat_card(str(assessment.total_tables), text('Total Tables', 'Total des tables')),
+        stat_card(str(tables_saved), text('Tables Saved', 'Tables économisées'), accent='green'),
+        stat_card(str(len(assessment.measure_conflicts)), text('Measure Conflicts', 'Conflits de mesures'),
                   accent='orange' if assessment.measure_conflicts else None),
-        stat_card('Recommendation', rec),
+        # Values are escaped by stat_card; localize this authored value on its own node.
+        f'<div class="stat-card"><div class="stat-value">{render(rec)}</div>'
+        f'<div class="stat-label">{render(text("Recommendation", "Recommandation"))}</div></div>',
     ])
 
     # Merge Candidates
-    html += section_open('candidates', 'Merge Candidates')
+    html += section_open('candidates', text('Merge Candidates', 'Candidats à la fusion'))
     if assessment.merge_candidates:
         rows = []
         for mc in assessment.merge_candidates:
             overlap_pct = int(mc.column_overlap * 100)
             color_cls = 'green' if overlap_pct >= 70 else ('yellow' if overlap_pct >= 40 else 'red')
             sources = esc(", ".join(s[0] for s in mc.sources))
-            conflicts_html = "<br>".join(esc(c) for c in mc.conflicts[:3]) if mc.conflicts else "None"
+            conflicts_html = "<br>".join(esc(c) for c in mc.conflicts[:3]) if mc.conflicts else render(text("None", "Aucun"))
             rows.append([
                 esc(mc.table_name), sources,
                 badge(f'{overlap_pct}%', color_cls),
                 conflicts_html,
             ])
-        html += data_table(['Table', 'Workbooks', 'Column Overlap', 'Conflicts'],
+        html += data_table([text('Table', 'Table'), text('Workbooks', 'Classeurs'), text('Column Overlap', 'Recoupement des colonnes'), text('Conflicts', 'Conflits')],
                            rows, sortable=True)
     else:
-        html += '<p>No merge candidates found</p>\n'
+        html += f'<p>{render(text("No merge candidates found", "Aucun candidat à la fusion trouvé"))}</p>\n'
     html += section_close()
 
     # Measure Conflicts
-    html += section_open('measure-conflicts', 'Measure Conflicts')
+    html += section_open('measure-conflicts', text('Measure Conflicts', 'Conflits de mesures'))
     if assessment.measure_conflicts:
         rows = []
         for mc in assessment.measure_conflicts:
             for wb, formula in mc.variants.items():
                 short = formula[:80] + '...' if len(formula) > 80 else formula
                 rows.append([esc(mc.name), esc(wb), f'<code>{esc(short)}</code>'])
-        html += data_table(['Measure', 'Workbook', 'Formula'], rows, sortable=True)
+        html += data_table([text('Measure', 'Mesure'), text('Workbook', 'Classeur'), text('Formula', 'Formule')], rows, sortable=True)
     else:
-        html += '<p>No measure conflicts</p>\n'
+        html += f'<p>{render(text("No measure conflicts", "Aucun conflit de mesures"))}</p>\n'
     html += section_close()
 
     # RLS Conflicts
-    html += section_open('rls-conflicts', 'RLS Conflicts')
+    html += section_open('rls-conflicts', text('RLS Conflicts', 'Conflits RLS'))
     if rls_conflicts:
         rows = []
         for rc in rls_conflicts:
@@ -257,13 +266,13 @@ def generate_merge_html_report(
                     esc(wb),
                     f'<code>{esc(short)}</code>',
                 ])
-        html += data_table(['Role', 'Table', 'Workbook', 'Expression'], rows, sortable=True)
+        html += data_table([text('Role', 'Rôle'), text('Table', 'Table'), text('Workbook', 'Classeur'), text('Expression', 'Expression')], rows, sortable=True)
     else:
-        html += '<p>No RLS conflicts detected</p>\n'
+        html += f'<p>{render(text("No RLS conflicts detected", "Aucun conflit RLS détecté"))}</p>\n'
     html += section_close()
 
     # Suggested Relationships
-    html += section_open('rel-suggestions', 'Suggested Relationships')
+    html += section_open('rel-suggestions', text('Suggested Relationships', 'Relations suggérées'))
     if relationship_suggestions:
         rows = []
         for rs in relationship_suggestions:
@@ -275,10 +284,10 @@ def generate_merge_html_report(
                 esc(rs.get('to_column', '')),
                 badge(rs.get('confidence', 'medium'), conf_level),
             ])
-        html += data_table(['From Table', 'From Column', 'To Table', 'To Column', 'Confidence'],
+        html += data_table([text('From Table', 'Table source'), text('From Column', 'Colonne source'), text('To Table', 'Table cible'), text('To Column', 'Colonne cible'), text('Confidence', 'Confiance')],
                            rows, sortable=True)
     else:
-        html += '<p>No relationship suggestions</p>\n'
+        html += f'<p>{render(text("No relationship suggestions", "Aucune relation suggérée"))}</p>\n'
     html += section_close()
 
     html += html_close()

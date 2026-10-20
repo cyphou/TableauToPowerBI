@@ -598,13 +598,13 @@ def slide_qa_automation(prs):
     _add_text(slide, Inches(0.5), Inches(0.3), Inches(12), Inches(0.7),
               "Post-Migration Automation & QA", 32, PBI_DARK, bold=True)
 
-    # QA Pipeline flow
+    # Batch migration outputs
     qa_steps = [
-        ("Validate\n(.pbip JSON/TMDL)", PBI_BLUE),
-        ("Auto-Fix\n(17 DAX patterns)", PURPLE),
-        ("Governance\n(naming, PII, labels)", TEAL),
-        ("Compare\n(Tableau vs PBI)", PBI_BLUE),
-        ("qa_report.json\n(pass/fail/score)", SUCCESS),
+        ("Batch\nmigration", PBI_BLUE),
+        ("Static\nopenability gate", PURPLE),
+        ("Quality\nreports", TEAL),
+        ("Evidence\npackage", PBI_BLUE),
+        ("Batch\nsummary", SUCCESS),
     ]
     box_w = Inches(2.2)
     box_h = Inches(1.2)
@@ -618,7 +618,7 @@ def slide_qa_automation(prs):
                       "→", 22, GRAY, bold=True, alignment=PP_ALIGN.CENTER)
 
     _add_text(slide, Inches(0.5), Inches(2.9), Inches(5), Inches(0.4),
-              "python migrate.py workbook.twbx --qa", 14, PBI_BLUE, bold=True)
+              "python migrate.py batch ./workbooks --output-dir ./output", 14, PBI_BLUE, bold=True)
 
     # Automation features
     auto_features = [

@@ -53,6 +53,17 @@ def _m_escape_col_name(name):
     return name.replace('"', '""')
 
 
+def _unquote_tableau_file_identifier(raw):
+    """Remove one SQL identifier wrapper, preserving literal apostrophes."""
+    name = (raw or '').strip()
+    if len(name) >= 2:
+        if name[0] == '[' and name[-1] == ']':
+            return name[1:-1].replace(']]', ']')
+        if name[0] in ('"', "'") and name[-1] == name[0]:
+            return name[1:-1].replace(name[0] * 2, name[0])
+    return name
+
+
 def _clean_sheet_name(raw, fallback):
     """Normalise a Tableau-derived sheet/table name for Excel Item navigation.
 
@@ -60,21 +71,40 @@ def _clean_sheet_name(raw, fallback):
     ``[extract].[Extract]`` or ``[Sheet1$]``.  When embedded directly into an
     M ``Item="..."`` clause the brackets and ``].[`` separator leak into the
     workbook navigation and break the query.  This takes the last segment,
-    strips surrounding brackets, a trailing ``$``, and any residual
-    double-quotes.
+    removes SQL identifier quoting and one trailing sheet-marker ``$``.
+    Apostrophes inside the name are data, not quoting to strip.
     """
     name = (raw or '').strip()
     if not name:
-        name = fallback or ''
+        # A fallback is a model name, not SQL syntax: its quotes are literal.
+        return _m_escape_col_name((fallback or '').removesuffix('$'))
     # Take the last qualified segment: ``[ds].[Extract]`` → ``Extract]``
+    # Also accept ``ds].[Extract`` from older extraction metadata.
     if '].[' in name:
-        name = name.rsplit('].[', 1)[-1]
-    # Strip surrounding/residual brackets and quotes
-    name = name.strip().strip('[]').strip('"').strip()
-    name = name.rstrip('$')
+        name = name.rsplit('].[', 1)[-1].removesuffix(']')
+    else:
+        name = _unquote_tableau_file_identifier(name)
+    name = name.removesuffix('$')
     if not name:
-        name = (fallback or '').rstrip('$')
+        name = (fallback or '').removesuffix('$')
     return _m_escape_col_name(name)
+
+
+def _sql_source_identity(details, table_name, default_schema):
+    """Resolve a physical SQL relation independently of its model caption."""
+    relation = (details.get('_source_table') or '').strip()
+    schema = details.get('schema') or default_schema
+    if '].[' in relation:
+        parts = relation.split('].[')
+        schema = parts[-2].lstrip('[').replace(']]', ']')
+        item = parts[-1].rstrip(']').replace(']]', ']')
+    elif '"."' in relation:
+        parts = relation.split('"."')
+        schema = parts[-2].lstrip('"').replace('""', '"')
+        item = parts[-1].rstrip('"').replace('""', '"')
+    else:
+        item = _unquote_tableau_file_identifier(relation) if relation else table_name
+    return schema, item
 
 
 def _m_escape_string(value):
@@ -137,11 +167,30 @@ def _append_type_step(m_query, columns, prev_step='#"Promoted Headers"'):
 
 # ── Per-connector generators ─────────────────────────────────────────────────
 
+def _gen_m_source_error(table_name, message):
+    """Emit an explicit refresh error rather than a fabricated file binding."""
+    logger.warning("Source binding unavailable for table %r: %s", table_name, message)
+    return (
+        'let\n'
+        f'    Source = error Error.Record("SourceBinding.Error", {_m_literal(message)}, '
+        f'[Table={_m_literal(table_name)}])\n'
+        'in\n    Source'
+    )
+
+
 def _gen_m_excel(details, table_name, columns):
-    filename = _file_basename(details.get('filename') or (table_name + '.xlsx'))
-    file_path_bs = filename.replace('/', '\\')
+    if not details.get('filename'):
+        return _gen_m_source_error(table_name, 'Excel source filename is missing; supply an explicit workbook binding.')
+    filename = _file_basename(details['filename'])
+    file_path_bs = _m_escape_string(filename.replace('/', '\\'))
     sheet_name = _clean_sheet_name(details.get('_source_table', ''), table_name)
-    safe_step = '#"' + table_name + ' Sheet"'
+    safe_step = '#"' + _m_escape_col_name(table_name) + ' Sheet"'
+    if not details.get('_source_table'):
+        logger.warning(
+            "Excel worksheet binding for table %r has no source_table metadata; "
+            "using its exact name %r, unverified until refresh (no alternate sheet substitution).",
+            table_name, sheet_name,
+        )
 
     m_query = 'let\n'
     m_query += f'    // Source Excel: {filename}\n'
@@ -154,11 +203,12 @@ def _gen_m_excel(details, table_name, columns):
 def _gen_m_schema_item(details, table_name, columns,
                       comment, pq_func, server_arg, db_arg, schema='dbo'):
     """Generic M generator for connectors using Schema+Item navigation."""
-    safe = '#"' + table_name + ' Table"'
+    safe = '#"' + _m_escape_col_name(table_name) + ' Table"'
     srv = _m_escape_string(server_arg)
     db = _m_escape_string(db_arg)
+    schema, item = _sql_source_identity(details, table_name, schema)
     sch = _m_escape_string(schema)
-    tbl = _m_escape_string(table_name)
+    tbl = _m_escape_string(item)
     m_query = 'let\n'
     m_query += f'    // Source {comment}\n'
     m_query += f'    Source = {pq_func}("{srv}", "{db}"),\n'
@@ -184,18 +234,34 @@ def _gen_m_postgresql(details, table_name, columns):
 
 
 def _gen_m_csv(details, table_name, columns):
-    filename = _file_basename(details.get('filename') or (table_name + '.csv'))
+    # A physical text relation is authoritative even when Tableau reuses a
+    # named connection whose filename belongs to another relation. Tableau's
+    # text driver represents the extension separator as '#' in SQL identifiers.
+    relation_file = _unquote_tableau_file_identifier(details.get('_source_table', ''))
+    relation_file = re.sub(r'#(csv|tsv|txt|tab)$', r'.\1', relation_file, flags=re.IGNORECASE)
+    if re.search(r'\.(csv|tsv|txt|tab)$', relation_file, re.IGNORECASE):
+        filename = _file_basename(relation_file)
+    elif details.get('filename'):
+        filename = _file_basename(details['filename'])
+        if relation_file:
+            logger.warning(
+                "CSV table %r has no filename in its source relation %r; "
+                "connection filename %r is unverified for this relation.",
+                table_name, relation_file, filename,
+            )
+    else:
+        return _gen_m_source_error(table_name, 'CSV source filename is missing; supply an explicit file binding.')
     delimiter = details.get('delimiter', ',')
     encoding = details.get('encoding', 'utf-8').upper()
     encoding_code = {'UTF-8': '65001', 'UTF8': '65001'}.get(encoding, '65001')
-    file_path_bs = filename.replace('/', '\\')
+    file_path_bs = _m_escape_string(filename.replace('/', '\\'))
+    columns_option = f'        Columns={len(columns)},\n' if columns else ''
 
     m_query = f'''let
     // Source CSV: {filename}
     Source = Csv.Document(File.Contents(DataFolder & "\\{file_path_bs}"), [
-        Delimiter="{delimiter}",
-        Columns={len(columns)},
-        Encoding={encoding_code},
+        Delimiter="{_m_escape_string(delimiter)}",
+{columns_option}        Encoding={encoding_code},
         QuoteStyle=QuoteStyle.None
     ]),
     #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
@@ -234,13 +300,14 @@ def _gen_m_oracle(details, table_name, columns):
     server = _m_escape_string(details.get('server', 'localhost'))
     service = _m_escape_string(details.get('service', 'ORCL'))
     port = details.get('port', '1521')
-    tbl = _m_escape_string(table_name)
-    safe = '#"' + table_name + ' Table"'
+    schema, item = _sql_source_identity(details, table_name, details.get('schema') or 'DBO')
+    tbl = _m_escape_string(item)
+    safe = '#"' + _m_escape_col_name(table_name) + ' Table"'
 
     m_query = 'let\n'
     m_query += f'    // Source Oracle: {server}:{port}/{service}\n'
     m_query += f'    Source = Oracle.Database("{server}:{port}/{service}"),\n'
-    m_query += f'    {safe} = Source{{[Schema="DBO", Item="{tbl}"]}}[Data],\n'
+    m_query += f'    {safe} = Source{{[Schema="{_m_escape_string(schema)}", Item="{tbl}"]}}[Data],\n'
     m_query += f'    Result = {safe}\nin\n    Result'
     return m_query
 
@@ -284,7 +351,7 @@ def _gen_m_geojson(details, table_name, columns):
     m_query = f'''let
     // Source GeoJSON: {filename}
     Source = Json.Document(File.Contents(DataFolder & "\\{file_path_bs}")),
-    features = try Source[features] otherwise {{}},
+    features = Source[features],
     #"Converted to Table" = Table.FromList(features, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
     #"Expanded Column1" = Table.ExpandRecordColumn(#"Converted to Table", "Column1", {{"properties", "geometry"}}),
     #"Expanded properties" = Table.ExpandRecordColumn(#"Expanded Column1", "properties", {{{prop_names}}}),'''
@@ -1295,6 +1362,14 @@ def generate_power_query_m(connection, table):
     if generator is None and isinstance(conn_type, str):
         generator = _M_GENERATORS.get(conn_type.lower())
     if generator:
+        if (generator is _gen_m_excel and source_table
+                and '].[' in source_table and not table.get('connection_details')):
+            logger.warning(
+                "Excel table %r has a qualified source relation %r but no per-table "
+                "connection provenance. Inherited workbook binding is unverified; "
+                "exact worksheet navigation must succeed at refresh.",
+                table_name, source_table,
+            )
         return generator(details, table_name, columns)
 
     # Fallback — pass conn_type through details for the message
@@ -2059,8 +2134,9 @@ def wrap_source_with_try_otherwise(m_query, empty_table_columns=None):
     """
     Wrap the Source step of an M query with try...otherwise for graceful error handling.
 
-    If the data source is unavailable, returns an empty table with the expected schema
-    instead of failing with an error.
+    File-backed Excel/CSV queries and explicit source errors are left unchanged:
+    a missing file or worksheet must remain an error, not a successful empty
+    refresh. Other connectors retain their legacy fallback.
 
     When the step immediately after Source is a key-based navigation on Source
     (e.g. ``Source{[Item="Sheet1",Kind="Sheet"]}[Data]``), the navigation step is
@@ -2074,6 +2150,10 @@ def wrap_source_with_try_otherwise(m_query, empty_table_columns=None):
     """
     import re as _re
 
+    if (_re.search(r'\bFile\.Contents\s*\(', m_query, _re.IGNORECASE)
+            and _re.search(r'\b(?:Excel\.Workbook|Csv\.Document)\s*\(', m_query, _re.IGNORECASE)):
+        return m_query
+
     # Find "Source = ..." line
     match = _re.search(r'(\n\s*)(Source\s*=\s*)', m_query)
     if not match:
@@ -2082,6 +2162,9 @@ def wrap_source_with_try_otherwise(m_query, empty_table_columns=None):
     indent = match.group(1)
     source_assign = match.group(2)
     after_assign = m_query[match.end():]
+
+    if _re.match(r'\s*error\b', after_assign):
+        return m_query
 
     # Skip if Source is already wrapped with try...otherwise
     if after_assign.strip().startswith('try'):
@@ -2448,4 +2531,3 @@ def generate_table_extension_query(extension):
             f'in\n'
             f'    Source'
         )
-

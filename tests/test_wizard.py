@@ -126,7 +126,7 @@ class TestWizardToArgs(unittest.TestCase):
 
     def test_basic_conversion(self):
         config = {
-            'tableau_file': 'test.twbx',
+            'batch': 'test_workbooks',
             'prep': None,
             'output_dir': 'out/',
             'output_format': 'pbip',
@@ -141,27 +141,32 @@ class TestWizardToArgs(unittest.TestCase):
         }
         args = wizard_to_args(config)
         self.assertIsInstance(args, argparse.Namespace)
-        self.assertEqual(args.tableau_file, 'test.twbx')
+        self.assertEqual(args.tableau_file, None)
         self.assertEqual(args.mode, 'import')
         self.assertEqual(args.calendar_start, 2020)
         self.assertTrue(args.assess)
         self.assertFalse(args.dry_run)
-        self.assertIsNone(args.batch)
+        self.assertEqual(args.batch, 'test_workbooks')
 
     def test_directquery_mode(self):
         config = {
-            'tableau_file': 'x.twb',
+            'batch': 'workbooks',
             'mode': 'directquery',
         }
         args = wizard_to_args(config)
         self.assertEqual(args.mode, 'directquery')
+        self.assertEqual(args.batch, 'workbooks')
 
     def test_defaults_for_missing_keys(self):
-        config = {'tableau_file': 'x.twb'}
+        config = {'batch': 'workbooks'}
         args = wizard_to_args(config)
         self.assertEqual(args.output_format, 'pbip')
         self.assertEqual(args.mode, 'import')
         self.assertFalse(args.paginated)
+
+    def test_single_file_generation_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'single-file generation is retired'):
+            wizard_to_args({'tableau_file': 'workbook.twbx'})
 
 
 class TestRunWizard(unittest.TestCase):
@@ -169,12 +174,9 @@ class TestRunWizard(unittest.TestCase):
 
     @patch('wizard.glob.glob', return_value=[])  # no auto-detected workbooks
     def test_full_wizard_flow(self, mock_glob):
-        # Create the file so os.path.isfile returns True
-        tmpfile = tempfile.NamedTemporaryFile(suffix='.twbx', delete=False)
-        tmpfile.close()
-        try:
+        with tempfile.TemporaryDirectory() as source_folder:
             inputs = [
-                tmpfile.name,  # Step 1: source file (no found list)
+                source_folder,  # Step 1: source folder (no found list)
                 'n',           # Step 2: prep? no
                 '',            # Step 3: output dir
                 '1',           # Step 3: format (pbip)
@@ -192,13 +194,11 @@ class TestRunWizard(unittest.TestCase):
             with patch('builtins.input', side_effect=inputs):
                 config = run_wizard()
             self.assertIsNotNone(config)
-            self.assertEqual(config['tableau_file'], tmpfile.name)
+            self.assertEqual(config['batch'], source_folder)
             self.assertIsNone(config['prep'])
-        finally:
-            os.unlink(tmpfile.name)
 
     @patch('wizard.glob.glob', return_value=[])  # no auto-detected workbooks
-    @patch('builtins.input', side_effect=['/nonexistent/path.twbx'])
+    @patch('builtins.input', side_effect=['/nonexistent/folder'])
     def test_wizard_file_not_found(self, mock_in, mock_glob):
         config = run_wizard()
         self.assertIsNone(config)

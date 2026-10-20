@@ -62,11 +62,18 @@ class TestValidatorAutoFix:
         assert "VALUES(" in fixed
         assert "ATTR" not in fixed
 
-    def test_fix_double_equals(self):
-        formula = "IF([Status] == 'Active', 1, 0)"
-        fixed, repairs = self.V.auto_fix_dax_leaks(formula)
-        assert "==" not in fixed
-        assert "= 'Active'" in fixed
+    def test_preserve_dax_strict_equality(self):
+        # Compiled relationship predicates require BLANK != empty string/zero.
+        # Valid DAX == must not be normalized to coercing equality.
+        for formula in (
+                'IF([Status] == "Active", 1, 0)',
+                'IF([Status] == BLANK(), 1, 0)',
+                'IF([Status] == "", 1, 0)',
+                'IF([Value] == 0, 1, 0)'):
+            fixed, repairs = self.V.auto_fix_dax_leaks(formula)
+            assert fixed == formula
+            assert repairs == []
+            assert self.V.validate_dax_formula(fixed) == []
 
     def test_fix_elseif(self):
         formula = "IF([A] > 1, 'X' ELSEIF [A] > 0, 'Y', 'Z')"
@@ -134,8 +141,10 @@ class TestValidatorAutoFix:
         fixed, repairs = self.V.auto_fix_dax_leaks(formula)
         assert "DISTINCTCOUNT(" in fixed
         assert "IF(ISBLANK(" in fixed
-        assert "==" not in fixed
-        assert len(repairs) == 3
+        assert fixed == "IF(DISTINCTCOUNT([Cust]) == 1, IF(ISBLANK([Sales]), 0, [Sales]), 0)"
+        assert "COUNTD(" not in fixed
+        assert "ZN(" not in fixed
+        assert len(repairs) == 2  # Only the actual Tableau function leaks.
 
     # ── No-op on clean formulas ───────────────────────────────────────
 

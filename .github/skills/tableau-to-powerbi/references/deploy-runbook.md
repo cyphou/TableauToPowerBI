@@ -5,28 +5,36 @@ migrated project to Power BI Service / Microsoft Fabric.
 
 ## Prerequisites
 
-- A generated, validated `.pbip` (open in Power BI Desktop first, or run `--qa`).
-- A target workspace ID (or use `--create-workspace "Name"`).
+- A generated `.pbip`. Batch generation runs the static openability gate and
+  writes quality reports; open the project in Power BI Desktop when a live
+  Desktop check is required. The separate MCP `qa` report card is optional.
+- A target workspace ID.
 - Credentials as **environment variables**, never CLI/chat arguments:
   - `FABRIC_TENANT_ID`, `FABRIC_CLIENT_ID`, `FABRIC_CLIENT_SECRET`, or a managed identity.
   - `FABRIC_WORKSPACE_ID` (optional default target).
 
 ## Steps
 
-1. **Validate**: `python migrate.py workbook.twbx --qa` — confirm no error-severity failures.
-2. **Dry run**: with the MCP `deploy` tool, call with `confirm=false` (default) to preview.
-3. **Deploy**: `python migrate.py workbook.twbx --deploy WORKSPACE_ID --deploy-refresh`.
-4. **Gateway** (on-prem sources): add `--gateway-bind GATEWAY_ID`.
-5. **Verify**: check dataset refresh status; open the report in the Service.
+1. **Generate**: `python migrate.py batch .\workbooks --output-dir .\output`.
+   Review the batch quality reports and `batch_quality_summary.json`.
+2. **Optional QA report card**: call the MCP `qa` tool with the generated
+   project's `project_dir` and, if available, its `extraction_dir`.
+3. **Preview deployment**: call the MCP `deploy` tool with the project
+   directory and workspace ID. Dry-run is the default.
+4. **Deploy**: after reviewing the preview, call the MCP `deploy` tool with
+   `dry_run=false` and `confirm=true`.
+5. **Verify**: open the report in the Service and check its status there.
 
 ## Safety
 
-- The MCP `deploy` tool is **dry-run by default** and refuses to run if any
-  argument name looks like a secret (`token`, `secret`, `password`, `key`).
+- Batch dispatch does not run the legacy `--qa` suite or forward deployment,
+  refresh, or gateway-binding flags. Use the MCP tools for the separate QA
+  report card and deployment.
+- The MCP `deploy` tool is **dry-run by default**; an actual deployment
+  requires `dry_run=false` and `confirm=true`.
 - Never paste tokens into chat or a question tool — type them in the terminal.
-- Prefer rolling/canary deploys (`--rolling`) for production targets.
 
 ## Rollback
 
-- `--rollback` reverts the last change set; blue/green deploys auto-rollback on
-  canary validation failure.
+- Follow the deployment tool's reported outcome and use the Power BI/Fabric
+  service controls to restore the previous deployment if necessary.

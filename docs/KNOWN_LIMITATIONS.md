@@ -20,6 +20,14 @@ This document lists known limitations and approximations in the Tableau to Power
 ## Generation Limitations
 
 Automatic generation and static validation do not establish rendered parity.
+They also do not establish successful native Desktop loading or refresh.
+`openable=true` is a compatibility name for a static verdict; refresh remains
+`not_run` unless a separate native diagnostic is performed. Bug report #84
+describes an orphaned `FromColumn` object during query/relationship
+reconciliation despite consistent declared endpoints. Its no-relationship
+variant reportedly passed, while null-row and typed-empty variants failed.
+Without the exact reproduction, the relationship-triggered cause is unresolved;
+typing empty outputs is not claimed as its remedy.
 In a focused Desktop recheck, removing identical Tooltip projections already
 bound in primary roles resolved a repeated-index visual error: bars rendered,
 table row counts were unchanged, and no accessible visual-error elements were
@@ -29,12 +37,49 @@ and require Desktop review.
 | Area | Limitation | Impact |
 |------|-----------|--------|
 | **Visual positioning** | ✅ IMPROVED — Grid-snapping + scaled zone mapping preserve most real-world layout/sizing. | One known caveat remains: floating legend overlays can still render side-by-side instead of overlaying chart corners in some dashboards. |
+| **Independent text labels** | A Tableau Text encoding can aggregate a different measure from the chart's axis. | The independent measure is retained in Tooltips with an approximation annotation, without replacing Y. Misleading native Y labels are suppressed; exact label placement still requires review. |
 | **Sparklines** | Table/matrix sparkline columns are generated as lineChart sparkline configs | Limited to basic line sparklines; area/bar sparklines not supported |
 | **Bump charts** | ✅ IMPROVED — Auto-generated RANKX measure injected for ranking semantics | Maps to lineChart; ranking is approximated via `RANKX(ALL(), [measure],, ASC, Dense)` |
 | **Fabric-native output** | ✅ NEW — `--output-format fabric` generates Lakehouse, Dataflow Gen2, PySpark Notebook, DirectLake Semantic Model, and Data Pipeline. Activity IDs in pipelines are placeholders requiring workspace binding. | Fabric artifacts require Fabric workspace capacity to deploy and test |
 | **DAX optimizer** | ✅ NEW — `--optimize-dax` rewrites verbose DAX (IF→SWITCH, COALESCE, constant fold, SUMX simplify). `--time-intelligence auto` injects YTD/PY/YoY%. Opt-in only to preserve original semantics by default. | Optimized DAX may differ from direct Tableau→DAX conversion; original preserved as annotation |
 
 ## DAX Conversion Limitations
+
+### Combined groups spanning tables
+
+A combined group that concatenates fields from different tables needs one
+unambiguous active, source-defined to-one relationship path to each referenced
+table. Canonical column names follow the owning table's exact rename metadata.
+An inferred edge, a many-to-many edge, or multiple possible row paths does not
+establish scalar lookup semantics. These cases stop generation rather than
+selecting an arbitrary match or creating blank placeholder columns. Resolve the
+source grain and relationship metadata before regenerating.
+
+### Composite and range logical relationships
+
+Logical relationships with multiple comparisons or inequalities cannot be
+represented by a single Power BI model equality relationship. Extraction retains
+their predicates and table aliases. A constrained conversion path supports
+`SUM` over pair-level calculated expressions, including supported `FIXED`
+dependencies, without duplicating unrelated single-table measures.
+
+This path requires an explicit policy keyed by the extracted datasource name,
+provided through `extra_objects['logical_relationship_policies']` or the JSON
+environment variable `TTPBI_LOGICAL_RELATIONSHIP_POLICIES`. Each policy declares:
+
+- `row_scopes`: lineage-preserving DAX table expressions for `left`, `right`,
+  `fixed_left` and `fixed_right`, accounting for source/context filter order.
+- `unmatched_left`: `exclude` or `null_extend`, based on the source calculation.
+- `contains_case_sensitive` and `comparison_case_sensitive`: source comparison
+  behavior.
+- `case_encoding_verified`: `true` only after verifying that the model's string
+  encoding preserves the distinctions required by those comparisons.
+
+Missing policies, unsupported independent intermediate-calculation uses and
+unrepresentable predicates stop generation rather than using an arbitrary
+`LOOKUPVALUE`, deduplicating matches or replacing errors with blanks. These
+policies are evidence requirements, not defaults to copy between workbooks.
+Generated expressions still require runtime and source-value checks.
 
 ### Functions with No DAX Equivalent
 
@@ -79,6 +124,7 @@ and require Desktop review.
 
 | Area | Limitation |
 |------|-----------|
+| **Prep graph and export validation** | Ambiguous container boundaries, dangling references, cycles and invalid collection shapes are rejected. Missing/null optional collections normalize to empty collections. Requested M conversion failures set `conversion_error`; standalone batch rejects missing outputs or M queries. Leaf-node output fallback remains supported when no explicit outputs exist. Generated M does not prove successful refresh or semantic equivalence. |
 | **M identifier quoting** | ✅ FIXED — Column names with special characters (hyphens, slashes, parentheses, etc.) are now auto-quoted as `[#"Name"]` in M expressions. Previously, names like `Sub-Category` caused "Invalid identifier" errors |
 | **Custom SQL params** | ✅ IMPLEMENTED — `Value.NativeQuery()` with parameter record binding and `[EnableFolding=true]` |
 | **Hyper data** | ✅ `.hyper` files are now loaded via SQLite interface — row data injected into M `#table()` expressions. Some proprietary `.hyper` v2+ formats may fall back to metadata-only |

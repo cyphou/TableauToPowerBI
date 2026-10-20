@@ -13,12 +13,14 @@ import os
 import sys
 import json
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch, MagicMock
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import migrate
 from migrate import (
     _build_argument_parser,
     _migrate_single_workbook,
@@ -283,6 +285,51 @@ class TestParallelBatch(unittest.TestCase):
                 self.assertEqual(result, ExitCode.SUCCESS)
                 self.assertEqual(mock_migrate.call_count, 3)
 
+    def test_parallel_workers_isolate_stats_extraction_and_logs(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'source')
+            os.makedirs(src)
+            names = [f'{i}.twbx' for i in range(4)]
+            for name in names:
+                with open(os.path.join(src, name), 'w') as fh:
+                    fh.write('<workbook/>')
+
+            out = os.path.join(td, 'output')
+            log_path = os.path.join(td, 'events.jsonl')
+            barrier = threading.Barrier(len(names))
+            seen = []
+            seen_lock = threading.Lock()
+
+            def migrate_workbook(tableau_file, **_kwargs):
+                name = os.path.basename(tableau_file)
+                migrate._stats.app_name = name
+                extract_dir = migrate._get_extract_dir()
+                barrier.wait(timeout=10)
+                with seen_lock:
+                    seen.append((name, extract_dir, migrate._stats.app_name))
+                return {'success': True, 'stats': migrate._stats.to_dict()}
+
+            with patch('migrate._migrate_single_workbook',
+                       side_effect=migrate_workbook), \
+                    patch('migrate.run_batch_html_dashboard'):
+                result = run_batch_migration(
+                    batch_dir=src, output_dir=out, parallel=len(names),
+                    jsonl_log=log_path)
+
+            self.assertEqual(result, ExitCode.SUCCESS)
+            self.assertEqual(len({path for _, path, _ in seen}), len(names))
+            self.assertEqual(
+                {name for name, _, value in seen if name == value}, set(names))
+            checkpoint_path = os.path.join(out, '.migration_batch_state.json')
+            with open(checkpoint_path, encoding='utf-8') as stream:
+                checkpoint = json.load(stream)
+            self.assertEqual(len(checkpoint), len(names))
+            with open(log_path, encoding='utf-8') as stream:
+                events = [json.loads(line) for line in stream if line.strip()]
+            self.assertEqual(
+                sum(event['event'] == 'workbook_end' for event in events),
+                len(names))
+
     def test_sequential_when_parallel_is_none(self):
         """Without --parallel, workbooks should be processed sequentially."""
         with tempfile.TemporaryDirectory() as td:
@@ -306,6 +353,15 @@ class TestParallelBatch(unittest.TestCase):
 
                 self.assertEqual(result, ExitCode.SUCCESS)
                 self.assertEqual(mock_migrate.call_count, 1)
+
+    def test_invalid_twbx_is_reported_after_generation(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = os.path.join(td, 'invalid.twbx')
+            with open(source, 'wb') as stream:
+                stream.write(b'not a zip archive')
+            with self.assertRaisesRegex(ValueError, 'Invalid TWBX archive'):
+                migrate._process_twbx_post_generation(
+                    source, 'Invalid', td)
 
     def test_sequential_failure_does_not_abort_later_workbooks(self):
         with tempfile.TemporaryDirectory() as td:
@@ -332,6 +388,36 @@ class TestParallelBatch(unittest.TestCase):
             self.assertEqual(checkpoint['failed.twbx']['status'], 'failed')
             self.assertEqual(checkpoint['later.twbx']['status'], 'success')
             self.assertEqual(checkpoint['later.twbx']['stages']['generation'], 'completed')
+
+    def test_extract_directory_setup_failure_does_not_abort_batch(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'source')
+            os.makedirs(src)
+            for name in ('failed.twbx', 'later.twbx'):
+                with open(os.path.join(src, name), 'w') as fh:
+                    fh.write('<workbook/>')
+            out = os.path.join(td, 'output')
+            original_makedirs = os.makedirs
+
+            def fail_first_extract_dir(path, *args, **kwargs):
+                if (os.path.basename(os.path.dirname(path)) == '.migration_extract'
+                        and os.path.basename(path) == 'failed.twbx'):
+                    raise OSError('synthetic extraction setup failure')
+                return original_makedirs(path, *args, **kwargs)
+
+            with patch('migrate.os.makedirs', side_effect=fail_first_extract_dir), \
+                    patch('migrate._migrate_single_workbook') as mock_migrate, \
+                    patch('migrate.run_batch_html_dashboard'):
+                mock_migrate.return_value = {'success': True, 'stats': {}}
+                result = run_batch_migration(batch_dir=src, output_dir=out)
+
+            self.assertEqual(result, ExitCode.BATCH_PARTIAL_FAIL)
+            self.assertEqual(mock_migrate.call_count, 1)
+            with open(os.path.join(out, '.migration_batch_state.json'),
+                      encoding='utf-8') as fh:
+                checkpoint = json.load(fh)
+            self.assertEqual(checkpoint['failed.twbx']['status'], 'failed')
+            self.assertEqual(checkpoint['later.twbx']['status'], 'success')
 
     def test_batch_checkpoint_records_validation_stage(self):
         with tempfile.TemporaryDirectory() as td:
@@ -435,7 +521,8 @@ class TestMigrateSingleWorkbook(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with patch('migrate.run_extraction') as mock_extract, \
                  patch('migrate.run_generation', return_value=True), \
-                 patch('migrate.run_migration_report', return_value={'fidelity_score': 90}):
+                 patch('migrate.run_migration_report', return_value={'fidelity_score': 90}), \
+                 patch('migrate._process_twbx_post_generation'):
                 result = _migrate_single_workbook(
                     tableau_file='fake.twbx',
                     basename='fake',
@@ -457,7 +544,8 @@ class TestMigrateSingleWorkbook(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with patch('migrate.run_extraction', return_value=True), \
                  patch('migrate.run_generation', return_value=True), \
-                 patch('migrate.run_migration_report', return_value={'fidelity_score': 95}):
+                 patch('migrate.run_migration_report', return_value={'fidelity_score': 95}), \
+                 patch('migrate._process_twbx_post_generation'):
                 result = _migrate_single_workbook(
                     tableau_file='test.twbx',
                     basename='test',

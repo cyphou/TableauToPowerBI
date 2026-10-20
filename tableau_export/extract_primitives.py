@@ -8,7 +8,68 @@ which is the point: per-type extractor modules import these without importing
 Owned by **@extractor**.
 """
 
+import logging
 import re
+from decimal import Decimal, InvalidOperation
+
+
+logger = logging.getLogger(__name__)
+
+_BIN_NUMBER_RE = re.compile(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?')
+_BIN_PARAMETER_REF_RE = re.compile(
+    r'^\[((?:[^\]]|\]\])*)\](?:\.\[((?:[^\]]|\]\])*)\])?$'
+)
+
+
+def _extract_calculation_formula(calc_elem, field_name=''):
+    """Expand numeric bins into interval lower bounds, never identity casts.
+
+    Bin size must be explicitly declared as either a positive numeric literal
+    or a complete Tableau parameter reference; only an absent peg defaults to
+    zero. Reject malformed declarations rather than silently generating a
+    different calculation. Numeric attributes are validated before
+    interpolation so they cannot inject formula text.
+    """
+    formula = calc_elem.get('formula', '')
+    if calc_elem.get('class', 'tableau') != 'bin':
+        return formula
+
+    try:
+        numbers = {}
+        raw_size = calc_elem.get('size')
+        if raw_size is None:
+            parameter_ref = calc_elem.get('size-parameter', '').strip()
+            if not _BIN_PARAMETER_REF_RE.fullmatch(parameter_ref):
+                raise ValueError(
+                    'size must be numeric or size-parameter must be a '
+                    'qualified Tableau parameter reference')
+            numbers = {'size': parameter_ref}
+        else:
+            numbers = {}
+            raw = raw_size
+            if raw is None or not _BIN_NUMBER_RE.fullmatch(raw.strip()):
+                raise ValueError('size must be a finite numeric literal')
+            number = Decimal(raw.strip())
+            if not number.is_finite() or number <= 0:
+                raise ValueError('size must be finite and positive')
+            numbers['size'] = str(number)
+
+        raw_peg = calc_elem.get('peg', '0')
+        if not _BIN_NUMBER_RE.fullmatch(raw_peg.strip()):
+            raise ValueError('peg must be a finite numeric literal')
+        peg_number = Decimal(raw_peg.strip())
+        if not peg_number.is_finite():
+            raise ValueError('peg must be finite')
+        numbers['peg'] = str(peg_number)
+        if not formula.strip():
+            raise ValueError('formula must not be empty')
+    except (ValueError, InvalidOperation) as exc:
+        message = f'Invalid bin calculation {field_name!r}: {exc}'
+        logger.warning('%s', message)
+        raise ValueError(message) from exc
+
+    size, peg = numbers['size'], numbers['peg']
+    return f'FLOOR((({formula}) - ({peg})) / ({size})) * ({size}) + ({peg})'
 
 
 def _safe_int(val, default=0):

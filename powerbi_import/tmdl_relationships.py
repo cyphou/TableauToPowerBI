@@ -32,10 +32,42 @@ def _enforce_hybrid_relationship_constraints(model):
 def _create_and_validate_relationships(model, datasources):
     """Phase 4: Create, deduplicate, validate, and fix type mismatches in relationships."""
     seen_rels = set()
+    protected_pairs = {
+        frozenset(pair) for pair in model.get('_logical_predicate_pairs', [])
+    }
     for ds in datasources:
-        relationships = ds.get('relationships', [])
+        relationships = []
+        for source_rel in ds.get('relationships', []):
+            # CLI fidelity preprocessing can add equality guesses *after*
+            # extraction. Inspect their explicit provenance before
+            # _build_relationships discards it. Never discard an unmarked
+            # (declared) edge just because its endpoints look inferred.
+            endpoints = [
+                source_rel.get(side, {}).get('table')
+                for side in ('left', 'right')
+            ]
+            rename_map = model.get('_table_rename_map', {})
+            pair = frozenset(
+                rename_map.get((ds.get('name', ''), name), name)
+                for name in endpoints
+            )
+            if pair in protected_pairs:
+                if source_rel.get('inferred') is True:
+                    logger.info(
+                        "Skipped generated inferred equality %s -> %s: "
+                        "preserved logical predicate governs this pair",
+                        *endpoints)
+                    continue
+                raise ValueError(
+                    "A model equality relationship cannot represent the preserved "
+                    "logical composite/range predicate; remove the lossy legacy edge")
+            relationships.append(source_rel)
         rels = _build_relationships(relationships)
         for rel in rels:
+            if frozenset((rel.get('fromTable'), rel.get('toTable'))) in protected_pairs:
+                raise ValueError(
+                    "A model equality relationship cannot represent the preserved "
+                    "logical composite/range predicate; remove the lossy legacy edge")
             key = (rel.get('fromTable'), rel.get('fromColumn'),
                    rel.get('toTable'), rel.get('toColumn'))
             if key not in seen_rels:
@@ -59,6 +91,11 @@ def _create_and_validate_relationships(model, datasources):
         - CamelCase split: 'CreatedById' → 'Created By ID' or 'Created By Id'
         - Case-insensitive match
         """
+        # Source endpoints use internal names; table creation may have emitted
+        # captions instead. Prefer its table-scoped evidence to name heuristics.
+        produced = model.get('_column_rename_map', {}).get((table_name, col_name))
+        if produced in available_cols:
+            return produced
         if col_name in available_cols:
             return col_name
 
@@ -239,6 +276,37 @@ def _is_parameter_table(tables, table_name):
     return False
 
 
+def _source_alias_pairs(model):
+    """Identify aliases of the same physical relation within one datasource.
+
+    Shared column names are not join provenance for these pairs: a Tableau
+    logical self-relationship can use several predicates, including ranges.
+    Require an explicit physical relation and connection identity; do not
+    classify unrelated tables by their schemas or display names.
+    """
+    aliases = set()
+    renames = model.get('_table_rename_map', {})
+    for datasource in model.get('_datasources', []):
+        ds_name = datasource.get('name', '')
+        sources = []
+        for table in datasource.get('tables', []):
+            physical = table.get('source_table')
+            connection = table.get('connection_details') or (
+                datasource.get('connection_map', {}).get(table.get('connection'))
+                or datasource.get('connection')
+            )
+            name = table.get('name')
+            if not physical or not connection or not name:
+                continue
+            actual_name = renames.get((ds_name, name), name)
+            for other_name, other_physical, other_connection in sources:
+                if (actual_name != other_name and physical == other_physical
+                        and connection == other_connection):
+                    aliases.add(frozenset((actual_name, other_name)))
+            sources.append((actual_name, physical, connection))
+    return aliases
+
+
 def _infer_cross_table_relationships(model):
     """
     Infer relationships between tables when DAX expressions reference
@@ -275,6 +343,11 @@ def _infer_cross_table_relationships(model):
     for table in tables:
         tname = table.get("name", "")
         for measure in table.get("measures", []):
+            if measure.get('_logical_relationship_pair_measure'):
+                # Its iterators implement the complete source predicate.
+                # A model equality edge would change that domain and must
+                # not be inferred from these intentional cross-table refs.
+                continue
             expr = measure.get("expression", "")
             for match in cross_ref_pattern.finditer(expr):
                 ref_table = match.group(1)
@@ -297,6 +370,36 @@ def _infer_cross_table_relationships(model):
                 ref_table = match.group(1)
                 if ref_table != perm_table and ref_table in table_columns:
                     needed_pairs.add((perm_table, ref_table))
+
+    # Do not turn a missing logical self-relationship into a guessed equality
+    # on RowID (or another coincidentally matching column).  In particular,
+    # rewriting RELATED through that fabricated relationship into LOOKUPVALUE
+    # can fail at refresh when a repeated key has several timestamps.  Moving
+    # the calculation to the wider/narrower alias does not recover the missing
+    # predicates either.  Stop before mutating relationships, not with blank
+    # columns or an arbitrary aggregation that hides the lost row grain.
+    source_aliases = _source_alias_pairs(model) | {
+        frozenset(pair) for pair in model.get('_logical_predicate_pairs', [])
+    }
+    unresolved_aliases = {
+        tuple(sorted((source_table, ref_table)))
+        for source_table, ref_table in needed_pairs
+        if (source_table, ref_table) not in connected_pairs
+        and frozenset((source_table, ref_table)) in source_aliases
+    }
+    if unresolved_aliases:
+        pairs = '; '.join(
+            f"'{left}' / '{right}'" for left, right in sorted(unresolved_aliases)
+        )
+        raise ValueError(
+            "Cannot infer a relationship between physical source aliases "
+            f"{pairs}: cross-table calculations require the original Tableau "
+            "relationship predicates, but no explicit relationship connects "
+            "these tables in the extracted model. Column-name or RowID "
+            "matching cannot preserve composite/range self-relationship "
+            "semantics. Preserve the source predicates in extraction and "
+            "implement their row grain before generating this semantic model."
+        )
 
     # For each needed pair, find a matching column for the relationship
     for (source_table, ref_table) in needed_pairs:
@@ -375,6 +478,11 @@ def _infer_cross_table_relationships(model):
     for i, t1 in enumerate(all_table_names):
         for t2 in all_table_names[i + 1:]:
             if (t1, t2) in connected_pairs:
+                continue
+            # Even without a current DAX dependency, aliases are not evidence
+            # of an equality relationship.  Leave them disconnected rather
+            # than proactively fabricating a key that later rewrites can use.
+            if frozenset((t1, t2)) in source_aliases:
                 continue
             # Skip auto-generated tables (Calendar, parameter tables)
             if t1 == 'Calendar' or t2 == 'Calendar':

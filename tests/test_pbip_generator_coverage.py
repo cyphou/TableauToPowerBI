@@ -2980,10 +2980,25 @@ class TestBuildColorEncodingObjects(unittest.TestCase):
 
     def test_categorical_color_values(self):
         objects = {}
-        me = {'color': {'color_values': {'A': '#FF0000', 'B': '#00FF00'}}}
-        self.gen._build_color_encoding_objects(objects, {}, 'bar', me)
+        self.gen._field_map = {'Category': ('Facts', 'Category')}
+        column = {'Column': {'Expression': {'SourceRef': {'Entity': 'Facts'}},
+                             'Property': 'Category'}}
+        me = {'color': {'field': 'Category',
+                        'color_values': {'A': '#FF0000', 'B': '#00FF00'}}}
+        state = {'Series': {'projections': [{'field': column, 'queryRef': 'Facts.Category'}]}}
+        self.gen._build_color_encoding_objects(objects, {}, 'bar', me, state)
         self.assertIn('dataPoint', objects)
         self.assertEqual(len(objects['dataPoint']), 2)
+        for item, value in zip(objects['dataPoint'], ('A', 'B')):
+            comparison = item['selector']['data'][0]['scopeId']['Comparison']
+            self.assertEqual(comparison['Left'], column)
+            self.assertEqual(comparison['Right'], {'Literal': {'Value': f"'{value}'"}})
+
+    def test_unbound_categorical_colors_are_not_applied_globally(self):
+        objects = {}
+        self.gen._build_color_encoding_objects(objects, {}, 'bar', {
+            'color': {'field': 'Missing', 'color_values': {'A': '#FF0000'}}})
+        self.assertNotIn('dataPoint', objects)
 
     def test_stepped_thresholds(self):
         objects = {}

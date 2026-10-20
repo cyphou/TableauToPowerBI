@@ -34,6 +34,15 @@ When a `.twbx` contains embedded `.hyper` files, the migration automatically:
 
 Use `--hyper-rows N` to control the inline/CSV threshold.
 
+For Hyper data staged as CSV, physical columns are typed at the M `Source`
+step immediately after header promotion and before derived calculations.
+Column types come from extraction metadata, with model `sourceColumn`/`dataType`
+as a fallback, and use explicit `en-US` culture for invariant CSV values. This
+was verified in Power BI on World Indicators: schema and data refresh confirmed
+numeric types and successful `AVERAGE` queries, and the Business scatter was
+populated without an aggregate error. This evidence applies to that workbook;
+it does not establish a general Desktop or all-workbook pass.
+
 ### What about `.tde` files (legacy Tableau Data Extract)?
 
 `.tde` is the **pre-2018 legacy extract format**. It cannot be read by `tableauhyperapi`, SQLite, or the binary scanner. Tables from `.tde`-based workbooks get a placeholder `#table()` partition with a `TODO` comment. To migrate the data, either:
@@ -42,42 +51,87 @@ Use `--hyper-rows N` to control the inline/CSV threshold.
 
 ## Migration
 
+### Why was an Excel source reported missing even though it was inside the TWBX?
+
+Packaged files must be available before semantic source validation. Migration
+now stages exact declared archive members into the project's `Data` folder
+before generation, using the same content-conflict checks as loose sources.
+It does not search by basename or replace a missing member with an unrelated
+file. Regenerate an affected project; merely copying the file into an older
+output does not replace an already-generated unavailable-source partition.
+
+### Why did a date-based calculated column fail on every row in Power Query?
+
+DAX permits numeric day offsets such as `NOW() - 45`; Power Query does not
+subtract a number directly from a datetime. Supported, proven date expressions
+with numeric literal offsets now use `Date.AddDays`. Bare boolean literals also
+become M `true` and `false`, without changing strings or field names. Uncertain
+date arithmetic remains in DAX instead of being pushed into invalid M. These
+conversion checks do not replace a native Desktop refresh.
+
+### Why did a calculation referencing `Number of Records` produce invalid DAX?
+
+A calculation without an explicit caption may repeat its bracketed Tableau
+identifier as its extracted caption. Semantic-context collection now removes
+only that fallback identifier's outer bracket pair, consistently across
+constant values, measure names and calculation references. This allows a
+literal `Number of Records = 1` calculation to be inlined in row expressions.
+Different explicit captions, including accents and bracket characters, remain
+unchanged. DAX containing diagnostic comments is not pushed into Power Query;
+the diagnostic remains visible rather than becoming invalid M arithmetic.
+Regenerate affected projects to apply these generator changes. Successful
+generation still does not establish source availability or Desktop parity.
+
+### Does successful extraction mean the migrated report is verified?
+
+No. Extraction, project generation, source availability, Desktop refresh and
+rendered-page comparison are separate checks. An extraction snapshot can be
+valid while migration is blocked by an unresolved source reference or an
+unsupported logical relationship.
+
+Desktop row counts are observations, not proof of an error-free refresh. The
+probe checks visible owned refresh state before and after observing rows, and
+again after render settling. Errors, unfinished refresh/pending changes or
+unavailable UI inspection prevent refresh/screenshot verification; loaded row
+counts remain available separately for diagnosis. A benign incomplete/no-data
+banner alone is not classified as a refresh error.
+
+Worksheet and dashboard extraction uses direct workbook collection members,
+not similarly named nested metadata references. Minimal XML without those
+collections may use direct workbook children. Duplicate names genuinely present
+in the source remain present; they are not silently deduplicated.
+
+Tableau bins may contain a literal size or a validated size-parameter reference.
+The extracted calculation can therefore differ from a raw field-reference
+formula while preserving the explicit bin definition. Logical relationship
+metadata and the active physical join tree must also be inspected separately;
+the legacy equality-only relationship list is not a complete relationship audit.
+
+Compare a fresh snapshot against its exact source revision. Object counts alone
+do not validate formulas, predicates, formats, values or rendered behavior.
+
 ### How do I run a migration?
 
 ```bash
-python migrate.py your_workbook.twbx
+python migrate.py batch ./workbooks --output-dir ./output
 ```
 
-Or with additional options:
+Migration generation is batch-only. To migrate one workbook, place it in a
+folder by itself. Assessment and diagnostic commands can still target a
+workbook file. For example:
 
 ```bash
-# Custom output directory
-python migrate.py your_workbook.twbx --output-dir /tmp/output
+# Batch migration with verbose logging
+python migrate.py batch ./workbooks --output-dir /tmp/output --verbose
 
-# Verbose logging
-python migrate.py your_workbook.twbx --verbose
-
-# Batch migrate all workbooks in a directory
-python migrate.py --batch examples/tableau_samples/ --output-dir /tmp/batch_output
-
-# With Tableau Prep flow
-python migrate.py your_workbook.twbx --prep flow.tfl
+# Pair a Prep flow with a workbook in a one-workbook source folder
+python migrate.py batch ./one_workbook --prep ./flows/flow.tfl --output-dir /tmp/output
 
 # Standalone Prep flow batch — export Power Query M, sources & lineage
-python migrate.py --batch examples/prep_portfolio/ --output-dir /tmp/prep_output
+python migrate.py batch examples/prep_portfolio/ --output-dir /tmp/prep_output
 
 # Prep flow lineage analysis
-python migrate.py --prep-lineage examples/prep_portfolio/
-
-# Log to file
-python migrate.py your_workbook.twbx --log-file migration.log
-```
-
-Or step by step:
-
-```bash
-python tableau_export/extract_tableau_data.py your_workbook.twbx
-python powerbi_import/import_to_powerbi.py
+python migrate.py lineage examples/prep_portfolio/
 ```
 
 ### Where is the output?
@@ -93,9 +147,10 @@ Standalone prep flows are **not** converted to `.pbip` projects (which would be 
 - **Assessment** — per-flow grade (GREEN/YELLOW/RED) and stats
 - **Cross-flow lineage** — automatic HTML + JSON report when ≥2 flows succeed, showing dependencies and merge recommendations
 
-To pair a prep flow with an existing workbook (merge M transforms into a `.pbip`), use:
+To pair a Prep flow with a workbook (merge M transforms into a `.pbip`), put
+the workbook in a source folder (the folder may contain only that workbook):
 ```bash
-python migrate.py workbook.twbx --prep flow.tfl
+python migrate.py batch ./one_workbook --prep flow.tfl --output-dir ./output
 ```
 
 ### Why do some formulas not work?
@@ -116,7 +171,9 @@ Most complex patterns **are** handled automatically:
 
 ### How are LOD expressions converted?
 
-LOD (Level of Detail) expressions are one of the most complex Tableau features. The tool converts them automatically:
+LOD (Level of Detail) expressions are one of the most complex Tableau features.
+The tool converts supported patterns automatically; source filter order,
+relationship grain and undefined ratios still require source-value and runtime checks:
 
 ```
 {FIXED [Region] : SUM([Sales])}
@@ -188,7 +245,7 @@ When a calculated column references a parameter, the value is **inlined** (since
 Use `--output-format fabric` to generate Lakehouse, Dataflow Gen2, PySpark Notebook, DirectLake Semantic Model, and Data Pipeline artifacts instead of a .pbip project:
 
 ```bash
-python migrate.py workbook.twbx --output-format fabric --output-dir /tmp/fabric_output
+python migrate.py fabric ./one_workbook --output-dir /tmp/fabric_output
 ```
 
 ### How do I optimize the generated DAX formulas?
@@ -196,7 +253,7 @@ python migrate.py workbook.twbx --output-format fabric --output-dir /tmp/fabric_
 Use `--optimize-dax` to run an AST-based DAX optimizer pass after conversion. This rewrites verbose formulas for readability and performance:
 
 ```bash
-python migrate.py workbook.twbx --optimize-dax --time-intelligence auto
+python migrate.py batch ./one_workbook --optimize-dax --time-intelligence auto
 ```
 
 The optimizer applies: nested IF→SWITCH, IF(ISBLANK)→COALESCE, redundant CALCULATE collapse, constant folding, SUMX simplification, and optional Time Intelligence auto-injection (YTD, PY, YoY%).
@@ -216,9 +273,15 @@ If you still see this behavior, regenerate with the latest version and attach a 
 
 ### Is visual positioning pixel-perfect?
 
-Direct zone-to-visual sizing maps accurately (including real-world validation work). Floating/overlapping zones are resolved deterministically: the report-side overlap healer sorts overlapping visuals by z-order, keeps the lowest-z backdrop anchored, and staggers higher-z foreground zones by +32 px. This is stable across runs (verified across all `PYTHONHASHSEED` values) and is locked in by per-workbook pixel-perfect golden fixtures with a CI drift gate (`scripts/generate_pixel_fixtures.py --check`).
+Direct zone-to-visual sizing and deterministic layout fixtures provide bounded
+positioning checks, not a guarantee of rendered Tableau equivalence.
+Floating/overlapping zones are resolved deterministically: the report-side
+overlap healer sorts overlapping visuals by z-order, keeps the lowest-z backdrop
+anchored, and staggers higher-z foreground zones by +32 px. The fixture drift
+gate (`scripts/generate_pixel_fixtures.py --check`) checks its recorded cases;
+it does not certify every workbook, visual type, color or interaction.
 
-Pixel-perfect fidelity is validated along 4 axes:
+The fixtures cover four presentation surfaces within their recorded cases:
 
 | Axis | What is preserved |
 |------|-------------------|
@@ -227,21 +290,17 @@ Pixel-perfect fidelity is validated along 4 axes:
 | **Sentinel** | Tableau soft line-break sentinel runs (`Ae`/NBSP) cleaned during extraction |
 | **Overlay** | Floating/overlapping zones staggered deterministically by z-order |
 
-### How do I run the real-world QA suite?
-
-Add `--qa` to produce a 6-check migration QA report card (HTML + console):
+### What quality reports does batch migration produce?
 
 ```bash
-python migrate.py workbook.twbx --qa
+python migrate.py qa ./one_workbook
 ```
 
-The 6 checks are: zero sentinel glyphs, zero empty visuals, full number-format coverage, all dashboard zones matched, no orphan filters, and fidelity ≥ 97.
-
-Use `--qa-strict` in CI to make the migration exit with a non-zero status if any check fails:
-
-```bash
-python migrate.py workbook.twbx --qa-strict
-```
+`one_workbook` is a source folder (it can contain just one workbook). The `qa`
+shortcut follows the batch migration path. Batch mode writes a unified quality
+JSON/HTML report and an evidence ZIP for each successful workbook by default;
+it does not run the separate six-check QA suite. The legacy `--qa` and
+`--qa-strict` flags are not available through the supported batch-only workflow.
 
 ## Technical
 
@@ -272,10 +331,15 @@ In calculated columns, to access a column from another related table, DAX requir
 
 ### How do relationships work?
 
-Tableau relationships (joins) are converted to Power BI relationships:
+Supported single-key equality relationships can become Power BI relationships:
 - `LEFT JOIN` → `toColumn` with `crossFilteringBehavior: oneDirection`
 - `FULL OUTER JOIN` → `crossFilteringBehavior: bothDirections`
 - Join columns become the relationship keys
+
+Composite or range logical predicates cannot be replaced by a single equality
+key. A constrained calculation path preserves their pair grain with explicit
+datasource-scoped policies; unsupported cases stop generation. See
+[logical-relationship policy requirements](KNOWN_LIMITATIONS.md#composite-and-range-logical-relationships).
 
 ## Validation & Deployment
 
@@ -291,7 +355,24 @@ cause is an invalid generated M partition. Fix the source generator, not the emi
 To attempt automatic recovery before opening, run `--autoheal` (deterministic DAX/M/visual
 healing). Add `--llm-autofix` to allow opt-in LLM correction, which is applied only when the
 result re-validates cleanly. For a best-effort real Desktop smoke test, use the explicit
-`--desktop-probe`; the static `--verify-open` result stays authoritative.
+`--desktop-probe`. The `--verify-open` verdict applies only to its static checks;
+it does not override a Desktop load or refresh failure.
+
+### Can `openable=true` still fail when data is refreshed?
+
+Yes. `openable=true` means the static checks found no blocking issue, not that
+Desktop loaded or refreshed the model successfully. The serialized report
+identifies its static scope and leaves refresh verification as `not_run`.
+Inspect native refresh evidence separately from table row-count observations.
+
+In bug report #84, removing relationships allowed the supplied test variant to
+refresh, while adding null rows or typing empty tables did not prevent the
+original `FromColumn` deleted-object error. These are reported observations,
+not an independently reproduced cause. A static endpoint/schema check cannot
+prove that Desktop will preserve column identities while reconciling queries.
+Do not remove relationships, add fake rows, or change cardinality merely to
+obtain a passing verdict. The exact reproduction project and native relation
+bissection are needed to establish a causal fix.
 
 ### How do I validate a client report opening and its screenshot?
 
@@ -433,7 +514,7 @@ The `merge_assessment.json` file lists all conflicts detected.
 python -m pytest tests/ -v
 ```
 
-The latest full run completed with **10,798 passed, 66 skipped, and 1 xfailed** from 10,865 collected tests across 316 files. Coverage includes DAX conversion, Power Query M generation, TMDL model building, visual generation, project structure, artifact validation, deployment utilities, Fabric-native generation, DAX optimization, cross-platform equivalence testing, and end-to-end non-regression migration.
+The historical full-suite baseline completed with **10,798 passed, 66 skipped, and 1 xfailed** from 10,865 collected tests across 316 files; see CI for current results. Coverage includes DAX conversion, Power Query M generation, TMDL model building, visual generation, project structure, artifact validation, deployment utilities, Fabric-native generation, DAX optimization, cross-platform equivalence testing, and end-to-end non-regression migration.
 
 ### Does the preceptor automatically send fixes to agents?
 
@@ -447,8 +528,8 @@ is accepted only if PBIP definition files changed and the finding disappeared.
 An owner can instead acknowledge `not_applicable` with a rationale. Accepted
 ACKs live only in the MCP process (`persisted: false`); they do not trigger an
 agent or persist a resolution history. `--no-preceptor` skips scoring;
-`--preceptor-block` opts into a hard failure after escalation. `--qa` is a
-separate QA suite.
+`--preceptor-block` opts into a hard failure after escalation. The legacy
+specialized QA suite is not available through the supported batch-only CLI.
 
 ### How do I run the migration as a REST API?
 
@@ -461,7 +542,9 @@ docker build -t tableau-to-pbi .
 docker run -p 8000:8000 tableau-to-pbi
 ```
 
-Endpoints: `POST /migrate` (upload .twbx), `GET /status/{id}`, `GET /download/{id}`, `GET /health`, `GET /jobs`.
+Endpoints: `POST /migrate/batch` (upload a ZIP containing Tableau files),
+`GET /batch/{id}`, `GET /status/{id}`, `GET /download/{id}`, `GET /health`,
+and `GET /jobs`. The retired `POST /migrate` endpoint returns HTTP 410.
 
 ### How do I detect schema drift between migrations?
 

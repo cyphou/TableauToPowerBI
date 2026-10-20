@@ -125,7 +125,7 @@ def _read_hyper_api(file_path, max_rows=20):
                 for schema in schema_names:
                     table_names = conn.catalog.get_table_names(schema)
                     for tbl in table_names:
-                        tname = str(tbl)
+                        tname = tbl.name.unescaped
                         # Get column definitions
                         table_def = conn.catalog.get_table_definition(tbl)
                         columns = []
@@ -158,7 +158,9 @@ def _read_hyper_api(file_path, max_rows=20):
                         )
 
                         tables.append({
+                            'schema': tbl.schema_name.name.unescaped,
                             'table': tname,
+                            'qualified_table': str(tbl),
                             'columns': columns,
                             'column_count': len(columns),
                             'sample_rows': sample_rows,
@@ -225,21 +227,21 @@ def _read_hyper_sqlite(file_path, max_rows=20):
             conn.close()
             return None
 
-        table_names = [row[0] for row in cursor.fetchall()]
+        table_names = [('main', row[0]) for row in cursor.fetchall()]
 
-        # Option B: Also discover schema-qualified tables
-        # Many Hyper files use "Extract"."Extract" schema convention
-        _HYPER_SCHEMAS = ['Extract', 'public', 'stg']
-        for schema in _HYPER_SCHEMAS:
+        # Database names and literal table names come from the catalog; a dot
+        # in sqlite_master.name is not evidence of a schema qualification.
+        cursor.execute('PRAGMA database_list')
+        schemas = [row[1] for row in cursor.fetchall() if row[1] != 'main']
+        for schema in schemas:
+            quoted_schema = schema.replace('"', '""')
             try:
                 cursor.execute(
-                    f'SELECT name FROM "{schema}".sqlite_master '
+                    f'SELECT name FROM "{quoted_schema}".sqlite_master '
                     f"WHERE type='table' AND name NOT LIKE 'sqlite_%'"
                 )
                 for row in cursor.fetchall():
-                    qualified = f'{schema}.{row[0]}'
-                    if qualified not in table_names and row[0] not in table_names:
-                        table_names.append(qualified)
+                    table_names.append((schema, row[0]))
             except sqlite3.DatabaseError:
                 pass
 
@@ -248,24 +250,15 @@ def _read_hyper_sqlite(file_path, max_rows=20):
             return None
 
         tables = []
-        for tname in table_names:
-            # Determine quoted name for queries
-            if '.' in tname:
-                parts = tname.split('.', 1)
-                quoted = f'"{parts[0]}"."{parts[1]}"'
-                pragma_table = parts[1]
-            else:
-                quoted = f'"{tname}"'
-                pragma_table = tname
+        for schema, tname in table_names:
+            quoted_schema = '"' + schema.replace('"', '""') + '"'
+            quoted_table = '"' + tname.replace('"', '""') + '"'
+            quoted = f'{quoted_schema}.{quoted_table}'
 
             # Get column info via PRAGMA
             try:
-                cursor.execute(f'PRAGMA table_info({quoted})')
+                cursor.execute(f'PRAGMA {quoted_schema}.table_info({quoted_table})')
                 col_info = cursor.fetchall()
-                if not col_info and '.' in tname:
-                    # Try schema-qualified PRAGMA
-                    cursor.execute(f'PRAGMA "{tname.split(".", 1)[0]}".table_info("{pragma_table}")')
-                    col_info = cursor.fetchall()
                 # col_info rows: (cid, name, type, notnull, dflt_value, pk)
                 columns = []
                 for ci in col_info:
@@ -302,7 +295,9 @@ def _read_hyper_sqlite(file_path, max_rows=20):
             col_stats = _compute_column_stats_sqlite(cursor, quoted, columns)
 
             tables.append({
+                'schema': schema,
                 'table': tname,
+                'qualified_table': quoted,
                 'columns': columns,
                 'column_count': len(columns),
                 'sample_rows': sample_rows,
@@ -1003,7 +998,7 @@ def discover_multi_table_hyper(file_path):
                         row_count = conn.execute_scalar_query(
                             f'SELECT COUNT(*) FROM {table_name}')
                         tables.append({
-                            'schema': str(schema_name),
+                            'schema': schema_name.name.unescaped,
                             'table': str(table_name.name.unescaped),
                             'columns': columns,
                             'row_count': row_count,

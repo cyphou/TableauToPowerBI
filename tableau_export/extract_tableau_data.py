@@ -13,6 +13,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import re
+from copy import deepcopy
 from datasource_extractor import extract_datasource
 from hyper_reader import read_hyper_from_twbx
 try:
@@ -56,6 +57,7 @@ logger = logging.getLogger(__name__)
 from extract_primitives import (  # noqa: E402,F401
     _clean_field_ref,
     _clean_tableau_run_text,
+    _extract_calculation_formula,
     _RE_DERIVATION_PREFIX,
     _RE_FIELD_REF,
     _RE_TABLE_CALC_PREFIX,
@@ -99,6 +101,7 @@ from chart_type_inference import (  # noqa: E402,F401
     _detect_bar_orientation,
     _infer_automatic_chart_type,
     _map_tableau_mark_to_type,
+    extract_combined_axis_panes,
 )
 
 #: What Tableau's action commands mean, in the vocabulary the pipeline uses.
@@ -116,6 +119,35 @@ def _strip_datasource_prefix(column):
     """``[federated.x].[none:Region:nk]`` -> ``[none:Region:nk]``."""
     match = _DS_PREFIXED_FIELD.match(column or '')
     return match.group(1) if match else (column or '')
+
+
+def _find_collection_items(root, collection_name, item_name):
+    """Return items directly owned by a workbook collection.
+
+    Tableau embeds fragments named ``worksheet`` and ``dashboard`` inside
+    other objects (for example dashboard add-in settings and worksheet
+    dependencies). Those are references/metadata, not workbook tabs. A
+    recursive ``.//worksheet`` or ``.//dashboard`` scan silently emits
+    duplicate or unnamed workbook objects. Prefer direct collection children
+    when the collection is present; small standalone fixtures and legacy
+    workbook fragments may instead put a real worksheet/dashboard directly
+    under the workbook root. In that fallback, still accept only root children
+    (never nested window, zone, or add-in references).
+    """
+    collections = []
+    for collection in list(root):
+        if collection.tag.rsplit('}', 1)[-1] != collection_name:
+            continue
+        collections.extend(
+            item for item in list(collection)
+            if item.tag.rsplit('}', 1)[-1] == item_name
+        )
+    if collections:
+        return collections
+    return [
+        item for item in list(root)
+        if item.tag.rsplit('}', 1)[-1] == item_name
+    ]
 
 
 def _read_action_kind(action):
@@ -141,6 +173,7 @@ def _read_action_kind(action):
 # moved to worksheet_extractor. Both re-exported for existing imports.
 from extract_primitives import _read_filter_condition  # noqa: E402,F401
 from worksheet_extractor import (  # noqa: E402,F401
+    build_field_provenance,
     extract_worksheet_fields,
     extract_worksheet_filters,
     extract_formatting,
@@ -360,6 +393,15 @@ class TableauExtractor:
                 return f.read()
         
         elif file_ext in ['.twbx', '.tdsx']:
+            if not zipfile.is_zipfile(self.tableau_file):
+                if file_ext != '.twbx':
+                    return None
+                with open(self.tableau_file, 'rb') as f:
+                    content = f.read()
+                if not content.lstrip(b'\xef\xbb\xbf \t\r\n').startswith(b'<'):
+                    raise ValueError(
+                        f"Invalid TWBX archive or XML workbook: {self.tableau_file}")
+                return content.decode('utf-8-sig')
             # Packaged file (ZIP) — with ZIP slip protection
             with zipfile.ZipFile(self.tableau_file, 'r') as z:
                 for name in z.namelist():
@@ -385,9 +427,11 @@ class TableauExtractor:
                     if name.endswith('.twb') or name.endswith('.tds'):
                         if _HAS_SECURITY:
                             content = safe_zip_extract_member(z, name)
+                            self._workbook_archive_member = name
                             return content.decode('utf-8')
                         else:
                             with z.open(name) as f:
+                                self._workbook_archive_member = name
                                 return f.read().decode('utf-8')
         
         return None
@@ -397,8 +441,9 @@ class TableauExtractor:
         
         worksheets = []
         self._color_index = self._build_color_index(root)
+        self._worksheet_field_provenance = build_field_provenance(root)
         
-        for worksheet in self._findall_root_cached(root, './/worksheet'):
+        for worksheet in _find_collection_items(root, 'worksheets', 'worksheet'):
             ws_data = {
             'name': safe_get_attr(worksheet, 'name', ''),
                 'title': self._extract_title_text(worksheet),
@@ -406,6 +451,7 @@ class TableauExtractor:
                 'chart_type': self.determine_chart_type(worksheet),
                 'original_mark_class': self._extract_mark_class(worksheet),
                 'fields': self.extract_worksheet_fields(worksheet),
+                'slices': self.extract_worksheet_slices(worksheet),
                 'filters': self.extract_worksheet_filters(worksheet),
                 'formatting': self.extract_formatting(worksheet),
                 'tooltips': self.extract_tooltips(worksheet),
@@ -428,6 +474,22 @@ class TableauExtractor:
                 'dynamic_title': self.extract_dynamic_title(worksheet),
                 'analytics_stats': self.extract_analytics_pane_stats(worksheet),
             }
+            for pane in ws_data['dual_axis'].get('panes', []):
+                for field in ws_data['fields']:
+                    if (field.get('name') == pane['field']
+                            and field.get('datasource') == pane['datasource']
+                            and field.get('shelf') == pane['shelf']):
+                        field['axis_role'] = pane['axis_role']
+            if ws_data['chart_type'] == 'lineClusteredColumnComboChart':
+                # The visual consumer currently binds measures by list order.
+                # Reorder only the declared axis slots, leaving categories
+                # and unrelated Marks-card fields in their original places.
+                positions = [i for i, field in enumerate(ws_data['fields'])
+                             if field.get('axis_role') in ('Y', 'Y2')]
+                ordered = sorted((ws_data['fields'][i] for i in positions),
+                                 key=lambda field: field['axis_role'] == 'Y2')
+                for position, field in zip(positions, ordered):
+                    ws_data['fields'][position] = field
             worksheets.append(ws_data)
         
         self.workbook_data['worksheets'] = worksheets
@@ -437,8 +499,14 @@ class TableauExtractor:
         """Extracts dashboards"""
         
         dashboards = []
+        # Quick-filter zones reference workbook/datasource filters that need
+        # not be children of the dashboard (or even its named worksheet).
+        self._range_filter_refs = {
+            filt.get('column', '') for filt in root.findall('.//filter')
+            if filt.get('class', '').lower() in ('quantitative', 'range')
+        }
         
-        for dashboard in self._findall_root_cached(root, './/dashboard'):
+        for dashboard in _find_collection_items(root, 'dashboards', 'dashboard'):
             size_elem = safe_find(dashboard, 'size')
             if size_elem is not None:
                 db_width = _safe_int(safe_get_attr(size_elem, 'maxwidth', safe_get_attr(size_elem, 'minwidth', '1280')))
@@ -549,14 +617,15 @@ class TableauExtractor:
         for ds_name, ds in ds_by_name.items():
             ds_seen[ds_name] = {c.get('name', '') for c in ds.get('calculations', [])}
 
-        for ws in self._findall_root_cached(root, './/worksheet'):
+        for ws in _find_collection_items(root, 'worksheets', 'worksheet'):
             for dep in safe_findall(ws, './/datasource-dependencies'):
                 ds_ref = safe_get_attr(dep, 'datasource', '')
                 for col_elem in safe_findall(dep, 'column'):
                     calc_elem = safe_find(col_elem, 'calculation')
                     if calc_elem is None:
                         continue
-                    calc_formula = safe_get_attr(calc_elem, 'formula', '').strip()
+                    calc_formula = _extract_calculation_formula(
+                        calc_elem, safe_get_attr(col_elem, 'name', '')).strip()
                     if not calc_formula:
                         continue
                     calc_class = safe_get_attr(calc_elem, 'class', 'tableau')
@@ -905,7 +974,134 @@ class TableauExtractor:
     # Worksheet extraction lives in worksheet_extractor; these delegate so
     # extractor.extract_worksheet_fields(worksheet) keeps working.
     def extract_worksheet_fields(self, worksheet):
-        return extract_worksheet_fields(worksheet)
+        # Slices describe filter membership, not mark grain. Keep them out of
+        # the leaf extractor's legacy slice-to-Detail path, without mutating
+        # the source XML (other extractors still need its filters and slices).
+        mark_worksheet = deepcopy(worksheet)
+        for parent in mark_worksheet.iter():
+            for child in list(parent):
+                if child.tag.rsplit('}', 1)[-1].split(':')[-1] == 'slices':
+                    parent.remove(child)
+        fields = extract_worksheet_fields(mark_worksheet)
+        self._preserve_worksheet_pill_metadata(mark_worksheet, fields)
+        definitions = {}
+        for dependency in worksheet.findall('.//datasource-dependencies'):
+            ds = dependency.get('datasource', '')
+            for column in dependency.findall('./column'):
+                definitions[(ds, column.get('name', '').strip('[]'))] = column
+        provenance = getattr(self, '_worksheet_field_provenance', {})
+        for field in fields:
+            identity = (field.get('datasource', ''), field.get('name', ''))
+            lineage = provenance.get(identity)
+            if lineage:
+                field.update(lineage)
+            definition = definitions.get(identity)
+            if definition is not None:
+                for attribute in ('datatype', 'role'):
+                    if definition.get(attribute):
+                        field[attribute] = definition.get(attribute)
+        return fields
+
+    def extract_worksheet_slices(self, worksheet):
+        """Preserve filter-only slices separately from visual shelf fields."""
+        slices = []
+        seen = set()
+        for column in worksheet.findall('.//slices/column'):
+            refs = re.findall(r'\[([^\]]+)\]\.\[([^\]]+)\]',
+                              column.text or '')
+            for datasource, raw in refs:
+                name = _clean_field_ref(raw)
+                identity = (datasource, raw)
+                if not name or identity in seen:
+                    continue
+                seen.add(identity)
+                slices.append({
+                    'name': name,
+                    'datasource': datasource,
+                    'shelf': 'filter',
+                    'source': 'slices',
+                })
+        return slices
+
+    def _preserve_worksheet_pill_metadata(self, worksheet, fields):
+        """Add date-pill and encoding aggregation metadata, never new axes.
+
+        ``date_part`` uses the same Tableau codes as worksheet filters.
+        Instance derivations retain their XML spelling; discrete/continuous
+        flags describe the pill, not the underlying column's datatype.
+        """
+        instances = {}
+        for dependency in worksheet.findall('.//datasource-dependencies'):
+            datasource = dependency.get('datasource', '')
+            for instance in dependency.findall('./column-instance'):
+                raw = _strip_brackets(instance.get('name', ''))
+                instances[(datasource, raw)] = instance
+
+        sources = []
+        for shelf, tag in (('columns', 'cols'), ('rows', 'rows')):
+            element = worksheet.find(f'./table/{tag}')
+            if element is not None:
+                sources.append((shelf, element.text or ''))
+            alternate = worksheet.find(f'.//shelf-{shelf}')
+            if alternate is not None:
+                sources.append((shelf, alternate.text or ''))
+                sources.extend((shelf, child.text or '')
+                               for child in alternate.findall('./field'))
+        for encoding in worksheet.findall('.//encodings'):
+            for element in encoding:
+                tag = element.tag.rsplit('}', 1)[-1].split(':')[-1]
+                sources.append(('detail' if tag == 'lod' else tag,
+                                element.get('column', '')))
+        # Some exports place lod outside encodings.
+        sources.extend(('detail', element.get('column', ''))
+                       for element in worksheet.findall('.//lod'))
+
+        by_identity = {}
+        for field in fields:
+            identity = (field.get('shelf'), field.get('datasource'),
+                        field.get('name'))
+            by_identity.setdefault(identity, []).append(field)
+
+        date_derivations = {
+            'yr': 'Year', 'qr': 'Quarter', 'mn': 'Month', 'dy': 'Day',
+            'wk': 'Week', 'hr': 'Hour', 'mt': 'Minute', 'sc': 'Second',
+            'tyr': 'Year', 'tqr': 'Quarter', 'tmn': 'Month',
+            'tdy': 'Day', 'twk': 'Week', 'md': 'Month Day',
+            'mdy': 'Month Day Year', 'hms': 'Hour Minute Second',
+            'trunc': 'Trunc',
+        }
+        for shelf, reference in sources:
+            for datasource, raw in re.findall(
+                    r'\[([^\]]+)\]\.\[([^\]]+)\]', reference):
+                identity = (shelf, datasource, _clean_field_ref(raw))
+                for field in by_identity.get(identity, []):
+                    # Text and label aggregations are independent of the
+                    # measures on Rows/Columns, even for the same column.
+                    aggregation = re.match(
+                        r'^(cnt|count|sum|avg|min|max|ctd|countd|median|'
+                        r'attr|stdev|stdevp|var|varp):', raw)
+                    if shelf in ('text', 'label') and aggregation:
+                        field['aggregation'] = aggregation.group(1)
+
+                    prefix = raw.split(':', 1)[0]
+                    if prefix not in date_derivations:
+                        continue
+                    instance = instances.get((datasource, raw))
+                    field['date_part'] = prefix
+                    field['derivation'] = (
+                        instance.get('derivation', date_derivations[prefix])
+                        if instance is not None else date_derivations[prefix])
+                    instance_type = (instance.get('type', '')
+                                     if instance is not None else '')
+                    suffix = re.search(r':(nk|ok|qk)(?::\d+)?$', raw)
+                    if instance_type in ('nominal', 'ordinal', 'quantitative'):
+                        discrete = instance_type != 'quantitative'
+                    elif suffix:
+                        discrete = suffix.group(1) != 'qk'
+                    else:
+                        continue
+                    field['is_discrete'] = discrete
+                    field['is_continuous'] = not discrete
 
     def extract_worksheet_filters(self, worksheet):
         return extract_worksheet_filters(worksheet)
@@ -926,7 +1122,14 @@ class TableauExtractor:
     # Dashboard extraction lives in dashboard_extractor; these delegate so
     # extractor.extract_*(dashboard) keeps working.
     def extract_dashboard_objects(self, dashboard):
-        return extract_dashboard_objects(dashboard)
+        objects = extract_dashboard_objects(
+            dashboard, workbook_path=self.tableau_file,
+            archive_member=getattr(self, '_workbook_archive_member', ''))
+        for obj in objects:
+            if (obj.get('type') == 'filter_control'
+                    and obj.get('param') in getattr(self, '_range_filter_refs', set())):
+                obj['filter_mode'] = 'range'
+        return objects
 
     def extract_dashboard_filters(self, dashboard):
         return extract_dashboard_filters(dashboard)
@@ -1271,10 +1474,11 @@ class TableauExtractor:
         
         # Detect dual axis: multiple y-axis definitions or sync flag
         y_axes = [a for a in axis_elements if a.get('type') == 'y']
-        if len(y_axes) > 1:
+        dual_axis = self.extract_dual_axis_sync(worksheet)
+        if len(y_axes) > 1 or dual_axis.get('enabled'):
             axes['dual_axis'] = True
             # Check for synchronized dual axis (range synced)
-            axes['dual_axis_sync'] = any(a.get('synchronized', 'false') == 'true' for a in y_axes)
+            axes['dual_axis_sync'] = dual_axis.get('synchronized', False)
         else:
             axes['dual_axis'] = False
             axes['dual_axis_sync'] = False
@@ -1759,11 +1963,14 @@ class TableauExtractor:
         print(f"  ✓ {len(groups)} groups extracted")
     
     def extract_bins(self, root):
-        """Extracts bins (intervals)"""
+        """Extract legacy bins; class='bin' is emitted as a calculation only."""
         bins = []
         
         for ds in self._findall_root_cached(root, './/datasource'):
             for col in ds.findall('.//column'):
+                calc_elem = col.find('.//calculation')
+                if calc_elem is not None and calc_elem.get('class') == 'bin':
+                    continue
                 bin_elem = col.find('.//bin')
                 if bin_elem is not None:
                     bins.append({
@@ -2290,7 +2497,11 @@ class TableauExtractor:
         """Detects dual-axis and synchronization settings."""
         dual_axis = {}
         axes = list(worksheet.findall('.//axis'))
-        if len(axes) >= 2:
+        panes = extract_combined_axis_panes(worksheet)
+        repeated_axes = any(
+            sum(axis.get('type') == kind for axis in axes) > 1
+            for kind in ('x', 'y'))
+        if repeated_axes or panes:
             dual_axis['enabled'] = True
             # Check for synchronized axes
             for axis in axes:
@@ -2299,6 +2510,8 @@ class TableauExtractor:
                     break
             else:
                 dual_axis['synchronized'] = False
+            if panes:
+                dual_axis['panes'] = panes
         return dual_axis
 
     def extract_custom_shapes(self):
@@ -2309,7 +2522,7 @@ class TableauExtractor:
         """
         shapes = []
         file_ext = os.path.splitext(self.tableau_file)[1].lower()
-        if file_ext in ['.twbx', '.tdsx']:
+        if file_ext in ['.twbx', '.tdsx'] and zipfile.is_zipfile(self.tableau_file):
             try:
                 shapes_dir = os.path.join(self.output_dir, 'shapes')
                 with zipfile.ZipFile(self.tableau_file, 'r') as z:
@@ -2334,7 +2547,7 @@ class TableauExtractor:
         """Extracts embedded font references from .twbx package."""
         fonts = []
         file_ext = os.path.splitext(self.tableau_file)[1].lower()
-        if file_ext in ['.twbx', '.tdsx']:
+        if file_ext in ['.twbx', '.tdsx'] and zipfile.is_zipfile(self.tableau_file):
             try:
                 with zipfile.ZipFile(self.tableau_file, 'r') as z:
                     for name in z.namelist():
@@ -2360,7 +2573,7 @@ class TableauExtractor:
                 })
         # Also look for custom geocoding files in .twbx
         file_ext = os.path.splitext(self.tableau_file)[1].lower()
-        if file_ext in ['.twbx', '.tdsx']:
+        if file_ext in ['.twbx', '.tdsx'] and zipfile.is_zipfile(self.tableau_file):
             try:
                 with zipfile.ZipFile(self.tableau_file, 'r') as z:
                     for name in z.namelist():
@@ -2462,7 +2675,7 @@ class TableauExtractor:
 
         hyper_files = []
         file_ext = os.path.splitext(self.tableau_file)[1].lower()
-        if file_ext in ['.twbx', '.tdsx']:
+        if file_ext in ['.twbx', '.tdsx'] and zipfile.is_zipfile(self.tableau_file):
             try:
                 with zipfile.ZipFile(self.tableau_file, 'r') as z:
                     for info in z.infolist():
@@ -2548,7 +2761,7 @@ class TableauExtractor:
 
         # Attempt deeper reading via SQLite (hyper_reader module)
         file_ext = os.path.splitext(self.tableau_file)[1].lower()
-        if file_ext in ['.twbx', '.tdsx']:
+        if file_ext in ['.twbx', '.tdsx'] and zipfile.is_zipfile(self.tableau_file):
             try:
                 deep_results = read_hyper_from_twbx(
                     self.tableau_file, max_rows=self.hyper_max_rows,
@@ -2557,11 +2770,11 @@ class TableauExtractor:
                     # Merge deep data (actual row counts, richer sample rows)
                     deep_map = {}
                     for dr in deep_results:
-                        key = dr.get('original_filename', '')
-                        deep_map[key] = dr
+                        key = dr.get('archive_path', '')
+                        deep_map.setdefault(key, []).append(dr)
                     for entry in hyper_files:
-                        fname = entry.get('filename', '')
-                        deep = deep_map.get(fname)
+                        matches = deep_map.get(entry.get('path', ''), [])
+                        deep = matches[0] if len(matches) == 1 else None
                         if deep and deep.get('tables'):
                             entry['hyper_reader_tables'] = deep['tables']
                             entry['hyper_reader_format'] = deep.get('format', 'unknown')

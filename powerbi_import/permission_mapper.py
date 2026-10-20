@@ -14,6 +14,11 @@ import logging
 import os
 import re
 
+try:
+    from powerbi_import.report_localization import text
+except ImportError:
+    from report_localization import text
+
 logger = logging.getLogger(__name__)
 
 
@@ -427,7 +432,7 @@ def generate_permission_report(
             section_open, section_close, badge, data_table, esc,
         )
 
-    parts = [html_open("Permission Migration Report")]
+    parts = [html_open(text("Permission Migration Report", "Rapport de migration des autorisations"))]
 
     # Summary
     rls = rls_reconciliation or {}
@@ -435,14 +440,14 @@ def generate_permission_report(
     unresolved_count = len(rls.get('unresolved', []))
 
     parts.append(stat_grid([
-        stat_card(str(len(role_assignments)), "Users Mapped"),
-        stat_card(str(resolved_count), "RLS Resolved"),
-        stat_card(str(unresolved_count), "RLS Unresolved",
+        stat_card(str(len(role_assignments)), text("Users Mapped", "Utilisateurs associés")),
+        stat_card(str(resolved_count), text("RLS Resolved", "RLS résolu")),
+        stat_card(str(unresolved_count), text("RLS Unresolved", "RLS non résolu"),
                   accent="fail" if unresolved_count else "success"),
     ]))
 
     # Role assignments
-    parts.append(section_open("ws_roles", "Workspace Role Assignments"))
+    parts.append(section_open("ws_roles", text("Workspace Role Assignments", "Attributions des rôles d’espace de travail")))
     role_rows = []
     for a in role_assignments[:200]:
         role_badge = {
@@ -459,14 +464,15 @@ def generate_permission_report(
             esc(', '.join(a.get('groups', [])[:3])),
         ])
     parts.append(data_table(
-        headers=["Identity", "Tableau Role", "PBI Role", "Groups"],
+        headers=[text("Identity", "Identité"), text("Tableau Role", "Rôle Tableau"),
+                 text("PBI Role", "Rôle Power BI"), text("Groups", "Groupes")],
         rows=role_rows,
     ))
     parts.append(section_close())
 
     # RLS reconciliation
     if rls.get('unresolved'):
-        parts.append(section_open("rls_unresolved", "Unresolved RLS Principals"))
+        parts.append(section_open("rls_unresolved", text("Unresolved RLS Principals", "Principaux RLS non résolus")))
         unres_rows = []
         for u in rls['unresolved']:
             unres_rows.append([
@@ -475,7 +481,8 @@ def generate_permission_report(
                 esc(u.get('reason', '')),
             ])
         parts.append(data_table(
-            headers=["RLS Role", "Tableau User", "Issue"],
+            headers=[text("RLS Role", "Rôle RLS"), text("Tableau User", "Utilisateur Tableau"),
+                     text("Issue", "Problème")],
             rows=unres_rows,
         ))
         parts.append(section_close())

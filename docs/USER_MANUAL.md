@@ -46,18 +46,22 @@ Use assessment before migration when the workbook has many data sources, custom 
 
 ## 3. Common Workflows
 
-### Migrate One Workbook
+### Migrate Workbooks
 
 ```bash
-python migrate.py migrate workbook.twbx
+python migrate.py batch ./workbooks --output-dir ./output
 ```
 
-The generated PBIP project is written to the default output folder unless you pass `--output-dir`.
+Generation is batch-only. To migrate one workbook, place it in a folder by
+itself; the same command handles one or many workbook files.
 
-### Choose an Output Folder
+**Bulk/batch, not simple load:** use the source-folder workflow for project
+generation. Selecting/loading a single `.twb`/`.twbx`, or running `assess`,
+`quality`, or `parity` on that file, is not a project-generation workflow.
+Opening a generated `.pbip` in Desktop does not rerun the migration.
 
-```bash
-python migrate.py migrate workbook.twbx --output-dir ./output
+```powershell
+.\.venv\Scripts\python.exe migrate.py batch "C:\Migration\Sources" --output-dir "C:\Migration\Output"
 ```
 
 ### Run Quality Evidence
@@ -79,7 +83,7 @@ Batch mode isolates each workbook. A failure in one workbook does not rewrite an
 ### Generate Fabric Artifacts
 
 ```bash
-python migrate.py fabric workbook.twbx --output-dir ./fabric-output
+python migrate.py fabric ./workbooks --output-dir ./fabric-output
 ```
 
 Fabric output is local scaffolding until it is bound to an authorized Fabric workspace.
@@ -87,10 +91,12 @@ Fabric output is local scaffolding until it is bound to an authorized Fabric wor
 ### Package a Migration Handoff
 
 ```bash
-python migrate.py package workbook.twbx
+python migrate.py package ./workbooks
 ```
 
-Use the package when another operator or review board needs the source inventory, target artifacts, quality evidence, known differences, and credential template in one deliverable.
+The `package` folder shortcut follows batch migration. Batch mode writes the
+unified quality report and evidence ZIP for each successful workbook by default;
+it does not run the separate assessment report packager.
 
 ## 4. Output Folder Guide
 
@@ -131,6 +137,46 @@ reported as proof that the model contains rows. Keep the HTML, JSON, and PNG
 evidence outside the source repository when it contains customer information.
 
 Static validation is intentionally conservative. It must not claim Desktop or Fabric success unless those environments actually supplied evidence.
+
+### Tableau and Power BI screenshots (optional local diagnostic)
+
+The paired Desktop diagnostic is included in the source tree, separate from
+bulk generation, and must be started explicitly.
+
+Prerequisites: an interactive Windows session, Tableau Desktop and Power BI
+Desktop installed, and existing batch output. Run from the repository root:
+
+```powershell
+$py = ".\.venv\Scripts\python.exe"
+$src = "C:\Migration\Sources"
+$out = "C:\Migration\Output"
+
+# Initial full-window captures, for manual review.
+& $py scripts\compare_desktop_reports.py $src $out
+
+# Attempt individual views/pages; selection must be verified through UI Automation.
+& $py scripts\compare_desktop_reports.py $src $out --all-pages --page-timeout 30
+
+# Optional decoded PNG pixel differences; not a semantic or fidelity verdict.
+& $py scripts\compare_desktop_reports.py $src $out --all-pages --screen-comparison local
+```
+
+Both arguments are folders, even for a single workbook. Missing or ambiguous
+source/project pairs and inaccessible tabs remain explicit failures. Initial
+captures do not establish page identity; `--all-pages` does not guarantee that
+every view can be selected or captured.
+
+Tableau is not refreshed. Power BI requests refresh and data verification,
+which may contact configured data sources. The pixel-comparison step itself
+uses no AI service or network and does not prove data correctness or parity.
+The diagnostic closes only application processes it launched.
+
+Each run writes `desktop_comparisons\<run_id>\manifest.json` and
+`comparison.html` beneath the output folder; the reports reference the captured
+PNG evidence. Keep screenshots, source data and manifests outside Git when
+they contain personal, customer or confidential information.
+See [paired Desktop screenshots](DEPLOYMENT_GUIDE.md#paired-tableau--power-bi-desktop-screenshots)
+for executable overrides, capture scope and failure states.
 
 ## 6. Tableau to Power BI Correspondence Table
 
@@ -203,6 +249,7 @@ After migration:
 
 - Do not put secrets in commands, logs, chat, screenshots, or documentation.
 - Treat generated artifacts as output, not source-of-truth code.
-- Prefer `quality` and `package` when handing work to another person.
+- Use the unified quality report and per-workbook evidence ZIPs from batch
+  output when handing work to another person.
 - Do not claim production readiness from static validation alone.
 - Keep approximations visible; do not hide them by changing thresholds.

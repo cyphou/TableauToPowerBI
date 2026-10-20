@@ -621,6 +621,10 @@ def generate_server_html_report(
 ) -> str:
     """Generate an executive HTML dashboard report for the server assessment."""
     try:
+        from powerbi_import.report_localization import text, render
+    except ImportError:
+        from report_localization import text, render
+    try:
         from powerbi_import.html_template import (
             html_open, html_close, stat_card, stat_grid, section_open,
             section_close, badge, fidelity_bar, donut_chart, bar_chart,
@@ -634,25 +638,26 @@ def generate_server_html_report(
         )
 
     html = html_open(
-        title="Tableau Server \u2014 Portfolio Assessment",
-        subtitle=f"{assessment.total_workbooks} workbooks analyzed",
+        title=text("Tableau Server \u2014 Portfolio Assessment", "Tableau Server — Évaluation du portefeuille"),
+        subtitle=text(f"{assessment.total_workbooks} workbooks analyzed",
+                      f"{assessment.total_workbooks} classeurs analysés"),
         timestamp=assessment.timestamp,
     )
 
     # ── Executive Summary ──────────────────────────────────────
-    html += section_open("summary", "Executive Summary", "&#128200;")
+    html += section_open("summary", text("Executive Summary", "Synthèse"), "&#128200;")
     html += stat_grid([
-        stat_card(assessment.total_workbooks, "Total Workbooks", accent="blue"),
-        stat_card(assessment.green_count, "GREEN (Ready)", accent="success"),
-        stat_card(assessment.yellow_count, "YELLOW (Review)", accent="warn"),
-        stat_card(assessment.red_count, "RED (Complex)", accent="fail"),
-        stat_card(f"{assessment.readiness_pct}%", "Readiness", accent="blue"),
-        stat_card(f"{assessment.total_effort_hours:.1f}h", "Est. Total Effort", accent="purple"),
+        stat_card(assessment.total_workbooks, text("Total Workbooks", "Total des classeurs"), accent="blue"),
+        stat_card(assessment.green_count, text("GREEN (Ready)", "GREEN (Prêt)"), accent="success"),
+        stat_card(assessment.yellow_count, text("YELLOW (Review)", "YELLOW (À examiner)"), accent="warn"),
+        stat_card(assessment.red_count, text("RED (Complex)", "RED (Complexe)"), accent="fail"),
+        stat_card(f"{assessment.readiness_pct}%", text("Readiness", "Préparation"), accent="blue"),
+        stat_card(f"{assessment.total_effort_hours:.1f}h", text("Est. Total Effort", "Effort total estimé"), accent="purple"),
     ])
 
     # Readiness donut
     html += '<div class="chart-row">'
-    html += '<div class="chart-card"><h4>&#127919; Readiness Distribution</h4>'
+    html += f'<div class="chart-card"><h4>&#127919; {render(text("Readiness Distribution", "Répartition de la préparation"))}</h4>'
     html += donut_chart([
         ("GREEN", assessment.green_count, SUCCESS),
         ("YELLOW", assessment.yellow_count, "#c19c00"),
@@ -664,7 +669,7 @@ def generate_server_html_report(
     if assessment.connector_census:
         conn_items = [(conn, count, "#0078d4")
                       for conn, count in assessment.connector_census.items()]
-        html += '<div class="chart-card"><h4>&#128268; Connector Census</h4>'
+        html += f'<div class="chart-card"><h4>&#128268; {render(text("Connector Census", "Inventaire des connecteurs"))}</h4>'
         html += bar_chart(conn_items)
         html += '</div>'
 
@@ -672,7 +677,7 @@ def generate_server_html_report(
     html += section_close()
 
     if assessment.dependency_hotspots:
-        html += section_open("dependencies", "Dependency Hotspots", "&#128279;")
+        html += section_open("dependencies", text("Dependency Hotspots", "Points critiques de dépendance"), "&#128279;")
         hotspot_rows = []
         for hotspot in assessment.dependency_hotspots:
             hotspot_rows.append([
@@ -682,35 +687,40 @@ def generate_server_html_report(
             ])
         html += '<div class="card">'
         html += data_table(
-            ["Workbook", "Dependency Surface", "Lineage Status"],
+            [text("Workbook", "Classeur"), text("Dependency Surface", "Étendue des dépendances"), text("Lineage Status", "Statut de traçabilité")],
             hotspot_rows, "dependency-hotspots-tbl", sortable=True)
         html += '</div>'
         html += section_close()
 
     # ── Migration Waves ──────────────────────────────────────────
     if assessment.waves:
-        html += section_open("waves", "Migration Waves", "&#128640;")
+        html += section_open("waves", text("Migration Waves", "Vagues de migration"), "&#128640;")
         wave_rows = []
+        wave_labels = {
+            "Easy (quick wins)": text("Easy (quick wins)", "Facile (gains rapides)"),
+            "Medium (standard migration)": text("Medium (standard migration)", "Moyen (migration standard)"),
+            "Complex (manual review recommended)": text("Complex (manual review recommended)", "Complexe (examen manuel recommandé)"),
+        }
         for wave in assessment.waves:
             members = ', '.join(wave.workbooks[:5])
             if len(wave.workbooks) > 5:
                 members += '...'
             wave_rows.append([
-                f'<strong>Wave {wave.wave_number}</strong>',
-                esc(wave.label),
+                f'<strong>{render(text(f"Wave {wave.wave_number}", f"Vague {wave.wave_number}"))}</strong>',
+                render(wave_labels.get(wave.label, wave.label)),
                 str(len(wave.workbooks)),
                 f'{wave.total_effort:.1f}h',
                 esc(members),
             ])
         html += '<div class="card">'
         html += data_table(
-            ["Wave", "Classification", "Workbooks", "Effort", "Members"],
+            [text("Wave", "Vague"), text("Classification", "Classification"), text("Workbooks", "Classeurs"), text("Effort", "Effort"), text("Members", "Membres")],
             wave_rows, "wave-tbl", sortable=True)
         html += '</div>'
         html += section_close()
 
     # ── Workbook Detail ──────────────────────────────────────────
-    html += section_open("detail", "Workbook Detail", "&#128221;")
+    html += section_open("detail", text("Workbook Detail", "Détail des classeurs"), "&#128221;")
     wb_rows = []
     for r in sorted(assessment.workbook_results, key=lambda x: x.effort_hours, reverse=True):
         wb_rows.append([
@@ -728,7 +738,7 @@ def generate_server_html_report(
         ])
     html += '<div class="card">'
     html += data_table(
-        ["Status", "Workbook", "Visuals", "Calcs", "Tables", "LOD", "Lineage", "Relationships", "Server Risk", "Effort", "Connectors"],
+        [text("Status", "Statut"), text("Workbook", "Classeur"), text("Visuals", "Visuels"), text("Calcs", "Calculs"), text("Tables", "Tables"), "LOD", text("Lineage", "Traçabilité"), text("Relationships", "Relations"), text("Server Risk", "Risque serveur"), text("Effort", "Effort"), text("Connectors", "Connecteurs")],
         wb_rows, "wb-detail-tbl", sortable=True, searchable=True)
     html += '</div>'
     html += section_close()

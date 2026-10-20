@@ -38,7 +38,419 @@ from datasource_extractor import (
     extract_column_metadata,
     extract_calculations,
     extract_relationships,
+    extract_relation_metadata,
 )
+
+
+class TestActiveMaterializedExtractContext(unittest.TestCase):
+    """Entirely synthetic native trees paired with one explicit Hyper object."""
+
+    def fixture(self, kind="join"):
+        from copy import deepcopy
+        ds = ET.Element("datasource", name="Synthetic")
+        root = ET.SubElement(ds, "connection", {"class": "federated"})
+        tree = ET.SubElement(root, "relation", type=kind)
+        if kind == "join":
+            tree.set("join", "left")
+            clause = ET.SubElement(tree, "clause", type="join")
+            comparison = ET.SubElement(clause, "expression", op="=")
+            ET.SubElement(comparison, "expression", op="[Left].[ID]")
+            ET.SubElement(comparison, "expression", op="[Right].[ID]")
+        for alias in ("Left", "Right"):
+            named = ET.SubElement(root, "named-connection", name=alias + "-ref")
+            ET.SubElement(named, "connection", {
+                "class": "excel-direct", "filename": alias + ".xlsx",
+                "directory": "Data"})
+            relation = ET.SubElement(tree, "relation", {
+                "type": "table", "name": alias, "connection": alias + "-ref",
+                "table": "[" + alias + "$]"})
+            columns = ET.SubElement(relation, "columns")
+            ET.SubElement(columns, "column", name=alias + " field",
+                          datatype="integer" if alias == "Left" else "string")
+        records = ET.SubElement(root, "metadata-records")
+        extract = ET.SubElement(ds, "extract", enabled="true")
+        ET.SubElement(extract, "filter", {"column": "[Left field]", "class": "quantitative"})
+        conn = ET.SubElement(extract, "connection", {
+            "class": "hyper", "dbname": "Data/exact.hyper",
+            "schema": "Extract", "tablename": "Materialized"})
+        physical = ET.SubElement(conn, "relation", {
+            "name": "Extract", "type": "table", "table": "[Extract].[Materialized]"})
+        physical_columns = ET.SubElement(physical, "columns")
+        extract_records = ET.SubElement(conn, "metadata-records")
+        maps = ET.SubElement(conn, "cols")
+        for alias, dtype in (("Left", "integer"), ("Right", "string")):
+            local, remote = alias + " field", alias.lower() + "_physical"
+            ET.SubElement(ds, "column", name=f"[{local}]", datatype=dtype)
+            ET.SubElement(physical_columns, "column", name=local, datatype=dtype)
+            for parent, table, source in (
+                (records, alias, alias + "_native"),
+                (extract_records, "Extract", remote),
+            ):
+                record = ET.SubElement(parent, "metadata-record", {"class": "column"})
+                for tag, text in (("local-name", f"[{local}]"),
+                                  ("remote-name", source),
+                                  ("parent-name", f"[{table}]"),
+                                  ("local-type", dtype)):
+                    ET.SubElement(record, tag).text = text
+            ET.SubElement(maps, "map", key=f"[{local}]",
+                          value=f"[Extract].[{remote}]")
+        graph = ET.SubElement(ds, "object-graph")
+        obj = ET.SubElement(ET.SubElement(graph, "objects"), "object",
+                            id="logical-101", caption="Logical object")
+        ET.SubElement(obj, "properties", context="").append(deepcopy(tree))
+        ET.SubElement(obj, "properties", context="extract").append(deepcopy(physical))
+        return ds
+
+    def extract(self, ds):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = os.path.join(directory, "synthetic.twbx")
+            with zipfile.ZipFile(archive, "w") as package:
+                package.writestr("Data/exact.hyper", b"opaque synthetic catalog placeholder")
+            result = extract_datasource(ds, archive)
+            return result, os.path.abspath(archive)
+
+    def test_join_and_union_flatten_only_with_complete_typed_bijection(self):
+        for kind in ("join", "union"):
+            with self.subTest(kind=kind):
+                ds = self.fixture(kind)
+                before = ET.tostring(ds)
+                result, workbook = self.extract(ds)
+                self.assertEqual(ET.tostring(ds), before)
+                self.assertEqual([t["name"] for t in result["tables"]], ["Logical object"])
+                table = result["tables"][0]
+                self.assertEqual(table["hyper_identity"], {
+                    "workbook": workbook, "archive_member": "Data/exact.hyper",
+                    "schema": "Extract", "table": "Materialized"})
+                self.assertEqual(table["cols_physical_map"], {
+                    "left_physical": "Left field", "right_physical": "Right field"})
+                self.assertEqual([(c["name"], c["datatype"]) for c in table["columns"]],
+                                 [("Left field", "integer"), ("Right field", "string")])
+                self.assertEqual(result["col_local_name_map"], {
+                    "Left field": "Logical object", "Right field": "Logical object"})
+                self.assertEqual(result["relationships"], [])
+                provenance = result["materialized_extract"]
+                self.assertEqual(provenance["object_id"], "logical-101")
+                self.assertEqual(provenance["catalog_validation"], "required_at_export")
+                self.assertEqual(provenance["field_mapping_validation"],
+                                 "exact_declared_extract_metadata")
+                self.assertIn(f'type="{kind}"', provenance["native_context_xml"])
+                self.assertTrue(provenance["extract_filters_xml"])
+                self.assertIn("native_relation_metadata", provenance)
+                self.assertIn("native_col_local_name_map", provenance)
+
+    def test_ambiguous_or_incomplete_context_never_partially_flattens(self):
+        def extra_object(ds):
+            ET.SubElement(ds.find("object-graph/objects"), "object", id="second")
+
+        def logical_relationship(ds):
+            ET.SubElement(ET.SubElement(ds.find("object-graph"), "relationships"),
+                          "relationship")
+
+        for label, mutate in (
+            ("disabled", lambda ds: ds.find("extract").set("enabled", "false")),
+            ("multiple objects", extra_object),
+            ("logical relationship", logical_relationship),
+            ("missing type", lambda ds: ds.find(
+                "extract/connection/metadata-records/metadata-record/local-type").clear()),
+            ("wrong table", lambda ds: ds.find("extract/connection").set("tablename", "Other")),
+            ("conflicting map", lambda ds: ds.find(
+                "extract/connection/cols/map").set("value", "[Extract].[wrong]")),
+        ):
+            with self.subTest(shape=label):
+                ds = self.fixture()
+                mutate(ds)
+                result, _ = self.extract(ds)
+                self.assertNotIn("materialized_extract", result)
+                self.assertNotIn("Logical object", [t["name"] for t in result["tables"]])
+                for table in result["tables"]:
+                    self.assertNotIn("hyper_identity", table)
+
+    def test_disabled_extract_keeps_one_or_two_native_excel_bindings_and_provenance(self):
+        for count in (1, 2):
+            with self.subTest(native_excel_sources=count):
+                ds = self.fixture()
+                ds.find("extract").set("enabled", "false")
+                if count == 1:
+                    root = ds.find("connection")
+                    tree = root.find("relation")
+                    first = tree.find("relation")
+                    root.remove(tree)
+                    root.append(first)
+                    props = ds.find("object-graph/objects/object/properties")
+                    props.clear()
+                    props.set("context", "")
+                    from copy import deepcopy
+                    props.append(deepcopy(first))
+                result, _ = self.extract(ds)
+                self.assertEqual({t["name"] for t in result["tables"]},
+                                 {"Left", "Right"} if count == 2 else {"Left"})
+                for table in result["tables"]:
+                    self.assertEqual(table["connection_details"]["type"].lower(),
+                                     "excel")
+                    self.assertNotIn("hyper_identity", table)
+                inactive = result["inactive_extract_context"]
+                self.assertEqual(inactive["selection"], "native_no_enabled_extract")
+                self.assertTrue(inactive["extract_xml"])
+                self.assertTrue(inactive["object_extract_contexts_xml"])
+
+
+class TestRelationMetadata(unittest.TestCase):
+    """Source provenance is a predicate tree, not a guessed equality edge."""
+
+    def fixture(self):
+        from tests.logical_relationship_fixtures import relation_xml
+        return relation_xml()
+
+    def test_complete_composite_equality_and_non_equi_predicate_preserved(self):
+        ds = self.fixture()
+        metadata = extract_relation_metadata(ds)
+        field = lambda table, column: dict(
+            table=table, column=column, remote_column=column,
+            reference=f"[{table}].[{column}]")
+        expected = {
+            "left": {"object_id": "Current", "tables": ["Current"]},
+            "right": {"object_id": "Prior", "tables": ["Prior"]},
+            "join_type": None,
+            "predicate": {
+                "operator": "AND", "arguments": [
+                    {"operator": operator,
+                     "left": field("Current", left), "right": field("Prior", right)}
+                    for operator, left, right in (
+                        ("=", "C_Key", "P_Key"), ("=", "C_Group", "P_Group"),
+                        (">", "C_Time", "P_Time"))
+                ],
+            },
+            "requires_materialization": True,
+        }
+        self.assertEqual(metadata["version"], 1)
+        self.assertEqual(metadata["logical_relationships"], [expected])
+        self.assertEqual(metadata["physical_relations"], [])
+        self.assertEqual(metadata["logical_tables"], [
+            {"object_id": alias, "caption": alias + " display", "relations": [{
+                "type": "table", "name": alias,
+                "connection": "synthetic_connection", "source_table": "[Events]",
+            }]} for alias in ("Current", "Prior")
+        ])
+        # Never emit the equality subset and silently lose the strict range.
+        self.assertEqual(extract_relationships(ds, metadata), [])
+
+    def test_same_source_and_rowid_never_synthesize_a_relationship(self):
+        ds = self.fixture()
+        graph = ds.find("object-graph")
+        graph.remove(graph.find("relationships"))
+        for alias in ("Current", "Prior"):
+            record = ET.SubElement(ds, "metadata-record", {"class": "column"})
+            for name, value in (("local-name", "[RowID]"),
+                                ("remote-name", "RowID"),
+                                ("parent-name", f"[{alias}]")):
+                ET.SubElement(record, name).text = value
+        metadata = extract_relation_metadata(ds)
+        self.assertEqual(len(metadata["logical_tables"]), 2)
+        self.assertEqual(metadata["logical_relationships"], [])
+        self.assertEqual(extract_relationships(ds, metadata), [])
+
+    def test_single_explicit_equality_retains_original_aliases_not_captions(self):
+        ds = self.fixture()
+        rel = ds.find(".//relationship")
+        predicate = rel.find("expression")
+        first = predicate[0]
+        rel.remove(predicate)
+        rel.append(first)
+        metadata = extract_relation_metadata(ds)
+        self.assertFalse(metadata["logical_relationships"][0]["requires_materialization"])
+        self.assertEqual(extract_relationships(ds, metadata), [{
+            "type": "left", "left": {"table": "Current", "column": "C_Key"},
+            "right": {"table": "Prior", "column": "P_Key"},
+        }])
+
+    def test_composite_equality_retains_all_legacy_edges_but_requires_materialization(self):
+        ds = self.fixture()
+        conjunction = ds.find(".//relationship/expression")
+        conjunction.remove(conjunction[-1])
+        metadata = extract_relation_metadata(ds)
+        self.assertTrue(metadata["logical_relationships"][0]["requires_materialization"])
+        self.assertEqual(extract_relationships(ds, metadata), [
+            {"type": "left", "left": {"table": "Current", "column": left},
+             "right": {"table": "Prior", "column": right}}
+            for left, right in (("C_Key", "P_Key"), ("C_Group", "P_Group"))
+        ])
+
+    def test_reversed_operands_and_local_remote_column_identity_are_not_rebound(self):
+        ds = self.fixture()
+        # Connector names are distinct from the local Tableau field identities.
+        cols = ET.SubElement(ds, "cols")
+        for alias, local, remote in (
+            ("Current", "C_Time", "time_value"), ("Prior", "P_Time", "time_value"),
+        ):
+            ET.SubElement(cols, "map", key=f"[{local}]", value=f"[{alias}].[{remote}]")
+        comparison = ds.find(".//relationship/expression")[-1]
+        comparison.set("op", "<")
+        comparison[0].set("op", "[Prior].[time_value]")
+        comparison[1].set("op", "[Current].[time_value]")
+        metadata = extract_relation_metadata(ds)
+        predicate = metadata["logical_relationships"][0]["predicate"]["arguments"][-1]
+        self.assertEqual(predicate, {
+            "operator": "<",
+            "left": {"table": "Prior", "column": "P_Time",
+                     "remote_column": "time_value", "reference": "[Prior].[time_value]"},
+            "right": {"table": "Current", "column": "C_Time",
+                      "remote_column": "time_value", "reference": "[Current].[time_value]"},
+        })
+        self.assertEqual(extract_relationships(ds, metadata), [])
+
+    def test_active_feature_attributes_and_graph_win_over_compatibility_copy(self):
+        ds = self.fixture()
+        rel = ds.find(".//relationship")
+        comparison = rel.find("expression")[2]
+        comparison.set("op", "=")
+        comparison.set("feature.true...op", ">=")
+        false_graph = ET.SubElement(ds, "feature.false...object-graph")
+        ET.SubElement(false_graph, "relationship", expression="[Current].[RowID] = [Prior].[RowID]")
+        metadata = extract_relation_metadata(ds)
+        self.assertEqual(len(metadata["logical_relationships"]), 1)
+        self.assertEqual(metadata["logical_relationships"][0]["predicate"]["arguments"][2]["operator"],
+                         ">=")
+        self.assertEqual(extract_relationships(ds, metadata), [])
+
+    def test_opaque_or_disjunctive_predicates_never_project_equality_subset(self):
+        for operator in ("OR", "unsupported_function"):
+            with self.subTest(operator=operator):
+                ds = self.fixture()
+                ds.find(".//relationship/expression").set("op", operator)
+                metadata = extract_relation_metadata(ds)
+                rel = metadata["logical_relationships"][0]
+                self.assertEqual(rel["predicate"]["operator"], operator)
+                self.assertEqual(len(rel["predicate"]["arguments"]), 3)
+                self.assertTrue(rel["requires_materialization"])
+                self.assertEqual(extract_relationships(ds, metadata), [])
+        ds = self.fixture()
+        rel = ds.find(".//relationship")
+        rel.remove(rel.find("expression"))
+        raw = "[Current].[C_Key] = [Prior].[P_Key] AND [Current].[C_Time] > [Prior].[P_Time]"
+        rel.set("expression", raw)
+        metadata = extract_relation_metadata(ds)
+        self.assertEqual(metadata["logical_relationships"][0]["predicate"],
+                         {"operator": "", "expression": raw})
+        self.assertEqual(extract_relationships(ds, metadata), [])
+
+    def test_physical_join_keeps_order_join_type_and_full_predicate(self):
+        ds = self.fixture()
+        connection = ET.SubElement(ds, "connection")
+        join = ET.SubElement(connection, "relation", type="join", join="left")
+        for alias in ("Current", "Prior"):
+            ET.SubElement(join, "relation", type="table", name=alias,
+                          connection="synthetic_connection", table="[Events]")
+        logical = ds.find(".//relationship")
+        clause = ET.SubElement(join, "clause")
+        clause.append(logical.find("expression"))
+        metadata = extract_relation_metadata(ds)
+        tree = metadata["physical_relations"][0]
+        self.assertEqual(tree["join_type"], "left")
+        self.assertEqual([child["name"] for child in tree["children"]], ["Current", "Prior"])
+        self.assertEqual(tree["predicate"], metadata["logical_relationships"][0]["predicate"])
+        self.assertTrue(tree["requires_materialization"])
+        self.assertEqual(extract_relationships(ds, metadata), [])
+
+    def test_public_extractor_includes_provenance_and_none_is_versioned_empty(self):
+        ds = self.fixture()
+        self.assertEqual(extract_datasource(ds)["relation_metadata"],
+                         extract_relation_metadata(ds))
+        expected = {"version": 1, "physical_relations": [], "logical_tables": [],
+                    "logical_relationships": []}
+        self.assertEqual(extract_relation_metadata(None), expected)
+        self.assertEqual(extract_datasource(None)["relation_metadata"], expected)
+
+    def test_logical_object_ids_display_captions_and_physical_aliases_are_distinct(self):
+        ds = self.fixture()
+        ids = {"Current": "object-101", "Prior": "object-202"}
+        for obj in ds.findall(".//objects/object"):
+            alias = obj.get("id")
+            obj.set("id", ids[alias])
+            obj.set("caption", f"{alias} friendly display")
+        rel = ds.find(".//relationship")
+        for endpoint in ("first-end-point", "second-end-point"):
+            elem = rel.find(endpoint)
+            elem.set("object-id", ids[elem.get("object-id")])
+        result = extract_datasource(ds)
+        metadata = result["relation_metadata"]
+        relationship = metadata["logical_relationships"][0]
+        self.assertEqual(relationship["left"],
+                         {"object_id": "object-101", "tables": ["Current"]})
+        self.assertEqual(relationship["right"],
+                         {"object_id": "object-202", "tables": ["Prior"]})
+        self.assertEqual(
+            [(obj["object_id"], obj["caption"], obj["relations"][0]["name"],
+              obj["relations"][0]["source_table"])
+             for obj in metadata["logical_tables"]],
+            [("object-101", "Current friendly display", "Current", "[Events]"),
+             ("object-202", "Prior friendly display", "Prior", "[Events]")])
+        self.assertEqual(relationship["predicate"],
+                         extract_relation_metadata(self.fixture())[
+                             "logical_relationships"][0]["predicate"])
+        self.assertTrue(relationship["requires_materialization"])
+        self.assertEqual(result["relationships"], [])
+
+    def test_bare_columns_are_disambiguated_by_physical_endpoint_scope_not_object_id(self):
+        ds = self.fixture()
+        for obj, object_id in zip(ds.findall(".//objects/object"),
+                                  ("object-101", "object-202")):
+            obj.set("id", object_id)
+        rel = ds.find(".//relationship")
+        rel.find("first-end-point").set("object-id", "object-101")
+        rel.find("second-end-point").set("object-id", "object-202")
+        rel.remove(rel.find("expression"))
+        comparison = ET.SubElement(rel, "expression", op="=")
+        ET.SubElement(comparison, "expression", op="[SharedKey]")
+        ET.SubElement(comparison, "expression", op="[SharedKey]")
+        records = ET.SubElement(ds, "metadata-records")
+        for alias, remote in (("Current", "current_key"), ("Prior", "prior_key")):
+            record = ET.SubElement(records, "metadata-record", {"class": "column"})
+            for tag, value in (("local-name", "[SharedKey]"),
+                               ("parent-name", f"[{alias}]"),
+                               ("remote-name", remote)):
+                ET.SubElement(record, tag).text = value
+        result = extract_datasource(ds)
+        relationship = result["relation_metadata"]["logical_relationships"][0]
+        self.assertEqual(relationship["predicate"], {
+            "operator": "=",
+            "left": {"table": "Current", "column": "SharedKey",
+                     "remote_column": "current_key", "reference": "[SharedKey]"},
+            "right": {"table": "Prior", "column": "SharedKey",
+                      "remote_column": "prior_key", "reference": "[SharedKey]"},
+        })
+        self.assertFalse(relationship["requires_materialization"])
+        self.assertEqual(result["relationships"], [{
+            "type": "left", "left": {"table": "Current", "column": "SharedKey"},
+            "right": {"table": "Prior", "column": "SharedKey"},
+        }])
+
+    def test_reversed_qualified_operands_do_not_swap_logical_endpoints(self):
+        ds = self.fixture()
+        objects = ds.findall(".//objects/object")
+        objects[0].set("id", "object-101")
+        objects[1].set("id", "object-202")
+        rel = ds.find(".//relationship")
+        rel.find("first-end-point").set("object-id", "object-101")
+        rel.find("second-end-point").set("object-id", "object-202")
+        rel.remove(rel.find("expression"))
+        comparison = ET.SubElement(rel, "expression", op=">")
+        ET.SubElement(comparison, "expression", op="[Prior].[P_Time]")
+        ET.SubElement(comparison, "expression", op="[Current].[C_Time]")
+        result = extract_datasource(ds)
+        relationship = result["relation_metadata"]["logical_relationships"][0]
+        self.assertEqual(relationship["left"],
+                         {"object_id": "object-101", "tables": ["Current"]})
+        self.assertEqual(relationship["right"],
+                         {"object_id": "object-202", "tables": ["Prior"]})
+        self.assertEqual(relationship["predicate"], {
+            "operator": ">",
+            "left": {"table": "Prior", "column": "P_Time", "remote_column": "P_Time",
+                     "reference": "[Prior].[P_Time]"},
+            "right": {"table": "Current", "column": "C_Time", "remote_column": "C_Time",
+                      "reference": "[Current].[C_Time]"},
+        })
+        self.assertTrue(relationship["requires_materialization"])
+        self.assertEqual(result["relationships"], [])
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 import zipfile
+from types import SimpleNamespace
 from unittest import mock
 import tableau_export.hyper_reader as _hyper_reader
 
@@ -138,6 +139,103 @@ class TestSplitValues(unittest.TestCase):
 
 
 # ── _read_hyper_sqlite ─────────────────────────────────────────────
+
+
+class TestHyperApiSchemaIdentity(unittest.TestCase):
+    """SchemaName.name is a Name; SchemaName itself has no .unescaped."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = os.path.join(tmp.name, "synthetic.hyper")
+        with open(self.path, "wb") as stream:
+            stream.write(b"Hyper" + b"\0" * 11)
+        self.identities = [
+            ('Schema."MiXeD"', 'Table."MiXeD"'),
+            ('Schema."MiXeD"', 'table."mixed"'),
+            ('schema."mixed"', 'Table."MiXeD"'),
+        ]
+        schemas = [
+            SimpleNamespace(name=SimpleNamespace(unescaped=name))
+            for name in dict.fromkeys(schema for schema, _ in self.identities)
+        ]
+
+        class TableName:
+            def __init__(self, schema, name):
+                self.schema_name = schema
+                self.name = SimpleNamespace(unescaped=name)
+
+            def __str__(self):
+                return ".".join(
+                    '"' + name.replace('"', '""') + '"'
+                    for name in (self.schema_name.name.unescaped, self.name.unescaped)
+                )
+
+        self.tables = [
+            TableName(next(s for s in schemas if s.name.unescaped == schema), name)
+            for schema, name in self.identities
+        ]
+        self.connection = mock.MagicMock()
+        self.connection.__enter__.return_value = self.connection
+        self.connection.catalog.get_schema_names.return_value = schemas
+        self.connection.catalog.get_table_names.side_effect = (
+            lambda schema: [t for t in self.tables if t.schema_name is schema]
+        )
+        self.connection.catalog.get_table_definition.return_value = SimpleNamespace(
+            columns=[SimpleNamespace(
+                name=SimpleNamespace(unescaped="Value"),
+                type="INTEGER",
+                nullability=SimpleNamespace(is_nullable=True),
+            )]
+        )
+        self.connection.execute_scalar_query.return_value = 2
+        self.connection.execute_query.return_value.__enter__.return_value = [[7], [9]]
+        process = mock.MagicMock()
+        process.__enter__.return_value = process
+        api = SimpleNamespace(
+            HyperProcess=mock.Mock(return_value=process),
+            Connection=mock.Mock(return_value=self.connection),
+            Telemetry=SimpleNamespace(DO_NOT_SEND_USAGE_DATA_TO_TABLEAU=0),
+            TableName=TableName,
+        )
+        patcher = mock.patch.dict("sys.modules", {"tableauhyperapi": api})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_read_hyper_preserves_exact_schema_table_metadata_without_fallback(self):
+        with mock.patch.object(_hyper_reader, "_read_hyper_sqlite") as sqlite_reader, \
+                mock.patch.object(_hyper_reader, "_read_hyper_header") as header_reader:
+            result = read_hyper(self.path, max_rows=2)
+            sqlite_reader.assert_not_called()
+            header_reader.assert_not_called()
+        self.assertEqual(result["format"], "hyper_api")
+        self.assertEqual(
+            [(t["schema"], t["table"]) for t in result["tables"]],
+            self.identities,
+        )
+        self.assertEqual(
+            [t["qualified_table"] for t in result["tables"]],
+            [str(t) for t in self.tables],
+        )
+        for table in result["tables"]:
+            self.assertEqual(table["columns"], [{"name": "Value", "hyper_type": "INTEGER"}])
+            self.assertEqual(table["column_count"], 1)
+            self.assertEqual(table["row_count"], 2)
+            self.assertEqual(table["sample_rows"], [{"Value": 7}, {"Value": 9}])
+        for table in self.tables:
+            self.connection.execute_query.assert_any_call(f"SELECT * FROM {table} LIMIT 2")
+
+    def test_discover_multi_table_preserves_exact_identity_without_sqlite_fallback(self):
+        with mock.patch("sqlite3.connect") as sqlite_reader:
+            tables = _hyper_reader.discover_multi_table_hyper(self.path)
+            sqlite_reader.assert_not_called()
+        self.assertEqual([(t["schema"], t["table"]) for t in tables], self.identities)
+        for table in tables:
+            self.assertEqual(table["row_count"], 2)
+            self.assertEqual(table["columns"], [{
+                "name": "Value", "hyper_type": "INTEGER",
+                "m_type": "Int64.Type", "nullable": True,
+            }])
 
 
 class TestReadHyperSqlite(unittest.TestCase):

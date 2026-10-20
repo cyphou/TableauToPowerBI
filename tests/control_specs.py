@@ -42,6 +42,7 @@ CONTROLS = [
                "            _resolve_published_datasources(args)\n",
         "new": "",
         "test": "tests/test_published_ds_wiring.py",
+        "all": True,  # Disable resolution in both batch and inspection paths.
     },
     {
         "name": "--no-ds-cache stops being honoured",

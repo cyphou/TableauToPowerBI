@@ -126,7 +126,7 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
     - `credential_vault.py`: Credential vault — secure credential storage and retrieval for deployment authentication
   - `config/`: Configuration subpackage
     - `migration_config.py`: Migration configuration — typed config objects for migration settings and feature flags
-  - **tests/**: Unit and integration tests (latest full run: 10,798 passed, 66 skipped, 1 xfailed; 10,865 collected across 316 files)
+  - **tests/**: Unit and integration tests (historical baseline: 10,798 passed, 66 skipped, 1 xfailed; 10,865 collected across 316 files; see CI for current results)
 - **docs/**: FAQ, PBI project guide, mapping reference, **ROADMAP.md** (v45/v46 release roadmap and agent assignments)
 - **.github/workflows/ci.yml**: CI/CD pipeline (lint → test → validate → deploy)
 - **.github/workflows/publish.yml**: PyPI auto-publish workflow (tag-triggered, OIDC trusted publisher)
@@ -148,71 +148,30 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
 ## Main Command
 
 ```bash
-python migrate.py path/to/workbook.twbx
-python migrate.py path/to/workbook.twbx --prep path/to/flow.tfl
-python migrate.py path/to/workbook.twbx --output-dir /tmp/pbi_output --verbose
-python migrate.py --batch examples/tableau_samples/ --output-dir /tmp/batch_output
-python migrate.py path/to/workbook.twbx --dry-run
-python migrate.py path/to/workbook.twbx --calendar-start 2018 --calendar-end 2028
-python migrate.py path/to/workbook.twbx --culture fr-FR
-python migrate.py path/to/workbook.twbx --assess
-python migrate.py path/to/workbook.twbx --deploy WORKSPACE_ID --deploy-refresh
-python migrate.py path/to/workbook.twbx --deploy WORKSPACE_ID --gateway-bind GATEWAY_ID --deploy-refresh
-python migrate.py path/to/workbook.twbx --create-workspace "Sales Reports" --deploy _ --deploy-refresh
-python migrate.py path/to/workbook.twbx --create-workspace "Sales Reports" --deploy _ --gateway-bind GATEWAY_ID
-python migrate.py --server https://tableau.example.com --workbook "Sales Dashboard" --token-name my-pat --token-secret secret
-python migrate.py --server https://tableau.example.com --server-batch Marketing --output-dir /tmp/batch
-python migrate.py --server https://tableau.example.com --server-batch Marketing --server-assets all --server-preserve-folders --token-name pat --token-secret secret
-python migrate.py --server https://tableau.example.com --server-batch Sales --server-assets workbooks datasources --token-name pat --token-secret secret
-python migrate.py path/to/workbook.twbx --languages fr-FR,de-DE,ja-JP
-python migrate.py path/to/workbook.twbx --goals
-python migrate.py path/to/workbook.twbx --check-schema
+python migrate.py --batch path/to/workbooks --output-dir C:\pbi_output
+python migrate.py --batch path\to\workbooks --prep path\to\flow.tfl
+python migrate.py --batch path\to\workbooks --dry-run
+python migrate.py --batch path\to\workbooks --culture fr-FR --calendar-start 2018 --calendar-end 2028
+python migrate.py --batch path\to\workbooks --output-format fabric
+python migrate.py --batch path\to\prep_flows --output-dir C:\prep_output
 python migrate.py --shared-model wb1.twbx wb2.twbx --model-name "Shared Sales"
-python migrate.py --shared-model wb1.twbx wb2.twbx --assess-merge
-python migrate.py --shared-model wb1.twbx wb2.twbx --force-merge
-python migrate.py --batch examples/tableau_samples/ --shared-model
-python migrate.py --global-assess --batch examples/tableau_samples/
-python migrate.py --bulk-assess examples/tableau_samples/
-python migrate.py --shared-model wb1.twbx wb2.twbx --deploy-bundle WORKSPACE_ID --bundle-refresh
-python migrate.py --deploy-bundle WORKSPACE_ID --output-dir artifacts/shared/MyModel
-python migrate.py --shared-model wb1.twbx wb2.twbx --multi-tenant tenants.json
-python migrate.py --shared-model wb1.twbx wb2.twbx --live-connection WORKSPACE_ID/ModelName
-python migrate.py --server https://tableau.example.com --workbook "Sales" --token-name pat --token-secret secret --migrate-schedules
 python migrate.py --shared-model wb1.twbx wb2.twbx --output-format fabric
-python migrate.py --shared-model wb1.twbx wb2.twbx --output-format fabric --output-dir /tmp/fabric_shared
-python migrate.py path/to/workbook.twbx --output-format fabric
-python migrate.py path/to/workbook.twbx --output-format fabric --output-dir /tmp/fabric_output
-python migrate.py path/to/workbook.twbx --check-drift /path/to/snapshot_dir
-python migrate.py path/to/workbook.twbx --qa
-python migrate.py path/to/workbook.twbx --preceptor
-python migrate.py path/to/workbook.twbx --preceptor --preceptor-block
-python migrate.py path/to/workbook.twbx --no-optimize-dax --no-compare
-python migrate.py --prep-lineage examples/prep_portfolio/ flow1.tfl flow2.tfl
-python migrate.py --batch examples/prep_portfolio/ --output-dir /tmp/prep_output
-python migrate.py path/to/workbook.twbx --autoplay
-python migrate.py path/to/workbook.twbx --autoplay --autoplay-open
-python migrate.py path/to/workbook.twbx --pdf --pptx --report-package
-python migrate.py path/to/workbook.twbx --config config.json
-python migrate.py path/to/workbook.twbx --incremental
-python migrate.py path/to/workbook.twbx --rollback
-python migrate.py path/to/workbook.twbx --strict
-python migrate.py path/to/workbook.twbx --llm-refine
-python migrate.py path/to/workbook.twbx --paginated
-python migrate.py path/to/workbook.twbx --governance
-python migrate.py path/to/workbook.twbx --telemetry
-python migrate.py path/to/workbook.twbx --monitor json
-python migrate.py path/to/workbook.twbx --sla-config sla.json
-python migrate.py path/to/workbook.twbx --parallel --workers 4
-python migrate.py path/to/workbook.twbx --full-lineage
-python migrate.py path/to/workbook.twbx --web-ui --web-port 8080
-python migrate.py --server https://tableau.example.com --server-discover --token-name pat --token-secret secret
-python migrate.py --server https://tableau.example.com --server-assess Marketing --token-name pat --token-secret secret
-python migrate.py --plan-migration examples/tableau_samples/ --team-size 3
-python migrate.py path/to/workbook.twbx --map-permissions
-python migrate.py path/to/workbook.twbx --cutover
-python migrate.py path/to/workbook.twbx --deploy WORKSPACE_ID --rolling --endorse promoted
-python migrate.py path/to/workbook.twbx --quiet --log-file migration.log --jsonl-log
+python migrate.py --server https://tableau.example.com --server-batch Marketing --output-dir C:\batch
+python migrate.py --global-assess --batch examples\tableau_samples\
+python migrate.py --bulk-assess examples\tableau_samples\
+python migrate.py --prep-lineage examples\prep_portfolio\ flow1.tfl flow2.tfl
+python migrate.py plan https://tableau.example.com
+python migrate.py assess path\to\workbook.twbx
+python migrate.py quality path\to\workbook.twbx
+python migrate.py parity path\to\workbook.twbx
+python migrate.py --deploy-bundle WORKSPACE_ID --output-dir artifacts\shared\MyModel
 ```
+
+Project generation is batch-only: even a one-workbook migration uses a source
+folder with `--batch`. Single-file assessment, quality, and parity commands are
+diagnostics only and do not generate a project. Batch writes unified quality
+reports and evidence ZIPs; it does not expose the legacy specialized `--qa`
+suite or `--report-package` workflow.
 
 ## Standalone Prep Flow Batch Mode
 
@@ -497,7 +456,7 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 | **@deployer** | Fabric/PBI deployment, auth, gateway | `deploy/*.py`, `gateway_config.py`, `telemetry.py` |
 | **@reviewer** | Artifact quality review and preceptor engine; CLI emits coaching reports but does not dispatch them to owner agents | `preceptor.py` (CLI default-on; `--no-preceptor` opts out) |
 | **@web-designer** | End-user UI/UX, Tkinter light UI, layout/presentation | `web/light_ui.py` |
-| **@tester** | Tests (10,798 passed, 66 skipped, 1 xfailed; 10,865 collected across 316 files), coverage, public fixtures, regression | `tests/*.py` |
+| **@tester** | Tests, coverage, public fixtures, regression; see CI for current results | `tests/*.py` |
 | **@readme** | Documentation quality gate before and after updates | `README.md`, `docs/`, `CHANGELOG.md`, project instructions (review only) |
 
 ### Rules

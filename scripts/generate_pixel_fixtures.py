@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -141,13 +142,15 @@ def snapshot_project(pbip_dir: str) -> dict:
 # ── Migration helper ───────────────────────────────────────────────
 
 def migrate_workbook(twb_path: str, out_dir: str) -> str:
-    """Run migrate.py for *twb_path*, returning the generated project dir."""
-    cmd = [
-        sys.executable, os.path.join(_REPO_ROOT, "migrate.py"),
-        twb_path, "--output-dir", out_dir, "--quiet",
-    ]
-    subprocess.run(cmd, cwd=_REPO_ROOT, check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    """Run a one-workbook batch, returning the generated project dir."""
+    with tempfile.TemporaryDirectory(prefix="pixel_source_") as source_dir:
+        shutil.copy2(twb_path, source_dir)
+        cmd = [
+            sys.executable, os.path.join(_REPO_ROOT, "migrate.py"),
+            "--batch", source_dir, "--output-dir", out_dir, "--quiet",
+        ]
+        subprocess.run(cmd, cwd=_REPO_ROOT, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # migrate.py creates <out_dir>/<name>/<name>.pbip alongside .Report/.SemanticModel.
     # Dot-prefixed checkpoint/extract dirs also live in out_dir and sort first,
     # so select the directory that actually holds the .pbip manifest.

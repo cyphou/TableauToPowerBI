@@ -45,8 +45,8 @@ class TestStackedBarOrientation(unittest.TestCase):
         ws = self._make_ws_xml(
             cols_text='[OrderDB].[Category]',
             rows_text='[OrderDB].[sum:Sales:qk]')
-        result = ext._detect_bar_orientation(ws, 'stackedBarChart')
-        self.assertEqual(result, 'stackedColumnChart')
+        result = ext._detect_bar_orientation(ws, 'barChart')
+        self.assertEqual(result, 'columnChart')
 
     def test_100pct_stacked_bar_to_column(self):
         ext = _make_extractor()
@@ -69,8 +69,8 @@ class TestStackedBarOrientation(unittest.TestCase):
         ws = self._make_ws_xml(
             cols_text='[OrderDB].[sum:Sales:qk]',
             rows_text='[OrderDB].[Category]')
-        result = ext._detect_bar_orientation(ws, 'stackedBarChart')
-        self.assertEqual(result, 'stackedBarChart')
+        result = ext._detect_bar_orientation(ws, 'barChart')
+        self.assertEqual(result, 'barChart')
 
     def test_clustered_bar_stays_when_no_shelf_pattern(self):
         ext = _make_extractor()

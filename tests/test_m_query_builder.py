@@ -16,6 +16,7 @@ from m_query_builder import (
     generate_power_query_m,
     inject_m_steps,
     _m_escape_string,
+    wrap_source_with_try_otherwise,
     # Column operations
     m_transform_rename,
     m_transform_remove_columns,
@@ -132,6 +133,71 @@ class TestGeneratePowerQueryM(unittest.TestCase):
         result = generate_power_query_m(conn, table)
         self.assertIn("PostgreSQL.Database", result)
         self.assertIn("pghost:5433", result)
+
+    def test_sql_navigation_uses_physical_relation_not_model_caption(self):
+        for connector, source_call in (
+            ("SQL Server", "Sql.Database"),
+            ("PostgreSQL", "PostgreSQL.Database"),
+            ("MySQL", "MySQL.Database"),
+            ("Azure SQL", "AzureSQL.Database"),
+            ("Oracle", "Oracle.Database"),
+        ):
+            with self.subTest(connector=connector):
+                connection = {
+                    "type": connector,
+                    "details": {"server": 'host"name', "database": "warehouse",
+                                "schema": "wrong_schema"},
+                }
+                table = {"name": 'Friendly "Sales"', "source_table": "[reporting].[Orders]",
+                         "columns": []}
+                result = generate_power_query_m(connection, table)
+                self.assertIn(source_call, result)
+                self.assertIn('[Schema="reporting", Item="Orders"]', result)
+                self.assertNotIn('Item="Friendly', result)
+                self.assertIn('host""name', result)
+                self.assertIn('#"Friendly ""Sales"" Table"', result)
+
+    def test_sql_navigation_unqualified_relation_preserves_explicit_schema(self):
+        connection = {"type": "SQL Server", "details": {
+            "server": "host", "database": "db", "schema": "analytics",
+        }}
+        table = {"name": "Report", "source_table": "[Actual Orders]", "columns": []}
+        self.assertIn(
+            '[Schema="analytics", Item="Actual Orders"]',
+            generate_power_query_m(connection, table),
+        )
+
+    def test_sql_navigation_accepts_extractor_stripped_outer_brackets(self):
+        connection = {"type": "SQL Server", "details": {
+            "server": "host", "database": "db",
+        }}
+        table = {"name": "Report", "source_table": "reporting].[Actual Orders",
+                 "columns": []}
+        self.assertIn(
+            '[Schema="reporting", Item="Actual Orders"]',
+            generate_power_query_m(connection, table),
+        )
+
+    def test_sql_navigation_accepts_quoted_qualified_relation(self):
+        connection = {"type": "PostgreSQL", "details": {
+            "server": "host", "database": "db",
+        }}
+        table = {"name": "Report", "source_table": '"my schema"."Actual Orders"',
+                 "columns": []}
+        self.assertIn(
+            '[Schema="my schema", Item="Actual Orders"]',
+            generate_power_query_m(connection, table),
+        )
+
+    def test_sql_navigation_uses_default_schema_for_unqualified_relation(self):
+        connection = {"type": "SQL Server", "details": {
+            "server": "host", "database": "db",
+        }}
+        table = {"name": "Orders", "columns": []}
+        self.assertIn(
+            '[Schema="dbo", Item="Orders"]',
+            generate_power_query_m(connection, table),
+        )
 
     def test_csv(self):
         cols = self._make_columns(("Name", "string"), ("Value", "real"))
@@ -1388,6 +1454,92 @@ class TestInjectMStepsDedup(unittest.TestCase):
         self.assertIn('#"Added Col"', result)
         # Should NOT have a suffix
         self.assertNotIn('#"Added Col 2"', result)
+
+
+class TestFileSourceBindingRegressions(unittest.TestCase):
+    """Synthetic exact navigation and refresh-error preservation contracts."""
+
+    def test_excel_normalizes_sql_quotes_and_sheet_marker_not_real_apostrophes(self):
+        for relation, expected in (
+            ("[namespace].[O'Brien$]", "O'Brien"),
+            ("[O'Brien$]", "O'Brien"),
+            ("'O''Brien$'", "O'Brien"),
+            ('"O\'Brien$"', "O'Brien"),
+            ('[namespace].[Réalisé "net"$]', 'Réalisé ""net""'),
+            ("[Period$$]", "Period$"),
+        ):
+            with self.subTest(relation=relation):
+                query = generate_power_query_m(
+                    {"type": "Excel", "details": {"filename": "synthetic.xlsx"}},
+                    {"name": "Renamed model", "source_table": relation, "columns": []},
+                )
+                self.assertIn(f'Item="{expected}",Kind="Sheet"', query)
+                self.assertNotIn('Item="Renamed model"', query)
+                self.assertNotIn("otherwise", query)
+
+    def test_csv_relation_filename_overrides_connection_including_hash_extension(self):
+        for relation, expected in (
+            ("[Actual#csv]", "Actual.csv"),
+            ("[Actual.CSV]", "Actual.CSV"),
+            ("[Actual#tsv]", "Actual.tsv"),
+            ("[O'Brien#csv]", "O'Brien.csv"),
+            ('[Réalisé "net"#csv]', 'Réalisé ""net"".csv'),
+        ):
+            with self.subTest(relation=relation):
+                connection = {"type": "CSV", "details": {"filename": "foreign.csv"}}
+                query = generate_power_query_m(connection, {
+                    "name": "Model", "source_table": relation, "columns": [],
+                })
+                self.assertIn(f'DataFolder & "\\{expected}"', query)
+                self.assertNotIn("foreign.csv", query)
+                self.assertEqual(connection["details"], {"filename": "foreign.csv"})
+
+    def test_file_backed_sources_keep_errors_through_wrapper(self):
+        for connector, filename in (("Excel", "synthetic.xlsx"), ("CSV", "synthetic.csv")):
+            for columns in ([], [{"name": 'Réalisé "net"', "datatype": "real"}]):
+                with self.subTest(connector=connector, columns=columns):
+                    query = generate_power_query_m(
+                        {"type": connector, "details": {"filename": filename}},
+                        {"name": "Model", "source_table": "Exact$", "columns": columns},
+                    )
+                    self.assertEqual(
+                        wrap_source_with_try_otherwise(query, ['Réalisé "net"']), query
+                    )
+                    self.assertNotIn("otherwise", query)
+                    self.assertNotIn("#table(", query)
+
+    def test_missing_file_binding_is_explicit_error_and_not_wrapped(self):
+        for connector in ("Excel", "CSV"):
+            with self.subTest(connector=connector):
+                query = generate_power_query_m(
+                    {"type": connector, "details": {}},
+                    {"name": 'Réalisé "net"', "columns": []},
+                )
+                self.assertIn('error Error.Record("SourceBinding.Error"', query)
+                self.assertIn('Table="Réalisé ""net"""', query)
+                self.assertNotIn("File.Contents", query)
+                self.assertNotIn("#table(", query)
+                self.assertEqual(wrap_source_with_try_otherwise(query, ["id"]), query)
+
+    def test_inherited_excel_binding_warns_and_keeps_exact_relation(self):
+        with self.assertLogs("m_query_builder", level="WARNING") as captured:
+            query = generate_power_query_m(
+                {"type": "Excel", "details": {"filename": "synthetic.xlsx"}},
+                {"name": "Model", "source_table": "[namespace].[Exact$]", "columns": []},
+            )
+        self.assertIn("no per-table connection provenance", "\n".join(captured.output))
+        self.assertIn('Item="Exact",Kind="Sheet"', query)
+        self.assertNotIn('Item="Model"', query)
+        self.assertNotIn("otherwise", query)
+
+    def test_missing_excel_relation_uses_literal_model_name_and_warns(self):
+        with self.assertLogs("m_query_builder", level="WARNING") as captured:
+            query = generate_power_query_m(
+                {"type": "Excel", "details": {"filename": "synthetic.xlsx"}},
+                {"name": "O'Brien", "columns": []},
+            )
+        self.assertIn("no source_table metadata", "\n".join(captured.output))
+        self.assertIn('Item="O\'Brien",Kind="Sheet"', query)
 
 
 class TestExcelSheetNameResolution(unittest.TestCase):

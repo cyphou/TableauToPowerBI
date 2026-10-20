@@ -23,6 +23,11 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+try:
+    from powerbi_import.report_localization import text
+except ImportError:
+    from report_localization import text
+
 logger = logging.getLogger(__name__)
 
 
@@ -477,20 +482,21 @@ def generate_subscription_report(
             section_open, section_close, badge, data_table, esc,
         )
 
-    parts = [html_open("Subscription & Alert Migration Report")]
+    parts = [html_open(text("Subscription & Alert Migration Report",
+                            "Rapport de migration des abonnements et alertes"))]
 
     # Summary
     parts.append(stat_grid([
-        stat_card(str(len(subscriptions)), "Subscriptions"),
-        stat_card(str(len(alerts)), "Data Alerts"),
-        stat_card(str(len(pbi_subs)), "PBI Subscriptions", accent="success"),
-        stat_card(str(len(flows)), "Automate Flows"),
-        stat_card(str(len(conflicts)), "Conflicts",
+        stat_card(str(len(subscriptions)), text("Subscriptions", "Abonnements")),
+        stat_card(str(len(alerts)), text("Data Alerts", "Alertes de données")),
+        stat_card(str(len(pbi_subs)), text("PBI Subscriptions", "Abonnements Power BI"), accent="success"),
+        stat_card(str(len(flows)), text("Automate Flows", "Flux Power Automate")),
+        stat_card(str(len(conflicts)), text("Conflicts", "Conflits"),
                   accent="fail" if conflicts else "success"),
     ]))
 
     # Subscription mapping table
-    parts.append(section_open("sub_mapping", "Subscription Mapping"))
+    parts.append(section_open("sub_mapping", text("Subscription Mapping", "Correspondance des abonnements")))
     sub_rows = []
     for i, sub in enumerate(subscriptions):
         pbi = pbi_subs[i] if i < len(pbi_subs) else {}
@@ -500,18 +506,20 @@ def generate_subscription_report(
             esc(sub.get('frequency', '')),
             esc(sub.get('schedule_name', '')),
             esc(pbi.get('frequency', '')),
-            badge('Mapped', 'green') if pbi else badge('Unmapped', 'red'),
+            badge(text('Mapped', 'Associé'), 'green') if pbi
+            else badge(text('Unmapped', 'Non associé'), 'red'),
         ])
     parts.append(data_table(
-        headers=["Content", "Recipient", "Tableau Freq", "Schedule",
-                 "PBI Freq", "Status"],
+        headers=[text("Content", "Contenu"), text("Recipient", "Destinataire"),
+                 text("Tableau Freq", "Fréquence Tableau"), text("Schedule", "Planification"),
+                 text("PBI Freq", "Fréquence Power BI"), text("Status", "État")],
         rows=sub_rows[:200],
     ))
     parts.append(section_close())
 
     # Alerts
     if alerts:
-        parts.append(section_open("alert_mapping", "Data Alert Mapping"))
+        parts.append(section_open("alert_mapping", text("Data Alert Mapping", "Correspondance des alertes de données")))
         alert_rows = []
         for alert in alerts:
             alert_rows.append([
@@ -522,14 +530,16 @@ def generate_subscription_report(
                 esc(', '.join(alert.get('recipients', [])[:3])),
             ])
         parts.append(data_table(
-            headers=["Subject", "Condition", "Threshold", "View", "Recipients"],
+            headers=[text("Subject", "Objet"), text("Condition", "Condition"),
+                     text("Threshold", "Seuil"), text("View", "Vue"),
+                     text("Recipients", "Destinataires")],
             rows=alert_rows,
         ))
         parts.append(section_close())
 
     # Conflicts
     if conflicts:
-        parts.append(section_open("sched_conflicts", "Schedule Conflicts"))
+        parts.append(section_open("sched_conflicts", text("Schedule Conflicts", "Conflits de planification")))
         for conflict in conflicts:
             severity_color = 'red' if conflict['severity'] == 'error' else 'yellow'
             parts.append(

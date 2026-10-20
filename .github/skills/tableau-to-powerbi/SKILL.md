@@ -3,7 +3,7 @@ name: tableau-to-powerbi
 description: >-
   Migrate Tableau workbooks (.twb/.twbx) and Prep flows (.tfl/.tflx) to Power BI
   projects (.pbip, PBIR v4.0 + TMDL) or Fabric-native artifacts using this repo's
-  migrate.py engine. USE WHEN the user wants to: convert/migrate a Tableau workbook
+  migrate.py engine.   USE WHEN the user wants to: convert/migrate Tableau workbook(s)
   or dashboard to Power BI, assess migration readiness, batch-migrate a folder,
   build a shared semantic model from several workbooks, migrate from Tableau Server/
   Cloud, generate a parity/QA report, or deploy the result to Fabric/Power BI Service.
@@ -30,7 +30,7 @@ it correctly. **Prefer running the CLI over hand-editing generated artifacts.**
 3. **Validate, don't assume.** Every PBIP migration runs the static openability gate
   automatically. Do not disable it except for diagnosis. Power BI Desktop is never
   launched automatically; use the explicit `--desktop-probe` diagnostic when a real
-  Desktop smoke test is required, or run `--qa` / `scripts/autoplay.py` for deeper QA.
+  Desktop smoke test is required, or run `scripts/autoplay.py` for deeper QA.
 4. **Read before editing generated code.** If a DAX/TMDL/PBIR fix is needed, find the
    *source generator* (see "Where things live") and fix it there so the fix is
    reproducible — not in the emitted artifact.
@@ -52,29 +52,44 @@ it correctly. **Prefer running the CLI over hand-editing generated artifacts.**
 - **Generation** (`powerbi_import/`): produces the full `.pbip` (TMDL semantic model,
   PBIR v4.0 report, Power Query M, visuals, filters, bookmarks).
 
-## Public CLI: 14 commands
+Generation is batch-only: pass a source folder to the `batch` or `fabric`
+command. A folder containing just one workbook is valid. Assessment, quality,
+and parity can still analyze individual source files; `qa` and
+`package` take folders and follow the batch migration path. Batch mode writes
+unified quality reports and evidence ZIPs by default, but does not run the
+specialized six-check QA suite or assessment report packager.
+
+Deployment is a separate operation: use the MCP `deploy` tool on a generated
+PBIP project, preview first, then explicitly confirm the write. Batch dispatch
+does not forward `--deploy` or refresh flags; they do not deploy batch outputs.
+
+## Supported CLI workflows
 
 ```bash
-.venv\Scripts\python.exe migrate.py migrate workbook.twbx
+.venv\Scripts\python.exe migrate.py batch .\workbooks --output-dir C:\out
 .venv\Scripts\python.exe migrate.py assess workbook.twbx
 .venv\Scripts\python.exe migrate.py batch folder --output-dir C:\out
 .venv\Scripts\python.exe migrate.py server https://tableau.example "Sales Dashboard"
 .venv\Scripts\python.exe migrate.py merge wb1.twbx wb2.twbx --model-name "Sales"
-.venv\Scripts\python.exe migrate.py fabric workbook.twbx
-.venv\Scripts\python.exe migrate.py deploy workbook.twbx WORKSPACE_ID
-.venv\Scripts\python.exe migrate.py qa workbook.twbx
+.venv\Scripts\python.exe migrate.py fabric .\workbooks
+.venv\Scripts\python.exe migrate.py qa .\workbooks
 .venv\Scripts\python.exe migrate.py quality workbook.twbx
 .venv\Scripts\python.exe migrate.py parity workbook.twbx
 .venv\Scripts\python.exe migrate.py portfolio .\workbooks
-.venv\Scripts\python.exe migrate.py plan workbook.twbx
+.venv\Scripts\python.exe migrate.py plan https://tableau.example
 .venv\Scripts\python.exe migrate.py lineage .\prep_flows
-.venv\Scripts\python.exe migrate.py package workbook.twbx
+.venv\Scripts\python.exe migrate.py package .\workbooks
 ```
+
+Legacy flag-based entry points include `--batch folder` and `--assess file`.
+The legacy `--qa` flag is retained, but on batch generation it does not run
+the specialized single-workbook QA suite.
 
 Use `quality` for one deterministic report combining assessment, feature parity,
 data coverage, interface coverage, and Power BI openability. Use `parity` for the
-feature scorecard, `portfolio` for folder assessment, `plan` for migration waves,
-`lineage` for Prep flows, and `package` for a stakeholder deliverable. Add
+feature scorecard, `portfolio` for folder assessment, `plan` for Tableau Server
+migration waves, and `lineage` for Prep flows. The `qa` and `package` folder
+shortcuts follow the batch path rather than running their single-workbook extras. Add
 `--quality-strict` when CI should fail on quality blockers. Use
 `--quality-policy report|enterprise|production` to control escalation of
 static semantic diagnostics and unresolved lineage. The semantic runtime
@@ -90,9 +105,10 @@ per-workbook statuses and report paths for CI or downstream automation. Batch
 outcomes also update `zero_touch_history.json`; a quality `FAIL` is recorded as
 `quality_blocker` rather than a successful migration.
 
-Run `.venv\Scripts\python.exe migrate.py --help` for the concise list. Existing
-flag-based automation remains compatible; `--advanced-help` exposes legacy options
-including `--assess`, `--batch`, and `--qa`. Prefer the subcommands for new workflows.
+Run `.venv\Scripts\python.exe migrate.py --help` for the concise list. Supported
+flag-based automation remains available through batch mode; direct single-file
+project generation has been retired. `--advanced-help` exposes advanced and
+legacy options. Prefer the subcommands for new workflows.
 Never put credentials in chat or command arguments; use environment variables.
 
 ## What you get (output layout)

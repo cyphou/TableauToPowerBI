@@ -53,13 +53,21 @@ class TestOpenApiSpec(unittest.TestCase):
         self.assertIn('/batch/{id}', paths)
         self.assertIn('/openapi.json', paths)
 
-    def test_openapi_migrate_has_webhook_param(self):
+    def test_openapi_marks_single_file_migration_as_retired(self):
         from powerbi_import.api_server import _build_openapi_spec
 
         spec = _build_openapi_spec()
         migrate = spec['paths']['/migrate']['post']
-        param_names = [p['name'] for p in migrate.get('parameters', [])]
-        self.assertIn('webhook_url', param_names)
+        self.assertTrue(migrate['deprecated'])
+        self.assertIn('410', migrate['responses'])
+        self.assertIn('/migrate/batch', migrate['description'])
+
+    def test_openapi_batch_migration_accepts_zip_upload(self):
+        from powerbi_import.api_server import _build_openapi_spec
+
+        batch = _build_openapi_spec()['paths']['/migrate/batch']['post']
+        schema = batch['requestBody']['content']['multipart/form-data']['schema']
+        self.assertEqual(schema['properties']['file']['format'], 'binary')
 
     def test_openapi_jobs_has_pagination_params(self):
         from powerbi_import.api_server import _build_openapi_spec
@@ -228,8 +236,10 @@ class TestWebhookDelivery(unittest.TestCase):
         # Should not raise
         _fire_webhook('nonexistent_job_id', 'http://example.com/hook')
 
-    @patch('urllib.request.urlopen')
-    def test_fire_webhook_success(self, mock_urlopen):
+    @patch('powerbi_import.api_server.socket.getaddrinfo',
+           return_value=[(2, 1, 6, '', ('93.184.216.34', 80))])
+    @patch('urllib.request.build_opener')
+    def test_fire_webhook_success(self, mock_opener, mock_dns):
         """Successful webhook delivery."""
         import powerbi_import.api_server as srv
         # Create a test job
@@ -247,19 +257,22 @@ class TestWebhookDelivery(unittest.TestCase):
         mock_resp.status = 200
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = lambda s, *a: None
-        mock_urlopen.return_value = mock_resp
+        mock_opener.return_value.open.return_value = mock_resp
 
         srv._fire_webhook(jid, 'http://example.com/hook')
-        mock_urlopen.assert_called_once()
+        mock_opener.return_value.open.assert_called_once()
 
         # Clean up
         with srv._lock:
             srv._jobs.pop(jid, None)
 
-    @patch('urllib.request.urlopen', side_effect=Exception('Connection refused'))
-    def test_fire_webhook_failure_doesnt_raise(self, mock_urlopen):
+    @patch('powerbi_import.api_server.socket.getaddrinfo',
+           return_value=[(2, 1, 6, '', ('93.184.216.34', 80))])
+    @patch('urllib.request.build_opener')
+    def test_fire_webhook_failure_doesnt_raise(self, mock_opener, mock_dns):
         """Failed webhook delivery logs warning but doesn't raise."""
         import powerbi_import.api_server as srv
+        mock_opener.return_value.open.side_effect = OSError('Connection refused')
         jid = 'webhook_test_2'
         with srv._lock:
             srv._jobs[jid] = {

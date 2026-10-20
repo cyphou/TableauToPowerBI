@@ -360,7 +360,7 @@ class TestTypeConversionFunctions(unittest.TestCase):
 
     def test_datetime_to_date(self):
         result = convert_tableau_formula_to_dax("DATETIME([DateStr])")
-        self.assertIn("DATE", result)
+        self.assertEqual(result, "CONVERT('Table'[DateStr], DATETIME)")
 
 
 # ═══════════════════════════════════════════════════════════════════════

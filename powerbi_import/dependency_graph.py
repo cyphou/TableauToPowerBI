@@ -26,6 +26,11 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+try:
+    from powerbi_import.report_localization import attributes, render, text
+except ImportError:
+    from report_localization import attributes, render, text
+
 logger = logging.getLogger(__name__)
 
 
@@ -477,41 +482,58 @@ def generate_topology_report(
             donut_chart, esc,
         )
 
-    parts = [html_open("Tableau Server — Site Topology Report")]
+    parts = [html_open(text("Tableau Server — Site Topology Report",
+                            "Rapport de topologie de site Tableau Server"))]
 
     # ── Executive Summary ──
     parts.append(stat_grid([
-        stat_card(str(len(topology.get('workbooks', []))), "Workbooks", accent="blue"),
-        stat_card(str(len(topology.get('datasources', []))), "Datasources", accent="purple"),
-        stat_card(str(len(topology.get('prep_flows', []))), "Prep Flows", accent="teal"),
-        stat_card(str(len(topology.get('users', []))), "Users"),
-        stat_card(str(len(topology.get('projects', []))), "Projects"),
-        stat_card(str(len(graph.get('shared_datasources', []))), "Shared DS", accent="warn"),
+        stat_card(str(len(topology.get('workbooks', []))), text("Workbooks", "Classeurs"), accent="blue"),
+        stat_card(str(len(topology.get('datasources', []))), text("Datasources", "Sources de données"), accent="purple"),
+        stat_card(str(len(topology.get('prep_flows', []))), text("Prep Flows", "Flux Prep"), accent="teal"),
+        stat_card(str(len(topology.get('users', []))), text("Users", "Utilisateurs")),
+        stat_card(str(len(topology.get('projects', []))), text("Projects", "Projets")),
+        stat_card(str(len(graph.get('shared_datasources', []))), text("Shared DS", "Sources partagées"), accent="warn"),
     ]))
 
     # ── Usage Classification ──
-    parts.append(section_open("usage", "Usage Classification"))
+    parts.append(section_open("usage", text("Usage Classification", "Classification de l’utilisation")))
     summary = usage.get('summary', {})
-    parts.append(donut_chart([
+    usage_chart = donut_chart([
         ("Active", summary.get('active_count', 0), "#107c10"),
         ("Stale", summary.get('stale_count', 0), "#ffb900"),
         ("Dormant", summary.get('dormant_count', 0), "#d13438"),
         ("Unknown", summary.get('unknown_count', 0), "#a19f9d"),
-    ], center_text="Usage"))
+    ], center_text="Usage")
+    for en, fr in (("Active", "Actif"), ("Stale", "Inactif récent"),
+                   ("Dormant", "Inactif"), ("Unknown", "Inconnu")):
+        usage_chart = usage_chart.replace(
+            f">{en}:", f'>{render(text(en, fr))}:')
+    usage_chart = usage_chart.replace(
+        '>Usage</text>',
+        f' {attributes(text("Usage", "Utilisation"))}>Usage</text>')
+    parts.append(usage_chart)
     parts.append(section_close())
 
     # ── Certification Breakdown ──
-    parts.append(section_open("cert", "Content Certification"))
+    parts.append(section_open("cert", text("Content Certification", "Certification du contenu")))
     cert_summary = certification.get('summary', {})
-    parts.append(donut_chart([
+    cert_chart = donut_chart([
         ("Certified", cert_summary.get('certified_count', 0), "#107c10"),
         ("Warned", cert_summary.get('warned_count', 0), "#ffb900"),
         ("Uncertified", cert_summary.get('uncertified_count', 0), "#a19f9d"),
-    ], center_text="Cert"))
+    ], center_text="Cert")
+    for en, fr in (("Certified", "Certifié"), ("Warned", "Avec avertissement"),
+                   ("Uncertified", "Non certifié")):
+        cert_chart = cert_chart.replace(
+            f">{en}:", f'>{render(text(en, fr))}:')
+    cert_chart = cert_chart.replace(
+        '>Cert</text>',
+        f' {attributes(text("Cert", "Certif."))}>Cert</text>')
+    parts.append(cert_chart)
     parts.append(section_close())
 
     # ── Dependency Graph (Mermaid) ──
-    parts.append(section_open("depgraph", "Dependency Graph"))
+    parts.append(section_open("depgraph", text("Dependency Graph", "Graphe des dépendances")))
     mermaid_lines = ["graph TD"]
     node_map = {n['id']: n for n in graph.get('nodes', [])}
     for edge in graph.get('edges', [])[:100]:  # Cap at 100 edges for readability
@@ -522,14 +544,22 @@ def generate_topology_report(
         safe_src = edge[0].replace('-', '_')
         safe_dst = edge[1].replace('-', '_')
         mermaid_lines.append(f'    {safe_src}["{src_label}"] --> {safe_dst}["{dst_label}"]')
-    if len(graph.get('edges', [])) > 100:
-        mermaid_lines.append(f'    note["... and {len(graph["edges"]) - 100} more edges"]')
     parts.append(f'<div class="mermaid">{"<br>".join(mermaid_lines)}</div>')
+    if len(graph.get('edges', [])) > 100:
+        extra_edges = len(graph['edges']) - 100
+        overflow_note = text(
+            f"... and {extra_edges} more edges",
+            f"… et {extra_edges} arête{'s' if extra_edges != 1 else ''} "
+            f"supplémentaire{'s' if extra_edges != 1 else ''}",
+        )
+        parts.append(
+            f'<p>{render(overflow_note)}</p>'
+        )
     parts.append(section_close())
 
     # ── Shared Datasources Table ──
     if graph.get('shared_datasources'):
-        parts.append(section_open("shared_ds", "Shared Datasources"))
+        parts.append(section_open("shared_ds", text("Shared Datasources", "Sources de données partagées")))
         rows = []
         for sd in graph['shared_datasources']:
             rows.append([
@@ -538,13 +568,14 @@ def generate_topology_report(
                 esc(', '.join(sd['workbook_names'][:5])),
             ])
         parts.append(data_table(
-            headers=["Datasource", "# Workbooks", "Used By"],
+            headers=[text("Datasource", "Source de données"), text("# Workbooks", "Nb de classeurs"),
+                     text("Used By", "Utilisée par")],
             rows=rows,
         ))
         parts.append(section_close())
 
     # ── Workbook Inventory ──
-    parts.append(section_open("wb_inv", "Workbook Inventory"))
+    parts.append(section_open("wb_inv", text("Workbook Inventory", "Inventaire des classeurs")))
     wb_rows = []
     for wb in topology.get('workbooks', []):
         usage_data = wb.get('_usage', {})
@@ -560,21 +591,26 @@ def generate_topology_report(
             str(days),
         ])
     parts.append(data_table(
-        headers=["Workbook", "Project", "Owner", "Views", "Days Since Access"],
+        headers=[text("Workbook", "Classeur"), text("Project", "Projet"), text("Owner", "Propriétaire"),
+                 text("Views", "Vues"), text("Days Since Access", "Jours depuis le dernier accès")],
         rows=wb_rows[:200],  # Cap for performance
     ))
     parts.append(section_close())
 
     # ── Cycles Warning ──
     if graph.get('cycles'):
-        parts.append(section_open("cycles", "⚠️ Circular Dependencies Detected"))
+        parts.append(section_open("cycles", text("⚠️ Circular Dependencies Detected",
+                                                 "⚠️ Dépendances circulaires détectées")))
         for i, cycle in enumerate(graph['cycles']):
             names = [node_map.get(nid, {}).get('name', nid) for nid in cycle]
-            parts.append(f'<p>Cycle {i + 1}: {" → ".join(esc(n) for n in names)}</p>')
+            parts.append(
+                f'<p>{render(text(f"Cycle {i + 1}:", f"Cycle {i + 1} :"))} '
+                f'{" → ".join(esc(n) for n in names)}</p>'
+            )
         parts.append(section_close())
 
     # ── Topological Order ──
-    parts.append(section_open("topo", "Migration Order (Topological)"))
+    parts.append(section_open("topo", text("Migration Order (Topological)", "Ordre de migration (topologique)")))
     topo_rows = []
     for i, nid in enumerate(graph.get('topological_order', [])):
         node = node_map.get(nid, {})
@@ -585,7 +621,7 @@ def generate_topology_report(
             esc(node.get('project', '')),
         ])
     parts.append(data_table(
-        headers=["#", "Type", "Name", "Project"],
+        headers=["#", text("Type", "Type"), text("Name", "Nom"), text("Project", "Projet")],
         rows=topo_rows[:200],
     ))
     parts.append(section_close())

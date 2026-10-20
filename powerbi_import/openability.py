@@ -1,10 +1,10 @@
 """Power BI Desktop openability preflight (Sprint 221).
 
-Verifies — WITHOUT opening Power BI Desktop — that a generated ``.pbip`` will
-load cleanly, with a dedicated focus on **Power Query (M) generation**, the most
-common silent load failure.
+Checks generated project files WITHOUT opening Power BI Desktop or executing
+Power Query. A passing result is static evidence only, not proof of loading,
+refresh completion, source availability, or TOM runtime relationship validity.
 
-Checks (blocking = would stop Desktop from opening the report):
+Checks (blocking = static contract violation, not an exhaustive runtime test):
     structure     required project files/dirs present (SemanticModel, Report, .pbir)
     json_parse    every .json (visual/page/report/.pbir/.platform/.pbip) parses
     tmdl_present  the semantic model has at least one .tmdl
@@ -32,6 +32,13 @@ from typing import Dict, List, Tuple
 from powerbi_import.dax_validator import validate_dax_expression
 from powerbi_import.m_validator import validate_m_query
 
+STATIC_SCOPE = "static_project_checks"
+STATIC_LIMITATION = (
+    "'openable' means no blocking static check found a problem. Desktop loading "
+    "and refresh were not run. Static checks cannot establish source availability, "
+    "data correctness, or runtime TOM relationship/object validity."
+)
+
 # TMDL partition of type ``m`` and its ``source =`` block (M lines are indented
 # with exactly 4 tabs by the generator; see tmdl_generator._write_partition).
 _PARTITION_RE = re.compile(r"^\tpartition\s+(.+?)\s*=\s*(\w+)\s*$")
@@ -54,6 +61,7 @@ class CheckResult:
 class OpenabilityReport:
     project_dir: str
     checks: List[CheckResult] = field(default_factory=list)
+    diagnostics: Dict = field(default_factory=dict)
 
     @property
     def blocking_issues(self) -> List[str]:
@@ -65,6 +73,7 @@ class OpenabilityReport:
 
     @property
     def openable(self) -> bool:
+        """Compatibility verdict: no blocking static issues, not a runtime pass."""
         return not self.blocking_issues
 
     @property
@@ -79,6 +88,10 @@ class OpenabilityReport:
         return {
             "project_dir": self.project_dir,
             "openable": self.openable,
+            "verified_scope": STATIC_SCOPE,
+            "refresh_verification": "not_run",
+            "limitation": STATIC_LIMITATION,
+            "diagnostics": self.diagnostics,
             "blocking_count": len(self.blocking_issues),
             "warning_count": len(self.warnings),
             "blocking_issues": self.blocking_issues,
@@ -506,6 +519,8 @@ def _check_visual_bindings(project_dir) -> CheckResult:
 
 def _check_model_column_projection(project_dir) -> CheckResult:
     """Catch TMDL source columns removed by the last Power Query selection."""
+    from powerbi_import.artifact_diff import _parse_tmdl_table
+
     issues = []
     for model_dir in glob.glob(os.path.join(project_dir, '*.SemanticModel')):
         for path in glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
@@ -515,21 +530,178 @@ def _check_model_column_projection(project_dir) -> CheckResult:
             except OSError as exc:
                 issues.append(f'{os.path.relpath(path, project_dir)}: {exc}')
                 continue
-            selection = re.search(
-                r'#"Model Columns"\s*=\s*Table\.SelectColumns\([^\n]*?\{([^}]*)\}',
-                content,
-            )
-            if not selection:
-                continue
-            selected = {name.replace('""', '"') for name in
-                        re.findall(r'"((?:[^"]|"")*)"', selection.group(1))}
-            sources = re.findall(r'(?m)^\s*sourceColumn:\s*(.+?)\s*$', content)
-            for source in sources:
-                name = source[1:-1].replace("''", "'") if source.startswith("'") else source
-                if name not in selected:
-                    issues.append(f'{os.path.relpath(path, project_dir)}: sourceColumn '
-                                  f'{name!r} is removed by #"Model Columns"')
+            table = _parse_tmdl_table(path) or {}
+            sources = [c["sourceColumn"] for c in table.get("columns", [])
+                       if "sourceColumn" in c]
+            for partition, expression in extract_m_partitions(content):
+                selected = _literal_final_projection(expression)
+                if selected is None:
+                    continue
+                for name in sources:
+                    if name not in selected:
+                        issues.append(
+                            f'{os.path.relpath(path, project_dir)}: partition '
+                            f'{partition!r}: sourceColumn {name!r} is removed '
+                            'by terminal #"Model Columns"')
     return CheckResult('model_column_projection', not issues, 'error', issues)
+
+
+def _literal_final_projection(expression):
+    """Return only a proven terminal literal Model Columns selection, or None.
+
+    Reuse M validation/masking for balanced delimiters and literal/comment
+    safety. This is not an M evaluator: dynamic lists, later transformations,
+    aliases, computed names and other output shapes remain unknown.
+    """
+    from powerbi_import.m_validator import (
+        _strip_comments_only, _strip_strings_and_comments,
+    )
+    if validate_m_query(expression):
+        return None
+    text = _strip_comments_only(expression)
+    if not re.search(r'\bin\s+#"Model Columns"\s*$', text):
+        return None
+    start = re.search(r'#"Model Columns"\s*=\s*Table\.SelectColumns\s*\(', text)
+    if not start:
+        return None
+    masked = _strip_strings_and_comments(text)
+    # Find argument boundaries using the validator's length-preserving mask,
+    # so braces/commas in strings or comments cannot terminate an argument.
+    depth = 0
+    commas = []
+    end = None
+    for index in range(start.end(), len(masked)):
+        char = masked[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if char == ")" and depth == 0:
+                end = index
+                break
+            depth -= 1
+        elif char == "," and depth == 0:
+            commas.append(index)
+    if end is None or not commas:
+        return None
+    # Require this assignment to be the final step, not a same-name earlier
+    # expression or a nested selection whose shape changes subsequently.
+    if not re.fullmatch(r'\s*in\s+#"Model Columns"\s*', text[end + 1:]):
+        return None
+    literal = text[commas[0] + 1:commas[1] if len(commas) > 1 else end].strip()
+    string = r'"(?:[^"]|"")*"'
+    if not re.fullmatch(r'\{\s*(?:' + string + r'(?:\s*,\s*' + string
+                        + r')*)?\s*\}', literal):
+        return None
+    # M escape sequences need evaluation; do not guess their decoded names.
+    if "#(" in literal:
+        return None
+    return {value.replace('""', '"') for value in
+            re.findall(r'"((?:[^"]|"")*)"', literal)}
+
+
+def _refresh_diagnostics(project_dir):
+    """Read-only, model-local resolution evidence; never a refresh verdict."""
+    from powerbi_import.artifact_diff import _parse_tmdl_table
+    from powerbi_import.m_validator import _strip_comments_only
+    from powerbi_import.validator import ArtifactValidator
+
+    endpoints = []
+    risks = []
+    issues = []
+    for model_dir in sorted(glob.glob(os.path.join(project_dir, "*.SemanticModel"))):
+        model_name = os.path.basename(model_dir)
+        tables = {}
+        for path in sorted(glob.glob(os.path.join(
+                model_dir, "definition", "tables", "*.tmdl"))):
+            table = _parse_tmdl_table(path)
+            if not table:
+                continue
+            partitions = []
+            for name, expression in extract_m_partitions(_read(path)):
+                selected = _literal_final_projection(expression)
+                partitions.append({
+                    "name": name,
+                    "m_syntax_valid": not validate_m_query(expression),
+                    "output_shape": ("terminal_literal_projection" if selected
+                                     is not None else "unknown"),
+                    "output_columns": sorted(selected) if selected is not None else None,
+                })
+                text = _strip_comments_only(expression)
+                signals = []
+                if "Migration.SourceUnavailable" in text:
+                    signals.append("source_unavailable_marker")
+                if "#table(" in text.replace(" ", ""):
+                    signals.append("literal_table_may_be_placeholder_or_intentional")
+                if signals:
+                    risks.append({
+                        "model": model_name, "table": table["name"],
+                        "partition": name, "signals": signals,
+                    })
+            tables.setdefault(table["name"], []).append({
+                "columns": table.get("columns", []), "partitions": partitions,
+                "path": os.path.relpath(path, project_dir),
+            })
+        rel_path = os.path.join(model_dir, "definition", "relationships.tmdl")
+        if not os.path.isfile(rel_path):
+            continue
+        relationship = None
+        for line in _read(rel_path).splitlines():
+            start = ArtifactValidator._RE_REL_START.match(line.strip())
+            if start:
+                relationship = start.group(1)
+                continue
+            for side, pattern in (
+                    ("fromColumn", ArtifactValidator._RE_REL_FROM_COL),
+                    ("toColumn", ArtifactValidator._RE_REL_TO_COL)):
+                match = pattern.match(line)
+                if not match or relationship is None:
+                    continue
+                table_name, column_name = ArtifactValidator._parse_rel_column_ref(
+                    match.group(1))
+                candidates = tables.get(table_name, [])
+                columns = [column for table in candidates
+                           for column in table["columns"]
+                           if column.get("name") == column_name]
+                resolved = len(candidates) == len(columns) == 1
+                source = columns[0].get("sourceColumn") if resolved else None
+                partitions = candidates[0]["partitions"] if resolved else []
+                evidence = {
+                    "model": model_name, "relationship": relationship, "side": side,
+                    "table": table_name, "column": column_name,
+                    "resolution": "resolved" if resolved else "missing_or_ambiguous",
+                    "table_file": candidates[0]["path"] if len(candidates) == 1 else None,
+                    "sourceColumn": source,
+                    "m_binding": ("sourceColumn" if source is not None else
+                                  "not_inferred_calculated_or_unbound"),
+                    "partitions": [],
+                }
+                for partition in partitions:
+                    shape = dict(partition)
+                    output = shape["output_columns"]
+                    shape["sourceColumn_in_output"] = (
+                        source in output if source is not None and output is not None
+                        else None)
+                    evidence["partitions"].append(shape)
+                endpoints.append(evidence)
+                if not resolved:
+                    issues.append(
+                        f"{model_name}: relationship {relationship} {side} "
+                        f"{table_name!r}.{column_name!r}: static table/column "
+                        "resolution missing or ambiguous; runtime refresh not tested")
+    for risk in risks:
+        issues.append(
+            f"{risk['model']}: table {risk['table']!r}, partition "
+            f"{risk['partition']!r}: {', '.join(risk['signals'])}; advisory only, "
+            "source availability and output rows were not evaluated")
+    return {
+        "relationship_endpoints": endpoints,
+        "partition_risks": risks,
+        "limitation": (
+            "Endpoint resolution and literal projections are static evidence only. "
+            "Unknown M shapes and calculated columns are not inferred. This does "
+            "not diagnose or rule out TOM FromColumn object-deleted refresh failures."
+        ),
+    }, CheckResult("refresh_diagnostics", not issues, "warning", issues)
 
 
 def _check_schema(project_dir) -> CheckResult:
@@ -915,7 +1087,7 @@ def _literal_values(node):
 
 
 def check_openability(project_dir: str) -> OpenabilityReport:
-    """Run the full PBI Desktop openability preflight."""
+    """Run static checks only; ``openable`` does not certify Desktop refresh."""
     report = OpenabilityReport(project_dir=project_dir)
     if not project_dir or not os.path.isdir(project_dir):
         report.checks.append(CheckResult("structure", False, "error",
@@ -945,6 +1117,8 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_report_structure(project_dir),
         _check_schema(project_dir),
     ]
+    report.diagnostics, diagnostic_check = _refresh_diagnostics(project_dir)
+    report.checks.append(diagnostic_check)
     return report
 
 

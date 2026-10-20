@@ -76,11 +76,13 @@ Example: {before → after, if applicable}
 
 ## Review Triggers
 
-The CLI's Python preceptor runs after generation by default and writes
-`preceptor_report.json`. `--no-preceptor` disables it; `--preceptor-block`
-opts into blocking on escalation. `--qa` is a separate QA suite, and there is
-no `--review` CLI flag. The Copilot `@Reviewer` agent is invoked separately by
-a caller who wants an agent to inspect artifacts or consume coaching.
+The supported batch-only CLI path does not run the Python preceptor or legacy
+`--qa` suite; those options are not forwarded to the batch runner. The `qa
+FOLDER` shortcut also performs batch migration, not QA-only inspection. To run
+the real-world QA report card against an existing project, use the MCP `qa`
+tool with `project_dir` and, optionally, `extraction_dir`. There is no
+`--review` CLI flag. The Copilot `@Reviewer` agent is invoked separately by a
+caller who wants an agent to inspect artifacts or consume coaching.
 
 ## Integration Points
 

@@ -23,7 +23,60 @@ migration, and cutover orchestration.
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Prerequisites
+## Optional evidence from official Tableau MCP
+
+The [official Tableau MCP](https://github.com/tableau/tableau-mcp) is an
+external Tableau-supported project, distinct from this repository's migration
+MCP (`python -m powerbi_import.mcp_server`). Sharing the MCP protocol does not
+mean the two servers are integrated.
+
+For Tableau Cloud, upstream recommends its hosted service with user OAuth.
+Tableau Server customers should follow the upstream self-hosted/enterprise
+instructions. Use the current upstream prerequisites and authentication guide;
+never store PAT values in tracked configuration or pass secrets in chat.
+
+An explicitly restricted, least-privilege evidence workflow can supplement
+local extraction:
+
+| Evidence | Migration use | Boundary |
+|----------|---------------|----------|
+| Published workbook/datasource metadata | Check identities, dependencies and fields against downloaded definitions | Permissions and published revision can differ from local files |
+| Datasource query results or view data | Compare selected aggregates, filters and null behavior | Record filters, user context and refresh state; not whole-model parity |
+| View images | Compare rendered source pages with Power BI screenshots | Missing pages and failed captures remain unverified |
+
+Official Tableau MCP also has Desktop authoring code in its upstream `main`
+branch: `list-instances`, `get-workbook-xml`, `list-worksheets` and
+`list-dashboards` can potentially corroborate the currently open workbook.
+This is **not** evidence that a released npm package or the installed Tableau
+Desktop supports that bridge. Upstream Desktop discovery expects an
+`agent-manifest.json` file under `%LOCALAPPDATA%\Tableau\Desktop` on Windows;
+an ordinary running Desktop process alone is insufficient. Validate the
+matching build, bridge availability and tool list before configuring it.
+`get-workbook-xml` defaults to writing a local cache; it does not by itself
+change the workbook.
+
+Use only approved observation tools for extraction verification. Official MCP
+also exposes write operations, including Desktop `apply-workbook`; do not
+enable or invoke them as part of this evidence workflow. Do not alter a user's
+open workbook, apply generated XML, publish content or trigger refresh without
+separate authorization.
+
+Keep `.twb`/`.twbx` XML extraction as the deterministic migration input. Compare
+MCP evidence against a snapshot with an identified source revision; investigate
+discrepancies rather than automatically replacing extracted formulas, joins,
+formats or model artifacts. A successful tool call, matching object counts or
+a screenshot alone does not certify extraction completeness or semantic parity.
+
+This documentation adds no MCP dependency, automatic connection, or live
+verification to the migration pipeline. External MCP execution is `not_run`
+until an authorized, compatible connection actually supplies evidence.
+
+Upstream references:
+- [README and deployment choices](https://github.com/tableau/tableau-mcp#readme)
+- [Desktop tool registration](https://github.com/tableau/tableau-mcp/blob/04969067cdebc537536eaa487579d48d9f8bd441/src/tools/desktop/tools.ts)
+- [Desktop instance discovery](https://github.com/tableau/tableau-mcp/blob/04969067cdebc537536eaa487579d48d9f8bd441/src/desktop/desktopDiscoverer.ts)
+
+## Server migration prerequisites
 
 - Python 3.12+
 - Tableau Server/Cloud with REST API access

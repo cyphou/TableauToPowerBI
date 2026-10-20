@@ -28,12 +28,15 @@ import json
 logger = logging.getLogger(__name__)
 import zipfile
 import re
+from copy import deepcopy
 from collections import OrderedDict
+from urllib.parse import quote
 
 # Import M query generators
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from m_query_builder import (
+    _M_GENERATORS,
     generate_power_query_m,
     generate_m_from_hyper,
     inject_m_steps,
@@ -77,7 +80,7 @@ from m_query_builder import (
 #  TABLEAU PREP TYPE MAPPINGS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Prep connection class → m_query_builder connection type
+# Prep connection class → extraction/lineage connection type (legacy contract).
 _PREP_CONNECTION_MAP = {
     'csv': 'textscan',
     'excel': 'excel-direct',
@@ -104,6 +107,46 @@ _PREP_CONNECTION_MAP = {
     'adls': 'ADLS',
     'wasbs': 'Azure Blob Storage',
 }
+
+# Builder dispatch uses display names, unlike the extraction/lineage contract.
+_PREP_M_CONNECTION_MAP = {
+    'csv': 'CSV',
+    'textscan': 'CSV',
+    'excel': 'Excel',
+    'excel-direct': 'Excel',
+    'sqlserver': 'SQL Server',
+    'postgres': 'PostgreSQL',
+    'mysql': 'MySQL',
+    'oracle': 'Oracle',
+    'bigquery': 'BigQuery',
+    'snowflake': 'Snowflake',
+    'redshift': 'Amazon Redshift',
+    'teradata': 'Teradata',
+    'saphana': 'SAP HANA',
+    'databricks': 'Databricks',
+    'spark': 'Spark SQL',
+    'json': 'JSON',
+    'hyper': 'hyper',
+    'google-sheets': 'Google Sheets',
+    'salesforce': 'Salesforce',
+    'azure_sql_dw': 'Azure Synapse',
+    'odata': 'OData',
+    'google-analytics': 'Google Analytics',
+    'azure-blob': 'Azure Blob',
+    'adls': 'ADLS',
+    'wasbs': 'Azure Blob Storage',
+}
+
+
+def _prep_m_connection_type(conn_type):
+    """Resolve a real builder connector; never accept its empty-table fallback."""
+    conn_class = (conn_type or '').strip().lower()
+    supported_types = {name.lower(): name for name in _M_GENERATORS}
+    resolved = _PREP_M_CONNECTION_MAP.get(conn_class, supported_types.get(conn_class))
+    if resolved not in _M_GENERATORS:
+        raise ValueError(f'unsupported connector {conn_type!r}')
+    return resolved
+
 
 # Prep data type → Power Query M type
 _PREP_TYPE_MAP = {
@@ -182,14 +225,14 @@ def read_prep_flow(filepath):
     ext = os.path.splitext(filepath)[1].lower()
 
     if ext == '.tflx':
-        return _read_tflx_zip(filepath)
+        return normalize_prep_flow(_read_tflx_zip(filepath))
 
     if ext == '.tfl':
         # Auto-detect ZIP archives saved with .tfl extension
         if zipfile.is_zipfile(filepath):
-            return _read_tflx_zip(filepath)
+            return normalize_prep_flow(_read_tflx_zip(filepath))
         with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            return normalize_prep_flow(json.load(f))
 
     raise ValueError(f"Unsupported file extension: {ext} (expected .tfl or .tflx)")
 
@@ -205,9 +248,332 @@ def _get_node_type(node):
          '.v1.LoadCsv' → 'LoadCsv'
     """
     node = _as_dict(node)
-    node_type = node.get('nodeType', '')
+    node_type = node.get('nodeType') or ''
+    if not isinstance(node_type, str):
+        raise ValueError("Prep nodeType must be a string")
     parts = node_type.rsplit('.', 1)
     return parts[-1] if parts else node_type
+
+
+def get_prep_node_kind(node):
+    """Return input/output/container/transform; explicit baseType takes priority.
+
+    Only known input/output semantic suffixes are inferred, never arbitrary
+    ``Load*`` or ``Publish*`` names. Unknown types remain transforms so conversion
+    can report unsupported semantics rather than silently discard them.
+    """
+    node = _as_dict(node)
+    base = node.get('baseType')
+    if base in ('input', 'output', 'container', 'transform'):
+        return base
+    if base:
+        raise ValueError(f"Unknown Prep baseType {base!r}")
+    sem = _get_node_type(node)
+    if sem in {
+        'LoadCsv', 'LoadExcel', 'LoadSql', 'LoadJson', 'LoadHyper',
+        'LoadGoogle', 'LoadGoogleSheets', 'LoadPublishedDataSource',
+        'PublishedDataSource', 'Input',
+    }:
+        return 'input'
+    if sem in {'PublishExtract', 'SaveToFile', 'SaveToDatabase', 'Output'}:
+        return 'output'
+    return 'container' if node.get('loomContainer') is not None else 'transform'
+
+
+def normalize_prep_flow(flow):
+    """Copy, validate and flatten a Prep DAG, without inferring execution order.
+
+    Top-level IDs are unchanged. Children receive escaped, collision-free scoped
+    IDs; edge, join-side and connection references are rewritten. Connections
+    remain datasource definitions, not graph edges. Missing/null optional
+    collections become empty collections; invalid shapes raise ValueError.
+
+    Container boundaries may be declared on the container or loomContainer via
+    entry/exitNodeId(s), input/outputNodeId(s), entry/exitNodes, input/outputNodes,
+    or initial/terminalNodeId(s). A reference is a string or {nodeId: string}.
+    Edges from a container to its descendant (or back) also declare boundaries.
+    Otherwise exactly one internal root/sink is required when routing through
+    that boundary. Multi-entry joins must have edges to the actual child inputs;
+    they are never wired by predecessor order or by broadcasting.
+    """
+    flow = deepcopy(_as_dict(flow))
+    try:
+        raw_nodes = _as_dict(flow.get('nodes'))
+        connections = _as_dict(flow.get('connections'))
+    except ValueError as exc:
+        raise ValueError(f'Prep flow nodes/connections: {exc}') from exc
+    if any(not isinstance(cid, str) or not cid for cid in connections):
+        raise ValueError('Prep flow: connection IDs must be nonempty strings')
+    flow['connections'] = connections
+    prefix = '__prep_scope__/'
+    while any(str(nid).startswith(prefix) for nid in raw_nodes):
+        prefix = '_' + prefix
+    records, scopes, parents, children = {}, {}, {}, {}
+    scope_connections = {}
+    list_keys = {
+        'nextNodes', 'fields', 'actions', 'groupByFields', 'aggregateFields',
+        'joinConditions', 'pivotFields', 'columns', 'values', 'groupings', 'rules',
+    }
+    dict_keys = {
+        'connectionAttributes', 'beforeActionGroup', 'actionGroup',
+        'afterActionGroup', 'pivotKeyField', 'pivotValueField',
+    }
+    object_lists = {
+        'nextNodes', 'fields', 'actions', 'groupByFields', 'aggregateFields',
+        'joinConditions', 'pivotFields', 'groupings', 'rules',
+    }
+    string_keys = {
+        'name', 'nodeType', 'actionType', 'baseType', 'connectionId', 'class',
+        'columnName', 'newColumnName', 'expression', 'filterExpression',
+        'filterType', 'newType', 'operation', 'direction', 'aggregation',
+        'joinType', 'pivotType', 'leftNodeId', 'rightNodeId',
+        'delimiter', 'separator', 'pattern', 'pivotValuesName', 'pivotNamesName',
+        'scriptLanguage', 'language', 'publishedDatasourceName', 'datasourceName',
+    }
+
+    def optional_shapes(obj, context):
+        for key, value in list(obj.items()):
+            here = f'{context}.{key}'
+            if key in list_keys:
+                try:
+                    value = _as_list(value)
+                except ValueError as exc:
+                    raise ValueError(f'{here}: {exc}') from exc
+                obj[key] = value
+                for item in value:
+                    if key in object_lists and not isinstance(item, dict):
+                        raise ValueError(f'{here}: expected object elements')
+                    if isinstance(item, dict):
+                        optional_shapes(item, here)
+            elif key in dict_keys:
+                try:
+                    obj[key] = _as_dict(value)
+                except ValueError as exc:
+                    raise ValueError(f'{here}: {exc}') from exc
+                if key == 'connectionAttributes':
+                    for attr, attr_value in list(obj[key].items()):
+                        if attr_value is None:
+                            obj[key].pop(attr)
+                        elif not isinstance(attr_value, (str, int, float, bool)):
+                            raise ValueError(f'{here}.{attr}: expected scalar connection attribute')
+                optional_shapes(obj[key], here)
+            elif key in string_keys:
+                if value is None:
+                    obj.pop(key)
+                elif not isinstance(value, str):
+                    raise ValueError(f'{here}: expected string')
+
+    def add_scope(node_map, scope, path, parent, local_connections):
+        node_map = _as_dict(node_map)
+        ids = {}
+        for local_id in node_map:
+            if not isinstance(local_id, str) or not local_id:
+                raise ValueError(f'Prep scope {path}: node IDs must be nonempty strings')
+            nid = local_id if not path else prefix + '/'.join(
+                quote(part, safe='') for part in (*path, local_id))
+            if nid in records:
+                raise ValueError(f'Prep duplicate scoped node ID {nid!r}')
+            ids[local_id] = nid
+            if not isinstance(node_map[local_id], dict):
+                raise ValueError(f'Prep node {nid!r}: expected object')
+            records[nid] = node_map[local_id]
+            parents[nid] = parent
+        scopes[scope] = ids
+        scope_connections[scope] = local_connections
+        children[parent] = list(ids.values())
+        for local_id, nid in ids.items():
+            node = records[nid]
+            optional_shapes(node, f'Prep node {nid!r}')
+            node.setdefault('nextNodes', [])
+            node.setdefault('fields', [])
+            node.setdefault('connectionAttributes', {})
+            node['baseType'] = get_prep_node_kind(node)
+            node['_prep_scope'] = scope
+            if node['baseType'] == 'container':
+                if (node.get('actions') or any(
+                    _as_dict(node.get(key)).get('actions') for key in
+                    ('beforeActionGroup', 'actionGroup', 'afterActionGroup')
+                )):
+                    raise ValueError(f'Prep container {nid!r}: outer actions cannot be '
+                                     'ordered reliably against child graph')
+                if any(node.get(key) for key in (
+                    'groupByFields', 'aggregateFields', 'joinConditions', 'pivotType',
+                )):
+                    raise ValueError(f'Prep container {nid!r}: outer transformation '
+                                     'semantics cannot be discarded while flattening')
+                loom = _as_dict(node.get('loomContainer'))
+                if not loom.get('nodes'):
+                    raise ValueError(f'Prep container {nid!r}: missing/empty loomContainer.nodes')
+                local = dict(local_connections)
+                for cid, definition in _as_dict(loom.get('connections')).items():
+                    if not isinstance(cid, str) or not cid:
+                        raise ValueError(f'Prep container {nid!r}: invalid connection ID {cid!r}')
+                    scoped_cid = prefix + 'connection/' + quote(nid, safe='') + '/' + quote(cid, safe='')
+                    if scoped_cid in connections:
+                        raise ValueError(f'Prep duplicate connection {scoped_cid!r}')
+                    connections[scoped_cid] = definition
+                    local[cid] = scoped_cid
+                add_scope(loom['nodes'], nid, (*path, local_id), nid, local)
+
+    add_scope(raw_nodes, None, (), None, {cid: cid for cid in connections})
+    containers = {nid for nid, node in records.items() if node['baseType'] == 'container'}
+
+    def is_inside(nid, container):
+        parent = parents[nid]
+        while parent is not None:
+            if parent == container:
+                return True
+            parent = parents[parent]
+        return False
+
+    def resolve(ref, scope, context):
+        if isinstance(ref, dict):
+            ref = ref.get('nodeId', ref.get('nextNodeId', ref.get('id')))
+        if not isinstance(ref, str) or not ref:
+            raise ValueError(f'{context}: expected nonempty node reference, got {ref!r}')
+        cursor = scope
+        while True:
+            if ref in scopes[cursor]:
+                return scopes[cursor][ref]
+            if cursor is None:
+                break
+            cursor = parents[cursor]
+        if ref in records:
+            return ref
+        # Outer edges may name a child directly, but never choose between
+        # identically named children in different containers.
+        matches = [ids[ref] for key, ids in scopes.items() if ref in ids
+                   and (scope is None or key == scope or
+                        (key is not None and is_inside(key, scope)))]
+        if len(matches) != 1:
+            raise ValueError(f'{context}: dangling/ambiguous reference {ref!r} ({matches})')
+        return matches[0]
+
+    edges = []
+    declared = {nid: {'entry': [], 'exit': []} for nid in containers}
+    for nid, node in records.items():
+        scope = node['_prep_scope']
+        for edge in node['nextNodes']:
+            target = resolve(edge.get('nextNodeId'), scope, f'Prep edge from {nid!r}')
+            if nid in containers and is_inside(target, nid):
+                declared[nid]['entry'].append(target)
+            elif target in containers and is_inside(nid, target):
+                declared[target]['exit'].append(nid)
+            else:
+                edges.append((nid, target, edge))
+        if node.get('nextNodeId') is not None:
+            target = resolve(node['nextNodeId'], scope, f'Prep edge from {nid!r}')
+            if nid in containers and is_inside(target, nid):
+                declared[nid]['entry'].append(target)
+            elif target in containers and is_inside(nid, target):
+                declared[target]['exit'].append(nid)
+            else:
+                edges.append((nid, target, {'nextNodeId': target}))
+            node.pop('nextNodeId')
+        cid = node.get('connectionId')
+        if cid is not None:
+            if not isinstance(cid, str):
+                raise ValueError(f'Prep node {nid!r}: connectionId must be a string')
+            node['connectionId'] = scope_connections[scope].get(cid, cid)
+        for direction, stems in (
+            ('entry', ('entry', 'input', 'initial')),
+            ('exit', ('exit', 'output', 'terminal')),
+        ):
+            if nid not in containers:
+                continue
+            for owner in (node, _as_dict(node.get('loomContainer'))):
+                for stem in stems:
+                    for key in (stem + 'NodeId', stem + 'NodeIds', stem + 'Node', stem + 'Nodes'):
+                        if owner.get(key) is None:
+                            continue
+                        refs = owner[key] if isinstance(owner[key], list) else [owner[key]]
+                        for ref in refs:
+                            target = resolve(ref, nid, f'Prep container {nid!r}.{key}')
+                            if not is_inside(target, nid):
+                                raise ValueError(f'Prep container {nid!r}.{key}: not a child: {target!r}')
+                            declared[nid][direction].append(target)
+
+    boundary_cache = {}
+
+    def boundary(nid, direction, active=()):
+        if nid not in containers:
+            return nid
+        key = (nid, direction)
+        if key in boundary_cache:
+            return boundary_cache[key]
+        if key in active:
+            raise ValueError(f'Prep cyclic container boundary {active + (key,)!r}')
+        candidates = set(declared[nid][direction])
+        if not candidates:
+            candidates = set(children[nid])
+            # Project real internal edges to direct children. No dictionary
+            # ordering is used to choose an entry, an exit, or join sides.
+            for source, target, _ in edges:
+                if not (is_inside(source, nid) and is_inside(target, nid)):
+                    continue
+                a, b = source, target
+                while parents[a] != nid:
+                    a = parents[a]
+                while parents[b] != nid:
+                    b = parents[b]
+                if a != b:
+                    candidates.discard(b if direction == 'entry' else a)
+        if len(candidates) != 1:
+            raise ValueError(f'Prep container {nid!r}: ambiguous {direction} boundary '
+                             f'{sorted(candidates)!r}; explicit child routing required')
+        result = boundary(next(iter(candidates)), direction, active + (key,))
+        boundary_cache[key] = result
+        return result
+
+    flat = {nid: node for nid, node in records.items() if nid not in containers}
+    for node in flat.values():
+        node['nextNodes'] = []
+    for source, target, edge in edges:
+        source = boundary(source, 'exit')
+        target = boundary(target, 'entry')
+        rewritten = {**edge, 'nextNodeId': target}
+        if rewritten not in flat[source]['nextNodes']:
+            flat[source]['nextNodes'].append(rewritten)
+    for nid, node in flat.items():
+        for key in ('leftNodeId', 'rightNodeId'):
+            if node.get(key) is not None:
+                node[key] = boundary(resolve(node[key], node['_prep_scope'],
+                                             f'Prep node {nid!r}.{key}'), 'exit')
+        node.pop('_prep_scope', None)
+        kind = get_prep_node_kind(node)
+        if kind == 'input' and _find_upstream_nodes(flat, nid):
+            raise ValueError(f'Prep input {nid!r}: incoming edges would be discarded')
+        if kind == 'output' and node['nextNodes']:
+            raise ValueError(f'Prep output {nid!r}: unexpected outgoing edges')
+    # An explicitly selected exit must not strand another internal branch.
+    # Retaining that branch in JSON while omitting it from generated output
+    # would still be silent data loss. Internal inputs/outputs are real graph
+    # terminals; other child roots/sinks must have actual routed edges, except
+    # for terminal leaves eligible for the legacy no-explicit-output fallback.
+    has_explicit_outputs = any(get_prep_node_kind(node) == 'output'
+                               for node in flat.values())
+    routed_containers = {source for source, _, _ in edges if source in containers}
+    for nid, node in flat.items():
+        if parents[nid] is None:
+            continue
+        upstream = _find_upstream_nodes(flat, nid)
+        if not upstream and get_prep_node_kind(node) != 'input':
+            raise ValueError(f'Prep container child {nid!r}: unrouted entry/root')
+        if not node['nextNodes'] and get_prep_node_kind(node) != 'output':
+            parent = parents[nid]
+            routed = False
+            while parent is not None:
+                routed = routed or parent in routed_containers
+                parent = parents[parent]
+            if routed or has_explicit_outputs:
+                raise ValueError(f'Prep container child {nid!r}: branch stranded at exit')
+    for cid, definition in connections.items():
+        definition = _as_dict(definition)
+        optional_shapes(definition, f'Prep connection {cid!r}')
+        connections[cid] = definition
+    flow['nodes'] = flat
+    _topological_sort(flat)
+    return flow
 
 
 def _topological_sort(nodes):
@@ -233,6 +599,8 @@ def _topological_sort(nodes):
             edge = _as_dict(edge)
             next_id = edge.get('nextNodeId', '')
             if next_id:
+                if next_id not in nodes:
+                    raise ValueError(f'Prep node {nid!r}: dangling edge to {next_id!r}')
                 graph[nid].append(next_id)
                 if next_id not in graph:
                     graph[next_id] = []
@@ -250,6 +618,9 @@ def _topological_sort(nodes):
             if in_degree[next_id] == 0:
                 queue.append(next_id)
 
+    if len(sorted_ids) != len(nodes):
+        blocked = [nid for nid in nodes if in_degree[nid] > 0]
+        raise ValueError(f'Prep graph contains a cycle; blocked nodes: {blocked!r}')
     return sorted_ids
 
 
@@ -267,13 +638,21 @@ def _find_upstream_nodes(nodes, node_id):
 
 
 def _as_dict(value):
-    """Return *value* when it is a dict, otherwise an empty dict."""
-    return value if isinstance(value, dict) else {}
+    """Normalize an optional object; reject malformed non-null shapes."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f'Prep expected object, got {type(value).__name__}')
+    return value
 
 
 def _as_list(value):
-    """Return *value* when it is a list, otherwise an empty list."""
-    return value if isinstance(value, list) else []
+    """Normalize an optional collection; reject malformed non-null shapes."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f'Prep expected list, got {type(value).__name__}')
+    return value
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -289,16 +668,20 @@ def _parse_input_node(node, connections):
         (connection_dict, table_dict)
     """
     conn_id = node.get('connectionId', '')
-    conn_def = connections.get(conn_id, {})
-    conn_attrs = conn_def.get('connectionAttributes', {})
-    node_conn_attrs = node.get('connectionAttributes', {})
+    conn_def = _as_dict(connections.get(conn_id))
+    conn_attrs = _as_dict(conn_def.get('connectionAttributes'))
+    node_conn_attrs = _as_dict(node.get('connectionAttributes'))
 
     # Merge connection-level and node-level attributes
     all_attrs = {**conn_attrs, **node_conn_attrs}
 
     # Map Prep connection class to m_query_builder type
-    conn_class = all_attrs.get('class', '').lower()
+    conn_class = (all_attrs.get('class') or '').strip().lower()
     conn_type = _PREP_CONNECTION_MAP.get(conn_class, conn_class)
+    try:
+        _prep_m_connection_type(conn_type)
+    except ValueError as exc:
+        raise ValueError(f"Prep input {node.get('name', '<unnamed>')!r}: {exc}") from exc
 
     # Build table name
     table_name = node.get('name', 'Table')
@@ -306,7 +689,8 @@ def _parse_input_node(node, connections):
 
     # Build columns from fields
     columns = []
-    for field in node.get('fields', []):
+    for field in _as_list(node.get('fields')):
+        field = _as_dict(field)
         columns.append({
             'name': field.get('name', ''),
             'datatype': field.get('type', 'string'),
@@ -411,12 +795,12 @@ def _parse_clean_actions(node):
         list of (step_name, step_expression) tuples
     """
     steps = []
-    action_group = node.get('beforeActionGroup', node.get('actionGroup', {}))
-    actions = list(action_group.get('actions', []))
-
-    # Also check afterActionGroup
-    after_group = node.get('afterActionGroup', {})
-    actions.extend(after_group.get('actions', []))
+    actions = []
+    for key in ('beforeActionGroup', 'actionGroup', 'afterActionGroup'):
+        action_group = _as_dict(node.get(key))
+        actions.extend(_as_list(action_group.get('actions')))
+    if node.get('actions'):
+        raise ValueError('Prep SuperTransform has unscoped actions; action-group order required')
 
     # Track step counter for unique step names
     step_counter = {}
@@ -431,7 +815,10 @@ def _parse_clean_actions(node):
             pending_renames.clear()
 
     for action in actions:
-        action_type = action.get('actionType', '')
+        action = _as_dict(action)
+        action_type = action.get('actionType') or action.get('nodeType') or ''
+        if not isinstance(action_type, str):
+            raise ValueError('Prep clean actionType must be a string')
         # Extract semantic type: '.v1.RenameColumn' → 'RenameColumn'
         sem_type = action_type.rsplit('.', 1)[-1] if '.' in action_type else action_type
 
@@ -440,6 +827,8 @@ def _parse_clean_actions(node):
             new_name = action.get('newColumnName', '')
             if old_name and new_name:
                 pending_renames[old_name] = new_name
+            else:
+                raise ValueError(f'Prep RenameColumn requires columnName/newColumnName: {action!r}')
             continue
 
         # Flush any pending renames before processing a non-rename action
@@ -451,6 +840,8 @@ def _parse_clean_actions(node):
                 steps.extend(step)
             else:
                 steps.append(step)
+        else:
+            raise ValueError(f'Prep unsupported or incomplete clean action {sem_type!r}: {action!r}')
 
     # Flush any trailing renames
     flush_renames()
@@ -472,6 +863,11 @@ def _convert_action_to_m_step(action_type, action, counter):
         if old_name and new_name:
             return m_transform_rename({old_name: new_name})
 
+    elif action_type == 'RemoveColumns':
+        columns = _as_list(action.get('columnNames', action.get('columns')))
+        if columns and all(isinstance(col, str) and col for col in columns):
+            return m_transform_remove_columns(columns)
+
     elif action_type == 'RemoveColumn':
         col = action.get('columnName', '')
         if col:
@@ -486,6 +882,8 @@ def _convert_action_to_m_step(action_type, action, counter):
     elif action_type == 'ChangeColumnType':
         col = action.get('columnName', '')
         new_type = action.get('newType', 'string')
+        if not col or new_type not in _PREP_TYPE_MAP:
+            raise ValueError('Prep ChangeColumnType requires a column and supported newType')
         m_type = _PREP_TYPE_MAP.get(new_type, 'text')
         n = counter.get('type', 0)
         counter['type'] = n + 1
@@ -495,6 +893,8 @@ def _convert_action_to_m_step(action_type, action, counter):
 
     elif action_type == 'FilterOperation':
         expr = action.get('filterExpression', '')
+        if not expr:
+            raise ValueError('Prep FilterOperation requires filterExpression')
         filter_type = action.get('filterType', 'keep')
         m_expr = _convert_prep_expression_to_m(expr)
         n = counter.get('filter', 0)
@@ -551,6 +951,8 @@ def _convert_action_to_m_step(action_type, action, counter):
     elif action_type == 'AddColumn':
         col_name = action.get('columnName', 'NewColumn')
         expression = action.get('expression', '')
+        if not expression:
+            raise ValueError('Prep AddColumn requires expression')
         m_expr = _convert_prep_expression_to_m(expression)
         # M Table.AddColumn requires 'each' prefix for row-context expressions
         if not m_expr.strip().startswith('each'):
@@ -769,14 +1171,12 @@ def parse_prep_flow(filepath):
         - columns_metadata: []
         - calculations: []
     """
-    flow = read_prep_flow(filepath)
-    flow = _as_dict(flow)
+    flow = normalize_prep_flow(read_prep_flow(filepath))
     nodes = _as_dict(flow.get('nodes', {}))
     connections = _as_dict(flow.get('connections', {}))
 
     if not nodes:
-        print("  ⚠ No nodes found in Prep flow")
-        return []
+        raise ValueError(f'Prep flow {filepath!s}: no nodes; no outputs can be produced')
 
     # Topological sort to process in order
     sorted_ids = _topological_sort(nodes)
@@ -799,7 +1199,7 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
     nodes = _as_dict(nodes)
     connections = _as_dict(connections)
     node = _as_dict(nodes.get(nid, {}))
-    base_type = node.get('baseType', '')
+    base_type = get_prep_node_kind(node)
     sem_type = _get_node_type(node)
     node_name = node.get('name', nid[:8])
 
@@ -812,14 +1212,18 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
                                 node_results, secondary_branch_ids, node_name)
 
     elif base_type == 'output':
-        if upstream_ids := _find_upstream_nodes(nodes, nid):
-            if upstream_ids[0] in node_results:
-                node_results[nid] = {
-                    **node_results[upstream_ids[0]],
-                    'name': node_name,
-                    'is_output': True,
-                }
-                print(f"    ✓ Output: {node_name}")
+        upstream_ids = _find_upstream_nodes(nodes, nid)
+        if len(upstream_ids) != 1 or upstream_ids[0] not in node_results:
+            raise ValueError(f'Prep output {nid!r} ({node_name}): expected one resolved '
+                             f'upstream, got {upstream_ids!r}')
+        node_results[nid] = {
+            **node_results[upstream_ids[0]],
+            'name': node_name,
+            'is_output': True,
+        }
+        print(f"    ✓ Output: {node_name}")
+    else:
+        raise ValueError(f'Prep node {nid!r}: unnormalized/unsupported kind {base_type!r}')
 
 
 def _process_input_node(nid, node, connections, node_results, node_name):
@@ -830,6 +1234,10 @@ def _process_input_node(nid, node, connections, node_results, node_name):
     """
     node = _as_dict(node)
     connections = _as_dict(connections)
+    if _get_node_type(node) in ('PublishedDataSource', 'LoadPublishedDataSource'):
+        _process_transform_node(nid, node, {}, [], _get_node_type(node),
+                                node_results, set(), node_name)
+        return
     connection, table = _parse_input_node(node, connections)
     conn_type = connection.get('type', '')
 
@@ -849,7 +1257,10 @@ def _process_input_node(nid, node, connections, node_results, node_name):
                 logger.debug('Hyper read failed for %s: %s', node_name, exc)
 
     if m_query is None:
-        m_query = generate_power_query_m(connection, table)
+        # Keep lineage metadata stable while dispatching to an actual builder
+        # connector (CSV instead of textscan, PostgreSQL instead of postgres).
+        m_connection = {**connection, 'type': _prep_m_connection_type(conn_type)}
+        m_query = generate_power_query_m(m_connection, table)
 
     node_results[nid] = {
         'connection': connection,
@@ -868,6 +1279,40 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
     nodes = _as_dict(nodes)
     upstream_ids = _as_list(upstream_ids)
 
+    source_types = ('PublishedDataSource', 'LoadPublishedDataSource')
+    if sem_type not in source_types:
+        if not upstream_ids or any(uid not in node_results for uid in upstream_ids):
+            raise ValueError(f'Prep transform {nid!r} ({sem_type}): unresolved upstream '
+                             f'{upstream_ids!r}')
+        if sem_type not in ('Join', 'CrossJoin', 'Union') and len(upstream_ids) != 1:
+            raise ValueError(f'Prep transform {nid!r} ({sem_type}): expected one upstream, '
+                             f'got {upstream_ids!r}')
+
+    action_types = {
+        'AddColumn', 'RemoveColumn', 'RemoveColumns', 'RenameColumn',
+        'ValueFilter', 'ChangeColumnType', 'FilterOperation', 'DuplicateColumn',
+        'RichRangeFilter', 'RangeFilter', 'Remap', 'RichDiscreteValueFilter',
+        'QuickCalcColumn', 'RichWildcardFilter', 'RichNullFilter',
+        'FilterValues', 'FilterRange', 'ReplaceValues', 'ReplaceNulls',
+        'SplitColumn', 'MergeColumns', 'CleanOperation', 'FillValues',
+        'GroupReplace', 'ConditionalColumn', 'ExtractValues', 'CustomCalculation',
+    }
+    if sem_type in action_types:
+        if any(_as_dict(node.get(key)).get('actions') for key in
+               ('beforeActionGroup', 'actionGroup', 'afterActionGroup')):
+            raise ValueError(f'Prep operation {nid!r}: mixed standalone/grouped actions')
+        action = {**node, 'actionType': sem_type}
+        try:
+            steps = _parse_clean_actions({'actionGroup': {'actions': [action]}})
+        except ValueError as exc:
+            raise ValueError(f'Prep operation {nid!r} ({sem_type}): {exc}') from exc
+        upstream = node_results[upstream_ids[0]]
+        node_results[nid] = {
+            **upstream, 'name': node_name,
+            'm_query': inject_m_steps(upstream['m_query'], steps),
+        }
+        return
+
     if sem_type in ('SuperTransform',):
         # Clean step — chain onto upstream M query
         if upstream_ids and upstream_ids[0] in node_results:
@@ -883,10 +1328,12 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
             }
             print(f"    ✓ Clean: {node_name} ({len(steps)} actions)")
 
-    elif sem_type == 'Aggregate':
+    elif sem_type in ('Aggregate', 'SuperAggregate'):
         if upstream_ids and upstream_ids[0] in node_results:
             upstream = node_results[upstream_ids[0]]
             step = _parse_aggregate_node(node)
+            if not step:
+                raise ValueError(f'Prep aggregate {nid!r}: missing grouping/aggregation fields')
             m_query = upstream['m_query']
             if step:
                 m_query = inject_m_steps(m_query, [step])
@@ -902,13 +1349,22 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
         left_id = node.get('leftNodeId')
         right_id = node.get('rightNodeId')
 
-        # Fallback: use upstream_ids order
-        if not left_id and len(upstream_ids) >= 2:
-            left_id = upstream_ids[0]
-            right_id = upstream_ids[1]
-        elif not left_id and len(upstream_ids) == 1:
-            left_id = upstream_ids[0]
+        # A side may be inferred only as the unique complement of an explicitly
+        # identified side. Dictionary/topological order is not left/right
+        # provenance, even for an otherwise flat, legacy flow.
+        if len(upstream_ids) == 2:
+            if left_id in upstream_ids and not right_id:
+                right_id = next(uid for uid in upstream_ids if uid != left_id)
+            elif right_id in upstream_ids and not left_id:
+                left_id = next(uid for uid in upstream_ids if uid != right_id)
+        if not left_id or not right_id:
+            raise ValueError(f'Prep join {nid!r}: explicit leftNodeId/rightNodeId '
+                             'provenance required; upstream iteration order is ambiguous')
 
+        if (len(upstream_ids) != 2 or left_id == right_id
+                or {left_id, right_id} != set(upstream_ids)):
+            raise ValueError(f'Prep join {nid!r}: requires two resolved left/right inputs; '
+                             f'got {upstream_ids!r}')
         if left_id and left_id in node_results:
             left = node_results[left_id]
             right_name = 'RightTable'
@@ -922,6 +1378,8 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 secondary_branch_ids.add(right_id)
 
             join_steps = _parse_join_node(node, right_name, right_fields)
+            if not join_steps:
+                raise ValueError(f'Prep join {nid!r}: missing supported join conditions')
             m_query = left['m_query']
             if join_steps:
                 m_query = inject_m_steps(m_query, join_steps)
@@ -960,6 +1418,8 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
         if upstream_ids and upstream_ids[0] in node_results:
             upstream = node_results[upstream_ids[0]]
             step = _parse_pivot_node(node)
+            if not step:
+                raise ValueError(f'Prep pivot {nid!r}: unsupported/incomplete pivot configuration')
             m_query = upstream['m_query']
             if step:
                 m_query = inject_m_steps(m_query, [step])
@@ -1009,6 +1469,8 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
 
     elif sem_type == 'CrossJoin':
         # Cross join (no key condition) → Table.Join with no key
+        if len(upstream_ids) != 2:
+            raise ValueError(f'Prep cross join {nid!r}: expected two inputs, got {upstream_ids!r}')
         if upstream_ids and len(upstream_ids) >= 2:
             left_id = upstream_ids[0]
             right_id = upstream_ids[1]
@@ -1051,13 +1513,8 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
         print(f"    ✓ Published DS Input: {node_name} → {ds_name}")
 
     else:
-        # Unknown transform — pass through
-        if upstream_ids and upstream_ids[0] in node_results:
-            node_results[nid] = {
-                **node_results[upstream_ids[0]],
-                'name': node_name,
-            }
-            print(f"    ⚠ Unsupported step: {sem_type} ({node_name}) — passed through")
+        raise ValueError(f'Prep unsupported transform {nid!r} ({node_name}): {sem_type!r}; '
+                         'manual migration required')
 
 
 def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_ids):
@@ -1066,6 +1523,24 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
     node_results = _as_dict(node_results)
     secondary_branch_ids = set(secondary_branch_ids or [])
     datasources = []
+    output_count = 0
+    explicit_outputs = [nid for nid, node in nodes.items()
+                        if get_prep_node_kind(node) == 'output']
+    unresolved = [nid for nid in explicit_outputs
+                  if not node_results.get(nid, {}).get('is_output')]
+    if unresolved:
+        raise ValueError(f'Prep explicit outputs have no resolved result: {unresolved!r}')
+
+    emitted_names = {}
+
+    def reserve_table_name(table_name, nid):
+        # Power BI query/table names are case-insensitive. Check the emitted
+        # name, not just the caption: "Sales Data" and "Sales_Data" collide too.
+        key = table_name.casefold()
+        if key in emitted_names:
+            raise ValueError(f'Duplicate Prep output/table name {table_name!r}: '
+                             f'nodes {emitted_names[key]!r} and {nid!r}')
+        emitted_names[key] = nid
 
     # First, emit secondary branch nodes (join right-tables, union extras)
     # so their queries exist in the model for the main query to reference
@@ -1074,6 +1549,7 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
             result = node_results[sec_id]
             raw_name = result.get('name', 'SecondaryTable')
             table_name = _clean_m_table_ref(raw_name)
+            reserve_table_name(table_name, sec_id)
             columns = []
             for f in _as_list(result.get('fields', [])):
                 if not isinstance(f, dict):
@@ -1107,6 +1583,7 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
         if result.get('is_output', False):
             ds_name = result.get('name', 'PrepOutput')
             table_name = ds_name.replace(' ', '_')
+            reserve_table_name(table_name, nid)
             columns = []
             for f in _as_list(result.get('fields', [])):
                 if not isinstance(f, dict):
@@ -1133,15 +1610,17 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
                 'is_prep_source': True,
             }
             datasources.append(datasource)
+            output_count += 1
 
     # If no output nodes, use all leaf nodes (nodes with no outgoing edges)
-    if not datasources:
+    if not explicit_outputs:
         for nid in sorted_ids:
             node = _as_dict(nodes.get(nid, {}))
             if not node.get('nextNodes') and nid in node_results:
                 result = node_results[nid]
                 ds_name = result.get('name', 'PrepOutput')
                 table_name = ds_name.replace(' ', '_')
+                reserve_table_name(table_name, nid)
                 datasource = {
                     'name': f'prep.{table_name}',
                     'caption': ds_name,
@@ -1161,7 +1640,10 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
                     'is_prep_source': True,
                 }
                 datasources.append(datasource)
+                output_count += 1
 
+    if not output_count:
+        raise ValueError('Prep flow produced zero outputs (no resolved explicit output or leaf)')
     return datasources
 
 
@@ -1184,19 +1666,26 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources):
     Returns:
         list of merged datasources (TWB datasources enhanced with Prep M queries)
     """
-    # Build lookup: table_name → prep M query
+    # Exact names/captions only. Prefix similarity (for example F_ versus S_)
+    # is not provenance and must never replace a workbook query automatically.
+    # Keep ownership with aliases so a caption match does not re-add the same
+    # transformed Prep datasource as an unmatched standalone datasource.
     prep_queries = {}
-    for pds in prep_datasources:
-        for table in pds.get('tables', []):
+    for index, pds in enumerate(prep_datasources):
+        for table in _as_list(pds.get('tables')):
             tname = table.get('name', '')
             m_query = pds.get('m_query_override', '')
             if tname and m_query:
-                prep_queries[tname] = m_query
-                # Also index by caption/datasource name
-                caption = pds.get('caption', '')
+                aliases = {tname}
+                caption = pds.get('caption')
                 if caption:
-                    prep_queries[caption] = m_query
-                    prep_queries[caption.replace(' ', '_')] = m_query
+                    aliases.update((caption, caption.replace(' ', '_')))
+                for alias in aliases:
+                    candidate = (m_query, index, tname)
+                    if alias in prep_queries and prep_queries[alias] != candidate:
+                        raise ValueError(f'Ambiguous Prep merge alias {alias!r}; '
+                                         'explicit datasource provenance required')
+                    prep_queries[alias] = candidate
 
     if not prep_queries:
         # No Prep data to merge — return TWB datasources plus any standalone Prep datasources
@@ -1208,22 +1697,26 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources):
 
     for ds in twb_datasources:
         # Check each table in the datasource
-        for table in ds.get('tables', []):
+        for table in _as_list(ds.get('tables')):
             tname = table.get('name', '')
             if tname in prep_queries:
                 # Replace the M query with the Prep-enriched version
-                ds['m_query_overrides'] = ds.get('m_query_overrides', {})
-                ds['m_query_overrides'][tname] = prep_queries[tname]
-                matched_prep_tables.add(tname)
+                m_query, index, prep_table = prep_queries[tname]
+                ds['m_query_overrides'] = _as_dict(ds.get('m_query_overrides'))
+                ds['m_query_overrides'][tname] = m_query
+                matched_prep_tables.add((index, prep_table))
                 print(f"    ✓ Matched Prep flow → TWB table: {tname}")
         merged.append(ds)
 
     # Add unmatched Prep datasources as standalone tables
-    for pds in prep_datasources:
-        for table in pds.get('tables', []):
+    for index, pds in enumerate(prep_datasources):
+        for table in _as_list(pds.get('tables')):
             tname = table.get('name', '')
-            if tname not in matched_prep_tables:
+            if (index, tname) not in matched_prep_tables:
                 merged.append(pds)
+                logger.warning('Prep table %r did not match a workbook table by exact '
+                               'name/caption; retained standalone. Explicit provenance '
+                               'is required for differently named workbook sources.', tname)
                 print(f"    + Added standalone Prep datasource: {tname}")
                 break
 

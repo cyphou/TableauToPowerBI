@@ -34,6 +34,11 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 try:
+    from powerbi_import.report_localization import text, render, attributes
+except ImportError:
+    from report_localization import text, render, attributes
+
+try:
     from powerbi_import.prep_lineage import (
         PrepLineageGraph, LineageEdge, SourceEndpoint, SinkEndpoint,
     )
@@ -255,9 +260,12 @@ def compute_merge_recommendations(graph: PrepLineageGraph) -> List[MergeRecommen
                 recs.append(MergeRecommendation(
                     rec_type='source_consolidation',
                     flows=[fa_name, fb_name],
-                    description=f'Both read {shared_count} common source(s), '
-                                f'{int(trans_sim * 100)}% transform similarity',
-                    impact=f'Eliminate 1 flow, reduce {shared_count} duplicate source connections',
+                    description=text(f'Both read {shared_count} common source(s), '
+                                     f'{int(trans_sim * 100)}% transform similarity',
+                                     f'Les deux lisent {shared_count} source(s) commune(s), '
+                                     f'{int(trans_sim * 100)}% de similarité des transformations'),
+                    impact=text(f'Eliminate 1 flow, reduce {shared_count} duplicate source connections',
+                                f'Supprimer 1 flux, réduire de {shared_count} les connexions source en double'),
                     score=score,
                 ))
 
@@ -270,8 +278,10 @@ def compute_merge_recommendations(graph: PrepLineageGraph) -> List[MergeRecommen
         recs.append(MergeRecommendation(
             rec_type='chain_collapse',
             flows=chain,
-            description=f'Linear chain of {len(chain)} flows with no fan-out',
-            impact=f'Merge into 1 flow ({total_nodes} total nodes)',
+            description=text(f'Linear chain of {len(chain)} flows with no fan-out',
+                             f'Chaîne linéaire de {len(chain)} flux sans ramification'),
+            impact=text(f'Merge into 1 flow ({total_nodes} total nodes)',
+                        f'Fusionner en 1 flux ({total_nodes} nœuds au total)'),
             score=score,
         ))
 
@@ -283,9 +293,12 @@ def compute_merge_recommendations(graph: PrepLineageGraph) -> List[MergeRecommen
             recs.append(MergeRecommendation(
                 rec_type='source_dedup',
                 flows=flow_list,
-                description=f'Source "{table_desc}" ({src.connection_type}) '
-                            f'read by {len(src.consumed_by)} flows',
-                impact=f'Reduce {len(src.consumed_by)}→1 source connections via shared query',
+                description=text(f'Source "{table_desc}" ({src.connection_type}) '
+                                 f'read by {len(src.consumed_by)} flows',
+                                 f'Source "{table_desc}" ({src.connection_type}) '
+                                 f'lue par {len(src.consumed_by)} flux'),
+                impact=text(f'Reduce {len(src.consumed_by)}→1 source connections via shared query',
+                            f'Réduire les connexions source de {len(src.consumed_by)} à 1 via une requête partagée'),
                 score=min(75, 40 + len(src.consumed_by) * 8),
             ))
 
@@ -301,8 +314,10 @@ def compute_merge_recommendations(graph: PrepLineageGraph) -> List[MergeRecommen
             recs.append(MergeRecommendation(
                 rec_type='redundant_output',
                 flows=flow_list,
-                description=f'{len(producers)} flows produce same output "{out_names}"',
-                impact=f'Keep 1, remove {len(producers) - 1} redundant output(s)',
+                description=text(f'{len(producers)} flows produce same output "{out_names}"',
+                                 f'{len(producers)} flux produisent la même sortie "{out_names}"'),
+                impact=text(f'Keep 1, remove {len(producers) - 1} redundant output(s)',
+                            f'Conserver 1 sortie, supprimer {len(producers) - 1} sortie(s) redondante(s)'),
                 score=65,
             ))
 
@@ -311,8 +326,8 @@ def compute_merge_recommendations(graph: PrepLineageGraph) -> List[MergeRecommen
         recs.append(MergeRecommendation(
             rec_type='isolated',
             flows=[name],
-            description='No cross-flow connections detected',
-            impact='Standalone migration — no merge needed',
+            description=text('No cross-flow connections detected', 'Aucune connexion entre flux détectée'),
+            impact=text('Standalone migration — no merge needed', 'Migration autonome — aucune fusion nécessaire'),
             score=0,
         ))
 
@@ -329,12 +344,12 @@ def _render_executive_summary(graph: PrepLineageGraph,
                               rec_count: int) -> str:
     """Section 1 — stat cards."""
     cards = [
-        stat_card(graph.total_flows, 'Total Flows', accent='blue'),
-        stat_card(graph.total_sources, 'External Sources', accent='teal'),
-        stat_card(graph.total_outputs, 'Final Outputs', accent='purple'),
-        stat_card(graph.total_cross_flow_edges, 'Cross-Flow Edges'),
-        stat_card(graph.max_chain_depth, 'Max Chain Depth'),
-        stat_card(rec_count, 'Merge Candidates', accent='success' if rec_count else ''),
+        stat_card(graph.total_flows, text('Total Flows', 'Total des flux'), accent='blue'),
+        stat_card(graph.total_sources, text('External Sources', 'Sources externes'), accent='teal'),
+        stat_card(graph.total_outputs, text('Final Outputs', 'Sorties finales'), accent='purple'),
+        stat_card(graph.total_cross_flow_edges, text('Cross-Flow Edges', 'Liens entre flux')),
+        stat_card(graph.max_chain_depth, text('Max Chain Depth', 'Profondeur maximale des chaînes')),
+        stat_card(rec_count, text('Merge Candidates', 'Candidats à la fusion'), accent='success' if rec_count else ''),
     ]
     return stat_grid(cards)
 
@@ -346,8 +361,9 @@ def _complexity_badge(label: str) -> str:
 
 def _render_flow_inventory(graph: PrepLineageGraph) -> str:
     """Section 2 — flow inventory table."""
-    headers = ['Flow', 'Inputs', 'Outputs', 'Transforms', 'Joins', 'Unions',
-               'Scripts', 'Depth', 'Complexity']
+    headers = [text('Flow', 'Flux'), text('Inputs', 'Entrées'), text('Outputs', 'Sorties'),
+               text('Transforms', 'Transformations'), text('Joins', 'Jointures'), text('Unions', 'Unions'),
+               text('Scripts', 'Scripts'), text('Depth', 'Profondeur'), text('Complexity', 'Complexité')]
     rows = []
     for f in sorted(graph.flows, key=lambda x: x.name):
         rows.append([
@@ -367,7 +383,8 @@ def _render_flow_inventory(graph: PrepLineageGraph) -> str:
 
 def _render_source_inventory(graph: PrepLineageGraph) -> str:
     """Section 3 — all external sources across all flows."""
-    headers = ['Source', 'Connection', 'Server', 'Database', 'Table / File', 'Used By']
+    headers = [text('Source', 'Source'), text('Connection', 'Connexion'), text('Server', 'Serveur'),
+               text('Database', 'Base de données'), text('Table / File', 'Table / Fichier'), text('Used By', 'Utilisée par')]
     rows = []
     for src in sorted(graph.external_sources,
                       key=lambda s: -len(s.consumed_by)):
@@ -389,7 +406,8 @@ def _render_source_inventory(graph: PrepLineageGraph) -> str:
 
 def _render_output_inventory(graph: PrepLineageGraph) -> str:
     """Section 4 — all outputs."""
-    headers = ['Output', 'Type', 'Target', 'Produced By', 'Consumed By']
+    headers = [text('Output', 'Sortie'), text('Type', 'Type'), text('Target', 'Cible'),
+               text('Produced By', 'Produite par'), text('Consumed By', 'Consommée par')]
     rows = []
 
     # Build consumed-by lookup from edges
@@ -402,7 +420,7 @@ def _render_output_inventory(graph: PrepLineageGraph) -> str:
         flow_name, out_name = sink.produced_by
         key = f"{flow_name}::{out_name}"
         consumers = consumed_map.get(key, [])
-        consumer_html = ', '.join(badge(c, 'blue') for c in consumers) if consumers else '—  (final)'
+        consumer_html = ', '.join(badge(c, 'blue') for c in consumers) if consumers else render(text('—  (final)', '—  (finale)'))
         target = esc(sink.target_table or sink.target_filename or '—')
         rows.append([
             esc(out_name),
@@ -434,7 +452,13 @@ def _render_lineage_diagram(graph: PrepLineageGraph) -> str:
         fid = f'F_{f.name.replace(" ", "_").replace("-", "_")}'
         flow_ids[f.name] = fid
         label = esc(f.name)
-        lines.append(f'    {fid}["{label}<br/><small>{len(f.transforms)} transforms</small>"]')
+        # Explicit authored diagram label; names and evidence labels stay untouched.
+        transform_label = (
+            f'<small {attributes(text(f"{len(f.transforms)} transforms", f"{len(f.transforms)} transformations"))}>'
+            f'{len(f.transforms)} transforms</small>'
+        )
+        # Mermaid labels use double quotes as delimiters.
+        lines.append(f'    {fid}["{label}<br/>{transform_label.replace(chr(34), chr(39))}"]')
 
     # Final sinks
     sink_ids = {}
@@ -479,42 +503,55 @@ def _render_lineage_diagram(graph: PrepLineageGraph) -> str:
 </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-<script>mermaid.initialize({{startOnLoad:true, theme:'default', securityLevel:'loose'}});</script>
+<script>
+mermaid.initialize({{startOnLoad:false, theme:'default', securityLevel:'loose'}});
+document.addEventListener('DOMContentLoaded', function () {{
+    mermaid.run({{
+        nodes: [document.getElementById('mermaid-diagram')],
+        postRenderCallback: function () {{
+            // Mermaid creates these explicitly annotated labels asynchronously.
+            // Reapply the selected language without changing diagram evidence.
+            if (window.ReportI18n) ReportI18n.setLanguage(ReportI18n.language, false);
+        }}
+    }});
+}});
+</script>
 """
 
 
 def _render_merge_recommendations(recs: List[MergeRecommendation]) -> str:
     """Section 6 — merge recommendation table."""
     if not recs:
-        return card(content='<p>No merge recommendations — all flows are independent.</p>',
-                    title='No Action Needed')
+        return card(content=f'<p>{render(text("No merge recommendations — all flows are independent.", "Aucune recommandation de fusion — tous les flux sont indépendants."))}</p>',
+                    title=text('No Action Needed', 'Aucune action nécessaire'))
 
     actionable = [r for r in recs if r.score > 0]
     isolated = [r for r in recs if r.score == 0]
 
-    headers = ['Score', 'Type', 'Flows', 'Description', 'Impact']
+    headers = [text('Score', 'Score'), text('Type', 'Type'), text('Flows', 'Flux'), text('Description', 'Description'), text('Impact', 'Impact')]
     rows = []
     for r in actionable:
         type_labels = {
-            'source_consolidation': 'Source Consolidation',
-            'chain_collapse': 'Chain Collapse',
-            'source_dedup': 'Source Dedup',
-            'redundant_output': 'Redundant Output',
-            'fan_in_simplification': 'Fan-in Simplification',
+            'source_consolidation': text('Source Consolidation', 'Consolidation des sources'),
+            'chain_collapse': text('Chain Collapse', 'Fusion de chaîne'),
+            'source_dedup': text('Source Dedup', 'Déduplication des sources'),
+            'redundant_output': text('Redundant Output', 'Sortie redondante'),
+            'fan_in_simplification': text('Fan-in Simplification', 'Simplification de convergence'),
         }
         rows.append([
             badge(f'{r.score}/100', r.level),
-            esc(type_labels.get(r.rec_type, r.rec_type)),
+            render(type_labels.get(r.rec_type, r.rec_type)),
             ', '.join(badge(f, 'blue') for f in r.flows),
-            esc(r.description),
-            esc(r.impact),
+            render(r.description),
+            render(r.impact),
         ])
 
     html = data_table(headers, rows, table_id='merge-recs', sortable=True)
 
     if isolated:
         html += f'\n<p style="margin-top:12px;color:#605e5c;">'
-        html += f'{len(isolated)} isolated flow(s) require no merging: '
+        html += render(text(f'{len(isolated)} isolated flow(s) require no merging: ',
+                            f'{len(isolated)} flux isolé(s) ne nécessitent aucune fusion : '))
         html += ', '.join(esc(r.flows[0]) for r in isolated)
         html += '</p>'
 
@@ -531,13 +568,11 @@ def _render_transform_documentation(graph: PrepLineageGraph) -> str:
         html_parts.append(f'<div class="card" style="margin-bottom:16px;">')
         html_parts.append(f'<h3 style="margin:0 0 8px;">{esc(flow.name)}</h3>')
         html_parts.append(f'<p style="color:#605e5c;margin:0 0 12px;">'
-                          f'{len(flow.inputs)} input(s) → '
-                          f'{len(flow.transforms)} transform(s) → '
-                          f'{len(flow.outputs)} output(s) | '
-                          f'Complexity: {_complexity_badge(flow.complexity_label)}</p>')
+                          f'{render(text(f"{len(flow.inputs)} input(s) → {len(flow.transforms)} transform(s) → {len(flow.outputs)} output(s) | Complexity:", f"{len(flow.inputs)} entrée(s) → {len(flow.transforms)} transformation(s) → {len(flow.outputs)} sortie(s) | Complexité :"))} '
+                          f'{_complexity_badge(flow.complexity_label)}</p>')
 
         # Transform pipeline table
-        headers = ['#', 'Step', 'Type', 'Operations', 'Details']
+        headers = ['#', text('Step', 'Étape'), text('Type', 'Type'), text('Operations', 'Opérations'), text('Details', 'Détails')]
         rows = []
         for idx, t in enumerate(flow.transforms, 1):
             details = t.details or {}
@@ -558,31 +593,31 @@ def _render_transform_documentation(graph: PrepLineageGraph) -> str:
             elif details.get('group_by_columns'):
                 gcols = details['group_by_columns']
                 acols = details.get('aggregate_columns', [])
-                ops_html = f'Group by: {", ".join(esc(c) for c in gcols)}'
+                ops_html = f'{render(text("Group by:", "Regrouper par :"))} {", ".join(esc(c) for c in gcols)}'
                 if acols:
-                    ops_html += f'<br/>Agg: {", ".join(esc(a) for a in acols)}'
+                    ops_html += f'<br/>{render(text("Agg:", "Agrég. :"))} {", ".join(esc(a) for a in acols)}'
             else:
                 ops_html = '—'
 
             # Detail strings
             detail_parts = []
             if details.get('join_type'):
-                detail_parts.append(f'Join: {esc(details["join_type"])}')
+                detail_parts.append(f'{render(text("Join:", "Jointure :"))} {esc(details["join_type"])}')
             if details.get('key_count'):
-                detail_parts.append(f'{details["key_count"]} key(s)')
+                detail_parts.append(render(text(f'{details["key_count"]} key(s)', f'{details["key_count"]} clé(s)')))
             if details.get('action_count'):
-                detail_parts.append(f'{details["action_count"]} action(s)')
+                detail_parts.append(render(text(f'{details["action_count"]} action(s)', f'{details["action_count"]} action(s)')))
             if details.get('group_fields'):
-                detail_parts.append(f'{details["group_fields"]} group field(s)')
+                detail_parts.append(render(text(f'{details["group_fields"]} group field(s)', f'{details["group_fields"]} champ(s) de regroupement')))
             if details.get('agg_fields'):
-                detail_parts.append(f'{details["agg_fields"]} agg field(s)')
+                detail_parts.append(render(text(f'{details["agg_fields"]} agg field(s)', f'{details["agg_fields"]} champ(s) agrégé(s)')))
             if details.get('pivot_type'):
-                detail_parts.append(f'Pivot: {esc(details["pivot_type"])}')
+                detail_parts.append(f'{render(text("Pivot:", "Pivot :"))} {esc(details["pivot_type"])}')
             if details.get('script_type'):
-                detail_parts.append(f'Language: {esc(details["script_type"])}')
+                detail_parts.append(f'{render(text("Language:", "Langage :"))} {esc(details["script_type"])}')
             out_cols = details.get('output_columns', [])
             if out_cols:
-                detail_parts.append(f'{len(out_cols)} output col(s)')
+                detail_parts.append(render(text(f'{len(out_cols)} output col(s)', f'{len(out_cols)} colonne(s) de sortie')))
 
             rows.append([
                 str(idx),
@@ -608,8 +643,8 @@ def _render_transform_documentation(graph: PrepLineageGraph) -> str:
         if all_ops:
             html_parts.append('<details style="margin-top:8px;">')
             html_parts.append('<summary style="cursor:pointer;color:#0078d4;">'
-                              f'Show {len(all_ops)} individual operation(s)</summary>')
-            op_headers = ['Step', 'Operation', 'Column', 'Description']
+                              f'{render(text(f"Show {len(all_ops)} individual operation(s)", f"Afficher {len(all_ops)} opération(s) individuelle(s)"))}</summary>')
+            op_headers = [text('Step', 'Étape'), text('Operation', 'Opération'), text('Column', 'Colonne'), text('Description', 'Description')]
             op_rows = []
             for step_name, op in all_ops:
                 op_rows.append([
@@ -626,8 +661,8 @@ def _render_transform_documentation(graph: PrepLineageGraph) -> str:
         html_parts.append('</div>')
 
     if not html_parts:
-        return card(content='<p>No transformations found in any flow.</p>',
-                    title='No Transforms')
+        return card(content=f'<p>{render(text("No transformations found in any flow.", "Aucune transformation trouvée dans les flux."))}</p>',
+                    title=text('No Transforms', 'Aucune transformation'))
     return '\n'.join(html_parts)
 
 
@@ -640,10 +675,13 @@ _TABLEAU_TO_PQ_MAP = {
     'Union': 'Table.Combine',
     'Aggregate': 'Table.Group',
     'Pivot': 'Table.Pivot / Table.Unpivot',
-    'Script': '⚠ Manual: Python/R visuals or custom function',
-    'Prediction': '⚠ Manual: ML model endpoint or custom function',
-    'PublishedDS': 'Power BI Dataflow or shared dataset reference',
-    'Other': 'Various Table.* functions',
+    'Script': text('⚠ Manual: Python/R visuals or custom function',
+                   '⚠ Manuel : visuels Python/R ou fonction personnalisée'),
+    'Prediction': text('⚠ Manual: ML model endpoint or custom function',
+                       '⚠ Manuel : point de terminaison de modèle ML ou fonction personnalisée'),
+    'PublishedDS': text('Power BI Dataflow or shared dataset reference',
+                        'Flux de données Power BI ou référence à un jeu de données partagé'),
+    'Other': text('Various Table.* functions', 'Diverses fonctions Table.*'),
 }
 
 _OPERATION_TO_PQ_MAP = {
@@ -661,14 +699,16 @@ _OPERATION_TO_PQ_MAP = {
     'clean_text': 'Table.TransformColumns(Source, {{"Col", Text.Trim}})',
     'replace_value': 'Table.ReplaceValue(Source, "old", "new", Replacer.ReplaceText, {"Col"})',
     'sort': 'Table.Sort(Source, {{"Col", Order.Ascending}})',
-    'unknown': '(no direct equivalent — review manually)',
+    'unknown': text('(no direct equivalent — review manually)',
+                    '(aucun équivalent direct — examiner manuellement)'),
 }
 
 
 def _render_assessment(graph: PrepLineageGraph) -> str:
     """Section 8 — per-flow readiness assessment."""
     html_parts: List[str] = []
-    headers = ['Flow', 'Grade', 'Pass', 'Warn', 'Fail', 'Details']
+    headers = [text('Flow', 'Flux'), text('Grade', 'Niveau'), text('Pass', 'Réussite'),
+               text('Warn', 'Avertissement'), text('Fail', 'Échec'), text('Details', 'Détails')]
     rows = []
     for flow in sorted(graph.flows, key=lambda x: x.name):
         a = flow.assessment
@@ -689,7 +729,7 @@ def _render_assessment(graph: PrepLineageGraph) -> str:
             '<br/>'.join(detail_parts),
         ])
     if not rows:
-        return card(content='<p>No assessment data available.</p>')
+        return card(content=f'<p>{render(text("No assessment data available.", "Aucune donnée d’évaluation disponible."))}</p>')
     return data_table(headers, rows, table_id='assessment', sortable=True)
 
 
@@ -699,9 +739,9 @@ def _render_power_query_equivalence(graph: PrepLineageGraph) -> str:
 
     # Part A: Reference mapping table
     html_parts.append('<div class="card" style="margin-bottom:16px;">')
-    html_parts.append('<h3 style="margin:0 0 8px;">Tableau Prep → Power Query M Reference</h3>')
-    ref_headers = ['Tableau Prep Step', 'Power Query M Equivalent']
-    ref_rows = [[esc(k), f'<code>{esc(v)}</code>'] for k, v in _TABLEAU_TO_PQ_MAP.items()]
+    html_parts.append(f'<h3 style="margin:0 0 8px;">{render(text("Tableau Prep → Power Query M Reference", "Référence Tableau Prep → Power Query M"))}</h3>')
+    ref_headers = [text('Tableau Prep Step', 'Étape Tableau Prep'), text('Power Query M Equivalent', 'Équivalent Power Query M')]
+    ref_rows = [[esc(k), f'<code>{render(v)}</code>'] for k, v in _TABLEAU_TO_PQ_MAP.items()]
     html_parts.append(data_table(ref_headers, ref_rows, table_id='pq-reference'))
     html_parts.append('</div>')
 
@@ -713,7 +753,7 @@ def _render_power_query_equivalence(graph: PrepLineageGraph) -> str:
                 continue
             html_parts.append(f'<div class="card" style="margin-bottom:16px;">')
             html_parts.append(f'<h3 style="margin:0 0 8px;">{esc(flow.name)} — '
-                              f'Generated Power Query M</h3>')
+                              f'{render(text("Generated Power Query M", "Power Query M généré"))}</h3>')
             for tbl_name, m_code in sorted(flow.m_queries.items()):
                 html_parts.append(f'<h4 style="margin:8px 0 4px;color:#0078d4;">'
                                   f'{esc(tbl_name)}</h4>')
@@ -724,9 +764,9 @@ def _render_power_query_equivalence(graph: PrepLineageGraph) -> str:
             html_parts.append('</div>')
     else:
         html_parts.append(card(
-            content='<p>Run with <code>--prep-lineage</code> to generate Power Query M. '
-                    'M queries are included when flow migration is active.</p>',
-            title='No M Queries Generated'))
+            content=f'<p>{render(text("Run with", "Exécutez avec"))} <code>--prep-lineage</code> '
+                    f'{render(text("to generate Power Query M. M queries are included when flow migration is active.", "pour générer Power Query M. Les requêtes M sont incluses lorsque la migration des flux est active."))}</p>',
+            title=text('No M Queries Generated', 'Aucune requête M générée')))
 
     # Part C: Per-flow operation → M mapping
     has_ops = any(
@@ -735,8 +775,8 @@ def _render_power_query_equivalence(graph: PrepLineageGraph) -> str:
     )
     if has_ops:
         html_parts.append('<div class="card" style="margin-bottom:16px;">')
-        html_parts.append('<h3 style="margin:0 0 8px;">Operation-Level Equivalence</h3>')
-        op_headers = ['Tableau Operation', 'Power Query M Pattern']
+        html_parts.append(f'<h3 style="margin:0 0 8px;">{render(text("Operation-Level Equivalence", "Équivalence par opération"))}</h3>')
+        op_headers = [text('Tableau Operation', 'Opération Tableau'), text('Power Query M Pattern', 'Modèle Power Query M')]
         op_rows = []
         seen_ops: set = set()
         for flow in graph.flows:
@@ -745,9 +785,9 @@ def _render_power_query_equivalence(graph: PrepLineageGraph) -> str:
                     otype = op.get('type', 'unknown')
                     if otype not in seen_ops:
                         seen_ops.add(otype)
-                        pq = _OPERATION_TO_PQ_MAP.get(otype, '(review manually)')
+                        pq = _OPERATION_TO_PQ_MAP.get(otype, text('(review manually)', '(examiner manuellement)'))
                         op_rows.append([badge(esc(otype), 'blue'),
-                                        f'<code>{esc(pq)}</code>'])
+                                        f'<code>{render(pq)}</code>'])
         if op_rows:
             html_parts.append(data_table(op_headers, op_rows, table_id='op-equiv'))
         html_parts.append('</div>')
@@ -776,10 +816,12 @@ def generate_prep_lineage_report(
     actionable = sum(1 for r in recommendations if r.score > 0)
 
     html = html_open(
-        title='Tableau Prep — Flow Lineage Report',
-        subtitle=f'{graph.total_flows} flows analyzed | '
+        title=text('Tableau Prep — Flow Lineage Report', 'Tableau Prep — Rapport de traçabilité des flux'),
+        subtitle=text(f'{graph.total_flows} flows analyzed | '
                  f'{graph.total_cross_flow_edges} cross-flow edges | '
                  f'{actionable} merge candidates',
+                 f'{graph.total_flows} flux analysés | {graph.total_cross_flow_edges} liens entre flux | '
+                 f'{actionable} candidats à la fusion'),
         timestamp=ts,
         version=version,
     )
@@ -788,42 +830,42 @@ def generate_prep_lineage_report(
     html += _render_executive_summary(graph, actionable)
 
     # Section 2: Flow Inventory
-    html += section_open('sec-flows', 'Flow Inventory', icon='📋')
+    html += section_open('sec-flows', text('Flow Inventory', 'Inventaire des flux'), icon='📋')
     html += _render_flow_inventory(graph)
     html += section_close()
 
     # Section 3: Source Inventory
-    html += section_open('sec-sources', 'Source Inventory', icon='🗄️')
+    html += section_open('sec-sources', text('Source Inventory', 'Inventaire des sources'), icon='🗄️')
     html += _render_source_inventory(graph)
     html += section_close()
 
     # Section 4: Output Inventory
-    html += section_open('sec-outputs', 'Output Inventory', icon='📤')
+    html += section_open('sec-outputs', text('Output Inventory', 'Inventaire des sorties'), icon='📤')
     html += _render_output_inventory(graph)
     html += section_close()
 
     # Section 5: Lineage Diagram
-    html += section_open('sec-lineage', 'Lineage Diagram', icon='🔗')
+    html += section_open('sec-lineage', text('Lineage Diagram', 'Diagramme de traçabilité'), icon='🔗')
     html += _render_lineage_diagram(graph)
     html += section_close()
 
     # Section 6: Merge Recommendations
-    html += section_open('sec-merge', 'Merge Recommendations', icon='🔀')
+    html += section_open('sec-merge', text('Merge Recommendations', 'Recommandations de fusion'), icon='🔀')
     html += _render_merge_recommendations(recommendations)
     html += section_close()
 
     # Section 7: Transform Documentation
-    html += section_open('sec-transforms', 'Transform Documentation', icon='🔧')
+    html += section_open('sec-transforms', text('Transform Documentation', 'Documentation des transformations'), icon='🔧')
     html += _render_transform_documentation(graph)
     html += section_close()
 
     # Section 8: Assessment
-    html += section_open('sec-assessment', 'Migration Readiness Assessment', icon='📊')
+    html += section_open('sec-assessment', text('Migration Readiness Assessment', 'Évaluation de la préparation à la migration'), icon='📊')
     html += _render_assessment(graph)
     html += section_close()
 
     # Section 9: Power Query M Equivalence
-    html += section_open('sec-powerquery', 'Power Query M Equivalence', icon='⚡')
+    html += section_open('sec-powerquery', text('Power Query M Equivalence', 'Équivalence Power Query M'), icon='⚡')
     html += _render_power_query_equivalence(graph)
     html += section_close()
 

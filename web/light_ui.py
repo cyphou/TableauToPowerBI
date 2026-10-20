@@ -56,7 +56,6 @@ class LightMigrationUI:
         self.server_site_var = tk.StringVar(value="")
         self.server_token_name_var = tk.StringVar(value="")
         self.server_target_var = tk.StringVar(value="")
-        self.server_target_mode_var = tk.StringVar(value="workbook")
         self.notify_var = tk.BooleanVar(value=True)
         self.auto_open_report_var = tk.BooleanVar(value=True)
         self.progress_var = tk.DoubleVar(value=0.0)
@@ -153,7 +152,6 @@ class LightMigrationUI:
         server_site = data.get("server_site")
         server_token_name = data.get("server_token_name")
         server_target = data.get("server_target")
-        server_target_mode = data.get("server_target_mode")
 
         if isinstance(source, str):
             self.source_var.set(source)
@@ -183,8 +181,6 @@ class LightMigrationUI:
         ):
             if isinstance(value, str):
                 variable.set(value)
-        if server_target_mode in {"workbook", "project"}:
-            self.server_target_mode_var.set(server_target_mode)
 
     def _save_settings(self) -> None:
         data = {
@@ -200,7 +196,6 @@ class LightMigrationUI:
             "server_site": self.server_site_var.get().strip(),
             "server_token_name": self.server_token_name_var.get().strip(),
             "server_target": self.server_target_var.get().strip(),
-            "server_target_mode": self.server_target_mode_var.get(),
         }
         try:
             self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -423,13 +418,7 @@ class LightMigrationUI:
         tk.Entry(server_top, textvariable=self.server_token_name_var, width=14, relief="solid", bd=1).pack(side=tk.LEFT, padx=(4, 0))
         server_bottom = tk.Frame(server_fields, bg=self.ui["surface"])
         server_bottom.pack(fill=tk.X, pady=2)
-        ttk.Combobox(
-            server_bottom,
-            textvariable=self.server_target_mode_var,
-            values=("workbook", "project"),
-            state="readonly",
-            width=10,
-        ).pack(side=tk.LEFT)
+        tk.Label(server_bottom, text="Project", bg=self.ui["surface"], fg=self.ui["muted"]).pack(side=tk.LEFT)
         tk.Entry(server_bottom, textvariable=self.server_target_var, relief="solid", bd=1).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
         tk.Label(
             server_bottom,
@@ -828,12 +817,12 @@ class LightMigrationUI:
                 self.verbose_var.set(True)
                 self.workflow_hint.configure(text="Generate the local Fabric six-artifact scaffold; live deployment and refresh remain separate.")
             elif preset == "Server":
-                self.mode_var.set("server")
+                self.mode_var.set("batch")
                 self.assess_only_var.set(False)
                 self.global_assess_var.set(False)
                 self.prep_lineage_only_var.set(False)
                 self.verbose_var.set(True)
-                self.workflow_hint.configure(text="Download one Tableau Server workbook or a whole project, then migrate it locally.")
+                self.workflow_hint.configure(text="Download workbooks from a Tableau Server project, then migrate them as one batch.")
             elif preset == "Lineage":
                 self.mode_var.set("batch")
                 self.assess_only_var.set(False)
@@ -965,10 +954,7 @@ class LightMigrationUI:
         elif self.preset_var.get() == "Server":
             cmd += ["--server", self.server_url_var.get().strip(), "--site", self.server_site_var.get().strip()]
             cmd += ["--token-name", self.server_token_name_var.get().strip()]
-            if self.server_target_mode_var.get() == "project":
-                cmd += ["--server-batch", self.server_target_var.get().strip(), "--server-assets", "all"]
-            else:
-                cmd += ["--workbook", self.server_target_var.get().strip(), "--server-assets", "workbooks"]
+            cmd += ["--server-batch", self.server_target_var.get().strip(), "--server-assets", "workbooks"]
         elif self.preset_var.get() == "Portfolio":
             cmd += ["--bulk-assess", source]
         elif self.prep_lineage_only_var.get():
@@ -1007,7 +993,7 @@ class LightMigrationUI:
 
         if self.preset_var.get() == "Server":
             if not self.server_url_var.get().strip() or not self.server_target_var.get().strip():
-                messagebox.showwarning("Missing Server input", "Enter the Server URL and workbook/project target.")
+                messagebox.showwarning("Missing Server input", "Enter the Server URL and Tableau project name.")
                 return False
             if not self.server_token_name_var.get().strip() or not os.environ.get("TABLEAU_TOKEN_SECRET"):
                 messagebox.showwarning("Missing PAT secret", "Set TABLEAU_TOKEN_SECRET in the terminal before starting the Server task.")

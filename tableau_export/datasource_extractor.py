@@ -12,11 +12,14 @@ import os
 import csv
 import re
 import logging
+import copy
 from dax_converter import _reverse_tableau_bracket_escape
 try:
     from .safe_xml import safe_findall, safe_findtext, safe_get_attr
+    from .extract_primitives import _extract_calculation_formula
 except ImportError:
     from safe_xml import safe_findall, safe_findtext, safe_get_attr
+    from extract_primitives import _extract_calculation_formula
 
 logger = logging.getLogger(__name__)
 
@@ -147,10 +150,14 @@ def extract_datasource(datasource_elem, twbx_path=None):
             'calculations': [],
             'columns': [],
             'relationships': [],
+            'relation_metadata': {'version': 1, 'physical_relations': [],
+                                  'logical_tables': [], 'logical_relationships': []},
             'col_local_name_map': {},
             'col_type_map': {},
         }
 
+    original_elem = datasource_elem
+    datasource_elem, inactive_context = _native_datasource_context(datasource_elem)
     ds_name = safe_get_attr(datasource_elem, 'name', 'Unknown')
     ds_caption = safe_get_attr(datasource_elem, 'caption', ds_name)
     
@@ -161,6 +168,7 @@ def extract_datasource(datasource_elem, twbx_path=None):
     for c in calcs:
         c['datasource_name'] = ds_name
 
+    relation_metadata = extract_relation_metadata(datasource_elem)
     datasource = {
         'name': ds_name,
         'caption': ds_caption,
@@ -169,10 +177,40 @@ def extract_datasource(datasource_elem, twbx_path=None):
         'tables': extract_tables_with_columns(datasource_elem, connection_map),
         'calculations': calcs,
         'columns': extract_column_metadata(datasource_elem),
-        'relationships': extract_relationships(datasource_elem),
+        'relationships': extract_relationships(datasource_elem, relation_metadata),
+        'relation_metadata': relation_metadata,
         'col_local_name_map': _extract_col_local_name_map(datasource_elem),
         'col_type_map': _extract_col_type_map(datasource_elem),
     }
+    if inactive_context:
+        datasource['inactive_extract_context'] = inactive_context
+
+    materialized = (_bind_packaged_hyper_identities(
+        original_elem, datasource['tables'], twbx_path)
+        if not inactive_context else None)
+    if materialized is not None:
+        # Native joins/unions and extract filters have already been evaluated
+        # by Tableau. Keep them as evidence, never as executable model edges.
+        materialized['native_relation_metadata'] = datasource['relation_metadata']
+        materialized['native_relationships'] = datasource['relationships']
+        materialized['native_col_local_name_map'] = datasource['col_local_name_map']
+        datasource['materialized_extract'] = materialized
+        table = datasource['tables'][0]
+        name = table['name']
+        datasource['relationships'] = []
+        relation = {'type': 'table', 'name': name, 'connection': '',
+                    'source_table': '[{}].[{}]'.format(
+                        table['hyper_identity']['schema'], table['hyper_identity']['table'])}
+        datasource['relation_metadata'] = {
+            'version': 1, 'physical_relations': [relation],
+            'logical_tables': [{'object_id': materialized['object_id'],
+                                'caption': name, 'relations': [dict(relation)]}],
+            'logical_relationships': [],
+        }
+        datasource['col_local_name_map'] = {
+            c['name']: name for c in table['columns']}
+        # Existing datasource-scoped calculation routing now has exactly one
+        # host. Do not stamp a raw table name: the model may rename collisions.
 
     # Rename 'sqlproxy' tables to use the datasource caption.
     # Published datasources (hosted on Tableau Server) expose a single relation
@@ -194,6 +232,481 @@ def extract_datasource(datasource_elem, twbx_path=None):
     _ensure_calc_referenced_columns(datasource)
     
     return datasource
+
+
+def _extract_context_tag(elem):
+    """Normalize only the known active object-model feature gate."""
+    local = elem.tag.rsplit('}', 1)[-1]
+    for feature in ('ObjectModelEncapsulateLegacy', 'SpatialFileUnion'):
+        prefix = '_.fcp.' + feature + '.'
+        if local.startswith(prefix + 'false...'):
+            return None
+        if local.startswith(prefix + 'true...'):
+            return local[len(prefix + 'true...'):]
+    return local
+
+
+def _active_extract_elements(elem):
+    if _extract_context_tag(elem) is not None:
+        yield elem
+        for child in elem:
+            yield from _active_extract_elements(child)
+
+
+def _native_datasource_context(datasource_elem, force=False):
+    """Exclude explicitly inactive extract scopes, without mutating source XML.
+
+    No extract declaration means native operation; an explicit single disabled
+    extract does too. Missing/unknown enabled flags and multiple declarations
+    are deliberately not interpreted as native activation evidence.
+    ``force`` is for native relation provenance, not a model binding policy.
+    """
+    extracts = [e for e in datasource_elem if _extract_context_tag(e) == 'extract']
+    native = (not extracts or
+              (len(extracts) == 1 and extracts[0].get('enabled', '').lower() == 'false'))
+    contexts = [e for e in _active_extract_elements(datasource_elem)
+                if _extract_context_tag(e) == 'properties' and e.get('context') == 'extract']
+    if not force and (not native or (not extracts and not contexts)):
+        return datasource_elem, None
+    provenance = {
+        'selection': 'native_no_enabled_extract',
+        'extract_xml': [ET.tostring(e, encoding='unicode') for e in extracts],
+        'object_extract_contexts_xml': [ET.tostring(e, encoding='unicode') for e in contexts],
+    }
+    selected = copy.deepcopy(datasource_elem)
+
+    def prune(parent):
+        for child in list(parent):
+            tag = _extract_context_tag(child)
+            if (tag is None or tag == 'extract'
+                    or (tag == 'properties' and child.get('context') == 'extract')):
+                parent.remove(child)
+            else:
+                # Existing ElementTree helpers use literal unqualified tags.
+                child.tag = tag
+                prune(child)
+    prune(selected)
+    return selected, provenance
+
+
+def _bind_packaged_hyper_identities(datasource_elem, tables, twbx_path):
+    """Bind explicit extract relations to exact packaged members, without guesses.
+
+    This records XML-declared identities, not proof of a successful export.
+    Consumers must join all four keys to the catalog-backed export manifest.
+    Ambiguous deduplicated relation names deliberately receive no identity.
+    """
+    if not twbx_path or os.path.splitext(twbx_path)[1].lower() not in ('.twbx', '.tdsx'):
+        return
+    try:
+        with zipfile.ZipFile(twbx_path) as archive:
+            members = archive.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return
+
+    # A relational native context may only bind as a complete materialized
+    # object. Never bind its staging alias while leaving native leaves active,
+    # including when the strict object-context proof fails.
+    relational_context = any(
+        _extract_context_tag(e) == 'properties' and e.get('context') == ''
+        and any(_extract_context_tag(r) == 'relation'
+                and r.get('type') != 'table' for r in _active_extract_elements(e))
+        for e in _active_extract_elements(datasource_elem))
+    if relational_context:
+        return _bind_object_context_extract(datasource_elem, tables, twbx_path, members)
+
+    # Match bracketed components as units: dots inside identifiers are literal.
+    qualified = re.compile(r'\[((?:[^\]]|\]\])*)\]\.\[((?:[^\]]|\]\])*)\]')
+    declarations = {}
+
+    def visit(elem, in_extract=False, connection=None, ancestors=()):
+        tag = _extract_context_tag(elem)
+        if tag is None:
+            return
+        if tag == 'extract':
+            in_extract = True
+            connection = None
+        elif tag == 'connection':
+            connection = elem
+        if tag == 'relation' and elem.get('type', '') == 'table':
+            identity = None
+            match = qualified.fullmatch(elem.get('table', ''))
+            parts = tuple(part.replace(']]', ']') for part in match.groups()) if match else None
+            if (in_extract and connection is not None
+                    and connection.get('class', '') == 'hyper'
+                    and (not elem.get('connection', '')
+                         or elem.get('connection') == connection.get('name'))):
+                member = connection.get('dbname', '')
+                if (member.lower().endswith('.hyper') and members.count(member) == 1
+                        and parts is not None and all(parts)):
+                    schema, table = parts
+                    identity = {
+                        'workbook': os.path.abspath(twbx_path),
+                        'archive_member': member,
+                        'schema': schema,
+                        'table': table,
+                    }
+            # Object-graph properties may repeat the exact extract relation
+            # outside a connection. They are references, never binding origins.
+            reference = (not in_extract and connection is None
+                         and not elem.get('connection', '')
+                         and 'object' in ancestors and 'properties' in ancestors)
+            declarations.setdefault(elem.get('name', ''), []).append((identity, parts, reference))
+        for child in elem:
+            visit(child, in_extract, connection, ancestors + (tag,))
+
+    visit(datasource_elem)
+    for table in tables:
+        candidates = declarations.get(table.get('name', ''), [])
+        identities = [identity for identity, _, _ in candidates if identity is not None]
+        if not identities:
+            continue
+        identity = identities[0]
+        if all(candidate == identity or (
+                candidate is None and reference
+                and parts == (identity['schema'], identity['table']))
+                for candidate, parts, reference in candidates):
+            table['hyper_identity'] = dict(identity)
+
+    return _bind_object_context_extract(datasource_elem, tables, twbx_path, members)
+
+
+def _bind_object_context_extract(datasource_elem, tables, twbx_path, members):
+    """Prefer a single explicitly paired, active packaged extract logical object.
+
+    Unlike the direct-relation path above, this requires connection-level
+    schema/tablename and both object contexts. No names, columns, or captions
+    are used to guess an association. A relational native context requires
+    complete field lineage before replacing the whole object by its extract.
+    """
+    def tag(elem):
+        return _extract_context_tag(elem)
+
+    def children(elem, name):
+        return [child for child in elem if tag(child) == name]
+
+    qualified = re.compile(r'\[((?:[^\]]|\]\])*)\]\.\[((?:[^\]]|\]\])*)\]')
+
+    def parts(value):
+        match = qualified.fullmatch(value)
+        return tuple(p.replace(']]', ']') for p in match.groups()) if match else None
+
+    extracts = children(datasource_elem, 'extract')
+    if len(extracts) != 1 or extracts[0].get('enabled', '').lower() != 'true':
+        return
+    extract = extracts[0]
+    connections = [e for e in _active_extract_elements(extract) if tag(e) == 'connection']
+    if len(connections) != 1 or connections[0] not in list(extract):
+        return
+    connection = connections[0]
+    member = connection.get('dbname', '')
+    schema, physical_name = connection.get('schema', ''), connection.get('tablename', '')
+    if (connection.get('class') != 'hyper' or not schema or not physical_name
+            or not member.lower().endswith('.hyper') or members.count(member) != 1):
+        return
+
+    graphs = [e for e in _active_extract_elements(datasource_elem) if tag(e) == 'object-graph']
+    if len(graphs) != 1 or graphs[0] not in list(datasource_elem):
+        return
+    if graphs[0].tag.rsplit('}', 1)[-1].startswith(
+            '_.fcp.ObjectModelEncapsulateLegacy.false...'):
+        return
+    objects_nodes = children(graphs[0], 'objects')
+    if len(objects_nodes) != 1:
+        return
+    objects = children(objects_nodes[0], 'object')
+    if len(objects) != 1:
+        return
+    obj = objects[0]
+    if not obj.get('id'):
+        return
+    properties = children(obj, 'properties')
+    if (len(properties) != 2
+            or sorted(p.get('context', '') for p in properties) != ['', 'extract']
+            or any('context' not in p.attrib for p in properties)):
+        return
+    native_props = next(p for p in properties if p.get('context') == '')
+    extract_props = next(p for p in properties if p.get('context') == 'extract')
+
+    def sole_relation(props):
+        relations = [e for e in _active_extract_elements(props) if tag(e) == 'relation']
+        if (len(relations) != 1 or relations[0] not in list(props)
+                or relations[0].get('type') != 'table'):
+            return None
+        return relations[0]
+
+    native, physical = sole_relation(native_props), sole_relation(extract_props)
+    if native is None and physical is not None:
+        if any(tag(e) == 'relationship' or '...' in (tag(e) or '')
+               for e in _active_extract_elements(graphs[0])):
+            return
+        return _bind_materialized_object_extract(
+            datasource_elem, tables, twbx_path, extract, connection,
+            obj, native_props, physical)
+    if native is None or physical is None:
+        return
+    native_name, alias = native.get('name', ''), physical.get('name', '')
+    native_ref = native.get('connection', '')
+    if (not native_name or not alias or native_name == alias or not native_ref
+            or not native.get('table') or physical.get('connection', '')
+            or parts(physical.get('table', '')) != (schema, physical_name)):
+        return
+
+    roots = children(datasource_elem, 'connection')
+    if len(roots) != 1:
+        return
+    root = roots[0]
+    named = [e for e in _active_extract_elements(root)
+             if tag(e) == 'named-connection' and e.get('name') == native_ref]
+    if len(named) != 1 or len(children(named[0], 'connection')) != 1:
+        return
+    if not children(named[0], 'connection')[0].get('class'):
+        return
+
+    # Deduplication by relation name has already happened. Prove that every
+    # declaration of either name is the SAME source in an allowed location
+    # before mutating or removing any table. Matching aliases alone is unsafe.
+    parents = {child: parent for parent in datasource_elem.iter() for child in parent}
+    for relation in (e for e in _active_extract_elements(datasource_elem)
+                     if tag(e) == 'relation'):
+        if relation.get('type') != 'table':
+            return  # joins, unions, custom SQL, or other unsupported shapes
+        name = relation.get('name', '')
+        parent = parents.get(relation)
+        if name == native_name:
+            if (parent not in (root, native_props)
+                    or relation.get('connection', '') != native_ref
+                    or relation.get('table', '') != native.get('table')):
+                return
+        elif name == alias:
+            if (parent not in (connection, extract_props)
+                    or relation.get('connection', '')
+                    or parts(relation.get('table', '')) != (schema, physical_name)):
+                return
+        else:
+            return  # multi-table context is not supported by this bounded path
+
+    logical_tables = [t for t in tables if t.get('name') == native_name]
+    physical_tables = [t for t in tables if t.get('name') == alias]
+    if len(logical_tables) != 1 or len(physical_tables) > 1:
+        return
+    logical = logical_tables[0]
+    identity = {
+        'workbook': os.path.abspath(twbx_path),
+        'archive_member': member,
+        'schema': schema,
+        'table': physical_name,
+    }
+    if (logical.get('hyper_identity') is not None
+            and logical['hyper_identity'] != identity):
+        return
+    column_map = dict(logical.get('cols_physical_map') or {})
+    for table in physical_tables:
+        if table.get('hyper_identity') is not None and table['hyper_identity'] != identity:
+            return
+        for remote, local in (table.get('cols_physical_map') or {}).items():
+            if remote in column_map and column_map[remote] != local:
+                return
+            column_map[remote] = local
+    # Preserve logical routing, columns, native metadata and calculation names.
+    # Only the explicit physical identity and its staging rename map move.
+    logical['hyper_identity'] = identity
+    if column_map:
+        logical['cols_physical_map'] = column_map
+    tables[:] = [t for t in tables if not any(t is p for p in physical_tables)]
+
+
+def _bind_materialized_object_extract(datasource_elem, tables, twbx_path,
+                                      extract, connection, obj, native_props, physical):
+    """Collapse a proven single relational object, atomically and fail closed.
+
+    XML metadata proves field identity, not successful Hyper export. Consumers
+    must still validate the exact identity against their catalog/export manifest.
+    No catalog is opened or inferred from filenames by this extraction path.
+    """
+    tag = _extract_context_tag
+
+    def children(elem, name):
+        return [c for c in elem if tag(c) == name]
+
+    def shape(elem):
+        return (tag(elem), tuple(sorted(elem.attrib.items())),
+                (elem.text or '').strip(),
+                tuple(shape(c) for c in elem if tag(c) is not None))
+
+    def identifier(value):
+        match = re.fullmatch(r'\[((?:[^\]]|\]\])*)\]', value)
+        return match.group(1).replace(']]', ']') if match else None
+
+    def qualified(value):
+        match = re.fullmatch(
+            r'\[((?:[^\]]|\]\])*)\]\.\[((?:[^\]]|\]\])*)\]', value)
+        return tuple(p.replace(']]', ']') for p in match.groups()) if match else None
+
+    roots = children(datasource_elem, 'connection')
+    native_relations = children(native_props, 'relation')
+    if len(roots) != 1 or len(native_relations) != 1:
+        return
+    root, native = roots[0], native_relations[0]
+    if native.get('type') not in ('join', 'union', 'batch-union'):
+        return
+    source_relations = children(root, 'relation')
+    if len(source_relations) != 1 or shape(source_relations[0]) != shape(native):
+        return
+    schema, physical_name = connection.get('schema'), connection.get('tablename')
+    alias = physical.get('name', '')
+    name = obj.get('caption', '')
+    if (not name or not alias or physical.get('connection')
+            or qualified(physical.get('table', '')) != (schema, physical_name)):
+        return
+    origins = children(connection, 'relation')
+    if (len(origins) != 1 or origins[0].get('type') != 'table'
+            or origins[0].get('name') != alias or origins[0].get('connection')
+            or qualified(origins[0].get('table', '')) != (schema, physical_name)):
+        return
+
+    active_native = list(_active_extract_elements(native))
+    aliases = set()
+    for relation in active_native:
+        if '...' in (tag(relation) or ''):
+            return  # unknown feature policy
+        if tag(relation) != 'relation':
+            continue
+        kind = relation.get('type')
+        nested = children(relation, 'relation')
+        if kind not in ('table', 'join', 'union', 'batch-union'):
+            return  # custom SQL or unknown native semantics
+        if kind == 'join' and (len(nested) != 2 or not relation.get('join')):
+            return
+        if kind == 'union' and len(nested) < 2:
+            return
+        if kind in ('table', 'batch-union'):
+            ref, source_alias = relation.get('connection'), relation.get('name')
+            named = [e for e in _active_extract_elements(root)
+                     if tag(e) == 'named-connection' and e.get('name') == ref]
+            if (not ref or not source_alias or source_alias in aliases
+                    or len(named) != 1 or len(children(named[0], 'connection')) != 1
+                    or not children(named[0], 'connection')[0].get('class')):
+                return
+            if kind == 'table' and (nested or not relation.get('table')):
+                return
+            aliases.add(source_alias)
+    # No independent relations may be silently deleted by the collapse.
+    allowed = set()
+    for subtree in (source_relations[0], native, origins[0], physical):
+        allowed.update(e for e in _active_extract_elements(subtree) if tag(e) == 'relation')
+    if any(tag(e) == 'relation' and e not in allowed
+           for e in _active_extract_elements(datasource_elem)):
+        return
+    if (any(t.get('name') not in aliases | {alias} for t in tables)
+            or len([t for t in tables if t.get('name') == alias]) != 1):
+        return
+
+    records_nodes = children(connection, 'metadata-records')
+    if len(records_nodes) != 1:
+        return
+    records = [e for e in records_nodes[0]
+               if tag(e) == 'metadata-record' and e.get('class') == 'column']
+    if not records:
+        return
+    mapping, columns, local_names = {}, [], set()
+    ds_columns = {identifier(c.get('name', '')): c
+                  for c in children(datasource_elem, 'column')}
+    for record in records:
+        def text(key):
+            values = children(record, key)
+            return (values[0].text or '').strip() if len(values) == 1 else ''
+        remote, local, dtype = text('remote-name'), identifier(text('local-name')), text('local-type')
+        if (not remote or not local
+                or dtype not in ('string', 'integer', 'real', 'boolean', 'date', 'datetime', 'spatial')
+                or identifier(text('parent-name')) != alias
+                or remote in mapping or local in local_names):
+            return
+        mapping[remote] = local
+        local_names.add(local)
+        definition = ds_columns.get(local)
+        role = (definition.get('role') if definition is not None else None)
+        column = {
+            'name': local, 'datatype': dtype,
+            'role': role or ('measure' if dtype in ('integer', 'real') else 'dimension'),
+        }
+        columns.append(column)
+    # If explicit physical renames exist they must exactly corroborate metadata,
+    # not merely cover a convenient subset (Fusac has collision-sensitive names).
+    cols = children(connection, 'cols')
+    if len(cols) > 1:
+        return
+    if cols:
+        explicit = {}
+        for entry in cols[0]:
+            pair, local = qualified(entry.get('value', '')), identifier(entry.get('key', ''))
+            if (tag(entry) != 'map' or pair is None or pair[0] != alias or not local
+                    or pair[1] in explicit):
+                return
+            explicit[pair[1]] = local
+        if explicit != mapping:
+            return
+    native_names = set()
+    for record in _active_extract_elements(root):
+        if tag(record) != 'metadata-record' or record.get('class') != 'column':
+            continue
+        local_nodes = children(record, 'local-name')
+        parent_nodes = children(record, 'parent-name')
+        remote_nodes = children(record, 'remote-name')
+        if (len(local_nodes) != 1 or len(parent_nodes) != 1 or len(remote_nodes) != 1
+                or not (remote_nodes[0].text or '').strip()
+                or identifier(parent_nodes[0].text or '') not in aliases):
+            return
+        local = identifier(local_nodes[0].text or '')
+        if local not in local_names or local in native_names:
+            return
+        native_names.add(local)
+    if native_names != local_names:
+        return
+    for local, definition in ds_columns.items():
+        if (children(definition, 'calculation') or (local or '').startswith(':')):
+            continue
+        if not local or local not in local_names:
+            return
+    # Check already available declared/export column metadata too. Missing or
+    # enriched staging fields must not silently stand in for extract metadata.
+    staging = next(t for t in tables if t.get('name') == alias)
+    staging_names = [c.get('name') for c in staging.get('columns', [])]
+    if len(staging_names) != len(local_names) or set(staging_names) != local_names:
+        return
+    staging_columns = {c['name']: c for c in staging['columns']}
+    columns = [dict(staging_columns[c['name']], **c) for c in columns]
+    existing_map = staging.get('cols_physical_map') or {}
+    if any(mapping.get(remote) != local for remote, local in existing_map.items()):
+        return
+    identity = {
+        'workbook': os.path.abspath(twbx_path),
+        'archive_member': connection.get('dbname'),
+        'schema': schema, 'table': physical_name,
+    }
+    if any(t.get('hyper_identity') not in (None, identity) for t in tables):
+        return
+    provenance = {
+        'object_id': obj.get('id'),
+        'binding': 'single_object_materialized_extract',
+        'field_mapping_validation': 'exact_declared_extract_metadata',
+        'catalog_validation': 'required_at_export',
+        'native_tables': tables[:],
+        'native_context_xml': ET.tostring(native_props, encoding='unicode'),
+        'extract_filters_xml': [
+            ET.tostring(e, encoding='unicode')
+            for e in _active_extract_elements(extract) if tag(e) == 'filter'],
+        'spatial_limitations': 'Catalog identity does not certify spatial export or visual support.',
+    }
+    flattened = {
+        'name': name, 'caption': name, 'type': 'table',
+        'columns': columns, 'connection': '',
+        'connection_details': {'type': 'hyper', 'details': {}},
+        'source_table': physical.get('table'),
+        'hyper_identity': identity, 'cols_physical_map': mapping,
+    }
+    tables[:] = [flattened]
+    return provenance
 
 
 def _sanitize_caption_for_table_name(caption):
@@ -565,6 +1078,8 @@ def resolve_published_datasource(datasource, server_client=None):
                             datasource['columns'] = remote_ds['columns']
                         if remote_ds.get('relationships'):
                             datasource['relationships'] = remote_ds['relationships']
+                        if remote_ds.get('relation_metadata'):
+                            datasource['relation_metadata'] = remote_ds['relation_metadata']
                         if remote_ds.get('connection_map'):
                             datasource['connection_map'] = remote_ds['connection_map']
                         datasource['_published_resolved'] = True
@@ -652,6 +1167,7 @@ def cache_published_datasource(datasource, cache_dir):
         'tables': datasource.get('tables', []),
         'columns': datasource.get('columns', []),
         'relationships': datasource.get('relationships', []),
+        'relation_metadata': datasource.get('relation_metadata', {}),
         'connection_map': datasource.get('connection_map'),
     }
 
@@ -738,7 +1254,7 @@ def resolve_published_datasource_cached(datasource, server_client=None,
     if cache_dir and not no_cache:
         cached = load_cached_datasource(ds_name, cache_dir)
         if cached:
-            for key in ('connection', 'tables', 'columns', 'relationships', 'connection_map'):
+            for key in ('connection', 'tables', 'columns', 'relationships', 'relation_metadata', 'connection_map'):
                 if key in cached and cached[key]:
                     datasource[key] = cached[key]
             datasource['_published_resolved'] = True
@@ -760,7 +1276,7 @@ def resolve_published_datasource_cached(datasource, server_client=None,
     if cache_dir:
         cached = load_cached_datasource(ds_name, cache_dir)
         if cached:
-            for key in ('connection', 'tables', 'columns', 'relationships', 'connection_map'):
+            for key in ('connection', 'tables', 'columns', 'relationships', 'relation_metadata', 'connection_map'):
                 if key in cached and cached[key]:
                     datasource[key] = cached[key]
             datasource['_published_resolved'] = True
@@ -1070,6 +1586,7 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
     """
     if connection_map is None:
         connection_map = {}
+    datasource_elem, _ = _native_datasource_context(datasource_elem)
     
     # Phase 1: Collect all physical tables
     raw_tables = {}  # name -> best table dict
@@ -1412,7 +1929,8 @@ def extract_column_metadata(datasource_elem):
         if calc_elem is not None:
             column['calculation'] = {
                 'class': calc_elem.get('class', 'tableau'),
-                'formula': calc_elem.get('formula', '')
+                'formula': _extract_calculation_formula(
+                    calc_elem, col_elem.get('name', ''))
             }
         
         columns.append(column)
@@ -1436,7 +1954,8 @@ def extract_calculations(datasource_elem):
             # extraction and have no formula, which would produce empty measures.
             if calc_class == 'categorical-bin':
                 continue
-            calc_formula = calc_elem.get('formula', '')
+            calc_formula = _extract_calculation_formula(
+                calc_elem, col_elem.get('name', ''))
             # Skip calculations with no formula to avoid empty measures
             if not calc_formula.strip():
                 continue
@@ -1480,165 +1999,282 @@ def extract_calculations(datasource_elem):
     return calculations
 
 
-def extract_relationships(datasource_elem):
-    """Extracts relationships between tables from Tableau joins.
-    
-    Handles two Tableau column reference formats in join clauses:
-    - [Table].[Column] — explicit table prefix
-    - [Column]          — bare column, table inferred from child relations
+def _relation_xml_name(name):
+    """Unwrap namespaces and Tableau feature-versioned tag/attribute names."""
+    return name.rsplit('}', 1)[-1].rsplit('...', 1)[-1]
+
+
+def _relation_children(elem, tag):
+    """Select the active (true) feature branch, never its legacy false copy."""
+    return [child for child in elem if _relation_xml_name(child.tag) == tag
+            and '.false...' not in child.tag]
+
+
+def _relation_attr(elem, name, default=''):
+    if elem is None:
+        return default
+    active = [value for key, value in elem.attrib.items()
+              if _relation_xml_name(key) == name and '.true...' in key]
+    if active:
+        return active[0]
+    return elem.get(name, default)
+
+
+def _relation_ref_parts(reference):
+    """Parse only complete field references, including escaped closing brackets."""
+    parts = re.findall(r'\[((?:[^\]]|\]\])*)\]', reference)
+    if not parts or re.sub(r'\[((?:[^\]]|\]\])*)\]', '', reference).strip(' .'):
+        return []
+    return [_reverse_tableau_bracket_escape(part) for part in parts]
+
+
+def extract_relation_metadata(datasource_elem):
+    """Return version-1 physical/logical join provenance, not model edges.
+
+    ``physical_relations`` are ordered trees (type/name/connection/source_table,
+    children, and for joins join_type/predicate). ``logical_tables`` bind object
+    ids and display captions to those trees. ``logical_relationships`` retain
+    endpoint ids/table aliases and the complete predicate.
+
+    Predicates use {operator, left, right} for comparisons and
+    {operator, arguments} for boolean/function expressions. Field operands carry
+    table (relation alias), column (local field identity), remote_column
+    (connector column), and reference (original XML op). Unresolved expressions
+    are preserved, never coerced to equality. Active feature-versioned attrs
+    take precedence over compatibility attrs.
+
+    requires_materialization is true unless the complete predicate is a single
+    resolved equality. No join cardinality, uniqueness or output grain is
+    inferred from keys or shared source filenames.
     """
-    relationships = []
-    seen = set()  # Avoid duplicates
-    
-    # Search for joins in relations
-    for relation in datasource_elem.findall('.//relation[@type="join"]'):
-        join_type = relation.get('join', 'inner')
-        
-        # Collect direct child relation names for table inference
-        # (first child = left table, second child = right table)
-        child_relations = []
-        for child in relation:
-            if child.tag == 'relation':
-                child_name = child.get('name', '')
-                if child_name:
-                    child_relations.append(child_name)
-                else:
-                    # Nested join — recurse into its children to find the first table
-                    for gc in child:
-                        if gc.tag == 'relation' and gc.get('name'):
-                            child_relations.append(gc.get('name'))
-                            break
-                        elif gc.tag == 'relation' and gc.get('type') == 'join':
-                            # Deeper nesting: find leftmost leaf table
-                            for ggc in gc:
-                                if ggc.tag == 'relation' and ggc.get('name'):
-                                    child_relations.append(ggc.get('name'))
-                                    break
-                            if child_relations:
-                                break
-        
-        # Extract columns from clause expressions
-        for clause in relation.findall('./clause'):
-            pairs = []
-            eq_expr = clause.find('./expression[@op="="]')
-            if eq_expr is not None:
-                for sub_expr in eq_expr.findall('./expression'):
-                    op = sub_expr.get('op', '')
-                    # Try [Table].[Column] format first
-                    matches = re.findall(r'\[([^\]]+)\]\.\[([^\]]+)\]', op)
-                    if matches:
-                        pairs.append({'table': matches[0][0], 'column': matches[0][1]})
-                    else:
-                        # Bare [Column] format — table inferred from child relations
-                        bare = re.findall(r'\[([^\]]+)\]', op)
-                        if bare:
-                            pairs.append({'table': '', 'column': bare[0]})
-            
-            # Resolve bare table names from child relation order
-            if len(pairs) == 2:
-                for i, pair in enumerate(pairs):
-                    if not pair['table'] and i < len(child_relations):
-                        pair['table'] = child_relations[i]
-                    elif not pair['table']:
-                        # Fallback: use the other pair's table info to guess
-                        other_idx = 1 - i
-                        if child_relations:
-                            # Use the first child relation that isn't the other pair's table
-                            for cr in child_relations:
-                                if cr != pairs[other_idx].get('table', ''):
-                                    pair['table'] = cr
-                                    break
+    result = {'version': 1, 'physical_relations': [], 'logical_tables': [],
+              'logical_relationships': []}
+    if datasource_elem is None:
+        return result
+    # This structure describes native physical provenance and logical object
+    # endpoints, not the alternative materialized extract context. Object ids
+    # remain endpoint identities, never additional physical table aliases.
+    datasource_elem, extract_context = _native_datasource_context(datasource_elem, force=True)
+    if extract_context['extract_xml'] or extract_context['object_extract_contexts_xml']:
+        result['extract_context_provenance'] = extract_context
 
-                if pairs[0]['table'] and pairs[1]['table']:
-                    key = (pairs[0]['table'], pairs[0]['column'],
-                           pairs[1]['table'], pairs[1]['column'])
-                    if key not in seen:
-                        seen.add(key)
-                        relationships.append({
-                            'type': join_type,
-                            'left': {'table': pairs[0]['table'], 'column': pairs[0]['column']},
-                            'right': {'table': pairs[1]['table'], 'column': pairs[1]['column']}
-                        })
-    
-    # --- New format: Object Model relationships (modern Tableau) ---
+    # Local aliases and connector column names are separate identities.
+    fields = {}
+    for mr in datasource_elem.iter():
+        if _relation_xml_name(mr.tag) != 'metadata-record' or mr.get('class') != 'column':
+            continue
+        values = {_relation_xml_name(child.tag): (child.text or '').strip() for child in mr}
+        local = _relation_ref_parts(values.get('local-name', ''))
+        parent = _relation_ref_parts(values.get('parent-name', ''))
+        if local and parent:
+            fields.setdefault(local[-1], []).append({
+                'table': parent[-1], 'column': local[-1],
+                'remote_column': values.get('remote-name') or local[-1]})
     for elem in datasource_elem.iter():
-        if elem.tag and elem.tag.endswith('object-graph'):
-            # Build object-id → table caption map
-            obj_id_to_name = {}
-            for obj_elem in elem.findall('.//object'):
-                obj_id = obj_elem.get('id', '')
-                obj_caption = obj_elem.get('caption', '')
-                if obj_id and obj_caption:
-                    obj_id_to_name[obj_id] = obj_caption
+        if _relation_xml_name(elem.tag) != 'cols':
+            continue
+        for mapping in _relation_children(elem, 'map'):
+            local = _relation_ref_parts(mapping.get('key', ''))
+            remote = _relation_ref_parts(mapping.get('value', ''))
+            if local and len(remote) >= 2:
+                field = {'table': remote[-2], 'column': local[-1],
+                         'remote_column': remote[-1]}
+                candidates = fields.setdefault(local[-1], [])
+                if field not in candidates:
+                    candidates.append(field)
 
-            for rel_elem in elem.findall('.//relationship'):
-                # Try attribute-based expression (some formats)
-                expr = rel_elem.get('expression', '')
-                join_type = rel_elem.get('type', 'Left').lower()
+    def operand(reference, tables):
+        parts = _relation_ref_parts(reference)
+        if not parts:
+            return {'expression': reference}
+        column = parts[-1]
+        table = parts[-2] if len(parts) > 1 else ''
+        # Alias identity is authoritative even when a comparison reverses the
+        # endpoint order. Endpoint scope only disambiguates repeated bare names.
+        candidates = [
+            field for values in fields.values() for field in values
+            if ((field['column'] == column if not table else
+                 column in (field['column'], field['remote_column']))
+                and (not table or field['table'] == table))]
+        candidates = [dict(items) for items in sorted({
+            tuple(sorted(field.items())) for field in candidates})]
+        if not table and tables:
+            candidates = [field for field in candidates if field['table'] in tables]
+        if len(candidates) == 1:
+            field = dict(candidates[0])
+        else:
+            # An ambiguous nested-join side must not be assigned its first leaf.
+            field = {'table': table or (tables[0] if len(tables) == 1 else ''),
+                     'column': column, 'remote_column': column}
+        return dict(field, reference=reference)
 
-                # Method 1: expression attribute with [Table].[Column] format
-                matches = re.findall(r'\[([^\]]+)\]\.\[([^\]]+)\]', expr)
-                if len(matches) >= 2:
-                    left_table, left_col = matches[0]
-                    right_table, right_col = matches[1]
-                    key = (left_table, left_col, right_table, right_col)
-                    if key not in seen:
-                        seen.add(key)
-                        relationships.append({
-                            'type': join_type,
-                            'left': {'table': left_table, 'column': left_col},
-                            'right': {'table': right_table, 'column': right_col}
-                        })
-                    continue
+    comparisons = {'=', '==', '!=', '<>', '<', '<=', '>', '>='}
 
-                # Method 2: nested <expression> child elements + endpoint object-ids
-                expr_elem = rel_elem.find('expression')
-                if expr_elem is None:
-                    continue
-                col_ops = []
-                for sub_expr in expr_elem.findall('expression'):
-                    op = sub_expr.get('op', '')
-                    col_match = re.findall(r'\[([^\]]+)\]', op)
-                    if col_match:
-                        col_ops.append(col_match[0])
-                if len(col_ops) < 2:
-                    continue
+    def expression(elem, left_tables, right_tables):
+        op = _relation_attr(elem, 'op')
+        args = _relation_children(elem, 'expression')
+        if op in comparisons and len(args) == 2:
+            def side(arg, tables):
+                if not _relation_children(arg, 'expression'):
+                    return operand(_relation_attr(arg, 'op'), tables)
+                return expression(arg, left_tables, right_tables)
+            return {'operator': op, 'left': side(args[0], left_tables),
+                    'right': side(args[1], right_tables)}
+        return {'operator': op, 'arguments': [
+            expression(arg, left_tables, right_tables) for arg in args]}
 
-                # Resolve endpoint object-ids to table names
-                first_ep = rel_elem.find('first-end-point')
-                second_ep = rel_elem.find('second-end-point')
-                if first_ep is None or second_ep is None:
-                    continue
-                first_table = obj_id_to_name.get(first_ep.get('object-id', ''), '')
-                second_table = obj_id_to_name.get(second_ep.get('object-id', ''), '')
-                if not first_table or not second_table:
-                    continue
+    def predicate(elem, left_tables, right_tables):
+        expressions = _relation_children(elem, 'expression')
+        if expressions:
+            parsed = [expression(e, left_tables, right_tables) for e in expressions]
+            return parsed[0] if len(parsed) == 1 else {'operator': 'AND', 'arguments': parsed}
+        raw = _relation_attr(elem, 'expression')
+        # Attribute expressions are parsed only if the entire expression is a
+        # single comparison. Anything more complex remains explicitly opaque.
+        ref = r'\[(?:[^\]]|\]\])*\](?:\s*\.\s*\[(?:[^\]]|\]\])*\])*'
+        match = re.fullmatch(rf'\s*({ref})\s*(>=|<=|<>|!=|==|=|>|<)\s*({ref})\s*', raw)
+        if match:
+            return {'operator': match[2], 'left': operand(match[1], left_tables),
+                    'right': operand(match[3], right_tables)}
+        return {'operator': '', 'expression': raw}
 
-                # Column names may have "(TableName)" suffix — strip it
-                left_col = col_ops[0]
-                right_col = col_ops[1]
-                # Strip " (TableName)" suffix if it matches the endpoint table
-                suffix_first = f' ({first_table})'
-                suffix_second = f' ({second_table})'
-                if left_col.endswith(suffix_first):
-                    left_col = left_col[:-len(suffix_first)]
-                if right_col.endswith(suffix_second):
-                    right_col = right_col[:-len(suffix_second)]
-                # Also strip the other table's suffix (in case of reversed naming)
-                if left_col.endswith(suffix_second):
-                    left_col = left_col[:-len(suffix_second)]
-                if right_col.endswith(suffix_first):
-                    right_col = right_col[:-len(suffix_first)]
+    def aliases(tree):
+        if tree['type'] in ('table', 'text'):
+            return [tree['name']] if tree['name'] else []
+        return [name for child in tree.get('children', []) for name in aliases(child)]
 
-                key = (first_table, left_col, second_table, right_col)
-                if key not in seen:
-                    seen.add(key)
-                    relationships.append({
-                        'type': join_type,
-                        'left': {'table': first_table, 'column': left_col},
-                        'right': {'table': second_table, 'column': right_col}
-                    })
-    
+    def physical(elem):
+        tree = {'type': _relation_attr(elem, 'type'), 'name': _relation_attr(elem, 'name'),
+                'connection': _relation_attr(elem, 'connection'),
+                'source_table': _relation_attr(elem, 'table')}
+        children = [physical(child) for child in _relation_children(elem, 'relation')]
+        if children:
+            tree['children'] = children
+        if tree['type'] == 'text':
+            tree['sql'] = elem.text or ''
+        if tree['type'] == 'join':
+            tree['join_type'] = _relation_attr(elem, 'join', 'inner')
+            left = aliases(children[0]) if children else []
+            right = aliases(children[1]) if len(children) > 1 else []
+            clauses = [predicate(clause, left, right)
+                       for clause in _relation_children(elem, 'clause')]
+            tree['predicate'] = (clauses[0] if len(clauses) == 1 else
+                                 {'operator': 'AND', 'arguments': clauses})
+            tree['requires_materialization'] = not _single_equality(tree['predicate'])
+        return tree
+
+    # Only connection-level roots: object-model copies remain on logical_tables.
+    for conn in _relation_children(datasource_elem, 'connection'):
+        result['physical_relations'].extend(
+            physical(rel) for rel in _relation_children(conn, 'relation'))
+    physical_aliases = {
+        name for tree in result['physical_relations'] for name in aliases(tree)}
+
+    for graph in datasource_elem.iter():
+        if _relation_xml_name(graph.tag) != 'object-graph' or '.false...' in graph.tag:
+            continue
+        objects = {}
+        for container in _relation_children(graph, 'objects') or [graph]:
+            for obj in _relation_children(container, 'object'):
+                roots = []
+                # Object properties can wrap connection/relation trees.
+                def collect(parent):
+                    for child in parent:
+                        if '.false...' in child.tag:
+                            continue
+                        if _relation_xml_name(child.tag) == 'relation':
+                            roots.append(physical(child))
+                        else:
+                            collect(child)
+                collect(obj)
+                entry = {'object_id': _relation_attr(obj, 'id'),
+                         'caption': _relation_attr(obj, 'caption'), 'relations': roots}
+                objects[entry['object_id']] = entry
+                result['logical_tables'].append(entry)
+        containers = _relation_children(graph, 'relationships')
+        for container in containers or [graph]:
+            for rel in _relation_children(container, 'relationship'):
+                endpoints = []
+                for tag in ('first-end-point', 'second-end-point'):
+                    eps = _relation_children(rel, tag)
+                    obj_id = _relation_attr(eps[0], 'object-id') if eps else ''
+                    obj = objects.get(obj_id, {})
+                    names = [name for tree in obj.get('relations', []) for name in aliases(tree)]
+                    names = list(dict.fromkeys(
+                        name for name in names
+                        if not physical_aliases or name in physical_aliases))
+                    # Caption fallback is legacy compatibility only; never
+                    # override a physical relation alias with a display label.
+                    if (not names and not obj.get('relations') and obj.get('caption')
+                            and (not physical_aliases or obj['caption'] in physical_aliases)):
+                        names = [obj['caption']]
+                    endpoints.append({'object_id': obj_id, 'tables': names})
+                pred = predicate(rel, endpoints[0]['tables'], endpoints[1]['tables'])
+                result['logical_relationships'].append({
+                    'left': endpoints[0], 'right': endpoints[1],
+                    'join_type': _relation_attr(rel, 'type').lower() or None,
+                    'predicate': pred,
+                    'requires_materialization': not _single_equality(pred)})
+    return result
+
+
+def _equality_pairs(predicate):
+    """Return conjunctive equality leaves, or None for any unsupported predicate."""
+    op = predicate.get('operator', '')
+    if op.upper() == 'AND':
+        pairs = []
+        for arg in predicate.get('arguments', []):
+            child_pairs = _equality_pairs(arg)
+            if child_pairs is None:
+                return None
+            pairs.extend(child_pairs)
+        return pairs or None
+    if op not in ('=', '=='):
+        return None
+    sides = [predicate.get(side, {}) for side in ('left', 'right')]
+    if not all(side.get('table') and side.get('column') for side in sides):
+        return None
+    return [sides]
+
+
+def _single_equality(predicate):
+    pairs = _equality_pairs(predicate)
+    return pairs is not None and len(pairs) == 1
+
+
+def extract_relationships(datasource_elem, relation_metadata=None):
+    """Legacy equality-only edges. Never project part of a non-equi/OR join.
+
+    The complete source semantics live in ``relation_metadata``. Conjunctive
+    equalities retain the historical per-column shape for existing consumers;
+    they do not establish uniqueness or a composite Power BI relationship.
+    """
+    metadata = (relation_metadata if relation_metadata is not None
+                else extract_relation_metadata(datasource_elem))
+    records = list(metadata['logical_relationships'])
+
+    def joins(tree):
+        if tree['type'] == 'join':
+            records.append(tree)
+        for child in tree.get('children', []):
+            joins(child)
+
+    for tree in metadata['physical_relations']:
+        joins(tree)
+    for obj in metadata['logical_tables']:
+        for tree in obj['relations']:
+            joins(tree)
+    relationships, seen = [], set()
+    for record in records:
+        for left, right in _equality_pairs(record.get('predicate', {})) or []:
+            key = (left['table'], left['column'], right['table'], right['column'])
+            if key in seen:
+                continue
+            seen.add(key)
+            relationships.append({
+                'type': record.get('join_type') or 'left',
+                'left': {'table': left['table'], 'column': left['column']},
+                'right': {'table': right['table'], 'column': right['column']}})
     return relationships
 
 

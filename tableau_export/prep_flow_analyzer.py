@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Tuple
 
 from prep_flow_parser import (
     read_prep_flow,
+    get_prep_node_kind,
     _get_node_type,
     _topological_sort,
     _find_upstream_nodes,
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 def _fingerprint(*parts: str) -> str:
     """SHA-256 fingerprint from normalized parts."""
-    raw = '\x00'.join(p.lower().strip() for p in parts)
+    raw = '\x00'.join(str(p or '').lower().strip() for p in parts)
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
 
 
@@ -160,16 +161,16 @@ class FlowProfile:
 def _extract_inputs(nodes: dict, connections: dict) -> List[FlowInput]:
     """Collect all input nodes from the flow."""
     inputs = []
-    for nid, node in nodes.items():
-        if node.get('baseType') != 'input':
+    for nid, node in (nodes or {}).items():
+        if get_prep_node_kind(node) != 'input':
             continue
 
         conn_id = node.get('connectionId', '')
-        conn_def = connections.get(conn_id, {})
-        conn_attrs = {**conn_def.get('connectionAttributes', {}),
-                      **node.get('connectionAttributes', {})}
+        conn_def = (connections or {}).get(conn_id) or {}
+        conn_attrs = {**(conn_def.get('connectionAttributes') or {}),
+                      **(node.get('connectionAttributes') or {})}
 
-        conn_class = conn_attrs.get('class', '').lower()
+        conn_class = str(conn_attrs.get('class') or '').lower()
         conn_type = _PREP_CONNECTION_MAP.get(conn_class, conn_class)
 
         server = conn_attrs.get('server', '')
@@ -178,7 +179,7 @@ def _extract_inputs(nodes: dict, connections: dict) -> List[FlowInput]:
         table_name = conn_attrs.get('table', node.get('name', ''))
         filename = conn_attrs.get('filename', '')
 
-        col_names = [f.get('name', '') for f in node.get('fields', [])]
+        col_names = _field_names(node)
 
         fp = _fingerprint(conn_type, server, database, schema, table_name or filename)
 
@@ -203,12 +204,12 @@ def _extract_outputs(nodes: dict) -> List[FlowOutput]:
     outputs = []
     has_output_base = False
 
-    for nid, node in nodes.items():
-        if node.get('baseType') == 'output':
+    for nid, node in (nodes or {}).items():
+        if get_prep_node_kind(node) == 'output':
             has_output_base = True
             sem = _get_node_type(node)
-            attrs = node.get('connectionAttributes', {})
-            col_names = [f.get('name', '') for f in node.get('fields', [])]
+            attrs = node.get('connectionAttributes') or {}
+            col_names = _field_names(node)
             target_server = attrs.get('server', '')
             target_db = attrs.get('dbname', attrs.get('database', ''))
             target_table = attrs.get('table', node.get('name', ''))
@@ -231,9 +232,9 @@ def _extract_outputs(nodes: dict) -> List[FlowOutput]:
 
     # Fallback: leaf nodes (no outgoing edges)
     if not has_output_base:
-        for nid, node in nodes.items():
+        for nid, node in (nodes or {}).items():
             if not node.get('nextNodes'):
-                col_names = [f.get('name', '') for f in node.get('fields', [])]
+                col_names = _field_names(node)
                 name = node.get('name', nid[:8])
                 fp = _fingerprint('leaf', '', '', '', name)
                 outputs.append(FlowOutput(
@@ -250,6 +251,7 @@ def _extract_outputs(nodes: dict) -> List[FlowOutput]:
 _TRANSFORM_TYPES = {
     'SuperTransform': 'Clean',
     'SuperAggregate': 'Aggregate',
+    'Aggregate': 'Aggregate',
     'SuperJoin': 'Join',
     'Join': 'Join',
     'SuperUnion': 'Union',
@@ -266,29 +268,59 @@ _TRANSFORM_TYPES = {
     'LoadPublishedDataSource': 'PublishedDS',
 }
 
+# Standalone clean operations accepted by the parser's transform dispatcher.
+# Keep unknown semantics as Other so analysis-only inventory remains possible.
+_DIRECT_CLEAN_TYPES = {
+    'AddColumn', 'RemoveColumn', 'RemoveColumns', 'RenameColumn',
+    'ValueFilter', 'ChangeColumnType', 'FilterOperation', 'DuplicateColumn',
+    'RichRangeFilter', 'RangeFilter', 'Remap', 'RichDiscreteValueFilter',
+    'QuickCalcColumn', 'RichWildcardFilter', 'RichNullFilter',
+    'FilterValues', 'FilterRange', 'ReplaceValues', 'ReplaceNulls',
+    'SplitColumn', 'MergeColumns', 'CleanOperation', 'FillValues',
+    'GroupReplace', 'ConditionalColumn', 'ExtractValues', 'CustomCalculation',
+}
+
+
+def _field_names(node: dict) -> List[str]:
+    """Read optional fields, including when helpers are called without normalization."""
+    return [f.get('name') or '' for f in (node.get('fields') or [])
+            if isinstance(f, dict)]
+
+
+def _clean_actions(node: dict) -> List[dict]:
+    """Inventory grouped and legacy actions, or a standalone clean operation."""
+    if _get_node_type(node) in _DIRECT_CLEAN_TYPES:
+        return [node]
+    actions = []
+    for key in ('beforeActionGroup', 'actionGroup', 'afterActionGroup'):
+        actions.extend((node.get(key) or {}).get('actions') or [])
+    actions.extend(node.get('actions') or [])
+    return [action for action in actions if isinstance(action, dict)]
+
 
 def _extract_transforms(sorted_ids: list, nodes: dict) -> List[FlowTransform]:
     """Classify each transform step and extract action-level detail."""
     transforms = []
     for nid in sorted_ids:
         node = nodes.get(nid, {})
-        if node.get('baseType') != 'transform':
+        if get_prep_node_kind(node) != 'transform':
             continue
         sem = _get_node_type(node)
-        ttype = _TRANSFORM_TYPES.get(sem, 'Other')
+        ttype = 'Clean' if sem in _DIRECT_CLEAN_TYPES else _TRANSFORM_TYPES.get(sem, 'Other')
         details: Dict[str, Any] = {}
 
-        if sem == 'SuperTransform':
-            actions = node.get('actions', [])
+        if ttype == 'Clean':
+            actions = _clean_actions(node)
             details['action_count'] = len(actions)
-            details['action_types'] = list({a.get('type', '') for a in actions})
+            details['action_types'] = sorted({
+                _clean_action_type(a) for a in actions})
             # Extract individual operations for retro-documentation
             operations = _extract_clean_operations(actions, node)
             if operations:
                 details['operations'] = operations
         elif sem in ('SuperJoin', 'Join', 'CrossJoin'):
             details['join_type'] = node.get('joinType', 'inner')
-            conditions = node.get('joinConditions', [])
+            conditions = node.get('joinConditions') or []
             details['key_count'] = len(conditions)
             # Extract join key columns
             keys = []
@@ -299,13 +331,13 @@ def _extract_transforms(sorted_ids: list, nodes: dict) -> List[FlowTransform]:
                     keys.append({'left': left, 'right': right})
             if keys:
                 details['join_keys'] = keys
-        elif sem in ('SuperAggregate',):
-            details['group_fields'] = len(node.get('groupByFields', []))
-            details['agg_fields'] = len(node.get('aggregateFields', []))
+        elif sem in ('Aggregate', 'SuperAggregate'):
+            details['group_fields'] = len(node.get('groupByFields') or [])
+            details['agg_fields'] = len(node.get('aggregateFields') or [])
             # Extract group-by and aggregate column names
-            gnames = [f.get('name', '') for f in node.get('groupByFields', []) if f.get('name')]
+            gnames = [f.get('name', '') for f in (node.get('groupByFields') or []) if f.get('name')]
             anames = []
-            for af in node.get('aggregateFields', []):
+            for af in node.get('aggregateFields') or []:
                 agg = af.get('aggregation', af.get('type', ''))
                 col = af.get('name', af.get('field', ''))
                 anames.append(f'{agg}({col})' if agg else col)
@@ -319,9 +351,9 @@ def _extract_transforms(sorted_ids: list, nodes: dict) -> List[FlowTransform]:
             details['script_type'] = node.get('scriptType', node.get('language', 'unknown'))
 
         # Capture input/output column names when present
-        fields = node.get('fields', [])
+        fields = _field_names(node)
         if fields:
-            details['output_columns'] = [f.get('name', '') for f in fields if f.get('name')]
+            details['output_columns'] = [name for name in fields if name]
 
         transforms.append(FlowTransform(
             node_id=nid,
@@ -354,7 +386,20 @@ _ACTION_TYPE_MAP = {
     'Replace': 'replace_value',
     'ReplaceValues': 'replace_value',
     'SortValues': 'sort',
+    'RemoveColumn': 'remove_columns',
+    'ChangeColumnType': 'change_type',
+    'CustomCalculation': 'calculated_field',
+    'QuickCalcColumn': 'calculated_field',
+    'SplitColumn': 'split',
+    'MergeColumns': 'merge',
+    'ReplaceNulls': 'replace_value',
 }
+
+
+def _clean_action_type(action: dict) -> str:
+    raw_type = (action.get('type') or action.get('actionType')
+                or action.get('nodeType') or '')
+    return raw_type.rsplit('.', 1)[-1]
 
 
 def _extract_clean_operations(actions: list, node: dict) -> List[Dict[str, Any]]:
@@ -363,12 +408,10 @@ def _extract_clean_operations(actions: list, node: dict) -> List[Dict[str, Any]]
     Each operation is returned as a dict with at minimum 'type' and 'description'.
     """
     ops: List[Dict[str, Any]] = []
-    for action in actions:
-        # Action type can come from 'type', or 'nodeType' suffix after the last '.'
-        raw_type = action.get('type', '')
-        node_type = action.get('nodeType', '')
-        if not raw_type and node_type:
-            raw_type = node_type.rsplit('.', 1)[-1] if '.' in node_type else node_type
+    for action in actions or []:
+        if not isinstance(action, dict):
+            continue
+        raw_type = _clean_action_type(action)
 
         op_type = _ACTION_TYPE_MAP.get(raw_type, raw_type or 'unknown')
         name = action.get('name', '')
@@ -403,7 +446,7 @@ def _build_node_graph(nodes: dict) -> Tuple[Dict[str, List[str]], int]:
     edge_count = 0
     for nid, node in nodes.items():
         nexts = []
-        for edge in node.get('nextNodes', []):
+        for edge in node.get('nextNodes') or []:
             next_id = edge.get('nextNodeId', '')
             if next_id:
                 nexts.append(next_id)
@@ -416,7 +459,7 @@ def _compute_dag_depth(nodes: dict) -> int:
     """Longest path from any input to any output."""
     graph: Dict[str, List[str]] = {}
     for nid, node in nodes.items():
-        graph[nid] = [e.get('nextNodeId', '') for e in node.get('nextNodes', []) if e.get('nextNodeId')]
+        graph[nid] = [e.get('nextNodeId', '') for e in (node.get('nextNodes') or []) if e.get('nextNodeId')]
 
     sorted_ids = _topological_sort(nodes)
     depth: Dict[str, int] = {nid: 0 for nid in sorted_ids}
@@ -433,10 +476,11 @@ def _count_calcs(nodes: dict) -> int:
     """Count calculated fields across Clean steps."""
     count = 0
     for node in nodes.values():
-        if node.get('baseType') == 'transform':
-            for action in node.get('actions', []):
-                atype = action.get('type', '')
-                if atype in ('AddColumn', 'ConditionalColumn', 'calc'):
+        if get_prep_node_kind(node) == 'transform':
+            for action in _clean_actions(node):
+                atype = _clean_action_type(action)
+                if atype in ('AddColumn', 'ConditionalColumn', 'calc',
+                             'CustomCalculation', 'QuickCalcColumn'):
                     count += 1
     return count
 
@@ -527,7 +571,10 @@ def analyze_flow(filepath: str, include_m_queries: bool = False) -> FlowProfile:
 
     Args:
         filepath: Path to .tfl or .tflx file
-        include_m_queries: If True, also run parse_prep_flow to get Power Query M
+        include_m_queries: If True, also run parse_prep_flow to get Power Query M.
+            Failures set assessment['conversion_error'] to a nonempty message,
+            assessment['grade'] to RED, and assessment['status'] to error.
+            Analysis-only profiles omit conversion_error.
 
     Returns:
         FlowProfile with inputs, outputs, transforms, DAG stats
@@ -552,25 +599,50 @@ def analyze_flow(filepath: str, include_m_queries: bool = False) -> FlowProfile:
 
     # Power Query M conversion
     m_queries: Dict[str, str] = {}
+    conversion_error = ''
     if include_m_queries:
         try:
             from prep_flow_parser import parse_prep_flow
             datasources = parse_prep_flow(filepath)
+            if not datasources:
+                raise ValueError('Prep conversion produced zero outputs')
             for ds in datasources:
+                if not isinstance(ds, dict):
+                    raise ValueError('Prep conversion datasource must be a dictionary')
+                tables = ds.get('tables', [])
+                if not isinstance(tables, list):
+                    raise ValueError('Prep conversion datasource tables must be a list')
                 # M query can be at table level or datasource level (m_query_override)
                 ds_mq = ds.get('m_query_override', '')
-                for tbl in ds.get('tables', []):
+                for tbl in tables:
+                    if not isinstance(tbl, dict):
+                        raise ValueError('Prep conversion table must be a dictionary')
                     tbl_name = tbl.get('name', '')
                     mq = tbl.get('m_query', '') or ds_mq
                     if tbl_name and mq:
                         m_queries[tbl_name] = mq
-        except (ImportError, OSError, ValueError) as exc:
+            if not m_queries:
+                raise ValueError('Prep conversion produced no output M queries')
+        except (ImportError, OSError, ValueError, KeyError) as exc:
+            # Conversion is optional: preserve inventory, but never report a
+            # successful assessment or retain partial queries on failure.
+            conversion_error = f'{type(exc).__name__}: {exc}'
+            m_queries.clear()
             logger.warning("Could not extract M queries from %s: %s", filepath, exc)
 
     # Assessment
     assessment = _assess_flow(inputs, outputs, transforms,
                               join_count, union_count, script_count,
                               calc_count, dag_depth, len(nodes))
+    if conversion_error:
+        assessment['conversion_error'] = conversion_error
+        assessment['grade'] = 'RED'
+        assessment['status'] = 'error'
+        assessment['items'].append({
+            'category': 'conversion', 'status': 'fail',
+            'detail': conversion_error,
+        })
+        assessment['fail_count'] += 1
 
     return FlowProfile(
         name=name,

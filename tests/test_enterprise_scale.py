@@ -214,7 +214,8 @@ class TestEnterpriseGuide(unittest.TestCase):
         self.assertIn('Assessment', content)
         self.assertIn('Batch Migration', content)
         self.assertIn('Deployment', content)
-        self.assertIn('Live Sync', content)
+        self.assertIn('## Phase 8: Revalidation', content)
+        self.assertIn('`--sync` is retired.', content)
 
     def test_guide_mentions_workers(self):
         with open('docs/ENTERPRISE_GUIDE.md', encoding='utf-8') as f:

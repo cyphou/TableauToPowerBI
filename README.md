@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | 🏷️ **Package** | 48.0.0 · roadmap track v48 |
-| ✅ **Tests** | 10,798 passed · 66 skipped · 1 xfailed (10,865 collected across 316 test files) |
+| 🧪 **Tests** | Historical baseline: 10,798 passed · 66 skipped · 1 xfailed; see CI for current results |
 | 🐍 **Python** | 3.12+ · zero external dependencies |
 | 📜 **License** | MIT |
 
@@ -41,8 +41,8 @@ These checks are part of the current verified baseline and are intended to raise
 ## ⚡ Quick Start
 
 ```bash
-# Default: one workbook to a validated PBIP project
-python migrate.py migrate your_workbook.twbx
+# Generate PBIP projects from every workbook in a folder
+python migrate.py batch ./workbooks --output-dir ./output
 ```
 
 > [!TIP]
@@ -58,7 +58,7 @@ python migrate.py migrate your_workbook.twbx
 ```bash
 git clone https://github.com/cyphou/Tableau-To-PowerBI.git
 cd Tableau-To-PowerBI
-python migrate.py migrate your_workbook.twbx
+python migrate.py batch ./workbooks --output-dir ./output
 ```
 
 **Requirements:** Python 3.12+ • No `pip install` needed — pure standard library.
@@ -75,41 +75,71 @@ pip install tableauhyperapi           # .hyper extract file reading (v2+ format)
 The public CLI has **14 commands**. These cover the normal workflows:
 
 ```bash
-python migrate.py migrate workbook.twbx
+# Migration generation is batch-only; a folder may contain one workbook.
 python migrate.py assess workbook.twbx
 python migrate.py batch folder/ --output-dir ./output
 python migrate.py server https://tableau.example "Sales Dashboard"
 python migrate.py merge wb1.twbx wb2.twbx --model-name "Sales"
-python migrate.py fabric workbook.twbx
-python migrate.py deploy workbook.twbx WORKSPACE_ID
-python migrate.py qa workbook.twbx
+python migrate.py fabric ./workbooks --output-dir ./fabric-output
+# Deployment is a separate step using the MCP deploy tool (preview first).
+python migrate.py qa ./workbooks
 python migrate.py quality workbook.twbx
 python migrate.py parity workbook.twbx
 python migrate.py portfolio ./workbooks
-python migrate.py plan workbook.twbx
+python migrate.py plan https://tableau.example
 python migrate.py lineage ./prep_flows
-python migrate.py package workbook.twbx
+python migrate.py package ./workbooks
 ```
 
-Use `python migrate.py quality workbook.twbx` for one deterministic report combining
-assessment, feature parity, data coverage, interface coverage, and Power BI
-openability. Use `parity` for feature coverage, `portfolio` for folder assessment,
-`plan` for migration waves, `lineage` for Prep flows, and `package` for a stakeholder
-deliverable. Add `--quality-strict` when a CI run should fail on quality blockers.
+Generation commands (`batch`, `fabric`, and deployment) take a source folder;
+put a single workbook in that folder when migrating only one. `assess` and
+`parity` can inspect an individual workbook file. `quality` inspects an existing
+migrated project for that workbook and requires its extraction data. `plan`
+takes a Tableau Server/Cloud URL and requires valid server access.
+
+Use `python migrate.py quality workbook.twbx` after migrating that workbook to
+inspect its combined assessment, feature parity, data coverage, interface
+coverage, and Power BI openability. Use `parity` for feature coverage,
+`portfolio` for folder assessment, `plan` for Tableau Server migration waves,
+and `lineage` for Prep flows. `qa FOLDER` and `package FOLDER` follow the batch migration path: batch already
+writes unified quality reports and evidence ZIPs, but does not run the specialized
+six-check QA suite or the assessment report packager. The legacy `--qa` and
+`--report-package` flags are not available through the supported batch-only
+generation path. Add `--quality-strict` when a CI run should fail on quality blockers.
 Use `--quality-policy report|enterprise|production` to control whether static
 semantic diagnostics and unresolved lineage are informational, warnings, or
 blocking findings. Runtime execution still requires an authorized executor.
 Add `--quality-ai` for an optional summary based only on verified findings; AI
 never changes the validation status.
-Run `python migrate.py --help` for the concise command list. Existing flag-based
-automation remains compatible; use `python migrate.py --advanced-help` only when an
-advanced option is required. Secrets belong in environment variables, never in
-command history.
+Run `python migrate.py --help` for the concise command list. Supported
+flag-based automation remains available through batch mode; direct single-file
+project generation has been retired. Use `python migrate.py --advanced-help`
+only when an advanced option is required. Secrets belong in environment
+variables, never in command history.
 
 ### Client validation service (Windows)
 
+**Bulk/batch only, not a single-file load:** select a source folder for
+project generation, including when it contains just one workbook. Loading or
+assessing a `.twb`/`.twbx` file alone does not generate a Power BI project.
+Opening an already generated `.pbip` is a separate validation step.
+
 Use this flow for a repeatable client migration plus a real Desktop opening
 check. Keep customer source files and generated evidence outside this repository.
+For explicit batch Tableau/PBI opening and side-by-side screenshots, see
+[paired Desktop screenshots](docs/DEPLOYMENT_GUIDE.md#paired-tableau--power-bi-desktop-screenshots).
+The paired capture script and its companion modules are included in the source
+tree. Installed Desktop applications and an interactive Windows session are
+still required; these diagnostics are not run automatically during migration.
+This separate diagnostic captures initial window states by default. Add
+`--all-pages` to inventory and attempt individual Tableau views and Power BI
+pages, with verified UI selection and explicit failures for inaccessible views.
+Tableau is not refreshed; the Power BI probe requests refresh and data
+verification, which may access configured data sources over the network.
+Add `--screen-comparison local` for deterministic PNG pixel differences without
+an AI endpoint or network access in the comparison step. Manual review remains
+the default. Full-window pixel metrics do not establish semantic parity, visual
+fidelity, or loaded-data correctness.
 
 ```powershell
 $py = ".\.venv\Scripts\python.exe"
@@ -117,7 +147,7 @@ $src = "C:\Client\Tableau"
 $out = "C:\Client\Tableau\migration_output"
 $env:POWERBI_DESKTOP_PATH = "C:\Program Files\Microsoft Power BI Desktop\bin\PBIDesktop.exe"
 
-& $py migrate.py --batch $src --output-dir $out --qa --quality-report --verify-open --quiet
+& $py migrate.py --batch $src --output-dir $out --verify-open --quiet
 & $py scripts/probe_projects.py $out `
     --shots "$out\opening_validation\screenshots" `
     --json "$out\opening_validation\opening_report.json" `
@@ -261,7 +291,10 @@ Generate **Lakehouse + Dataflow Gen2 + PySpark Notebook + DirectLake Semantic Mo
 <td>
 
 ### 🔍 QA Suite & Auto-Fix
-`--qa` runs the full quality assurance pipeline in one shot: validation → auto-fix (17 Tableau→DAX leak patterns) → governance → comparison report → `qa_report.json`. Validator auto-fixes `ISNULL→ISBLANK`, `ZN→IF(ISBLANK)`, `ELSEIF→nested IF`, and more.
+The legacy `--qa` post-generation QA option is not available through the
+supported batch-only generation command. Batch migration writes the unified
+quality report and evidence package by default; it does not run the specialized
+six-check QA suite.
 
 </td>
 <td>
@@ -275,7 +308,7 @@ Every migration produces a `lineage_map.json` tracking the provenance of every o
 <td colspan="2">
 
 ### 🔗 Shared Semantic Model
-Merge multiple Tableau workbooks into **one shared semantic model** with thin reports. Fingerprint-based table matching, Jaccard column overlap scoring, measure conflict resolution, merge assessment with 0–100 scoring, and automatic `byPath` report wiring. **Global assessment** (`--global-assess`) analyzes all workbooks pairwise to find merge clusters and generates an HTML report with a score heatmap matrix. **Fabric bundle deployment** (`--deploy-bundle`) deploys the shared model + thin reports as an atomic unit.
+Merge multiple Tableau workbooks into **one shared semantic model** with thin reports. Fingerprint-based table matching, Jaccard column overlap scoring, measure conflict resolution, merge assessment with 0–100 scoring, and automatic `byPath` report wiring. **Global assessment** (`--global-assess`) analyzes all workbooks pairwise to find merge clusters and generates an HTML report with a score heatmap matrix. **Fabric bundle deployment** (`--deploy-bundle`) deploys the shared model followed by thin reports; report failures are isolated, so partial deployment is possible.
 
 </td>
 </tr>
@@ -342,7 +375,7 @@ flowchart LR
     style PL fill:#0078D4,color:#fff,stroke:#0078D4
 ```
 
-The pipeline generates **5 Fabric artifacts** from a single Tableau workbook:
+The pipeline generates **6 Fabric items** by default for each Tableau workbook in the source folder (five core items plus a report):
 
 | Artifact | Description |
 |----------|-------------|
@@ -350,14 +383,15 @@ The pipeline generates **5 Fabric artifacts** from a single Tableau workbook:
 | **Dataflow Gen2** | Power Query M ingestion queries with Lakehouse destinations |
 | **PySpark Notebook** | ETL pipeline (9 connector templates) + transformation notebook |
 | **Semantic Model** | DirectLake TMDL pointing to Lakehouse Delta tables |
+| **Power BI Report** | PBIR report connected to the semantic model |
 | **Data Pipeline** | 3-stage orchestration: Dataflow → Notebook → Semantic Model refresh |
 
 ```bash
-# Generate the complete five-artifact Fabric chain
-python migrate.py fabric workbook.twbx
+# Generate the complete six-item Fabric scaffold from a folder
+python migrate.py fabric ./workbooks
 
 # With custom output directory
-python migrate.py fabric workbook.twbx --output-dir /tmp/fabric_output
+python migrate.py fabric ./workbooks --output-dir /tmp/fabric_output
 ```
 
 ### 🔗 Shared Semantic Model Mode
@@ -463,8 +497,8 @@ flowchart LR
 # Batch — analyze & export all .tfl files in a folder
 python migrate.py batch examples/prep_portfolio/ --output-dir /tmp/prep_output
 
-# Pair a prep flow with a workbook (merge M expressions into .pbip)
-python migrate.py migrate workbook.twbx --prep flow.tflx
+# Pair a prep flow with the workbook in a one-workbook source folder
+python migrate.py batch ./workbooks --prep ./flows/flow.tflx --output-dir ./output
 ```
 
 The lineage report shows cross-flow dependencies, merge candidates, and data provenance across your entire Prep portfolio:
@@ -734,7 +768,7 @@ TableauToPowerBI/
 │   ├── schema_drift.py                        #   Schema drift detection (v28)
 │   └── deploy/                                #   Deploy to PBI Service / Fabric
 ├── Dockerfile                                 # Docker image for API server
-├── tests/                                     # 10,798 passed, 66 skipped, 1 xfailed; 316 test files
+├── tests/                                     # Unit, integration, and regression tests
 ├── docs/                                      # 18 documentation files
 └── examples/                                  # Sample Tableau workbooks
 ```
@@ -785,11 +819,11 @@ TableauToPowerBI/
 | `--merge-preview` | Preview merge results without generating output |
 | `--global-assess` | Cross-workbook pairwise merge scoring and clustering |
 | **Deploy** | |
-| `--deploy WORKSPACE_ID` | Deploy to Power BI Service workspace |
-| `--deploy-refresh` | Trigger dataset refresh after deploy |
-| `--deploy-bundle WS_ID` | Deploy shared model + thin reports as atomic Fabric bundle |
+| `--deploy WORKSPACE_ID` | Legacy deployment flag; not dispatched by batch generation. Use separate deployment |
+| `--deploy-refresh` | Legacy post-deployment refresh flag; not dispatched by batch generation |
+| `--deploy-bundle WS_ID` | Deploy shared model followed by thin reports; partial deployment is possible |
 | `--bundle-refresh` | Trigger dataset refresh after bundle deployment |
-| `--sync` | Auto-deploy after incremental change detection |
+| `--sync` | Retired; does not detect Server changes or auto-deploy batch output |
 | **Semantic Model** | |
 | `--calendar-start YEAR` | Calendar table start year (default: 2020) |
 | `--calendar-end YEAR` | Calendar table end year (default: 2030) |
@@ -802,7 +836,7 @@ TableauToPowerBI/
 | **Quality & Optimization** | |
 | `--assess` | Run pre-migration assessment and strategy analysis |
 | `--bulk-assess DIR` | Full portfolio assessment on a local folder (readiness + merge + prep lineage) |
-| `--qa` | Full QA suite: validate → auto-fix → governance → compare |
+| `--qa` | Legacy QA suite; unavailable through the supported batch-only workflow |
 | `--preceptor` | Automated post-generation scoring on 6 dimensions; writes coaching feedback but does not call an agent or apply fixes. **On by default** (advisory) |
 | `--no-preceptor` | Skip the preceptorship review |
 | `--preceptor-block` | Make the preceptor a hard gate instead of a warning |
@@ -836,14 +870,14 @@ TableauToPowerBI/
 
 ```bash
 # Set FABRIC_TENANT_ID, FABRIC_CLIENT_ID, and FABRIC_CLIENT_SECRET first.
-python migrate.py deploy your_workbook.twbx WORKSPACE_ID
+python migrate.py fabric ./workbooks --output-dir ./fabric-output
 ```
 
-The command generates and deploys Lakehouse, Dataflow Gen2, Notebook, Direct Lake
-Semantic Model, Power BI report, and Pipeline artifacts. It then runs the Pipeline
-and returns a nonzero exit code unless the run completes successfully. See the
-[Deployment Guide](docs/DEPLOYMENT_GUIDE.md) for identity setup, read-only preflight,
-and the legacy Power BI Service deployment workflow.
+The command generates Lakehouse, Dataflow Gen2, Notebook, Direct Lake
+Semantic Model, Power BI report, and Pipeline artifacts locally. Batch dispatch
+does not forward deployment or refresh flags. Deployment is a separate,
+explicitly authorized step; see the [Deployment Guide](docs/DEPLOYMENT_GUIDE.md)
+for identity setup and supported deployment entry points.
 
 Or programmatically:
 
@@ -937,7 +971,7 @@ python -m pytest tests/test_openability.py -v         # Static PBIP openability 
 
 ```mermaid
 flowchart LR
-    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\n10,798 passed\nPy 3.12–3.14"]
+    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\nUnit + integration\nPy 3.12–3.14"]
     T --> V["✅ Validate\nStrict .twbx\nmigrations"]
     V --> S["📦 Staging\nFabric deploy"]
     S --> P["🚀 Production\nManual approval"]

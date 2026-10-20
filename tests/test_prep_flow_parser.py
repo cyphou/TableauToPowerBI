@@ -12,6 +12,12 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from copy import deepcopy
+import re
+
+from tests.prep_flow_fixtures import (
+    clean_chain, container, edge, join_flow, operation, output, source, write_flow,
+)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -38,6 +44,7 @@ from prep_flow_parser import _PREP_CONNECTION_MAP
 from prep_flow_parser import _PREP_TYPE_MAP
 from prep_flow_parser import _PREP_AGG_MAP
 from prep_flow_parser import _PREP_JOIN_MAP
+from prep_flow_parser import normalize_prep_flow, get_prep_node_kind
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -432,12 +439,12 @@ class TestCleanActions(unittest.TestCase):
         steps = _parse_clean_actions(node)
         self.assertEqual(len(steps), 2)  # One replace step per grouping
 
-    def test_unknown_action_returns_nothing(self):
+    def test_unknown_action_raises(self):
         node = _clean_node(actions=[
             {'actionType': '.v1.FutureAction', 'columnName': 'X'},
         ])
-        steps = _parse_clean_actions(node)
-        self.assertEqual(len(steps), 0)
+        with self.assertRaisesRegex(ValueError, 'unsupported.*FutureAction'):
+            _parse_clean_actions(node)
 
     def test_rename_flush_before_other_action(self):
         """Renames should flush before a non-rename action."""
@@ -729,7 +736,7 @@ class TestParseFlowEndToEnd(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_malformed_flow_structure_is_safe(self):
+    def test_malformed_flow_structure_raises(self):
         flow = {
             'nodes': {
                 'bad': None,
@@ -748,12 +755,11 @@ class TestParseFlowEndToEnd(unittest.TestCase):
             _old = sys.stdout
             sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
             try:
-                result = parse_prep_flow(path)
+                with self.assertRaisesRegex(ValueError, "bad.*expected object"):
+                    parse_prep_flow(path)
             finally:
                 sys.stdout = _old
 
-            self.assertIsInstance(result, list)
-            self.assertGreaterEqual(len(result), 1)
         finally:
             os.unlink(path)
 
@@ -1023,8 +1029,8 @@ class TestProcessTransformNode(unittest.TestCase):
         self.assertIn(nid, node_results)
         self.assertIn('right', secondary)  # right branch marked secondary
 
-    def test_join_transform_fallback_single_upstream(self):
-        """Join with only 1 upstream, no leftNodeId → left_id = upstream[0]."""
+    def test_join_transform_single_upstream_raises(self):
+        """A one-input join must not silently become a passthrough."""
         nid = 'join1'
         node = {
             'baseType': 'transform', 'nodeType': '.v1.Join', 'name': 'JoinStep',
@@ -1035,9 +1041,11 @@ class TestProcessTransformNode(unittest.TestCase):
         nodes = {'inp': _input_node(next_ids=[nid]), nid: node}
         node_results = {'inp': self._base_input_result()}
         secondary = set()
-        _process_transform_node(nid, node, nodes, ['inp'], 'Join',
-                                node_results, secondary, 'JoinStep')
-        self.assertIn(nid, node_results)
+        with self.assertRaisesRegex(ValueError, 'Prep join.*provenance required'):
+            _process_transform_node(nid, node, nodes, ['inp'], 'Join',
+                                    node_results, secondary, 'JoinStep')
+        self.assertNotIn(nid, node_results)
+        self.assertEqual(secondary, set())
 
     # --- Union ---
     def test_union_transform(self):
@@ -1165,17 +1173,17 @@ class TestProcessTransformNode(unittest.TestCase):
         self.assertIn(nid, node_results)
         self.assertIn('MyDS', node_results[nid]['m_query'])
 
-    # --- Unknown transform → pass through ---
-    def test_unknown_transform_passthrough(self):
+    # --- Unknown transforms must fail explicitly ---
+    def test_unknown_transform_raises(self):
         nid = 'unk1'
         node = {'baseType': 'transform', 'nodeType': '.v1.FutureStep', 'name': 'Future',
                 'nextNodes': []}
         nodes = {'inp': _input_node(next_ids=[nid]), nid: node}
         node_results = {'inp': self._base_input_result()}
-        _process_transform_node(nid, node, nodes, ['inp'], 'FutureStep',
-                                node_results, set(), 'Future')
-        self.assertIn(nid, node_results)
-        self.assertEqual(node_results[nid]['name'], 'Future')
+        with self.assertRaisesRegex(ValueError, 'unsupported transform.*FutureStep'):
+            _process_transform_node(nid, node, nodes, ['inp'], 'FutureStep',
+                                    node_results, set(), 'Future')
+        self.assertNotIn(nid, node_results)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1209,11 +1217,12 @@ class TestProcessPrepNode(unittest.TestCase):
         self.assertTrue(node_results['out'].get('is_output'))
         self.assertEqual(node_results['out']['name'], 'FinalOutput')
 
-    def test_output_node_no_upstream_skipped(self):
-        """Output with no upstream in node_results is silently skipped."""
+    def test_output_node_no_upstream_raises(self):
+        """Disconnected explicit outputs are conversion failures."""
         nodes = {'out': _output_node('Orphan')}
         node_results = {}
-        _process_prep_node('out', nodes, {}, node_results, set())
+        with self.assertRaisesRegex(ValueError, 'output.*expected one resolved upstream'):
+            _process_prep_node('out', nodes, {}, node_results, set())
         self.assertNotIn('out', node_results)
 
 
@@ -1291,9 +1300,9 @@ class TestCollectPrepDatasources(unittest.TestCase):
         # clean has no nextNodes and no is_output → leaf fallback
         self.assertGreater(len(ds), 0)
 
-    def test_empty_results_returns_empty(self):
-        ds = _collect_prep_datasources(['n1'], {'n1': _input_node()}, {}, set())
-        self.assertEqual(ds, [])
+    def test_empty_results_raises(self):
+        with self.assertRaisesRegex(ValueError, 'zero outputs'):
+            _collect_prep_datasources(['n1'], {'n1': _input_node()}, {}, set())
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1369,11 +1378,11 @@ class TestParseFlowExtended(unittest.TestCase):
         finally:
             sys.stdout = old
 
-    def test_empty_flow_returns_empty(self):
+    def test_empty_flow_raises(self):
         path = self._write_flow({'nodes': {}, 'connections': {}})
         try:
-            result = self._parse(path)
-            self.assertEqual(result, [])
+            with self.assertRaisesRegex(ValueError, 'no nodes.*no outputs'):
+                self._parse(path)
         finally:
             os.unlink(path)
 
@@ -1432,6 +1441,7 @@ class TestParseFlowExtended(unittest.TestCase):
                 },
                 'join': {
                     'baseType': 'transform', 'nodeType': '.v1.Join', 'name': 'JoinStep',
+                    'leftNodeId': 'left', 'rightNodeId': 'right',
                     'joinType': 'inner',
                     'joinConditions': [{'leftColumn': 'CustID', 'rightColumn': 'CustID'}],
                     'nextNodes': [{'nextNodeId': 'out'}],
@@ -1453,6 +1463,386 @@ class TestParseFlowExtended(unittest.TestCase):
             self.assertGreaterEqual(len(result), 2)
         finally:
             os.unlink(path)
+
+
+class TestPrepContainerReports81To83(unittest.TestCase):
+    """Regression contracts for recursive containers and strict conversion."""
+
+    def parse(self, flow):
+        with tempfile.TemporaryDirectory() as directory:
+            return parse_prep_flow(write_flow(directory, flow))
+
+    def assert_actual_chain(self, query):
+        expected = [
+            ('Table.RenameColumns', '"Raw", "Amount"'),
+            ('Table.RemoveColumns', '"Discard"'),
+            ('Table.AddColumn', 'each [Amount] * 2'),
+            ('Table.TransformColumnTypes', '"Twice", type number'),
+            ('Table.SelectRows', 'each [Twice] > 10'),
+        ]
+        previous = None
+        positions = []
+        for function, payload in expected:
+            lines = [line.strip().rstrip(',') for line in query.splitlines()
+                     if function + '(' in line and payload in line]
+            self.assertEqual(len(lines), 1, (function, query))
+            name, expression = lines[0].split(' = ', 1)
+            if previous is not None:
+                self.assertTrue(expression.startswith(function + '(' + previous + ','),
+                                (previous, expression))
+            previous = name
+            positions.append(query.index(lines[0]))
+        self.assertEqual(positions, sorted(positions))
+        self.assertRegex(query, r'Result\s*=\s*' + re.escape(previous) + r'\s*\nin\s+Result\s*$')
+        self.assertNotIn('{prev}', query)
+
+    def test_container_executes_all_operations_in_graph_order(self):
+        datasources = self.parse(clean_chain())
+        self.assertEqual([ds['name'] for ds in datasources], ['prep.PublishedSales'])
+        self.assert_actual_chain(datasources[0]['m_query_override'])
+
+    def test_recursive_container_preserves_operations(self):
+        datasources = self.parse(clean_chain(nested=True))
+        self.assertEqual(len(datasources), 1)
+        self.assert_actual_chain(datasources[0]['m_query_override'])
+
+    def test_flat_standalone_operations_dispatch(self):
+        flow = clean_chain()
+        children = flow['nodes'].pop('box')['loomContainer']['nodes']
+        children['filter']['nextNodes'] = [edge('out')]
+        flow['nodes'].update(children)
+        flow['nodes']['input']['nextNodes'] = [edge('rename')]
+        self.assert_actual_chain(self.parse(flow)[0]['m_query_override'])
+
+    def test_normalization_is_deterministic_idempotent_and_nonmutating(self):
+        flow = clean_chain(nested=True)
+        before = deepcopy(flow)
+        normalized = normalize_prep_flow(flow)
+        self.assertEqual(flow, before)
+        self.assertEqual(normalized, normalize_prep_flow(flow))
+        self.assertEqual(normalized, normalize_prep_flow(normalized))
+        self.assertEqual(len(normalized['nodes']), 7)
+        self.assertNotIn('box', normalized['nodes'])
+        self.assertTrue(all(get_prep_node_kind(n) != 'container'
+                            for n in normalized['nodes'].values()))
+        normalized['nodes']['input']['fields'][0]['name'] = 'ChangedOnlyInCopy'
+        self.assertEqual(flow, before)
+
+    def test_scoped_duplicate_child_ids_and_explicit_join_sides(self):
+        flow = join_flow()
+        normalized = normalize_prep_flow(flow)
+        join = normalized['nodes']['join']
+        left, right = join['leftNodeId'], join['rightNodeId']
+        self.assertNotEqual(left, right)
+        self.assertEqual(normalized['nodes'][left]['name'], 'LeftClean')
+        self.assertEqual(normalized['nodes'][right]['name'], 'RightClean')
+        self.assertEqual(normalized['nodes']['left_input']['nextNodes'], [edge(left)])
+        self.assertEqual(normalized['nodes']['right_input']['nextNodes'], [edge(right)])
+        datasources = self.parse(flow)
+        self.assertEqual({ds['name'] for ds in datasources},
+                         {'prep.RightClean', 'prep.JoinedSales'})
+        query = next(ds['m_query_override'] for ds in datasources
+                     if ds['name'] == 'prep.JoinedSales')
+        self.assertIn('Table.AddColumn', query)
+        self.assertIn('RightClean', query)
+        self.assertIn('JoinKind.LeftOuter', query)
+        right_query = next(ds['m_query_override'] for ds in datasources
+                           if ds['name'] == 'prep.RightClean')
+        self.assertIn('Table.RemoveColumns', right_query)
+        self.assertNotIn('LeftMarker', right_query)
+
+    def test_join_side_is_independent_of_node_dictionary_order(self):
+        flow = join_flow()
+        expected = {ds['name']: ds['m_query_override'] for ds in self.parse(flow)}
+        flow['nodes'] = dict(reversed(list(flow['nodes'].items())))
+        actual = {ds['name']: ds['m_query_override'] for ds in self.parse(flow)}
+        self.assertEqual(actual, expected)
+
+    def test_ambiguous_join_sides_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'provenance required.*ambiguous'):
+            self.parse(join_flow(explicit=False))
+
+    def test_explicit_single_side_unique_complement(self):
+        flow = join_flow()
+        del flow['nodes']['join']['rightNodeId']
+        query = next(ds['m_query_override'] for ds in self.parse(flow)
+                     if ds['name'] == 'prep.JoinedSales')
+        self.assertIn('RightClean', query)
+        self.assertIn('JoinKind.LeftOuter', query)
+
+    def test_one_input_join_with_explicit_sides_rejected(self):
+        flow = join_flow()
+        del flow['nodes']['right_box']
+        del flow['nodes']['right_input']
+        flow['nodes']['join']['rightNodeId'] = 'left_box'
+        with self.assertRaisesRegex(ValueError, 'requires two resolved left/right inputs'):
+            self.parse(flow)
+
+    def test_multiple_container_entries_require_direct_child_routing(self):
+        flow = join_flow()
+        nodes = flow['nodes']
+        left = nodes.pop('left_box')['loomContainer']['nodes']['same/id']
+        right = nodes.pop('right_box')['loomContainer']['nodes']['same/id']
+        left['nextNodes'], right['nextNodes'] = [edge('join')], [edge('join')]
+        join = nodes.pop('join')
+        join.update(leftNodeId='left', rightNodeId='right')
+        nodes['box'] = container({'left': left, 'right': right, 'join': join}, 'out')
+        join['nextNodes'] = []
+        nodes['left_input']['nextNodes'] = [edge('left')]
+        nodes['right_input']['nextNodes'] = [edge('right')]
+        self.assertIn('JoinKind.LeftOuter', self.parse(flow)[-1]['m_query_override'])
+        nodes['left_input']['nextNodes'] = [edge('box')]
+        with self.assertRaisesRegex(ValueError, 'ambiguous entry boundary'):
+            self.parse(flow)
+
+    def test_branched_container_union_keeps_both_transformations(self):
+        flow = {
+            'nodes': {
+                'input': source('box'),
+                'box': container({
+                    'root': operation('SuperTransform'),
+                    'left': operation('AddColumn', 'union', name='LeftBranch',
+                                      columnName='L', expression='1'),
+                    'right': operation('AddColumn', 'union', name='RightBranch',
+                                       columnName='R', expression='2'),
+                    'union': operation('Union'),
+                }, 'out'),
+                'out': output(),
+            },
+        }
+        flow['nodes']['box']['loomContainer']['nodes']['root']['nextNodes'] = [
+            edge('left'), edge('right'),
+        ]
+        datasources = self.parse(flow)
+        self.assertEqual({ds['name'] for ds in datasources},
+                         {'prep.LeftBranch', 'prep.RightBranch', 'prep.PublishedSales'})
+        query = next(ds['m_query_override'] for ds in datasources
+                     if ds['name'] == 'prep.PublishedSales')
+        self.assertIn('Table.Combine', query)
+        self.assertIn('LeftBranch', query)
+        self.assertIn('RightBranch', query)
+        for name, column in [('LeftBranch', 'L'), ('RightBranch', 'R')]:
+            branch = next(ds for ds in datasources if ds['name'] == 'prep.' + name)
+            self.assertIn('"' + column + '"', branch['m_query_override'])
+
+    def test_container_ambiguous_exit_and_stranded_branch_rejected(self):
+        flow = {'nodes': {
+            'input': source('box'),
+            'box': container({
+                'root': operation('SuperTransform'),
+                'a': operation('RemoveColumn', columnName='Discard'),
+                'b': operation('RenameColumn', columnName='Raw', newColumnName='Kept'),
+            }, 'out'),
+            'out': output(),
+        }}
+        box = flow['nodes']['box']
+        box['loomContainer']['nodes']['root']['nextNodes'] = [edge('a'), edge('b')]
+        with self.assertRaisesRegex(ValueError, 'ambiguous exit boundary'):
+            normalize_prep_flow(flow)
+        box['exitNodeId'] = 'a'
+        with self.assertRaisesRegex(ValueError, 'branch stranded at exit'):
+            normalize_prep_flow(flow)
+
+    def test_explicit_boundary_aliases_route_without_reordering(self):
+        for entry_key, exit_key in [
+            ('entryNodeId', 'exitNodeId'),
+            ('inputNodes', 'outputNodes'),
+            ('initialNodeIds', 'terminalNodeIds'),
+        ]:
+            with self.subTest(entry=entry_key):
+                flow = clean_chain()
+                loom = flow['nodes']['box']['loomContainer']
+                loom[entry_key] = {'nodeId': 'rename'}
+                loom[exit_key] = {'nodeId': 'filter'}
+                self.assert_actual_chain(self.parse(flow)[0]['m_query_override'])
+
+    def test_outer_container_actions_cannot_be_silently_discarded(self):
+        flow = clean_chain()
+        flow['nodes']['box']['actions'] = [
+            {'actionType': 'RemoveColumn', 'columnName': 'Raw'},
+        ]
+        with self.assertRaisesRegex(ValueError, 'outer actions'):
+            normalize_prep_flow(flow)
+
+    def test_known_output_versions_with_and_without_base_type(self):
+        for kind in ['PublishExtract', 'SaveToFile', 'SaveToDatabase']:
+            for base_type in [False, True]:
+                with self.subTest(kind=kind, base_type=base_type):
+                    node = output(base_type=base_type)
+                    node['nodeType'] = '.v2030_2.' + kind
+                    self.assertEqual(get_prep_node_kind(node), 'output')
+                    result = self.parse({'nodes': {'in': source('out'), 'out': node}})
+                    self.assertEqual([ds['name'] for ds in result], ['prep.PublishedSales'])
+
+    def test_kind_never_guesses_unknown_load_or_publish_suffix(self):
+        for kind in ['LoadFuture', 'PublishFuture', 'FutureStep']:
+            with self.subTest(kind=kind):
+                self.assertEqual(get_prep_node_kind(operation(kind)), 'transform')
+        self.assertEqual(get_prep_node_kind({
+            'baseType': 'output', 'nodeType': '.v99.CustomSink',
+        }), 'output')
+        with self.assertRaisesRegex(ValueError, 'Unknown Prep baseType'):
+            get_prep_node_kind({'baseType': 'future'})
+
+    def test_nullable_optional_collections_convert(self):
+        flow = {'nodes': {
+            'input': source('clean'),
+            'clean': operation('SuperTransform', 'out', fields=None,
+                               connectionAttributes=None, actions=None,
+                               beforeActionGroup=None,
+                               actionGroup={'actions': None}, afterActionGroup=None),
+            'out': {**output(), 'fields': None, 'nextNodes': None,
+                    'connectionAttributes': None},
+        }, 'connections': None}
+        flow['nodes']['input']['fields'] = None
+        flow['nodes']['input']['connectionAttributes']['server'] = None
+        before = deepcopy(flow)
+        normalized = normalize_prep_flow(flow)
+        self.assertEqual(normalized['connections'], {})
+        self.assertEqual(normalized['nodes']['clean']['fields'], [])
+        self.assertEqual(normalized['nodes']['clean']['actionGroup'], {'actions': []})
+        self.assertNotIn('server', normalized['nodes']['input']['connectionAttributes'])
+        self.assertTrue(self.parse(flow)[0]['m_query_override'].strip())
+        self.assertEqual(flow, before)
+
+    def test_container_local_connection_is_scoped(self):
+        flow = {'connections': {'c': {'connectionAttributes': {
+            'class': 'csv', 'filename': 'outer.csv',
+        }}}, 'nodes': {
+            'box': container({
+                'in': operation('LoadCsv', 'out', name='LocalInput', connectionId='c'),
+                'out': output(),
+            }),
+        }}
+        flow['nodes']['box']['loomContainer']['connections'] = {
+            'c': {'connectionAttributes': {'class': 'csv', 'filename': 'inner.csv'}},
+        }
+        normalized = normalize_prep_flow(flow)
+        inner = next(n for n in normalized['nodes'].values() if n['name'] == 'LocalInput')
+        self.assertNotEqual(inner['connectionId'], 'c')
+        self.assertEqual(normalized['connections'][inner['connectionId']]
+                         ['connectionAttributes']['filename'], 'inner.csv')
+        self.assertEqual(normalized['connections']['c']['connectionAttributes']
+                         ['filename'], 'outer.csv')
+        query = self.parse(flow)[0]['m_query_override']
+        self.assertIn('inner.csv', query)
+        self.assertNotIn('outer.csv', query)
+
+    def test_nullable_connection_definitions_and_container_collections(self):
+        flow = clean_chain()
+        flow['connections'] = {'unused': None, 'optional': {'connectionAttributes': None}}
+        loom = flow['nodes']['box']['loomContainer']
+        loom['connections'] = None
+        flow['nodes']['box']['fields'] = None
+        flow['nodes']['box']['actions'] = None
+        before = deepcopy(flow)
+        normalized = normalize_prep_flow(flow)
+        self.assertEqual(normalized['connections'], {
+            'unused': {}, 'optional': {'connectionAttributes': {}},
+        })
+        self.assert_actual_chain(self.parse(flow)[0]['m_query_override'])
+        self.assertEqual(flow, before)
+
+    def test_scoped_ids_cannot_collide_with_existing_top_level_ids(self):
+        flow = clean_chain()
+        reserved = '__prep_scope__/box/rename'
+        flow['nodes'][reserved] = source('out', name='ExtraInput')
+        # This additional branch would make the output invalid, so only test the
+        # normalizer's ID allocation; parsing validates output cardinality.
+        before = deepcopy(flow)
+        normalized = normalize_prep_flow(flow)
+        self.assertIn(reserved, normalized['nodes'])
+        rename_ids = [nid for nid, n in normalized['nodes'].items()
+                      if n['nodeType'].endswith('.RenameColumn')]
+        self.assertEqual(len(rename_ids), 1)
+        self.assertNotEqual(rename_ids[0], reserved)
+        self.assertEqual(len(normalized['nodes']), 8)
+        self.assertEqual(normalized, normalize_prep_flow(flow))
+        self.assertEqual(flow, before)
+
+    def test_unresolved_explicit_output_blocks_leaf_fallback(self):
+        nodes = {'input': source(), 'out': output()}
+        results = {'input': {
+            'name': 'SyntheticSales', 'm_query': 'let Source = 1 in Source',
+            'fields': [], 'table': {}, 'connection': {},
+        }}
+        with self.assertRaisesRegex(ValueError, 'explicit outputs have no resolved result'):
+            _collect_prep_datasources(['input', 'out'], nodes, results, set())
+
+    def test_malformed_shapes_fail_instead_of_passthrough(self):
+        cases = [
+            ('fields', {}), ('connectionAttributes', []), ('nextNodes', 'out'),
+            ('beforeActionGroup', []), ('actions', {}),
+            ('fields', [None]), ('nodeType', 17),
+        ]
+        for key, bad_value in cases:
+            with self.subTest(key=key, value=bad_value):
+                flow = clean_chain()
+                flow['nodes']['input'][key] = bad_value
+                with self.assertRaisesRegex(ValueError, 'Prep node'):
+                    normalize_prep_flow(flow)
+        for connections in [[], 'bad']:
+            with self.subTest(connections=connections):
+                with self.assertRaisesRegex(ValueError, 'nodes/connections'):
+                    normalize_prep_flow({'nodes': {}, 'connections': connections})
+
+    def test_unknown_or_incomplete_operations_fail(self):
+        for node in [
+            operation('FutureTransform'),
+            operation('RenameColumn', columnName='Raw'),
+            operation('ChangeColumnType', columnName='Raw', newType='future'),
+            operation('AddColumn', columnName='MissingExpression'),
+            operation('FilterOperation'),
+            operation('SuperTransform', actions=[{'actionType': 'FutureAction'}]),
+        ]:
+            with self.subTest(kind=node['nodeType']):
+                node['nextNodes'] = [edge('out')]
+                with self.assertRaises(ValueError):
+                    self.parse({'nodes': {
+                        'input': source('bad'), 'bad': node, 'out': output(),
+                    }})
+
+    def test_disconnected_unresolved_and_multi_upstream_outputs_fail(self):
+        flows = [
+            {'nodes': {'input': source(), 'out': output()}},
+            {'nodes': {'input': source('out'), 'other': source('out'), 'out': output()}},
+        ]
+        for flow in flows:
+            with self.subTest(flow=flow):
+                with self.assertRaisesRegex(ValueError, 'expected one resolved upstream'):
+                    self.parse(flow)
+        nodes = {'input': source('out'), 'out': output()}
+        with self.assertRaisesRegex(ValueError, 'expected one resolved upstream'):
+            _process_prep_node('out', nodes, {}, {}, set())
+
+    def test_cycle_and_dangling_edges_rejected(self):
+        for flow in [
+            {'nodes': {'input': source('missing')}},
+            {'nodes': {'a': operation('SuperTransform', 'b'),
+                       'b': operation('SuperTransform', 'a')}},
+        ]:
+            with self.subTest(flow=flow):
+                with self.assertRaisesRegex(ValueError, 'dangling|cycl'):
+                    self.parse(flow)
+
+    def test_json_and_zip_archives_have_identical_normalized_graph_and_m(self):
+        flow = clean_chain(nested=True)
+        with tempfile.TemporaryDirectory() as directory:
+            expected_graph = normalize_prep_flow(flow)
+            expected_queries = None
+            for filename, member in [
+                ('plain.tfl', None), ('packed.tfl', 'flow'),
+                ('packed.tflx', 'flow'), ('nested.tflx', 'Flow/synthetic.tfl'),
+                ('nested.tfl', 'Flow/synthetic.tfl'),
+            ]:
+                with self.subTest(filename=filename, member=member):
+                    path = write_flow(directory, flow, filename, member)
+                    self.assertEqual(read_prep_flow(path), expected_graph)
+                    queries = [ds['m_query_override'] for ds in parse_prep_flow(path)]
+                    if expected_queries is None:
+                        expected_queries = queries
+                    self.assertEqual(queries, expected_queries)
+                    self.assert_actual_chain(queries[0])
 
 
 if __name__ == '__main__':

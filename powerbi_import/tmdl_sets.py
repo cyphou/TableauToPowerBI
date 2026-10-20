@@ -116,6 +116,33 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
 
     # Groups -> SWITCH / concatenation column
     for g in extra_objects.get('groups', []):
+        if g.get('group_type') == 'combined' and g.get('source_fields'):
+            # Action keys are row expressions too. Route an explicitly
+            # single-host key before attempting M or RELATED; the widest
+            # table is not its current row grain.
+            hosts = {
+                column_table_map.get(_clean_tableau_field_ref(field))
+                for field in g['source_fields']
+            }
+            if None not in hosts and len(hosts) == 1:
+                host = next(iter(hosts))
+                # Only the preserved logical-predicate path requires this new
+                # current-row routing. Ordinary cross-table groups retain
+                # their existing RELATED fallback on the requested table.
+                logical_hosts = {
+                    name for pair in model.get('_logical_predicate_pairs', [])
+                    for name in pair
+                }
+                if host != main_table_name and host in logical_hosts:
+                    _process_sets_groups_bins(
+                        model, dict(extra_objects, sets=[], groups=[g], bins=[]),
+                        host, column_table_map)
+                    continue
+            elif any(frozenset(pair).issubset(hosts)
+                     for pair in model.get('_logical_predicate_pairs', [])):
+                raise ValueError(
+                    f"Combined group {g.get('name')} spans a logical predicate: "
+                    "no single current-row host; cannot substitute RELATED or MAX")
         group_name = g.get('name', '')
         if not group_name or group_name in existing_cols:
             continue
@@ -141,6 +168,9 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                         if col_cap and col_name != col_cap:
                             col_caption_map[col_name] = col_cap
             # Also resolve from existing_cols (columns already in the BIM table)
+            for (host, raw), produced in model.get('_column_rename_map', {}).items():
+                if host == main_table_name:
+                    col_caption_map[raw] = produced
             for table_obj in model.get('model', {}).get('tables', []):
                 for col in table_obj.get('columns', []):
                     col_name = col.get('name', '')
@@ -200,6 +230,29 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
 
             m_parts = []
             dax_parts = []
+            # Model columns include DAX-only columns, and column_table_map also
+            # includes measures. Neither exists in the Power Query row. Rebuild
+            # this map for each group so earlier M additions are available, but
+            # earlier DAX fallbacks are not.
+            m_row_columns = {}
+            for col in main_table.get('columns', []):
+                if not col.get('expression') and not col.get('isCalculated'):
+                    source = col.get('sourceColumn') or col.get('name', '')
+                    m_row_columns[col.get('name', '')] = source
+                    m_row_columns[source] = source
+            measure_refs = {
+                (table.get('name'), measure.get('name'))
+                for table in model['model']['tables']
+                for measure in table.get('measures', [])
+            }
+            date_dax_funcs = {
+                'Date.Year': 'YEAR', 'Date.Month': 'MONTH',
+                'Date.Day': 'DAY', 'Date.QuarterOfYear': 'QUARTER',
+                'Date.WeekOfYear': 'WEEKNUM', 'Time.Hour': 'HOUR',
+                'Time.Minute': 'MINUTE', 'Time.Second': 'SECOND',
+            }
+            all_m_available = True
+            unknown_source = False
             for idx, sf_raw in enumerate(source_fields):
                 # 1. Extract derivation prefix before cleaning
                 prefix_match = _RE_TMDL_DERIVATION_PREFIX.match(sf_raw)
@@ -213,12 +266,15 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                 # Also check if the resolved name exists in existing columns
                 if resolved not in existing_cols and sf in col_caption_map:
                     resolved = col_caption_map[sf]
-                # Validate: skip fields that don't exist in any known column set
+                # Never silently generate a partial combined key.
                 if resolved not in existing_cols and resolved not in column_table_map:
-                    print(f"  ⚠ Group '{group_name}': skipping unknown source field '{sf_raw}' (resolved='{resolved}')")
-                    continue
+                    print(f"  ⚠ Group '{group_name}': unknown source field '{sf_raw}' (resolved='{resolved}'), skipping whole group")
+                    unknown_source = True
+                    break
                 # 3. Build M column reference
-                escaped_m = resolved.replace('"', '""')
+                if resolved not in m_row_columns:
+                    all_m_available = False
+                escaped_m = m_row_columns.get(resolved, resolved).replace('"', '""')
                 m_ref = f'[#"{escaped_m}"]'
                 # 4. Apply date-part function: first from derivation prefix, then from group name
                 m_func = None
@@ -233,29 +289,46 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                 m_parts.append(m_ref)
                 # Also build DAX parts for fallback
                 table_ref = column_table_map.get(resolved, column_table_map.get(sf, main_table_name))
+                # A local row column wins over a same-named remote field.
+                if resolved in existing_cols:
+                    table_ref = main_table_name
+                escaped_table = table_ref.replace("'", "''")
                 escaped_col = resolved.replace(']', ']]')
-                ref = f"'{table_ref}'[{escaped_col}]"
-                if table_ref != main_table_name:
+                ref = f"'{escaped_table}'[{escaped_col}]"
+                if table_ref != main_table_name and (table_ref, resolved) not in measure_refs:
                     ref = f"RELATED({ref})"
+                if m_func:
+                    ref = f'{date_dax_funcs[m_func]}({ref})'
                 dax_parts.append(ref)
 
-            if not m_parts:
+            if unknown_source:
+                continue
+            if not dax_parts:
                 # All source fields were unknown — skip this group entirely
                 print(f"  ⚠ Group '{group_name}': no valid source fields found, skipping")
                 continue
-            # Build M expression directly (type-safe concatenation)
-            if len(m_parts) == 1:
-                m_concat_expr = m_parts[0]
-            else:
+            if all_m_available:
+                # Every reference is present in this partition's row.
                 m_concat_expr = ' & " | " & '.join(m_parts)
-            m_steps.append(m_transform_add_column(group_name, f'each {m_concat_expr}', 'type text'))
-            main_table["columns"].append({
-                "name": group_name,
-                "dataType": "String",
-                "sourceColumn": group_name,
-                "summarizeBy": "none",
-                "displayFolder": "Groups"
-            })
+                m_steps.append(m_transform_add_column(group_name, f'each {m_concat_expr}', 'type text'))
+                main_table["columns"].append({
+                    "name": group_name,
+                    "dataType": "String",
+                    "sourceColumn": group_name,
+                    "summarizeBy": "none",
+                    "displayFolder": "Groups"
+                })
+            else:
+                # Do not pass this through DAX-to-M conversion: its dependencies
+                # were explicitly found to be unavailable during Power Query.
+                main_table["columns"].append({
+                    "name": group_name,
+                    "dataType": "String",
+                    "expression": ' & " | " & '.join(dax_parts),
+                    "summarizeBy": "none",
+                    "isCalculated": True,
+                    "displayFolder": "Groups"
+                })
             existing_cols.add(group_name)
             continue
 

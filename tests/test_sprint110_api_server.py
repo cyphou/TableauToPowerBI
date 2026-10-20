@@ -157,7 +157,7 @@ class TestDownloadEndpoint(_ServerTestBase):
         with open(os.path.join(tmpdir, 'test.txt'), 'w') as f:
             f.write('hello')
         job_id = _new_job('/tmp/test.twbx')
-        _update_job(job_id, status='completed', output_dir=tmpdir)
+        _update_job(job_id, status='completed', job_dir=tmpdir, output_dir=tmpdir)
 
         url = self.base_url + f'/download/{job_id}'
         req = urllib.request.Request(url)
@@ -170,14 +170,14 @@ class TestDownloadEndpoint(_ServerTestBase):
 
 
 class TestMigrateEndpoint(_ServerTestBase):
-    """POST /migrate validates input."""
+    """POST /migrate has been retired in favor of batch migration."""
 
-    def test_no_body(self):
+    def test_single_file_endpoint_is_gone(self):
         status, data = self._post('/migrate', b'', content_type='application/octet-stream')
-        self.assertEqual(status, 400)
+        self.assertEqual(status, 410)
+        self.assertIn('batch', data.get('error', '').lower())
 
-    def test_unsupported_extension(self):
-        # Send a small file with wrong extension (using JSON payload)
+    def test_single_file_upload_endpoint_is_gone(self):
         import base64
         payload = json.dumps({
             'filename': 'test.xlsx',
@@ -185,8 +185,8 @@ class TestMigrateEndpoint(_ServerTestBase):
         }).encode()
         status, data = self._post('/migrate', payload,
                                    content_type='application/json')
-        self.assertEqual(status, 400)
-        self.assertIn('Unsupported', data.get('error', ''))
+        self.assertEqual(status, 410)
+        self.assertIn('batch', data.get('error', '').lower())
 
 
 class TestNotFound(_ServerTestBase):

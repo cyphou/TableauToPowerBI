@@ -398,9 +398,19 @@ in
         self.assertIn('"Sales"', result)
 
     def test_wrap_source_no_columns(self):
-        """wrap_source_with_try_otherwise without columns uses empty table."""
+        """A file-backed Excel failure must not become a successful empty load."""
         m_query = '''let
     Source = Excel.Workbook(File.Contents("data.xlsx"))
+in
+    Source'''
+        result = wrap_source_with_try_otherwise(m_query)
+        self.assertEqual(result, m_query)
+        self.assertNotIn('otherwise', result)
+        self.assertNotIn('#table(', result)
+
+    def test_wrap_non_file_source_no_columns_retains_legacy_empty_table(self):
+        m_query = '''let
+    Source = Sql.Database("synthetic-server", "synthetic-db")
 in
     Source'''
         result = wrap_source_with_try_otherwise(m_query)
@@ -431,8 +441,17 @@ in
     #"Promoted"'''
         result = wrap_source_with_try_otherwise(
             m_query, ['Revenue "net" total', 'Plain Column'])
+        self.assertEqual(result, m_query)
+        self.assertNotIn('otherwise', result)
 
-        # The quoted name survives, escaped M-style.
+        # Non-file sources retain the legacy fallback, including M escaping.
+        legacy_query = '''let
+    Source = Sql.Database("synthetic-server", "synthetic-db"),
+    #"Nav" = Source{[Schema="dbo", Item="Synthetic"]}[Data]
+in
+    #"Nav"'''
+        result = wrap_source_with_try_otherwise(
+            legacy_query, ['Revenue "net" total', 'Plain Column'])
         self.assertIn('"Revenue ""net"" total"', result)
         self.assertNotIn('"Revenue "net" total"', result)
         # And no bare quote remains inside the fallback column list.

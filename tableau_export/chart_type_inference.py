@@ -23,14 +23,73 @@ def _extract_mark_class(worksheet):
     Used downstream by the PBIR generator to look up custom visual
     GUIDs for mark types that have AppSource equivalents.
     """
+    automatic = None
     for pane in worksheet.findall('.//pane'):
         mark = pane.find('.//mark')
         if mark is not None and mark.get('class'):
-            return mark.get('class')
+            if mark.get('class').lower() != 'automatic':
+                return mark.get('class')
+            automatic = mark.get('class')
     for mark in worksheet.findall('.//style/mark'):
         if mark.get('class'):
-            return mark.get('class')
-    return None
+            if mark.get('class').lower() != 'automatic':
+                return mark.get('class')
+            automatic = automatic or mark.get('class')
+    return automatic
+
+
+def extract_combined_axis_panes(worksheet):
+    """Read declared overlay shelves, not adjacent shelves or field names.
+
+    Tableau serializes a dual axis as ``(ref + ref)`` and assigns each ref
+    to a pane's x/y-axis-name. ``ref / ref`` instead means separate panes.
+    Keep raw marks (including Automatic) alongside their resolved types.
+    Axis roles follow shelf order, not pane order or IDs.
+    """
+    panes = worksheet.findall('./table/panes/pane')
+    for shelf, axis_attr in (('rows', 'y-axis-name'), ('cols', 'x-axis-name')):
+        elem = worksheet.find(f'./table/{shelf}')
+        text = (elem.text or '').strip() if elem is not None else ''
+        refs = re.findall(r'\[[^\]]+\]\.\[[^\]]+\]', text)
+        if len(refs) != 2 or refs[0] == refs[1]:
+            continue
+        # Remove references before checking the shelf operator. No inference
+        # from two ordinary shelf fields, calculated names, or mark counts.
+        operators = re.sub(r'\[[^\]]+\]\.\[[^\]]+\]', '', text)
+        if re.sub(r'[\s()]', '', operators) != '+':
+            continue
+        assignments = []
+        for index, ref in enumerate(refs):
+            pane = next((p for p in panes if p.get(axis_attr) == ref), None)
+            if pane is None:
+                break
+            mark = pane.find('./mark')
+            raw_mark = mark.get('class', 'Automatic') if mark is not None else 'Automatic'
+            ds, raw_field = re.findall(r'\[([^\]]+)\]\.\[([^\]]+)\]', ref)[0]
+            resolved = (_infer_automatic_chart_type(worksheet)
+                        if raw_mark.lower() == 'automatic'
+                        else _map_tableau_mark_to_type(raw_mark))
+            if resolved == 'clusteredBarChart' and shelf == 'rows':
+                resolved = 'clusteredColumnChart'
+            assignments.append({
+                'pane_id': pane.get('id', ''),
+                'field': _clean_field_ref(raw_field),
+                'datasource': ds,
+                'field_ref': ref,
+                'shelf': 'rows' if shelf == 'rows' else 'columns',
+                'axis_role': 'Y' if index == 0 else 'Y2',
+                'mark_class': raw_mark,
+                'chart_type': resolved,
+            })
+        if len(assignments) == 2:
+            if {p['chart_type'] for p in assignments} == {'clusteredColumnChart', 'lineChart'}:
+                # Native combo consumers bind the first measure to columns
+                # (Y), then the line to Y2, regardless of Tableau pane order.
+                assignments.sort(key=lambda p: p['chart_type'] == 'lineChart')
+                for index, assignment in enumerate(assignments):
+                    assignment['axis_role'] = 'Y' if index == 0 else 'Y2'
+            return assignments
+    return []
 
 def determine_chart_type(worksheet):
     """Determines the chart type from the Tableau mark type.
@@ -49,20 +108,11 @@ def determine_chart_type(worksheet):
     PBI Desktop. (Bug fix: previously returned ``'bar'`` which is not
     a valid PBI visual type and renders as a blank rectangle.)
     """
-    mark_class = None
-    # Search for the mark class in panes
-    for pane in worksheet.findall('.//pane'):
-        mark = pane.find('.//mark')
-        if mark is not None and mark.get('class'):
-            mark_class = mark.get('class')
-            break
+    combined_panes = extract_combined_axis_panes(worksheet)
+    if {p['chart_type'] for p in combined_panes} == {'clusteredColumnChart', 'lineChart'}:
+        return 'lineClusteredColumnComboChart'
 
-    # Search in style/mark
-    if mark_class is None:
-        for mark in worksheet.findall('.//style/mark'):
-            if mark.get('class'):
-                mark_class = mark.get('class')
-                break
+    mark_class = _extract_mark_class(worksheet)
 
     # Search for <mark-type>X</mark-type> element-text format
     # (used by minimal Tableau XML and some test fixtures)
@@ -166,9 +216,16 @@ def _detect_bar_orientation(worksheet, default):
     cols_has_fields = bool(re.search(r'\[.*\]\.\[.*\]', cols_text))
     rows_has_fields = bool(re.search(r'\[.*\]\.\[.*\]', rows_text))
 
+    # Accept historical stacked aliases, but emit native Power BI IDs.
+    default = {
+        'stackedBarChart': 'barChart',
+        'stackedColumnChart': 'columnChart',
+    }.get(default, default)
+
     # Sprint 78: Map stacked variants based on orientation
     stacked_map_column = {
-        'stackedBarChart': 'stackedColumnChart',
+        'barChart': 'columnChart',
+        'columnChart': 'columnChart',
         'hundredPercentStackedBarChart': 'hundredPercentStackedColumnChart',
         'clusteredBarChart': 'clusteredColumnChart',
     }

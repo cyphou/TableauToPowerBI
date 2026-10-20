@@ -18,6 +18,35 @@ from extract_primitives import (
 )
 
 
+def build_field_provenance(root):
+    """Index authoritative local-field -> physical-column XML lineage.
+
+    Self-joins can expose the same remote column twice. Only a unique
+    metadata-record assignment is safe; never choose a table by field name.
+    """
+    candidates = {}
+    for datasource in root.findall('.//datasource'):
+        ds_name = datasource.get('name', '')
+        for record in datasource.findall('.//metadata-record'):
+            if record.get('class', '') != 'column':
+                continue
+            local = (record.findtext('./local-name', '') or '').strip().strip('[]')
+            parent = (record.findtext('./parent-name', '') or '').strip().strip('[]')
+            remote = (record.findtext('./remote-name', '') or '').strip().strip('[]')
+            datatype = (record.findtext('./local-type', '') or '').strip()
+            if local and parent and remote:
+                candidates.setdefault((ds_name, local), set()).add(
+                    (parent, remote, datatype))
+    result = {}
+    for identity, values in candidates.items():
+        if len(values) == 1:
+            table, column, datatype = next(iter(values))
+            result[identity] = {'source_table': table, 'source_column': column}
+            if datatype:
+                result[identity]['datatype'] = datatype
+    return result
+
+
 def extract_worksheet_fields(worksheet):
     """Extracts fields used in the worksheet"""
     fields = []

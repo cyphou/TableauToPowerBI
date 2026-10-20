@@ -198,6 +198,16 @@ def _check_zip_integrity(path: str, result: PreflightResult) -> Optional[zipfile
     if ext not in (".twbx", ".tdsx", ".tflx"):
         return None
 
+    if ext == ".twbx":
+        try:
+            with open(path, "rb") as source:
+                prefix = source.read(4096).lstrip(b"\xef\xbb\xbf \t\r\n")
+        except OSError as e:
+            result.add(BLOCKER, "archive_io_error", f"Cannot read archive: {e}")
+            return None
+        if prefix.startswith(b"<"):
+            return None
+
     try:
         zf = zipfile.ZipFile(path, "r")
     except zipfile.BadZipFile:
@@ -237,7 +247,7 @@ def _check_zip_integrity(path: str, result: PreflightResult) -> Optional[zipfile
 def _read_twb_xml(path: str, zf: Optional[zipfile.ZipFile]) -> Optional[bytes]:
     """Return the raw .twb XML bytes for a .twb or .twbx."""
     ext = os.path.splitext(path)[1].lower()
-    if ext == ".twb":
+    if ext == ".twb" or (ext == ".twbx" and zf is None):
         try:
             with open(path, "rb") as f:
                 return f.read()

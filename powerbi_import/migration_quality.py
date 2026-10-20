@@ -11,10 +11,13 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from powerbi_import.assessment import run_assessment
+from powerbi_import.report_localization import text, render as ui
 from powerbi_import.assessment_evidence import build_assessment_evidence
 from powerbi_import.html_template import (
     badge,
@@ -149,14 +152,14 @@ class MigrationQualityReport:
     def render_body(self) -> str:
         """Return the readable report body (sections only, no page wrapper)."""
         html = stat_grid([
-            stat_card(self.status, "Overall status",
+            stat_card(self.status, text("Overall status", "État global"),
                       accent={"PASS": "success", "WARN": "warn", "FAIL": "fail"}.get(
                           self.status, "")),
-            stat_card(self.parity.get("parity_score", "n/a"), "Parity score"),
-            stat_card(len(self.blockers), "Blockers", accent="fail"),
-            stat_card(len(self.warnings), "Warnings", accent="warn"),
+            stat_card(self.parity.get("parity_score", "n/a"), text("Parity score", "Score de parité")),
+            stat_card(len(self.blockers), text("Blockers", "Blocages"), accent="fail"),
+            stat_card(len(self.warnings), text("Warnings", "Avertissements"), accent="warn"),
         ])
-        html += section_open("quality-confidence", "Openability confidence", "OK")
+        html += section_open("quality-confidence", text("Openability confidence", "Confiance dans l’ouverture"), "OK")
         html += self._render_obj(self.openability_confidence)
         html += self._raw_details(self.openability_confidence)
         html += section_close()
@@ -166,35 +169,35 @@ class MigrationQualityReport:
             "lineage": self.lineage,
             "checkpoints": self.evidence_manifest.get("checkpoints", {}),
         }
-        html += section_open("quality-handoff", "Operator handoff", "->")
+        html += section_open("quality-handoff", text("Operator handoff", "Transmission à l’opérateur"), "->")
         html += self._render_obj(handoff)
         html += self._raw_details(handoff)
         html += section_close()
 
-        html += section_open("quality-blockers", "Blockers", "!")
-        html += self._html_list(self.blockers, "No blockers.")
+        html += section_open("quality-blockers", text("Blockers", "Blocages"), "!")
+        html += self._html_list(self.blockers, text("No blockers.", "Aucun blocage."))
         html += section_close()
-        html += section_open("quality-warnings", "Warnings", "!")
-        html += self._html_list(self.warnings, "No warnings.")
+        html += section_open("quality-warnings", text("Warnings", "Avertissements"), "!")
+        html += self._html_list(self.warnings, text("No warnings.", "Aucun avertissement."))
         html += section_close()
-        html += section_open("quality-priorities", "Remediation priorities", "->")
+        html += section_open("quality-priorities", text("Remediation priorities", "Priorités de remédiation"), "->")
         if self.priorities:
             html += "<ol>" + "".join(
                 f"<li><strong>{esc(item['priority'])}</strong> "
-                f"{badge(_ACTION_LABEL.get(item.get('action_kind', ''), 'review'), _ACTION_TONE.get(item.get('action_kind', ''), 'gray'))} "
+                f"{badge(_ACTION_LABEL.get(item.get('action_kind', ''), text('review', 'examiner')), _ACTION_TONE.get(item.get('action_kind', ''), 'gray'))} "
                 f"{esc(item['action'])} "
-                f"<em>(owner: {esc(item['owner'])})</em>"
-                + (f"<br><small>How: {esc(item['fix'])}</small>"
+                f"<em>({ui(text('owner:', 'responsable :'))} {esc(item['owner'])})</em>"
+                + (f"<br><small>{ui(text('How:', 'Méthode :'))} {esc(item['fix'])}</small>"
                    if item.get("fix") else "")
                 + "</li>"
                 for item in self.priorities
             ) + "</ol>"
         else:
-            html += "<p>No remediation priorities.</p>"
+            html += "<p>" + ui(text("No remediation priorities.", "Aucune priorité de remédiation.")) + "</p>"
         html += section_close()
-        html += section_open("quality-ai", "AI summary", "AI")
+        html += section_open("quality-ai", text("AI summary", "Synthèse IA"), "AI")
         html += (f"<p>{esc(self.ai_summary)}</p>"
-                 if self.ai_summary else "<p>No AI summary was requested or available.</p>")
+                 if self.ai_summary else "<p>" + ui(text("No AI summary was requested or available.", "Aucune synthèse IA demandée ou disponible.")) + "</p>")
         html += section_close()
         details = {
             "parity": self.parity,
@@ -205,7 +208,7 @@ class MigrationQualityReport:
             "strategy": self.strategy,
             "lineage": self.lineage,
         }
-        html += section_open("quality-details", "Validation details", "i")
+        html += section_open("quality-details", text("Validation details", "Détails de validation"), "i")
         html += self._render_obj(details)
         html += self._raw_details(details)
         html += section_close()
@@ -215,9 +218,10 @@ class MigrationQualityReport:
         """Write a self-contained human-readable quality report."""
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         html = html_open(
-            f"Migration quality — {self.report_name}",
-            "Deterministic validation with optional grounded AI summary",
-        ) + self.render_body() + html_close()
+            text(f"Migration quality — {self.report_name}", f"Qualité de migration — {self.report_name}"),
+            text("Deterministic validation with optional grounded AI summary",
+                 "Validation déterministe avec synthèse IA facultative fondée sur les preuves"),
+        ) + _desktop_comparison_links(path) + self.render_body() + html_close()
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(html)
         return path
@@ -225,7 +229,7 @@ class MigrationQualityReport:
     @staticmethod
     def _html_list(items: list[str], empty_text: str) -> str:
         if not items:
-            return f"<p>{esc(empty_text)}</p>"
+            return f"<p>{ui(empty_text)}</p>"
         return "<ul>" + "".join(f"<li>{esc(item)}</li>" for item in items) + "</ul>"
 
     @staticmethod
@@ -254,7 +258,7 @@ class MigrationQualityReport:
         """Render nested dict/list data as readable tables instead of raw JSON."""
         if isinstance(obj, dict):
             if not obj:
-                return "<p>None.</p>"
+                return "<p>" + ui(text("None.", "Aucun élément.")) + "</p>"
             rows: list[list[str]] = []
             blocks: list[str] = []
             for k, v in obj.items():
@@ -268,7 +272,7 @@ class MigrationQualityReport:
                     rows.append([esc(str(k)), esc(joined)])
                 else:
                     rows.append([esc(str(k)), cls._fmt_scalar(v, str(k))])
-            table = data_table(["Field", "Value"], rows, detail=True) if rows else ""
+            table = data_table([text("Field", "Champ"), text("Value", "Valeur")], rows, detail=True) if rows else ""
             return table + "".join(blocks)
         if isinstance(obj, list):
             if obj and all(isinstance(i, dict) for i in obj):
@@ -279,9 +283,103 @@ class MigrationQualityReport:
     @staticmethod
     def _raw_details(obj: Any) -> str:
         """Collapsible raw JSON so no data is lost from the readable view."""
-        return ("<details class=\"raw-json\"><summary>Raw JSON</summary><pre>"
+        return ("<details class=\"raw-json\"><summary>" + ui(text("Raw JSON", "JSON brut")) + "</summary><pre>"
                 + esc(json.dumps(obj, indent=2, ensure_ascii=False, default=str))
                 + "</pre></details>")
+
+
+_COMPARISON_LINKS_START = "<!-- desktop-comparison-links:start -->"
+_COMPARISON_LINKS_END = "<!-- desktop-comparison-links:end -->"
+
+
+def _desktop_comparison_links(html_path: str) -> str:
+    """Discover existing run reports, using paths rather than manifest locations.
+
+    The nearest comparison directory belongs to this output tree. Manifest
+    paths may describe the original machine and are intentionally not followed.
+    """
+    parent = Path(html_path).resolve().parent
+    comparison_root = next(
+        (p / "desktop_comparisons" for p in (parent, *parent.parents)
+         if (p / "desktop_comparisons").is_dir()), None)
+    if comparison_root is None:
+        return ""
+    # Do not follow comparison directories/reports outside their output tree.
+    output_root = comparison_root.parent
+    if not comparison_root.resolve().is_relative_to(output_root):
+        return ""
+    rows = []
+    for report in sorted(comparison_root.glob("*/comparison.html"), reverse=True):
+        if not report.is_file() or not report.resolve().is_relative_to(comparison_root.resolve()):
+            continue
+        status = text("not_run — capture status unavailable", "not_run — état des captures indisponible")
+        manifest_path = report.parent / "manifest.json"
+        try:
+            if manifest_path.resolve().is_relative_to(comparison_root.resolve()):
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                recorded = manifest.get("status") if isinstance(manifest, dict) else None
+                if not isinstance(recorded, str):
+                    recorded = None
+                status = {
+                    "captured": text("Captures recorded — manual review required", "Captures enregistrées — revue manuelle nécessaire"),
+                    "failed": text("Capture failure / incomplete — not parity success", "Captures en échec / incomplètes — parité non validée"),
+                }.get(recorded, status)
+        except (OSError, ValueError):
+            pass
+        relative = os.path.relpath(report, parent).replace("\\", "/")
+        url = esc(quote(relative, safe="/."))
+        rows.append([
+            f'<a href="{url}">{ui(text("Desktop screenshot comparison", "Comparaison des captures Desktop"))} — {esc(report.parent.name)}</a>',
+            ui(status),
+        ])
+    if not rows:
+        return ""
+    return (
+        _COMPARISON_LINKS_START
+        + section_open("quality-desktop-comparisons", text("Desktop screenshot comparisons", "Comparaisons des captures Desktop"), "i")
+        + "<p>" + ui(text(
+            "Separate capture diagnostics, not a parity verdict. Capture failures are not equivalent reports; even successful captures do not verify data, rendering fidelity, refresh, or deployment.",
+            "Diagnostics de capture distincts, sans verdict de parité. Un échec de capture ne signifie pas que les rapports sont équivalents ; même une capture réussie ne valide ni les données, ni la fidélité du rendu, ni l’actualisation, ni le déploiement.")) + "</p>"
+        + data_table([text("Comparison report (all workbooks in run)", "Rapport comparatif (tous les classeurs de l’exécution)"), text("Recorded capture evidence", "Preuves de capture enregistrées")],
+                     rows, table_id="quality-desktop-comparisons-table")
+        + section_close() + _COMPARISON_LINKS_END + "\n"
+    )
+
+
+def refresh_desktop_comparison_links(output_root: str) -> list[str]:
+    """Refresh only link sections in existing quality HTML; never run Desktop.
+
+    Replaces the managed section instead of appending duplicates, and removes
+    it if no comparison HTML remains. Quality scores and JSON are untouched.
+    Returns paths whose HTML changed. Unreadable/unwritable reports are logged.
+    """
+    import logging
+
+    root = Path(output_root).resolve()
+    changed = []
+    pattern = re.compile(re.escape(_COMPARISON_LINKS_START) + r".*?"
+                         + re.escape(_COMPARISON_LINKS_END) + r"\n?", re.DOTALL)
+    anchor = '<div class="container">'
+    for path in sorted(root.rglob("*.html")):
+        name = path.name.lower()
+        if not (name.startswith("migration_quality_") or name == "migration_quality.html"):
+            continue
+        if not path.resolve().is_relative_to(root):
+            continue
+        try:
+            original = path.read_text(encoding="utf-8")
+            document = pattern.sub("", original)
+            if anchor not in document:
+                continue
+            section = _desktop_comparison_links(str(path))
+            if section:
+                document = document.replace(anchor + "\n", anchor + "\n" + section, 1)
+            if document != original:
+                path.write_text(document, encoding="utf-8")
+                changed.append(str(path))
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).warning("Cannot refresh comparison links in %s: %s", path, exc)
+    return changed
 
 
 def build_consolidated_quality_html(quality_json_paths: list,
@@ -307,13 +405,15 @@ def build_consolidated_quality_html(quality_json_paths: list,
     for rep in reports:
         counts[rep.status] = counts.get(rep.status, 0) + 1
 
-    html = html_open(title,
-                     "Merged deterministic validation across all migrated workbooks")
+    html = html_open(text(title, "Qualité de migration consolidée") if title == "Consolidated migration quality" else title,
+                     text("Merged deterministic validation across all migrated workbooks",
+                          "Validation déterministe consolidée de tous les classeurs migrés"))
+    html += _desktop_comparison_links(output_path)
     html += stat_grid([
-        stat_card(len(reports), "Workbooks"),
-        stat_card(counts.get("PASS", 0), "Pass", accent="success"),
-        stat_card(counts.get("WARN", 0), "Warnings", accent="warn"),
-        stat_card(counts.get("FAIL", 0), "Failures", accent="fail"),
+        stat_card(len(reports), text("Workbooks", "Classeurs")),
+        stat_card(counts.get("PASS", 0), text("Pass", "Réussites"), accent="success"),
+        stat_card(counts.get("WARN", 0), text("Warnings", "Avertissements"), accent="warn"),
+        stat_card(counts.get("FAIL", 0), text("Failures", "Échecs"), accent="fail"),
     ])
 
     overview_rows = [
@@ -327,14 +427,15 @@ def build_consolidated_quality_html(quality_json_paths: list,
         ]
         for rep in reports
     ]
-    overview = section_open("consolidated-overview", "Overview", "i")
+    overview = section_open("consolidated-overview", text("Overview", "Vue d’ensemble"), "i")
     overview += data_table(
-        ["Workbook", "Status", "Parity", "Blockers", "Warnings", "Priorities"],
+        [text("Workbook", "Classeur"), text("Status", "État"), text("Parity", "Parité"),
+         text("Blockers", "Blocages"), text("Warnings", "Avertissements"), text("Priorities", "Priorités")],
         overview_rows, table_id="consolidated-overview-table",
         sortable=True, searchable=True)
     overview += section_close()
 
-    tabs = [("overview", "Overview", True)]
+    tabs = [("overview", text("Overview", "Vue d’ensemble"), True)]
     tabs += [(f"wb{i}", esc(rep.report_name), False)
              for i, rep in enumerate(reports)]
     html += tab_bar("consolidated", tabs)
@@ -547,8 +648,8 @@ _ACTION_RANK = {"repair": 0, "decide": 1, "verify": 2, "note": 3}
 _ACTION_TIER = {"repair": "P1", "decide": "P1", "verify": "P2", "note": "P2"}
 
 #: How the queue reads to a human, and how it is coloured.
-_ACTION_LABEL = {"repair": "fix", "decide": "decide", "verify": "verify",
-                 "note": "informational"}
+_ACTION_LABEL = {"repair": text("fix", "corriger"), "decide": text("decide", "décider"),
+                 "verify": text("verify", "vérifier"), "note": text("informational", "information")}
 _ACTION_TONE = {"repair": "red", "decide": "yellow", "verify": "blue",
                 "note": "gray"}
 

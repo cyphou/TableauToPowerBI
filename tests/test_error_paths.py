@@ -437,7 +437,6 @@ class TestValidatorDaxLeakPatterns(unittest.TestCase):
         ('LOD INCLUDE', '{INCLUDE [Category] : AVG([Sales])}'),
         ('LOD EXCLUDE', '{EXCLUDE [Region] : COUNT([ID])}'),
         ('ELSEIF', 'IF [A] > 1 THEN "X" ELSEIF [A] THEN "Y" END'),
-        ('==', '[Status] == "Active"'),
         ('ATTR', 'ATTR([Name])'),
         ('MAKEPOINT', 'MAKEPOINT([Lat], [Lon])'),
         ('SCRIPT_REAL', 'SCRIPT_REAL("code", [X])'),
@@ -451,6 +450,17 @@ class TestValidatorDaxLeakPatterns(unittest.TestCase):
                     len(errors) > 0,
                     f"Leak pattern '{name}' not detected in: {formula}"
                 )
+
+    def test_valid_dax_strict_equality_is_not_a_tableau_leak(self):
+        # Logical-relationship compilation intentionally distinguishes BLANK
+        # from empty string and numeric zero; == is the valid DAX operator.
+        for formula in ('[Status] == "Active"', '[Status] == ""',
+                        '[Status] == BLANK()', '[Value] == 0'):
+            with self.subTest(formula=formula):
+                self.assertEqual(ArtifactValidator.validate_dax_formula(formula), [])
+                fixed, repairs = ArtifactValidator.auto_fix_dax_leaks(formula)
+                self.assertEqual(fixed, formula)
+                self.assertEqual(repairs, [])
 
 
 # ═══════════════════════════════════════════════════════════════════════

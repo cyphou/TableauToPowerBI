@@ -100,18 +100,18 @@ def run_wizard():
 
     config = {}
 
-    # ── Step 1: Source file ──
-    print("─── Step 1: Source Workbook ───")
+    # ── Step 1: Source folder ──
+    print("─── Step 1: Source Folder (Batch Migration) ───")
 
     # Auto-detect workbooks in current dir
     found = []
     for ext in ('*.twb', '*.twbx'):
         found.extend(glob.glob(ext))
         found.extend(glob.glob(os.path.join('examples', '**', ext), recursive=True))
-    found = sorted(set(found))
+    found = sorted({os.path.dirname(path) or '.' for path in found})
 
     if found:
-        print(f"\n  Found {len(found)} workbook(s):")
+        print(f"\n  Found {len(found)} source folder(s):")
         for i, f in enumerate(found[:20]):
             print(f"    {i + 1}. {f}")
         if len(found) > 20:
@@ -119,24 +119,19 @@ def run_wizard():
 
         use_found = _yes_no("\n  Use one of these?")
         if use_found and found:
-            idx = _choose("Select workbook:", found[:20])
-            config['tableau_file'] = found[idx]
+            idx = _choose("Select source folder:", found[:20])
+            config['batch'] = found[idx]
         else:
-            config['tableau_file'] = _input("  Path to Tableau workbook (.twb/.twbx)")
+            config['batch'] = _input("  Path to source folder containing Tableau workbooks")
     else:
-        config['tableau_file'] = _input("  Path to Tableau workbook (.twb/.twbx)")
+        config['batch'] = _input("  Path to source folder containing Tableau workbooks")
 
-    if not config['tableau_file'] or not os.path.isfile(config['tableau_file']):
-        print(f"\n  Error: File not found: {config.get('tableau_file')}")
-        return None
-
-    # Validate file extension
-    valid, err = _validate_file_path(
-        config['tableau_file'],
-        allowed_extensions={'.twb', '.twbx', '.tds', '.tdsx'},
-    )
+    valid, err = _validate_file_path(config['batch'])
     if not valid:
         print(f"\n  Error: {err}")
+        return None
+    if not os.path.isdir(config['batch']):
+        print(f"\n  Error: Source folder not found: {config['batch']}. Single-file generation is retired.")
         return None
 
     # ── Step 2: Prep flow ──
@@ -188,7 +183,7 @@ def run_wizard():
     print("\n" + "=" * 60)
     print("  Migration Configuration Summary")
     print("=" * 60)
-    print(f"  Source:       {config['tableau_file']}")
+    print(f"  Source folder: {config['batch']}")
     if config.get('prep'):
         print(f"  Prep flow:    {config['prep']}")
     print(f"  Output dir:   {config['output_dir']}")
@@ -217,8 +212,13 @@ def wizard_to_args(config):
         argparse.Namespace: Ready to pass to main() internals.
     """
     import argparse
+    if not config.get('batch'):
+        raise ValueError(
+            "Wizard project generation requires a source folder in 'batch'; "
+            "single-file generation is retired."
+        )
     args = argparse.Namespace(
-        tableau_file=config['tableau_file'],
+        tableau_file=None,
         prep=config.get('prep'),
         output_dir=config.get('output_dir'),
         output_format=config.get('output_format', 'pbip'),
@@ -230,7 +230,7 @@ def wizard_to_args(config):
         rollback=config.get('rollback', False),
         verbose=config.get('verbose', False),
         assess=config.get('assess', False),
-        batch=None,
+        batch=config['batch'],
         batch_config=None,
         dry_run=False,
         skip_extraction=False,
@@ -252,7 +252,7 @@ def main():
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
     from migrate import main as migrate_main
     args = wizard_to_args(config)
-    sys.argv = ['migrate.py', config['tableau_file']]  # Reset argv
+    sys.argv = ['migrate.py', '--batch', config['batch']]  # Reset argv
     # Patch argparse to return our args
     import argparse
     original_parse = argparse.ArgumentParser.parse_args

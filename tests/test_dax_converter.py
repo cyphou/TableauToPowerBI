@@ -6,7 +6,9 @@ conversion phases: references, CASE/IF, functions, LOD, operators,
 column resolution, AGG→AGGX, and cleanup.
 """
 
+import json
 import os
+import subprocess
 import sys
 import unittest
 
@@ -16,12 +18,33 @@ from dax_converter import (
     convert_tableau_formula_to_dax,
     map_tableau_to_powerbi_type,
     _reverse_tableau_bracket_escape,
+    _convert_nullif,
+    _convert_measure_ref_ratio,
 )
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # Type Mapping
 # ═══════════════════════════════════════════════════════════════════════
+
+class TestYearDateParsingRegression(unittest.TestCase):
+    def test_explicit_year_parse_preserves_constructor_components(self):
+        result = convert_tableau_formula_to_dax(
+            'DATE(DATEPARSE("yyyy", RIGHT([Lot], 4)))',
+            table_name="Facts", is_calc_column=True)
+        self.assertIn("DATE(VALUE(RIGHT(", result)
+        self.assertIn(", 1, 1)", result)
+        self.assertNotIn("DATEVALUE(", result)
+        from powerbi_import.dax_validator import validate_dax_expression
+        self.assertEqual(validate_dax_expression(result), [])
+
+    def test_date_constructors_and_literal_text_are_preserved(self):
+        result = convert_tableau_formula_to_dax('MAKEDATE(2024, 9, 1)')
+        self.assertEqual(result, "DATE(2024, 9, 1)")
+        self.assertEqual(
+            convert_tableau_formula_to_dax('"DATE(DATEPARSE)"'),
+            '"DATE(DATEPARSE)"')
+
 
 class TestMapTableauToPowerBIType(unittest.TestCase):
     """Test map_tableau_to_powerbi_type."""
@@ -95,6 +118,426 @@ class TestEmptyInputs(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════
 # Simple Function Conversions
 # ═══════════════════════════════════════════════════════════════════════
+
+class TestStandaloneNullRegression(unittest.TestCase):
+    """Synthetic regressions for NULL normalization through the public converter."""
+
+    def test_nested_date_if_final_null(self):
+        formula = (
+            "IF [Start Date] <= TODAY() THEN [Start Date] "
+            "ELSE IF [End Date] <= TODAY() THEN [End Date] "
+            "ELSE NULL END END"
+        )
+        result = convert_tableau_formula_to_dax(formula)
+        self.assertEqual(
+            result,
+            convert_tableau_formula_to_dax(formula.replace("NULL", "BLANK()")),
+        )
+        self.assertEqual(result.count("BLANK()"), 1)
+        self.assertNotRegex(result, r"(?i)\bNULL\b")
+        self.assertIn("'Table'[Start Date]", result)
+        self.assertIn("'Table'[End Date]", result)
+
+    def test_nested_date_if_call_final_null(self):
+        result = convert_tableau_formula_to_dax(
+            "IF([Start Date] <= TODAY(), [Start Date], "
+            "IF([End Date] <= TODAY(), [End Date], NULL))"
+        )
+        self.assertEqual(
+            result,
+            "IF('Table'[Start Date] <= TODAY(), 'Table'[Start Date], "
+            "IF('Table'[End Date] <= TODAY(), 'Table'[End Date], BLANK()))",
+        )
+
+    def test_standalone_null_is_case_insensitive(self):
+        for formula in ("NULL", "null", "Null", "nUlL", " \tNuLl\n"):
+            with self.subTest(formula=formula):
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(formula), "BLANK()"
+                )
+
+    def test_null_call_with_whitespace(self):
+        for formula in ("NULL()", "null ()", "NuLl( )", "NULL \t(\n\t)"):
+            with self.subTest(formula=formula):
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(formula), "BLANK()"
+                )
+
+    def test_isnull_of_null(self):
+        for formula in ("ISNULL(NULL)", "isnull(null)", "ISNULL(NULL ( ))"):
+            with self.subTest(formula=formula):
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(formula), "ISBLANK(BLANK())"
+                )
+
+    def test_ifnull_column_with_null_fallback(self):
+        for fallback in ("NULL", "null", "NULL ( )"):
+            with self.subTest(fallback=fallback):
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(
+                        f"IFNULL([Value], {fallback})"
+                    ),
+                    "IF(ISBLANK('Table'[Value]), BLANK(), 'Table'[Value])",
+                )
+
+    def test_quoted_null_text_is_preserved(self):
+        for text in ("NULL", "NULL()", "null", "before NULL after"):
+            for quote in ('"', "'"):
+                with self.subTest(text=text, quote=quote):
+                    self.assertEqual(
+                        convert_tableau_formula_to_dax(f"{quote}{text}{quote}"),
+                        f'"{text}"',
+                    )
+
+    def test_quoted_text_and_null_literal_in_same_expression(self):
+        for quoted in ('"NULL"', "'NULL'", '"NULL()"', "'NULL()'"):
+            with self.subTest(quoted=quoted):
+                text = quoted[1:-1]
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(
+                        f"IF [Flag] THEN {quoted} ELSE NULL END"
+                    ),
+                    f'IF(\'Table\'[Flag], "{text}", BLANK())',
+                )
+
+    def test_bracket_identifiers_are_not_null_literals(self):
+        for field in ("NULL", "NULL()", "réalisé NULL (%)", "NULL]] suffix"):
+            with self.subTest(field=field):
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(f"[{field}]"),
+                    f"'Table'[{field}]",
+                )
+
+    def test_quoted_table_names_containing_null_are_preserved(self):
+        for table in ("NULL", "NULL()", "NULL Records", "NULL''s Records"):
+            with self.subTest(table=table):
+                formula = f"'{table}'[NULL()]"
+                self.assertEqual(convert_tableau_formula_to_dax(formula), formula)
+
+    def test_escaped_quote_delimiters_protect_null_text(self):
+        cases = (
+            ('"left "" NULL() "" right"', '"left "" NULL() "" right"'),
+            (r'"left \" NULL() \" right"', r'"left \" NULL() \" right"'),
+            ("'left '' NULL() '' right'", '"left \' NULL() \' right"'),
+            (r"'left \' NULL() \' right'", r'"left \" NULL() \" right"'),
+        )
+        for formula, expected in cases:
+            with self.subTest(formula=formula):
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(formula), expected
+                )
+
+    def test_longer_identifiers_are_not_null_literals(self):
+        for identifier in (
+            "NULLABLE", "ANNULLED", "_NULL", "NULL_value", "NULL2",
+            "valueNULL", "éNULL", "NULLé",
+        ):
+            with self.subTest(identifier=identifier):
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(identifier), identifier
+                )
+
+    def test_null_conversion_is_idempotent(self):
+        cases = (
+            ("NULL", "BLANK()"),
+            ("NULL ( )", "BLANK()"),
+            ("ISNULL(NULL)", "ISBLANK(BLANK())"),
+            (
+                "IFNULL([Value], NULL)",
+                "IF(ISBLANK('Table'[Value]), BLANK(), 'Table'[Value])",
+            ),
+            (
+                'IF [Flag] THEN "NULL()" ELSE NULL END',
+                'IF(\'Table\'[Flag], "NULL()", BLANK())',
+            ),
+            ("'NULL''s Records'[NULL()]", "'NULL''s Records'[NULL()]"),
+        )
+        for formula, expected in cases:
+            with self.subTest(formula=formula):
+                result = convert_tableau_formula_to_dax(formula)
+                self.assertEqual(result, expected)
+                self.assertEqual(convert_tableau_formula_to_dax(result), expected)
+
+
+class TestNullifRegression(unittest.TestCase):
+    """Synthetic coverage of strict NULLIF semantics and token-safe rewriting."""
+
+    def test_public_conversion_keeps_strict_equality_and_original_value(self):
+        for left, right in (
+            ("0", "BLANK()"), ('""', "BLANK()"), ("BLANK()", "0"),
+            ("BLANK()", '""'), ("0", "0"), ('""', '""'),
+        ):
+            with self.subTest(left=left, right=right):
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(f"NULLIF({left}, {right})"),
+                    f"IF(({left}) == ({right}), BLANK(), ({left}))",
+                )
+
+    def test_public_case_insensitive_call_resolves_columns(self):
+        self.assertEqual(
+            convert_tableau_formula_to_dax("nullif ([Value], NULL)"),
+            "IF(('Table'[Value]) == (BLANK()), BLANK(), ('Table'[Value]))",
+        )
+
+    def test_nested_calls_rewrite_both_arguments(self):
+        left = "IF(([A]) == (0), BLANK(), ([A]))"
+        right = "IF(([B]) == (1), BLANK(), ([B]))"
+        self.assertEqual(
+            _convert_nullif("NULLIF(NULLIF([A], 0), NULLIF([B], 1))"),
+            f"IF(({left}) == ({right}), BLANK(), ({left}))",
+        )
+
+    def test_sibling_calls_are_all_rewritten(self):
+        self.assertEqual(
+            _convert_nullif("NULLIF([A], 0) / NULLIF([B], 1)"),
+            "IF(([A]) == (0), BLANK(), ([A])) / "
+            "IF(([B]) == (1), BLANK(), ([B]))",
+        )
+
+    def test_compound_arguments_retain_precedence(self):
+        self.assertEqual(
+            convert_tableau_formula_to_dax(
+                "2 * NULLIF([A] + [B], [C] - [D])"
+            ),
+            "2 * IF(('Table'[A] + 'Table'[B]) == "
+            "('Table'[C] - 'Table'[D]), BLANK(), "
+            "('Table'[A] + 'Table'[B]))",
+        )
+
+    def test_protected_tokens_are_not_parsed_as_calls_or_arguments(self):
+        tokens = (
+            '"NULLIF(a,b)"', "'NULLIF(a,b)'", "[NULLIF(a,b)]",
+            '"left "" NULLIF(a,b) "" right"',
+            r'"left \" NULLIF(a,b) \" right"',
+            "'left '' NULLIF(a,b) '' right'",
+            r"'left \' NULLIF(a,b) \' right'",
+            "[left]] NULLIF(a,b)]",
+            "'NULLIF(a,b)''s table'[réalisé (%)]",
+        )
+        for token in tokens:
+            with self.subTest(token=token):
+                self.assertEqual(_convert_nullif(token), token)
+                self.assertEqual(
+                    _convert_nullif(f"NULLIF({token}, 0)"),
+                    f"IF(({token}) == (0), BLANK(), ({token}))",
+                )
+
+    def test_malformed_calls_return_unchanged_without_looping(self):
+        # A child process gives a parser-loop regression a bounded failure,
+        # rather than allowing it to hang the entire pytest worker.
+        cases = (
+            "NULLIF()", "NULLIF([A])", "NULLIF([A], 0, 1)",
+            "NULLIF(, 0)", "NULLIF([A], )", "NULLIF([A], 0",
+            "NULLIF(NULLIF([A], 0), 1",
+        )
+        script = (
+            "import json, sys; "
+            "from tableau_export.dax_converter import _convert_nullif; "
+            "print(json.dumps([_convert_nullif(s) for s in json.loads(sys.argv[1])]))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script, json.dumps(cases)],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+        self.assertEqual(json.loads(result.stdout), list(cases))
+
+    def test_helper_is_idempotent_and_protects_placeholder_like_text(self):
+        for formula in (
+            "NULLIF([A], 0)", "NULLIF(NULLIF([A], 0), 1)",
+            "NULLIF([A], 0) + NULLIF([B], 0)",
+            'NULLIF("__nullif_token_0__", [__nullif_token_1__])',
+        ):
+            with self.subTest(formula=formula):
+                result = _convert_nullif(formula)
+                self.assertNotIn("NULLIF(", result)
+                self.assertIn(" == ", result)
+                self.assertEqual(_convert_nullif(result), result)
+        self.assertEqual(
+            _convert_nullif('NULLIF("__nullif_token_0__", 0)'),
+            'IF(("__nullif_token_0__") == (0), BLANK(), ("__nullif_token_0__"))',
+        )
+
+    def test_nested_fixed_lod_ratio_uses_strict_nullif_denominator(self):
+        formula = (
+            "SUM([Amount]) / NULLIF("
+            "{ FIXED [Group] : SUM("
+            "{ FIXED [Group], [Item] : SUM([Amount]) }) }, 0)"
+        )
+        inner = (
+            "CALCULATE(SUM('Facts'[Amount]), "
+            "ALLEXCEPT('Facts', 'Facts'[Group], 'Facts'[Item]))"
+        )
+        denominator = (
+            f"CALCULATE(SUMX('Facts', {inner}), "
+            "ALLEXCEPT('Facts', 'Facts'[Group]))"
+        )
+        self.assertEqual(
+            convert_tableau_formula_to_dax(formula, table_name="Facts"),
+            f"DIVIDE(SUM('Facts'[Amount]), IF(({denominator}) == (0), "
+            f"BLANK(), ({denominator})))",
+        )
+
+
+class TestMeasureRefRatioRegression(unittest.TestCase):
+    def test_plain_and_grouped_measure_ratios_keep_blank_denominator_semantics(self):
+        names = {"Numerator", "Denominator", "réalisé (%)", "预算"}
+        for formula, expected in (
+            ("[Numerator] / [Denominator]",
+             "DIVIDE([Numerator], [Denominator])"),
+            ("(([réalisé (%)]) / (([预算])))",
+             "DIVIDE([réalisé (%)], [预算])"),
+        ):
+            with self.subTest(formula=formula):
+                # No third argument: an undefined/blank denominator must stay
+                # BLANK rather than becoming an artificial zero.
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(formula, measure_names=names),
+                    expected,
+                )
+
+    def test_ratio_tokenizer_accepts_escaped_brackets_and_slashes_in_names(self):
+        # These are already-resolved DAX refs; exercise the final rewrite
+        # independently of Tableau's different bracket-escape resolution.
+        names = {"left] value", "réalisé (%)", "path/to/value"}
+        for formula, expected in (
+            ("(([left]] value]) / ([réalisé (%)]))",
+             "DIVIDE([left]] value], [réalisé (%)])"),
+            ("[path/to/value] / [left]] value]",
+             "DIVIDE([path/to/value], [left]] value])"),
+        ):
+            with self.subTest(formula=formula):
+                self.assertEqual(_convert_measure_ref_ratio(formula, names), expected)
+                self.assertEqual(_convert_measure_ref_ratio(expected, names), expected)
+
+    def test_measure_ref_helper_leaves_compound_expressions_to_scalar_parser(self):
+        names = {"Numerator", "Denominator", "path/to/value"}
+        for formula in (
+            '"[Numerator] / [Denominator]"',
+            '"C:/reports/current"',
+            "[path/to/value]",
+            "'Facts'[Numerator] / 'Facts'[Denominator]",
+            "[Numerator] / [Denominator] + 1",
+            "1 + [Numerator] / [Denominator]",
+            "[Numerator] / ([Denominator] + 1)",
+            "[Numerator] / [Denominator] / [Numerator]",
+            "SUM([Numerator]) / SUM([Denominator])",
+        ):
+            with self.subTest(formula=formula):
+                self.assertEqual(_convert_measure_ref_ratio(formula, names), formula)
+
+    def test_public_converter_preserves_literal_slashes_and_identifier_slashes(self):
+        names = {"Numerator", "Denominator", "path/to/value"}
+        for formula in (
+            '"[Numerator] / [Denominator]"',
+            '"C:/reports/current"',
+            "[path/to/value]",
+        ):
+            with self.subTest(formula=formula):
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(formula, measure_names=names),
+                    formula,
+                )
+
+    def test_public_converter_safely_divides_compound_scalar_and_aggregate_expressions(self):
+        names = {"Numerator", "Denominator"}
+        for formula, expected in (
+            ("'Facts'[Numerator] / 'Facts'[Denominator]",
+             "DIVIDE('Facts'[Numerator], 'Facts'[Denominator])"),
+            ("[Numerator] / [Denominator] + 1",
+             "DIVIDE([Numerator], [Denominator]) + 1"),
+            ("1 + [Numerator] / [Denominator]",
+             "1 + DIVIDE([Numerator], [Denominator])"),
+            ("[Numerator] / ([Denominator] + 1)",
+             "DIVIDE([Numerator], ([Denominator] + 1))"),
+            ("[Numerator] / [Denominator] / [Numerator]",
+             "DIVIDE(DIVIDE([Numerator], [Denominator]), [Numerator])"),
+            ("SUM([Numerator]) / SUM([Denominator])",
+             "DIVIDE(SUM([Numerator]), SUM([Denominator]))"),
+        ):
+            with self.subTest(formula=formula):
+                self.assertEqual(
+                    convert_tableau_formula_to_dax(formula, measure_names=names),
+                    expected,
+                )
+        self.assertEqual(
+            convert_tableau_formula_to_dax(
+                "[Numerator] / [Denominator]", table_name="Facts"),
+            "DIVIDE('Facts'[Numerator], 'Facts'[Denominator])",
+        )
+
+
+class TestSafeScalarDivisionRegression(unittest.TestCase):
+    """Parser boundaries and operator semantics, independent of LOD rewriting."""
+
+    def rewrite(self, expression):
+        from tableau_export.dax_converter import _convert_safe_division
+        return _convert_safe_division(expression)
+
+    def test_precedence_and_left_associativity(self):
+        for source, expected in (
+            ("1 + 8 / 2 * 3", "1 + DIVIDE(8, 2) * 3"),
+            ("8 * 2 / 4", "DIVIDE(8 * 2, 4)"),
+            ("8 / 2 / 4", "DIVIDE(DIVIDE(8, 2), 4)"),
+            ("8 / (2 / 4)", "DIVIDE(8, (DIVIDE(2, 4)))"),
+            ("8 / 2 ^ 3", "DIVIDE(8, 2 ^ 3)"),
+            ("-8 / -2 + 1", "DIVIDE(-8, -2) + 1"),
+            ("NOT 8 / 2 > 3", "NOT DIVIDE(8, 2) > 3"),
+            ("IF(8 / 2 > 3, 6 / 2, 0)", "IF(DIVIDE(8, 2) > 3, DIVIDE(6, 2), 0)"),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(self.rewrite(source), expected)
+                self.assertEqual(self.rewrite(expected), expected)
+
+    def test_strings_identifiers_and_comments_are_not_division_operators(self):
+        for expression in (
+            '"https://synthetic.invalid/a/b"',
+            '"escaped "" slash / still a string"',
+            "'Facts/Archive'[path/to/value]",
+            "[escaped]]/name]",
+            "/* 8 / 0 */ SUM('Facts'[Amount])",
+            "SUM('Facts'[Amount]) // 8 / 0",
+        ):
+            with self.subTest(expression=expression):
+                self.assertEqual(self.rewrite(expression), expression)
+        self.assertEqual(
+            self.rewrite('/* lead / */ 8 /* before / */ / /* after / */ 2 // tail /'),
+            '/* lead / */ DIVIDE(8 /* before / */ ,  /* after / */ 2) // tail /')
+        self.assertEqual(
+            self.rewrite('8 // keep slash / in comment\n / 2'),
+            'DIVIDE(8 // keep slash / in comment\n , 2)')
+
+    def test_malformed_or_unsupported_expressions_fail_closed_without_partial_rewrite(self):
+        for expression in (
+            "8 /", "/ 2", "8 / (2", "SUM(8 / 2", "8 / 2)",
+            '8 / "unterminated', "8 / [unterminated", "8 / 2 /* unterminated",
+            "8 / 2 @ 3", "8 / 2; 4", "VAR x = 8 / 2 RETURN x",
+            "SUMX({1, 2}, 8 / 2)",
+        ):
+            with self.subTest(expression=expression):
+                self.assertEqual(self.rewrite(expression), expression)
+
+    def test_omitted_optional_arguments_do_not_prevent_safe_nested_division(self):
+        for source, expected in (
+            ("RANKX('Facts', 8 / 2, , DESC, Dense)",
+             "RANKX('Facts', DIVIDE(8, 2), , DESC, Dense)"),
+            ("IF(TRUE(), 8 / 2, )", "IF(TRUE(), DIVIDE(8, 2), )"),
+            ("DIVIDE(8 / 2, 0)", "DIVIDE(DIVIDE(8, 2), 0)"),
+            ("IF(TRUE(), , 8 / 2)", "IF(TRUE(), , DIVIDE(8, 2))"),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(self.rewrite(source), expected)
+
+    def test_public_conversion_keeps_blank_result_and_nullif_strict_equality(self):
+        self.assertEqual(convert_tableau_formula_to_dax("8 / 0"), "DIVIDE(8, 0)")
+        self.assertEqual(convert_tableau_formula_to_dax("8 / NULL"), "DIVIDE(8, BLANK())")
+        self.assertEqual(
+            convert_tableau_formula_to_dax("8 / NULLIF(0, 0)"),
+            "DIVIDE(8, IF((0) == (0), BLANK(), (0)))")
+        self.assertEqual(
+            convert_tableau_formula_to_dax('8 / 2 // ignored / 0'),
+            "DIVIDE(8, 2)")
+
 
 class TestSimpleFunctionConversions(unittest.TestCase):
     """Test direct Tableau → DAX function name mappings."""
@@ -860,7 +1303,8 @@ class TestSpecialConverterFunctions(unittest.TestCase):
 
     def test_date_function(self):
         result = convert_tableau_formula_to_dax("DATE([DateStr])")
-        self.assertIn("DATE", result)
+        self.assertEqual(
+            result, "CONVERT(INT(CONVERT('Table'[DateStr], DATETIME)), DATETIME)")
 
 
 class TestTableCalcExpanded(unittest.TestCase):

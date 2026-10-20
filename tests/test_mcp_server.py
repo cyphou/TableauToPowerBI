@@ -85,6 +85,13 @@ class TestToolCatalogue(unittest.TestCase):
             self.assertEqual(tool["inputSchema"]["type"], "object")
             self.assertIn("required", tool["inputSchema"])
 
+    def test_migrate_requires_source_directory(self):
+        migrate_tool = next(
+            tool for tool in _tool_catalogue() if tool["name"] == "migrate"
+        )
+        self.assertIn("directory", migrate_tool["inputSchema"]["required"])
+        self.assertNotIn("file", migrate_tool["inputSchema"]["properties"])
+
     def test_every_tool_has_handler(self):
         tools = MigrationTools()
         for tool in _tool_catalogue():
@@ -131,10 +138,9 @@ class TestToolsCall(unittest.TestCase):
         self.assertTrue(resp["result"]["isError"])
         self.assertFalse(payload["ok"])
 
-    def test_migrate_bad_format(self):
-        # Bad format is caught before extraction, so a nonexistent file with a
-        # valid extension still fails on the file check first.
-        resp, payload = self._call("migrate", {"file": "x.twbx", "output_format": "xml"})
+    def test_migrate_missing_directory_is_error(self):
+        resp, payload = self._call("migrate", {"directory": "no-such-source-directory"})
+        self.assertTrue(resp["result"]["isError"])
         self.assertFalse(payload["ok"])
 
     def test_qa_bad_dir(self):

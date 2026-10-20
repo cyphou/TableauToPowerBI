@@ -765,6 +765,7 @@ class TestConditionalFormatting(unittest.TestCase):
                 'color': {
                     'field': 'Revenue',
                     'palette': 'blue-teal',
+                    'type': 'quantitative',
                     'palette_colors': ['#0000FF', '#00FFFF']
                 }
             },
@@ -790,6 +791,7 @@ class TestConditionalFormatting(unittest.TestCase):
                 'color': {
                     'field': 'Revenue',
                     'palette': 'traffic',
+                    'type': 'quantitative',
                     'palette_colors': ['#FF0000', '#FFFF00', '#00FF00']
                 }
             },

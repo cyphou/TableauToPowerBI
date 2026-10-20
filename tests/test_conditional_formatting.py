@@ -169,13 +169,13 @@ class TestCategoricalColor(unittest.TestCase):
         vg._apply_visual_decorations(ws, 'bar', 'clusteredBarChart', 'S1', {}, visual_obj)
         return visual_obj
 
-    def test_categorical_colors(self):
+    def test_categorical_palette_without_bound_values_is_not_sentiment_or_global_fill(self):
         obj = self._decorate({
             'type': 'categorical',
             'palette_colors': ['#FF0000', '#0000FF'],
         })
-        sent = obj.get('objects', {}).get('sentimentColors', [])
-        self.assertTrue(len(sent) > 0)
+        self.assertNotIn('sentimentColors', obj.get('objects', {}))
+        self.assertNotIn('dataPoint', obj.get('objects', {}))
 
     def test_empty_categorical_no_sentiment(self):
         obj = self._decorate({

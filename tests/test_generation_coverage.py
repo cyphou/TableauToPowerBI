@@ -351,11 +351,55 @@ class TestDaxToMTopLevelBinops(unittest.TestCase):
         )
         self.assertIsNone(result)
 
-    def test_datevalue_to_date_from(self):
-        """DATEVALUE(text) → Date.From(text)."""
+    def test_datevalue_retains_dax_locale_semantics(self):
         result = _dax_to_m_expression('DATEVALUE("2025-01-15")')
-        self.assertIsNotNone(result)
-        self.assertIn("Date.From", result)
+        self.assertIsNone(result)
+        self.assertIsNone(_dax_to_m_expression('DATEVALUE(RIGHT([Lot], 4))'))
+
+
+class TestRuntimeRowConversionRegressions(unittest.TestCase):
+    def test_combined_group_uses_dax_for_dax_only_row_fields(self):
+        from powerbi_import.tmdl_sets import _process_sets_groups_bins
+        original = 'let Source = Input in Source'
+        table = {
+            "name": "Facts",
+            "columns": [
+                {"name": "Category", "sourceColumn": "Category"},
+                {"name": "DAX Only", "expression": "1", "isCalculated": True},
+            ],
+            "partitions": [{"source": {"type": "m", "expression": original}}],
+        }
+        model = {"model": {"tables": [table]}}
+        _process_sets_groups_bins(model, {"groups": [{
+            "name": "Combined", "group_type": "combined",
+            "source_fields": ["Category", "DAX Only"],
+        }]}, "Facts", {"Category": "Facts", "DAX Only": "Facts"})
+        group = next(c for c in table["columns"] if c["name"] == "Combined")
+        self.assertEqual(group["expression"],
+                         "'Facts'[Category] & \" | \" & 'Facts'[DAX Only]")
+        self.assertEqual(table["partitions"][0]["source"]["expression"], original)
+
+    def test_datetime_column_converts_date_values_at_injection_boundary(self):
+        from powerbi_import.tmdl_m_conversion import _inject_m_steps_into_partition
+        table = {"partitions": [{"source": {
+            "type": "m", "expression": "let\n    Source = Input\nin\n    Source",
+        }}]}
+        _inject_m_steps_into_partition(table, [
+            ("Added Date", 'Table.AddColumn({prev}, "Date", each #date([Year], [Month], 1), type datetime)'),
+        ])
+        expression = table["partitions"][0]["source"]["expression"]
+        self.assertIn('each DateTime.From(#date([Year], [Month], 1)), type datetime',
+                      expression)
+        self.assertNotIn("otherwise", expression)
+
+    def test_row_dependencies_do_not_accept_measure_fields(self):
+        from powerbi_import.tmdl_generator import _m_row_dependencies_available
+        self.assertFalse(_m_row_dependencies_available(
+            'Text.From([Date]) & Text.From([Objective])', {"Date"}))
+        self.assertTrue(_m_row_dependencies_available(
+            'Text.From([Date]) & "[Objective]"', {"Date"}))
+        self.assertTrue(_m_row_dependencies_available(
+            'Text.From([#"Quoted ""Name"])', {'Quoted "Name'}))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -623,9 +667,11 @@ class TestValidatorDaxFormula(unittest.TestCase):
         errors = ArtifactValidator.validate_dax_formula("IFNULL([Sales], 0)")
         self.assertTrue(len(errors) > 0)
 
-    def test_tableau_leakage_double_equals(self):
-        errors = ArtifactValidator.validate_dax_formula("[Status] == 'Active'")
-        self.assertTrue(len(errors) > 0)
+    def test_valid_dax_strict_equality(self):
+        # DAX supports == (strict equality); string literals use double quotes.
+        for formula in ('[Status] == "Active"', '[Amount] == BLANK()'):
+            with self.subTest(formula=formula):
+                self.assertEqual(ArtifactValidator.validate_dax_formula(formula), [])
 
     def test_tableau_leakage_elseif(self):
         errors = ArtifactValidator.validate_dax_formula("IF [A] > 1 THEN 'X' ELSEIF [A] > 0 THEN 'Y' END")

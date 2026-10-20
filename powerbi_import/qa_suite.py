@@ -27,6 +27,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    from powerbi_import.report_localization import text
+except ImportError:
+    from report_localization import text
+
 # Tableau run-separator sentinels and the non-breaking space that occasionally
 # leak into text runs when rich-text parsing mishandles paragraph boundaries.
 # A bare occurrence of any of these in a textRun value is a defect.
@@ -658,26 +663,29 @@ def generate_qa_html(report: QAReport, output_path: str) -> str:
     overall = "PASS" if report.passed else "FAIL"
     parts: List[str] = [
         html_open(
-            title="Migration QA Report Card",
-            subtitle=f"{report.workbook} — {report.pass_count}/{report.total} checks passed",
+            title=text("Migration QA Report Card", "Rapport de contrôle qualité de migration"),
+            subtitle=text(
+                f"{report.workbook} — {report.pass_count}/{report.total} checks passed",
+                f"{report.workbook} — {report.pass_count}/{report.total} vérifications réussies",
+            ),
             version=tool_version,
         )
     ]
 
     # Stat cards
     cards = [
-        stat_card(report.pass_count, "Checks passed", accent="success"),
-        stat_card(report.fail_count, "Checks failed",
+        stat_card(report.pass_count, text("Checks passed", "Vérifications réussies"), accent="success"),
+        stat_card(report.fail_count, text("Checks failed", "Vérifications échouées"),
                   accent="fail" if report.fail_count else "success"),
-        stat_card(report.skip_count, "Checks skipped", accent="blue"),
-        stat_card(overall, "Overall", accent="success" if report.passed else "fail"),
+        stat_card(report.skip_count, text("Checks skipped", "Vérifications ignorées"), accent="blue"),
+        stat_card(overall, text("Overall", "Résultat global"), accent="success" if report.passed else "fail"),
     ]
     if report.fidelity is not None:
-        cards.append(stat_card(f"{report.fidelity:.1f}%", "Fidelity", accent="purple"))
+        cards.append(stat_card(f"{report.fidelity:.1f}%", text("Fidelity", "Fidélité"), accent="purple"))
     parts.append(stat_grid(cards))
 
     # Checks section
-    parts.append(section_open("qa-checks", "QA Checks", icon="&#9989;"))
+    parts.append(section_open("qa-checks", text("QA Checks", "Vérifications QA"), icon="&#9989;"))
     rows: List[List[str]] = []
     for chk in report.checks:
         ev = "<br>".join(esc(e) for e in chk.evidence[:_MAX_EVIDENCE]) or "&mdash;"
@@ -690,7 +698,9 @@ def generate_qa_html(report: QAReport, output_path: str) -> str:
         ])
     parts.append(
         data_table(
-            headers=["Status", "Check", "Severity", "Summary", "Evidence"],
+            headers=[text("Status", "État"), text("Check", "Vérification"),
+                     text("Severity", "Gravité"), text("Summary", "Résumé"),
+                     text("Evidence", "Preuves")],
             rows=rows,
             table_id="qa-check-table",
             sortable=True,
@@ -700,7 +710,8 @@ def generate_qa_html(report: QAReport, output_path: str) -> str:
 
     # Counts section
     if report.tableau_counts or report.pbi_counts:
-        parts.append(section_open("qa-counts", "Tableau &#8594; Power BI Counts",
+        parts.append(section_open("qa-counts", text("Tableau &#8594; Power BI Counts",
+                                  "Comptages Tableau &#8594; Power BI"),
                                   icon="&#128202;"))
         keys = sorted(set(report.tableau_counts) | {
             "worksheets", "dashboards", "filters", "parameters",
@@ -720,7 +731,8 @@ def generate_qa_html(report: QAReport, output_path: str) -> str:
             ])
         parts.append(
             data_table(
-                headers=["Object", "Tableau", "Power BI"],
+                headers=[text("Object", "Objet"), text("Tableau", "Tableau"),
+                         text("Power BI", "Power BI")],
                 rows=count_rows,
                 table_id="qa-count-table",
             )

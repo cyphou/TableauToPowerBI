@@ -4,7 +4,7 @@ Sprint 110: Lightweight HTTP wrapper around the migration pipeline.
 Sprint 176: API v2 — OpenAPI spec, pagination, webhooks, API key auth, batch.
 
 Endpoints:
-    POST /migrate          Upload .twb/.twbx/.tds/.tdsx → returns job ID
+    POST /migrate          Retired (HTTP 410); use /migrate/batch
     POST /migrate/batch    Upload multiple files as ZIP → returns batch ID
     GET  /status/{id}      Check migration job status
     GET  /download/{id}    Download generated .pbip project as ZIP
@@ -31,6 +31,8 @@ import logging
 import os
 import re
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -76,6 +78,122 @@ _batch_lock = threading.Lock()
 _WEBHOOK_SECRET: str | None = None
 
 
+def _confined_path(path, root):
+    """Resolve a server-owned path, rejecting escapes and all reparse points."""
+    from migrate import _confine_upload_path
+    return _confine_upload_path(path, root)
+
+
+def _uploaded_filename(name):
+    """Use a portable non-special basename, never a client-supplied path."""
+    import ntpath
+    if not isinstance(name, str) or '\0' in name:
+        raise ValueError("Invalid uploaded filename")
+    filename = ntpath.basename(name)
+    stem, extension = os.path.splitext(filename)
+    if extension.lower() not in ('.twb', '.twbx', '.tds', '.tdsx'):
+        raise ValueError("Unsupported uploaded filename")
+    stem = re.sub(r'[^A-Za-z0-9_-]', '_', stem)[:100] or 'upload'
+    if stem.upper() in {'CON', 'PRN', 'AUX', 'NUL', 'CLOCK$',
+                        *('COM' + str(i) for i in range(10)),
+                        *('LPT' + str(i) for i in range(10))}:
+        stem = 'upload_' + stem
+    return stem + extension.lower()
+
+
+def _write_output_archive(source_dir, destination, job_dir):
+    """Archive only regular files inside the recorded private job."""
+    source_dir = _confined_path(source_dir, job_dir)
+    if isinstance(destination, (str, bytes, os.PathLike)):
+        destination = _confined_path(destination, job_dir)
+    if not os.path.isdir(source_dir):
+        raise ValueError("Output directory not found")
+
+    def walk_error(error):
+        raise error
+
+    with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for current, dirs, files in os.walk(source_dir, onerror=walk_error):
+            _confined_path(current, source_dir)
+            for name in dirs + files:
+                _confined_path(os.path.join(current, name), source_dir)
+            for name in files:
+                full = _confined_path(os.path.join(current, name), source_dir)
+                _confined_path(full, job_dir)
+                if not stat.S_ISREG(os.stat(full, follow_symlinks=False).st_mode):
+                    raise ValueError("Only regular output files may be downloaded")
+                archive.write(full, os.path.relpath(full, source_dir))
+
+
+def _run_upload_worker(input_path, upload_root, output_dir, options=None,
+                       assess=False):
+    """Run the batch-only CLI in a private process, preserving REST options."""
+    options = options or {}
+    input_path = _confined_path(input_path, upload_root)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    source_dir = input_path if os.path.isdir(input_path) else os.path.dirname(input_path)
+    source_args = [input_path] if assess and os.path.isfile(input_path) else ['--batch', source_dir]
+    command = [sys.executable, os.path.join(root, 'migrate.py'),
+               *source_args, '--output-dir', output_dir]
+    mode = options.get('model_mode', options.get('mode', 'import'))
+    if mode not in ('import', 'directquery', 'composite'):
+        raise ValueError("model_mode must be import, directquery, or composite")
+    command.extend(['--mode', mode])
+    for option, flag in (
+        ('calendar_start', '--calendar-start'), ('calendar_end', '--calendar-end'),
+        ('culture', '--culture'), ('output_format', '--output-format'),
+        ('time_intelligence', '--time-intelligence'),
+    ):
+        if options.get(option) is not None:
+            command.extend([flag, str(options[option])])
+    if options.get('optimize_dax'):
+        command.append('--optimize-dax')
+    if assess:
+        command.append('--assess')
+    env = os.environ.copy()
+    env['TTPBI_UPLOAD_ROOT'] = os.path.realpath(upload_root)
+    env['PYTHONIOENCODING'] = 'utf-8'
+    with tempfile.TemporaryDirectory(prefix='extraction_', dir=output_dir) as extraction:
+        env['TTPBI_EXTRACT_DIR'] = extraction
+        completed = subprocess.run(
+            command, cwd=root, env=env, capture_output=True, text=True,
+            encoding='utf-8', errors='replace', check=False, timeout=3600,
+        )
+    if completed.returncode:
+        detail = (completed.stderr + '\n' + completed.stdout)[-4000:].strip()
+        raise RuntimeError(
+            f"Confined upload migration failed (exit {completed.returncode}): {detail}")
+    return completed
+
+
+def _migration_options(params):
+    """Validate REST options before allocating any upload or job."""
+    unknown = set(params) - {'calendar_start', 'calendar_end', 'culture',
+                             'model_mode', 'webhook_url'}
+    if unknown:
+        raise ValueError('Unsupported migration option(s): ' + ', '.join(sorted(unknown)))
+    options = {}
+    for key in ('calendar_start', 'calendar_end'):
+        value = _int_param(params, key)
+        if key in params and (value is None or not 1900 <= value <= 2100):
+            raise ValueError(f'{key} must be between 1900 and 2100')
+        options[key] = value
+    culture = params.get('culture', [None])[0]
+    if culture and not re.fullmatch(r'[a-zA-Z]{2}(-[a-zA-Z]{2,4})?', culture):
+        raise ValueError('Invalid culture format (expected e.g. en-US)')
+    options['culture'] = culture
+    mode = params.get('model_mode', ['import'])[0]
+    if mode not in ('import', 'directquery', 'composite'):
+        raise ValueError('model_mode must be import, directquery, or composite')
+    options['model_mode'] = mode
+    webhook_url = params.get('webhook_url', [None])[0]
+    if webhook_url:
+        if not webhook_url.startswith(('http://', 'https://')):
+            raise ValueError('webhook_url must start with http:// or https://')
+        options['webhook_url'] = webhook_url
+    return options
+
+
 def _purge_stale_jobs():
     """Remove completed/failed jobs older than JOB_TTL_SECONDS."""
     cutoff = time.time() - JOB_TTL_SECONDS
@@ -83,9 +201,9 @@ def _purge_stale_jobs():
              if j['status'] in ('completed', 'failed') and j['created'] < cutoff]
     for jid in stale:
         job = _jobs.pop(jid)
-        output_dir = job.get('output_dir')
-        if output_dir and os.path.isdir(output_dir):
-            shutil.rmtree(output_dir, ignore_errors=True)
+        for directory in (job.get('job_dir'), job.get('upload_root')):
+            if directory and os.path.isdir(directory):
+                shutil.rmtree(directory, ignore_errors=True)
 
 
 def _check_rate_limit(client_ip):
@@ -104,7 +222,7 @@ def _check_rate_limit(client_ip):
         return True
 
 
-def _new_job(input_path):
+def _new_job(input_path, upload_root=None):
     job_id = uuid.uuid4().hex[:12]
     with _lock:
         _purge_stale_jobs()
@@ -112,6 +230,8 @@ def _new_job(input_path):
             'status': 'queued',
             'created': time.time(),
             'input_path': input_path,
+            'upload_root': upload_root,
+            'job_dir': None,
             'output_dir': None,
             'error': None,
             'stats': None,
@@ -138,35 +258,18 @@ def _run_migration(job_id, input_path, options=None):
     _update_job(job_id, status='running')
 
     try:
-        output_dir = tempfile.mkdtemp(prefix=f'pbi_api_{job_id}_')
-        _update_job(job_id, output_dir=output_dir)
-
-        # Import migration modules
-        from tableau_export.extract_tableau_data import TableauExtractor
-        from powerbi_import.import_to_powerbi import PowerBIImporter
-
-        # Step 1: Extract
-        extraction_dir = os.path.join(output_dir, 'tableau_export')
-        extractor = TableauExtractor(input_path, output_dir=extraction_dir)
-        extractor.extract_all()
-
-        # Step 2: Generate
+        job = _get_job(job_id)
+        if not job or not job.get('upload_root'):
+            raise ValueError("Missing server-owned private upload directory")
+        upload_root = job['upload_root']
+        job_dir = os.path.realpath(tempfile.mkdtemp(prefix=f'pbi_api_{job_id}_'))
+        output_dir = os.path.join(job_dir, 'output')
+        os.mkdir(output_dir)
+        _update_job(job_id, job_dir=job_dir, output_dir=output_dir)
+        _run_upload_worker(input_path, upload_root, output_dir, options)
+        if not os.listdir(output_dir):
+            raise RuntimeError("Migration produced no output artifacts")
         report_name = os.path.splitext(os.path.basename(input_path))[0]
-        src_dir = os.path.dirname(os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', 'tableau_export')
-        ))
-        importer = PowerBIImporter(os.path.join(src_dir, 'tableau_export'))
-
-        converted = importer._load_converted_objects()
-        importer.generate_powerbi_project(
-            report_name=report_name,
-            converted_objects=converted,
-            output_dir=output_dir,
-            calendar_start=options.get('calendar_start'),
-            calendar_end=options.get('calendar_end'),
-            culture=options.get('culture'),
-            model_mode=options.get('model_mode', 'import'),
-        )
 
         _update_job(job_id, status='completed', stats={
             'report_name': report_name,
@@ -177,12 +280,9 @@ def _run_migration(job_id, input_path, options=None):
         logger.exception("Migration failed for job %s", job_id)
         _update_job(job_id, status='failed', error=str(exc))
     finally:
-        # Clean up the uploaded temp file
-        try:
-            if input_path and os.path.isfile(input_path):
-                os.unlink(input_path)
-        except OSError:
-            pass
+        job = _get_job(job_id)
+        if job and job.get('upload_root'):
+            shutil.rmtree(job['upload_root'], ignore_errors=True)
 
     # Sprint 176: Fire webhook if configured
     webhook_url = (options or {}).get('webhook_url')
@@ -224,6 +324,10 @@ def _fire_webhook(job_id: str, url: str) -> None:
             if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
                 raise ValueError('webhook destination resolves to a private/reserved address')
         import urllib.request
+        class NoWebhookRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                raise ValueError("Webhook redirects are not allowed")
+
         req = urllib.request.Request(
             url, data=payload,
             headers={
@@ -233,7 +337,8 @@ def _fire_webhook(job_id: str, url: str) -> None:
             },
             method='POST',
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        opener = urllib.request.build_opener(NoWebhookRedirect())
+        with opener.open(req, timeout=10) as resp:
             logger.info("Webhook delivered to %s — HTTP %s", url, resp.status)
     except Exception as exc:
         logger.warning("Webhook delivery to %s failed: %s", url, exc)
@@ -277,33 +382,12 @@ def _build_openapi_spec() -> dict:
             },
             '/migrate': {
                 'post': {
-                    'summary': 'Submit a migration job',
-                    'description': 'Upload a .twb/.twbx file via multipart/form-data or JSON body.',
-                    'parameters': [
-                        {'name': 'webhook_url', 'in': 'query', 'schema': {'type': 'string'},
-                         'description': 'URL to POST job result on completion'},
-                    ],
-                    'requestBody': {
-                        'content': {
-                            'multipart/form-data': {
-                                'schema': {
-                                    'type': 'object',
-                                    'properties': {
-                                        'file': {'type': 'string', 'format': 'binary'},
-                                        'calendar_start': {'type': 'integer'},
-                                        'calendar_end': {'type': 'integer'},
-                                        'culture': {'type': 'string'},
-                                    },
-                                },
-                            },
-                        },
-                    },
+                    'summary': 'Retired single-file migration endpoint',
+                    'description': 'Single-file generation has been retired. Use POST /migrate/batch with a ZIP containing one or more Tableau files.',
+                    'deprecated': True,
                     'responses': {
-                        '200': {'description': 'Job created'},
-                        '400': {'description': 'Bad request'},
+                        '410': {'description': 'Gone — use POST /migrate/batch with a ZIP of Tableau files'},
                         '401': {'description': 'Unauthorized'},
-                        '413': {'description': 'File too large'},
-                        '429': {'description': 'Rate limited'},
                     },
                 },
             },
@@ -323,7 +407,7 @@ def _build_openapi_spec() -> dict:
                         },
                     },
                     'responses': {
-                        '200': {'description': 'Batch created'},
+                        '202': {'description': 'Batch created'},
                         '400': {'description': 'No valid workbooks in ZIP'},
                         '401': {'description': 'Unauthorized'},
                     },
@@ -506,20 +590,15 @@ class MigrationHandler(BaseHTTPRequestHandler):
                 self._send_error(500, 'Output directory not found')
                 return
 
-            # Validate output directory is under temp
-            abs_out = os.path.abspath(output_dir)
-            if not abs_out.startswith(os.path.abspath(tempfile.gettempdir()) + os.sep):
-                self._send_error(400, 'Invalid output directory')
+            # Recheck real paths at the final download boundary, too.
+            try:
+                buf = io.BytesIO()
+                if not job.get('job_dir'):
+                    raise ValueError("Missing recorded private job directory")
+                _write_output_archive(output_dir, buf, job['job_dir'])
+            except (ValueError, OSError) as exc:
+                self._send_error(400, f'Unsafe download output: {exc}')
                 return
-
-            # Create ZIP from output directory
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for root, _dirs, files in os.walk(output_dir):
-                    for fname in files:
-                        full = os.path.join(root, fname)
-                        arcname = os.path.relpath(full, output_dir)
-                        zf.write(full, arcname)
             zip_bytes = buf.getvalue()
 
             self.send_response(200)
@@ -606,135 +685,27 @@ class MigrationHandler(BaseHTTPRequestHandler):
             self._send_error(401, 'Unauthorized — provide Authorization: Bearer <api-key>')
             return
 
-        # POST /migrate
+        # Retired endpoint: authenticate above, but never create a job or file.
         if path == '/migrate':
-            content_length = int(self.headers.get('Content-Length', 0))
-            if content_length > MAX_UPLOAD_SIZE:
-                self._send_error(413, 'File too large (max 500 MB)')
-                return
-            if content_length == 0:
-                self._send_error(400, 'No file uploaded')
-                return
-
-            # Read uploaded file
-            body = self.rfile.read(content_length)
-
-            # Parse multipart or raw file upload
-            content_type = self.headers.get('Content-Type', '')
-            filename = 'upload.twbx'
-            file_data = body
-
-            if 'multipart/form-data' in content_type:
-                # Parse multipart boundary
-                parts = content_type.split('boundary=')
-                if len(parts) < 2:
-                    self._send_error(400, 'Invalid multipart boundary')
-                    return
-                boundary = parts[1].strip().encode()
-                parsed = _parse_multipart(body, boundary)
-                if not parsed:
-                    self._send_error(400, 'No file found in multipart data')
-                    return
-                filename, file_data = parsed
-            elif 'application/json' in content_type:
-                # JSON body with base64-encoded file
-                try:
-                    import base64
-                    payload = json.loads(body)
-                    filename = payload.get('filename', 'upload.twbx')
-                    file_data = base64.b64decode(payload['file'])
-                except (json.JSONDecodeError, KeyError, Exception) as exc:
-                    self._send_error(400, f'Invalid JSON payload: {exc}')
-                    return
-
-            # Validate extension
-            ext = os.path.splitext(filename)[1].lower()
-            if ext not in ('.twb', '.twbx', '.tds', '.tdsx'):
-                self._send_error(400,
-                    f'Unsupported file type: {ext}. Use .twb, .twbx, .tds, or .tdsx')
-                return
-
-            # Save to temp file
-            tmp = tempfile.NamedTemporaryFile(
-                suffix=ext, prefix='migration_', delete=False
+            self._drain_request_body()
+            self._send_error(
+                410,
+                'Single-file project generation has been retired. '
+                'Use POST /migrate/batch with a ZIP containing one or more '
+                'Tableau files (.twb/.twbx/.tds/.tdsx).',
             )
-            tmp.write(file_data)
-            tmp.close()
-
-            # Parse migration options from query string
-            parsed_url = urlparse(self.path)
-            params = parse_qs(parsed_url.query)
-            calendar_start = _int_param(params, 'calendar_start')
-            calendar_end = _int_param(params, 'calendar_end')
-            if calendar_start is not None and not (1900 <= calendar_start <= 2100):
-                self._send_error(400, 'calendar_start must be between 1900 and 2100')
-                os.unlink(tmp.name)
-                return
-            if calendar_end is not None and not (1900 <= calendar_end <= 2100):
-                self._send_error(400, 'calendar_end must be between 1900 and 2100')
-                os.unlink(tmp.name)
-                return
-            culture = params.get('culture', [None])[0]
-            if culture and not re.match(r'^[a-zA-Z]{2}(-[a-zA-Z]{2,4})?$', culture):
-                self._send_error(400, 'Invalid culture format (expected e.g. en-US)')
-                os.unlink(tmp.name)
-                return
-            model_mode = params.get('model_mode', ['import'])[0]
-            if model_mode not in ('import', 'directquery', 'composite'):
-                self._send_error(400, 'model_mode must be import, directquery, or composite')
-                os.unlink(tmp.name)
-                return
-            options = {
-                'calendar_start': calendar_start,
-                'calendar_end': calendar_end,
-                'culture': culture,
-                'model_mode': model_mode,
-            }
-
-            # Sprint 176: Webhook URL for completion notification
-            webhook_url = params.get('webhook_url', [None])[0]
-            if webhook_url:
-                # Basic URL validation
-                if not webhook_url.startswith(('http://', 'https://')):
-                    self._send_error(400, 'webhook_url must start with http:// or https://')
-                    os.unlink(tmp.name)
-                    return
-                options['webhook_url'] = webhook_url
-
-            # Rate limiting
-            client_ip = self.client_address[0] if self.client_address else 'unknown'
-            if not _check_rate_limit(client_ip):
-                self._send_error(429, 'Too many requests. Please try again later.')
-                os.unlink(tmp.name)
-                return
-
-            # Check concurrent job limit
-            with _lock:
-                active = sum(1 for j in _jobs.values() if j['status'] in ('queued', 'running'))
-            if active >= MAX_CONCURRENT_JOBS:
-                self._send_error(429, f'Server busy ({active} active jobs). Try again later.')
-                os.unlink(tmp.name)
-                return
-
-            # Create job and start migration
-            job_id = _new_job(tmp.name)
-            thread = threading.Thread(
-                target=_run_migration,
-                args=(job_id, tmp.name, options),
-                daemon=True,
-            )
-            thread.start()
-
-            self._send_json({
-                'job_id': job_id,
-                'status': 'queued',
-                'filename': filename,
-            }, status=202)
             return
 
         # POST /migrate/batch — Sprint 176
         if path == '/migrate/batch':
-            content_length = int(self.headers.get('Content-Length', 0))
+            try:
+                batch_options = _migration_options(self._get_query_params())
+                content_length = int(self.headers.get('Content-Length', 0))
+                if content_length < 0:
+                    raise ValueError('Invalid Content-Length')
+            except (TypeError, ValueError) as exc:
+                self._send_error(400, str(exc))
+                return
             if content_length > MAX_UPLOAD_SIZE:
                 self._send_error(413, 'File too large (max 500 MB)')
                 return
@@ -774,6 +745,11 @@ class MigrationHandler(BaseHTTPRequestHandler):
                 and not n.startswith('__MACOSX')
                 and not os.path.basename(n).startswith('.')
             ]
+            if any(stat.S_ISLNK(zf.getinfo(name).external_attr >> 16)
+                   for name in workbook_names):
+                self._send_error(400, 'Symlink workbook entries are not allowed')
+                zf.close()
+                return
             if not workbook_names:
                 self._send_error(400, 'No valid workbooks (.twb/.twbx) found in ZIP')
                 zf.close()
@@ -802,11 +778,6 @@ class MigrationHandler(BaseHTTPRequestHandler):
                 zf.close()
                 return
 
-            # Parse options from query string
-            parsed_url = urlparse(self.path)
-            params = parse_qs(parsed_url.query)
-            webhook_url = params.get('webhook_url', [None])[0]
-
             # Create batch
             batch_id = uuid.uuid4().hex[:12]
             job_ids = []
@@ -817,24 +788,29 @@ class MigrationHandler(BaseHTTPRequestHandler):
                 }
 
             for wb_name in workbook_names:
-                ext = os.path.splitext(wb_name)[1].lower()
-                tmp = tempfile.NamedTemporaryFile(
-                    suffix=ext, prefix='batch_', delete=False
-                )
-                with zf.open(wb_name) as source:
-                    shutil.copyfileobj(source, tmp)
-                tmp.close()
+                upload_root = os.path.realpath(tempfile.mkdtemp(prefix='pbi_upload_'))
+                try:
+                    filename = _uploaded_filename(wb_name)
+                    input_path = _confined_path(os.path.join(upload_root, filename),
+                                                upload_root)
+                    with zf.open(wb_name) as source, open(input_path, 'xb') as uploaded:
+                        shutil.copyfileobj(source, uploaded)
+                except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+                    shutil.rmtree(upload_root, ignore_errors=True)
+                    with _batch_lock:
+                        _batches[batch_id]['status'] = 'failed'
+                    zf.close()
+                    self._send_error(400, f'Unable to save batch workbook: {exc}')
+                    return
 
-                jid = _new_job(tmp.name)
+                jid = _new_job(input_path, upload_root=upload_root)
                 job_ids.append(jid)
                 with _batch_lock:
                     _batches[batch_id]['job_ids'].append(jid)
-                options = {'batch_id': batch_id}
-                if webhook_url:
-                    options['webhook_url'] = webhook_url
+                options = {**batch_options, 'batch_id': batch_id}
                 thread = threading.Thread(
                     target=_run_migration,
-                    args=(jid, tmp.name, options),
+                    args=(jid, input_path, options),
                     daemon=True,
                 )
                 thread.start()
@@ -925,7 +901,7 @@ def run_server(host='127.0.0.1', port=8000, api_key=None):
 
     server = HTTPServer((host, port), MigrationHandler)
     print(f"Migration API server running on http://{host}:{port}")
-    print(f"  POST /migrate          Upload .twb/.twbx/.tds/.tdsx for migration")
+    print(f"  POST /migrate          Retired (410); use /migrate/batch")
     print(f"  POST /migrate/batch    Upload ZIP of workbooks for batch migration")
     print(f"  GET  /status/{{id}}      Check job status")
     print(f"  GET  /download/{{id}}    Download result as ZIP")

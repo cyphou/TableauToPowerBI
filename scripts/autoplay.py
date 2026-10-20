@@ -11,8 +11,8 @@ Replaces the manual "Next steps" checklist printed after migration:
 Usage (standalone):
     python scripts/autoplay.py <pbip_dir> [--open] [--extract-dir DIR] [--json FILE]
 
-Usage (integrated — via migrate.py):
-    python migrate.py workbook.twbx --autoplay
+Batch generation is separate from this diagnostic; run it against each
+generated project after the batch completes.
 """
 
 import argparse

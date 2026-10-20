@@ -28,6 +28,11 @@ import re
 import shutil
 from datetime import datetime
 
+try:
+    from powerbi_import.report_localization import render, text
+except ImportError:
+    from report_localization import render, text
+
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -946,8 +951,8 @@ def generate_diff_report(report, output_path=None):
     new_label = os.path.basename(report.new_path) if report.new_path else 'Current'
 
     html = html_open(
-        title='Artifact Diff Report',
-        subtitle=f'{old_label} → {new_label}',
+        title=text('Artifact Diff Report', 'Rapport de différences d’artefacts'),
+        subtitle=text(f'{old_label} → {new_label}', f'{old_label} → {new_label}'),
         timestamp=ts,
         version='',
     )
@@ -956,8 +961,8 @@ def generate_diff_report(report, output_path=None):
     # ── Summary stats ──────────────────────────────────────
     if not report.has_changes:
         html += '<div class="no-changes"><div class="icon">✓</div>'
-        html += '<h2>No Differences Detected</h2>'
-        html += '<p>The two projects are identical.</p></div>\n'
+        html += f'<h2>{render(text("No Differences Detected", "Aucune différence détectée"))}</h2>'
+        html += f'<p>{render(text("The two projects are identical.", "Les deux projets sont identiques."))}</p></div>\n'
         html += html_close()
         if output_path:
             os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
@@ -970,16 +975,21 @@ def generate_diff_report(report, output_path=None):
     modified_count = len(report.modified)
 
     html += stat_grid([
-        stat_card(str(len(report.entries)), 'Total Changes', accent='blue'),
-        stat_card(str(added_count), 'Added', accent='success'),
-        stat_card(str(removed_count), 'Removed', accent='fail'),
-        stat_card(str(modified_count), 'Modified', accent='warn'),
+        stat_card(str(len(report.entries)), text('Total Changes', 'Modifications totales'), accent='blue'),
+        stat_card(str(added_count), text('Added', 'Ajoutés'), accent='success'),
+        stat_card(str(removed_count), text('Removed', 'Supprimés'), accent='fail'),
+        stat_card(str(modified_count), text('Modified', 'Modifiés'), accent='warn'),
     ])
 
     # ── Donut chart ────────────────────────────────────────
     if report.has_changes:
         _COLORS = ['#0078d4', '#107c10', '#d13438', '#ca5010',
                     '#881798', '#008272', '#005b70', '#7719aa', '#004e8c']
+        category_labels_fr = {
+            'table': 'Table', 'column': 'Colonne', 'measure': 'Mesure',
+            'relationship': 'Relation', 'page': 'Page', 'visual': 'Visuel',
+            'filter': 'Filtre', 'partition': 'Partition', 'role': 'Rôle',
+        }
         categories = []
         for cat in ('table', 'column', 'measure', 'relationship',
                     'page', 'visual', 'filter', 'partition', 'role'):
@@ -988,11 +998,15 @@ def generate_diff_report(report, output_path=None):
                 color = _COLORS[len(categories) % len(_COLORS)]
                 categories.append((cat.capitalize(), count, color))
         if categories:
-            html += '<h3 style="margin:1.5rem 0 0.5rem;">Changes by Category</h3>\n'
-            html += donut_chart(
+            html += f'<h3 style="margin:1.5rem 0 0.5rem;">{render(text("Changes by Category", "Modifications par catégorie"))}</h3>\n'
+            category_chart = donut_chart(
                 categories,
                 center_text=str(len(report.entries)),
             )
+            for en, fr in category_labels_fr.items():
+                category_chart = category_chart.replace(
+                    f'>{en.capitalize()}:', f'>{render(text(en.capitalize(), fr))}:')
+            html += category_chart
 
     # ── Per-category sections ──────────────────────────────
     category_icons = {
@@ -1000,7 +1014,6 @@ def generate_diff_report(report, output_path=None):
         'relationship': '🔗', 'page': '📄', 'visual': '👁️',
         'filter': '🔍', 'partition': '⚡', 'role': '🔒',
     }
-
     for cat in ('table', 'column', 'measure', 'relationship',
                 'page', 'visual', 'filter', 'partition', 'role'):
         items = report.by_category(cat)
@@ -1010,11 +1023,15 @@ def generate_diff_report(report, output_path=None):
         icon = category_icons.get(cat, '📦')
         html += section_open(
             f'section-{cat}',
-            f'{icon} {cat.capitalize()} Changes ({len(items)})',
+            text(
+                f'{icon} {cat.capitalize()} Changes ({len(items)})',
+                f'{icon} Modifications : {category_labels_fr.get(cat, cat.capitalize())} ({len(items)})',
+            ),
         )
 
         # Summary table
-        headers = ['Name', 'Change', 'Parent', 'Detail']
+        headers = [text('Name', 'Nom'), text('Change', 'Modification'),
+                   text('Parent', 'Parent'), text('Detail', 'Détail')]
         rows = []
         for e in items:
             change_badge = f'<span class="diff-badge {e.change_type}">{e.change_type.upper()}</span>'
@@ -1036,12 +1053,12 @@ def generate_diff_report(report, output_path=None):
         if cat == 'measure':
             modified_measures = [e for e in items if e.change_type == MODIFIED and (e.before or e.after)]
             if modified_measures:
-                html += '<h4 style="margin: 1.5rem 0 0.5rem;">Formula Changes</h4>\n'
+                html += f'<h4 style="margin: 1.5rem 0 0.5rem;">{render(text("Formula Changes", "Modifications de formule"))}</h4>\n'
                 for e in modified_measures:
                     html += f'<p style="font-weight:600; margin: 1rem 0 0.25rem;">{esc(e.parent)}.{esc(e.name)}</p>\n'
                     html += '<div class="diff-before-after">\n'
-                    html += f'<div class="panel before"><h5>Previous</h5><pre>{esc(e.before)}</pre></div>\n'
-                    html += f'<div class="panel after"><h5>Current</h5><pre>{esc(e.after)}</pre></div>\n'
+                    html += f'<div class="panel before"><h5>{render(text("Previous", "Précédent"))}</h5><pre>{esc(e.before)}</pre></div>\n'
+                    html += f'<div class="panel after"><h5>{render(text("Current", "Actuel"))}</h5><pre>{esc(e.after)}</pre></div>\n'
                     html += '</div>\n'
 
         html += section_close()

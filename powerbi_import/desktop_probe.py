@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import glob
 import json
+import ntpath
 import os
 import re
 import subprocess
@@ -85,6 +86,12 @@ DATA_LOAD_LIMITATION = (
     "action in Power BI Desktop."
 )
 
+REFRESH_LIMITATION = (
+    "Refresh completion was not verified in Power BI Desktop. Aggregate row "
+    "counts describe observed model data only and may reflect prior or partial "
+    "loads; they do not prove an error-free refresh."
+)
+
 _TMDL_TABLE_RE = re.compile(r"^table\s+(.+?)\s*$", re.MULTILINE)
 _TMDL_M_PARTITION_RE = re.compile(
     r"^\s*partition\s+.+?\s*=\s*m\s*$", re.MULTILINE)
@@ -93,6 +100,7 @@ _DATA_LOAD_KEYS = (
     "tables_failed", "total_rows",
 )
 _DESKTOP_PIDS_QUERY_FAILED = False
+_OPEN_PROBE_PROCESSES: dict[int, subprocess.Popen] = {}
 
 _ADOMD_VERIFY_SCRIPT = r'''
 $ErrorActionPreference = 'Stop'
@@ -280,6 +288,37 @@ def _scan_trace_errors(since: float) -> List[str]:
     return signals
 
 
+def _report_definition_launch_path(pbip_path: str) -> str:
+    """Resolve exactly one declared, project-contained report definition."""
+    with open(pbip_path, encoding="utf-8-sig") as handle:
+        manifest = json.load(handle)
+    artifacts = manifest.get("artifacts") if isinstance(manifest, dict) else None
+    if not isinstance(artifacts, list):
+        raise ValueError("PBIP artifacts must be a list containing one report")
+    reports = [item["report"] for item in artifacts
+               if isinstance(item, dict) and "report" in item]
+    if len(reports) != 1:
+        raise ValueError("PBIP must declare exactly one report artifact "
+                         "(missing or ambiguous report)")
+    path = reports[0].get("path") if isinstance(reports[0], dict) else None
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("PBIP report artifact path is missing or invalid")
+    # Check Windows syntax even when validation runs on a non-Windows host.
+    parts = path.replace("\\", "/").split("/")
+    if (ntpath.isabs(path) or ntpath.splitdrive(path)[0]
+            or ".." in parts or ":" in path or "\x00" in path):
+        raise ValueError("PBIP report artifact path must be project-relative "
+                         "without traversal")
+    root = os.path.realpath(os.path.dirname(os.path.abspath(pbip_path)))
+    definition = os.path.realpath(
+        os.path.join(root, *parts, "definition.pbir"))
+    if os.path.commonpath([root, definition]) != root:
+        raise ValueError("PBIP report definition escapes the project directory")
+    if not os.path.isfile(definition):
+        raise ValueError("PBIP report artifact has no existing definition.pbir")
+    return definition
+
+
 def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
                        close_after: bool = True,
                        screenshot_path: Optional[str] = None,
@@ -288,12 +327,18 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
                        desktop_path: Optional[str] = None,
                        refresh: bool = False,
                        refresh_timeout: int = 300,
-                       capture_unverified: bool = False) -> DesktopProbeReport:
+                       capture_unverified: bool = False,
+                       launch_report_definition: bool = False) -> DesktopProbeReport:
     """Launch Power BI Desktop against ``pbip_path`` and watch for load failure.
 
     With *wait_for_window* the probe waits for the document window to carry the
     report name and answer a message rather than sleeping for a fixed period,
     and *screenshot_path* captures what actually rendered.
+
+    *launch_report_definition* explicitly launches the single report artifact's
+    ``definition.pbir`` with the project working directory, instead of the PBIP.
+    This diagnostic mode does not verify PBIP launching; the report retains the
+    original PBIP identity and window-title expectation. No fallback is attempted.
 
     Best-effort: returns a DesktopProbeReport; never raises.
     """
@@ -306,6 +351,16 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
         report.status = "error"
         report.note = f".pbip not found: {pbip_path}"
         return report
+    launch_path = os.path.abspath(pbip_path)
+    if launch_report_definition:
+        try:
+            launch_path = _report_definition_launch_path(pbip_path)
+        except (OSError, ValueError, RecursionError) as exc:
+            report.note = f"invalid report-definition diagnostic launch: {exc}"
+            return report
+        report.warnings.append(
+            f"Diagnostic launch target: {launch_path} (definition.pbir), "
+            f"not {os.path.abspath(pbip_path)}. This does not verify PBIP launching.")
     exe = find_pbi_desktop(desktop_path)
     if not exe:
         report.status = "unavailable"
@@ -327,8 +382,13 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
             "close them for an unambiguous probe")
 
     start = time.time()
+    proc = None
     try:
-        proc = subprocess.Popen([exe, os.path.abspath(pbip_path)])
+        if launch_report_definition:
+            proc = subprocess.Popen(
+                [exe, launch_path], cwd=os.path.dirname(os.path.abspath(pbip_path)))
+        else:
+            proc = subprocess.Popen([exe, launch_path])
     except (OSError, ValueError) as exc:
         report.status = "error"
         report.note = f"failed to launch Desktop: {exc}"
@@ -355,7 +415,10 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
             report.status = "crashed"
         elif alive:
             report.status = "opened"
-            if report.data_load["status"] not in ("not_requested", "verified"):
+            if refresh and report.refresh["status"] != "verified":
+                report.note = REFRESH_LIMITATION
+            elif (not refresh and report.data_load["status"]
+                  not in ("not_requested", "verified")):
                 report.note = DATA_LOAD_LIMITATION
             else:
                 report.note = (WINDOW_LIMITATION if report.window_loaded
@@ -375,8 +438,29 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
                         proc.kill()
                 except OSError:
                     pass
+        elif proc is not None:
+            _OPEN_PROBE_PROCESSES[proc.pid] = proc
     report.duration_s = round(time.time() - start, 1)
     return report
+
+
+def close_probe_process(pid: int) -> dict:
+    """Close only a live process started by this probe."""
+    proc = _OPEN_PROBE_PROCESSES.pop(pid, None)
+    if proc is None:
+        return {"status": "not_owned", "note": "No probe-owned process is registered"}
+    try:
+        if proc.poll() is not None:
+            return {"status": "already_exited", "note": "Probe process already exited"}
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+        return {"status": "closed", "note": "Probe-owned process terminated"}
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"status": "error", "note": f"{type(exc).__name__}: {exc}"}
 
 
 def _watch_process(report, proc, start, deadline, settle_until) -> bool:
@@ -513,26 +597,36 @@ def _watch_window(report, proc, pbip_path, start, timeout,
     if refresh:
         report.refresh = refresh_report(window.hwnd, pbip_path, owner_pid,
                                         timeout=refresh_timeout)
-        if report.refresh["status"] == "verified":
-            report.data_load = report.refresh["data_load"]
+        report.data_load = report.refresh["data_load"]
         # A refresh failure surfaces as an owned popup; keep its picture.
         _capture_dialogs(report, screenshot_path, allowed_pids)
 
-    if verify_data and report.data_load["status"] != "verified":
+    if verify_data and not refresh and report.data_load["status"] != "verified":
         report.data_load = verify_desktop_data(pbip_path, owner_pid)
-        if report.data_load["status"] != "verified":
-            report.note = DATA_LOAD_LIMITATION
-            if not capture_unverified:
-                return False
     if verify_data:
         report.screenshot_data_verified = (
-            report.data_load["status"] == "verified")
+            report.refresh["status"] == "verified" if refresh
+            else report.data_load["status"] == "verified")
+        if not report.screenshot_data_verified:
+            report.note = (
+                REFRESH_LIMITATION if refresh
+                and report.refresh["status"] != "verified"
+                else DATA_LOAD_LIMITATION)
+            if not capture_unverified:
+                return False
 
     if screenshot_path:
         os.makedirs(os.path.dirname(os.path.abspath(screenshot_path)),
                     exist_ok=True)
         if refresh and report.refresh.get("clicks"):
             _wait_for_render(window.hwnd, screenshot_path)
+            # Rendering can take long enough for a late refresh failure to surface.
+            state = _refresh_ui_state(window.hwnd, owner_pid)
+            report.refresh.setdefault("ui_state", {})["after_render"] = state
+            if state not in {"clear", "completed"}:
+                report.refresh["status"] = state
+                report.screenshot_data_verified = False
+                report.note = REFRESH_LIMITATION
         report.screenshot = desktop_window.capture_window(
             window.hwnd, screenshot_path)
         if report.screenshot:
@@ -548,6 +642,7 @@ _SCHEMA_REFRESH_NAMES = ("Schema and data", "Sch\u00e9ma et donn\u00e9es")
 _APPLY_CHANGES_NAMES = ("Apply changes", "Appliquer les modifications")
 _PENDING_CHANGES_TEXT = (
     "There are pending changes in your queries that haven't been applied",
+    "There are pending changes in your queries that haven’t been applied",
     "Des modifications sont en attente dans vos requêtes",
 )
 
@@ -679,6 +774,117 @@ try {
 [Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
 '''
 
+# Read-only inspection: never invoke controls or inspect another process's UI.
+# Return only states, not source paths, query text or other UI contents.
+_UIA_REFRESH_STATE_SCRIPT = r'''
+$ErrorActionPreference = 'Stop'
+$request = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString(
+    [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())))
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$root = [Windows.Automation.AutomationElement]::FromHandle([IntPtr][long]$request.hwnd)
+if ($root.Current.ProcessId -ne [int]$request.owner_pid) { exit 1 }
+# WebView2 provides Desktop's refresh dialog from a child process. Anchor the
+# UI tree to the owned HWND, then admit only providers in its process tree.
+$processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+$providers = New-Object 'System.Collections.Generic.HashSet[int]'
+$pending = New-Object System.Collections.Queue
+$null = $providers.Add([int]$request.owner_pid)
+$pending.Enqueue([int]$request.owner_pid)
+while ($pending.Count -gt 0) {
+    $parent = [int]$pending.Dequeue()
+    foreach ($process in $processes) {
+        if ([int]$process.ParentProcessId -ne $parent) { continue }
+        $child = [int]$process.ProcessId
+        if ($providers.Add($child)) { $pending.Enqueue($child) }
+    }
+}
+$out = [ordered]@{ status = 'clear' }
+$completed = $false
+$elements = @($root) + @($root.FindAll(
+    [Windows.Automation.TreeScope]::Descendants,
+    [Windows.Automation.Condition]::TrueCondition))
+foreach ($e in $elements) {
+    if ($e.Current.ProcessId -ne [int]$request.owner_pid -and
+        -not $providers.Contains([int]$e.Current.ProcessId)) { continue }
+    if ($e.Current.IsOffscreen) { continue }
+    $r = $e.Current.BoundingRectangle
+    if ($r.Width -le 0 -or $r.Height -le 0) { continue }
+    $name = $e.Current.Name
+    if ($name -match $request.error_pattern) { $out.status = 'refresh_error'; break }
+    if ($name -match $request.completed_pattern) { $completed = $true }
+    if ($name -match $request.pending_pattern) {
+        $out.status = 'pending_changes'
+    } elseif ($out.status -eq 'clear' -and (
+        $name -match $request.busy_pattern -or
+        $e.Current.ControlType -eq [Windows.Automation.ControlType]::ProgressBar -or
+        ($request.refresh_dialog -and $e.Current.IsEnabled -and
+         $e.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
+         $name -match '^(Cancel|Annuler)$'))) {
+        $out.status = 'busy'
+    }
+    if ($out.status -eq 'clear' -and $completed) { $out.status = 'completed' }
+}
+[Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
+'''
+
+# Nonzero counts only: "0 errors" and benign no-data/incomplete banners are
+# not evidence of a failed refresh. Match summaries as well as individual rows.
+_REFRESH_ERROR_PATTERN = (
+    r"(?i)(?:contained errors|queries? (?:had|has|have) errors|"
+    r"(?<![\d.,])\d*[1-9]\d*\s+quer(?:y|ies)\s+(?:is|are)\s+"
+    r"blocked by the following errors?\b|"
+    r"(?<![\d.,])\d*[1-9]\d*\s+requêtes?\s+(?:est|sont)\s+"
+    r"bloquées?\s+par (?:les erreurs suivantes|l['’]erreur suivante)\b|"
+    r"requêtes?.*(?:contenaient|contenait|contiennent|contient|comportent|comporte"
+    r"|ont rencontré).*erreurs?|"
+    r"(?<![\d.,])\d*[1-9]\d*(?:[.,\s\u00a0\u202f]\d{3})*\s+"
+    r"(?:errors?|erreurs?)\b|"
+    r"(?:DataSource|Expression|DataFormat)\.Error\b|"
+    r"(?:OLE DB (?:or|ou) ODBC (?:error|erreur)|"
+    r"an error occurred while (?:loading|refreshing)|"
+    r"erreur (?:lors|au cours) (?:du|de l['’])\s*(?:chargement|actualisation))|"
+    r"(?:refresh|load|actualisation|chargement) (?:has failed|failed|a échoué)|"
+    r"(?:failed to load|échec (?:du|de l['’])\s*(?:chargement|actualisation)))"
+)
+_REFRESH_BUSY_PATTERN = (
+    r"(?i)^(?:(?:Loading|Refreshing|Evaluating|Connecting|Waiting for)"
+    r"(?:\b|[.…])|(?:Chargement|Actualisation|Évaluation|Connexion)"
+    r"(?:[.…]|$|\s+(?:en cours|des données))|En attente de\b)"
+)
+_REFRESH_COMPLETED_PATTERN = (
+    r"(?i)(?:\b\d[\d,.\s\u00a0\u202f]*\s+(?:rows? loaded|lignes? chargées?)\b|"
+    r"^(?:Refresh completed|Actualisation terminée)[.!]?$)"
+)
+
+
+def _refresh_ui_state(hwnd: int, owner_pid: Optional[int]) -> str:
+    """Inspect the report and only its process-owned visible popup windows."""
+    if not owner_pid:
+        return "unavailable"
+    roots = {int(hwnd): False}
+    for window in desktop_window.dialog_windows(owner_pid):
+        roots[window.hwnd] = window.title.strip().casefold() in {
+            "refresh", "actualiser", "actualisation",
+        }
+    states = []
+    for handle, refresh_dialog in roots.items():
+        observation = _run_uia(_UIA_REFRESH_STATE_SCRIPT, {
+            "hwnd": handle, "owner_pid": int(owner_pid),
+            "refresh_dialog": refresh_dialog,
+            "error_pattern": _REFRESH_ERROR_PATTERN,
+            "pending_pattern": "(?i)" + "|".join(
+                re.escape(text) for text in _PENDING_CHANGES_TEXT),
+            "busy_pattern": _REFRESH_BUSY_PATTERN,
+            "completed_pattern": _REFRESH_COMPLETED_PATTERN,
+        })
+        states.append(observation.get("status", "unavailable"))
+    for state in ("refresh_error", "pending_changes", "busy", "unavailable"):
+        if state in states:
+            return state
+    if all(state in {"clear", "completed"} for state in states):
+        return "completed" if "completed" in states else "clear"
+    return "unavailable"
+
 
 def _run_uia(script: str, payload: dict) -> dict:
     if not desktop_window.IS_WINDOWS:
@@ -748,14 +954,20 @@ def _wait_for_render(hwnd: int, screenshot_path: str, *, timeout: float = 60.0,
 
 def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
                    timeout: int = 300, poll: float = 10.0) -> dict:
-    """Press Desktop's Refresh, then wait until the model holds rows.
+    """Refresh, observing owned UI completion separately from aggregate rows.
 
-    Returns counters only; the data check is the completion signal because the
-    ribbon gives no reliable "refresh finished" state.
+    Counts may reflect a previous or partial load. They never override a visible
+    error, pending changes or busy UI. Empty tables are not refresh failures.
     """
     result = {"status": "not_found", "mode": "none", "clicks": 0,
               "waited_s": 0.0, "data_load": _data_load_result("unavailable")}
     started = time.time()
+    initial_state = _refresh_ui_state(hwnd, owner_pid)
+    result["ui_state"] = {"initial": initial_state, "observed_progress": False}
+    if initial_state == "refresh_error":
+        result["status"] = initial_state
+        result["waited_s"] = round(time.time() - started, 1)
+        return result
     for _attempt in range(3):
         result["clicks"] = _invoke_schema_refresh(hwnd)
         if result["clicks"]:
@@ -773,8 +985,16 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
     banner_done = False
     applied = False
     apply_attempted_at = None
+    observed_progress = False
     while time.time() - started < timeout:
         time.sleep(poll)
+        before = _refresh_ui_state(hwnd, owner_pid)
+        observed_progress = observed_progress or before == "busy"
+        result["ui_state"].update(
+            before=before, observed_progress=observed_progress)
+        if before == "refresh_error":
+            result["status"] = before
+            break
         if not applied:
             applied_clicks = _click_button(hwnd, _APPLY_CHANGES_NAMES)
             if not applied_clicks:
@@ -792,14 +1012,33 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
             if retry_clicks:
                 result["clicks"] += retry_clicks
                 apply_attempted_at = time.time()
-        if (apply_attempted_at and time.time() - apply_attempted_at >= 20
-            and (_button_present(hwnd, _APPLY_CHANGES_NAMES)
-                 or _text_present(hwnd, _PENDING_CHANGES_TEXT))):
-            result["status"] = "pending_changes"
-            break
         data = verify_desktop_data(pbip_path, owner_pid)
         result["data_load"] = data
-        if data["status"] == "verified":
+        after = _refresh_ui_state(hwnd, owner_pid)
+        observed_progress = observed_progress or after == "busy"
+        result["ui_state"].update(
+            after=after, observed_progress=observed_progress)
+        if after == "refresh_error":
+            result["status"] = after
+            break
+        result["status"] = (
+            "waiting" if after in {"clear", "completed"} else after)
+        if after == "unavailable":
+            break
+        counts_complete = (
+            data["status"] in {"verified", "partial", "empty"}
+            and data["tables_checked"] > 0
+            and data["tables_failed"] == 0
+            and data["tables_nonempty"] + data["tables_empty"]
+            == data["tables_checked"])
+        # Existing rows (including intentionally empty tables) say nothing
+        # about whether this request actually ran. Require a UI lifecycle or
+        # explicit load completion, not just the absence of a visible error.
+        if (before in {"clear", "completed"}
+                and after in {"clear", "completed"} and counts_complete
+                and (observed_progress or (
+                    initial_state not in {"completed", "unavailable"}
+                    and "completed" in {before, after}))):
             result["status"] = "verified"
             break
         if not banner_done and time.time() - started >= timeout / 3:

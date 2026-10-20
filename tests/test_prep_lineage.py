@@ -26,6 +26,9 @@ import csv
 import unittest
 import zipfile
 from unittest.mock import patch, MagicMock
+from tests.prep_flow_fixtures import (
+    clean_chain, source, output, operation, write_flow, join_flow,
+)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -1894,6 +1897,132 @@ class TestEdgeCases(unittest.TestCase):
         recs = compute_merge_recommendations(graph)
         actionable = [r for r in recs if r.score > 0]
         self.assertEqual(len(actionable), 0)
+
+
+class TestNormalizedPrepAnalysisReports81To83(unittest.TestCase):
+    """Analyzer inventories flattened children and never greens failed M."""
+
+    def analyze(self, flow, include_m_queries=True):
+        with tempfile.TemporaryDirectory() as directory:
+            return analyze_flow(write_flow(directory, flow), include_m_queries)
+
+    def assert_conversion_failure(self, profile):
+        self.assertTrue(profile.assessment['conversion_error'])
+        self.assertEqual(profile.assessment['grade'], 'RED')
+        self.assertEqual(profile.assessment['status'], 'error')
+        self.assertEqual(profile.m_queries, {})
+        self.assertGreaterEqual(profile.assessment['fail_count'], 1)
+        self.assertTrue(any(item['category'] == 'conversion' and item['status'] == 'fail'
+                            for item in profile.assessment['items']))
+
+    def test_analyzer_automatically_flattens_recursive_container(self):
+        profile = self.analyze(clean_chain(nested=True))
+        self.assertEqual(profile.node_count, 7)
+        self.assertEqual(profile.edge_count, 6)
+        self.assertEqual(profile.dag_depth, 6)  # Depth counts edges, not nodes.
+        self.assertEqual(len(profile.inputs), 1)
+        self.assertEqual(len(profile.outputs), 1)
+        self.assertEqual(len(profile.transforms), 5)
+        self.assertEqual(profile.outputs[0].name, 'PublishedSales')
+        self.assertEqual(set(profile.m_queries), {'PublishedSales'})
+        self.assertNotIn('conversion_error', profile.assessment)
+        query = profile.m_queries['PublishedSales']
+        for transform in ['RenameColumns', 'RemoveColumns', 'AddColumn',
+                          'TransformColumnTypes', 'SelectRows']:
+            self.assertIn('Table.' + transform, query)
+
+    def test_output_without_base_type_is_in_inventory(self):
+        for base_type in [False, True]:
+            with self.subTest(base_type=base_type):
+                profile = self.analyze({'nodes': {
+                    'input': source('out'), 'out': output(base_type=base_type),
+                }})
+                self.assertEqual(len(profile.outputs), 1)
+                self.assertEqual(profile.outputs[0].name, 'PublishedSales')
+                self.assertEqual(set(profile.m_queries), {'PublishedSales'})
+
+    def test_failed_unknown_transform_preserves_inventory_but_is_red(self):
+        flow = {'nodes': {
+            'input': source('bad'),
+            'bad': operation('SyntheticUnsupported', 'out'),
+            'out': output(),
+        }}
+        profile = self.analyze(flow)
+        self.assertEqual(len(profile.inputs), 1)
+        self.assertEqual(len(profile.outputs), 1)
+        self.assert_conversion_failure(profile)
+        self.assertIn('SyntheticUnsupported', profile.assessment['conversion_error'])
+
+    def test_analysis_only_does_not_claim_conversion_error(self):
+        profile = self.analyze({'nodes': {
+            'input': source('bad'),
+            'bad': operation('SyntheticUnsupported', 'out'),
+            'out': output(),
+        }}, include_m_queries=False)
+        self.assertNotIn('conversion_error', profile.assessment)
+        self.assertEqual(profile.m_queries, {})
+        self.assertEqual(len(profile.transforms), 1)
+
+    def test_disconnected_output_is_conversion_error_not_green(self):
+        profile = self.analyze({'nodes': {'input': source(), 'out': output()}})
+        self.assert_conversion_failure(profile)
+        self.assertIn('expected one resolved upstream', profile.assessment['conversion_error'])
+
+    def test_ambiguous_join_conversion_is_not_green(self):
+        self.assert_conversion_failure(self.analyze(join_flow(explicit=False)))
+
+    def test_cyclic_and_dangling_flow_analysis_fails_explicitly(self):
+        for flow in [
+            {'nodes': {'input': source('missing')}},
+            {'nodes': {'a': operation('SuperTransform', 'b'),
+                       'b': operation('SuperTransform', 'a')}},
+        ]:
+            with self.subTest(flow=flow):
+                with self.assertRaisesRegex(ValueError, 'dangling|cycl'):
+                    self.analyze(flow)
+
+    def test_empty_or_queryless_parser_result_is_conversion_error(self):
+        for datasources in [
+            [],
+            [{'name': 'prep.Empty', 'tables': []}],
+            [{'name': 'prep.Empty', 'tables': [{'name': 'Empty', 'm_query': ''}]}],
+        ]:
+            with self.subTest(datasources=datasources):
+                with patch('prep_flow_parser.parse_prep_flow', return_value=datasources):
+                    self.assert_conversion_failure(self.analyze(clean_chain()))
+
+    def test_conversion_exception_discards_queries_and_marks_failure(self):
+        with patch('prep_flow_parser.parse_prep_flow',
+                   side_effect=ValueError('synthetic M conversion failure')):
+            profile = self.analyze(clean_chain())
+        self.assert_conversion_failure(profile)
+        self.assertIn('synthetic M conversion failure', profile.assessment['conversion_error'])
+
+    def test_late_conversion_failure_discards_partial_queries(self):
+        datasources = [
+            {'tables': [{'name': 'Partial', 'm_query': 'let Source = 1 in Source'}]},
+            {'tables': [None]},
+        ]
+        with patch('prep_flow_parser.parse_prep_flow', return_value=datasources):
+            profile = self.analyze(clean_chain())
+        self.assert_conversion_failure(profile)
+
+    def test_normalized_archive_profiles_match_json(self):
+        flow = clean_chain(nested=True)
+        with tempfile.TemporaryDirectory() as directory:
+            expected = analyze_flow(write_flow(directory, flow), include_m_queries=True)
+            for filename, member in [
+                ('packed.tfl', 'flow'), ('packed.tflx', 'flow'),
+                ('nested.tflx', 'package/flow.tfl'),
+            ]:
+                with self.subTest(filename=filename):
+                    actual = analyze_flow(write_flow(directory, flow, filename, member),
+                                          include_m_queries=True)
+                    self.assertEqual(actual.node_graph, expected.node_graph)
+                    self.assertEqual(actual.node_count, expected.node_count)
+                    self.assertEqual(actual.edge_count, expected.edge_count)
+                    self.assertEqual(actual.m_queries, expected.m_queries)
+                    self.assertEqual(actual.assessment, expected.assessment)
 
 
 if __name__ == '__main__':
