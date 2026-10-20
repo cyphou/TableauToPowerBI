@@ -453,27 +453,6 @@ def enhance_lod_exclude_accuracy(formula):
         return formula.replace('ALL(', 'REMOVEFILTERS(', 1)  # At least improve first one
     return formula
 
-    for m_name in graph:
-        if m_name not in visited:
-            _dfs(m_name, [m_name])
-
-    # Find unused measures (not referenced by anything)
-    referenced = set()
-    for refs in graph.values():
-        referenced.update(refs)
-    unused = [n for n in measure_names if n not in referenced]
-
-    # Root measures (no dependencies)
-    roots = [n for n in graph if not graph[n]]
-
-    return {
-        'edges': edges,
-        'circular': circular,
-        'unused': sorted(unused),
-        'roots': sorted(roots),
-    }
-
-
 # ════════════════════════════════════════════════════════════════════
 #  OPTIMIZATION REPORT
 # ════════════════════════════════════════════════════════════════════

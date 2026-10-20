@@ -22,8 +22,18 @@ import json
 import shutil
 import tempfile
 import logging
-import zipfile
-from datetime import datetime
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from powerbi_import.api_server import (
+    _confined_path,
+    _parse_multipart,
+    _run_upload_worker,
+    _uploaded_filename,
+    _write_output_archive,
+)
 
 logger = logging.getLogger('tableau_to_powerbi.web')
 
@@ -39,20 +49,23 @@ except ImportError:
     st = None
 
 
-def _zip_directory(source_dir, zip_path):
-    """Create a ZIP archive of a directory."""
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(source_dir):
-            for f in files:
-                full = os.path.join(root, f)
-                arcname = os.path.relpath(full, source_dir)
-                zf.write(full, arcname)
+def _zip_directory(source_dir, zip_path, job_dir):
+    """Create a download only from the recorded private job directory."""
+    zip_path = _confined_path(zip_path, job_dir)
+    _write_output_archive(source_dir, zip_path, job_dir)
 
 
 def _save_uploaded_file(uploaded, tmp_dir):
     """Save a Streamlit uploaded file to a temp directory, return path."""
-    path = os.path.join(tmp_dir, uploaded.name)
-    with open(path, 'wb') as f:
+    filename = _uploaded_filename(uploaded.name)
+    path = os.path.join(tmp_dir, filename)
+    stem, extension = os.path.splitext(filename)
+    index = 1
+    while os.path.lexists(path):
+        path = os.path.join(tmp_dir, f'{stem}_{index}{extension}')
+        index += 1
+    path = _confined_path(path, tmp_dir)
+    with open(path, 'xb') as f:
         f.write(uploaded.getbuffer())
     return path
 
@@ -79,34 +92,32 @@ def _run_migration_pipeline(file_path, options, progress_callback=None):
         'stats': {},
         'errors': [],
         'assessment': None,
+        'job_dir': options.get('upload_root'),
     }
 
     try:
         if progress_callback:
             progress_callback(1, 4, "Extracting Tableau objects...")
 
-        # Step 1: Extraction
-        sys.path.insert(0, os.path.join(root, 'tableau_export'))
-        from extract_tableau_data import TableauExtractor
-        extractor = TableauExtractor(file_path)
-        if not extractor.extract_all():
-            result['errors'].append("Extraction failed")
-            return result
+        upload_root = options.get('upload_root')
+        if not upload_root:
+            raise ValueError("Missing server-owned private upload directory")
+        file_path = _confined_path(file_path, upload_root)
+        result['output_dir'] = _confined_path(result['output_dir'], upload_root)
+        os.makedirs(result['output_dir'], exist_ok=True)
+        _run_upload_worker(file_path, upload_root, result['output_dir'], options)
+        if not os.listdir(result['output_dir']):
+            raise RuntimeError("Migration produced no output artifacts")
+        # Reject unsafe generated paths before inspecting or validating artifacts.
+        for current, dirs, files in os.walk(result['output_dir']):
+            for name in dirs + files:
+                _confined_path(os.path.join(current, name), result['output_dir'])
 
         if progress_callback:
             progress_callback(2, 4, "Generating Power BI project...")
 
-        # Step 2: Generation
-        from powerbi_import.import_to_powerbi import PowerBIImporter
-        extract_dir = os.path.join(root, 'tableau_export')
-        importer = PowerBIImporter(source_dir=extract_dir)
+        # Extraction and generation ran together in the isolated worker.
         report_name = os.path.splitext(os.path.basename(file_path))[0]
-        importer.import_all(
-            report_name=report_name,
-            output_dir=result['output_dir'],
-            culture=options.get('culture', 'en-US'),
-            output_format=options.get('output_format', 'pbip'),
-        )
 
         # Find the generated project folder for stats
         project_dir = os.path.join(result['output_dir'], report_name)
@@ -158,37 +169,23 @@ def _run_migration_pipeline(file_path, options, progress_callback=None):
     return result
 
 
-def _run_assessment(file_path):
+def _run_assessment(file_path, upload_root=None):
     """Run pre-migration assessment, return assessment dict."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if root not in sys.path:
         sys.path.insert(0, root)
 
     try:
-        sys.path.insert(0, os.path.join(root, 'tableau_export'))
-        from extract_tableau_data import TableauExtractor
-        extractor = TableauExtractor(file_path)
-        if not extractor.extract_all():
-            return {'error': 'Extraction failed'}
-
-        from powerbi_import.assessment import run_assessment
-
-        # Load extracted JSON files
-        extracted = {}
-        json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
-                      'parameters', 'filters', 'stories', 'actions', 'sets',
-                      'groups', 'bins', 'hierarchies', 'custom_sql', 'user_filters',
-                      'sort_orders', 'aliases']
-        extract_dir = os.path.join(root, 'tableau_export')
-        for jf in json_files:
-            fpath = os.path.join(extract_dir, f'{jf}.json')
-            if os.path.exists(fpath):
-                with open(fpath, 'r', encoding='utf-8') as f:
-                    extracted[jf] = json.load(f)
-
-        workbook_name = os.path.splitext(os.path.basename(file_path))[0]
-        report = run_assessment(extracted, workbook_name=workbook_name)
-        return report.to_dict()
+        if not upload_root:
+            raise ValueError("Missing server-owned private upload directory")
+        file_path = _confined_path(file_path, upload_root)
+        with tempfile.TemporaryDirectory(prefix='assessment_', dir=upload_root) as output:
+            _run_upload_worker(file_path, upload_root, output, assess=True)
+            workbook_name = os.path.splitext(os.path.basename(file_path))[0]
+            report_path = _confined_path(
+                os.path.join(output, f'assessment_{workbook_name}.json'), output)
+            with open(report_path, 'r', encoding='utf-8') as report:
+                return json.load(report)
     except Exception as e:
         return {'error': str(e)}
 
@@ -250,7 +247,11 @@ def run_streamlit_app():
         if uploaded:
             paths = []
             for f in uploaded:
-                path = _save_uploaded_file(f, st.session_state.tmp_dir)
+                try:
+                    path = _save_uploaded_file(f, st.session_state.tmp_dir)
+                except (ValueError, OSError) as exc:
+                    st.error(f"Upload failed: {exc}")
+                    continue
                 paths.append(path)
                 st.success(f"Uploaded: {f.name} ({f.size / 1024:.1f} KB)")
             st.session_state.file_paths = paths
@@ -274,7 +275,7 @@ def run_streamlit_app():
         with col2:
             output_format = st.selectbox("Output Format", ['pbip', 'fabric'])
             optimize = st.checkbox("Optimize DAX", value=True)
-            time_intel = st.selectbox("Time Intelligence", ['none', 'auto', 'full'])
+            time_intel = st.selectbox("Time Intelligence", ['none', 'auto'])
 
         if 'options' not in st.session_state:
             st.session_state.options = {}
@@ -286,6 +287,7 @@ def run_streamlit_app():
             'optimize_dax': optimize,
             'time_intelligence': time_intel,
             'output_dir': os.path.join(st.session_state.tmp_dir, 'output'),
+            'upload_root': st.session_state.tmp_dir,
         }
 
         c1, c2 = st.columns(2)
@@ -305,7 +307,8 @@ def run_streamlit_app():
         if st.session_state.assessment is None:
             with st.spinner("Running assessment..."):
                 if st.session_state.file_paths:
-                    result = _run_assessment(st.session_state.file_paths[0])
+                    result = _run_assessment(st.session_state.file_paths[0],
+                                             st.session_state.tmp_dir)
                     st.session_state.assessment = result
 
         assessment = st.session_state.assessment
@@ -423,11 +426,10 @@ def run_streamlit_app():
             output_dir = result['output_dir']
             zip_path = os.path.join(st.session_state.tmp_dir, 'migration_output.zip')
 
-            if not os.path.exists(zip_path) and os.path.isdir(output_dir):
-                _zip_directory(output_dir, zip_path)
-
-            if os.path.exists(zip_path):
-                with open(zip_path, 'rb') as f:
+            try:
+                # Never reuse an archive that predates the final path checks.
+                _zip_directory(output_dir, zip_path, result['job_dir'])
+                with open(_confined_path(zip_path, result['job_dir']), 'rb') as f:
                     st.download_button(
                         label="Download .pbip Project (ZIP)",
                         data=f.read(),
@@ -435,6 +437,8 @@ def run_streamlit_app():
                         mime="application/zip",
                         type="primary",
                     )
+            except (ValueError, OSError) as exc:
+                st.error(f"Unsafe or unavailable download output: {exc}")
 
             st.info("Open the extracted .pbip file in Power BI Desktop (December 2025+).")
         else:
@@ -443,6 +447,7 @@ def run_streamlit_app():
         if st.button("Start Over"):
             # Cleanup
             tmp = st.session_state.tmp_dir
+            shutil.rmtree(tmp, ignore_errors=True)
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.session_state.step = 1
@@ -487,7 +492,7 @@ def _generate_upload_html():
 def run_fallback_server(port=8501):
     """Run a minimal stdlib-based web UI (no Streamlit dependency)."""
     from http.server import HTTPServer, BaseHTTPRequestHandler
-    import cgi
+    from email.message import Message
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -506,32 +511,40 @@ def run_fallback_server(port=8501):
                 self.send_error(400, "Expected multipart/form-data")
                 return
 
-            form = cgi.FieldStorage(
-                fp=self.rfile,
-                headers=self.headers,
-                environ={'REQUEST_METHOD': 'POST',
-                         'CONTENT_TYPE': content_type},
-            )
-
-            file_item = form['file']
-            if not file_item.file:
-                self.send_error(400, "No file uploaded")
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                if not 0 < length <= 500 * 1024 * 1024:
+                    raise ValueError("Upload must be between 1 byte and 500 MB")
+                header = Message()
+                header['Content-Type'] = content_type
+                boundary = header.get_boundary()
+                if not boundary:
+                    raise ValueError("Invalid multipart boundary")
+                body = self.rfile.read(length)
+                if len(body) != length:
+                    raise ValueError("Incomplete uploaded body")
+                parsed = _parse_multipart(body, boundary.encode('utf-8'))
+                if not parsed:
+                    raise ValueError("No file uploaded")
+                filename, file_data = parsed
+                filename = _uploaded_filename(filename)
+            except (TypeError, ValueError) as exc:
+                self.send_error(400, str(exc))
                 return
 
-            ext = os.path.splitext(file_item.filename)[1].lower()
-            if ext not in ('.twb', '.twbx', '.tds', '.tdsx'):
-                self.send_error(400, f"Unsupported file type: {ext}")
+            try:
+                with tempfile.TemporaryDirectory(prefix='tableau_migrate_') as tmp_dir:
+                    file_path = _confined_path(os.path.join(tmp_dir, filename), tmp_dir)
+                    with open(file_path, 'xb') as uploaded:
+                        uploaded.write(file_data)
+                    output_dir = os.path.join(tmp_dir, 'output')
+                    result = _run_migration_pipeline(
+                        file_path, {'output_dir': output_dir, 'upload_root': tmp_dir})
+            except (ValueError, OSError) as exc:
+                self.send_error(400, f"Unable to save upload: {exc}")
                 return
 
-            tmp_dir = tempfile.mkdtemp(prefix='tableau_migrate_')
-            file_path = os.path.join(tmp_dir, os.path.basename(file_item.filename))
-            with open(file_path, 'wb') as f:
-                f.write(file_item.file.read())
-
-            output_dir = os.path.join(tmp_dir, 'output')
-            result = _run_migration_pipeline(file_path, {'output_dir': output_dir})
-
-            self.send_response(200)
+            self.send_response(200 if result['success'] else 422)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.end_headers()
             response = {

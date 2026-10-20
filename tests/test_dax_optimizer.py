@@ -17,6 +17,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 
+class TestLODExcludeAccuracy(unittest.TestCase):
+    def test_existing_rewrite_behavior_is_preserved(self):
+        from powerbi_import.dax_optimizer import enhance_lod_exclude_accuracy
+        cases = (
+            ('[Sales]', '[Sales]'),
+            ('CALCULATE([Sales], ALL([Region]))',
+             'CALCULATE([Sales], ALL([Region]))'),
+            ('CALCULATE([Sales], ALL([Region]), ALL([Category]))',
+             'CALCULATE([Sales], REMOVEFILTERS([Region]), ALL([Category]))'),
+        )
+        for expression, expected in cases:
+            with self.subTest(expression=expression):
+                self.assertEqual(enhance_lod_exclude_accuracy(expression), expected)
+
+
 class TestISBLANKToCoalesce(unittest.TestCase):
     """Tests for IF(ISBLANK(x),...) → COALESCE conversion."""
 

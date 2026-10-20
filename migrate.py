@@ -80,6 +80,217 @@ def _get_extract_dir():
 # ── Structured logging setup ────────────────────────────────────────
 
 logger = logging.getLogger('tableau_to_powerbi')
+_upload_security_violation = False
+
+
+class UploadSecurityError(SecurityError, ValueError, OSError):
+    """An uploaded job attempted to cross its server-owned file boundary."""
+
+    # shutil.copy2's Windows native fallback inspects this on OSError.
+    winerror = None
+
+def _upload_root():
+    root = os.environ.get('TTPBI_UPLOAD_ROOT')
+    return os.path.realpath(root) if root else None
+
+
+def _confine_upload_path(path, *roots):
+    """Check canonical containment and reject symlinks / Windows reparse points."""
+    import stat
+    absolute = os.path.abspath(os.fsdecode(path))
+    resolved = os.path.realpath(absolute)
+    for root in roots:
+        root = os.path.abspath(root)
+        try:
+            if (os.path.commonpath([os.path.normcase(resolved),
+                                    os.path.normcase(os.path.realpath(root))])
+                    != os.path.normcase(os.path.realpath(root))
+                    or os.path.commonpath([os.path.normcase(absolute),
+                                           os.path.normcase(root)])
+                    != os.path.normcase(root)):
+                continue
+        except ValueError:
+            continue
+        current = absolute
+        while True:
+            if os.path.lexists(current):
+                info = os.lstat(current)
+                if (stat.S_ISLNK(info.st_mode)
+                        or getattr(info, 'st_file_attributes', 0) & 0x400):
+                    raise UploadSecurityError("Links/reparse points in uploaded sources are forbidden")
+            if os.path.normcase(current) == os.path.normcase(root):
+                return resolved
+            current = os.path.dirname(current)
+    raise UploadSecurityError("Upload file is outside its authorized directory")
+
+
+def _upload_relative_path(path):
+    import ntpath
+    portable = str(path).replace('\\', '/')
+    if (not portable or portable.startswith('/') or '\0' in portable or ':' in portable
+            or ntpath.isabs(portable) or ntpath.splitdrive(portable)[0]
+            or '..' in portable.split('/')):
+        raise UploadSecurityError("Uploaded source references must be relative, without parent traversal")
+    return portable
+
+
+def _validate_uploaded_workbook(path, boundary=None):
+    """Validate bindings *before* extraction/generation can open local sources."""
+    import ntpath
+    import stat
+
+    from powerbi_import.security_validator import safe_parse_xml
+
+    def xml_bindings(data, members=None):
+        if b'<!DOCTYPE' in data.upper() or b'<!ENTITY' in data.upper():
+            raise UploadSecurityError("DTD/entity declarations are forbidden in uploaded XML")
+        try:
+            root = safe_parse_xml(data)
+        except Exception as exc:
+            raise UploadSecurityError("Invalid uploaded XML") from exc
+        for node in root.iter():
+            attributes = node.attrib
+            # These attributes designate files, not database server/catalog names.
+            for key in ('filename', 'directory', 'original-filename', 'original_filename'):
+                value = attributes.get(key)
+                if value:
+                    _upload_relative_path(value)
+            local_class = attributes.get('class', '').lower()
+            if local_class in {'hyper', 'dataengine', 'excel-direct', 'excel',
+                               'textscan', 'spatial', 'stat-direct', 'sqlite'}:
+                value = attributes.get('dbname')
+                if value:
+                    _upload_relative_path(value)
+            filename = attributes.get('filename')
+            if not filename and local_class in {'hyper', 'dataengine', 'sqlite', 'spatial'}:
+                filename = attributes.get('dbname')
+            if filename:
+                reference = _upload_relative_path(ntpath.join(
+                    attributes.get('directory') or '', filename))
+                # Embedded files need not exist beside the package. Their names
+                # and all archive entries have already passed the relative check.
+                if members is None:
+                    _confine_upload_path(os.path.join(os.path.dirname(path),
+                                                     reference),
+                                         boundary or _upload_root() or os.path.dirname(path))
+
+    if path.lower().endswith(('.twbx', '.tdsx', '.tflx')):
+        with zipfile.ZipFile(path) as archive:
+            for member in archive.infolist():
+                _upload_relative_path(member.filename)
+                if stat.S_ISLNK(member.external_attr >> 16):
+                    raise UploadSecurityError("Archive symlinks are forbidden")
+            for member in archive.infolist():
+                if member.filename.lower().endswith(('.twb', '.tds', '.tfl')):
+                    xml_bindings(archive.read(member), archive.namelist())
+    else:
+        with open(path, 'rb') as stream:
+            xml_bindings(stream.read())
+
+
+def _validate_upload_tree(root):
+    """Validate every member, including junctions os.walk does not follow."""
+    boundary = _upload_root() or os.path.realpath(root)
+    _confine_upload_path(root, boundary)
+    for current, dirs, files in os.walk(root):
+        for name in dirs + files:
+            _confine_upload_path(os.path.join(current, name), boundary)
+        for name in files:
+            if name.lower().endswith(('.twb', '.twbx', '.tds', '.tdsx', '.tfl', '.tflx')):
+                _validate_uploaded_workbook(os.path.join(current, name), boundary)
+
+
+def _install_upload_copy_guard(output_dir):
+    """Process-wide defense for late readers/copies, including worker threads.
+
+    Install ONLY in a dedicated upload subprocess, never a shared server. Local
+    CLI jobs (no server-owned environment) retain their existing trusted access.
+    """
+    root = _upload_root()
+    if not root:
+        return
+    if not output_dir:
+        raise UploadSecurityError("Uploads require an explicit output directory")
+    output = os.path.realpath(output_dir)
+    roots = (root, output)
+    code_root = os.path.dirname(os.path.abspath(__file__))
+    runtime_roots = tuple(os.path.realpath(p) for p in
+                          (sys.prefix, sys.base_prefix) if p)
+    # Hooks are synchronous and process-global; do not use thread-local context.
+    def enforce(event, args):
+        if event in {'shutil.copyfile', 'shutil.copytree', 'shutil.move'}:
+            _confine_upload_path(args[0], *roots)
+            _confine_upload_path(args[1], output)
+        elif event in {'os.rename', 'os.link', 'os.symlink'}:
+            _confine_upload_path(args[0], *roots)
+            _confine_upload_path(args[1], output)
+            if event != 'os.rename':
+                raise UploadSecurityError("Uploaded jobs cannot create filesystem links")
+        elif event == 'open' and isinstance(args[0], (str, bytes, os.PathLike)):
+            path, mode, flags = args
+            writing = ((isinstance(mode, str) and any(c in mode for c in 'wax+'))
+                       or flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC))
+            if writing:
+                _confine_upload_path(path, output)
+                return
+            try:
+                _confine_upload_path(path, *roots)
+                return
+            except UploadSecurityError:
+                pass
+            # Python/native dependencies are trusted installed application code,
+            # not upload sources. No arbitrary host document reads are allowed.
+            for runtime in runtime_roots:
+                try:
+                    _confine_upload_path(path, runtime)
+                    return
+                except UploadSecurityError:
+                    pass
+            extension = os.path.splitext(os.fsdecode(path))[1].lower()
+            if extension in {'.py', '.pyc', '.pyd', '.dll'}:
+                _confine_upload_path(path, code_root)
+                return
+            if extension == '.json':
+                _confine_upload_path(path, os.path.join(code_root, 'powerbi_import', 'config'))
+                return
+            raise UploadSecurityError("Reading files outside the uploaded job is forbidden")
+
+    def guard(event, args):
+        global _upload_security_violation
+        try:
+            enforce(event, args)
+        except UploadSecurityError:
+            # Generation helpers sometimes catch I/O errors and substitute empty
+            # data. A denied read/copy must never turn into a successful upload.
+            _upload_security_violation = True
+            raise
+
+    sys.dont_write_bytecode = True
+    sys.addaudithook(guard)
+    # Python 3.13+ Windows copy2 uses native CopyFile2, bypassing both the
+    # shutil.copyfile audit event and Python open(). Cover that fast path too.
+    original_copy2 = shutil.copy2
+
+    def confined_copy2(source, destination, *, follow_symlinks=True):
+        guard('shutil.copyfile', (source, destination))
+        if os.path.isdir(destination):
+            guard('shutil.copyfile',
+                  (source, os.path.join(destination, os.path.basename(source))))
+        return original_copy2(source, destination, follow_symlinks=follow_symlinks)
+
+    shutil.copy2 = confined_copy2
+    # copytree's default copy_function and already-imported aliases can still
+    # reference the original copy2. Guard its native primitive as well.
+    winapi = getattr(shutil, '_winapi', None)
+    native_copy = getattr(winapi, 'CopyFile2', None)
+    if native_copy is not None:
+        def confined_native_copy(source, destination, flags):
+            guard('shutil.copyfile', (source, destination))
+            return native_copy(source, destination, flags)
+
+        winapi.CopyFile2 = confined_native_copy
+    # All tempfile consumers, including native extraction wrappers, stay local.
+    tempfile.tempdir = output
 
 
 def setup_logging(verbose=False, log_file=None, quiet=False):
@@ -171,6 +382,9 @@ def print_step(step_num, total_steps, text):
 
 def run_extraction(tableau_file, hyper_max_rows=None):
     """Run Tableau extraction with path validation."""
+    if _upload_root():
+        tableau_file = _confine_upload_path(tableau_file, _upload_root())
+        _validate_upload_tree(os.path.dirname(tableau_file))
     print_step(1, 2, "TABLEAU OBJECTS EXTRACTION")
 
     # Security: validate file path
@@ -1946,6 +2160,8 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         return 1
 
     batch_dir = os.path.abspath(batch_dir)
+    if _upload_root():
+        _validate_upload_tree(batch_dir)
 
     # Find all Tableau workbooks recursively
     tableau_files = []
@@ -4593,6 +4809,8 @@ def run_bulk_assessment_mode(args):
         return ExitCode.GENERAL_ERROR
 
     batch_dir = os.path.abspath(batch_dir)
+    if _upload_root():
+        _validate_upload_tree(batch_dir)
 
     # Discover workbooks and prep flows
     workbook_files = []
@@ -5865,6 +6083,7 @@ def main():
     """Main entry point — orchestrates the full migration pipeline."""
     parser = _build_argument_parser()
     args = _parse_cli_args(parser)
+    _install_upload_copy_guard(args.output_dir)
 
     # --qa-strict implies --qa
     if getattr(args, 'qa_strict', False):
@@ -7497,7 +7716,19 @@ def _read_data_folder(expr_path):
     match = _re.search(r'expression\s+DataFolder\s*=\s*"([^"]*)"', content)
     if not match:
         return content, None
-    return content, match.group(1).replace('\\\\', '\\')
+    folder = match.group(1).replace('\\\\', '\\')
+    if _upload_root() and folder:
+        # Only the actual generated project, not arbitrary ancestors of a
+        # caller-supplied expressions path, may supplement the upload boundary.
+        model_dir = os.path.dirname(os.path.dirname(expr_path))
+        roots = [_upload_root()]
+        if model_dir.lower().endswith('.semanticmodel'):
+            roots.append(os.path.dirname(model_dir))
+        folder = _confine_upload_path(folder, *roots)
+        for current, dirs, files in os.walk(folder):
+            for name in dirs + files:
+                _confine_upload_path(os.path.join(current, name), folder)
+    return content, folder
 
 
 def _referenced_data_files(model_dir):
@@ -7509,7 +7740,11 @@ def _referenced_data_files(model_dir):
     for tmdl in _glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
         try:
             with open(tmdl, 'r', encoding='utf-8') as f:
-                refs.update(m.group(1) for m in pattern.finditer(f.read()))
+                text = f.read()
+                if _upload_root():
+                    for match in _re.finditer(r'DataFolder\s*&\s*"([^"]*)"', text):
+                        _upload_relative_path(_re.sub(r'^\\{1,2}', '', match.group(1)))
+                refs.update(m.group(1) for m in pattern.finditer(text))
         except OSError:
             continue
     return sorted(refs)
@@ -7532,10 +7767,20 @@ def _local_data_candidates(source_path, wanted, max_files=20000, max_depth=4,
     found = {}
     src_dir = os.path.dirname(os.path.abspath(source_path))
     parent = os.path.dirname(src_dir)
+    if _upload_root():
+        _confine_upload_path(source_path, _upload_root())
+        for name in wanted:
+            _upload_relative_path(name)
+        if search_root:
+            _confine_upload_path(search_root, _upload_root())
 
     def _scan(root, recursive, depth_limit=max_depth):
         hits, seen = {}, 0
         for current, dirs, files in os.walk(root):
+            if _upload_root():
+                _confine_upload_path(current, _upload_root())
+                for name in dirs + files:
+                    _confine_upload_path(os.path.join(current, name), _upload_root())
             depth = os.path.relpath(current, root).count(os.sep)
             if _is_generated_dir(current, files + dirs) and current != root:
                 dirs[:] = []
@@ -7556,7 +7801,7 @@ def _local_data_candidates(source_path, wanted, max_files=20000, max_depth=4,
         return hits
 
     tiers = [(src_dir, False, max_depth), (src_dir, True, max_depth)]
-    if parent and parent != src_dir:
+    if parent and parent != src_dir and not _upload_root():
         tiers.append((parent, False, max_depth))
     if search_root and os.path.isdir(search_root):
         tiers.append((os.path.abspath(search_root), True, 8))
@@ -7638,6 +7883,9 @@ def _reconcile_csv_partitions(project_dir, source_basename):
         original = content
         for match in list(csv_call.finditer(content))[::-1]:
             fname = match.group(1).replace('\\\\', '\\')
+            if _upload_root():
+                _upload_relative_path(fname)
+                _confine_upload_path(os.path.join(folder, fname), folder)
             sniff = _sniff_csv(os.path.join(folder, fname))
             if not sniff:
                 continue
@@ -8170,6 +8418,9 @@ def _route_spatial_partitions(project_dir, source_basename):
             continue
         stats['spatial'] += 1
         ref = match.group(1).replace('\\\\', '\\')
+        if _upload_root():
+            _upload_relative_path(ref)
+            _confine_upload_path(os.path.join(folder, ref), folder)
         ext = os.path.splitext(ref)[1].lower()
         ref_path = os.path.join(folder, ref)
         if ext != '.shp' and os.path.isfile(ref_path):
@@ -9292,6 +9543,10 @@ def _run_single_migration(args):
 if __name__ == '__main__':
     try:
         exit_code = main()
+        if _upload_security_violation:
+            print("Upload rejected: a file operation crossed the authorized job boundary",
+                  file=sys.stderr)
+            exit_code = ExitCode.GENERAL_ERROR
         sys.exit(exit_code)
     except KeyboardInterrupt:
         print("\n\nMigration interrupted by user")

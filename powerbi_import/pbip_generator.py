@@ -2831,8 +2831,7 @@ class PowerBIProjectGenerator:
 
                 # Sprint 122: Set-value actions → hidden slicer + bookmarks + button
                 set_actions = [a for a in actions if a.get('type') == 'set-value'
-                               and (not a.get('source_worksheet') or a.get('source_worksheet') == db_name
-                                    or any(o.get('worksheetName') == a.get('source_worksheet') for o in db_objects))]
+                               and _action_belongs_to_page(a, page_display_name, page_worksheets)]
                 if set_actions:
                     set_created, set_bms = self._generate_set_action_artifacts(
                         visuals_dir, set_actions, visual_count,
@@ -2845,8 +2844,7 @@ class PowerBIProjectGenerator:
 
                 # Sprint 122: Parameter actions → slicer visuals
                 param_actions = [a for a in actions if a.get('type') == 'param'
-                                 and (not a.get('source_worksheet') or a.get('source_worksheet') == db_name
-                                      or any(o.get('worksheetName') == a.get('source_worksheet') for o in db_objects))]
+                                 and _action_belongs_to_page(a, page_display_name, page_worksheets)]
                 if param_actions:
                     param_created = self._generate_parameter_action_slicers(
                         visuals_dir, param_actions, visual_count, converted_objects)
