@@ -383,6 +383,8 @@ def normalize_prep_flow(flow):
         children[parent] = list(ids.values())
         for local_id, nid in ids.items():
             node = records[nid]
+            node.setdefault('_prep_declared_fields',
+                            'fields' in node and node['fields'] is not None)
             optional_shapes(node, f'Prep node {nid!r}')
             node.setdefault('nextNodes', [])
             node.setdefault('fields', [])
@@ -826,6 +828,9 @@ def _parse_clean_actions(node):
             old_name = action.get('columnName', '')
             new_name = action.get('newColumnName', '')
             if old_name and new_name:
+                # A->B followed by B->C is sequential, not a simultaneous map.
+                if old_name in pending_renames or old_name in pending_renames.values():
+                    flush_renames()
                 pending_renames[old_name] = new_name
             else:
                 raise ValueError(f'Prep RenameColumn requires columnName/newColumnName: {action!r}')
@@ -888,6 +893,7 @@ def _convert_action_to_m_step(action_type, action, counter):
         n = counter.get('type', 0)
         counter['type'] = n + 1
         step_name = f'#"Changed Type {n}"' if n > 0 else '#"Changed Type"'
+        col = col.replace('"', '""')
         return (step_name,
                 f'Table.TransformColumnTypes({{prev}}, {{{{"{col}", type {m_type}}}}})')
 
@@ -939,7 +945,12 @@ def _convert_action_to_m_step(action_type, action, counter):
         col = action.get('columnName', '')
         delimiter = action.get('delimiter', ',')
         if col:
-            return m_transform_split_by_delimiter(col, delimiter)
+            parts = action.get('numParts')
+            if parts is not None and (
+                    not isinstance(parts, int) or isinstance(parts, bool) or parts < 1):
+                raise ValueError('Prep SplitColumn requires explicit positive numParts '
+                                 'to determine its output schema')
+            return m_transform_split_by_delimiter(col, delimiter, parts)
 
     elif action_type == 'MergeColumns':
         columns = action.get('columns', [])
@@ -957,7 +968,11 @@ def _convert_action_to_m_step(action_type, action, counter):
         # M Table.AddColumn requires 'each' prefix for row-context expressions
         if not m_expr.strip().startswith('each'):
             m_expr = f'each {m_expr}'
-        return m_transform_add_column(col_name, m_expr)
+        dtype = action.get('newType', action.get('type'))
+        if dtype is not None and dtype not in _PREP_TYPE_MAP:
+            raise ValueError(f'Prep AddColumn unsupported type {dtype!r}')
+        return m_transform_add_column(
+            col_name, m_expr, f'type {_PREP_TYPE_MAP[dtype]}' if dtype else None)
 
     elif action_type == 'CleanOperation':
         col = action.get('columnName', '')
@@ -1034,6 +1049,206 @@ def _convert_action_to_m_step(action_type, action, counter):
         return m_transform_add_column(col_name, m_expr)
 
     return None
+
+
+def _schema(fields, context):
+    """Validate known fields without synthesizing missing source columns."""
+    if not isinstance(fields, list):
+        raise ValueError(f'Prep {context}: fields must be a list')
+    result = deepcopy(fields)
+    seen = set()
+    for field in result:
+        if not isinstance(field, dict) or not isinstance(field.get('name'), str) or not field['name']:
+            raise ValueError(f'Prep {context}: each field requires a nonempty name')
+        key = field['name'].casefold()
+        if key in seen:
+            raise ValueError(f'Prep {context}: duplicate/colliding field {field["name"]!r}')
+        seen.add(key)
+        dtype = field.get('type', 'string')
+        if dtype not in _PREP_TYPE_MAP and dtype != 'unknown':
+            raise ValueError(f'Prep {context}: unsupported field type {dtype!r}')
+        field['type'] = dtype
+    return result
+
+
+def _require_field(fields, name, context):
+    for field in fields:
+        if field['name'] == name:
+            return field
+    raise ValueError(f'Prep {context}: column {name!r} is not in the upstream schema')
+
+
+def _expression_type(expression, fields):
+    """Conservative inference for literals, references and numeric arithmetic."""
+    expr = (expression or '').strip()
+    if re.fullmatch(r'(?:"[^"]*"|\'[^\']*\')', expr):
+        return 'string'
+    # Brackets inside literals are not field references.
+    unquoted = re.sub(r'"(?:[^"]|"")*"|\'(?:[^\']|\'\')*\'', '""', expr)
+    refs = re.findall(r'\[([^\]]+)\]', unquoted)
+    types = [_require_field(fields, ref, 'calculation')['type'] for ref in refs]
+    if re.fullmatch(r'\[[^\]]+\]', expr):
+        return types[0]
+    if expr.lower() in ('true', 'false'):
+        return 'boolean'
+    arithmetic = re.sub(r'\[[^\]]+\]', '1', expr)
+    if re.fullmatch(r'[\d\s.+*/()%-]+', arithmetic) and all(
+            t in ('integer', 'real') for t in types):
+        return 'real' if '/' in expr or '.' in arithmetic or 'real' in types else 'integer'
+    return 'unknown'
+
+
+def _clean_schema(node, fields):
+    fields = _schema(fields, 'clean input')
+    actions = []
+    for key in ('beforeActionGroup', 'actionGroup', 'afterActionGroup'):
+        actions.extend(_as_list(_as_dict(node.get(key)).get('actions')))
+    for action in actions:
+        kind = (action.get('actionType') or action.get('nodeType') or '').rsplit('.', 1)[-1]
+        name = action.get('columnName', '')
+        if kind in ('RemoveColumn', 'RemoveColumns'):
+            removed = ([name] if kind == 'RemoveColumn' else
+                       _as_list(action.get('columnNames', action.get('columns'))))
+            for col in removed:
+                _require_field(fields, col, kind)
+            fields = [f for f in fields if f['name'] not in removed]
+        elif kind == 'RenameColumn':
+            _require_field(fields, name, kind)['name'] = action['newColumnName']
+        elif kind == 'ChangeColumnType':
+            _require_field(fields, name, kind)['type'] = action['newType']
+        elif kind == 'DuplicateColumn':
+            field = deepcopy(_require_field(fields, name, kind))
+            field['name'] = action.get('newColumnName', f'{name}_copy')
+            fields.append(field)
+        elif kind in ('AddColumn', 'CustomCalculation'):
+            new_name = action.get('columnName', action.get(
+                'newColumnName', 'NewColumn' if kind == 'AddColumn' else 'Calc'))
+            dtype = action.get('newType', action.get('type')) or _expression_type(
+                action.get('expression'), fields)
+            fields.append({'name': new_name, 'type': dtype})
+        elif kind == 'ConditionalColumn':
+            for rule in action.get('rules', []):
+                _expression_type(rule.get('condition'), fields)
+            # The existing generator quotes string rule values; do not infer a
+            # numeric type from a numeric-looking string.
+            values = [rule.get('value', '') for rule in action.get('rules', [])]
+            default = action.get('defaultValue', 'null')
+            types = {('string' if isinstance(v, str) else
+                      'boolean' if isinstance(v, bool) else 'real')
+                     for v in values if v is not None}
+            if default != 'null':
+                types.add(_expression_type(str(default), fields))
+            fields.append({'name': action.get('newColumnName', 'Conditional'),
+                           'type': next(iter(types)) if len(types) == 1 else 'unknown'})
+        elif kind == 'ExtractValues':
+            _require_field(fields, name, kind)
+            fields.append({'name': action.get('newColumnName', f'{name}_extracted'),
+                           'type': 'string'})
+        elif kind == 'SplitColumn':
+            _require_field(fields, name, kind)
+            if not isinstance(action.get('numParts'), int) or action['numParts'] < 1:
+                raise ValueError('Prep SplitColumn requires explicit positive numParts '
+                                 'to determine its output schema')
+            pos = next(i for i, f in enumerate(fields) if f['name'] == name)
+            fields[pos:pos + 1] = [
+                {'name': f'{name}.{i + 1}', 'type': 'string'}
+                for i in range(action['numParts'])]
+        elif kind == 'MergeColumns':
+            columns = action.get('columns', [])
+            for col in columns:
+                _require_field(fields, col, kind)
+            pos = min(i for i, f in enumerate(fields) if f['name'] in columns)
+            fields = [f for f in fields if f['name'] not in columns]
+            fields.insert(pos, {'name': action.get('newColumnName', 'Merged'), 'type': 'string'})
+        elif kind == 'FilterOperation':
+            _expression_type(action.get('filterExpression'), fields)
+        elif name:
+            _require_field(fields, name, kind)
+        fields = _schema(fields, kind)
+    return fields
+
+
+def _declared_schema(node, result, context, project=False):
+    """Honor explicit schemas as a checked contract, never as invented columns.
+
+    Output fields may select/reorder an existing schema. Transform fields must
+    describe exactly the computed names. Known incompatible types are errors;
+    a declared type can resolve an otherwise unknown calculation's type.
+    """
+    fields = _schema(result.get('fields', []), context)
+    if node.get('_prep_declared_fields', 'fields' in node):
+        declared = _schema(node['fields'], context + ' declared')
+        if not project and {f['name'] for f in fields} != {f['name'] for f in declared}:
+            raise ValueError(f'Prep {context}: declared fields disagree with computed schema')
+        for raw, field in zip(node['fields'], declared):
+            actual = _require_field(fields, field['name'], context)
+            if 'type' not in raw:
+                field['type'] = actual['type']
+            if field['type'] == 'unknown':
+                raise ValueError(f'Prep {context}: declared fields require concrete types')
+            if actual['type'] != 'unknown' and actual['type'] != field['type']:
+                raise ValueError(f'Prep {context}: declared type for {field["name"]!r} '
+                                 f'({field["type"]}) disagrees with computed {actual["type"]}')
+        if project or [f['name'] for f in declared] != [f['name'] for f in fields]:
+            result['m_query'] = inject_m_steps(result['m_query'], [
+                m_transform_select_columns([f['name'] for f in declared])])
+        # Resolve unknown calculation types explicitly in M as well as JSON.
+        conversions = [(f['name'], f['type']) for f in declared
+                       if _require_field(fields, f['name'], context)['type'] == 'unknown']
+        if conversions:
+            pairs = ', '.join(
+                '{"' + name.replace('"', '""') + '", type ' + _PREP_TYPE_MAP[dtype] + '}'
+                for name, dtype in conversions)
+            result['m_query'] = inject_m_steps(result['m_query'], [
+                ('#"Declared Types"', f'Table.TransformColumnTypes({{prev}}, {{{pairs}}})')])
+        fields = declared
+    result['fields'] = fields
+    result['table'] = {**result.get('table', {}), 'columns': [
+        {'name': f['name'], 'datatype': f['type']} for f in fields]}
+    return result
+
+
+def _aggregate_schema(node, fields):
+    fields = _schema(fields, 'aggregate input')
+    result = []
+    for group in _as_list(node.get('groupByFields')):
+        name = group.get('name')
+        if not name:
+            continue
+        result.append(_require_field(fields, name, 'aggregate group'))
+    for agg in _as_list(node.get('aggregateFields')):
+        source_name = agg.get('name')
+        if not source_name:
+            continue
+        source = _require_field(fields, source_name, 'aggregate')
+        operation = agg.get('aggregation', 'SUM').upper()
+        if operation not in _PREP_AGG_MAP:
+            raise ValueError(f'Prep unsupported aggregation {operation!r}')
+        if operation not in ('COUNT', 'COUNTD') and source['type'] not in ('integer', 'real'):
+            raise ValueError(f'Prep aggregate: {operation} requires numeric input '
+                             f'for column {source_name!r}')
+        result.append({'name': agg.get('newColumnName', agg.get('name')),
+                       'type': 'integer' if operation in ('COUNT', 'COUNTD') else 'real'})
+    return _schema(result, 'aggregate output')
+
+
+def _union_schema(results, node):
+    if (node.get('fieldMappings') or node.get('columnMappings') or node.get('fieldMapping')
+            or node.get('unionType', '').lower() == 'manual'):
+        raise ValueError('Prep union manual field mapping requires an explicit supported dialect')
+    fields = OrderedDict()
+    for result in results:
+        for field in _schema(result.get('fields', []), 'union input'):
+            name, dtype = field['name'], field['type']
+            if name in fields and fields[name]['type'] != dtype:
+                previous = fields[name]['type']
+                if {previous, dtype} <= {'integer', 'real'}:
+                    dtype = 'real'
+                else:
+                    raise ValueError(f'Prep union incompatible types for {name!r}: '
+                                     f'{previous!r}, {dtype!r}')
+            fields[name] = {'name': name, 'type': dtype}
+    return _schema(list(fields.values()), 'union output')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1210,6 +1425,7 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
         upstream_ids = _find_upstream_nodes(nodes, nid)
         _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                                 node_results, secondary_branch_ids, node_name)
+        _declared_schema(node, node_results[nid], f'transform {nid!r}')
 
     elif base_type == 'output':
         upstream_ids = _find_upstream_nodes(nodes, nid)
@@ -1220,7 +1436,9 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
             **node_results[upstream_ids[0]],
             'name': node_name,
             'is_output': True,
+            'prep_output_type': sem_type,
         }
+        _declared_schema(node, node_results[nid], f'output {nid!r}', project=True)
         print(f"    ✓ Output: {node_name}")
     else:
         raise ValueError(f'Prep node {nid!r}: unnormalized/unsupported kind {base_type!r}')
@@ -1267,7 +1485,8 @@ def _process_input_node(nid, node, connections, node_results, node_name):
         'table': table,
         'name': node_name,
         'm_query': m_query,
-        'fields': _as_list(node.get('fields', [])),
+        'fields': _schema(_as_list(node.get('fields', [])), f'input {nid!r}'),
+        'prep_dependencies': [],
     }
     print(f"    ✓ Input: {node_name} ({connection.get('type', '?')})")
 
@@ -1310,6 +1529,8 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
         node_results[nid] = {
             **upstream, 'name': node_name,
             'm_query': inject_m_steps(upstream['m_query'], steps),
+            'fields': _clean_schema({'actionGroup': {'actions': [action]}},
+                                    upstream.get('fields', [])),
         }
         return
 
@@ -1325,6 +1546,7 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 **upstream,
                 'name': node_name,
                 'm_query': m_query,
+                'fields': _clean_schema(node, upstream.get('fields', [])),
             }
             print(f"    ✓ Clean: {node_name} ({len(steps)} actions)")
 
@@ -1341,6 +1563,7 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 **upstream,
                 'name': node_name,
                 'm_query': m_query,
+                'fields': _aggregate_schema(node, upstream.get('fields', [])),
             }
             print(f"    ✓ Aggregate: {node_name}")
 
@@ -1377,9 +1600,26 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 # Mark the right branch for emission as a separate query
                 secondary_branch_ids.add(right_id)
 
+            if node.get('joinType', 'inner') not in _PREP_JOIN_MAP:
+                raise ValueError(f'Prep join {nid!r}: unsupported joinType')
+            left_fields = _schema(left.get('fields', []), 'join left')
+            right_fields = _schema(right_fields, 'join right')
+            conditions = _as_list(node.get('joinConditions'))
+            for condition in conditions:
+                _require_field(left_fields, condition.get('leftColumn'), 'join left key')
+                _require_field(right_fields, condition.get('rightColumn'), 'join right key')
+            right_keys = {c.get('rightColumn') for c in conditions}
+            expanded = [f for f in right_fields if f['name'] not in right_keys]
+            # NestedJoin introduces Joined; expansion removes it only if there
+            # are fields to expand. Remove the empty nested column explicitly.
+            if any(f['name'].casefold() == 'joined' for f in left_fields):
+                raise ValueError(f'Prep join {nid!r}: reserved nested column Joined collides')
+            joined_fields = _schema(left_fields + expanded, 'join output')
             join_steps = _parse_join_node(node, right_name, right_fields)
             if not join_steps:
                 raise ValueError(f'Prep join {nid!r}: missing supported join conditions')
+            if not expanded:
+                join_steps.append(m_transform_remove_columns(['Joined']))
             m_query = left['m_query']
             if join_steps:
                 m_query = inject_m_steps(m_query, join_steps)
@@ -1388,6 +1628,9 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 **left,
                 'name': node_name,
                 'm_query': m_query,
+                'fields': joined_fields,
+                'prep_dependencies': list(dict.fromkeys(
+                    left.get('prep_dependencies', []) + [_clean_m_table_ref(right_name)])),
             }
             print(f"    ✓ Join: {node_name} ({node.get('joinType', 'inner')})")
 
@@ -1411,6 +1654,8 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 **upstream,
                 'name': node_name,
                 'm_query': m_query,
+                'fields': _union_schema([node_results[uid] for uid in upstream_ids], node),
+                'prep_dependencies': upstream_names,
             }
             print(f"    ✓ Union: {node_name} ({len(upstream_names)} inputs)")
 
@@ -1420,6 +1665,22 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
             step = _parse_pivot_node(node)
             if not step:
                 raise ValueError(f'Prep pivot {nid!r}: unsupported/incomplete pivot configuration')
+            if node.get('pivotType') != 'columnsToRows':
+                raise ValueError(f'Prep pivot {nid!r}: data-dependent rowsToColumns schema; '
+                                 'static output columns cannot be proven')
+            pivot_names = [f.get('name') for f in _as_list(node.get('pivotFields'))]
+            pivot_fields = [_require_field(upstream.get('fields', []), name, 'unpivot')
+                            for name in pivot_names if name]
+            types = {f['type'] for f in pivot_fields}
+            if len(types) > 1 and not types <= {'integer', 'real'}:
+                raise ValueError(f'Prep pivot {nid!r}: incompatible value types {types!r}')
+            fields = [deepcopy(f) for f in upstream.get('fields', [])
+                      if f['name'] not in pivot_names]
+            fields.extend([
+                {'name': node.get('pivotNamesName', 'Attribute'), 'type': 'string'},
+                {'name': node.get('pivotValuesName', 'Value'),
+                 'type': 'real' if 'real' in types else next(iter(types))},
+            ])
             m_query = upstream['m_query']
             if step:
                 m_query = inject_m_steps(m_query, [step])
@@ -1427,6 +1688,7 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 **upstream,
                 'name': node_name,
                 'm_query': m_query,
+                'fields': _schema(fields, 'unpivot output'),
             }
             print(f"    ✓ Pivot: {node_name} ({node.get('pivotType', '?')})")
 
@@ -1446,6 +1708,8 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 **upstream,
                 'name': node_name,
                 'm_query': m_query,
+                'fields': _schema(upstream.get('fields', []) + [
+                    {'name': '__script_warning', 'type': 'string'}], 'script warning'),
             }
             print(f"    ⚠ Script step ({script_lang}): {node_name} — manual migration required")
 
@@ -1464,6 +1728,8 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 **upstream,
                 'name': node_name,
                 'm_query': m_query,
+                'fields': _schema(upstream.get('fields', []) + [
+                    {'name': '__prediction_warning', 'type': 'string'}], 'prediction warning'),
             }
             print(f"    ⚠ Prediction step: {node_name} — manual migration required")
 
@@ -1488,6 +1754,10 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                     **left,
                     'name': node_name,
                     'm_query': m_query,
+                    'fields': _schema(left.get('fields', []) + right.get('fields', []),
+                                      'cross join output'),
+                    'prep_dependencies': list(dict.fromkeys(
+                        left.get('prep_dependencies', []) + [right_name])),
                 }
                 print(f"    ✓ Cross Join: {node_name}")
 
@@ -1509,6 +1779,7 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
             'name': node_name,
             'm_query': m_query,
             'fields': node.get('fields', []),
+            'prep_dependencies': [],
         }
         print(f"    ✓ Published DS Input: {node_name} → {ds_name}")
 
@@ -1541,6 +1812,11 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
             raise ValueError(f'Duplicate Prep output/table name {table_name!r}: '
                              f'nodes {emitted_names[key]!r} and {nid!r}')
         emitted_names[key] = nid
+        unknown = [f['name'] for f in node_results[nid].get('fields', [])
+                   if f.get('type') == 'unknown']
+        if unknown:
+            raise ValueError(f'Prep emitted table {table_name!r}: unresolved field types '
+                             f'{unknown!r}; supply validated output fields or ChangeColumnType')
 
     # First, emit secondary branch nodes (join right-tables, union extras)
     # so their queries exist in the model for the main query to reference
@@ -1574,6 +1850,8 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
                 'relationships': [],
                 'm_query_override': result.get('m_query', ''),
                 'is_prep_source': True,
+                'prep_role': 'secondary',
+                'prep_dependencies': result.get('prep_dependencies', []),
             }
             datasources.append(datasource)
             print(f"    + Secondary table emitted: {table_name}")
@@ -1608,6 +1886,9 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
                 'relationships': [],
                 'm_query_override': result.get('m_query', ''),
                 'is_prep_source': True,
+                'prep_role': 'output',
+                'prep_dependencies': result.get('prep_dependencies', []),
+                'prep_output_type': result.get('prep_output_type', ''),
             }
             datasources.append(datasource)
             output_count += 1
@@ -1638,6 +1919,8 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
                     'relationships': [],
                     'm_query_override': result.get('m_query', ''),
                     'is_prep_source': True,
+                    'prep_role': 'output',
+                    'prep_dependencies': result.get('prep_dependencies', []),
                 }
                 datasources.append(datasource)
                 output_count += 1
@@ -1651,73 +1934,211 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
 #  MERGE PREP DATASOURCES WITH TWB DATASOURCES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def merge_prep_with_workbook(prep_datasources, twb_datasources):
+class PrepBindingError(ValueError):
+    """A rejected binding plan, carrying coverage without mutating its inputs."""
+
+    def __init__(self, message, coverage):
+        self.coverage = coverage
+        super().__init__(message + '; coverage=' + json.dumps(coverage, ensure_ascii=False))
+
+
+def _published_evidence(ds):
+    connections = [ds.get('connection', {})]
+    connections.extend(_as_dict(ds.get('connection_map')).values())
+    connections.extend(_as_list(ds.get('connections')))
+    connections.extend(t.get('connection_details', {}) for t in ds.get('tables', []))
+    published = bool(ds.get('published_datasource') or ds.get('_published_unresolved')
+                     or ds.get('_published_resolved'))
+    names = set()
+    for connection in connections:
+        if connection.get('type', '').lower() in ('tableau server', 'sqlproxy', 'published'):
+            published = True
+            name = _as_dict(connection.get('details')).get('server_ds_name')
+            if name:
+                names.add(name)
+    metadata = _as_dict(ds.get('published_datasource'))
+    if metadata.get('name'):
+        names.add(metadata['name'])
+    return published, names
+
+
+def merge_prep_with_workbook(prep_datasources, twb_datasources, *, return_report=False):
+    """Plan, validate, then apply a workbook binding on deep copies.
+
+    Contract: every published workbook table must be reconnected, and at least
+    one output must bind. Unrelated local tables and auxiliary flow outputs do
+    not need to match. Unused outputs are reported, NOT appended as a substitute
+    for reconnecting workbook sources. Secondary queries are included only when
+    referenced by a bound query. Empty workbook input remains standalone mode.
+
+    Match by exact table name / output caption (including its deterministic
+    space-to-underscore form). The sole reserved convention is
+    F_<digits>_<subject> -> S_F<digits>_<subject>, requiring a unique output and
+    published metadata explicitly naming that S_F datasource. No fuzzy match,
+    table-order matching or synthetic connection is permitted.
     """
-    Merge Tableau Prep flow datasources with TWB datasources.
+    coverage = {'status': 'rejected', 'matched': [], 'unmatched_published': [],
+                'unmatched_local': [], 'unused_outputs': [], 'secondary_queries': []}
 
-    When a TWB references a Prep-produced data source (by matching table names),
-    the Prep's M query (with all transformation steps) replaces the simple
-    source query from the TWB extraction.
+    def reject(message):
+        raise PrepBindingError(message + '. Supply exact output names/captions or '
+                               'published datasource identity metadata; no fuzzy binding '
+                               'or invented connection is performed', coverage)
 
-    Args:
-        prep_datasources: list from parse_prep_flow()
-        twb_datasources: list from TWB extraction
+    for label, datasources in (('Prep', prep_datasources), ('workbook', twb_datasources)):
+        if not isinstance(datasources, list):
+            reject(f'{label} datasources must be a list')
+        for ds in datasources:
+            if not isinstance(ds, dict) or not isinstance(ds.get('tables', []), list):
+                reject(f'{label} datasource requires an object with a tables list')
+            if any(not isinstance(t, dict) or not isinstance(t.get('name'), str)
+                   or not t['name'] for t in ds.get('tables', [])):
+                reject(f'{label} tables require nonempty string names')
+            if label == 'Prep':
+                query = ds.get('m_query_override')
+                if not isinstance(query, str) or not query.strip():
+                    reject('Prep datasource requires a nonempty string M query')
 
-    Returns:
-        list of merged datasources (TWB datasources enhanced with Prep M queries)
-    """
-    # Exact names/captions only. Prefix similarity (for example F_ versus S_)
-    # is not provenance and must never replace a workbook query automatically.
-    # Keep ownership with aliases so a caption match does not re-add the same
-    # transformed Prep datasource as an unmatched standalone datasource.
-    prep_queries = {}
-    for index, pds in enumerate(prep_datasources):
-        for table in _as_list(pds.get('tables')):
-            tname = table.get('name', '')
-            m_query = pds.get('m_query_override', '')
-            if tname and m_query:
-                aliases = {tname}
-                caption = pds.get('caption')
-                if caption:
-                    aliases.update((caption, caption.replace(' ', '_')))
-                for alias in aliases:
-                    candidate = (m_query, index, tname)
-                    if alias in prep_queries and prep_queries[alias] != candidate:
-                        raise ValueError(f'Ambiguous Prep merge alias {alias!r}; '
-                                         'explicit datasource provenance required')
-                    prep_queries[alias] = candidate
+    # Empty workbook input remains a standalone flow; explicit workbook tables are
+    # not required for the merge to succeed when no workbook data is present.
+    if not twb_datasources:
+        coverage['status'] = 'standalone'
+        result = deepcopy(prep_datasources)
+        return (result, coverage) if return_report else result
+    if not prep_datasources:
+        coverage['status'] = 'no_outputs'
+        result = deepcopy(twb_datasources)
+        return (result, coverage) if return_report else result
 
-    if not prep_queries:
-        # No Prep data to merge — return TWB datasources plus any standalone Prep datasources
-        return twb_datasources + prep_datasources
+    aliases, outputs, secondary = {}, {}, {}
+    for index, ds in enumerate(prep_datasources):
+        if len(ds.get('tables', [])) != 1:
+            reject('Prep binding requires one table per parsed datasource')
+        table = ds['tables'][0]
+        name = table.get('name')
+        if not name or not isinstance(name, str):
+            reject('Prep output requires a nonempty string table name')
+        if ds.get('prep_role') == 'secondary':
+            if name in secondary:
+                reject(f'Ambiguous secondary query {name!r}')
+            secondary[name] = index
+            continue
+        outputs[index] = name
+        caption = ds.get('caption') or ''
+        if not isinstance(caption, str):
+            reject('Prep output caption must be a string')
+        for alias in {name, caption, caption.replace(' ', '_')} - {''}:
+            if alias in aliases and aliases[alias] != index:
+                reject(f'Ambiguous Prep merge alias {alias!r}')
+            aliases[alias] = index
 
-    # Enhance TWB datasources with Prep M queries
-    merged = []
-    matched_prep_tables = set()
+    plan = []
+    table_names = {}
+    used = set()
+    for ds_index, ds in enumerate(twb_datasources):
+        published, evidence = _published_evidence(ds)
+        tables = ds.get('tables', [])
+        if published and not tables:
+            coverage['unmatched_published'].append({'datasource': ds.get('name'), 'table': None})
+        for table_index, table in enumerate(tables):
+            name = table.get('name', '')
+            identity = {'datasource': ds.get('name'), 'table': name}
+            table_names.setdefault(name.casefold(), []).append(identity)
+            candidate = aliases.get(name) if name != 'sqlproxy' else None
+            method = 'exact_name_or_caption'
+            # sqlproxy is a protocol token, never an output identity.
+            if published and len(tables) == 1:
+                exact = {aliases[alias] for alias in
+                         ({ds.get('caption', '')} | evidence)
+                         if alias != 'sqlproxy' and alias in aliases}
+                if candidate is not None:
+                    exact.add(candidate)
+                if len(exact) > 1:
+                    reject(f'Ambiguous published datasource/table identity {name!r}')
+                if exact:
+                    candidate = next(iter(exact))
+                # Check the reserved convention even if an exact alias exists,
+                # so exact-vs-prefix collisions cannot silently choose a winner.
+                reserved = set()
+                for alias, index in aliases.items():
+                    match = re.fullmatch(r'F_(\d+)_(.+)', alias)
+                    target = f'S_F{match[1]}_{match[2]}' if match else None
+                    if target and target in evidence and target in (name, ds.get('caption')):
+                        reserved.add(index)
+                if candidate is not None:
+                    reserved.add(candidate)
+                if len(reserved) > 1:
+                    reject(f'Ambiguous reserved-prefix binding for {name!r}')
+                if candidate is None and reserved:
+                    candidate = next(iter(reserved))
+                    method = 'reserved_prefix_with_published_identity'
+            if candidate is None:
+                coverage['unmatched_published' if published else 'unmatched_local'].append(identity)
+                continue
+            prep_table = prep_datasources[candidate]['tables'][0]
+            if 'columns' in prep_table:
+                columns = prep_table['columns']
+                prep_names = {c['name'] for c in columns}
+                missing = [c['name'] for c in table.get('columns', [])
+                           if c['name'] not in prep_names]
+                if missing:
+                    reject(f'Workbook table {name!r} references absent Prep columns {missing!r}')
+            plan.append((ds_index, table_index, candidate))
+            used.add(candidate)
+            coverage['matched'].append({**identity, 'output': outputs[candidate], 'method': method})
 
-    for ds in twb_datasources:
-        # Check each table in the datasource
-        for table in _as_list(ds.get('tables')):
-            tname = table.get('name', '')
-            if tname in prep_queries:
-                # Replace the M query with the Prep-enriched version
-                m_query, index, prep_table = prep_queries[tname]
-                ds['m_query_overrides'] = _as_dict(ds.get('m_query_overrides'))
-                ds['m_query_overrides'][tname] = m_query
-                matched_prep_tables.add((index, prep_table))
-                print(f"    ✓ Matched Prep flow → TWB table: {tname}")
-        merged.append(ds)
+    coverage['unused_outputs'] = [name for index, name in outputs.items() if index not in used]
+    if coverage['unmatched_published']:
+        reject('Incomplete Prep binding: published workbook sources remain unreconnected')
+    if not plan:
+        reject('No exact Prep bindings found for workbook sources')
+    for ds_index, table_index, _ in plan:
+        name = twb_datasources[ds_index]['tables'][table_index]['name']
+        if len(table_names[name.casefold()]) != 1:
+            reject(f'Ambiguous workbook table name {name!r}; per-table override would collide')
 
-    # Add unmatched Prep datasources as standalone tables
-    for index, pds in enumerate(prep_datasources):
-        for table in _as_list(pds.get('tables')):
-            tname = table.get('name', '')
-            if (index, tname) not in matched_prep_tables:
-                merged.append(pds)
-                logger.warning('Prep table %r did not match a workbook table by exact '
-                               'name/caption; retained standalone. Explicit provenance '
-                               'is required for differently named workbook sources.', tname)
-                print(f"    + Added standalone Prep datasource: {tname}")
-                break
-
-    return merged
+    # Resolve only real secondary dependencies, recursively. Never add an
+    # unmatched output and call it a successful workbook reconnection.
+    needed = set()
+    queries = [prep_datasources[i] for i in used]
+    while queries:
+        current = queries.pop()
+        query = current['m_query_override']
+        dependencies = current.get('prep_dependencies')
+        if dependencies is not None:
+            missing = set(dependencies) - set(secondary)
+            if missing:
+                reject(f'Unresolved secondary queries {sorted(missing)!r}')
+        for name, index in secondary.items():
+            quoted = '#"' + name.replace('"', '""') + '"'
+            referenced = (name in dependencies if dependencies is not None else
+                          quoted in query or re.search(
+                              r'(?<![\w"])' + re.escape(name) + r'(?![\w"])', query))
+            if index not in needed and referenced:
+                if name.casefold() in table_names:
+                    reject(f'Secondary query {name!r} collides with a workbook table')
+                needed.add(index)
+                queries.append(prep_datasources[index])
+    merged = deepcopy(twb_datasources)
+    for ds_index, table_index, index in plan:
+        ds = merged[ds_index]
+        table = ds['tables'][table_index]
+        prep = prep_datasources[index]
+        overrides = _as_dict(ds.get('m_query_overrides'))
+        ds['m_query_overrides'] = overrides
+        # TMDL collects the datasource-wide override after per-table overrides.
+        # Preserve its intent for untouched tables, but do not let it mask the
+        # binding just installed here.
+        previous = ds.pop('m_query_override', '')
+        if previous:
+            for other in ds['tables']:
+                overrides[other['name']] = previous
+        overrides[table['name']] = prep['m_query_override']
+        if 'columns' in prep['tables'][0]:
+            table['columns'] = deepcopy(prep['tables'][0]['columns'])
+    for index in sorted(needed):
+        merged.append(deepcopy(prep_datasources[index]))
+        coverage['secondary_queries'].append(prep_datasources[index]['tables'][0]['name'])
+    coverage['status'] = 'complete'
+    print('    Prep binding coverage: ' + json.dumps(coverage, ensure_ascii=False))
+    return (merged, coverage) if return_report else merged

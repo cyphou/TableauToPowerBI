@@ -182,6 +182,21 @@ def extract_datasource(datasource_elem, twbx_path=None):
         'col_local_name_map': _extract_col_local_name_map(datasource_elem),
         'col_type_map': _extract_col_type_map(datasource_elem),
     }
+    # Keep published identity alongside datasources.json. The separate global
+    # published-datasource list is not available to --prep's binding planner.
+    repositories = [
+        elem for elem in original_elem.iter()
+        if isinstance(elem.tag, str)
+        and elem.tag.rsplit('}', 1)[-1].rsplit(':', 1)[-1] == 'repository-location'
+    ]
+    if len(repositories) == 1:
+        repo = repositories[0]
+        datasource['published_datasource'] = {
+            'name': repo.get('name') or repo.get('id', ''),
+            'id': repo.get('id', ''),
+            'path': repo.get('path', ''),
+            'site': repo.get('site', ''),
+        }
     if inactive_context:
         datasource['inactive_extract_context'] = inactive_context
 

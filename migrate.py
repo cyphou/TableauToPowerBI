@@ -1166,40 +1166,32 @@ def run_prep_flow(prep_file, datasources_json=None):
                 twb_datasources = _json.load(f)
             print(f"  [OK] {len(twb_datasources)} TWB datasource(s) loaded")
         else:
-            twb_datasources = []
-            print("  [WARN] No TWB datasources found -- using Prep flow only")
+            raise ValueError("Workbook datasources.json is missing; --prep requires an "
+                             "extracted workbook. Use standalone Prep export instead.")
+        if not twb_datasources:
+            raise ValueError("Workbook has no datasources to reconnect; use standalone "
+                             "Prep export instead.")
 
         # Merge Prep transforms into TWB datasources
-        merged = merge_prep_with_workbook(prep_datasources, twb_datasources)
-
-        # The parser appends unmatched Prep tables too; that is not a merge
-        # into the workbook. Verify its exact table-name/caption matches and
-        # the per-table m_query_overrides it actually installs on TWB sources.
-        prep_aliases = {}
-        for ds in prep_datasources:
-            query = ds.get('m_query_override', '')
-            for table in ds.get('tables') or []:
-                if table.get('name') and query:
-                    prep_aliases[table['name']] = query
-                    if ds.get('caption'):
-                        prep_aliases[ds['caption']] = query
-                        prep_aliases[ds['caption'].replace(' ', '_')] = query
-        matched = sum(
-            1 for ds in twb_datasources for table in ds.get('tables') or []
-            if table.get('name') in prep_aliases
-            and (ds.get('m_query_overrides') or {}).get(table['name'])
-            == prep_aliases[table['name']]
-        )
-        if not matched:
-            raise ValueError(
-                "Prep flow did not match any workbook tables by exact name/caption; "
-                "only unmatched standalone tables would be appended. "
-                "Explicit datasource provenance is required for differently named sources."
-            )
+        merged, coverage = merge_prep_with_workbook(
+            prep_datasources, twb_datasources, return_report=True)
+        print(f"  [OK] Binding coverage: {len(coverage['matched'])} workbook table(s), "
+              f"{len(coverage['unused_outputs'])} unused auxiliary output(s), "
+              f"{len(coverage['unmatched_local'])} unrelated local table(s)")
 
         # Save merged datasources back
-        with open(datasources_json, 'w', encoding='utf-8') as f:
-            _json.dump(merged, f, indent=2, ensure_ascii=False)
+        import tempfile
+        staged_json = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode='w', encoding='utf-8', suffix='.json', delete=False,
+                    dir=os.path.dirname(os.path.abspath(datasources_json))) as f:
+                staged_json = f.name
+                _json.dump(merged, f, indent=2, ensure_ascii=False)
+            os.replace(staged_json, datasources_json)
+        finally:
+            if staged_json is not None and os.path.exists(staged_json):
+                os.remove(staged_json)
         print(f"  [OK] {len(merged)} merged datasource(s) saved to {datasources_json}")
 
         print("\n[OK] Prep flow parsing completed successfully")

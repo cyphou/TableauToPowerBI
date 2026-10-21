@@ -11,6 +11,91 @@ Covers both Tableau Prep (.tfl/.tflx) operations and Tableau Desktop data-source
 
 ---
 
+## Parser scope and workbook binding contract (reports #81–83)
+
+The tables below are an M **reference**, not proof that every Prep JSON dialect
+is parsed. Report **#81 remains partially supported**, not closed. Existing
+#82/#83 behavior is preserved, including recursive-container/DAG handling and
+standalone export validation.
+
+### Schema propagation
+
+The parser tracks fields through each supported operation, rather than copying
+the input schema to the output. Rename, remove, duplicate, type change and
+calculated-column operations update names/types in execution order. For example,
+`Raw, Discard` → rename `Raw` to `Amount` → remove `Discard` → add `Twice`
+produces only `Amount, Twice` in datasource JSON and the generated TMDL columns.
+
+- Explicit output `fields` select/reorder **existing** fields and must agree with
+  computed types. Unknown calculation types can be resolved by concrete declared
+  output types (also applied in M), or by `ChangeColumnType`. Missing fields,
+  incompatible declared types and case-insensitive name collisions are errors.
+- Aggregation retains only grouping keys and named aggregate outputs; references
+  must exist. The current aggregate helper requires numeric inputs for non-count
+  aggregates. Automatic unions combine input schemas and accept integer/real
+  widening; incompatible types and manual mapping dialects are rejected.
+- Join schemas contain the left fields plus the right non-key fields actually
+  expanded by the generated M. Colliding names require an explicit upstream
+  rename. The temporary `Joined` column is removed even when no fields expand.
+- Delimiter splits require explicit positive `numParts` for a deterministic
+  schema. Dynamic rows-to-columns pivot schemas are rejected; columns-to-rows
+  pivots require compatible value types. No source columns are invented.
+- Expression conversion remains limited: simple literals, field references and
+  numeric arithmetic have conservative type inference. A typed schema does not
+  establish equivalence of arbitrary calculations, script/ML placeholders, or a
+  successful Power Query refresh.
+
+The following eight clean-node dialects have **no demonstrated JSON payload
+schema in the existing public fixtures** and remain explicit conversion errors:
+`ValueFilter`, `RichRangeFilter`, `RangeFilter`, `Remap`,
+`RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter`,
+`RichNullFilter`. Their names in analyzer classification tables do not prove
+convertibility. In particular, `RangeFilter` is not silently treated as the
+already supported `FilterRange` dialect.
+
+### `--prep` with a workbook
+
+Binding is planned and validated before applying any changes, on deep copies.
+`merge_prep_with_workbook(..., return_report=True)` returns `(datasources,
+coverage)` on success. Rejections raise `PrepBindingError` with a `.coverage`
+report; `run_prep_flow` returns `False` and leaves the existing JSON unchanged.
+Successful JSON replacement is staged in the same directory and atomic.
+
+Coverage lists matched workbook tables (with match method), unmatched published
+and local tables, unused outputs and required secondary queries. The contract is:
+
+1. At least one Prep output must reconnect a workbook table.
+2. **Every published datasource/table in that workbook must be reconnected.**
+   Use a scoped workbook/flow pairing if the flow does not cover its published
+   sources. Unrelated local tables may remain unchanged.
+3. Auxiliary flow outputs need not be consumed. They are reported as unused,
+   **not appended** to disguise an incomplete reconnection. Only secondary
+   queries referenced by bound queries are included.
+4. Exact output table names/captions are accepted, including the deterministic
+   space-to-underscore caption form. A single-table published datasource may
+   match its exact caption or published identity even if the relation is named
+   `sqlproxy`. Ambiguity/collisions are rejected.
+5. The only reserved prefix rule is `F_<digits>_<subject>` →
+   `S_F<digits>_<subject>`. It requires a unique candidate **and** published
+   identity metadata naming the target (`server_ds_name` from sqlproxy or the
+   extracted repository name/id). A caption or prefix resemblance alone is not
+   evidence. Missing proof fails with a recommendation to supply exact names or
+   published metadata; no fuzzy match or connection is invented.
+
+Thus outputs `F1, F2` with workbook published tables `F1, S_F2` **fail**, rather
+than reporting a full merge after binding only `F1`. Existing workbook physical
+columns must be available in the selected Prep output. Per-table overrides
+retain workbook table identity and take precedence over a preexisting
+datasource-wide override, so the TMDL partition consumes the bound M query.
+Globally colliding workbook table names are rejected for bound overrides.
+
+Standalone `.tfl/.tflx` **batch** migration still exports M expressions, source
+definitions and lineage/assessment artifacts; it does **not** produce a PBIP.
+Missing workbook datasource JSON in `--prep` mode is an error, not an implicit
+standalone conversion. Static JSON/TMDL checks do not execute M or verify refresh.
+
+---
+
 ## 1. Input Steps (Data Source Connections)
 
 | # | Tableau Prep Step | Power Query M Equivalent | Status | Notes |

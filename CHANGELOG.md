@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Fix stale Prep schemas through supported clean operations, aggregates, joins,
+  automatic unions and unpivot. Validate declared output fields, reject missing
+  columns/type conflicts and require deterministic split/pivot schemas rather
+  than inventing columns. Plan workbook `--prep` binding without mutating inputs,
+  report complete published-source coverage, and reject unmatched/partial or
+  ambiguous bindings before atomically replacing datasource JSON. Unused
+  auxiliary outputs no longer masquerade as reconnected workbook sources.
+  Permit only the reserved `F_<n>_<subject>` → `S_F<n>_<subject>` convention with
+  unique, exact published identity evidence, preserved from datasource metadata.
+  Keep bound M overrides effective through TMDL partition collection.
+  **#81 is not complete:** `ValueFilter`, `RichRangeFilter`, `RangeFilter`,
+  `Remap`, `RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter`,
+  `RichNullFilter` still fail explicitly without a proven JSON dialect.
+  Preserve #82/#83 container/DAG and standalone batch M+sources behavior (no
+  standalone batch PBIP); generated M/TMDL is not refresh verification.
+
 - Preserve authored `m_query_override` partitions through local-source auditing:
   missing inputs/stale connection metadata remain diagnostics, without replacing
   the query or claiming refresh success. Generated missing sources still fail

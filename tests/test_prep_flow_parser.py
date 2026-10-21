@@ -654,9 +654,11 @@ class TestMergePrepWithWorkbook(unittest.TestCase):
         prep = [{'name': 'prep.Out', 'tables': [{'name': 'Out'}],
                  'm_query_override': ''}]
         twb = [{'name': 'ds1', 'tables': [{'name': 'T1'}]}]
-        result = self._run_merge(prep, twb)
-        # With no m_query_override, prep is appended
-        self.assertGreaterEqual(len(result), 1)
+        original_prep, original_twb = deepcopy(prep), deepcopy(twb)
+        with self.assertRaisesRegex(ValueError, 'nonempty string M query'):
+            self._run_merge(prep, twb)
+        self.assertEqual(prep, original_prep)
+        self.assertEqual(twb, original_twb)
 
     def test_matching_table_merges_m_query(self):
         prep = [{'name': 'prep.Orders', 'caption': 'Orders',
@@ -674,9 +676,64 @@ class TestMergePrepWithWorkbook(unittest.TestCase):
                  'tables': [{'name': 'NewTable'}],
                  'm_query_override': 'let Source = #table({}) in Source'}]
         twb = [{'name': 'ds1', 'tables': [{'name': 'OtherTable'}]}]
-        result = self._run_merge(prep, twb)
-        # Should have both the TWB datasource and the Prep standalone
-        self.assertEqual(len(result), 2)
+        original_prep, original_twb = deepcopy(prep), deepcopy(twb)
+        with self.assertRaisesRegex(ValueError, 'No exact Prep bindings'):
+            self._run_merge(prep, twb)
+        self.assertEqual(prep, original_prep)
+        self.assertEqual(twb, original_twb)
+
+    def test_invalid_empty_binding_shapes_are_rejected_without_mutation(self):
+        cases = [
+            (
+                [{'name': 'prep.Empty', 'tables': [],
+                  'm_query_override': 'let Source = 1 in Source'}],
+                [{'name': 'ds1', 'tables': [{'name': 'Empty'}]}],
+                'one table per parsed datasource',
+            ),
+            (
+                [{'name': 'prep.Out', 'tables': [{'name': 'Out'}],
+                  'm_query_override': 'let Source = 1 in Source'}],
+                [{'name': 'ds1', 'tables': []}],
+                'No exact Prep bindings',
+            ),
+        ]
+        for prep, twb, message in cases:
+            with self.subTest(message=message):
+                original_prep, original_twb = deepcopy(prep), deepcopy(twb)
+                with self.assertRaisesRegex(ValueError, message):
+                    self._run_merge(prep, twb)
+                self.assertEqual(prep, original_prep)
+                self.assertEqual(twb, original_twb)
+
+    def test_ambiguous_prep_alias_is_rejected_without_mutation(self):
+        prep = [
+            {'name': 'prep.First', 'caption': 'Shared',
+             'tables': [{'name': 'First'}], 'm_query_override': 'let A = 1 in A'},
+            {'name': 'prep.Second', 'caption': 'Shared',
+             'tables': [{'name': 'Second'}], 'm_query_override': 'let B = 1 in B'},
+        ]
+        twb = [{'name': 'ds1', 'tables': [{'name': 'Shared'}]}]
+        original_prep, original_twb = deepcopy(prep), deepcopy(twb)
+        with self.assertRaisesRegex(ValueError, 'Ambiguous Prep merge alias'):
+            self._run_merge(prep, twb)
+        self.assertEqual(prep, original_prep)
+        self.assertEqual(twb, original_twb)
+
+    def test_incomplete_published_binding_is_rejected_without_mutation(self):
+        prep = [{'name': 'prep.Orders', 'caption': 'Orders',
+                 'tables': [{'name': 'Orders'}],
+                 'm_query_override': 'let Source = 1 in Source'}]
+        twb = [
+            {'name': 'published-orders', 'connection': {'type': 'published'},
+             'tables': [{'name': 'Orders'}]},
+            {'name': 'published-customers', 'connection': {'type': 'published'},
+             'tables': [{'name': 'Customers'}]},
+        ]
+        original_prep, original_twb = deepcopy(prep), deepcopy(twb)
+        with self.assertRaisesRegex(ValueError, 'Incomplete Prep binding'):
+            self._run_merge(prep, twb)
+        self.assertEqual(prep, original_prep)
+        self.assertEqual(twb, original_twb)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1000,12 +1057,57 @@ class TestProcessTransformNode(unittest.TestCase):
             'nextNodes': [],
         }
         nodes = {'inp': _input_node(next_ids=[nid]), nid: node}
-        node_results = {'inp': self._base_input_result()}
+        node_results = {'inp': {**self._base_input_result(),
+                                'fields': [{'name': 'Region', 'type': 'string'},
+                                           {'name': 'Sales', 'type': 'real'}]}}
         secondary = set()
         _process_transform_node(nid, node, nodes, ['inp'], 'Aggregate',
                                 node_results, secondary, 'GroupBy')
         self.assertIn(nid, node_results)
         self.assertIn('Table.Group', node_results[nid]['m_query'])
+
+    def test_aggregate_rejects_missing_group_and_measure_columns(self):
+        for field in ('Region', 'Sales'):
+            with self.subTest(missing=field):
+                nid = 'agg_missing'
+                node = {
+                    'baseType': 'transform', 'nodeType': '.v1.Aggregate',
+                    'name': 'GroupBy',
+                    'groupByFields': [{'name': 'Region'}],
+                    'aggregateFields': [
+                        {'name': 'Sales', 'aggregation': 'SUM', 'newColumnName': 'TotalSales'},
+                    ],
+                    'nextNodes': [],
+                }
+                fields = [{'name': 'Sales', 'type': 'real'}] if field == 'Region' else [
+                    {'name': 'Region', 'type': 'string'}]
+                upstream = {**self._base_input_result(), 'fields': fields}
+                node_results = {'inp': upstream}
+                original = deepcopy(node_results)
+                with self.assertRaisesRegex(ValueError, 'not in the upstream schema'):
+                    _process_transform_node(
+                        nid, node, {'inp': _input_node(next_ids=[nid]), nid: node},
+                        ['inp'], 'Aggregate', node_results, set(), 'GroupBy')
+                self.assertEqual(node_results, original)
+                self.assertNotIn(nid, node_results)
+
+    def test_aggregate_rejects_text_measure_for_sum(self):
+        nid = 'agg_text'
+        node = {
+            'baseType': 'transform', 'nodeType': '.v1.Aggregate', 'name': 'GroupBy',
+            'groupByFields': [{'name': 'Region'}],
+            'aggregateFields': [{'name': 'Sales', 'aggregation': 'SUM'}],
+            'nextNodes': [],
+        }
+        node_results = {'inp': {**self._base_input_result(), 'fields': [
+            {'name': 'Region', 'type': 'string'}, {'name': 'Sales', 'type': 'string'}]}}
+        original = deepcopy(node_results)
+        with self.assertRaisesRegex(ValueError, 'requires numeric input.*Sales'):
+            _process_transform_node(
+                nid, node, {'inp': _input_node(next_ids=[nid]), nid: node},
+                ['inp'], 'Aggregate', node_results, set(), 'GroupBy')
+        self.assertEqual(node_results, original)
+        self.assertNotIn(nid, node_results)
 
     # --- Join with leftNodeId / rightNodeId ---
     def test_join_transform_with_explicit_ids(self):
@@ -1077,12 +1179,32 @@ class TestProcessTransformNode(unittest.TestCase):
             'nextNodes': [],
         }
         nodes = {'inp': _input_node(next_ids=[nid]), nid: node}
-        node_results = {'inp': self._base_input_result()}
+        node_results = {'inp': {**self._base_input_result(), 'fields': [
+            {'name': 'Q1', 'type': 'real'}, {'name': 'Q2', 'type': 'real'}]}}
         secondary = set()
         _process_transform_node(nid, node, nodes, ['inp'], 'Pivot',
                                 node_results, secondary, 'Unpivot')
         self.assertIn(nid, node_results)
         self.assertIn('Unpivot', node_results[nid]['m_query'])
+
+    def test_unpivot_rejects_missing_pivot_column(self):
+        nid = 'piv_missing'
+        node = {
+            'baseType': 'transform', 'nodeType': '.v1.Pivot', 'name': 'Unpivot',
+            'pivotType': 'columnsToRows',
+            'pivotFields': [{'name': 'Q1'}, {'name': 'Q2'}],
+            'pivotValuesName': 'Value', 'pivotNamesName': 'Quarter',
+            'nextNodes': [],
+        }
+        node_results = {'inp': {**self._base_input_result(), 'fields': [
+            {'name': 'Q1', 'type': 'real'}]}}
+        original = deepcopy(node_results)
+        with self.assertRaisesRegex(ValueError, 'not in the upstream schema'):
+            _process_transform_node(
+                nid, node, {'inp': _input_node(next_ids=[nid]), nid: node},
+                ['inp'], 'Pivot', node_results, set(), 'Unpivot')
+        self.assertEqual(node_results, original)
+        self.assertNotIn(nid, node_results)
 
     # --- Script ---
     def test_script_transform(self):
@@ -1138,15 +1260,39 @@ class TestProcessTransformNode(unittest.TestCase):
                 'nextNodes': []}
         nodes = {'a': _input_node('A'), 'b': _input_node('B'), nid: node}
         node_results = {
-            'a': self._base_input_result('A'),
-            'b': self._base_input_result('B'),
+            'a': {**self._base_input_result('A'), 'fields': [
+                {'name': 'ID', 'type': 'integer'}, {'name': 'Val', 'type': 'real'}]},
+            'b': {**self._base_input_result('B'), 'fields': [
+                {'name': 'CustID', 'type': 'integer'}, {'name': 'CustName', 'type': 'string'}]},
         }
         secondary = set()
         _process_transform_node(nid, node, nodes, ['a', 'b'], 'CrossJoin',
                                 node_results, secondary, 'Cross')
         self.assertIn(nid, node_results)
         self.assertIn('Table.Join', node_results[nid]['m_query'])
+        self.assertIn('B', node_results[nid]['m_query'])
+        self.assertEqual(
+            [field['name'] for field in node_results[nid]['fields']],
+            ['ID', 'Val', 'CustID', 'CustName'])
         self.assertIn('b', secondary)
+
+    def test_cross_join_rejects_colliding_fields_instead_of_mismatching_m_schema(self):
+        nid = 'cj_collision'
+        node = {'baseType': 'transform', 'nodeType': '.v1.CrossJoin', 'name': 'Cross',
+                'nextNodes': []}
+        node_results = {
+            'a': {**self._base_input_result('A'), 'fields': [
+                {'name': 'ID', 'type': 'integer'}, {'name': 'Shared', 'type': 'string'}]},
+            'b': {**self._base_input_result('B'), 'fields': [
+                {'name': 'CustID', 'type': 'integer'}, {'name': 'Shared', 'type': 'string'}]},
+        }
+        original = deepcopy(node_results)
+        with self.assertRaisesRegex(ValueError, 'duplicate/colliding field'):
+            _process_transform_node(
+                nid, node, {'a': _input_node('A'), 'b': _input_node('B'), nid: node},
+                ['a', 'b'], 'CrossJoin', node_results, set(), 'Cross')
+        self.assertEqual(node_results, original)
+        self.assertNotIn(nid, node_results)
 
     # --- PublishedDataSource ---
     def test_published_datasource_transform(self):
@@ -1337,6 +1483,49 @@ class TestMergePrepExtended(unittest.TestCase):
         result = self._run([], twb)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]['name'], 'ds1')
+
+    def test_empty_workbook_is_valid_standalone_prep(self):
+        prep = [{'name': 'prep.Standalone', 'caption': 'Standalone',
+                 'tables': [{'name': 'Standalone'}],
+                 'm_query_override': 'let Source = 1 in Source'}]
+        original = deepcopy(prep)
+        old = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            result, coverage = merge_prep_with_workbook(prep, [], return_report=True)
+        finally:
+            sys.stdout = old
+        self.assertEqual(coverage['status'], 'standalone')
+        self.assertEqual(result, prep)
+        self.assertEqual(prep, original)
+
+    def test_partial_local_and_unused_output_coverage_is_reported(self):
+        prep = [
+            {'name': 'prep.Orders', 'caption': 'Orders',
+             'tables': [{'name': 'Orders'}],
+             'm_query_override': 'let Source = 1 in Source'},
+            {'name': 'prep.Auxiliary', 'caption': 'Auxiliary',
+             'tables': [{'name': 'Auxiliary'}],
+             'm_query_override': 'let Source = 2 in Source'},
+        ]
+        twb = [
+            {'name': 'main', 'tables': [{'name': 'Orders'}, {'name': 'LocalOnly'}]},
+            {'name': 'another-local', 'tables': [{'name': 'AlsoLocal'}]},
+        ]
+        original_prep, original_twb = deepcopy(prep), deepcopy(twb)
+        old = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            result, coverage = merge_prep_with_workbook(prep, twb, return_report=True)
+        finally:
+            sys.stdout = old
+        self.assertEqual(coverage['status'], 'complete')
+        self.assertEqual(len(coverage['matched']), 1)
+        self.assertEqual(len(coverage['unmatched_local']), 2)
+        self.assertEqual(coverage['unused_outputs'], ['Auxiliary'])
+        self.assertEqual([ds['name'] for ds in result], ['main', 'another-local'])
+        self.assertEqual(prep, original_prep)
+        self.assertEqual(twb, original_twb)
 
     def test_multiple_matches(self):
         """Multiple TWB tables matching different Prep tables."""
