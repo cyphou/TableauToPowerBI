@@ -5,30 +5,213 @@ Fabric-native artifacts. Static local validation is the release gate. Semantic
 execution, refresh and deployment evidence remain `not_run` unless an
 authorized environment proves otherwise.
 
-## Where we stand
+## Current priorities — 2026-10-21
 
-Measured on the committed example corpus, not estimated:
+Latest delivered baseline: commit `e429608` on `main`, following `7c27328`.
+The latest verified local full-suite measurement, including Remap conversion,
+checkpoint recovery, input stability, artifact inventories and batch output
+collision preflight, passed **11,618 tests**, with **66 skipped** and
+**1 xfailed**. This regression evidence does not prove Power Query refresh,
+Desktop rendering, or complete Prep feature support.
+
+### Delivered in the latest fixes
+
+| Area | Delivered behavior | Evidence / boundary |
+|---|---|---|
+| Source failures | Generated connection/navigation failures remain visible; authored M overrides and intentional value-level error handling are preserved | No generated blanket `try ... otherwise` empty-table fallback; existing output must be regenerated to receive generator changes |
+| Windows output paths | Plan short project identities before writing; validate paths and complete postprocessing before declaring success | Resume and quality/MCP lookup recognize the generated identity; this does not prove Desktop refresh |
+| Prep schemas | Supported clean operations, aggregates, joins, automatic unions and unpivot propagate checked fields/types | Missing columns, incompatible types and colliding names fail explicitly; no invented source schema |
+| Bounded Prep Remap | Convert observed explicit JSON-encoded TEXT maps standalone or in grouped clean actions, with simultaneous exact case-sensitive lookup preserving unmatched values/nulls | Static source-to-parser-to-workbook/TMDL tests; reject missing/non-string upstream fields and invalid/ambiguous maps. `groupMethodProps` is materialized-map provenance, not fuzzy execution; native refresh/value execution is `not_run` |
+| Prep workbook binding | Plan exact bindings on copies, require at least one match and complete published-source coverage, then replace datasource JSON atomically | Ambiguous or incomplete bindings reject; unused outputs are reported, not appended as reconnections |
+| Prep graph and standalone export | Preserve the #82/#83 container/DAG and standalone batch safeguards | Standalone batch exports M, source definitions and assessment/lineage, not PBIP; preservation does not close #81 |
+
+See the [Prep parser and binding contract](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#parser-scope-and-workbook-binding-contract-reports-8183)
+and [known limitations](KNOWN_LIMITATIONS.md) for the supported scope.
+
+### Next development sequence
+
+Correctness and reproducible evidence take priority over further structural
+refactoring. These work items include a delivered bounded N2 slice; remaining work is not
+completed functionality or runtime evidence.
+
+| Order | Work item | Owner | Acceptance gate |
+|---|---|---|---|
+| N1 — Prep dialect evidence (#81, partial / Open) | Remap producer structure and expected string mappings are recorded from the public CC-BY-4.0 example: one observed dialect of eight; obtain evidence for the other seven unsupported clean dialects | Extractor / Tester | Remap's unmodified operation-field projection and anonymized reduced multigroup shape have producer-path checks and malformed/ambiguous-map controls. N1 remains open until all eight dialects have observed payloads, expected semantics and negative controls; unsupported dialects still fail explicitly |
+| N2 — Incremental Prep conversion (#81, In progress) | Done: first bounded Remap slice for observed explicit JSON-encoded TEXT maps, standalone and grouped. Simultaneous exact case-sensitive lookup preserves unmatched strings/nulls. Implement no other dialect until its N1 evidence is complete | Extractor / Wiring / Tester | Static production tests cover generated lookup/null/unmatched branches, invalid/ambiguous maps, missing/non-string upstream fields, and source-to-parser-to-workbook/TMDL field names/types, binding and M preservation. `groupMethodProps` is provenance only, not fuzzy execution. Seven dialects remain unsupported; native refresh/value execution is `not_run` |
+| N3 — Batch resilience (In progress; bounded slice delivered) | Harden batch resume for unusable checkpoints, roll back failed checkpoint updates under the lock, retract an incomplete PBIP entry marker after failed/interrupted postprocessing, bind each resume signature to that workbook's effective configuration, and preflight candidate destination collisions; exercise atomic Prep update failures | Orchestrator / Extractor / Tester | Focused tests cover malformed/empty/non-object/invalid-UTF-8 checkpoint handling, absent-checkpoint legacy behavior, retry and second resume using the planned identity, five checkpoint-write fault scenarios (partial write, persistent/transient replacement lock, interrupted save, two concurrent workers), ten effective-config signature regressions, injected Prep dump/replace failures, and Windows-normalized output collision preflight. Signatures cover resolved per-workbook culture/calendar/Prep path and content, quality policy, `verify_open`, output format, model mode, and extraction mode; unchanged effective settings and unrelated manifest entries do not invalidate another completion, missing requested Prep cannot match success, and old signatures regenerate once. Collision preflight checks all candidates before resume/dry-run or output writes; conflicting normalized targets fail with `VALIDATION_FAILED` (5), while distinct subdirectories remain valid. Prep fault tests verify existing atomic-write behavior, not a new production fix. Full N3 acceptance remains open: interrupted or failed runs must retain prior valid datasource JSON, avoid publishing a successful partial project, and resume without duplicate outputs; one-workbook folders and mixed workbook/Prep batches must preserve their contracts |
+| N4 — Refresh reproduction (#84) | Capture the exact minimal failing model, relationship and source prerequisites in an authorized local environment; distinguish a source error from a relationship-triggered failure | Semantic / Wiring / Healing / Tester | A reproducible negative control and causal fix with regression coverage; do not remove relationships or substitute empty tables merely to obtain a pass |
+| N5 — Operational validation | Refresh and save/reopen representative generated projects; compare source/target values and Tableau/Power BI screenshots where authorized | Reviewer / Evidence / Deployer | Attach refresh, value-comparison and visual evidence with environment/prerequisite status; static success alone never becomes `OPERATIONAL_100` |
+
+**N1 is partial; N2's first bounded Remap conversion slice is delivered.**
+`.v2018_3_3.Remap` is the one dialect with observed producer structure and
+bounded converter support, not full #81 closure. Its fixture includes an
+unmodified operation-field projection and an anonymized, reduced multigroup
+payload with a separate source-shape summary and `NGramFingerprint` provenance.
+Expected rows remain test-side specification, not native M execution.
+`tests/test_prep_remap_conversion.py` exercises production standalone and
+`beforeActionGroup`/`actionGroup`/`afterActionGroup` conversion and static
+source-to-TMDL preservation. Identifier healing preserves the generated valid
+M conditional/equality syntax rather than quoting it as a malformed step name.
+These checks do not prove native refresh or runtime value equivalence; both
+remain `not_run` pending an authorized Power Query environment. The seven
+still-unproven dialects are `ValueFilter`, `RichRangeFilter`, `RangeFilter`,
+`RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter` and
+`RichNullFilter`. Helper availability is not parser support; `RangeFilter` must
+not be guessed from the supported `FilterRange` dialect. #81 remains partial
+until the required dialects and their evidence are covered. N4 reproduction can
+proceed independently when an authorized environment is available; #84 remains
+unresolved.
+
+N3 has a bounded batch-resilience slice delivered, not full resilience closure.
+An existing checkpoint that is empty, malformed, non-object, or invalid UTF-8
+forces regeneration with a warning; file-read failures do too. This includes
+syntactically valid but unusable values such as `{}` or a non-object. Only an absent
+checkpoint permits the legacy marker-only resume fallback. Failed or
+interrupted batch postprocessing retracts the PBIP entry marker at the planned
+(possibly shortened) identity, so a retry regenerates it and a later resume can
+skip only the completed output.
+
+Resume signatures now use the effective configuration resolved for each
+workbook rather than hashing the whole manifest or only global options. They
+include effective culture and calendar settings, output format, model mode,
+extraction mode, quality policy, `verify_open`, and the requested Prep path plus
+its content signature. Thus a changed effective override or changed Prep bytes
+invalidates that workbook; changing globals shadowed by unchanged workbook
+overrides or changing an unrelated manifest entry does not. A requested Prep
+file that is missing or unreadable cannot produce a reusable success signature.
+The signature version also makes checkpoints written with the obsolete global
+configuration regenerate once. This does not change the absent-checkpoint-only
+legacy marker fallback described above.
+
+Each batch task captures the workbook digest and effective configuration/Prep
+digest when that task starts, so queued work uses the Prep bytes available at
+its actual start rather than a stale planning-time digest. Before writing a
+successful checkpoint, the worker rechecks those captured signatures. A
+workbook or Prep input that changes or becomes deleted/unreadable after capture
+becomes an explicit failed result; unavailable inputs at task start fail before
+the migration worker can claim success. For a failure after publication, the
+planned PBIP entry marker is retracted, and retry can process the now-stable
+input. The checkpoint retains the captured digest, not a fresh digest computed
+after output generation. Eleven focused source/entry-stability cases exercise
+mutations and unavailable inputs at task start or before success, including a
+queued Prep edit; the missing-requested-Prep contract separately verifies
+preflight failure even when the mocked Prep boundary would return success.
+This is a before/after digest boundary only: there are no input snapshots,
+atomic-input guarantees, continuous monitoring, or ABA-change guarantee, and
+it says nothing about runtime/Power Query execution.
+
+The checkpoint-write slice fixes a shared-memory success leak: after an
+interrupted save, another worker could serialize the interrupted worker's
+uncommitted success into its own checkpoint update. `_set_checkpoint` now
+restores the previous entry (or removes a newly inserted entry) under the same
+lock on `BaseException`, then re-raises. Existing staged-file replacement and
+cleanup preserve the prior on-disk snapshot when the save fails; a transient
+replacement lock can recover within the existing three-attempt retry.
+Five new fault scenarios in `tests/test_bug_bash_resume_paths.py` exercise
+partial JSON writes, persistent and transient replacement locks, an interrupted
+success save, and two concurrent workers. They check snapshot preservation and
+temporary-file cleanup; the concurrent case verifies that a healthy worker's
+save cannot publish the interrupted worker's success. Failed/interrupted cases
+regenerate the incomplete planned output on retry and skip only on a subsequent
+resume; transient recovery keeps the successful output resumable.
+Focused verification:
+`python -m pytest tests/test_bug_bash_resume_paths.py -q -k 'success_checkpoint_io_failure or interrupt_during_success_checkpoint or parallel_checkpoint_interrupt'`
+— **5 passed, 35 deselected**. This is a bounded fault-injection result, not a
+new full-suite measurement.
+
+Successful workbook checkpoint entries now include a bounded structural
+inventory: relative paths and SHA-256 content hashes for `.pbip`, `.pbir`,
+`.pbism`, `.tmdl`, `.json`, `.pq`, `.m`, `.ipynb`, `.py`, `.bim`, and `.platform`
+files found in the completed output tree. Resume skips only when the completed
+marker exists, source/effective-configuration signatures still match, and the
+recorded non-empty inventory matches the current tree. An addition, deletion,
+or content edit to an inventoried file—including a same-size edit with restored
+mtime—forces regeneration. `.git`, `.pbi`, and `__pycache__` directories and
+the project-root `Data` directory are excluded; customer data and Desktop
+`.pbi` cache/runtime files therefore do not invalidate the checkpoint. This is a
+bounded structural integrity check, not a full all-file audit, complete schema
+validation, Desktop-open proof, or native refresh check. A successful older
+checkpoint without an inventory regenerates once and records a fresh baseline.
+The legacy marker-only fallback remains available only if the checkpoint file
+is absent; malformed or unreadable checkpoint files still force regeneration.
+Standalone `.tfl`/`.tflx` Prep flows have no PBIP/Fabric completion contract and
+cannot be skipped by either the inventory or marker-only fallback, even if a
+stray PBIP marker exists.
+Resume validates each workbook's checkpoint entry/result shape and any
+provided `report_name` before reuse. Invalid values emit a warning containing
+the workbook key and reason, never the checkpoint payload, and force regeneration
+only for that workbook; healthy entries remain reusable. Preferred identities
+are restricted to the planned project name or source basename, while an omitted
+optional result or identity remains compatible with prior checkpoint entries.
+Twelve focused regressions in `tests/test_bug_bash_resume_paths.py` cover
+PBIP additions/deletions/content edits, Fabric model deletions/content edits,
+excluded Data and `.pbi` changes, legacy output identity, one-time inventory
+migration, hash-read failure, and standalone Prep handling. Local verification
+on 2026-10-21:
+`python -m pytest tests/test_bug_bash_resume_paths.py -q` — **93 passed**,
+including the source/entry-stability cases described above. This file result
+is not a new full-suite measurement.
+
+Batch output destinations are now preflighted across every discovered candidate
+before resume can skip a workbook, dry-run can return, or output/checkpoint/log
+writes begin. The comparison uses normalized, case-folded Windows path identity
+for the planned target, including the workbook's `P_<hash>` path-budget identity
+and basename-preserving Prep targets. This explicitly catches same-stem files
+with different extensions, shortened workbook targets colliding with Prep
+targets, and case-only path aliases. A collision returns
+`VALIDATION_FAILED` (exit code 5), performs no generation, and leaves existing
+output, checkpoint, and JSONL log bytes untouched. The diagnostic recommends
+renaming the conflicting inputs or placing them in distinct, noncolliding
+subdirectories; it does not auto-rename them. Same-stem candidates in distinct
+subdirectories remain valid. The preflight does not change path-budget
+isolation: an individually impossible target remains a per-candidate failure
+and does not prevent a healthy sibling from running. On 2026-10-21,
+`python -m pytest tests/test_batch_output_collisions.py -q` — **7 passed**.
+These focused regressions verify this bounded slice only; N3 remains in
+progress, and no full-suite, Desktop, or runtime validation is claimed.
+
+Fault injection confirms that failed Prep JSON serialization or replacement
+leaves the prior datasource JSON untouched and removes the staged file; this
+tests existing atomic-write behavior, not a new production fix. These are
+focused static regressions, not Desktop/runtime evidence, and do not satisfy the
+full N3 acceptance gate or establish operational closure. Native Desktop,
+refresh and runtime value execution remain `not_run` for this slice; they
+require a separate authorized environment and evidence.
+
+Generation stays **folder-based bulk/batch only**, including a folder with one
+workbook. Screenshot capture, Desktop probes, refresh and deployment are explicit
+diagnostics/operations, not automatic consequences of batch generation. Use only
+public fixtures or reserved placeholders in committed tests; private logs,
+credentials and customer data are not roadmap evidence to commit.
+
+## Historical corpus snapshot
+
+The figures below were measured on the committed example corpus in an earlier
+cycle. They have **not been remeasured for `e429608`** and are not current
+all-features or runtime certification. Historical sections below retain the
+original measurements and decisions; the current priority list above supersedes
+their sequencing.
 
 | Signal | Value |
 |---|---|
 | Migration success | 44/44 artefacts, 0 failures |
 | Static openability gate | 27/27 projects, 0 blockers |
 | Quality verdicts | 17 PASS, 10 WARN, 0 FAIL |
-| Outstanding repairs | **0** — nothing measurably broken remains |
+| Outstanding repairs in that corpus queue | **0** at the snapshot; excludes subsequently reported defects and unsupported Prep dialects |
 | Functional parity | mean **99.7%**, lowest **96.4%**, 20 of 26 at full parity |
 | Lineage coverage | **99.9%**, 0 unresolved source records |
 | Evidence level | `STATIC_PASS` on 26/26 |
 | Test suite (historical baseline; see CI for current results) | 10,798 passed, 66 skipped, 1 xfailed; 10,865 collected across 316 `test_*.py` files in 281.73s |
 | Agent ownership | 0 unowned modules, 0 asymmetric declarations |
 
-The remediation queue now contains **no `repair` actions at all**: 10 `decide`,
-12 `note`, 2 `verify`. Everything left either needs a human judgement or is
-evidence with nothing to act on. That is the milestone this cycle reached, and
-it changes what the next one should be about.
+At that snapshot, the corpus remediation queue contained no `repair` actions:
+10 `decide`, 12 `note`, 2 `verify`. Those historical counts do not supersede the
+open Prep work or #84 reproduction above, and have not been refreshed in this
+documentation update.
 
 ## Convergence to 100% and Resilience
 
-The current **99.7% functional parity** is not the release target by itself.
+The historical **99.7% functional parity** is not the release target by itself.
 The target is the contract in [FULL_MIGRATION_EVOLUTION_PLAN.md](FULL_MIGRATION_EVOLUTION_PLAN.md):
 no silent source-object drops, an explicit target or remediation for every
 in-use object, evidence for every claimed conversion, and a separate status for

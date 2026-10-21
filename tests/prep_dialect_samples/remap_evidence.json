@@ -1,0 +1,58 @@
+{
+  "provenance": {
+    "source_file": "examples/real_world/tableau_prep_book.tfl",
+    "upstream": "https://github.com/aloth/tableau-book-resources",
+    "upstream_commit": "407ce9780e00c1c07a761754be242b43f7bb43d5",
+    "upstream_file": "chapter10/10-1-Tableau_Prep.tfl",
+    "upstream_member": "flow",
+    "source_url": "https://github.com/aloth/tableau-book-resources/blob/407ce9780e00c1c07a761754be242b43f7bb43d5/chapter10/10-1-Tableau_Prep.tfl",
+    "license_url": "https://github.com/aloth/tableau-book-resources/blob/407ce9780e00c1c07a761754be242b43f7bb43d5/LICENSE",
+    "verification": "Both local producer nodes matched the pinned upstream archive's flow member exactly on 2026-10-21; verification was in memory, without importing connection data.",
+    "license": "CC-BY-4.0",
+    "attribution": "Copyright Alexander Loth. Loth, A. (2019). Visual Analytics with Tableau. Wiley. Licensed CC-BY-4.0 (https://creativecommons.org/licenses/by/4.0/).",
+    "transformation_note": "Structural evidence only. discounts_remap.payload is an unmodified projection of the producer node's operation fields, not the entire node. generic_multigroup_remap.payload is ALTERED: group keys and values replaced with generic reserved labels; source_shape records the original group count, per-group sizes, target-in-sources property and groupMethodProps. The reduced generic payload is not raw source data and does not preserve the original group count.",
+    "runtime_claim": "none; static structural evidence only"
+  },
+  "discounts_remap": {
+    "source_node_path": "$.nodes.5fde9199-3e12-4811-9a47-cd7fb37a1c6b.loomContainer.nodes.520dbd33-f6f0-4c38-ad9f-dac3f785b77f",
+    "altered": false,
+    "payload": {
+      "nodeType": ".v2018_3_3.Remap",
+      "columnName": "Discounts",
+      "values": {"\"0\"": ["\"0\"", "\"None\""]},
+      "groupMethodProps": null
+    },
+    "scenario": {
+      "input_type": "string",
+      "input_rows": ["0", "None", "5%", null],
+      "expected_type": "string",
+      "expected_rows": ["0", "0", "5%", null]
+    }
+  },
+  "generic_multigroup_remap": {
+    "source_node_path": "$.nodes.4964e8db-6fbd-4592-8fd3-e1a997f70f93.loomContainer.nodes.1b90ce0a-5e91-4411-ab86-88b1d4056c5f",
+    "altered": true,
+    "alteration": "values and column name replaced with generic labels (Label_*, Column_A); not raw source",
+    "source_shape": {
+      "nodeType": ".v2018_3_3.Remap",
+      "group_sizes": [3, 2, 2, 2, 4, 2, 5, 2, 2, 2, 2],
+      "target_listed_in_own_sources": true,
+      "groupMethodProps": {"groupMethod": "NGramFingerprint", "threshold": 3.0}
+    },
+    "payload": {
+      "nodeType": ".v2018_3_3.Remap",
+      "columnName": "Column_A",
+      "values": {
+        "\"Label_1\"": ["\"label.1\"", "\"Label 1x\"", "\"Label_1\""],
+        "\"Label_2\"": ["\"Label_2\"", "\"label-2\""]
+      },
+      "groupMethodProps": {"groupMethod": "NGramFingerprint", "threshold": 3.0}
+    },
+    "scenario": {
+      "input_type": "string",
+      "input_rows": ["label.1", "label-2", "Label_2", "Other", null],
+      "expected_type": "string",
+      "expected_rows": ["Label_1", "Label_2", "Label_2", "Other", null]
+    }
+  }
+}

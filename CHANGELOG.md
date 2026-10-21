@@ -12,9 +12,15 @@
   Permit only the reserved `F_<n>_<subject>` → `S_F<n>_<subject>` convention with
   unique, exact published identity evidence, preserved from datasource metadata.
   Keep bound M overrides effective through TMDL partition collection.
-  **#81 is not complete:** `ValueFilter`, `RichRangeFilter`, `RangeFilter`,
-  `Remap`, `RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter`,
-  `RichNullFilter` still fail explicitly without a proven JSON dialect.
+  Convert observed `.v2018_3_3.Remap` explicit JSON-encoded TEXT maps in
+  standalone nodes and grouped clean actions. Use simultaneous, exact
+  case-sensitive lookup, preserving unmatched values and nulls; reject missing
+  or non-string upstream fields and invalid/ambiguous maps. `groupMethodProps`
+  is provenance for the materialized map, not fuzzy execution. Preserve this
+  valid M through identifier healing and workbook binding into TMDL, covered by
+  static source-to-TMDL tests, not native refresh/value execution. N1 remains
+  partial (one observed dialect of eight); N2's first bounded Remap slice is
+  delivered. The other seven clean dialects remain unsupported. **#81 is not complete.**
   Preserve #82/#83 container/DAG and standalone batch M+sources behavior (no
   standalone batch PBIP); generated M/TMDL is not refresh verification.
 
@@ -35,6 +41,79 @@
   generation checkpoint. Resumed outputs are rechecked even with
   `--no-verify-open`; older single-file generation checkpoints are regenerated
   once because they do not prove postprocessing completed.
+
+- For batch resume, use legacy marker-only fallback only when the checkpoint
+  file is absent; an empty, malformed, non-object, or invalid-UTF-8 checkpoint
+  forces regeneration with a warning, as do read failures. Failed or
+  interrupted batch postprocessing retracts the PBIP entry marker using the
+  planned identity, so retries regenerate rather than skip incomplete output.
+  Batch checkpoint signatures now hash each workbook's effective configuration:
+  manifest-resolved culture and calendar, requested Prep path and file-content
+  signature, quality policy, `verify_open`, output format, model mode, and
+  extraction mode. Changing an effective setting or Prep contents invalidates
+  that workbook; unchanged effective settings and unrelated manifest entries do
+  not. A requested but missing/unreadable Prep file cannot match a successful
+  checkpoint. Older global-config signatures regenerate once under the new
+  signature version. This is separate from the legacy marker-only fallback,
+  which remains available only when the checkpoint file itself is absent.
+  Roll back the in-memory checkpoint entry under the lock on any save
+  `BaseException`, then propagate it: another worker can no longer persist an
+  interrupted worker's uncommitted success. Five checkpoint-write fault
+  scenarios cover partial writes, persistent/transient replacement locks,
+  interrupted saves and two concurrent workers. Failed saves preserve the prior
+  on-disk snapshot and clean temporary files; retries regenerate incomplete
+  output, while a transient lock can recover without regeneration.
+  Ten focused regressions cover effective manifest culture/calendar changes,
+  unchanged overrides despite changed globals, unrelated manifest entries,
+  Prep content edits and missing Prep, quality policy and `verify_open`
+  changes, and one-time regeneration of old signatures.
+  Successful workbook checkpoints now also record a bounded SHA-256 inventory
+  of generated structural files. On resume, added, deleted, or content-edited
+  inventoried files force regeneration; unchanged inventory can be skipped only
+  with matching source/configuration signatures and a completed output marker.
+  This is not full schema validation or an all-artifact audit: customer files
+  under the project-root `Data` directory and Desktop-local `.pbi` state are
+  excluded, and the inventory does not prove native refresh. Older successful
+  checkpoints without an inventory regenerate once to establish a baseline.
+  The legacy marker-only fallback remains limited to an absent checkpoint file;
+  malformed/unreadable checkpoints force regeneration. Standalone Prep flows
+  do not qualify for PBIP/Fabric completion-marker skipping.
+  Validate each workbook's checkpoint entry, result, and optional `report_name`
+  identity before reuse. Invalid entries log only the workbook key and reason,
+  not checkpoint payload; only that workbook is regenerated while healthy
+  entries remain reusable. A supplied identity is limited to the planned
+  project name or source basename, and an omitted optional result/identity
+  remains compatible with existing checkpoints.
+  Capture workbook and requested Prep content signatures when each batch task
+  starts, refreshing a queued task's Prep signature at that boundary; recheck
+  the signatures before recording success. A workbook or Prep input that
+  changes or becomes deleted/unreadable after capture fails explicitly,
+  retracts the PBIP marker, and remains retryable. A requested Prep flow already
+  missing at task start fails before the worker can report success. The
+  checkpoint records the captured input digest, not a new digest taken after
+  output generation. Eleven focused source/entry-stability cases and the
+  missing-Prep preflight contract cover these boundaries. This compares
+  before/after digests only; it does not provide input snapshots, atomic-input
+  or continuous-monitoring guarantees, or protection against ABA changes.
+  Fault-injection regressions also verify that failed Prep JSON dumping or
+  replacement leaves existing datasource JSON intact and cleans the staged
+  file; this verifies existing atomic-write behavior and is not a new Prep
+  production fix. N3 remains partial; these checks do not claim full operational
+  closure, Power BI Desktop or runtime validation.
+
+- Preflight every discovered batch candidate's planned output destination
+  before resume skipping, dry-run return, or output/checkpoint/log writes.
+  Compare normalized Windows path identities case-insensitively, including
+  path-budget-shortened workbook names and Prep-flow targets. Same-stem inputs
+  with different extensions, a shortened project colliding with a Prep target,
+  and case-only path aliases now fail explicitly with `VALIDATION_FAILED`
+  (exit code 5) without generating outputs or overwriting existing checkpoint,
+  PBIP, or JSONL log files. Rename conflicting inputs or place them in distinct
+  noncolliding source subdirectories; names are not auto-renamed. Distinct
+  subdirectories remain valid, and a single candidate's path-budget failure
+  remains isolated from healthy siblings. Focused regressions:
+  `python -m pytest tests/test_batch_output_collisions.py -q` — **7 passed**.
+  This bounded result does not close N3 or claim Desktop/runtime validation.
 
 - Stop injecting Power Query `Source = try ... otherwise #table(...)` guards
   during semantic-model generation and self-healing, for all connectors.

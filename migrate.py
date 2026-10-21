@@ -2305,6 +2305,40 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
 
     # Output root: honour --output-dir or default to <batch_dir>/migrated
     migrated_root = output_dir if output_dir else os.path.join(batch_dir, 'migrated')
+
+    # Plan ALL destinations before resume can hide a conflicting source, and
+    # before mkdir, checkpoint updates or JSONL logging can write anything.
+    # Prep exports keep their source basename; workbook projects must use the
+    # same path-budget identity as _run_task, not merely the input stem.
+    target_sources = {}
+    for tableau_file in tableau_files:
+        basename, extension = os.path.splitext(os.path.basename(tableau_file))
+        rel_dir = os.path.relpath(os.path.dirname(tableau_file), batch_dir)
+        out_base = os.path.join(migrated_root, rel_dir) if rel_dir != '.' else migrated_root
+        project_name = basename
+        if extension.lower() not in ('.tfl', '.tflx'):
+            try:
+                project_name = _desktop_project_name(basename, out_base, output_format)
+            except ValueError:
+                # An impossible path remains an isolated worker failure. Still
+                # detect duplicate nominal destinations under an unusable root.
+                pass
+        project_path = os.path.join(out_base, project_name)
+        # The target contract is Windows even on a case-sensitive host.
+        # realpath also resolves existing filesystem aliases before casefold.
+        identity = os.path.normpath(os.path.realpath(project_path)).replace('\\', '/').casefold()
+        target_sources.setdefault(identity, []).append(
+            (os.path.relpath(tableau_file, batch_dir), project_path))
+    conflicts = [sources for sources in target_sources.values() if len(sources) > 1]
+    if conflicts:
+        print("Error: Batch output project collisions (Windows path identity):")
+        for sources in conflicts:
+            print(f"  Target: {sources[0][1]}")
+            for source, _target in sources:
+                print(f"    Source: {source}")
+        print("Rename the conflicting inputs or place them in separate noncolliding folders.")
+        return ExitCode.VALIDATION_FAILED
+
     if dry_run:
         print(f"[DRY RUN] Found {len(tableau_files)} batch source candidate(s):")
         for path in tableau_files:
@@ -2316,19 +2350,6 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
     checkpoint_path = os.path.join(migrated_root, '.migration_batch_state.json')
     checkpoint_lock = threading.RLock()
 
-    def _checkpoint_config():
-        return json.dumps({
-            'output_format': output_format,
-            'calendar_start': calendar_start,
-            'calendar_end': calendar_end,
-            'culture': culture,
-            'model_mode': model_mode,
-            'skip_extraction': skip_extraction,
-            'prep_file': os.path.abspath(prep_file) if prep_file else None,
-        }, sort_keys=True, default=str)
-
-    checkpoint_config = hashlib.sha256(_checkpoint_config().encode('utf-8')).hexdigest()
-
     def _source_signature(path):
         try:
             digest = hashlib.sha256()
@@ -2339,15 +2360,175 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         except OSError:
             return ''
 
+    # Resolve exactly the overrides the worker uses, before deciding whether a
+    # workbook can resume. Never hash the whole manifest: unrelated entries
+    # must not invalidate this workbook's checkpoint.
+    manifest_lookup = {}
+    if manifest:
+        for entry in manifest:
+            manifest_lookup[os.path.normpath(entry.get('file', ''))] = entry
+
+    def _resolve_workbook_config(tableau_file):
+        rel_path = os.path.normpath(os.path.relpath(tableau_file, batch_dir))
+        entry = manifest_lookup.get(rel_path, {})
+        if not entry:
+            entry = manifest_lookup.get(
+                os.path.normpath(os.path.basename(tableau_file)), {})
+        return {
+            'wb_culture': entry.get('culture', culture),
+            'wb_cal_start': entry.get('calendar_start', calendar_start),
+            'wb_cal_end': entry.get('calendar_end', calendar_end),
+            'wb_prep': entry.get('prep', prep_file),
+            'output_format': output_format,
+            'model_mode': model_mode,
+            'skip_extraction': skip_extraction,
+            'quality_policy': quality_policy,
+            'verify_open': verify_open,
+        }
+
+    def _checkpoint_config(effective):
+        config = dict(effective)
+        requested_prep = config.pop('wb_prep')
+        config['prep_file'] = None
+        config['prep_signature'] = None
+        if requested_prep:
+            try:
+                config['prep_file'] = os.path.abspath(requested_prep)
+                config['prep_signature'] = _source_signature(requested_prep)
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Could not sign requested Prep flow %s; forcing regeneration: %s",
+                    requested_prep, exc)
+                return None
+            if not config['prep_signature']:
+                logger.warning(
+                    "Could not read requested Prep flow %s; forcing regeneration",
+                    requested_prep)
+                # No stable sentinel may validate an earlier success. Leave
+                # source failure reporting to the isolated migration worker.
+                return None
+        # Obsolete global-config signatures must regenerate once, even when
+        # their global options happen to match the effective workbook options.
+        config['signature_version'] = 2
+        return hashlib.sha256(
+            json.dumps(config, sort_keys=True, default=str).encode('utf-8')
+        ).hexdigest()
+
+    workbook_configs = {}
+    for tableau_file in tableau_files:
+        effective = _resolve_workbook_config(tableau_file)
+        workbook_configs[tableau_file] = {
+            **effective,
+            'config_signature': _checkpoint_config(effective),
+        }
+
     def _load_checkpoint():
         try:
             with open(checkpoint_path, 'r', encoding='utf-8') as handle:
                 value = json.load(handle)
-            return value if isinstance(value, dict) else {}
-        except (OSError, json.JSONDecodeError):
+            if not isinstance(value, dict):
+                logger.warning(
+                    "Could not load batch checkpoint %s; forcing regeneration: "
+                    "checkpoint JSON must be an object", checkpoint_path)
+                return {}
+            if not value:
+                logger.warning(
+                    "Could not load batch checkpoint %s; forcing regeneration: "
+                    "checkpoint object is empty", checkpoint_path)
+            return value
+        except FileNotFoundError:
+            return None
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            logger.warning("Could not load batch checkpoint %s; forcing regeneration: %s",
+                           checkpoint_path, exc)
             return {}
 
-    checkpoint = _load_checkpoint()
+    loaded_checkpoint = _load_checkpoint()
+    # Only a genuinely absent checkpoint permits legacy marker-only resume.
+    # An unreadable, truncated or empty checkpoint cannot prove completion.
+    legacy_resume = loaded_checkpoint is None
+    checkpoint = loaded_checkpoint or {}
+
+    def _completed_project(tableau_file, out_base, preferred=None):
+        """Discover the actual successful identity, including pre-planning names."""
+        if os.path.splitext(tableau_file)[1].lower() in ('.tfl', '.tflx'):
+            # Standalone Prep exports are not a PBIP/Fabric completion contract.
+            return None
+        basename = os.path.splitext(os.path.basename(tableau_file))[0]
+        planned = _desktop_project_name(basename, out_base, output_format)
+        # A checkpoint may select an existing expected identity, never supply
+        # an arbitrary path (including an absolute or traversal path).
+        if not isinstance(preferred, str) or preferred not in (planned, basename):
+            preferred = None
+        for identity in dict.fromkeys(filter(None, (preferred, planned, basename))):
+            project = os.path.join(out_base, identity)
+            marker = os.path.join(
+                project, f'{identity}.SemanticModel' if output_format == 'fabric'
+                else f'{identity}.pbip')
+            if not (os.path.isdir(marker) if output_format == 'fabric'
+                    else os.path.isfile(marker)):
+                continue
+            if output_format != 'fabric':
+                from powerbi_import.desktop_paths import DesktopPathError, validate_desktop_tree
+                try:
+                    validate_desktop_tree(project)
+                except DesktopPathError:
+                    continue
+            return project, marker
+        return None
+
+    def _artifact_inventory(completed, out_base):
+        """Fingerprint a successful structural baseline, not artifact schemas.
+
+        Keep the inventory in the batch checkpoint OUTSIDE the project: no
+        manifest is written into (and recursively hashed with) its own inputs.
+        Customer data and Desktop-local state are deliberately out of scope.
+        """
+        from powerbi_import.evidence_manifest import file_sha256
+
+        project, marker = completed
+        extensions = {
+            '.pbip', '.pbir', '.pbism', '.tmdl', '.json', '.pq', '.m',
+            '.ipynb', '.py', '.bim',
+        }
+        files = {}
+
+        def walk_error(exc):
+            # os.walk otherwise silently omits unreadable subtrees.
+            raise exc
+
+        try:
+            for root, dirs, names in os.walk(project, onerror=walk_error):
+                dirs[:] = sorted(
+                    name for name in dirs
+                    if name not in ('.git', '.pbi', '__pycache__')
+                    and not (root == project and name.casefold() == 'data'))
+                for name in sorted(names):
+                    if (name != '.platform'
+                            and os.path.splitext(name)[1].lower() not in extensions):
+                        continue
+                    path = os.path.join(root, name)
+                    if os.path.abspath(path) in {
+                            os.path.abspath(checkpoint_path),
+                            os.path.abspath(jsonl_log) if jsonl_log else None}:
+                        continue
+                    digest = file_sha256(path)
+                    if digest is None:
+                        raise OSError(f"Could not hash structural artifact: {path}")
+                    files[os.path.relpath(path, project).replace(os.sep, '/')] = digest
+            if not files:
+                raise OSError("No structural artifacts found in completed project")
+            return {
+                'project': os.path.relpath(project, out_base).replace(os.sep, '/'),
+                'marker': os.path.relpath(marker, project).replace(os.sep, '/'),
+                'files': dict(sorted(files.items())),
+            }
+        except OSError as exc:
+            logger.warning(
+                "Could not inventory generated artifacts in %s; forcing regeneration: %s",
+                project, exc)
+            # Never let two read failures compare equal as reusable evidence.
+            return None
 
     def _save_checkpoint():
         with checkpoint_lock:
@@ -2385,19 +2566,44 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             stages['quality'] = str(result['quality_status']).lower()
         if result.get('prep_flow'):
             stages['prep'] = 'completed' if result.get('success') else 'failed'
+        artifact_inventory = None
+        if (status == 'success'
+                and os.path.splitext(task['tableau_file'])[1].lower()
+                not in ('.tfl', '.tflx')):
+            completed = _completed_project(
+                task['tableau_file'], task['workbook_output_dir'],
+                result.get('report_name'))
+            if completed:
+                artifact_inventory = _artifact_inventory(
+                    completed, task['workbook_output_dir'])
+            else:
+                logger.warning(
+                    "No completed output marker for %s; checkpoint cannot resume",
+                    task['display_name'])
         with checkpoint_lock:
+            missing = object()
+            previous = checkpoint.get(key, missing)
             checkpoint[key] = {
-                'source_signature': _source_signature(task['tableau_file']),
-                'config_signature': checkpoint_config,
+                'source_signature': task.get('source_signature'),
+                'config_signature': task['config_signature'],
                 'output_format': task['output_format'],
                 'status': status,
                 'duration_sec': round(duration_sec, 3),
                 'result': result,
                 'stages': stages,
+                'artifact_inventory': artifact_inventory,
                 'error': error,
                 'updated_at': datetime.now().isoformat(),
             }
-            _save_checkpoint()
+            try:
+                _save_checkpoint()
+            except BaseException:
+                # Roll back before another worker can persist this failed update.
+                if previous is missing:
+                    checkpoint.pop(key, None)
+                else:
+                    checkpoint[key] = previous
+                raise
 
     print_header("TABLEAU TO POWER BI BATCH MIGRATION")
     print(f"  Source:     {batch_dir}")
@@ -2447,47 +2653,66 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             bn = os.path.splitext(os.path.basename(twb))[0]
             rel = os.path.relpath(os.path.dirname(twb), batch_dir)
             out_base = os.path.join(migrated_root, rel) if rel != '.' else migrated_root
+            state_key = os.path.relpath(twb, batch_dir)
+            state = checkpoint.get(state_key, {})
+            invalid_reason = None
+            preferred = None
+            if not isinstance(state, dict):
+                invalid_reason = 'workbook entry must be an object'
+            elif 'result' in state:
+                result = state['result']
+                if not isinstance(result, dict):
+                    invalid_reason = 'result must be an object'
+                else:
+                    preferred = result.get('report_name')
+                    if preferred is not None and (
+                            not isinstance(preferred, str) or not preferred):
+                        invalid_reason = 'report_name must be a nonempty string or null'
+            if invalid_reason:
+                logger.warning(
+                    "Invalid batch checkpoint for %s; forcing regeneration: %s",
+                    state_key, invalid_reason)
+                filtered.append(twb)
+                continue
             try:
-                planned = (
-                    bn if os.path.splitext(twb)[1].lower() in ('.tfl', '.tflx')
-                    else _desktop_project_name(bn, out_base, output_format)
-                )
+                if preferred is not None and preferred not in (
+                        _desktop_project_name(bn, out_base, output_format), bn):
+                    logger.warning(
+                        "Invalid batch checkpoint for %s; forcing regeneration: "
+                        "report_name is not a planned or source-basename identity",
+                        state_key)
+                    filtered.append(twb)
+                    continue
+                completed = _completed_project(twb, out_base, preferred)
             except ValueError:
                 # Let the isolated worker report an impossible output path.
                 filtered.append(twb)
                 continue
-            # Prefer the identity generation uses. Retain marker compatibility
-            # for outputs predating name planning, but never skip an unsafe tree.
-            completed_path = None
-            for identity in dict.fromkeys((planned, bn)):
-                project = os.path.join(out_base, identity)
-                pbip_path = os.path.join(project, f'{identity}.pbip')
-                marker = (os.path.join(project, f'{identity}.SemanticModel')
-                          if output_format == 'fabric' else pbip_path)
-                if not os.path.exists(marker):
-                    continue
-                if output_format != 'fabric':
-                    from powerbi_import.desktop_paths import DesktopPathError, validate_desktop_tree
-                    try:
-                        validate_desktop_tree(project)
-                    except DesktopPathError:
-                        continue
-                completed_path = marker
-                break
-            state_key = os.path.relpath(twb, batch_dir)
-            state = checkpoint.get(state_key, {})
+            config_signature = workbook_configs[twb]['config_signature']
+            source_signature = _source_signature(twb)
             checkpoint_valid = (
-                state.get('status') == 'success'
-                and state.get('source_signature') == _source_signature(twb)
-                and state.get('config_signature') == checkpoint_config
+                config_signature is not None
+                and bool(source_signature)
+                and state.get('status') == 'success'
+                and state.get('source_signature') == source_signature
+                and state.get('config_signature') == config_signature
             )
-            if checkpoint_valid and completed_path:
+            # Old successes without an inventory regenerate once. A missing or
+            # unreadable inventory must never match another empty/sentinel value.
+            recorded_inventory = state.get('artifact_inventory')
+            inventory_matches = (
+                checkpoint_valid and completed and recorded_inventory
+                and recorded_inventory == _artifact_inventory(completed, out_base)
+            )
+            completed_path = completed[1] if completed else None
+            if inventory_matches:
                 logger.info("Resume: skipping already-completed %s", bn)
-                _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': pbip_path})
-            elif not checkpoint and completed_path:
-                # Backward-compatible fallback for batches created before checkpoints.
+                _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': completed_path})
+            elif legacy_resume and completed_path:
+                # Intentional ABSENT-checkpoint compatibility only: marker-only
+                # legacy outputs have no content-integrity evidence.
                 logger.info("Resume: skipping legacy completed %s", bn)
-                _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': pbip_path,
+                _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': completed_path,
                                              'legacy_marker': True})
             else:
                 filtered.append(twb)
@@ -2505,13 +2730,6 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
     batch_start = datetime.now()
     batch_results = {}
 
-    # ── Manifest: per-workbook config overrides ───────────────
-    manifest_lookup = {}
-    if manifest:
-        for entry in manifest:
-            key = os.path.normpath(entry.get('file', ''))
-            manifest_lookup[key] = entry
-
     # ── Pre-compute workbook tasks ──────────────────────────────
     tasks = []
     for i, tableau_file in enumerate(tableau_files, 1):
@@ -2521,34 +2739,13 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         os.makedirs(workbook_output_dir, exist_ok=True)
         display_name = os.path.join(rel_dir, basename) if rel_dir != '.' else basename
 
-        # Per-workbook config from manifest (if provided)
-        wb_culture = culture
-        wb_cal_start = calendar_start
-        wb_cal_end = calendar_end
-        wb_prep = prep_file
-        if manifest_lookup:
-            rel_path = os.path.relpath(tableau_file, batch_dir)
-            m_entry = manifest_lookup.get(os.path.normpath(rel_path), {})
-            if not m_entry:
-                m_entry = manifest_lookup.get(os.path.normpath(os.path.basename(tableau_file)), {})
-            wb_culture = m_entry.get('culture', wb_culture)
-            wb_cal_start = m_entry.get('calendar_start', wb_cal_start)
-            wb_cal_end = m_entry.get('calendar_end', wb_cal_end)
-            wb_prep = m_entry.get('prep', wb_prep)
-
         tasks.append({
             'index': i,
             'tableau_file': tableau_file,
             'basename': basename,
             'workbook_output_dir': workbook_output_dir,
             'display_name': display_name,
-            'skip_extraction': skip_extraction,
-            'wb_prep': wb_prep,
-            'wb_cal_start': wb_cal_start,
-            'wb_cal_end': wb_cal_end,
-            'wb_culture': wb_culture,
-            'output_format': output_format,
-            'quality_policy': quality_policy,
+            **workbook_configs[tableau_file],
             'search_root': batch_dir,
             'extract_dir': (
                 os.path.join(migrated_root, '.migration_extract',
@@ -2557,6 +2754,42 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             ),
         })
 
+    def _check_task_inputs(task, capture=False):
+        """Compare boundary digests, not snapshots or atomic input guarantees."""
+        effective = _resolve_workbook_config(task['tableau_file'])
+        if capture:
+            # Queued work must use the inputs available when it actually starts,
+            # not the Prep digest computed during batch resume planning.
+            task.update(effective)
+        source_signature = _source_signature(task['tableau_file'])
+        config_signature = _checkpoint_config(effective)
+        if capture:
+            task['source_signature'] = source_signature or None
+            task['config_signature'] = config_signature
+        phase = 'before migration' if capture else 'during migration'
+        if not source_signature:
+            category = 'source_unavailable'
+            error = f'Workbook source became unreadable or unavailable {phase}.'
+        elif not capture and source_signature != task['source_signature']:
+            category = 'source_changed'
+            error = 'Workbook source changed during migration.'
+        elif config_signature is None:
+            category = 'prep_unavailable'
+            error = f'Requested Prep flow became unreadable or unavailable {phase}.'
+        elif not capture and config_signature != task['config_signature']:
+            category = 'config_changed'
+            error = 'Effective configuration or requested Prep flow changed during migration.'
+        else:
+            return None
+        # Diagnostics describe the boundary failure, never source contents.
+        logger.error("Input consistency failure for %s [%s]: %s",
+                     task['display_name'], category, error)
+        return {
+            'success': False,
+            'error': error,
+            'error_category': category,
+        }
+
     def _run_task_in_context(task):
         """Execute a single workbook migration task."""
         print(f"\n{'=' * 80}")
@@ -2564,6 +2797,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         print(f"{'=' * 80}")
 
         wb_start_time = datetime.now()
+        input_failure = _check_task_inputs(task, capture=True)
         _set_checkpoint(task, 'running')
         _write_jsonl('workbook_start', {
             'workbook': task['display_name'],
@@ -2573,7 +2807,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
 
         wb_duration = (datetime.now() - wb_start_time).total_seconds()
         try:
-            wb_result = _migrate_single_workbook(
+            wb_result = input_failure if input_failure else _migrate_single_workbook(
                 tableau_file=task['tableau_file'],
                 basename=task['basename'],
                 workbook_output_dir=task['workbook_output_dir'],
@@ -2584,14 +2818,25 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 wb_cal_end=task['wb_cal_end'],
                 wb_culture=task['wb_culture'],
                 output_format=task['output_format'],
-                verify_open=verify_open,
+                verify_open=task['verify_open'],
                 quality_policy=task['quality_policy'],
                 data_search_root=task.get('search_root'),
-                model_mode=model_mode,
+                model_mode=task['model_mode'],
             )
         except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
             wb_result = {'success': False, 'error': str(exc), 'error_category': 'exception'}
             logger.exception("Migration failed for %s", task['display_name'])
+        if wb_result.get('success'):
+            input_failure = _check_task_inputs(task)
+            if input_failure:
+                wb_result = {
+                    **wb_result,
+                    **input_failure,
+                    'stages': {
+                        **(wb_result.get('stages') or {}),
+                        'input_validation': 'failed',
+                    },
+                }
         wb_duration = (datetime.now() - wb_start_time).total_seconds()
         status = 'success' if wb_result.get('success', False) else 'failed'
         _set_checkpoint(task, status, wb_result, wb_duration, wb_result.get('error', ''))
@@ -2610,6 +2855,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
     def _run_task(task):
         """Isolate setup and migration failures to this workbook."""
         extract_dir = task.get('extract_dir')
+        task_succeeded = False
         try:
             # Plan before extraction as well: its per-workbook directory used
             # to repeat the full source filename under .migration_extract.
@@ -2625,7 +2871,9 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             if extract_dir:
                 os.makedirs(extract_dir, exist_ok=True)
                 _extract_dir_local.path = extract_dir
-            return _run_task_in_context(task)
+            display_name, result = _run_task_in_context(task)
+            task_succeeded = bool(result.get('success'))
+            return display_name, result
         except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
             display_name = task['display_name']
             logger.exception("Could not prepare or record migration for %s", display_name)
@@ -2650,6 +2898,22 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             result.setdefault('extraction_dir', extract_dir)
             return display_name, result
         finally:
+            # Generation publishes the PBIP entry point before batch
+            # postprocessing and validation. Retract it on failure, including
+            # KeyboardInterrupt/SystemExit, using the planned (shortened) name.
+            # Fabric's marker is a model directory, not a disposable entry point.
+            if (not task_succeeded and task['output_format'] != 'fabric'
+                    and os.path.splitext(task['tableau_file'])[1].lower()
+                    not in ('.tfl', '.tflx')):
+                marker = os.path.join(
+                    task['workbook_output_dir'], task['basename'],
+                    f"{task['basename']}.pbip")
+                try:
+                    if os.path.isfile(marker):
+                        os.remove(marker)
+                except OSError:
+                    logger.warning("Could not retract incomplete PBIP marker: %s",
+                                   marker, exc_info=True)
             if hasattr(_extract_dir_local, 'path'):
                 del _extract_dir_local.path
 

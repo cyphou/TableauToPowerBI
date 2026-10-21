@@ -1344,6 +1344,11 @@ _M_DOUBLE_COMMA = re.compile(r',\s*,')
 _M_TRAILING_COMMA_RECORD = re.compile(r',(\s*[\]\}])')
 _M_STEP_DEF_RE = re.compile(r'^\s*(#"[^"]+"|\w+)\s*=', re.M)
 _M_UNQUOTED_BAD = re.compile(r'(?<![\w#"])([A-Za-z_]\w*[ \-/&%]+\w[\w \-/&%]*)\s*=')
+_M_KEYWORDS = frozenset((
+    'and', 'as', 'each', 'else', 'error', 'false', 'if', 'in', 'is',
+    'let', 'meta', 'not', 'null', 'or', 'otherwise', 'section', 'shared',
+    'then', 'true', 'try', 'type',
+))
 _M_CRED_PATTERNS = (
     re.compile(r'(Password|Pwd)\s*=\s*"[^"]*"', re.I),
     re.compile(r'(User(name)?|Uid)\s*=\s*"[^"]*"', re.I),
@@ -1514,6 +1519,12 @@ def _heal_m_invalid_identifier_unquoted(model, recovery=None) -> int:
         def _wrap(match):
             nonlocal changed
             ident = match.group(1)
+            # "=" also denotes equality in M. Phrases such as "each if _"
+            # and "null then null else let position" are expression syntax,
+            # not malformed step names. Keywords are case-sensitive and
+            # cannot be regular identifier tokens; do not quote across them.
+            if _M_KEYWORDS.intersection(re.findall(r'\w+', ident)):
+                return match.group(0)
             changed = True
             return f'#"{ident}" ='
 

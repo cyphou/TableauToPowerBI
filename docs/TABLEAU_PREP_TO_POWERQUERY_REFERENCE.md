@@ -45,13 +45,68 @@ produces only `Amount, Twice` in datasource JSON and the generated TMDL columns.
   establish equivalence of arbitrary calculations, script/ML placeholders, or a
   successful Power Query refresh.
 
-The following eight clean-node dialects have **no demonstrated JSON payload
-schema in the existing public fixtures** and remain explicit conversion errors:
-`ValueFilter`, `RichRangeFilter`, `RangeFilter`, `Remap`,
-`RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter`,
+### Clean-node dialect evidence status
+
+Static evidence demonstrates the producer structure for one of the eight
+clean-node dialects tracked by #81: `.v2018_3_3.Remap` in the public
+CC-BY-4.0 [`tableau_prep_book.tfl` example](../examples/real_world/SOURCES.md).
+The [evidence fixture](../tests/prep_dialect_samples/remap_evidence.json)
+pins the upstream commit, archive member, license and producer-node paths;
+both local nodes were verified against that upstream export on 2026-10-21.
+The evidence fixture contains an unmodified projection of the `Discounts`
+node's operation fields (not the entire node) and a separate anonymized,
+reduced multigroup example. For the latter, it records the original shape
+summary, including group sizes, whether targets occur in their own source
+lists, and `NGramFingerprint` method/threshold provenance; the generic payload
+is not raw source data.
+
+The observed `Discounts` `values` field is
+`{"\"0\"": ["\"0\"", "\"None\""]}`: the fixture specifies string inputs
+`["0", "None", "5%", null]` and expected outputs
+`["0", "0", "5%", null]`. The generic multigroup scenario similarly specifies
+the expected string mappings for its anonymized labels. These expected rows
+are specifications for the scenarios only.
+Evidence tests compare the recorded structure to producer node paths and check
+the test-side mapping specification and malformed/ambiguous-map controls.
+Separately, N2's **first bounded Remap conversion slice is delivered**:
+
+- The parser accepts observed explicit JSON-encoded TEXT maps (`values` maps
+  encoded target strings to nonempty lists of encoded source strings), both
+  standalone and within `beforeActionGroup`, `actionGroup` and `afterActionGroup`.
+- Generated M uses one `Table.TransformColumns` lookup with `List.PositionOf`
+  and `Comparer.Ordinal`: exact, case-sensitive and simultaneous on the original
+  cell, not cascading replacements. For `A → B, B → C`, input `A` maps to `B`,
+  not `C`. Unmatched strings and nulls are preserved; field names/types remain
+  unchanged.
+- Missing/empty column names, missing or non-string upstream fields,
+  empty/malformed maps or source lists, invalid JSON, decoded non-string values
+  and conflicting targets for the same source reject explicitly. Repeating a
+  source with the same target is accepted; it is not ambiguous.
+- `groupMethodProps`, including `NGramFingerprint` metadata, is provenance for
+  the already materialized map. It does not trigger fuzzy grouping, threshold
+  evaluation or inferred replacements.
+- [Production conversion tests](../tests/test_prep_remap_conversion.py) exercise
+  both observed payloads through standalone/grouped dispatch, escaping and
+  negative controls. Static source-to-parser-to-workbook/TMDL checks verify
+  binding coverage, field names/types and preservation of the bound M partition.
+  The tightly coupled identifier-healing fix preserves valid M conditional
+  and equality syntax rather than misquoting it as a malformed step name.
+
+These are static conversion contracts, not native Power Query execution.
+Native refresh and runtime value equivalence remain `not_run`; they require an
+authorized Power Query environment and source/target value comparison.
+N1 is **partial** (one observed dialect of eight), not complete and not #81 closure.
+The other seven clean-node dialects still have no demonstrated producer
+payloads in accepted fixtures: `ValueFilter`, `RichRangeFilter`, `RangeFilter`,
+`RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter`, and
 `RichNullFilter`. Their names in analyzer classification tables do not prove
 convertibility. In particular, `RangeFilter` is not silently treated as the
 already supported `FilterRange` dialect.
+
+A bounded public-source search did not establish suitable additional fixtures:
+customer-like exports with unclear data-publication permission were excluded,
+and third-party node generators were not treated as Tableau-produced evidence.
+This is a fixture-coverage gap, not a claim that those payloads do not exist.
 
 ### `--prep` with a workbook
 

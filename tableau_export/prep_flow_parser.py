@@ -13,7 +13,7 @@ Supported step types:
 - Clean (SuperTransform): RenameColumn, RemoveColumn, DuplicateColumn,
   ChangeColumnType, FilterOperation, FilterValues, FilterRange,
   ReplaceValues, SplitColumn, MergeColumns, AddColumn, CleanOperation,
-  FillValues, ReplaceNulls, ConditionalColumn, GroupReplace
+  FillValues, ReplaceNulls, ConditionalColumn, GroupReplace, Remap (explicit text map)
 - Aggregate: groupByFields + aggregateFields
 - Join: inner, left, right, full, leftOnly, rightOnly
 - Union: automatic or manual field mapping
@@ -37,6 +37,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from m_query_builder import (
     _M_GENERATORS,
+    _m_literal,
     generate_power_query_m,
     generate_m_from_hyper,
     inject_m_steps,
@@ -332,9 +333,17 @@ def normalize_prep_flow(flow):
     }
 
     def optional_shapes(obj, context):
+        kind = obj.get('actionType') or obj.get('nodeType') or ''
+        is_remap = isinstance(kind, str) and kind.rsplit('.', 1)[-1] == 'Remap'
+        if is_remap:
+            _parse_remap(obj)
         for key, value in list(obj.items()):
             here = f'{context}.{key}'
-            if key in list_keys:
+            if key == 'values' and is_remap:
+                # Remap uses an encoded target -> encoded sources object,
+                # unlike the value lists used by other clean operations.
+                continue
+            elif key in list_keys:
                 try:
                     value = _as_list(value)
                 except ValueError as exc:
@@ -786,6 +795,46 @@ def _convert_prep_expression_to_m(expression):
     return expr
 
 
+def _parse_remap(action, fields=None):
+    """Decode only materialized JSON-string maps; never rerun grouping methods."""
+    column = action.get('columnName')
+    if not isinstance(column, str) or not column:
+        raise ValueError('Prep Remap requires a nonempty columnName')
+    values = action.get('values')
+    if not isinstance(values, dict) or not values:
+        raise ValueError('Prep Remap values must be a nonempty object')
+
+    def decode(encoded):
+        if not isinstance(encoded, str):
+            raise ValueError('Prep Remap values must be JSON-encoded strings')
+        try:
+            value = json.loads(encoded)
+        except ValueError as exc:
+            raise ValueError(f'Prep Remap invalid JSON-encoded string {encoded!r}') from exc
+        if not isinstance(value, str):
+            raise ValueError('Prep Remap supports only decoded string values')
+        return value
+
+    mapping = {}
+    for encoded_target, encoded_sources in values.items():
+        target = decode(encoded_target)
+        if not isinstance(encoded_sources, list) or not encoded_sources:
+            raise ValueError('Prep Remap sources must be nonempty lists')
+        for encoded_source in encoded_sources:
+            source = decode(encoded_source)
+            if source in mapping and mapping[source] != target:
+                raise ValueError(f'Prep Remap conflicting mappings for source {source!r}')
+            mapping[source] = target
+
+    if fields is not None:
+        field = _require_field(fields, column, 'Remap')
+        if field.get('type') != 'string':
+            raise ValueError(f'Prep Remap column {column!r} requires upstream string type')
+    # groupMethodProps describes how the producer obtained this explicit map;
+    # it is provenance, not an instruction to execute fuzzy matching.
+    return column, mapping
+
+
 def _parse_clean_actions(node):
     """
     Parse SuperTransform actions into M transformation steps.
@@ -934,6 +983,28 @@ def _convert_action_to_m_step(action_type, action, counter):
         new_val = action.get('newValue', '')
         if col:
             return m_transform_replace_value(col, old_val, new_val)
+
+    elif action_type == 'Remap':
+        column, mapping = _parse_remap(action)
+
+        def literal(value):
+            # The shared helper quotes text. Also protect M escape sequences,
+            # control characters and inject_m_steps' literal {prev} sentinel.
+            return _m_literal(value.replace('#', '#(#)')
+                              .replace('\r', '#(cr)').replace('\n', '#(lf)')
+                              .replace('\t', '#(tab)')
+                              .replace('{prev}', '#(007B)prev}'))
+
+        sources = '{' + ', '.join(literal(source) for source in mapping) + '}'
+        targets = '{' + ', '.join(literal(target) for target in mapping.values()) + '}'
+        n = counter.get('remap', 0)
+        counter['remap'] = n + 1
+        step_name = f'#"Remapped Values {n}"' if n > 0 else '#"Remapped Values"'
+        return (step_name,
+                f'Table.TransformColumns({{prev}}, {{{{{literal(column)}, '
+                f'each if _ = null then null else let position = '
+                f'List.PositionOf({sources}, _, Occurrence.First, Comparer.Ordinal) '
+                f'in if position = -1 then _ else {targets}{{position}}, type text}}}})')
 
     elif action_type == 'ReplaceNulls':
         col = action.get('columnName', '')
@@ -1162,6 +1233,8 @@ def _clean_schema(node, fields):
             fields.insert(pos, {'name': action.get('newColumnName', 'Merged'), 'type': 'string'})
         elif kind == 'FilterOperation':
             _expression_type(action.get('filterExpression'), fields)
+        elif kind == 'Remap':
+            _parse_remap(action, fields)
         elif name:
             _require_field(fields, name, kind)
         fields = _schema(fields, kind)
