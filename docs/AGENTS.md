@@ -33,7 +33,7 @@ its release criteria pass.
 | **@merger** | Shared semantic model, multi-workbook merge, Fabric merge | `shared_model.py`, `merge_config.py` (+ co-owns `merge_assessment.py`, `merge_report_html.py`, `thin_report_generator.py`) |
 | **@deployer** | Fabric/PBI deployment, auth, gateway, telemetry, multi-tenant | `deploy/*.py`, `gateway_config.py`, `telemetry.py`, `telemetry_dashboard.py`, `refresh_generator.py` |
 | **@reviewer** | Artifact review engine and coaching reports; CLI does not invoke the Copilot agent or dispatch fixes | `powerbi_import/preceptor.py` |
-| **@web-designer** | End-user UI/UX, Tkinter light UI, layout clarity, presentation | `web/light_ui.py` |
+| **@web-designer** | End-user UI/UX, local browser UI, layout clarity, presentation | `web/index.html`, `web/app.js`, `web/style.css` |
 | **@tester** | Tests, coverage, fixtures, regression | `tests/*.py` |
 | **@roadmap-planner** | Roadmap waves, release gates, priority decisions | `docs/ROADMAP.md` and planning artifacts (owns no generator source) |
 | **@readme** | Documentation consistency and pre/post-update checks | Read-only review of `README.md`, `docs/`, `CHANGELOG.md`, and project instructions |
@@ -87,7 +87,7 @@ flowchart TB
         MRG["<b>@merger</b><br/>shared semantic model"]
         DEP["<b>@deployer</b><br/>Fabric · PBI Service"]
         AI["<b>@ai</b><br/>MCP · LLM gateway"]
-        WEBD["<b>@web-designer</b><br/>Tkinter light UI"]
+        WEBD["<b>@web-designer</b><br/>Local browser UI"]
     end
 
     OUT[/".pbip — PBIR v4.0 + TMDL<br/>or Fabric-native bundle"/]

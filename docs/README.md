@@ -16,7 +16,7 @@ Reference documentation for the Tableau to Power BI migration engine.
 - [TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md) — Complete 165-operation Tableau Prep → Power Query M transformation mapping
 - [FAQ.md](FAQ.md) — Frequently asked questions
 - [ROADMAP.md](ROADMAP.md) — Release gates, verified evidence, and active semantic-validation work
-- [WINDOWS_APP.md](WINDOWS_APP.md) — Portable Windows application, EXE build, and runtime requirements
+- [LOCAL_WEB_UI.md](LOCAL_WEB_UI.md) — Local browser UI, launcher, and runtime requirements
 - [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) — Fabric deployment and client-side Desktop opening validation
 - [SERVER_MIGRATION_GUIDE.md](SERVER_MIGRATION_GUIDE.md) — Server/Cloud migration and optional official Tableau MCP evidence
 
@@ -78,27 +78,8 @@ Notebook sessions can run the same report explicitly after generation:
 project and keeps live semantic execution marked `not_run` until an authorized
 runtime is used.
 
-The Windows desktop application is `web/light_ui.py`, launched with
-`powershell -ExecutionPolicy Bypass -File .\run_light_ui.ps1`. Its Quality task
-passes the selected `report`, `enterprise`, or `production` policy to the batch
-engine and exposes the generated output and HTML dashboard. Its M Coverage task
-runs the offline 98-path M-emitter matrix and writes `m_emitter_matrix.json`.
-The Fabric task selects `--output-format fabric` and generates the local
-Lakehouse, Dataflow, Notebook, Semantic Model, Report, and Pipeline scaffold;
-deployment and refresh remain authorized runtime steps.
-
-The Server task downloads one Tableau Server/Cloud workbook or a project before
-migrating it. Set `TABLEAU_TOKEN_SECRET` in the PowerShell session; the UI only
-stores the Server URL, site, PAT name, and workbook/project target. Server tests
-require content-download permissions and a reachable Tableau endpoint.
-
-Build the autonomous Windows application with Python 3.13 and PyInstaller:
-`py -3.13 -m pip install pyinstaller` followed by
-`powershell -ExecutionPolicy Bypass -File .\scripts\build_light_ui_exe.ps1 -Clean`.
-The resulting portable folder `dist\windows\TableauToPowerBI\` contains
-`TableauToPowerBI.exe` and its bundled runtime. Copy the complete folder; it
-does not require Python, PowerShell, a virtual environment, or the repository
-at runtime.
+For local browser setup and launch options, see the
+[Local browser UI guide](LOCAL_WEB_UI.md).
 
 Desktop probe results are evidence gates: a successful launch can produce
 `DESKTOP_SMOKE_PASS`, while a crash, timeout, or probe error downgrades the

@@ -93,6 +93,74 @@ Opening a generated `.pbip` in Desktop does not rerun the migration.
 .\.venv\Scripts\python.exe migrate.py batch "C:\Migration\Sources" --output-dir "C:\Migration\Output"
 ```
 
+### Local browser alternative (source checkout)
+
+The local runner uses Python 3.12+ and the standard library; no web framework
+or Streamlit install is required. Run from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_web_ui.ps1
+# Equivalent direct runner:
+python web/local_server.py
+```
+
+The launcher prefers `.venv\Scripts\python.exe`, then `python` on PATH.
+The default address is `http://127.0.0.1:8765/`; the browser opens automatically.
+Use `-NoBrowser` (launcher) or `--no-browser` (Python) to open it manually.
+Use `-Port 8766` or `--port 8766` if the default port is occupied.
+Keep the terminal running. **Ctrl+C** stops the server and requests cleanup of
+its running jobs; closing a browser tab is not shutdown. This loopback-only
+runner is not a production, shared-host or multiuser web server.
+
+**Delivery boundary:** the local browser slice is delivered. Reported browser
+acceptance on public Superstore verified form-based migration, artifact/log
+display and a download link, connected job polling in the French UI, and no
+horizontal overflow at a 390px viewport. Both native actions opened explicit
+authorization dialogs; cancel sent no job and launched no native app. Native
+runtime remains `not_run`; this UI acceptance does not prove Desktop opening,
+refresh, value/visual equivalence, Fabric deployment or N5 completion. Detailed
+measurements are recorded in the [roadmap](ROADMAP.md#local-browser-slice--bounded-delivery).
+
+1. Supply an existing **local source folder** and a separate **local output
+   folder** on this computer. They must not contain one another. Type or paste
+   paths; a native folder chooser is optional and may be unavailable. This is
+   This is not a browser upload service: this slice provides no folder/ZIP
+   upload, cloud input, or Server task.
+2. Use the bulk route for one or many workbooks (`.twb`/`.twbx`). Standalone
+   `.tfl`/`.tflx` inputs use the engine's Prep export path (Power Query M,
+   source definitions and assessment/lineage), not a standalone PBIP.
+3. Configure PBIP or local Fabric output, optional culture and calendar
+   start/end years, `report`/`enterprise`/`production` quality policy and
+   resume. These forward to the existing batch engine; they do not change
+   unsupported Prep dialects or prove refresh/deployment.
+4. Inspect job logs and generated artifact reports. The backend exposes
+   supported HTML/JSON/image/PBIP/ZIP artifacts and a generated-output ZIP
+   after a job finishes. A completed job or downloadable ZIP is not proof of
+   runtime correctness. The ZIP is filtered, not a full source backup; staged
+   data and screenshots can still be private. Use a dedicated output folder
+   and review its contents before sharing.
+
+Native diagnostics are separate actions and require explicit confirmation:
+
+| Action | Implemented route and side effects |
+|---|---|
+| Power BI probe | `scripts/probe_projects.py` inspects existing output projects; may launch Power BI Desktop, request refresh/data verification and write HTML/JSON/screenshots under `local_diagnostics/<job_id>/` |
+| Tableau/Power BI comparison | `scripts/compare_desktop_reports.py` pairs source/output folders, launches both apps and captures comparison evidence under `desktop_comparisons/`; supports all-pages requests and manual or local screen comparison |
+
+Neither diagnostic runs automatically after migration. They require an
+interactive Windows session and installed apps; the backend records `not_run`
+when native prerequisites are unavailable. `POWERBI_DESKTOP_PATH` and
+`TABLEAU_DESKTOP_PATH` support executable overrides. Power BI refresh may access
+configured network sources; Tableau is not refreshed by the comparison.
+Screenshots, manifests, logs and reports may contain confidential data and
+must stay outside Git. Local pixel comparison does not prove value equivalence;
+process survival, static validation, refresh and visual evidence remain separate.
+See [paired Desktop screenshots](DEPLOYMENT_GUIDE.md#paired-tableau--power-bi-desktop-screenshots)
+for the diagnostic evidence contract.
+
+The existing `web/app.py` Streamlit workflow is separate from this runner.
+For setup and launch options, see the [local browser guide](LOCAL_WEB_UI.md).
+
 ### Run Quality Evidence
 
 ```bash

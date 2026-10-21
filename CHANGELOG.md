@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Add the bounded source-checkout local browser UI and runner/launcher slice:
+  `python web/local_server.py` or `run_web_ui.ps1`, standard-library serving
+  on `127.0.0.1:8765` with default browser opening, opt-out and Ctrl+C shutdown.
+  The backend accepts local source/output folder paths, bulk migration
+  (including one-workbook folders), PBIP/local Fabric, culture/calendar,
+  quality policy and resume; standalone Prep keeps its M/source-export route.
+  Expose generated artifact reports and a filtered output ZIP. Native Power BI
+  probing and Tableau/Power BI comparison are separately confirmed actions
+  that may launch apps, refresh/access sources and save private screenshots;
+  neither runs automatically. Reported browser acceptance verified public
+  Superstore migration, artifact/log display and a download link, French UI
+  polling, a 390px layout and both authorization dialogs with cancel submitting
+  no job. Native runtime remains `not_run`. No folder/ZIP upload or Server
+  workflow is claimed. The separate Streamlit workflow remains unchanged; this
+  is not N5 operational acceptance.
+- Removed the standalone Tkinter desktop UI and its Windows executable build;
+  the local browser UI and PowerShell launcher remain supported.
+
 - Fix stale Prep schemas through supported clean operations, aggregates, joins,
   automatic unions and unpivot. Validate declared output fields, reject missing
   columns/type conflicts and require deterministic split/pivot schemas rather

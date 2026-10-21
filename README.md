@@ -34,7 +34,7 @@ This repo is currently validated on the following evidence-backed conditions:
 - **Semantic runtime evidence**: an injected executor boundary records `not_run`, `passed`, or `failed` DAX evidence without requiring credentials in local CI. Use `--quality-policy report|enterprise|production` to control escalation of semantic diagnostics and unresolved lineage.
 - **Visual mapping evidence**: the generator inventory is measured as 129 native mappings, 16 approximations, and 19 custom visual mappings; approximations remain explicit in quality evidence.
 - **Evidence packages**: batch quality runs produce an `evidence_package_<workbook>.zip` containing quality status, lineage, M/visual matrices, Fabric evidence, manifests, priorities, and explicit runtime states.
-- **Portable Windows EXE**: the supported distribution is the onedir package at `dist\windows\TableauToPowerBI\TableauToPowerBI.exe`; copy the complete folder, not only the executable.
+- **Local browser UI**: start the Python migration interface from a source checkout with `.\run_web_ui.ps1`; see the [local browser guide](docs/LOCAL_WEB_UI.md).
 
 These checks are part of the current verified baseline and are intended to raise confidence in local migration quality without overstating live Desktop or Fabric deployment readiness.
 
@@ -172,60 +172,39 @@ detected, `verified` means rows were found, and `empty` means no usable rows
 were confirmed. Keep the generated HTML/JSON report and screenshots beside the
 external output directory; do not copy customer evidence into the repository.
 
-The optional Tkinter interface remains available through
-`powershell -ExecutionPolicy Bypass -File .\run_light_ui.ps1`.
+### Local browser alternative (source checkout)
 
-### Windows desktop application
-
-See the complete [Windows Desktop Application guide](docs/WINDOWS_APP.md) for
-the portable distribution layout, build instructions, runtime prerequisites,
-Server/Cloud credentials boundary, and developer fallback.
-
-The Windows migration application is `web/light_ui.py`, launched by
-`run_light_ui.ps1`. It provides folder-based Assess, Migrate, Fabric, Quality,
-M Coverage, and Prep Lineage workflows. The default static openability gate
-remains enabled; Desktop probing and live Fabric execution remain explicit
-runtime steps.
-
-It also provides a **Server** task for downloading and migrating one Tableau
-Server/Cloud workbook or an entire Tableau project. Enter the Server URL, site
-content URL, PAT name, and workbook/project target in the UI. Set the PAT secret
-only in the launching PowerShell session:
+The standard-library runner provides a local-folder migration interface:
 
 ```powershell
-$env:TABLEAU_TOKEN_SECRET = "<type-secret-here>"
-powershell -ExecutionPolicy Bypass -File .\run_light_ui.ps1
+powershell -ExecutionPolicy Bypass -File .\run_web_ui.ps1
+# Or, with Python 3.12+ from the repository root:
+python web/local_server.py
 ```
 
-The UI does not persist or place the PAT secret in command-line arguments. A
-real Server test requires a reachable Tableau URL, a permitted PAT, and
-download permissions for the selected content.
+It binds only to `http://127.0.0.1:8765/` and opens the browser by default.
+Use launcher `-NoBrowser` or Python `--no-browser` to suppress browser opening;
+`-Port` / `--port` selects another port. Keep the terminal open and stop the
+server with **Ctrl+C**; closing the browser tab does not stop it. This is a
+local-only tool, not a production or multiuser web server.
 
-#### Portable executable
+The implemented backend takes separate local source/output folder paths (no
+upload or cloud input), runs bulk migration even for one workbook, and exposes
+PBIP/Fabric, culture, calendar years, quality policy and resume options.
+Standalone Prep flows follow the engine's M/source-export route, not PBIP.
+Generated artifact reports and an output ZIP are available through the backend.
+Power BI **probe** and **Tableau/Power BI comparison** are separate,
+explicitly confirmed actions: they can launch native apps, request Power BI
+refresh/access configured networks, and save private screenshots. Migration
+does not automatically run either diagnostic.
 
-The supported Windows distribution is an onedir package. Launch:
-
-```text
-dist\windows\TableauToPowerBI\TableauToPowerBI.exe
-```
-
-Copy the complete `dist\windows\TableauToPowerBI\` folder with the EXE and
-`_internal\` directory together. The portable application does not require
-Python, PowerShell, a virtual environment, PyInstaller, or the repository at
-runtime. See [docs/WINDOWS_APP.md](docs/WINDOWS_APP.md) for runtime details.
-
-To build the portable Windows executable from source:
-
-```powershell
-winget install --id Python.Python.3.13 --exact --scope user
-py -3.13 -m pip install pyinstaller
-powershell -ExecutionPolicy Bypass -File .\scripts\build_light_ui_exe.ps1 -Clean
-```
-
-The build writes `dist\windows\TableauToPowerBI\`, including the executable
-and bundled runtime. The bundled engine includes the current UI, migration
-pipeline, static openability gate, quality policies, M coverage, Server/Cloud
-task, and Fabric output option.
+The local browser slice is delivered: the reported real-browser Superstore
+migration succeeded with artifact/log display and a download link; both native
+authorization dialogs were checked, and cancel submitted no job. Native
+execution remains `not_run`; this is not N5 operational acceptance. This slice does not include folder/ZIP upload or a Server workflow. See the
+[local browser guide](docs/LOCAL_WEB_UI.md) and [operator workflow and boundaries](docs/USER_MANUAL.md#local-browser-alternative-source-checkout).
+The existing `web/app.py` Streamlit workflow is separate; this runner does not
+require Streamlit.
 
 ---
 

@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="referrer" content="no-referrer">
+  <title>Tableau → Power BI · Migration locale</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Aller au contenu</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Navigation principale">
+      <a class="brand" href="#main"><span class="brand-mark" aria-hidden="true">T → P</span><span>Tableau → Power BI<small>Espace de migration locale</small></span></a>
+      <nav aria-label="Sections">
+        <a href="#configuration"><span aria-hidden="true">01</span> Configuration</a>
+        <a href="#migration"><span aria-hidden="true">02</span> Migration</a>
+        <a href="#diagnostics"><span aria-hidden="true">03</span> Diagnostics natifs</a>
+        <a href="#results"><span aria-hidden="true">04</span> Résultats et journaux</a>
+      </nav>
+      <div class="sidebar-note">
+        <strong>Vos dossiers, sur cet ordinateur</strong>
+        <p>Cette interface pilote le serveur local. Aucun téléversement de dossier depuis le navigateur.</p>
+      </div>
+    </aside>
+
+    <main id="main" tabindex="-1">
+      <header class="page-header">
+        <div><p class="eyebrow">TABLEAU → POWER BI</p><h1>Votre migration, étape par étape</h1><p class="lead">Indiquez vos dossiers, lancez la migration, puis ouvrez les résultats.</p></div>
+        <div class="connection-box">
+          <span id="connection-status" class="badge" role="status">Connexion en cours…</span>
+          <button id="reconnect" class="button button-quiet" type="button">Réessayer la connexion</button>
+        </div>
+      </header>
+
+      <noscript><div class="notice notice-error">JavaScript est nécessaire pour piloter la migration locale. Activez-le puis rechargez cette page.</div></noscript>
+      <div id="network-error" class="notice notice-error" role="alert" hidden></div>
+      <div id="action-message" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <form id="job-form" novalidate>
+        <section id="configuration" class="card" aria-labelledby="configuration-title">
+          <div class="section-heading"><div><p class="eyebrow">01 · CONFIGURATION</p><h2 id="configuration-title">Choisir les dossiers</h2></div><span class="tag">Traitement par dossier</span></div>
+          <p id="path-help" class="section-description">Saisissez les chemins absolus de l’ordinateur qui exécute le serveur local. Le navigateur ne peut pas importer ni retrouver automatiquement un dossier local.</p>
+          <div class="field-grid">
+            <div class="field">
+              <label for="source-dir">Dossier source Tableau <span class="required">(obligatoire)</span></label>
+              <input id="source-dir" name="source_dir" type="text" placeholder="C:\Tableau\Sources" required spellcheck="false" autocomplete="off" aria-describedby="source-help source-error">
+              <p id="source-help" class="hint">Un dossier contenant vos classeurs, même pour un seul classeur. Pas un fichier .twb ou .twbx.</p>
+              <p id="source-error" class="field-error" hidden></p>
+            </div>
+            <div class="field">
+              <label for="output-dir">Dossier de sortie <span class="required">(obligatoire)</span></label>
+              <input id="output-dir" name="output_dir" type="text" placeholder="C:\MigrationOutput" required spellcheck="false" autocomplete="off" aria-describedby="output-help output-error">
+              <p id="output-help" class="hint">Les projets générés et les rapports seront enregistrés ici, sur le serveur local.</p>
+              <p id="output-error" class="field-error" hidden></p>
+            </div>
+          </div>
+          <details class="advanced">
+            <summary>Options de migration</summary>
+            <div class="options-grid">
+              <div class="field"><label for="output-format">Format de sortie</label><select id="output-format" name="output_format"><option value="pbip">Projet Power BI (.pbip)</option><option value="fabric">Microsoft Fabric</option></select></div>
+              <div class="field"><label for="culture">Culture du modèle</label><select id="culture" name="culture"><option value="fr-FR">Français (France) · fr-FR</option><option value="en-US">English (United States) · en-US</option><option value="en-GB">English (United Kingdom) · en-GB</option><option value="de-DE">Deutsch · de-DE</option></select></div>
+              <div class="field"><label for="calendar-start">Calendrier · première année</label><input id="calendar-start" name="calendar_start" type="number" value="2020" min="1" max="9999" step="1" required aria-describedby="calendar-error"></div>
+              <div class="field"><label for="calendar-end">Calendrier · dernière année</label><input id="calendar-end" name="calendar_end" type="number" value="2030" min="1" max="9999" step="1" required aria-describedby="calendar-error"></div>
+              <div class="field"><label for="quality-policy">Politique de qualité</label><select id="quality-policy" name="quality_policy"><option value="report">Rapport · report</option><option value="enterprise">Entreprise · enterprise</option><option value="production">Production · production</option></select></div>
+              <label class="check-field"><input id="resume" name="resume" type="checkbox"><span>Reprendre une migration existante<small>Utilise la capacité de reprise du moteur.</small></span></label>
+            </div>
+            <p id="calendar-error" class="field-error" hidden></p>
+          </details>
+        </section>
+
+        <section id="migration" class="card migration-card" aria-labelledby="migration-title">
+          <div><p class="eyebrow">02 · MIGRATION</p><h2 id="migration-title">Générer le projet Power BI</h2><p class="section-description">La migration ne déclenche aucun diagnostic natif. Vous gardez la main sur l’ouverture de Tableau et de Power BI.</p></div>
+          <div class="primary-action"><button id="migrate-button" class="button button-primary job-action" type="submit" disabled>Lancer la migration</button><span id="availability-hint" class="hint">Connexion au serveur local requise.</span></div>
+        </section>
+
+        <section id="diagnostics" class="card" aria-labelledby="diagnostics-title">
+          <div class="section-heading"><div><p class="eyebrow">03 · ÉTAPE FACULTATIVE</p><h2 id="diagnostics-title">Diagnostics natifs</h2></div><span class="tag">Confirmation requise</span></div>
+          <p class="section-description">Ces actions distinctes peuvent ouvrir les applications installées, actualiser les données avec un accès réseau et capturer du contenu local sensible. Elles ne sont jamais lancées automatiquement.</p>
+          <div class="diagnostic-grid">
+            <article class="diagnostic-card">
+              <div class="section-heading"><h3>Vérifier Power BI</h3><span id="probe-status" class="badge" aria-label="État du diagnostic Power BI">Non exécuté</span></div>
+              <p>Demander au serveur un diagnostic natif Power BI pour les dossiers indiqués.</p>
+              <button id="probe-button" class="button button-secondary job-action" type="button" disabled>Probe Power BI</button>
+            </article>
+            <article class="diagnostic-card">
+              <div class="section-heading"><h3>Comparer les rendus</h3><span id="compare-status" class="badge" aria-label="État de la comparaison">Non exécuté</span></div>
+              <p>Comparer Tableau et Power BI avec les applications natives disponibles.</p>
+              <button id="compare-button" class="button button-secondary job-action" type="button" disabled>Comparaison Tableau/Power BI</button>
+            </article>
+          </div>
+          <div class="diagnostic-options">
+            <label class="check-field"><input id="all-pages" name="all_pages" type="checkbox"><span>Inclure toutes les pages<small>Peut prolonger la capture et inclure davantage de contenu sensible.</small></span></label>
+            <div class="field"><label for="screen-comparison">Mode de comparaison des captures</label><select id="screen-comparison" name="screen_comparison" aria-describedby="comparison-help"><option value="manual">Manuel · examen des captures</option><option value="local">Local · différence de pixels</option></select></div>
+          </div>
+          <p id="comparison-help" class="hint callout">Une différence de pixels locale mesure l’apparence, pas la parité sémantique des calculs ou des données. Les résultats doivent être vérifiés.</p>
+        </section>
+      </form>
+
+      <section id="results" class="card" aria-labelledby="results-title">
+        <div class="section-heading"><div><p class="eyebrow">04 · SUIVI ET RÉSULTATS</p><h2 id="results-title">Retrouver votre travail</h2></div><span id="polling-status" class="hint">Actualisation toutes les 2 s</span></div>
+        <p id="job-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+        <div class="summary-grid">
+          <div class="summary-item"><span>Tâche sélectionnée</span><strong id="current-action">Aucune tâche</strong></div>
+          <div class="summary-item"><span>État</span><strong><span id="current-status" class="badge">Non exécuté</span></strong></div>
+          <div class="summary-item"><span>Fichiers disponibles</span><strong id="artifact-count">0</strong></div>
+        </div>
+        <p id="current-description" class="hint">Lancez une migration pour afficher sa progression et ses résultats.</p>
+        <div id="job-error" class="notice notice-error" role="alert" hidden></div>
+        <div class="results-layout">
+          <div class="artifacts-panel">
+            <h3>Ouvrir les résultats</h3>
+            <p id="artifacts-empty" class="hint">Les liens fournis par le serveur apparaîtront ici.</p>
+            <ul id="artifact-list" class="artifact-list"></ul>
+            <a id="download-zip" class="button button-secondary" target="_blank" rel="noopener noreferrer" hidden>Télécharger le projet ZIP</a>
+            <p class="hint">Les rapports s’ouvrent dans un nouvel onglet isolé de cette page. Leur disponibilité dépend de la tâche.</p>
+          </div>
+          <div class="history-panel"><h3>Tâches récentes</h3><p id="history-empty" class="hint">Aucune tâche pour le moment.</p><ul id="job-history" class="job-history" aria-label="Sélectionner une tâche récente"></ul></div>
+        </div>
+        <details id="log-details" class="log-details">
+          <summary>Journal technique <span id="log-count" class="hint">· 0 ligne</span></summary>
+          <p id="log-help" class="hint">Dernières lignes transmises par le serveur (500 maximum affichées). Le journal peut contenir des chemins et données sensibles.</p>
+          <pre id="job-logs" tabindex="0" aria-label="Journal de la tâche sélectionnée" aria-describedby="log-help">Aucun journal disponible.</pre>
+        </details>
+      </section>
+      <footer>Interface locale · Les diagnostics natifs restent facultatifs. Le moteur de migration et ses résultats restent sur cet ordinateur.</footer>
+    </main>
+  </div>
+
+  <dialog id="native-dialog" aria-labelledby="native-title" aria-describedby="native-description">
+    <form method="dialog">
+      <p class="eyebrow">DIAGNOSTIC NATIF</p>
+      <h2 id="native-title">Autoriser l’ouverture des applications ?</h2>
+      <p id="native-description">Cette action peut ouvrir Tableau et/ou Power BI, actualiser des connexions de données avec un accès réseau et prendre des captures d’écran contenant du contenu local sensible. Vérifiez vos dossiers et fermez les fenêtres confidentielles avant de continuer.</p>
+      <dl class="confirmation-summary">
+        <dt>Action</dt><dd id="confirm-action"></dd>
+        <dt>Source</dt><dd id="confirm-source"></dd>
+        <dt>Sortie</dt><dd id="confirm-output"></dd>
+        <dt>Captures</dt><dd id="confirm-options"></dd>
+      </dl>
+      <p class="hint">Une comparaison de pixels n’atteste pas la parité des données ou des calculs.</p>
+      <div class="dialog-actions"><button id="native-cancel" class="button button-secondary" value="cancel" autofocus>Annuler</button><button id="native-confirm" class="button button-primary" value="confirm">Autoriser et lancer</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

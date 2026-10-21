@@ -13,6 +13,54 @@ checkpoint recovery, input stability, artifact inventories and batch output
 collision preflight, passed **11,618 tests**, with **66 skipped** and
 **1 xfailed**. This regression evidence does not prove Power Query refresh,
 Desktop rendering, or complete Prep feature support.
+This remains the prior engine-suite measurement, not a test count or
+end-to-end acceptance result for the new local browser surface.
+
+### Local browser slice — bounded delivery
+
+**Done:** source-checkout local browser UI, standard-library backend and
+PowerShell launcher (`web/index.html`, `web/app.js`, `web/style.css`,
+`web/local_server.py`, `run_web_ui.ps1`). The inspected contract binds only
+to `127.0.0.1:8765` by default, opens a browser unless suppressed, and stops
+with Ctrl+C. It accepts separate local source/output folder paths and forwards
+bulk migration (including one workbook), PBIP/local Fabric, culture, calendar
+years, quality policy and resume to the existing engine. Standalone Prep
+retains M/source definitions and assessment/lineage export, not standalone PBIP.
+Generated artifact reports and a filtered output ZIP are backend surfaces.
+
+**Browser acceptance passed (reported by the parent validation run,
+2026-10-21):** real-browser form migration of public Superstore succeeded
+(job `c456c7b7b53c4e33b828c17273f78c42`), displaying **22 reports/artifacts**,
+**189 log entries** and a download link. The root rendered the French UI with
+connected job polling; a **390px** viewport had no horizontal overflow.
+Both Probe and Tableau/Power BI comparison opened explicit authorization
+dialogs; cancel sent no job and launched no native app.
+
+**Backend evidence (reported by the parent validation run):** **87 passed**
+(37 runner tests + 50 existing API tests), fatal Ruff checks clean, and
+`node --check web/app.js` passed; the 37 runner tests also passed on rerun.
+A separate HTTP Superstore migration succeeded with all flat options,
+including culture/calendar/resume, and **23 artifacts**. Its output ZIP was
+verified to contain the complete `.pbip`, `report.json` and `model.tmdl`
+artifacts. The 23-artifact HTTP run and 22-artifact browser run are distinct
+observations, not a universal artifact count. A generated report returned HTTP
+200 under a script-enabled sandbox without same-origin permission and with
+`connect-src 'none'`; this is report-serving evidence, not native rendering.
+Runner help and launcher DryRun establish launch contracts only.
+
+**Not run (`not_run`):** native operational validation for this slice.
+No folder/ZIP upload, cloud input or Server workflow is included.
+`web/app.py` is the separate existing Streamlit workflow. The loopback runner
+is not a production or multiuser web server.
+
+Probe and Tableau/Power BI comparison are separately confirmed native actions,
+never automatic post-migration diagnostics. They may launch apps, request
+Power BI refresh/network-source access and save private screenshots; unavailable
+native prerequisites produce `not_run`. These entry points do **not** complete
+N5: refresh, save/reopen, value comparison and visual evidence still require an
+authorized environment. Owners: Web Designer / Orchestrator for the local UI,
+Tester / Reviewer / Evidence for further operational acceptance. See the
+[operator contract](USER_MANUAL.md#local-browser-alternative-source-checkout).
 
 ### Delivered in the latest fixes
 
@@ -40,7 +88,7 @@ completed functionality or runtime evidence.
 | N2 — Incremental Prep conversion (#81, In progress) | Done: first bounded Remap slice for observed explicit JSON-encoded TEXT maps, standalone and grouped. Simultaneous exact case-sensitive lookup preserves unmatched strings/nulls. Implement no other dialect until its N1 evidence is complete | Extractor / Wiring / Tester | Static production tests cover generated lookup/null/unmatched branches, invalid/ambiguous maps, missing/non-string upstream fields, and source-to-parser-to-workbook/TMDL field names/types, binding and M preservation. `groupMethodProps` is provenance only, not fuzzy execution. Seven dialects remain unsupported; native refresh/value execution is `not_run` |
 | N3 — Batch resilience (In progress; bounded slice delivered) | Harden batch resume for unusable checkpoints, roll back failed checkpoint updates under the lock, retract an incomplete PBIP entry marker after failed/interrupted postprocessing, bind each resume signature to that workbook's effective configuration, and preflight candidate destination collisions; exercise atomic Prep update failures | Orchestrator / Extractor / Tester | Focused tests cover malformed/empty/non-object/invalid-UTF-8 checkpoint handling, absent-checkpoint legacy behavior, retry and second resume using the planned identity, five checkpoint-write fault scenarios (partial write, persistent/transient replacement lock, interrupted save, two concurrent workers), ten effective-config signature regressions, injected Prep dump/replace failures, and Windows-normalized output collision preflight. Signatures cover resolved per-workbook culture/calendar/Prep path and content, quality policy, `verify_open`, output format, model mode, and extraction mode; unchanged effective settings and unrelated manifest entries do not invalidate another completion, missing requested Prep cannot match success, and old signatures regenerate once. Collision preflight checks all candidates before resume/dry-run or output writes; conflicting normalized targets fail with `VALIDATION_FAILED` (5), while distinct subdirectories remain valid. Prep fault tests verify existing atomic-write behavior, not a new production fix. Full N3 acceptance remains open: interrupted or failed runs must retain prior valid datasource JSON, avoid publishing a successful partial project, and resume without duplicate outputs; one-workbook folders and mixed workbook/Prep batches must preserve their contracts |
 | N4 — Refresh reproduction (#84) | Capture the exact minimal failing model, relationship and source prerequisites in an authorized local environment; distinguish a source error from a relationship-triggered failure | Semantic / Wiring / Healing / Tester | A reproducible negative control and causal fix with regression coverage; do not remove relationships or substitute empty tables merely to obtain a pass |
-| N5 — Operational validation | Refresh and save/reopen representative generated projects; compare source/target values and Tableau/Power BI screenshots where authorized | Reviewer / Evidence / Deployer | Attach refresh, value-comparison and visual evidence with environment/prerequisite status; static success alone never becomes `OPERATIONAL_100` |
+| N5 — Operational validation (Open) | Refresh and save/reopen representative generated projects; compare source/target values and Tableau/Power BI screenshots where authorized | Reviewer / Evidence / Deployer | Attach refresh, value-comparison and visual evidence with environment/prerequisite status; static success and the bounded local browser diagnostic entry points alone never become `OPERATIONAL_100` |
 
 **N1 is partial; N2's first bounded Remap conversion slice is delivered.**
 `.v2018_3_3.Remap` is the one dialect with observed producer structure and

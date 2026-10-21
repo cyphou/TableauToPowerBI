@@ -455,7 +455,7 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 | **@merger** | Shared semantic model, fingerprint matching | `shared_model.py`, `merge_config.py` |
 | **@deployer** | Fabric/PBI deployment, auth, gateway | `deploy/*.py`, `gateway_config.py`, `telemetry.py` |
 | **@reviewer** | Artifact quality review and preceptor engine; CLI emits coaching reports but does not dispatch them to owner agents | `preceptor.py` (CLI default-on; `--no-preceptor` opts out) |
-| **@web-designer** | End-user UI/UX, Tkinter light UI, layout/presentation | `web/light_ui.py` |
+| **@web-designer** | End-user UI/UX, local browser UI, layout/presentation | `web/index.html`, `web/app.js`, `web/style.css` |
 | **@tester** | Tests, coverage, public fixtures, regression; see CI for current results | `tests/*.py` |
 | **@readme** | Documentation quality gate before and after updates | `README.md`, `docs/`, `CHANGELOG.md`, project instructions (review only) |
 
