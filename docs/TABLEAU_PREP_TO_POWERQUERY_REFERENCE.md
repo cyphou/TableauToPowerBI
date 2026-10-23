@@ -1,7 +1,11 @@
 # Tableau Prep Transformations → Power Query M Complete Reference
 
-Complete mapping of **every Tableau Prep Builder transformation** to its Power Query M equivalent.
-Covers both Tableau Prep (.tfl/.tflx) operations and Tableau Desktop data-source-level transformations embedded in .twb files.
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🗺️ Mappings](MAPPING_REFERENCE.md) · [🔌 Power Query M](TABLEAU_TO_POWERQUERY_REFERENCE.md)
+
+Reference for Tableau Prep Builder transformations and their Power Query M
+patterns, including Prep (.tfl/.tflx) and workbook data-source transformations.
+Not every documented pattern has a supported producer JSON dialect; the parser
+contract below is authoritative for automated conversion.
 
 > **Legend**  
 > ✅ Implemented — generated automatically by the migration tool  

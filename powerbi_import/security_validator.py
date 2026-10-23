@@ -13,17 +13,24 @@ Provides:
 """
 
 import logging
+import ntpath
 import os
 import re
 import xml.etree.ElementTree as ET
+
+try:
+    from .errors import ConfigurationError
+except ImportError:  # direct module import when powerbi_import is on sys.path
+    from errors import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
 MAX_FILE_SIZE_MB = 500  # Maximum allowed file size in MB
-MAX_ZIP_ENTRY_SIZE_MB = 200  # Maximum allowed size per ZIP entry
+MAX_ZIP_ENTRY_SIZE_MB = 1024  # Default maximum allowed size per ZIP entry
 MAX_XML_SIZE_MB = 100  # Maximum XML content size
+_ZIP_COPY_CHUNK_SIZE = 1024 * 1024
 ALLOWED_EXTENSIONS = frozenset({
     '.twb', '.twbx', '.tds', '.tdsx', '.tfl', '.tflx', '.hyper',
     '.json', '.xml', '.csv', '.txt',
@@ -124,13 +131,131 @@ def validate_output_dir(path):
 
 # ── ZIP safe extraction ──────────────────────────────────────────────────────
 
-def safe_zip_extract_member(zip_file, member_name, target_dir=None):
+def _positive_zip_limit(value, *, source):
+    """Validate a positive, integral ZIP entry limit."""
+    if isinstance(value, bool):
+        raise ConfigurationError(f"{source} must be a positive integer")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        parsed = int(value.strip())
+    else:
+        raise ConfigurationError(f"{source} must be a positive integer")
+    if parsed <= 0:
+        raise ConfigurationError(f"{source} must be a positive integer")
+    return parsed
+
+
+def get_zip_entry_limit_mb(value=None):
+    """Resolve the maximum decompressed ZIP member size in MiB.
+
+    An explicit argument wins, followed by ``TTPBI_MAX_ZIP_ENTRY_MB`` and the
+    module default. Invalid explicit or environment values are configuration
+    errors; they are never silently replaced with the default.
+    """
+    if value is not None:
+        return _positive_zip_limit(value, source="max ZIP entry size")
+    env_value = os.environ.get("TTPBI_MAX_ZIP_ENTRY_MB")
+    if env_value is not None:
+        return _positive_zip_limit(
+            env_value, source="TTPBI_MAX_ZIP_ENTRY_MB")
+    return _positive_zip_limit(
+        MAX_ZIP_ENTRY_SIZE_MB, source="MAX_ZIP_ENTRY_SIZE_MB")
+
+
+def _validate_zip_member(zip_file, member_name, target_dir, max_size_mb):
+    """Return the ZIP metadata after path and declared-size checks."""
+    if not isinstance(member_name, str) or not member_name:
+        raise SecurityError("ZIP entry name must be a nonempty string")
+    info = zip_file.getinfo(member_name)
+
+    # Normalize to forward slashes for consistent POSIX and Windows checking.
+    normalized = member_name.replace('\\', '/')
+    if '..' in normalized.split('/'):
+        raise SecurityError(
+            f"ZIP entry contains path traversal: '{member_name}'")
+    if (os.path.isabs(member_name) or ntpath.isabs(member_name)
+            or normalized.startswith('/')):
+        raise SecurityError(f"ZIP entry has absolute path: '{member_name}'")
+
+    size_limit_mb = get_zip_entry_limit_mb(max_size_mb)
+    size_limit = size_limit_mb * 1024 * 1024
+    if info.file_size > size_limit:
+        raise ValueError(
+            f"ZIP entry '{member_name}' exceeds size limit "
+            f"({info.file_size / (1024 * 1024):.1f} MB > "
+            f"{size_limit_mb} MB)")
+
+    if target_dir:
+        target_path = os.path.realpath(os.path.join(target_dir, member_name))
+        target_dir_real = os.path.realpath(target_dir)
+        try:
+            contained = os.path.commonpath(
+                (os.path.normcase(target_path), os.path.normcase(target_dir_real))
+            ) == os.path.normcase(target_dir_real)
+        except ValueError:
+            contained = False
+        if not contained:
+            raise SecurityError(
+                f"ZIP entry would extract outside target: '{member_name}'")
+    return info, size_limit
+
+
+def safe_zip_copy_member(zip_file, member_name, output_stream, target_dir=None,
+                         max_size_mb=None):
+    """Stream one ZIP member to *output_stream* with path and size defenses.
+
+    Data is copied in chunks no larger than 1 MiB. Both the central-directory
+    size and actual decompressed byte count are checked against the configured
+    limit. The caller owns and closes ``output_stream`` and should write to a
+    sibling temporary file before atomically publishing it.
+
+    Returns:
+        int: Number of decompressed bytes written.
+    """
+    if not callable(getattr(output_stream, "write", None)):
+        raise TypeError("output_stream must provide write(bytes)")
+    info, size_limit = _validate_zip_member(
+        zip_file, member_name, target_dir, max_size_mb)
+    total = 0
+    with zip_file.open(member_name) as source:
+        while True:
+            # Read at most 1 MiB, and one byte beyond the remaining allowance
+            # when near the limit so a dishonest declared size cannot bypass
+            # the runtime guard.
+            remaining = size_limit - total
+            chunk = source.read(min(_ZIP_COPY_CHUNK_SIZE, remaining + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > size_limit:
+                raise ValueError(
+                    f"ZIP entry '{member_name}' exceeds size limit "
+                    f"while streaming ({total / (1024 * 1024):.1f} MB > "
+                    f"{size_limit / (1024 * 1024):.1f} MB)")
+            if total > info.file_size:
+                raise ValueError(
+                    f"ZIP entry '{member_name}' expanded beyond its declared size")
+            written = output_stream.write(chunk)
+            if written is not None and written != len(chunk):
+                raise OSError(
+                    f"Short write while copying ZIP entry '{member_name}'")
+    if total != info.file_size:
+        raise ValueError(
+            f"ZIP entry '{member_name}' size mismatch "
+            f"({total} bytes read, {info.file_size} declared)")
+    return total
+
+
+def safe_zip_extract_member(zip_file, member_name, target_dir=None,
+                            max_size_mb=None):
     """Safely extract a single member from a ZIP archive with ZIP slip protection.
 
     Args:
         zip_file: An open zipfile.ZipFile object.
         member_name: Name of the member to extract.
         target_dir: Optional target directory. If None, reads content in memory.
+        max_size_mb: Optional per-member decompressed size limit in MiB.
 
     Returns:
         bytes: The raw content of the member.
@@ -139,43 +264,16 @@ def safe_zip_extract_member(zip_file, member_name, target_dir=None):
         SecurityError: If the member path would escape the target directory.
         ValueError: If the member exceeds size limits.
     """
-    info = zip_file.getinfo(member_name)
+    import io
 
-    # Check for path traversal in archive entry names
-    # Normalize to forward slashes for consistent checking
-    normalized = member_name.replace('\\', '/')
-    if '..' in normalized.split('/'):
-        raise SecurityError(
-            f"ZIP entry contains path traversal: '{member_name}'"
-        )
-
-    # Check for absolute paths in archive
-    if os.path.isabs(member_name) or normalized.startswith('/'):
-        raise SecurityError(
-            f"ZIP entry has absolute path: '{member_name}'"
-        )
-
-    # Size limit check
-    if info.file_size > MAX_ZIP_ENTRY_SIZE_MB * 1024 * 1024:
-        raise ValueError(
-            f"ZIP entry '{member_name}' exceeds size limit "
-            f"({info.file_size / (1024*1024):.1f} MB > {MAX_ZIP_ENTRY_SIZE_MB} MB)"
-        )
-
-    if target_dir:
-        # Verify the resolved extraction path is within target_dir
-        target_path = os.path.realpath(os.path.join(target_dir, member_name))
-        target_dir_real = os.path.realpath(target_dir)
-        if not target_path.startswith(target_dir_real + os.sep) and target_path != target_dir_real:
-            raise SecurityError(
-                f"ZIP entry would extract outside target: '{member_name}'"
-            )
-
-    with zip_file.open(member_name) as f:
-        return f.read()
+    result = io.BytesIO()
+    safe_zip_copy_member(
+        zip_file, member_name, result, target_dir=target_dir,
+        max_size_mb=max_size_mb)
+    return result.getvalue()
 
 
-def validate_zip_archive(zip_path):
+def validate_zip_archive(zip_path, max_size_mb=None):
     """Validate a ZIP archive for common security issues.
 
     Args:
@@ -186,6 +284,7 @@ def validate_zip_archive(zip_path):
     """
     import zipfile as zf
     issues = []
+    size_limit_mb = get_zip_entry_limit_mb(max_size_mb)
 
     if not os.path.exists(zip_path):
         return False, ["File does not exist"]
@@ -202,10 +301,11 @@ def validate_zip_archive(zip_path):
                     issues.append(f"Path traversal in entry: '{info.filename}'")
                 if os.path.isabs(info.filename):
                     issues.append(f"Absolute path in entry: '{info.filename}'")
-                if info.file_size > MAX_ZIP_ENTRY_SIZE_MB * 1024 * 1024:
+                if info.file_size > size_limit_mb * 1024 * 1024:
                     issues.append(
                         f"Entry '{info.filename}' exceeds size limit "
-                        f"({info.file_size / (1024*1024):.1f} MB)"
+                        f"({info.file_size / (1024*1024):.1f} MB > "
+                        f"{size_limit_mb} MB)"
                     )
     except zf.BadZipFile:
         issues.append("Invalid or corrupted ZIP file")

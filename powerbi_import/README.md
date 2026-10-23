@@ -2,6 +2,17 @@
 
 Generates complete Power BI projects (`.pbip`) from extracted Tableau data.
 
+For normal use, run the [local browser UI](../docs/LOCAL_WEB_UI.md) or the
+batch CLI from the repository root:
+
+```powershell
+python migrate.py batch .\workbooks --output-dir .\output
+```
+
+Even one workbook uses a source folder. The internal importer below is a
+developer entry point for already-extracted data, not an alternative public
+single-file migration command.
+
 ## Core Modules
 
 ### `import_to_powerbi.py`
@@ -25,6 +36,14 @@ Generates the complete `.pbip` file structure:
 
 Converts extracted data into TMDL (Tabular Model Definition Language) files:
 
+- Automatic per-table storage: Hyper snapshots and import-only connectors use
+  Import; supported native sources without Hyper use DirectQuery. Users can
+  always force Import with `--mode import`. See the
+  [mode/export decision diagram](../docs/ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
+- Non-Hyper Import generates the connection, schema and M only, using original
+  native file bindings instead of copying datasets. Power BI loads those rows
+  at refresh. Hyper remains the exception with staged CSV/Parquet data;
+  Fabric retains its separate staging contract.
 - `database.tmdl` — compatibility
 - `model.tmdl` — culture, data source version
 - `relationships.tmdl` — relationships between tables
@@ -32,7 +51,10 @@ Converts extracted data into TMDL (Tabular Model Definition Language) files:
 
 ### `visual_generator.py`
 
-Generates JSON visual definitions for the report. Maps 118+ Tableau visual types to Power BI.
+Generates JSON visual definitions for the report. The runtime mapping inventory
+has 164 records: 129 native, 16 approximations and 19 custom-visual mappings.
+See [the mapping reference](../docs/MAPPING_REFERENCE.md); custom mappings
+require target-tenant availability, and mapping counts do not establish parity.
 
 ### `m_query_generator.py`
 
@@ -48,7 +70,14 @@ Per-item fidelity tracking and migration status reporting.
 
 ### `api_server.py`
 
-REST API server (stdlib `http.server`). Endpoints: `POST /migrate`, `GET /status/{id}`, `GET /download/{id}`, `GET /health`, `GET /jobs`.
+REST upload API server (stdlib `http.server`). `POST /migrate/batch` accepts a
+ZIP containing one or more Tableau files; `POST /migrate` is retired (HTTP 410).
+Status/download routes include `GET /batch/{id}`, `GET /status/{id}`,
+`GET /download/{id}`, `GET /health` and `GET /jobs`.
+This is distinct from the loopback-only [local browser runner](../web/local_server.py),
+which accepts trusted local folder paths, not uploads. See the
+[deployment guide](../docs/DEPLOYMENT_GUIDE.md) and
+[upload security boundary](../UPLOAD_SECURITY.md).
 
 ### `schema_drift.py`
 
@@ -69,15 +98,18 @@ Fabric deployment is in the `deploy/` subpackage:
 
 ## Output Format
 
-**PBIR v4.0** — compatible with **Power BI Desktop March 2025 (CY25SU03)** and later.
-Base theme: `CY25SU03`, report version at import: `5.58`.
+**PBIR v4.0** with TMDL. Schema and theme constants are defined in
+[`pbip_generator.py`](pbip_generator.py). The current base-theme name is
+`CY26SU04`; report version at import is `5.58`. These metadata values do not
+certify a minimum Power BI Desktop version or successful loading. Validate
+generated projects separately with a compatible Desktop installation.
 
 | Artifact | Schema | Version |
 |----------|--------|--------|
 | report.json | `report/2.0.0` | 2.0.0 |
-| page.json | `page/2.0.0` | 2.0.0 |
-| visual.json | `visualContainer/2.5.0` | 2.5.0 |
-| bookmark.json | `bookmark/1.1.0` | 1.1.0 |
+| page.json | `page/2.1.0` | 2.1.0 |
+| visual.json | `visualContainer/2.7.0` | 2.7.0 |
+| bookmark.json | `bookmark/2.1.0` | 2.1.0 |
 | pages.json | `pagesMetadata/1.0.0` | 1.0.0 |
 | definition.pbir | `definitionProperties/2.0.0` | PBIR v4.0 |
 | .platform | `platformProperties/2.0.0` | 2.0.0 |

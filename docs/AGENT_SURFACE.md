@@ -38,17 +38,17 @@ python -m powerbi_import.mcp_server --list   # print tool + resource catalogue
 | Tool | Required args | Notes |
 |------|---------------|-------|
 | `assess` | `file` | Readiness report; writes nothing |
-| `migrate` | `file` | Full pipeline → `.pbip`/Fabric; optional `output_dir`, `output_format`, `culture` |
+| `migrate` | `directory` | Batch pipeline → local PBIP/Fabric artifacts; a one-workbook folder is valid; optional `output_dir`, `output_format`, `culture` |
 | `qa` | `project_dir` | QA report card; optional `extraction_dir` |
 | `quality_report` | `file`, `project_dir` | Unified deterministic report; stores the latest quality payload in the current MCP server process |
 | `agent_handoff` | `agent` | Read-only pull of priorities owned by this agent from the latest quality report; accepts `@name` or `name` |
 | `agent_handoff_ack` | `handoff_id`, `agent`, `outcome`, `rationale` | In-memory ACK; `applied` requires changed PBIP definition files and a fresh report where the finding disappeared |
-| `parity_scan` | `file` | Graceful `unavailable` status until the parity registry ships |
+| `parity_scan` | `file` | Uses the shipped feature-parity registry; unavailable/import failures are not evidence of parity |
 | `shared_model` | `files` (≥2) | Merge assessment for a shared model |
 | `diff` | `extraction_dir`, `project_dir` | Field-coverage comparison |
 | `deploy` | `project_dir`, `workspace_id` | **Guarded**: dry-run default; `confirm=true` to push |
 | `llm_status` | _(none)_ | LLM gateway config + connectivity (mode/route/provider/budget); no secrets |
-| `autoheal` | `project_dir` | Closed-loop heal so the .pbip opens cleanly in Desktop: collect errors → deterministic heal → optional LLM correction → re-validate → apply only if valid |
+| `autoheal` | `project_dir` | Static/error-log-driven repair loop: collect → deterministic heal → optional LLM correction → re-validate; no native-opening guarantee |
 | `verify_open` | `project_dir` | **Openability preflight** (no Desktop needed): validates every Power Query (M) partition, DAX measure, JSON file, TMDL presence, project structure and PBIR schema; returns `openable` + blocking issues/warnings |
 
 ### Resources
@@ -69,14 +69,14 @@ cloud vs local (Ollama/LM Studio/vLLM) provider, reachability, and budget. The
 gateway (`powerbi_import/llm_gateway.py`) powers on-the-fly correction with an
 offline-first, redaction-safe, budget-capped, opt-in policy.
 
-The `autoheal` tool (`powerbi_import/autoheal.py`) runs the closed loop that makes
-a `.pbip` open cleanly in Power BI Desktop: collect errors (static validators, or a
+The `autoheal` tool (`powerbi_import/autoheal.py`) runs a bounded repair loop:
+collect errors (static validators, or a
 Desktop error-export log via `PbiDesktopSource`/`LogFileSource`) → deterministic
 heal (DAX/M/visual) → optional LLM correction via the gateway → re-validate → apply
 a fix ONLY when it re-validates clean (never degrading).
 
-The `verify_open` tool (`powerbi_import/openability.py`) is a **read-only preflight**
-that answers "will Power BI Desktop open this project?" without launching Desktop.
+The `verify_open` tool (`powerbi_import/openability.py`) is a **read-only static
+preflight**, not proof that Power BI Desktop will open or refresh the project.
 It runs the current static check set, including `structure`, `json_parse`,
 `tmdl_present`, `power_query`, `dax`, `schema`, `references`, data-file presence,
 calculated-column dependencies, path length, bookmark indexes, and literal grammar,
@@ -86,7 +86,7 @@ TMDL (`extract_m_partitions`) and validates each with the M validator, catching 
 Power Query generation errors that are a top cause of silent load failures. The same
 M-partition validation is wired into `autoheal`'s default error source. Reachable
 from the CLI via `migrate.py --verify-open` (writes `openability_report.json` and
-exits non-zero if the project would not open).
+exits non-zero for static blocking issues).
 
 For real Desktop evidence, use `scripts/probe_projects.py` after generation. Its
 default mode waits for the report window, verifies aggregate row counts through
@@ -104,9 +104,11 @@ is diagnostic only. The external `DESKTOP_OPENING_VALIDATION.html` report separa
 
 ## 4. Preceptor report and owner-pull handoff
 
-The CLI runs the Python preceptor after generation by default. It writes
-`preceptor_report.json`, and the quality report can include its dimension, fix,
-and evidence fields in the findings queue. It does **not** invoke Copilot's
+Supported batch/shared-model CLI generation does not invoke the Python
+preceptor or write `preceptor_report.json`; these dispatch paths do not forward
+the parser's preceptor switches. A separately produced preceptor report can
+supply dimension, fix and evidence fields to the quality findings queue.
+The review does **not** invoke Copilot's
 `@reviewer` agent or push findings to owners.
 
 An MCP-connected owner agent can pull its packet in the same server process:
@@ -129,8 +131,8 @@ requires a fresh quality report for the same report/project, changed PBIP
 definition artifacts, and the finding absent from current priorities. ACKs are
 held only in the MCP process (`persisted: false`); they are not durable
 resolution records or automatic preceptor-cycle dispatch. The report cache and
-handoff registry are process-local. `--no-preceptor` opts out;
-`--preceptor-block` opts into blocking after escalation. The existing `autoheal`
+handoff registry are process-local. `--no-preceptor` and `--preceptor-block`
+do not alter supported batch/shared-model generation. The existing `autoheal`
 tool is separate and does not consume preceptor coaching automatically.
 
 ## Safety model

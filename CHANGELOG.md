@@ -1,6 +1,70 @@
 # Changelog
 
+[🏠 Overview](README.md) · [📚 Documentation](docs/README.md) · [📈 Roadmap](docs/ROADMAP.md) · [🤝 Contributing](CONTRIBUTING.md)
+
 ## Unreleased
+
+- Resolve native Import relative file bindings against the original loose
+  workbook/datasource directory, without reading or copying native rows.
+  Preserve absolute paths and packaged-source configuration boundaries.
+  Do not truncate native CSV physical width to the selected model-column count.
+  Select the declared raw source columns after header parsing and before type
+  or caption transformations, so unmodeled physical fields cannot collide with
+  a caption rename; missing declared fields still raise an error.
+  Merge explicitly declared physical columns into a sole partially populated
+  source table, preserving their types instead of fabricating calculated
+  placeholders; exclude Tableau pseudo-fields and leave ambiguous multi-table
+  ownership unresolved.
+  Explain unsupported native shapefiles with an explicit source-binding error
+  instead of attempting JSON parsing. Keep Hyper/Fabric staging unchanged and
+  document initial refresh notices, processing checks and Desktop cache saving.
+
+- Recognize narrowly declared inline Tableau `Parameters` dependencies during
+  source preflight without exempting missing real datasources. Export native
+  Hyper geography columns to Parquet as WKT text while preserving names, order
+  and nulls; keep other unsupported-type failures explicit and CSV behavior
+  unchanged. Neither change establishes source-value or visual parity.
+
+- Keep non-Hyper PBIP Import datasource-only: generate the connection, schema
+  and Power Query M without exporting native rows or copying native dataset
+  files. Retain original file bindings for a later Power BI refresh, separate
+  from the staged Hyper data folder. Hyper still exports its data to CSV/Parquet
+  using the existing 10 MiB rule; Fabric keeps its separate staging behavior.
+
+- Simplify PBIP source selection: Hyper snapshots use Import; native sources
+  without Hyper use DirectQuery when supported. Import-only files stay Import
+  with a diagnostic, and the user can always force Import through `--mode import`
+  or the local browser. PBIP automatic native Hyper export requires Parquet
+  strictly above 10 MiB and CSV otherwise. Above-threshold SQLite-compatible
+  inputs error unless CSV is explicitly selected; Fabric auto staging stays CSV.
+  Add a documented decision diagram, bounded
+  Hyper/SQLite/ZIP I/O, atomic CSV rewrites, configurable ZIP and row limits,
+  export provenance and throttled progress in terminal/browser logs. Required
+  Parquet uses the existing optional Hyper API; unavailable prerequisites and
+  failed exports are explicit errors, not partial-success fallbacks. Capped
+  exports and header-reader samples remain explicitly limited data. The central
+  quality report records those limits before determining status and handoff.
+  These changes do not establish native refresh parity.
+
+- Refresh the maintained documentation for the local-browser product and
+  folder-based CLI. Reconcile PBIR schema/theme constants, the 23-object
+  extraction contract, 164-record visual inventory, connector aliases,
+  package metadata versus roadmap tracks, and specialist ownership. Distinguish
+  local paths from upload services, static checks from native runtime evidence,
+  and parsed legacy flags from actual batch dispatch. Document the current
+  VS Code single-file adapter limitation rather than claiming it generates
+  projects. Preserve dated test/browser observations and historical release notes.
+  Add a GitHub-oriented documentation hub, linked local SVG badges and refreshed
+  illustrations without fixed success or release claims. Separate the
+  863-test native refresh-binding slice from the earlier full-suite baseline,
+  qualify Desktop opening instructions and show only active CI stages.
+  Preserve images and bounded presentation HTML in the standard-library
+  documentation publisher, rewrite guide/source links and keep code examples
+  literal. Publish only allowlisted raster images and strictly validated passive
+  SVGs; reject symlinks, Windows junctions, unsupported assets and active or
+  malformed SVG content with file-specific errors. Preserve the maintained
+  illustrations, accessibility metadata and local gradient/filter references.
+  Add focused publisher regressions.
 
 - Add the bounded source-checkout local browser UI and runner/launcher slice:
   `python web/local_server.py` or `run_web_ui.ps1`, standard-library serving
@@ -524,4 +588,6 @@
 
 ## v44.0.0
 
-Current released version. Detailed historical changelog entries have been intentionally cleared.
+The [package metadata](pyproject.toml) declares `44.0.0`; publication status is
+unverified here. Detailed historical changelog entries have been intentionally
+cleared.

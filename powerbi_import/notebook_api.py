@@ -46,7 +46,7 @@ class MigrationSession:
             'calendar_start': 2020,
             'calendar_end': 2030,
             'culture': 'en-US',
-            'mode': 'import',
+            'mode': 'auto',
             'languages': [],
             'goals': False,
         }
@@ -330,7 +330,7 @@ class MigrationSession:
             calendar_start=self._config.get('calendar_start', 2020),
             calendar_end=self._config.get('calendar_end', 2030),
             culture=self._config.get('culture', 'en-US'),
-            model_mode=self._config.get('mode', 'import'),
+            model_mode=self._config.get('mode', 'auto'),
             languages=self._config.get('languages'),
         )
         self._generated_path = output_dir
@@ -911,4 +911,3 @@ def _render_mermaid_html(mermaid_src):
         f'{_html_escape(mermaid_src)}</div>'
         '<pre style="display:none">' + _html_escape(mermaid_src) + '</pre>'
     )
-

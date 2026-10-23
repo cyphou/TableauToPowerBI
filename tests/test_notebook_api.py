@@ -71,7 +71,7 @@ class TestMigrationSessionInit(unittest.TestCase):
         self.assertEqual(cfg['calendar_start'], 2020)
         self.assertEqual(cfg['calendar_end'], 2030)
         self.assertEqual(cfg['culture'], 'en-US')
-        self.assertEqual(cfg['mode'], 'import')
+        self.assertEqual(cfg['mode'], 'auto')
 
     def test_configure_updates(self):
         s = MigrationSession()
@@ -79,12 +79,45 @@ class TestMigrationSessionInit(unittest.TestCase):
         self.assertEqual(result['calendar_start'], 2018)
         self.assertEqual(result['culture'], 'fr-FR')
         # Other defaults preserved
-        self.assertEqual(result['mode'], 'import')
+        self.assertEqual(result['mode'], 'auto')
 
     def test_configure_ignores_unknown(self):
         s = MigrationSession()
         result = s.configure(unknown_key='value')
         self.assertNotIn('unknown_key', result)
+
+
+class TestGenerateModelMode(unittest.TestCase):
+    """Notebook defaults and Import overrides reach the real importer boundary."""
+
+    def test_generate_uses_auto_by_default_and_keeps_explicit_import(self):
+        cases = (
+            ("omitted", {}, False, "auto"),
+            ("auto", {"mode": "auto"}, False, "auto"),
+            ("import", {"mode": "import"}, False, "import"),
+            ("missing-config", {}, True, "auto"),
+        )
+        with tempfile.TemporaryDirectory(prefix="notebook_mode_") as root:
+            for name, options, remove_mode, expected in cases:
+                with self.subTest(name=name), patch(
+                        "powerbi_import.import_to_powerbi.PowerBIImporter") as importer:
+                    session = MigrationSession()
+                    session._extracted = {"datasources": [{"name": "Synthetic"}]}
+                    session.configure(**options)
+                    if remove_mode:
+                        session._config.pop("mode")
+                    importer.return_value.import_all.return_value = {
+                        "tables": 1, "measures": 0, "pages": 0,
+                    }
+                    output = os.path.join(root, name)
+                    summary = session.generate(output)
+                    importer.return_value.import_all.assert_called_once()
+                    kwargs = importer.return_value.import_all.call_args.kwargs
+                    self.assertEqual(kwargs["model_mode"], expected)
+                    self.assertTrue(kwargs["generate_pbip"])
+                    self.assertEqual(kwargs["output_dir"], output)
+                    self.assertEqual(summary["tables"], 1)
+                    self.assertEqual(session._generated_path, output)
 
 
 class TestRequireLoaded(unittest.TestCase):

@@ -1,8 +1,14 @@
 # Upload Security
 
 This note describes the current file-confinement controls for uploaded
-migrations handled by the REST API and web UI. It is not a general security
+migrations handled by the REST ZIP API and optional Streamlit/fallback upload
+UI. It is not a general security
 guarantee for arbitrary migration inputs or deployment environments.
+
+The recommended [local browser runner](docs/LOCAL_WEB_UI.md) is different:
+it accepts trusted local folder paths and does not upload workbooks. Its
+loopback/origin/session controls do not turn local migrations into the
+upload-confined or OS-sandboxed workflow described here.
 
 ## Upload handling
 

@@ -57,6 +57,16 @@
               <p id="output-help" class="hint">Les projets générés et les rapports seront enregistrés ici, sur le serveur local.</p>
               <p id="output-error" class="field-error" hidden></p>
             </div>
+            <div class="field storage-mode-field">
+              <label for="model-mode">Mode de stockage Power BI</label>
+              <select id="model-mode" name="model_mode" aria-describedby="model-mode-help hyper-export-help model-mode-error">
+                <option value="auto" selected>Automatique (recommandé)</option>
+                <option value="import">Import (modèle local)</option>
+              </select>
+              <p id="model-mode-help" class="hint">Ces modes concernent les projets Power BI (.pbip) ; la sortie Fabric conserve DirectLake. Automatique : avec Hyper, Import ; sans Hyper, DirectQuery pour les bases compatibles. Excel, CSV et les autres fichiers non compatibles DirectQuery restent en Import. Vous pouvez toujours choisir Import, même si DirectQuery est possible. Hors Hyper, Import migre uniquement la connexion, le schéma et le code Power Query (M), sans extraire ni copier les données sources ; Power BI les charge dans le modèle lors de l’actualisation.</p>
+              <p id="hyper-export-help" class="hint">Exception Hyper : les données sont toujours exportées. Pour les projets Power BI (.pbip), CSV jusqu’à 10 Mio inclus (10 485 760 octets), Parquet au-delà. Les exports Fabric restent en CSV.</p>
+              <p id="model-mode-error" class="field-error" hidden></p>
+            </div>
           </div>
           <details class="advanced">
             <summary>Options de migration</summary>

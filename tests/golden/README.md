@@ -6,6 +6,11 @@ committed sample workbook in `examples/tableau_samples/` and contains a single
 `visuals.json` capturing the pixel-relevant attributes of every generated
 visual.
 
+These are structural geometry/field snapshots, not native screenshots or
+evidence of pixel-identical Tableau/Power BI rendering. Native comparison and
+refresh remain separate authorized checks described in the
+[migration checklist](../../docs/MIGRATION_CHECKLIST.md).
+
 Folders are named by the fixture id from `tests/fixture_corpus.py` (a hash of
 the workbook stem) rather than by workbook name, which is only legal under
 `examples/`. Use `fixture_corpus.describe(fid)` to resolve an id back to a

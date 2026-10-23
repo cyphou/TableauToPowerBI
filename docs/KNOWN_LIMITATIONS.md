@@ -1,14 +1,30 @@
 # Known Limitations
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🌐 Local browser](LOCAL_WEB_UI.md) · [✅ Review checklist](MIGRATION_CHECKLIST.md)
+
 This document lists known limitations and approximations in the Tableau to Power BI migration tool.
 
 ---
+
+## Local browser interface
+
+The supported guided UI is the [local browser runner](LOCAL_WEB_UI.md), not a
+packaged Windows application. It accepts separate, non-nested local source
+and output paths; the current page uses manual path entry, not folder/ZIP
+upload, a Server task, or a Browse button. The optional upload UI and REST API
+have separate source-confinement rules.
+
+The runner binds to loopback, keeps a bounded in-memory history, and allows
+one active job. It is not a production/multiuser server, and closing a browser
+tab does not cancel a job. Native Power BI/Tableau diagnostics require a
+separate confirmation and can access configured network sources; ordinary
+local generation is not proof of native refresh or runtime parity.
 
 ## Extraction Limitations
 
 | Area | Limitation | Impact |
 |------|-----------|--------|
-| **Hyper files** | ✅ `.hyper` file column metadata AND row-level data loaded via 3-tier reader chain: (1) `tableauhyperapi` optional package for full v2+ support, (2) SQLite fallback for older formats, (3) header-only scan. Multi-schema discovery (`Extract`, `public`, `stg`). Configurable sample rows via `--hyper-rows N`. Column stats (distinct_count, min, max) and metadata enrichment with DirectQuery recommendations. **Automatic Hyper→CSV conversion** for TWBX extracts with TMDL partition rewriting to `Csv.Document()`. | Requires optional `tableauhyperapi` pip package for proprietary v2+ Hyper formats; without it, some v2+ files still fall back to metadata-only |
+| **Hyper files** | Exact physical identities route packaged snapshots to Import. PBIP auto requires native Parquet when the uncompressed Hyper file is strictly > 10 MiB, otherwise CSV; Fabric auto remains CSV. CSV rewrites and archive copies use bounded buffers and atomic replacement. `--hyper-export-max-rows N` explicitly creates a sample; `--hyper-rows` is separate legacy metadata sampling, not a batch export cap. | Proprietary Hyper and native Parquet require optional `tableauhyperapi`. SQLite handles compatible inputs, but cannot provide native Parquet: above the PBIP threshold it requires an explicit CSV override. The bounded header scan may yield metadata and sample rows, never complete data. Required Parquet support errors are explicit. See the [decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export). |
 | **TDE files (legacy)** | ⚠️ `.tde` is the **pre-2018 legacy extract format** and cannot be read by any tier (not a Hyper database, not SQLite-compatible). Tables get a placeholder `#table()` partition with a `TODO` comment. | Re-save the workbook in Tableau Desktop to convert `.tde` → `.hyper`, or manually export data to CSV |
 | **Tableau Server/Cloud** | ✅ `--server` CLI flag enables direct extraction from Tableau Server/Cloud via REST API (PAT or password auth). Live connections still need reconfiguration in PBI |
 | **Tableau 2024.3+** | ✅ Dynamic parameters with database queries fully extracted and converted to M partition with `Value.NativeQuery()`. Dynamic zone visibility parses conditions and maps to PBI bookmark visibility toggles. Table extensions (Einstein Discovery, external API) generate M `Web.Contents()` or placeholder. Linguistic schema extraction feeds PBI Q&A synonyms. | Some newer Tableau 2024.3+ features may still need manual adjustment |
@@ -17,7 +33,41 @@ This document lists known limitations and approximations in the Tableau to Power
 | **Nested layout containers** | ✅ IMPROVED — Grid-snapping engine handles 3-level nesting; 4+ levels may lose precision | Very deeply nested containers may need manual adjustment |
 | **Rich tooltips** | HTML/custom layout tooltips are converted to run-level text (bold, color, font_size extracted) | Complex HTML tooltip layouts are not preserved |
 
+Native Hyper geography is exported as WKT text in Parquet, not as a native
+spatial column. CSV geography serialization remains the SDK's bytes
+representation. Other unsupported Parquet types remain explicit errors;
+successful export does not establish spatial or visual parity.
+
 ## Generation Limitations
+
+### Automatic storage mode
+
+`--mode auto` imports Hyper snapshots and selects DirectQuery for supported
+native database connectors without Hyper. Excel, CSV, native MySQL and other import-only
+sources must remain Import; they cannot be made DirectQuery by changing a
+partition label. `--mode import` and the local browser **Import** control let
+the user override automatic DirectQuery. Mixed-source models are resolved per
+table. Explicit DirectQuery requests for Hyper or import-only files fail
+instead of producing an invalid file-backed DirectQuery model.
+
+Non-Hyper Import generates only the connection, schema and Power Query M.
+Migration does not export native rows or copy native Excel/CSV and other dataset
+files into the project. Loose-workbook relative paths are resolved against the
+original workbook directory without dataset I/O; absolute paths are preserved.
+Packaged native data are not extracted or rebound to guessed files, and
+drive-relative/ambiguous paths still need explicit configuration. Source
+delimiters and schemas must agree with the file. Credentials and source access
+are required when Power BI loads the data at refresh.
+Hyper data still export to CSV/Parquet and use Import.
+
+Native shapefiles cannot be parsed by the GeoJSON M connector. PBIP emits an
+actionable `SourceBinding.Error`; supply a supported GeoJSON source separately.
+It does not silently parse binary `.shp` as JSON or convert native spatial rows.
+Fabric's separate spatial-staging behavior is unchanged.
+
+Neither native Import nor DirectQuery generation establishes credentials,
+gateway availability, query folding or successful Power BI refresh.
+Fabric-native DirectLake generation retains its separate file-staging contract.
 
 ### Windows / Power BI Desktop path lengths
 
@@ -164,7 +214,7 @@ Generated expressions still require runtime and source-value checks.
 | **Prep #81 incomplete clean dialect coverage** | N2's first bounded `.v2018_3_3.Remap` slice supports observed explicit JSON-encoded TEXT maps standalone and in grouped clean actions: simultaneous exact case-sensitive lookup preserves unmatched values/nulls. Missing/non-string upstream fields and invalid/ambiguous maps reject. `groupMethodProps` is provenance for the materialized map, not fuzzy execution. Static source-to-TMDL tests cover conversion and M/schema preservation; native refresh/value execution remains `not_run`. N1 is partial (one observed dialect of eight). The other seven dialects (`ValueFilter`, `RichRangeFilter`, `RangeFilter`, `RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter`, `RichNullFilter`) remain unsupported and lack demonstrated producer payloads. M helper availability/analyzer classification is not parser support. Existing #82/#83 safeguards are preserved. See the [Prep dialect evidence](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#clean-node-dialect-evidence-status). |
 | **M identifier quoting** | ✅ FIXED — Column names with special characters (hyphens, slashes, parentheses, etc.) are now auto-quoted as `[#"Name"]` in M expressions. Previously, names like `Sub-Category` caused "Invalid identifier" errors |
 | **Custom SQL params** | ✅ IMPLEMENTED — `Value.NativeQuery()` with parameter record binding and `[EnableFolding=true]` |
-| **Hyper data** | ✅ `.hyper` files are now loaded via SQLite interface — row data injected into M `#table()` expressions. Some proprietary `.hyper` v2+ formats may fall back to metadata-only |
+| **Hyper data** | Packaged extracts use staged CSV/Parquet partitions with exact physical identity, not full-dataset M `#table()` inlining. Metadata/header fallback may supply only a bounded sample, which manifests and quality reports flag as limited data. See the [Hyper contract](FAQ.md#how-are-hyper-extract-files-handled). |
 | **Query folding** | ✅ IMPLEMENTED — `m_transform_buffer()` + `m_transform_join(buffer_right=True)` for `Table.Buffer()` folding boundaries |
 | **PDF connector** | ✅ IMPROVED — `Pdf.Tables(File.Contents(...), [StartPage=N, EndPage=M])` with page range and table index selection |
 | **Salesforce connector** | ✅ IMPROVED — SOQL passthrough via `Value.NativeQuery()`, API version specification, relationship traversal via `Table.ExpandRecordColumn()` |
@@ -174,7 +224,7 @@ Generated expressions still require runtime and source-value checks.
 
 | Area | Limitation |
 |------|-----------|
-| **PBI Service deployment** | ✅ `--deploy WORKSPACE_ID` deploys via REST API (Azure AD auth required). Integration tests are opt-in (`@pytest.mark.integration`) — not run in standard CI |
+| **PBI Service deployment** | Batch generation does not forward `--deploy`. Use the separate MCP `deploy` tool, preview with its default `dry_run=true`, and explicitly authorize publishing with configured credentials. See the [deployment guide](DEPLOYMENT_GUIDE.md). Live integration checks are opt-in, not evidence supplied by standard CI |
 | **Fabric deployment** | Fabric deployment is structurally tested but not against a real workspace |
 | **Windows paths** | ✅ OneDrive file locks handled via `_rmtree_with_retry()` with exponential backoff (3 attempts). Stale TMDL files retried with 0.3s backoff |
 
@@ -189,7 +239,7 @@ Generated expressions still require runtime and source-value checks.
 
 | Area | Limitation |
 |------|------------|
-| **PBIR schema versions** | Documented PBIR v4.0 baseline: report schema 2.0.0, page schema 2.0.0, visualContainer schema 2.5.0, and `CY25SU03` for PBI Desktop March 2025+. Validate generated projects in Desktop; `--check-schema` checks schemas, not runtime compatibility |
+| **PBIR schema versions** | Current generator targets PBIR v4.0: report 2.0.0, page 2.1.0, visualContainer 2.7.0, bookmark 2.1.0; base-theme name `CY26SU04`. These constants do not establish a minimum Desktop version. Schema/static validation is not runtime compatibility |
 
 ## Shared Semantic Model Limitations
 
@@ -207,14 +257,14 @@ Generated expressions still require runtime and source-value checks.
 For most limitations, the recommended workflow is:
 
 1. Run the migration to generate the .pbip project
-2. Open in Power BI Desktop (March 2025+)
+2. Open in a Power BI Desktop installation supporting the generated PBIP/TMDL schemas
 3. Review the migration metadata JSON for conversion notes
 4. Manually adjust unsupported features (spatial, custom shapes, advanced formatting)
 5. Re-authenticate data source connections
 6. Validate measures and relationships in Model view
 7. Use `--assess` flag for pre-migration readiness analysis
 8. Use `--incremental` for iterative refinement without losing manual edits
-9. Use `--deploy WORKSPACE_ID` to publish directly to Power BI Service
+9. Publish separately through the [authorized deployment workflow](DEPLOYMENT_GUIDE.md); batch generation does not deploy to Power BI Service
 10. Use `--server` to extract workbooks directly from Tableau Server/Cloud
 11. Use `--languages fr-FR,de-DE` to generate multi-language culture TMDL files with translated display folders
 12. Use `--goals` to convert Tableau Pulse metrics to Power BI Goals/Scorecard artifacts

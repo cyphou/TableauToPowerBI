@@ -55,11 +55,12 @@ main { width: 100%; max-width: 1280px; padding: 40px clamp(20px, 4vw, 60px) 24px
 .tag { font-size: .73rem; color: var(--muted); background: #f0f3f7; border-radius: 6px; padding: 4px 9px; white-space: nowrap; }
 .field-grid, .options-grid, .diagnostic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
 .field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.storage-mode-field { grid-column: 1 / -1; }
 label { font-size: .88rem; font-weight: 600; }
 .required { color: var(--muted); font-weight: 400; font-size: .78rem; }
 input[type="text"], input[type="number"], select { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #98a9bc; border-radius: 6px; background: #fff; color: var(--ink); }
 input::placeholder { color: #69798c; opacity: 1; }
-input[aria-invalid="true"] { border-color: var(--red); background: #fffafb; }
+input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--red); background: #fffafb; }
 .hint { font-size: .8rem; color: var(--muted); margin-bottom: 0; font-weight: 400; }
 .field-error { color: var(--red); font-size: .82rem; margin: 0; }
 .advanced { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 16px; }

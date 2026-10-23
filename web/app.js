@@ -354,6 +354,9 @@
     const output = $("output-dir").value.trim();
     const firstSource = fieldError("source-dir", "source-error", pathError(source, true));
     const firstOutput = fieldError("output-dir", "output-error", pathError(output, false));
+    const modelMode = $("model-mode").value;
+    const firstModelMode = fieldError("model-mode", "model-mode-error",
+      ["auto", "import"].includes(modelMode) ? "" : "Choisissez « Automatique » ou « Import ».");
     const start = $("calendar-start").valueAsNumber;
     const end = $("calendar-end").valueAsNumber;
     const calendarInvalid = !Number.isInteger(start) || !Number.isInteger(end) ||
@@ -363,7 +366,7 @@
     for (const id of ["calendar-start", "calendar-end"]) {
       $(id).setAttribute("aria-invalid", calendarInvalid ? "true" : "false");
     }
-    const invalid = firstSource || firstOutput || (calendarInvalid ? $("calendar-start") : null);
+    const invalid = firstSource || firstOutput || firstModelMode || (calendarInvalid ? $("calendar-start") : null);
     if (invalid) {
       if (calendarInvalid) $("calendar-start").closest("details").open = true;
       invalid.focus();
@@ -373,6 +376,7 @@
     return {
       action, source_dir: source, output_dir: output,
       opts: {
+        model_mode: modelMode,
         output_format: $("output-format").value, culture: $("culture").value,
         calendar_start: start, calendar_end: end,
         quality_policy: $("quality-policy").value, resume: $("resume").checked,

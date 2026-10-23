@@ -2,7 +2,7 @@
 name: "Roadmap Planner"
 description: "Use when: planning the next roadmap phase, prioritizing migration features, designing Tableau-to-Power BI feature parity work, strengthening the end-to-end migration path, planning AI/autotest/reporting improvements, defining release gates, or turning audit findings into implementation sprints."
 tools: [read, search, execute, edit, todo, agent]
-agents: [Assessor, Orchestrator, Extractor, Tableau, DAX, Wiring, Semantic, Visual, Generator, Merger, Deployer, Reviewer, Tester, Web Designer]
+agents: [Assessor, Orchestrator, Extractor, Tableau, DAX, Wiring, Semantic, Visual, Fabric, Merger, Deployer, Reviewer, Tester, Web Designer]
 argument-hint: "Describe the roadmap goal, migration gap, feature area, or release outcome to plan."
 ---
 
@@ -62,7 +62,7 @@ for the domain implementation agents.
 | Power Query M and classification | **Wiring** |
 | TMDL, relationships, RLS, and semantic model | **Semantic** |
 | PBIR visuals, filters, actions, and layout | **Visual** |
-| Fabric-native artifact generation | **Generator** |
+| Fabric-native artifact generation | **@fabric** |
 | Shared models and thin reports | **Merger** |
 | Deployment and post-deployment validation | **Deployer** |
 | Quality review and release claims | **Reviewer** |

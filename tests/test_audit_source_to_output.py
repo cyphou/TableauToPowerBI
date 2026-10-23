@@ -381,8 +381,9 @@ class TestAuditFinalPowerQueryExport(unittest.TestCase):
         self._assert_final_export(packaged=True, batch=True)
 
     def _assert_final_export(self, packaged, batch=False):
-        # Start with a stale export to exercise the actual single-workbook
-        # orchestration, rather than explicitly re-exporting in the test.
+        # Seed the old PowerQuery artifact from pre-repair M, then persist the
+        # repaired TMDL state before exercising real post-generation
+        # orchestration. The final export must come from that on-disk state.
         from tests.test_csv_partition_wiring import (
             NAME, _csv_partition, _project, _read, _write,
         )
@@ -417,10 +418,19 @@ class TestAuditFinalPowerQueryExport(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 migrate._export_power_query_files(project, NAME)
                 stale = Path(project, "PowerQuery", "Facts.pq").read_text(encoding="utf-8")
+                self.assertIn('Delimiter=","', stale)
+                self.assertIn("Columns=1", stale)
+                self.assertIn("QuoteStyle=QuoteStyle.None", stale)
+                # This fixture stands in for repairs already persisted by the
+                # model-generation stage. Use the real normalizers against
+                # synthetic data; the PBIP orchestration below only publishes
+                # the persisted model and must not read/copy native sources.
+                migrate._reconcile_csv_partitions(project, NAME)
+                migrate._restrict_file_partitions_to_model(project, NAME)
                 if batch:
-                    # Generation is outside this regression's seam: start with
-                    # the serialized model above and run real post-generation
-                    # partition mutations/export through the batch entry point.
+                    # Generation and upstream repairs are fixture preconditions;
+                    # run real post-generation synchronization/export through
+                    # the batch entry point.
                     with patch.object(migrate, "run_generation", return_value=True), \
                             patch.object(migrate, "run_migration_report", return_value={}):
                         result = migrate._migrate_single_workbook(

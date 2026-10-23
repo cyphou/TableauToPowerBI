@@ -87,12 +87,44 @@ class TestLocalCommands(_LocalFixture):
             if arg.startswith("--"):
                 self.assertIn(arg, flags, f"{arg} not declared by {command[2]}")
 
+    def test_mode_defaults_to_auto_and_import_override_reaches_cli(self):
+        normalized = local.validate_payload(self.payload())
+        self.assertEqual(normalized["opts"]["model_mode"], "auto")
+        for mode in ("auto", "import"):
+            with self.subTest(mode=mode):
+                payload = self.payload(opts={"model_mode": mode})
+                request = local.validate_payload(payload)
+                self.assertEqual(request["opts"]["model_mode"], mode)
+                command = local.build_command(payload)
+                self.assertEqual(command.count("--mode"), 1)
+                index = command.index("--mode")
+                self.assertEqual(command[index + 1], mode)
+                self.assert_script_flags_exist(command)
+
+    def test_mode_flat_and_nested_payloads_agree_and_duplicate_is_rejected(self):
+        flat = self.payload(model_mode="import")
+        nested = self.payload(opts={"model_mode": "import"})
+        self.assertEqual(local.validate_payload(flat), local.validate_payload(nested))
+        self.assertEqual(local.build_command(flat), local.build_command(nested))
+        with self.assertRaisesRegex(ValueError, "same option"):
+            local.validate_payload(self.payload(
+                model_mode="auto", opts={"model_mode": "import"},
+            ))
+
+    def test_ui_mode_is_allowlisted_and_cannot_inject_cli_arguments(self):
+        for mode in ("unsupported", "import --resume", "", None,
+                     True, ["import"], {"mode": "import"}):
+            with self.subTest(mode=mode), patch.object(local.subprocess, "Popen") as popen:
+                with self.assertRaises(ValueError):
+                    local.build_command(self.payload(opts={"model_mode": mode}))
+                popen.assert_not_called()
+
     def test_single_workbook_folder_uses_bulk_migration(self):
         command = local.build_command(self.payload())
         self.assertEqual(command, [
             sys.executable, "-u", str(local.REPO_ROOT / "migrate.py"),
             "--batch", str(self.source), "--output-dir", str(self.output),
-            "--output-format", "pbip", "--quality-policy", "report"])
+            "--output-format", "pbip", "--mode", "auto", "--quality-policy", "report"])
         self.assert_script_flags_exist(command)
 
     def test_fabric_culture_calendar_quality_and_resume_fixed_arguments(self):
@@ -103,7 +135,7 @@ class TestLocalCommands(_LocalFixture):
         self.assertEqual(command, [
             sys.executable, "-u", str(local.REPO_ROOT / "migrate.py"),
             "--batch", str(self.source), "--output-dir", str(self.output),
-            "--output-format", "fabric", "--quality-policy", "production",
+            "--output-format", "fabric", "--mode", "auto", "--quality-policy", "production",
             "--culture", "fr-FR", "--calendar-start", "2010",
             "--calendar-end", "2040", "--resume"])
         self.assert_script_flags_exist(command)

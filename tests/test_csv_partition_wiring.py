@@ -1,16 +1,24 @@
 """CSV partitions are wired to the right file and match its real header."""
 
+import base64
+import io
+import ntpath
 import os
 import csv
 import json
+import re
 import struct
 import tempfile
 import unittest
 import zipfile
 from types import SimpleNamespace
 from unittest import mock
+from contextlib import redirect_stdout
 
 import migrate
+from powerbi_import.errors import GenerationError
+from tests.hyper_test_helpers import StreamingHyperApi
+from tests.native_import_test_helpers import forbid_native_payload_io
 
 NAME = "Report"
 
@@ -33,7 +41,9 @@ class TestDeclaredLocalSourceStaging(unittest.TestCase):
         _write(os.path.join(metadata, "datasources.json"),
                json.dumps([{"tables": tables}]))
         project = os.path.join(root, "output")
-        result = migrate._stage_declared_local_sources(source, project, metadata)
+        result = migrate._stage_declared_local_sources(
+            source, project, metadata, copy_files=True,
+        )
         return project, result
 
     def test_exact_relative_source_is_available_before_model_generation(self):
@@ -223,6 +233,315 @@ def _read(project, table):
         return f.read()
 
 
+class TestPbipNativeDataPolicy(unittest.TestCase):
+    """Supported PBIP routes keep native bindings, Hyper data, and report assets distinct."""
+
+    @staticmethod
+    def _native_sources(directory=None):
+        tables, connections, expected, payloads = [], {}, {}, {}
+        for name, connector, folder, filename, relation in (
+            ("NativeWest", "CSV", "west", "facts.csv", "[facts#csv]"),
+            ("NativeEast", "CSV", "east", "facts.csv", "[facts#csv]"),
+            ("NativeBook", "Excel", "books", "facts.xlsx", "[Exact$]"),
+            ("NativeJson", "JSON", "json", "facts.json", "facts.json"),
+        ):
+            source_directory = os.path.join(directory, folder) if directory else f"Native/{folder}"
+            path = os.path.join(source_directory, filename)
+            payloads[path] = ("synthetic native body " + name).encode("utf-8")
+            expected[name] = path
+            connection = {
+                "type": connector,
+                "details": {"directory": source_directory, "filename": filename},
+            }
+            connections[name] = connection
+            tables.append({
+                "name": name, "source_table": relation, "connection": name,
+                "connection_details": connection,
+                "columns": [{"name": "id", "datatype": "integer"},
+                            {"name": "label", "datatype": "string"}],
+            })
+        datasource = {
+            "name": "NativeFiles", "connection": connections["NativeWest"],
+            "connection_map": connections, "tables": tables,
+            "calculations": [], "relationships": [],
+        }
+        return datasource, expected, payloads
+
+    def _generate(self, project, datasources):
+        from powerbi_import.tmdl_generator import generate_tmdl
+
+        with redirect_stdout(io.StringIO()):
+            return generate_tmdl(
+                datasources, NAME, None, os.path.join(project, NAME + ".SemanticModel"),
+                model_mode="import", parameterize=False,
+            )
+
+    def _assert_original_bindings(self, project, expected):
+        for table, path in expected.items():
+            content = _read(project, table)
+            paths = re.findall(r'File\.Contents\("((?:[^"]|"")*)"\)', content)
+            self.assertEqual(len(paths), 1, content)
+            self.assertEqual(
+                ntpath.normpath(paths[0].replace('""', '"')), ntpath.normpath(path),
+            )
+            self.assertIn("mode: import", content)
+            self.assertNotIn("DataFolder", content)
+            self.assertNotIn("Migration.SourceUnavailable", content)
+            self.assertNotIn("otherwise", content)
+
+    def test_pbip_package_skips_native_bodies_but_retains_assets_and_hyper_exports(self):
+        threshold = 10 * 1024 * 1024
+        for expected_format, hyper_size in ((None, None), ("csv", threshold),
+                                             ("parquet", threshold + 1)):
+            with self.subTest(hyper_format=expected_format), \
+                    tempfile.TemporaryDirectory() as root:
+                native, expected, payloads = self._native_sources()
+                archive_members = {
+                    path.replace("\\", "/"): payload for path, payload in payloads.items()
+                }
+                source = os.path.join(root, NAME + ".twbx")
+                datasources = [native]
+                identity = {
+                    "workbook": source, "archive_member": "Data/Extract/snapshot.hyper",
+                    "schema": "Extract", "table": "Facts",
+                }
+                if expected_format:
+                    datasources.append({
+                        "name": "Snapshot",
+                        "connection": {"type": "Hyper", "details": {}},
+                        "tables": [{
+                            "name": "Snapshot", "source_table": "[Extract].[Facts]",
+                            "hyper_identity": identity,
+                            "columns": [{"name": "id", "datatype": "integer"},
+                                        {"name": "label", "datatype": "string"}],
+                        }],
+                        "calculations": [], "relationships": [],
+                    })
+                project = os.path.join(root, NAME)
+                self._generate(project, datasources)
+                self._assert_original_bindings(project, expected)
+                metadata = os.path.join(root, "metadata")
+                _write(os.path.join(metadata, "datasources.json"), json.dumps(datasources))
+                definition = os.path.join(project, NAME + ".SemanticModel", "definition")
+                # Force a real DataFolder update; native literal bindings must not follow it.
+                expressions = os.path.join(definition, "expressions.tmdl")
+                existing = ""
+                if os.path.isfile(expressions):
+                    with open(expressions, encoding="utf-8") as stream:
+                        existing = stream.read()
+                existing = re.sub(
+                    r"(?m)^expression DataFolder\b[^\n]*\n?", "", existing,
+                )
+                _write(expressions, existing + '\nexpression DataFolder = "unresolved-before-postprocess"\n')
+                image = b"\x89PNG\r\nsynthetic-report-asset"
+                visual_path = os.path.join(
+                    project, NAME + ".Report", "definition", "pages", "page",
+                    "visuals", "image", "visual.json",
+                )
+                _write(visual_path, json.dumps({"visual": {"objects": {"general": [{
+                    "properties": {"imageUrl": {"expr": {"Literal": {
+                        "Value": "'Assets/logo.png'",
+                    }}}},
+                }]}}}))
+                with zipfile.ZipFile(source, "w") as archive:
+                    archive.writestr(NAME + ".twb", "<workbook/>")
+                    for member, payload in archive_members.items():
+                        archive.writestr(member, payload)
+                    archive.writestr("Assets/logo.png", image)
+                    if expected_format:
+                        archive.writestr(identity["archive_member"], b"synthetic Hyper fixture")
+
+                api = StreamingHyperApi()
+
+                def copy_parquet(sql):
+                    destination = re.search(r"\bTO\s+'((?:[^']|'')*)'", sql, re.I)
+                    self.assertIsNotNone(destination, sql)
+                    # Marker only: parent-owned native-SDK validation verifies Parquet bytes.
+                    _write(destination.group(1).replace("''", "'"), b"PAR1syntheticCOPYmarkerPAR1")
+                    return 2
+
+                api.connection.execute_command.side_effect = copy_parquet
+                real_size = os.path.getsize
+                staged_hyper = os.path.normcase(os.path.join(project, *identity["archive_member"].split("/")))
+
+                def size(path):
+                    if os.path.normcase(os.fspath(path)) == staged_hyper and hyper_size:
+                        return hyper_size
+                    return real_size(path)
+
+                args = SimpleNamespace(
+                    tableau_file=source, output_dir=root, output_format="pbip", quiet=True,
+                )
+                with forbid_native_payload_io(archive_members=archive_members), \
+                        mock.patch.object(migrate, "_get_extract_dir", return_value=metadata), \
+                        mock.patch.dict("sys.modules", {"tableauhyperapi": api.module}), \
+                        mock.patch.object(os.path, "getsize", side_effect=size), \
+                        redirect_stdout(io.StringIO()):
+                    migrate._extract_twbx_data_files(args, NAME)
+
+                self._assert_original_bindings(project, expected)
+                for member in archive_members:
+                    self.assertFalse(os.path.exists(os.path.join(project, *member.split("/"))))
+                    self.assertFalse(os.path.exists(os.path.join(
+                        project, "Data", ntpath.basename(member),
+                    )))
+                with open(os.path.join(project, "Data", "Assets", "logo.png"), "rb") as stream:
+                    self.assertEqual(stream.read(), image)
+                with open(visual_path, encoding="utf-8") as stream:
+                    visual = json.load(stream)
+                literal = visual["visual"]["objects"]["general"][0]["properties"]["imageUrl"]["expr"]["Literal"]["Value"]
+                self.assertEqual(
+                    literal.strip("'"),
+                    "data:image/png;base64," + base64.b64encode(image).decode("ascii"),
+                )
+                with open(expressions, encoding="utf-8") as stream:
+                    final_expressions = stream.read()
+                if expected_format:
+                    self.assertNotIn("unresolved-before-postprocess", final_expressions)
+                else:
+                    self.assertIn(
+                        'expression DataFolder = "unresolved-before-postprocess"',
+                        final_expressions,
+                    )
+                manifest = os.path.join(project, "Data", "hyper_exports.json")
+                if expected_format is None:
+                    api.module.HyperProcess.assert_not_called()
+                    self.assertFalse(os.path.exists(manifest))
+                    continue
+                api.module.HyperProcess.assert_called_once()
+                api.connection.execute_list_query.assert_not_called()
+                with open(manifest, encoding="utf-8") as stream:
+                    records = json.load(stream)["exports"]
+                self.assertEqual(len(records), 1)
+                record = records[0]
+                self.assertEqual(record["identity"], identity)
+                self.assertEqual(record["format"], expected_format)
+                self.assertEqual(record["columns"], ["id", "label"])
+                self.assertEqual(record["row_count"], 2)
+                self.assertFalse(record["sampled"])
+                self.assertFalse(record["truncated"])
+                export = os.path.join(project, "Data", record["filename"])
+                if expected_format == "csv":
+                    with open(export, newline="", encoding="utf-8") as stream:
+                        self.assertEqual(list(csv.reader(stream)), [
+                            ["id", "label"], ["1", "first"], ["2", "second"],
+                        ])
+                else:
+                    with open(export, "rb") as stream:
+                        self.assertEqual(stream.read(), b"PAR1syntheticCOPYmarkerPAR1")
+                snapshot = _read(project, "Snapshot")
+                self.assertIn("mode: import", snapshot)
+                self.assertIn(record["filename"], snapshot)
+                self.assertIn("DataFolder", snapshot)
+                self.assertIn("Csv.Document" if expected_format == "csv"
+                              else "Parquet.Document", snapshot)
+                if expected_format == "parquet":
+                    self.assertNotIn("PromoteHeaders", snapshot)
+
+    def test_supported_pbip_worker_never_stages_or_collects_loose_native_bodies(self):
+        with tempfile.TemporaryDirectory() as root:
+            datasource, expected, payloads = self._native_sources(
+                os.path.join(root, "native-sources"),
+            )
+            for path, payload in payloads.items():
+                _write(path, payload)
+            source = _write(os.path.join(root, "Workbook.twb"), "<workbook/>")
+            metadata = os.path.join(root, "metadata")
+            _write(os.path.join(metadata, "datasources.json"), json.dumps([datasource]))
+            output = os.path.join(root, "output")
+            project = os.path.join(output, NAME)
+
+            def generate(**kwargs):
+                self.assertEqual(kwargs["report_name"], NAME)
+                self.assertEqual(kwargs["output_format"], "pbip")
+                self.assertEqual(kwargs["model_mode"], "import")
+                self._generate(project, [datasource])
+                _write(os.path.join(project, NAME + ".pbip"), "{}")
+                return True
+
+            with forbid_native_payload_io(payloads), \
+                    mock.patch.object(migrate, "_get_extract_dir", return_value=metadata), \
+                    mock.patch.object(migrate, "run_generation", side_effect=generate), \
+                    mock.patch.object(migrate, "run_migration_report", return_value=None), \
+                    redirect_stdout(io.StringIO()):
+                result = migrate._migrate_single_workbook(
+                    source, NAME, output, NAME, skip_extraction=True,
+                    wb_prep=None, wb_cal_start=None, wb_cal_end=None, wb_culture=None,
+                    verify_open=False, output_format="pbip", model_mode="import", quiet=True,
+                )
+            self.assertTrue(result["success"], result)
+            self._assert_original_bindings(project, expected)
+            for path, payload in payloads.items():
+                with open(path, "rb") as stream:
+                    self.assertEqual(stream.read(), payload)
+                self.assertFalse(os.path.exists(os.path.join(project, "Data", os.path.basename(path))))
+
+    def test_explicit_fabric_still_stages_csv_body_and_canonical_notebook_input(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = _project(root, {"NativeFacts": _csv_partition(
+                "facts.csv", ["id", "label"],
+            )})
+            os.makedirs(os.path.join(project, NAME + ".Notebook"))
+            metadata = os.path.join(root, "metadata")
+            _write(os.path.join(metadata, "datasources.json"), json.dumps([{
+                "name": "NativeCSV",
+                "connection": {"type": "CSV", "details": {
+                    "directory": "Data", "filename": "facts.csv",
+                }},
+                "tables": [{
+                    "name": "NativeFacts", "source_table": "[facts#csv]",
+                    "columns": [{"name": "id"}, {"name": "label"}],
+                }],
+            }]))
+            source = os.path.join(root, NAME + ".twbx")
+            payload = b"id,label\n1,first\n2,second\n"
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr(NAME + ".twb", "<workbook/>")
+                archive.writestr("Data/facts.csv", payload)
+            args = SimpleNamespace(
+                tableau_file=source, output_dir=root, output_format="fabric", quiet=True,
+            )
+            with mock.patch.object(migrate, "_get_extract_dir", return_value=metadata), \
+                    redirect_stdout(io.StringIO()):
+                migrate._extract_twbx_data_files(args, NAME)
+            with open(os.path.join(project, "Data", "facts.csv"), "rb") as stream:
+                self.assertEqual(stream.read(), payload)
+            with open(os.path.join(project, "Data", "nativefacts.csv"),
+                      newline="", encoding="utf-8") as stream:
+                self.assertEqual(list(csv.reader(stream)), [
+                    ["id", "label"], ["1", "first"], ["2", "second"],
+                ])
+            self.assertIn("DataFolder", _read(project, "NativeFacts"))
+            with open(os.path.join(project, NAME + ".SemanticModel", "definition",
+                                   "expressions.tmdl"), encoding="utf-8") as stream:
+                self.assertIn(
+                    os.path.abspath(os.path.join(project, "Data")).replace("\\", "\\\\"),
+                    stream.read(),
+                )
+
+    def test_skipped_native_zip_payload_does_not_bypass_traversal_validation(self):
+        for member in ("../outside.csv", "Native/../../outside.xlsx"):
+            with self.subTest(member=member), tempfile.TemporaryDirectory() as root:
+                source = os.path.join(root, NAME + ".twbx")
+                project = os.path.join(root, NAME)
+                os.makedirs(project)
+                with zipfile.ZipFile(source, "w") as archive:
+                    archive.writestr(NAME + ".twb", "<workbook/>")
+                    archive.writestr("Data/safe.csv", b"id\n1\n")
+                    archive.writestr(member, b"must not escape")
+                with forbid_native_payload_io(archive_members={"Data/safe.csv", member}), \
+                        self.assertRaisesRegex(
+                            RuntimeError, "Could not extract TWBX data files",
+                        ) as raised:
+                    migrate._process_twbx_post_generation(
+                        source, project, NAME, output_format="pbip",
+                    )
+                self.assertIsInstance(raised.exception.__cause__, migrate.SecurityError)
+                self.assertFalse(os.path.exists(os.path.join(root, "outside.csv")))
+                self.assertFalse(os.path.exists(os.path.join(root, "outside.xlsx")))
+                self.assertFalse(os.path.exists(os.path.join(project, "Data", "safe.csv")))
+
+
 class TestReconcileCsvPartitions(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -399,31 +718,14 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
             ('Schema."A"', long_name.lower()),
         ]
         # SchemaName wraps Name; unlike Name it has no .unescaped attribute.
-        schemas = [
-            SimpleNamespace(name=SimpleNamespace(unescaped=name))
-            for name in ('Schema."A"', 'schema."a"')
-        ]
-        tables = [
-            SimpleNamespace(schema_name=next(
-                                s for s in schemas if s.name.unescaped == schema),
-                            name=SimpleNamespace(unescaped=table))
-            for schema, table in catalog_pairs
-        ]
-        connection = mock.Mock()
-        connection.catalog.get_schema_names.return_value = schemas
-        connection.catalog.get_table_names.side_effect = (
-            lambda schema: [t for t in tables if t.schema_name is schema]
+        # Real Hyper results are context-managed single-pass cursors.
+        api = StreamingHyperApi(
+            columns=columns, rows=[(1, "synthetic", 3)], total_rows=1,
+            table_pairs=catalog_pairs,
         )
-        connection.catalog.get_table_definition.return_value = SimpleNamespace(
-            columns=[SimpleNamespace(name=SimpleNamespace(unescaped=c)) for c in columns]
-        )
-        connection.execute_list_query.return_value = [[1, "synthetic", 3]]
-        api = SimpleNamespace(
-            HyperProcess=mock.Mock(return_value=mock.Mock(endpoint="synthetic")),
-            Telemetry=SimpleNamespace(DO_NOT_SEND_USAGE_DATA_TO_TABLEAU=0),
-            Connection=mock.Mock(return_value=connection),
-        )
-        with mock.patch.dict("sys.modules", {"tableauhyperapi": api}), \
+        connection = api.connection
+        _write(os.path.join(self.root, "staged.hyper"), b"Hyper synthetic fixture")
+        with mock.patch.dict("sys.modules", {"tableauhyperapi": api.module}), \
                 mock.patch("sqlite3.connect") as sqlite_reader, \
                 mock.patch("tableau_export.hyper_reader.read_hyper") as fallback_reader:
             result = migrate._hyper_to_csv_files(
@@ -442,7 +744,9 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
             fallback_reader.assert_not_called()
         with open(os.path.join(self.root, "hyper_exports.json"),
                   encoding="utf-8") as stream:
-            self.assertEqual(json.load(stream), {"version": 1, "exports": result.exports})
+            self.assertEqual(json.load(stream), {
+                "version": 1, "authoritative": True, "exports": result.exports,
+            })
         self.assertIsInstance(result, dict)
         self.assertEqual(len(result.exports), 3)
         self.assertEqual(
@@ -462,6 +766,8 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
                       encoding="utf-8", newline="") as stream:
                 self.assertEqual(list(csv.reader(stream)), [columns, ["1", "synthetic", "3"]])
         self.assertEqual(connection.close.call_count, 2)
+        connection.execute_list_query.assert_not_called()
+        self.assertTrue(all(result.closed for result in api.results))
 
     def test_project_reader_fallback_preserves_long_identity_and_column_order(self):
         names = ["Long." + "Ab-" * 120, "Long." + "ab-" * 120]
@@ -469,67 +775,143 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
         tables = [
             {"schema": "Extract", "table": name,
              "columns": [{"name": column, "type": "text"} for column in columns],
-             "sample_rows": [[1, 2, 3]]}
+             "sample_rows": [[1, 2, 3]], "row_count": 9, "sample_row_count": 1}
             for name in names
         ]
-        def export(table, out_dir, csv_filename):
-            return _write(os.path.join(out_dir, csv_filename), "z,réalisé (%),a\n1,2,3\n")
-
         with mock.patch.dict("sys.modules", {"tableauhyperapi": None}), \
                 mock.patch("sqlite3.connect", side_effect=OSError("synthetic non-SQLite file")), \
                 mock.patch("tableau_export.hyper_reader.read_hyper",
                            return_value={"tables": tables}), \
-                mock.patch("tableau_export.hyper_reader.export_hyper_to_csv",
-                           side_effect=export) as writer:
+                self.assertLogs(migrate.logger.name, level="WARNING") as warnings:
             result = migrate._hyper_to_csv_files(
                 "synthetic.hyper", self.root, NAME, csv, identity=self.package_identity
             )
-        self.assertEqual(writer.call_count, 2)
         self.assertEqual([r["identity"] for r in result.exports],
                          [self._identity(table=name) for name in names])
         self.assertEqual([r["columns"] for r in result.exports], [columns, columns])
         self.assertEqual(len(set(result.values())), 2)
         for filename in result.values():
             self.assertRegex(filename, r"^hyper_[0-9a-f]{64}\.csv$")
+            with open(os.path.join(self.root, filename), encoding="utf-8",
+                      newline="") as stream:
+                self.assertEqual(list(csv.reader(stream)), [columns, ["1", "2", "3"]])
+        for record in result.exports:
+            self.assertEqual(record["row_count"], 1)
+            self.assertEqual(record["total_rows"], 9)
+            self.assertIs(record["sampled"], True)
+            self.assertIs(record["truncated"], True)
+            self.assertIn("sample", record["sampling_method"])
+        self.assertTrue(any("not a full extract" in line for line in warnings.output))
 
     def test_explicit_package_reads_exact_path_despite_prefix_csv_and_writes_manifest(self):
         project, data = self._routing_project([None])
         path = _write(os.path.join(project, "Elsewhere", "data.hyper"), b"synthetic")
         _write(os.path.join(data, "data_old.csv"), "id\nwrong\n")
-        record = {"identity": self._identity(), "csv_filename": "hyper_" + "a" * 64 + ".csv",
-                  "columns": ["id"]}
-        _write(os.path.join(data, record["csv_filename"]), "id\nright\n")
-        converted = migrate._HyperCsvExports()
-        converted[os.path.splitext(record["csv_filename"])[0]] = record["csv_filename"]
-        converted.exports = [record]
-        with mock.patch.object(migrate, "_hyper_to_csv_files", return_value=converted) as reader:
-            migrate._convert_hyper_to_csv_in_data(
-                data, NAME, project,
-                packaged_hyper=[{"path": path, "identity": self.package_identity}],
-            )
-        reader.assert_called_once_with(path, data, NAME, csv, identity=self.package_identity)
-        with open(os.path.join(data, "hyper_exports.json"), encoding="utf-8") as stream:
-            self.assertEqual(json.load(stream), {"version": 1, "exports": [record]})
+        filename = "hyper_" + "a" * 64 + ".csv"
+        record = {
+            "identity": self._identity(), "format": "csv",
+            "filename": filename, "csv_filename": filename, "columns": ["id"],
+            "row_count": 1, "total_rows": 1, "max_rows": None,
+            "sampled": False, "truncated": False,
+        }
 
-    def test_failed_reader_publishes_empty_authoritative_manifest(self):
-        project, data = self._routing_project([None])
-        path = _write(os.path.join(data, "data.hyper"), b"synthetic")
-        _write(os.path.join(data, "data_old.csv"), "id\nwrong\n")
-        before = _read(project, "Model")
+        def export_exact_member(hyper_path, output_dir, prefix, csv_module, **kwargs):
+            self.assertEqual(hyper_path, path)
+            self.assertEqual(kwargs["identity"], self.package_identity)
+            self.assertEqual(os.path.dirname(output_dir), data)
+            self.assertNotEqual(output_dir, data)
+            _write(os.path.join(output_dir, filename), "id\nright\n")
+            converted = migrate._HyperCsvExports()
+            converted[os.path.splitext(filename)[0]] = filename
+            converted.exports = [dict(record)]
+            return converted
+
         with mock.patch.object(migrate, "_hyper_to_csv_files",
-                               return_value=migrate._HyperCsvExports()) as reader:
+                               side_effect=export_exact_member) as reader:
             migrate._convert_hyper_to_csv_in_data(
                 data, NAME, project,
                 packaged_hyper=[{"path": path, "identity": self.package_identity}],
             )
         reader.assert_called_once()
+        export_stage = reader.call_args.args[1]
+        reader.assert_called_once_with(
+            path, export_stage, NAME, csv, identity=self.package_identity,
+            export_format="auto", max_rows=None, quiet=False,
+        )
+        self.assertFalse(os.path.exists(export_stage))
+        with open(os.path.join(data, filename), encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), "id\nright\n")
+        with open(os.path.join(data, "data_old.csv"), encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), "id\nwrong\n")
         with open(os.path.join(data, "hyper_exports.json"), encoding="utf-8") as stream:
-            self.assertEqual(json.load(stream), {"version": 1, "exports": []})
-        self.assertEqual(_read(project, "Model"), before)
-        with mock.patch.object(migrate, "_hyper_to_csv_files") as second_reader:
-            migrate._convert_hyper_to_csv_in_data(data, NAME, project)
-        second_reader.assert_not_called()
-        self.assertEqual(_read(project, "Model"), before)
+            self.assertEqual(json.load(stream), {
+                "version": 1, "authoritative": True, "exports": [record],
+            })
+
+    def test_empty_selected_reader_raises_and_preserves_manifest_without_fallback(self):
+        project, data = self._routing_project([None])
+        path = _write(os.path.join(data, "data.hyper"), b"Hyper synthetic fixture")
+        self.assertTrue(os.path.isfile(path))
+        _write(os.path.join(data, "data_old.csv"), "id\nwrong\n")
+        _write(os.path.join(data, "legacy.csv"), "id\nstale\n")
+        before = _read(project, "Model")
+        manifest_path = os.path.join(data, "hyper_exports.json")
+        for existing_manifest in (False, True):
+            with self.subTest(existing_manifest=existing_manifest):
+                if existing_manifest:
+                    self._manifest(data, [{
+                        "identity": self._identity(), "format": "csv",
+                        "filename": "data_old.csv", "csv_filename": "data_old.csv",
+                        "columns": ["id"], "row_count": 1, "total_rows": 1,
+                        "max_rows": None, "sampled": False, "truncated": False,
+                    }])
+                    with open(manifest_path, "rb") as stream:
+                        previous_manifest = stream.read()
+                baseline = set(os.listdir(data))
+                staged_directories = []
+
+                def empty_export(hyper_path, output_dir, *args, **kwargs):
+                    self.assertEqual(hyper_path, path)
+                    self.assertEqual(kwargs["identity"], self.package_identity)
+                    self.assertNotEqual(output_dir, data)
+                    self.assertTrue(os.path.isdir(output_dir))
+                    staged_directories.append(output_dir)
+                    # No injected exception: production must reject an empty
+                    # export set. A valid empty table still has an export record.
+                    return migrate._HyperCsvExports()
+
+                with mock.patch.object(migrate, "_hyper_to_csv_files",
+                                       side_effect=empty_export) as reader, \
+                        mock.patch.object(migrate, "_pick_csv_for_columns") as fallback, \
+                        mock.patch.object(migrate, "_stage_pending_hyper_partition") as binding:
+                    for attempt in range(2):
+                        with self.assertRaises(GenerationError) as raised:
+                            migrate._convert_hyper_to_csv_in_data(
+                                data, NAME, project,
+                                packaged_hyper=[{
+                                    "path": path, "identity": self.package_identity,
+                                }],
+                            )
+                        self.assertRegex(str(raised.exception), "(?i)hyper.*no exportable")
+                        self.assertEqual(
+                            raised.exception.item, self.package_identity["archive_member"],
+                        )
+                        self.assertEqual(reader.call_count, attempt + 1)
+                    fallback.assert_not_called()
+                    binding.assert_not_called()
+                self.assertEqual(len(staged_directories), 2)
+                self.assertTrue(all(not os.path.exists(p) for p in staged_directories))
+                self.assertEqual(set(os.listdir(data)), baseline)
+                if existing_manifest:
+                    with open(manifest_path, "rb") as stream:
+                        self.assertEqual(stream.read(), previous_manifest)
+                else:
+                    self.assertFalse(os.path.exists(manifest_path))
+                self.assertEqual(_read(project, "Model"), before)
+                with open(os.path.join(data, "data_old.csv"), encoding="utf-8") as stream:
+                    self.assertEqual(stream.read(), "id\nwrong\n")
+                with open(os.path.join(data, "legacy.csv"), encoding="utf-8") as stream:
+                    self.assertEqual(stream.read(), "id\nstale\n")
 
     def test_identical_headers_route_only_by_exact_identity_and_manifest_on_repeat(self):
         identity = self._identity(table="ExactCase")
@@ -656,7 +1038,7 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
         project = _project(self.root, {})
         def check_staged_members(*args, **kwargs):
             for index, member in enumerate(members):
-                with open(os.path.join(project, member), "rb") as stream:
+                with open(os.path.join(project, *member.split("/")), "rb") as stream:
                     self.assertEqual(stream.read(), f"synthetic-{index}".encode())
 
         with mock.patch.object(migrate, "_convert_hyper_to_csv_in_data",
@@ -668,10 +1050,13 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
         converter.assert_called_once_with(
             os.path.join(project, "Data"), NAME, project,
             packaged_hyper=[
-                {"path": os.path.join(project, member),
+                {"path": os.path.join(project, *member.split("/")),
                  "identity": {"workbook": self.workbook, "archive_member": member}}
                 for member in members
             ],
+            hyper_export_format="auto", hyper_export_max_rows=None,
+            output_format="pbip", quiet=False, max_zip_entry_mb=1024,
+            merge_manifest=False, extract_dir=None,
         )
         installer.assert_not_called()
 
@@ -1052,6 +1437,85 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
             "formula": "[Amount] * 2", "role": "measure", "datatype": "real",
         }]
         return datasource
+
+    def test_parquet_binding_keeps_captions_types_and_downstream_m_without_headers(self):
+        from powerbi_import.m_validator import validate_m_query
+
+        # Keep this source-binding regression independent of the pre-existing
+        # DAX apostrophe-quoting bug; other identity tests retain O'Brien.
+        self.table = "Synthetic Facts réalisé"
+        datasource = self._transformed_datasource()
+        model = self._model([datasource])
+        content = self._content(model["model"]["tables"][0])
+        filename = "hyper_" + "b" * 64 + ".parquet"
+        _write(os.path.join(self.data, filename), b"PAR1synthetic-markerPAR1")
+        record = {
+            "identity": dict(self.identity), "format": "parquet", "filename": filename,
+            "columns": ["raw_code", "Amount"], "row_count": 2, "total_rows": 2,
+            "max_rows": None, "sampled": False, "truncated": False,
+        }
+        bound = migrate._stage_pending_hyper_partition(content, self.data, [record])
+        self.assertNotEqual(bound, content)
+        self.assertIn("Parquet.Document(File.Contents(", bound)
+        self.assertIn(filename, bound)
+        self.assertNotIn("Csv.Document", bound)
+        self.assertNotIn("PromoteHeaders", bound)
+        self.assertNotIn("Migration.HyperExportRequired", bound)
+        self.assertEqual(
+            bound.split("\n\tpartition ", 1)[0], content.split("\n\tpartition ", 1)[0],
+            "Parquet source replacement must not change model captions or column types",
+        )
+        for step in (
+            'Table.RenameColumns(Source, {{"raw_code", "Code"}})',
+            '{{"Code", "Display Code"}}',
+            '"Double Amount", each ([Amount] * 2), type number)',
+        ):
+            self.assertIn(step, content)
+            self.assertIn(step, bound)
+        self.assertEqual(validate_m_query(self._expression(bound)), [])
+        self.assertEqual(record["identity"], self.identity)
+        self.assertEqual(record["columns"], ["raw_code", "Amount"])
+        self.assertEqual(
+            migrate._stage_pending_hyper_partition(bound, self.data, [record]), bound,
+        )
+
+    def test_parquet_manifest_is_routed_in_postprocessing_by_exact_identity_not_headers(self):
+        content = self._content()
+        project = _project(self.root, {})
+        data = os.path.join(project, "Data")
+        path = os.path.join(project, f"{NAME}.SemanticModel", "definition",
+                            "tables", "unrelated-artifact.tmdl")
+        _write(path, content)
+        filename = "hyper_" + "c" * 64 + ".parquet"
+        _write(os.path.join(data, filename), b"PAR1synthetic-markerPAR1")
+        record = {
+            "identity": dict(self.identity), "format": "parquet", "filename": filename,
+            "columns": ["id", "Amount"], "row_count": 2, "total_rows": 2,
+            "max_rows": None, "sampled": False, "truncated": False,
+        }
+        manifest = os.path.join(data, "hyper_exports.json")
+        extract = os.path.join(self.root, "metadata")
+        _write(os.path.join(extract, "datasources.json"), json.dumps([self._datasource()]))
+        # Matching headers are not permission to borrow a different physical table.
+        foreign = dict(record, identity=dict(self.identity, schema="foreign"))
+        _write(manifest, json.dumps({"version": 1, "exports": [foreign]}))
+        with mock.patch.object(migrate, "_get_extract_dir", return_value=extract), \
+                mock.patch.object(migrate, "_hyper_to_csv_files") as reader:
+            migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+            with open(path, encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), content)
+            _write(manifest, json.dumps({"version": 1, "exports": [record]}))
+            migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+            with open(path, encoding="utf-8") as stream:
+                bound = stream.read()
+            migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+        reader.assert_not_called()
+        self.assertIn("Parquet.Document", bound)
+        self.assertIn(filename, bound)
+        self.assertNotIn("PromoteHeaders", bound)
+        self.assertNotIn("Migration.HyperExportRequired", bound)
+        with open(path, encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), bound)
 
     def test_pending_source_is_seeded_before_build_table_and_keeps_real_m_steps(self):
         from powerbi_import import tmdl_generator
@@ -1530,6 +1994,71 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
         self.assertNotIn('"Year"', source)
         self.assertNotIn("#table(", text)
 
+    def _same_path_case(self, root):
+        project, data, extract, downstream, metadata = self._make_project(root)
+        os.replace(os.path.join(data, "orders_extract.hyper"),
+                   os.path.join(data, "Orders.hyper"))
+        os.replace(os.path.join(data, "orders_extract.csv"),
+                   os.path.join(data, "Orders.csv"))
+        rows = [
+            ["2", "1234.5", "2026-10-15", "2026-10-15 09:30:00"],
+            ["7", "0.25", "2026-10-22", "2026-10-22 13:15:05"],
+        ]
+        with open(os.path.join(data, "Orders.csv"), "w",
+                  encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["qty_raw", "amount_raw", "date_raw", "updated_raw"])
+            writer.writerows(rows)
+        metadata[0]["tables"][0]["source_table"] = "Orders"
+        _write(os.path.join(extract, "datasources.json"), json.dumps(metadata))
+        return project, data, extract, downstream, rows
+
+    def _assert_same_path_result(self, project, data, downstream, rows):
+        with open(os.path.join(data, "Orders.csv"),
+                  encoding="utf-8", newline="") as stream:
+            self.assertEqual(
+                list(csv.reader(stream)),
+                [["Qty", "Amount", "Order Date", "Updated"]] + rows,
+                "Opening the staged destination must not truncate its own source",
+            )
+        self._assert_source_types(
+            _read(project, "Orders"),
+            ['{"Qty", Int64.Type}', '{"Amount", type number}',
+             '{"Order Date", type date}', '{"Updated", type datetime}'],
+            downstream,
+        )
+
+    def test_source_equals_staged_csv_retains_both_rows_captions_and_source_types(self):
+        with tempfile.TemporaryDirectory() as root:
+            project, data, extract, downstream, rows = self._same_path_case(root)
+            with mock.patch.object(migrate, "_get_extract_dir", return_value=extract):
+                migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+            self._assert_same_path_result(project, data, downstream, rows)
+            self.assertEqual(set(os.listdir(data)), {"Orders.hyper", "Orders.csv"})
+
+    def test_caption_staging_consumes_csv_as_a_stream_not_list_reader(self):
+        real_reader = csv.reader
+
+        class StreamingOnlyReader:
+            def __init__(self, *args, **kwargs):
+                self.reader = real_reader(*args, **kwargs)
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self.reader)
+
+            def __length_hint__(self):
+                raise AssertionError("caption staging must not materialize list(reader)")
+
+        with tempfile.TemporaryDirectory() as root:
+            project, data, extract, downstream, rows = self._same_path_case(root)
+            with mock.patch.object(migrate, "_get_extract_dir", return_value=extract), \
+                    mock.patch.object(csv, "reader", side_effect=StreamingOnlyReader):
+                migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+            self._assert_same_path_result(project, data, downstream, rows)
+
     def test_restores_metadata_types_immediately_after_promotion_before_calculations(self):
         with tempfile.TemporaryDirectory() as root:
             project, data, extract, downstream, _ = self._make_project(root)
@@ -1682,24 +2211,60 @@ class TestRestrictToModelColumns(unittest.TestCase):
 
 class TestSpatialRouting(unittest.TestCase):
     def test_single_workbook_runs_coordinate_wiring_after_csv_routing(self):
-        order = []
-        names = ('_fix_twb_data_folder', '_collect_local_data_files',
-                 '_convert_hyper_to_csv_in_data', '_route_spatial_partitions',
-                 '_reconcile_csv_partitions', '_wire_shapefile_map_coordinates',
-                 '_restrict_file_partitions_to_model', '_shorten_report_artifact_path')
-        with mock.patch.multiple(migrate, **{
-            name: mock.Mock(side_effect=lambda *args, step=name: order.append(step))
-            for name in names
-        }):
-            migrate._extract_twbx_data_files(
-                SimpleNamespace(tableau_file='sample.twb', output_dir='out',
-                                output_format='pbip'), NAME)
-        self.assertLess(order.index('_route_spatial_partitions'),
-                        order.index('_wire_shapefile_map_coordinates'))
-        self.assertLess(order.index('_reconcile_csv_partitions'),
-                        order.index('_wire_shapefile_map_coordinates'))
-        self.assertLess(order.index('_wire_shapefile_map_coordinates'),
-                        order.index('_restrict_file_partitions_to_model'))
+        for output_format in ("pbip", "fabric"):
+            with self.subTest(output_format=output_format):
+                order = []
+                names = ('_fix_twb_data_folder', '_collect_local_data_files',
+                         '_convert_hyper_to_csv_in_data', '_route_spatial_partitions',
+                         '_reconcile_csv_partitions', '_wire_shapefile_map_coordinates',
+                         '_restrict_file_partitions_to_model', '_shorten_report_artifact_path')
+
+                def record_step(step):
+                    order.append(step)
+                    if step == '_collect_local_data_files':
+                        return {
+                            'referenced': 0, 'already_present': 0, 'copied': 0,
+                            'ambiguous': 0, 'not_found': 0,
+                        }
+
+                hooks = {
+                    name: mock.Mock(side_effect=lambda *args, step=name, **kwargs: record_step(step))
+                    for name in names
+                }
+                with mock.patch.multiple(migrate, **hooks):
+                    migrate._extract_twbx_data_files(
+                        SimpleNamespace(tableau_file='sample.twb', output_dir='out',
+                                        output_format=output_format), NAME)
+                expected = names[:-1] if output_format == "fabric" else (
+                    '_collect_local_data_files', '_convert_hyper_to_csv_in_data',
+                    '_shorten_report_artifact_path',
+                )
+                self.assertEqual(order, list(expected))
+                if output_format == "pbip":
+                    for name in (
+                        '_fix_twb_data_folder', '_route_spatial_partitions',
+                        '_reconcile_csv_partitions', '_wire_shapefile_map_coordinates',
+                        '_restrict_file_partitions_to_model',
+                    ):
+                        hooks[name].assert_not_called()
+                else:
+                    hooks["_shorten_report_artifact_path"].assert_not_called()
+                hooks["_collect_local_data_files"].assert_called_once_with(
+                    "sample.twb", os.path.join("out", NAME), NAME,
+                    hyper_only=output_format == "pbip",
+                )
+                hooks["_convert_hyper_to_csv_in_data"].assert_called_once_with(
+                    os.path.join("out", NAME, "Data"), NAME, os.path.join("out", NAME),
+                    hyper_export_format="auto", hyper_export_max_rows=None,
+                    output_format=output_format, quiet=False, max_zip_entry_mb=1024,
+                )
+                if output_format == "fabric":
+                    self.assertLess(order.index('_route_spatial_partitions'),
+                                    order.index('_wire_shapefile_map_coordinates'))
+                    self.assertLess(order.index('_reconcile_csv_partitions'),
+                                    order.index('_wire_shapefile_map_coordinates'))
+                    self.assertLess(order.index('_wire_shapefile_map_coordinates'),
+                                    order.index('_restrict_file_partitions_to_model'))
 
     def test_wgs84_polygon_points_join_to_map_fact_without_losing_rows(self):
         with tempfile.TemporaryDirectory() as root:

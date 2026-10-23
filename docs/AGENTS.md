@@ -18,22 +18,22 @@ its release criteria pass.
 
 | Agent | Invoke When | Owns |
 |-------|-------------|------|
-| **@orchestrator** | Pipeline coordination, CLI, batch, wizard | `migrate.py`, `import_to_powerbi.py`, `wizard.py`, `progress.py`, `incremental.py`, `plugins.py`, `notebook_api.py`, `api_server.py` |
+| **@orchestrator** | Pipeline coordination, CLI, batch, wizard, local browser runner | `migrate.py`, `run_web_ui.ps1`, `web/local_server.py`, `import_to_powerbi.py`, `wizard.py`, `progress.py`, `incremental.py`, `plugins.py`, `notebook_api.py`, `api_server.py` |
 | **@extractor** | Parsing Tableau XML (.twb/.twbx), Hyper files, Prep flow conversion | `tableau_export/extract_tableau_data.py`, `datasource_extractor.py`, `hyper_reader.py`, `pulse_extractor.py`, `prep_flow_parser.py` |
 | **@tableau** | Tableau Server/Cloud REST API, JWT auth, site discovery, permissions, metadata lineage, Prep flow analysis | `tableau_export/server_client.py`, `tableau_export/prep_flow_analyzer.py` |
-| **@dax** | DAX formula correctness, conversion, optimization, aggregation context, cross-table refs | `dax_converter.py`, `dax_optimizer.py` + DAX post-processing in `tmdl_generator.py` |
+| **@dax** | DAX formula correctness, conversion, optimization, aggregation context, cross-table refs | `dax_converter.py`, `dax_optimizer.py`, `tmdl_dax_postprocess.py` |
 | **@wiring** | DAX↔M bridge, calc column vs measure classification, M generation, M step injection | `m_query_builder.py`, `calc_column_utils.py`, `tmdl_m_conversion.py` |
-| **@semantic** | TMDL semantic model, relationships, Calendar, RLS, hierarchies, parameters | `tmdl_generator.py` (structural), `fabric_semantic_model_generator.py` |
+| **@semantic** | TMDL semantic model, relationships, Calendar, RLS, hierarchies, parameters | `tmdl_generator.py` (structural) |
 | **@visual** | PBIR report, visual containers, slicers, filters, bookmarks, themes, pages | `pbip_generator.py`, `visual_generator.py` |
 | **@healing** | Self-repair subsystem, openability preflight, recovery ledger, rollback gate | `healing*.py`, `autoheal.py`, `dax_healing.py`, `m_healing.py`, `visual_healing.py`, `openability.py`, `self_healing_v3.py`, `tmdl_self_heal.py` |
 | **@evidence** | Quality reports, evidence packages, parity scoring, diff/coverage tooling | `migration_quality.py`, `parity_registry.py`, `evidence_*.py`, `*_diff.py`, `html_template.py`, `quality_grades.py` |
 | **@fabric** | Fabric-native artifacts (Lakehouse, Dataflow Gen2, Notebook, DirectLake, Pipeline) | `fabric_*.py`, `lakehouse_generator.py`, `dataflow_generator.py`, `notebook_generator.py`, `pipeline_generator.py` |
 | **@ai** | MCP server, LLM gateway, conversational Q&A, remediation, plugin SDK, marketplace | `mcp_server.py`, `llm_gateway.py`, `conversational.py`, `remediation.py`, `plugin_sdk.py`, `marketplace.py` |
 | **@assessor** | Migration readiness, scoring, strategy, diff reports, validation | `assessment.py`, `server_assessment.py`, `global_assessment.py`, `strategy_advisor.py`, `visual_diff.py`, `comparison_report.py`, `migration_report.py`, `equivalence_tester.py`, `regression_suite.py`, `schema_drift.py`, `validator.py` |
-| **@merger** | Shared semantic model, multi-workbook merge, Fabric merge | `shared_model.py`, `merge_config.py` (+ co-owns `merge_assessment.py`, `merge_report_html.py`, `thin_report_generator.py`) |
+| **@merger** | Shared semantic model, multi-workbook merge, Fabric merge | `shared_model.py`, `merge_config.py`, `thin_report_generator.py` (+ co-owns `merge_assessment.py`, `merge_report_html.py`) |
 | **@deployer** | Fabric/PBI deployment, auth, gateway, telemetry, multi-tenant | `deploy/*.py`, `gateway_config.py`, `telemetry.py`, `telemetry_dashboard.py`, `refresh_generator.py` |
 | **@reviewer** | Artifact review engine and coaching reports; CLI does not invoke the Copilot agent or dispatch fixes | `powerbi_import/preceptor.py` |
-| **@web-designer** | End-user UI/UX, local browser UI, layout clarity, presentation | `web/index.html`, `web/app.js`, `web/style.css` |
+| **@web-designer** | End-user UI/UX, local browser UI, layout clarity, presentation | `web/index.html`, `web/app.js`, `web/style.css`, `web/app.py` |
 | **@tester** | Tests, coverage, fixtures, regression | `tests/*.py` |
 | **@roadmap-planner** | Roadmap waves, release gates, priority decisions | `docs/ROADMAP.md` and planning artifacts (owns no generator source) |
 | **@readme** | Documentation consistency and pre/post-update checks | Read-only review of `README.md`, `docs/`, `CHANGELOG.md`, and project instructions |
@@ -142,9 +142,9 @@ Solid arrows carry migration data; dotted arrows are advisory or governing.
 
 The flow diagram above shows who runs when. This one shows where two agents
 touch the same file — the only places a handoff is a *contract* rather than a
-message. It is machine-verified: `scripts/check_agent_ownership.py` fails the
-build if a file here is claimed by an agent that does not declare `co-owned`,
-if only one side declares it, or if a seventh file joins the list.
+message. `scripts/check_agent_ownership.py` reports module ownership totals
+and unowned, duplicate or asymmetric declarations; `tests/test_agent_ownership.py`
+is the build gate for ownership drift. There is no fixed seventh-file limit.
 
 ```mermaid
 flowchart LR
@@ -156,7 +156,8 @@ flowchart LR
     WIRA(["@wiring"]):::ag
     HEALA(["@healing"]):::ag
 
-    TMDL["tmdl_generator.py<br/><i>structure + DAX post-processing</i>"]:::sh
+    TMDL["tmdl_generator.py<br/><i>semantic model orchestration</i>"]:::solo
+    DPOST["tmdl_dax_postprocess.py"]:::solo
     SHM["shared_model.py<br/><i>merge engine + semantic merge</i>"]:::sh
     MASS["merge_assessment.py<br/>merge_report_html.py<br/><i>scoring + reporting</i>"]:::sh
     PLIN["prep_lineage.py<br/>prep_lineage_report.py<br/><i>graph + flow profiles</i>"]:::sh
@@ -164,7 +165,9 @@ flowchart LR
     MCONV["tmdl_m_conversion.py"]:::solo
     SHEAL["tmdl_self_heal.py"]:::solo
 
-    DAXA --- TMDL --- SEMA
+    SEMA -->|sole owner| TMDL
+    DAXA -->|sole owner| DPOST
+    DPOST -.->|re-exported by| TMDL
     SEMA --- SHM --- MRGA
     MRGA --- MASS --- ASSA
     ASSA --- PLIN --- TABA
@@ -179,20 +182,20 @@ flowchart LR
     classDef solo fill:#dcfce7,stroke:#16a34a,color:#14532d
 ```
 
-Six files are co-owned, and every pair is a deliberate seam:
+Five files are co-owned, and every pair is a deliberate seam:
 
 | Shared file | Agents | Why it is shared |
 |---|---|---|
-| `tmdl_generator.py` | `@semantic` + `@dax` | `@semantic` owns tables, relationships, Calendar, RLS and the TMDL writers; `@dax` owns the post-processing that rewrites the emitted expressions |
 | `shared_model.py` | `@merger` + `@semantic` | `@merger` owns fingerprint matching and conflict resolution; `@semantic` owns how merged tables become one model |
 | `merge_assessment.py`, `merge_report_html.py` | `@assessor` + `@merger` | `@merger` supplies the score, `@assessor` owns how a score becomes a recommendation |
 | `prep_lineage.py`, `prep_lineage_report.py` | `@assessor` + `@tableau` | `@tableau` profiles each Prep flow, `@assessor` turns the cross-flow graph into merge advice |
 
-The green nodes are the opposite move. `tmdl_m_conversion.py` and
-`tmdl_self_heal.py` were *extracted* from `tmdl_generator.py` so `@wiring` and
-`@healing` could own their surfaces outright; `tmdl_generator` re-exports them
-for backward compatibility but defines none of them. That is why neither agent
-co-owns it — a re-export is a dependency, not shared ownership, and recording
+The green nodes are the opposite move. `tmdl_dax_postprocess.py`,
+`tmdl_m_conversion.py` and `tmdl_self_heal.py` were *extracted* from
+`tmdl_generator.py` so `@dax`, `@wiring` and `@healing` could own their surfaces
+outright; `tmdl_generator` re-exports them
+for backward compatibility but defines none of them. That is why these agents do not
+co-own it — a re-export is a dependency, not shared ownership, and recording
 it as ownership would make the guard unable to tell the two apart.
 
 ### ASCII fallback
@@ -239,9 +242,11 @@ it as ownership would make the guard unable to tell the two apart.
 
 ## Preceptor Review and Agent Handoff
 
-The CLI runs the Python preceptor after generation by default. It scores the
-generated PBIP and writes `preceptor_report.json`; it does **not** invoke the
-Copilot `@reviewer` agent or call a generation agent to apply coaching.
+Supported `migrate.py --batch` and `--shared-model` generation do not invoke
+the Python preceptor or write `preceptor_report.json`; these dispatch paths
+do not forward the parser's preceptor switches. Record preceptor evidence as
+`not_run` unless a separate invocation produces a verified report. An invoked
+review does not dispatch Copilot agents or apply coaching.
 
 ```
 GENERATED PBIP → PreceptorLoop → APPROVED or COACHING REPORT
@@ -268,8 +273,9 @@ GENERATED PBIP → PreceptorLoop → APPROVED or COACHING REPORT
 - **< 4★ average** → structured coaching is emitted; the preceptor applies no
     fix.
 - **After the configured cycles** → `escalated_warn` by default, or
-    `escalated_block` when `--preceptor-block` is enabled. The CLI reports this
-    state; it does not itself initiate a conversation with the user.
+    `escalated_block` for a separately configured blocking invocation. The
+    preceptor report records this state; it does not initiate a conversation
+    with the user. These rules apply only when the preceptor is invoked.
 
 ### Coaching Feedback Format
 
@@ -285,16 +291,11 @@ Example: {before → after, if applicable}
 
 ### Pipeline Integration
 
-The CLI review runs after generation by default, scoring the full `.pbip` output.
-It is advisory by default: a review that falls short writes
-`preceptor_report.json` and does not fail the run. Two switches change that:
-
-- `--no-preceptor` — skip the review entirely
-- `--preceptor-block` — make it a hard gate, failing the run on escalation
-
-A review exception never fails a migration; the review is instrumentation, not a
-correctness oracle. The authoritative pass/fail check remains the openability
-gate. `PreceptorLoop.run()` may score up to three times, but has no agent callback
+`--no-preceptor` and `--preceptor-block` do not change batch/shared-model
+generation: neither route invokes the loop or forwards those options.
+A separately invoked review is instrumentation, not a correctness oracle;
+static openability and native runtime evidence remain separate.
+`PreceptorLoop.run()` may score up to three times, but has no agent callback
 or artifact mutation between cycles; without an external edit, it can review the
 same output repeatedly. The consolidated quality report carries coaching into
 findings with dimensions, fixes, and evidence, but that is a reporting handoff,
@@ -325,7 +326,7 @@ The original 8-agent model had two overloaded agents:
 
 ### @dax — DAX Formula Specialist
 - Owns: `dax_converter.py`, `dax_optimizer.py`
-- Co-owns: DAX post-processing blocks in `tmdl_generator.py` (SUM wrapping, measure unwrapping, RELATED/LOOKUPVALUE)
+- Owns: `tmdl_dax_postprocess.py` — DAX post-processing re-exported by `tmdl_generator.py`, which is solely owned by @semantic
 - Expertise: Aggregation context (bare column refs vs iterator row context), cross-table semantics, DAX optimization
 
 ### @wiring — DAX↔M Bridge Specialist
@@ -335,13 +336,13 @@ The original 8-agent model had two overloaded agents:
 
 ### @semantic — Semantic Model Specialist
 - Owns: `tmdl_generator.py` (structural parts: tables, relationships, Calendar, RLS, hierarchies, parameters, self-healing, TMDL writers)
-- Owns: `fabric_semantic_model_generator.py`
+- Fabric wrapper: `fabric_semantic_model_generator.py` is owned by @fabric
 - Expertise: TMDL structure, relationship cardinality, join graph analysis, data model correctness
 
 ### @visual — Report Visual Specialist
 - Owns: `pbip_generator.py` (report parts: pages, visuals, slicers, filters, bookmarks, layout, formatting)
 - Owns: `visual_generator.py`
-- Expertise: PBIR v4.0 schema, visual type mapping (190), slicer configuration, filter levels
+- Expertise: PBIR v4.0 schemas, 164 runtime visual mapping records, slicer configuration, filter levels
 
 ## Data Flow
 
@@ -396,6 +397,7 @@ All agent definitions are in `.github/agents/`:
 - `shared.instructions.md` — Base rules inherited by all agents
 - `orchestrator.agent.md` — Pipeline coordination
 - `extractor.agent.md` — Tableau parsing
+- `tableau.agent.md` — Tableau Server/Cloud interaction and Prep flow analysis
 - `dax.agent.md` — DAX formula specialist (NEW)
 - `wiring.agent.md` — DAX↔M bridge specialist (NEW)
 - `semantic.agent.md` — Semantic model specialist (NEW)
@@ -409,4 +411,6 @@ All agent definitions are in `.github/agents/`:
 - `deployer.agent.md` — Fabric/PBI deployment + multi-tenant
 - `reviewer.agent.md` — Artifact quality review + preceptorship loop
 - `tester.agent.md` — Test creation and validation
+- `web-designer.agent.md` — Local browser UI/UX
+- `roadmap-planner.agent.md` — Roadmap planning and release gates
 - `readme.agent.md` — Documentation quality gate before and after updates

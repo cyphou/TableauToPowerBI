@@ -96,7 +96,7 @@ def validate_payload(payload: dict) -> dict:
     """Return a normalized request without creating directories or launching apps."""
     if not isinstance(payload, dict):
         raise ValueError("JSON body must be an object")
-    option_names = {"output_format", "culture", "calendar_start", "calendar_end",
+    option_names = {"output_format", "model_mode", "culture", "calendar_start", "calendar_end",
                     "quality_policy", "resume", "all_pages", "screen_comparison"}
     allowed = {"action", "source_dir", "output_dir", "opts", "confirm_native"} | option_names
     if set(payload) - allowed:
@@ -120,8 +120,11 @@ def validate_payload(payload: dict) -> dict:
     if set(flat_opts) & set(opts):
         raise ValueError("Do not supply the same option both flat and inside opts")
     opts = {**opts, **flat_opts}
+    if action != "migration" and "model_mode" in opts:
+        raise ValueError("model_mode is only valid for migration requests")
     normalized = {
         "output_format": opts.get("output_format", "pbip"),
+        "model_mode": opts.get("model_mode", "auto"),
         "quality_policy": opts.get("quality_policy", "report"),
         "resume": opts.get("resume", False),
         "all_pages": opts.get("all_pages", False),
@@ -129,11 +132,17 @@ def validate_payload(payload: dict) -> dict:
     }
     for key, choices in (
         ("output_format", ("pbip", "fabric")),
+        ("model_mode", ("auto", "import", "directquery", "composite")),
         ("quality_policy", ("report", "enterprise", "production")),
         ("screen_comparison", ("manual", "local")),
     ):
         if normalized[key] not in choices:
             raise ValueError(f"Invalid {key}")
+    if action != "migration":
+        # The default migration mode is injected for migrations only. Keep it
+        # out of normalized diagnostic requests so their command can be
+        # validated again without mistaking the default for a user option.
+        normalized.pop("model_mode")
     for key in ("resume", "all_pages"):
         if type(normalized[key]) is not bool:
             raise ValueError(f"{key} must be a boolean")
@@ -171,6 +180,7 @@ def build_command(payload: dict, diagnostic_root=None) -> list[str]:
     if action == "migration":
         command = prefix + [str(REPO_ROOT / "migrate.py"), "--batch", source,
                             "--output-dir", output, "--output-format", opts["output_format"],
+                            "--mode", opts["model_mode"],
                             "--quality-policy", opts["quality_policy"]]
         for key in ("culture", "calendar_start", "calendar_end"):
             if key in opts:

@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" width="1200" height="520">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" width="1200" height="520" role="img" aria-labelledby="architecture-title architecture-desc">
+  <title id="architecture-title">Migration engine architecture</title>
+  <desc id="architecture-desc">Extraction produces intermediate JSON; generation creates PBIP or Fabric artifacts. Assessment, static validation and separately authorized deployment have distinct responsibilities.</desc>
   <defs>
     <linearGradient id="a-bg" x1="0" y1="0" x2="0.5" y2="1">
       <stop offset="0%" stop-color="#0A0E27"/>
@@ -70,7 +72,7 @@
     <g transform="translate(16, 110)">
       <rect width="232" height="48" rx="6" fill="rgba(233,118,39,0.06)" stroke="rgba(233,118,39,0.15)" stroke-width="0.6"/>
       <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#E97627">dax_converter.py</text>
-      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">180+ formula conversions</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">Tableau-to-DAX conversions</text>
     </g>
     <g transform="translate(262, 110)">
       <rect width="242" height="48" rx="6" fill="rgba(233,118,39,0.06)" stroke="rgba(233,118,39,0.15)" stroke-width="0.6"/>
@@ -132,7 +134,7 @@
     <g transform="translate(16, 110)">
       <rect width="232" height="48" rx="6" fill="rgba(0,120,212,0.06)" stroke="rgba(0,120,212,0.15)" stroke-width="0.6"/>
       <text x="12" y="22" font-family="Consolas, monospace" font-size="10" fill="#0078D4">visual_generator.py</text>
-      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">190 visual types</text>
+      <text x="12" y="38" font-family="Segoe UI, sans-serif" font-size="9" fill="rgba(255,255,255,0.35)">164 visual mapping records</text>
     </g>
     <g transform="translate(262, 110)">
       <rect width="242" height="48" rx="6" fill="rgba(0,120,212,0.06)" stroke="rgba(0,120,212,0.15)" stroke-width="0.6"/>

@@ -1,6 +1,15 @@
 # Deployment Guide — Fabric REST API
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🌐 Local browser](LOCAL_WEB_UI.md) · [✅ Review checklist](MIGRATION_CHECKLIST.md)
+
 This guide covers deploying generated Power BI projects to Microsoft Fabric workspaces using the tool's built-in deployment pipeline.
+
+Local generation and remote deployment are separate. The
+[local browser UI](LOCAL_WEB_UI.md) generates PBIP or local Fabric artifacts
+without provisioning cloud resources; its Fabric option is not a deploy action.
+Power BI/Tableau Desktop references below describe optional native diagnostics,
+not a standalone Windows application. No current minimum Desktop version is
+certified by the generator's schema/theme constants alone.
 
 ---
 
@@ -105,15 +114,23 @@ $output = "C:\Client\migration_output"
   --html "$output\DESKTOP_OPENING_VALIDATION.html"
 ```
 
-The probe presses **Home > Refresh > Schema and data** for each report, waits
-for rows in the local model, and labels each screenshot *data verified* or
-*data not verified*. Data files embedded in a `.twbx` are exported to each
-project's `Data/` folder. Files the workbook links instead are searched for, by
-file name, in this order: the workbook's folder, its subfolders, its parent
-folder, then the batch root. Matches are copied into `Data/` and `DataFolder`
-points there. When several copies share a name but differ in content, none is
-copied. Files that cannot be found must be placed in `Data/` before the refresh
-can load them.
+The probe presses **Home > Refresh > Schema and data** for each report and
+checks owned refresh completion separately from aggregate model rows.
+An observed successful refresh lifecycle and complete table checks are required
+for a *data verified* screenshot; rows alone are not sufficient, and a valid
+empty table is not itself an error. For PBIP, Hyper data are exported to staged CSV/Parquet
+files and connected to Import partitions. Non-Hyper Import migrates the native
+datasource connection, schema and M only: native Excel/CSV and other dataset
+files are not searched for and copied into `Data/`. Configure their original
+file paths, credentials and any gateway before asking Power BI to refresh.
+Loose-workbook relative bindings resolve against the original workbook folder;
+packaged native files are not extracted or rebound to guessed paths.
+Initial calculated-object/no-data banners are expected for an unprocessed
+metadata-only model, not proof of either success or failure. After a successful
+refresh, save in Desktop to retain its local cache and verify by reopening.
+The `DataFolder` used by staged Hyper exports is not a replacement binding for
+native file sources. See the
+[source-mode diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
 
 `POWERBI_DESKTOP_PATH` must point to an existing `PBIDesktop.exe`; an invalid
 explicit path fails closed. Reports and screenshots remain beside the external

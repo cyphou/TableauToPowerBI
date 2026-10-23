@@ -22,8 +22,20 @@ import sqlite3
 import struct
 import tempfile
 import zipfile
+from collections import Counter
+
+try:
+    from powerbi_import.errors import ConfigurationError, ExtractionError
+    from powerbi_import.security_validator import (
+        get_zip_entry_limit_mb, safe_zip_copy_member,
+    )
+except ModuleNotFoundError:  # Legacy callers put powerbi_import on sys.path.
+    from errors import ConfigurationError, ExtractionError
+    from security_validator import get_zip_entry_limit_mb, safe_zip_copy_member
 
 logger = logging.getLogger(__name__)
+
+_HEADER_SCAN_BYTES = 262_144
 
 # ── Hyper column type  →  Power Query M type mapping ────────────────
 
@@ -355,7 +367,7 @@ def _read_hyper_header(raw_bytes, max_rows=20):
     Returns:
         list[dict] | None: Same shape as ``_read_hyper_sqlite``, or ``None``.
     """
-    scan_limit = min(262_144, len(raw_bytes))
+    scan_limit = min(_HEADER_SCAN_BYTES, len(raw_bytes))
     try:
         text_chunk = raw_bytes[:scan_limit].decode('utf-8', errors='replace')
     except (UnicodeDecodeError, AttributeError):
@@ -458,7 +470,8 @@ def read_hyper(file_path, max_rows=20):
             ``format`` — ``'hyper_api'`` | ``'sqlite'`` | ``'hyper'`` | ``'unknown'``,
             ``file_path`` — original path,
             ``metadata`` — file-level metadata (size, mtime).
-        Returns empty ``tables`` list on failure.
+        Missing paths and unrecognized formats retain an empty ``tables`` list.
+        File I/O failures raise ExtractionError rather than reporting success.
     """
     result = {
         'file_path': file_path,
@@ -484,8 +497,9 @@ def read_hyper(file_path, max_rows=20):
     try:
         with open(file_path, 'rb') as f:
             magic = f.read(16)
-    except OSError:
-        return result
+    except OSError as exc:
+        raise ExtractionError(
+            'Could not read Hyper file header', source=file_path) from exc
 
     if magic[:6] == b'SQLite':
         result['format'] = 'sqlite'
@@ -510,68 +524,93 @@ def read_hyper(file_path, max_rows=20):
     # Fall back to header scan
     try:
         with open(file_path, 'rb') as f:
-            raw = f.read()
+            raw = f.read(_HEADER_SCAN_BYTES)
         tables = _read_hyper_header(raw, max_rows=max_rows)
         if tables:
             result['tables'] = tables
             if result['format'] == 'unknown':
                 result['format'] = 'hyper'
-    except OSError as e:
-        logger.debug('Hyper header scan failed for %s: %s', file_path, e)
+    except OSError as exc:
+        raise ExtractionError(
+            'Hyper header scan failed', source=file_path) from exc
 
     return result
 
 
-def read_hyper_from_twbx(twbx_path, hyper_filename=None, max_rows=20):
+def read_hyper_from_twbx(twbx_path, hyper_filename=None, max_rows=20,
+                        max_zip_entry_mb=None, *, max_size_mb=None):
     """Extract and read ``.hyper`` file(s) from a ``.twbx`` archive.
 
     Args:
         twbx_path: Path to the ``.twbx`` (or ``.tdsx``) file.
         hyper_filename: Optional — specific ``.hyper`` entry name to read.
+            Exact archive paths take precedence over the legacy filename filter.
             If ``None``, reads all ``.hyper`` entries.
         max_rows: Max sample rows per table.
+        max_zip_entry_mb: Per-member decompressed size limit in MiB. ``None``
+            uses the security validator's environment/default resolution.
+        max_size_mb: Keyword alias for ``max_zip_entry_mb`` used by ZIP helpers.
+            Conflicting explicit limits are configuration errors.
 
     Returns:
         list[dict]: One ``read_hyper()`` result per ``.hyper`` entry found.
+
+    Copy/read failures propagate after temporary files have been cleaned up.
+    Missing paths retain the legacy empty-list result.
     """
+    if max_size_mb is not None:
+        alias_limit_mb = get_zip_entry_limit_mb(max_size_mb)
+        if (max_zip_entry_mb is not None
+                and get_zip_entry_limit_mb(max_zip_entry_mb) != alias_limit_mb):
+            raise ConfigurationError(
+                'Conflicting max_zip_entry_mb and max_size_mb limits',
+                source=twbx_path)
+        entry_limit_mb = alias_limit_mb
+    else:
+        entry_limit_mb = get_zip_entry_limit_mb(max_zip_entry_mb)
     results = []
     if not twbx_path or not os.path.isfile(twbx_path):
         return results
 
     try:
         with zipfile.ZipFile(twbx_path, 'r') as z:
+            members = z.namelist()
+            member_counts = Counter(members)
             entries = [
-                name for name in z.namelist()
+                name for name in members
                 if name.lower().endswith('.hyper')
             ]
             if hyper_filename:
-                entries = [
-                    e for e in entries
-                    if os.path.basename(e).lower() == hyper_filename.lower()
-                    or e.lower().endswith(hyper_filename.lower())
-                ]
+                if hyper_filename in members:
+                    entries = [hyper_filename] if hyper_filename in entries else []
+                else:
+                    entries = [
+                        e for e in entries
+                        if os.path.basename(e).lower() == hyper_filename.lower()
+                        or e.lower().endswith(hyper_filename.lower())
+                    ]
 
             for entry_name in entries:
-                # Extract to temp file for sqlite3.connect()
-                raw = z.read(entry_name)
-                with tempfile.NamedTemporaryFile(
-                    suffix='.hyper', delete=False
-                ) as tmp:
-                    tmp.write(raw)
-                    tmp_path = tmp.name
-
-                try:
+                if member_counts[entry_name] != 1:
+                    raise ExtractionError(
+                        'Duplicate Hyper archive member identity',
+                        source=twbx_path, item=entry_name)
+                # Catalog readers need a real, closed file on Windows. The
+                # directory context covers open, copy, flush AND read failures.
+                with tempfile.TemporaryDirectory(prefix='ttpbi_hyper_') as tmp_dir:
+                    tmp_path = os.path.join(tmp_dir, 'extract.hyper')
+                    with open(tmp_path, 'wb') as tmp:
+                        safe_zip_copy_member(
+                            z, entry_name, tmp, target_dir=tmp_dir,
+                            max_size_mb=entry_limit_mb)
                     hyper_data = read_hyper(tmp_path, max_rows=max_rows)
                     hyper_data['archive_path'] = entry_name
                     hyper_data['original_filename'] = os.path.basename(entry_name)
                     results.append(hyper_data)
-                finally:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
     except (zipfile.BadZipFile, OSError, KeyError) as exc:
-        logger.debug("Could not read hyper from archive: %s", exc)
+        raise ExtractionError(
+            'Could not read Hyper data from archive',
+            source=twbx_path) from exc
 
     return results
 
@@ -1060,8 +1099,7 @@ def read_hyper_streaming(file_path, table_name=None, batch_size=10000):
         list[list]: Batches of row data.
     """
     try:
-        from tableauhyperapi import (HyperProcess, Connection, Telemetry,
-                                      TableName)
+        from tableauhyperapi import Connection, HyperProcess, TableName, Telemetry
         with HyperProcess(Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU) as hp:
             with Connection(hp.endpoint, file_path) as conn:
                 if table_name:

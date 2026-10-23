@@ -1257,7 +1257,7 @@ class TestExtractHyperMetadata(unittest.TestCase):
             f.write(buf.read())
 
         ext = TableauExtractor(twbx_path, output_dir=tmpdir)
-        with patch('extract_tableau_data.read_hyper_from_twbx', side_effect=Exception('skip')):
+        with patch('extract_tableau_data.read_hyper_from_twbx', return_value=[]):
             ext.extract_hyper_metadata()
 
         hyper_files = ext.workbook_data.get('hyper_files', [])
@@ -1288,10 +1288,13 @@ class TestExtractHyperMetadata(unittest.TestCase):
             f.write(buf.read())
 
         ext = TableauExtractor(twbx_path, output_dir=tmpdir)
-        with patch('extract_tableau_data.read_hyper_from_twbx', side_effect=Exception('skip')):
+        with patch('extract_tableau_data.read_hyper_from_twbx', return_value=[]), \
+                patch('sys.stdout', new_callable=io.StringIO) as stdout:
             ext.extract_hyper_metadata()
 
         self.assertTrue(len(ext.workbook_data['hyper_files']) >= 1)
+        self.assertIn(".hyper extract files detected", stdout.getvalue())
+        self.assertIn("tables parsed", stdout.getvalue())
 
     def test_deep_reading_via_hyper_reader(self):
         tmpdir = tempfile.mkdtemp(prefix='ttpbi_cov_')

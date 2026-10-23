@@ -1,20 +1,37 @@
 # Development Roadmap
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🧪 Test guide](../tests/README.md) · [📝 Changelog](../CHANGELOG.md)
+
 The engine migrates Tableau workbooks to Power BI (PBIP/PBIR v4.0 + TMDL) or
 Fabric-native artifacts. Static local validation is the release gate. Semantic
 execution, refresh and deployment evidence remain `not_run` unless an
 authorized environment proves otherwise.
 
-## Current priorities — 2026-10-21
+## Current priorities — 2026-10-23
 
-Latest delivered baseline: commit `e429608` on `main`, following `7c27328`.
-The latest verified local full-suite measurement, including Remap conversion,
-checkpoint recovery, input stability, artifact inventories and batch output
-collision preflight, passed **11,618 tests**, with **66 skipped** and
-**1 xfailed**. This regression evidence does not prove Power Query refresh,
-Desktop rendering, or complete Prep feature support.
-This remains the prior engine-suite measurement, not a test count or
-end-to-end acceptance result for the new local browser surface.
+Latest delivered UI baseline: commit `12e921e` on `main`, following the
+engine/recovery work in `8cd63b2`. The local browser runner and PowerShell
+launcher are retained; the standalone desktop UI and Windows executable build
+have been removed. See the [local browser guide](LOCAL_WEB_UI.md).
+
+Package metadata still declares `44.0.0`; roadmap tracks and historical release
+headings do not establish a published package version or runtime certification.
+The local publication-candidate run on **2026-10-23**, using Python **3.14.2**,
+passed **11,826 tests**, with **66 skipped**, **1 xfailed**, **11,893 collected**
+and one expected duplicate-ZIP-name fixture warning. It includes native
+Import/refresh-binding and passive documentation-asset regressions. Skipped
+environment-dependent checks remain unexecuted.
+The earlier local full-suite baseline, including the Hyper I/O,
+automatic storage-mode and quality-evidence changes, passed **11,741 tests**,
+with **66 skipped**, **1 xfailed** and **11,808 collected**. The prior engine
+measurement was 11,618 passed. That baseline predates the native Import and
+refresh-binding follow-ups. The separate refresh-binding slice passed **863
+targeted tests** before the newer full-suite run above.
+These regression checks do not prove Power Query refresh, Desktop rendering,
+or complete Prep feature support.
+The suite includes local-browser backend tests, not a new end-to-end browser
+migration acceptance result; the dated browser observations below remain
+separate evidence.
 
 ### Local browser slice — bounded delivery
 
@@ -61,6 +78,61 @@ N5: refresh, save/reopen, value comparison and visual evidence still require an
 authorized environment. Owners: Web Designer / Orchestrator for the local UI,
 Tester / Reviewer / Evidence for further operational acceptance. See the
 [operator contract](USER_MANUAL.md#local-browser-alternative-source-checkout).
+
+### Hyper correction slice — delivered locally
+
+The current Hyper correction slice follows a deliberately small PBIP policy:
+Hyper snapshots use Import; supported native sources without Hyper use
+DirectQuery; the user can force Import. The automatic export threshold is
+strictly above 10 MiB for Parquet, otherwise CSV. Source/file incompatibilities,
+row caps and native runtime evidence stay explicit. See the
+[decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export)
+and [Hyper options](FAQ.md#how-are-hyper-extract-files-handled).
+Final local gate (2026-10-22): **11,741 passed, 66 skipped, 1 xfailed** across
+11,808 collected tests. Real SDK checks also passed for CSV/Parquet, typed
+values/nulls, exact multi-schema identities, caps, newline progress and
+mixed-mode/forced-Import generation. A valid 31,391,744-byte Hyper file with
+30,000 rows automatically exported to Parquet and was bound to Import TMDL.
+The current browser control was checked at 390px with no horizontal overflow
+or mutation request on selection; this is not a new full browser migration run.
+Native Power BI Desktop refresh and rendered parity remain `not_run`.
+
+Follow-up contract: non-Hyper PBIP Import migrates only datasource connections,
+schema and Power Query M; native dataset files are not staged or copied.
+Power BI retrieves their rows at refresh using accessible original source
+bindings. Loose-workbook relative paths resolve against the original workbook
+directory; packaged native bindings are not extracted or guessed.
+Hyper data export remains enabled under the same CSV/Parquet threshold.
+The full-suite count above predates this follow-up and is not its test evidence.
+Follow-up validation: **1,442 passed** across 28 affected test files, covering
+native Import without dataset reads/copies, original M file bindings, retained
+Hyper exports, Fabric staging, upload confinement, shared models, CLI/API,
+notebooks and the local UI. This targeted run is not a new full-suite or native
+Power BI refresh measurement.
+
+### Native refresh-binding corrections — targeted evidence
+
+Local correction checks on **2026-10-22** passed **863 targeted tests** in two
+non-overlapping runs: **771** affected-path tests and **92** dedicated
+datasource-extractor tests. See the [test guide](../tests/README.md#native-refresh-binding-regressions)
+for the combined selector. Fatal Ruff checks and scoped whitespace checks
+also passed. Those targeted checks are not a full-suite measurement or general
+runtime certification. The later **2026-10-23** publication-candidate full run
+passed **11,826 tests**, with **66 skipped** and **1 xfailed**, as recorded above.
+
+The corrections resolve loose native relative paths from their proven original
+directory, parse the full CSV width, select declared raw fields before types
+and caption renames, and preserve explicitly typed physical fields in a sole
+partially populated table. Tableau pseudo-fields are excluded, ambiguous
+multi-table declarations stay unresolved, and unsupported native shapefiles
+produce a source-binding diagnostic instead of being parsed as JSON.
+
+Native rows are still not extracted or copied by migration; Hyper exports and
+Fabric staging keep their separate contracts. Source credentials, missing
+external files, undeclared separators and spatial-source configuration remain
+explicit operator actions. Generation and these regression checks do not
+certify refresh, saved/reopened state, value/visual parity or deployment for
+every workbook.
 
 ### Delivered in the latest fixes
 
@@ -909,9 +981,11 @@ against correct code. Matching prose is not matching behaviour.
 
 ### Preceptorship: Python review and agent handoff boundary
 
-`migrate.py` enables `--preceptor` by default; `--no-preceptor` opts out, and
-`--preceptor-block` opts into blocking after escalation. `PreceptorLoop.run()`
-can run up to `max_cycles` and emits a `ReviewReport`, including
+The parser retains preceptor switches, but supported `--batch` and
+`--shared-model` dispatch do not invoke the preceptor or forward those switches.
+No `preceptor_report.json` or preceptor gate is implied by these generation
+routes. A separately invoked `PreceptorLoop.run()` can run up to `max_cycles`
+and emit a `ReviewReport`, including
 `preceptor_report.json`. The Python loop does **not** call an owning Copilot
 agent or apply coaching fixes between cycles. Without an external agent or
 operator edit, it can score the same unchanged artifacts again; a rerating is

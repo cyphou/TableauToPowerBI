@@ -10,8 +10,17 @@
     "// output_dir": "Output directory for generated .pbip projects (default: artifacts/powerbi_projects/)",
     "output_dir": null,
 
-    "// model_mode": "Semantic model connection mode: import | directquery | composite",
-    "model_mode": "import",
+    "// model_mode": "Semantic model mode: auto | import | directquery | composite",
+    "model_mode": "auto",
+
+    "// hyper_export_format": "PBIP auto: CSV at/below 10 MiB, native Parquet above 10 MiB; Fabric auto remains CSV",
+    "hyper_export_format": "auto",
+
+    "// hyper_export_max_rows": "Optional positive row cap for Hyper exports; null means unlimited",
+    "hyper_export_max_rows": null,
+
+    "// max_zip_entry_mb": "Maximum decompressed size of any one ZIP entry in MiB; null uses TTPBI_MAX_ZIP_ENTRY_MB or 1024",
+    "max_zip_entry_mb": null,
 
     "// output_format": "Output format: pbip (full project) | tmdl (semantic model only) | pbir (report only)",
     "output_format": "pbip",

@@ -135,9 +135,9 @@ def _run_upload_worker(input_path, upload_root, output_dir, options=None,
     source_args = [input_path] if assess and os.path.isfile(input_path) else ['--batch', source_dir]
     command = [sys.executable, os.path.join(root, 'migrate.py'),
                *source_args, '--output-dir', output_dir]
-    mode = options.get('model_mode', options.get('mode', 'import'))
-    if mode not in ('import', 'directquery', 'composite'):
-        raise ValueError("model_mode must be import, directquery, or composite")
+    mode = options.get('model_mode', options.get('mode', 'auto'))
+    if mode not in ('auto', 'import', 'directquery', 'composite'):
+        raise ValueError("model_mode must be auto, import, directquery, or composite")
     command.extend(['--mode', mode])
     for option, flag in (
         ('calendar_start', '--calendar-start'), ('calendar_end', '--calendar-end'),
@@ -182,9 +182,9 @@ def _migration_options(params):
     if culture and not re.fullmatch(r'[a-zA-Z]{2}(-[a-zA-Z]{2,4})?', culture):
         raise ValueError('Invalid culture format (expected e.g. en-US)')
     options['culture'] = culture
-    mode = params.get('model_mode', ['import'])[0]
-    if mode not in ('import', 'directquery', 'composite'):
-        raise ValueError('model_mode must be import, directquery, or composite')
+    mode = params.get('model_mode', ['auto'])[0]
+    if mode not in ('auto', 'import', 'directquery', 'composite'):
+        raise ValueError('model_mode must be auto, import, directquery, or composite')
     options['model_mode'] = mode
     webhook_url = params.get('webhook_url', [None])[0]
     if webhook_url:

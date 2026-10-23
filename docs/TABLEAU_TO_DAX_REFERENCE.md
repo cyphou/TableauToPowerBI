@@ -1,7 +1,15 @@
 # Tableau Functions → DAX Complete Reference
 
-Complete mapping of **every Tableau calculation function** to its DAX (Power BI) equivalent.
-All conversions below are implemented in `tableau_export/dax_converter.py`.
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🗺️ Mappings](MAPPING_REFERENCE.md) · [🔌 Power Query M](TABLEAU_TO_POWERQUERY_REFERENCE.md)
+
+Reference for Tableau calculation functions and their DAX (Power BI) conversion
+patterns. Automatic, approximate, manual, and unsupported cases are distinguished
+below; a reference row is not a guarantee of equivalent results for every formula
+or evaluation context. The implemented converter is
+[`dax_converter.py`](../tableau_export/dax_converter.py).
+
+Use the [known limitations](KNOWN_LIMITATIONS.md) and generated quality evidence
+when reviewing a conversion. Static syntax validation does not execute DAX.
 
 > **Legend**  
 > ✅ Automatic — fully converted by the migration tool  

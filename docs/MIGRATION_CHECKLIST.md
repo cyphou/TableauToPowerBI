@@ -1,32 +1,44 @@
 # Post-Migration Checklist
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🌐 Local browser](LOCAL_WEB_UI.md) · [📦 Project guide](POWERBI_PROJECT_GUIDE.md)
+
 Use this checklist after running the migration tool to validate the generated Power BI project.
+
+Generate through the [local browser interface](LOCAL_WEB_UI.md) or
+`python migrate.py batch FOLDER`. Use a folder even for one workbook.
+Standalone Prep exports M/source definitions instead of a PBIP; use section 12
+for those outputs. Keep client source files and generated evidence outside Git.
 
 ---
 
 ## 0. Openability Preflight (before opening Desktop)
 
 - [ ] Confirm source preflight passed: XML is safely parsed, the TWBX archive has one workbook member, and internal datasource/worksheet references are coherent
+- [ ] Treat an inline `Parameters` dependency as virtual only when every named column declares a nonempty `param-domain-type`; bare, mixed or missing real datasource references still block migration
 - [ ] Confirm the migration reported `openable=true` (the static gate runs by default)
 - [ ] If `openable=false`, read `openability_report.json` blocking issues and fix at the source generator
-- [ ] Optionally run `--autoheal` (add `--llm-autofix` for opt-in LLM correction) to recover automatically
+- [ ] If needed, run the separate MCP `autoheal` tool, review its repair evidence and rerun static validation; batch does not forward the legacy autoheal/preceptor postprocessing switches
 - [ ] For shared models, resolve `--strict-thin-report` orphan violations before opening
-- [ ] Use `--desktop-probe` only as a best-effort real-Desktop smoke test; `--verify-open` stays authoritative
+- [ ] Keep static `--verify-open` evidence separate from an opt-in `--desktop-probe`; neither substitutes for a verified refresh and rendered comparison
 - [ ] For client evidence, run `scripts/probe_projects.py` with its default data check and save output outside the repository
 
 ## 1. Open & Load
 
-- [ ] Open the `.pbip` file in Power BI Desktop (March 2025+)
+- [ ] Open the reported `.pbip` path in Desktop with PBIP/TMDL support; do not infer compatibility from a theme name or schema pass
 - [ ] Confirm the project loads without errors
 - [ ] Check the notification bar for any warnings
 - [ ] Confirm the report window is `OPENED` and the strict data status is `verified` before treating its screenshot as data-bearing evidence
 - [ ] Treat `empty`, `unavailable`, `query_failed`, or `no_m_tables` as a validation failure/limitation, not as a successful data screenshot
 - [ ] Use `--skip-data-check` only for a clearly labelled diagnostic screenshot
 - [ ] Review `DESKTOP_OPENING_VALIDATION.html` for green/red opening cards and keep it with the external migration output
+- [ ] After successful processing, save in Desktop and reopen without refreshing to verify that the loaded state persists; an initial no-data/refresh notice is not hidden by generation
 
 ## 2. Data Source Connections
 
 - [ ] Go to **Transform Data** → verify each data source connection
+- [ ] For native Import, configure accessible original file paths and the declared CSV separator; migration does not extract or copy native datasets, including Excel/CSV packaged in a TWBX
+- [ ] For Hyper Import, check the matching exported CSV/Parquet and its source identity; above 10 MiB uncompressed uses native Parquet automatically
+- [ ] Treat missing declared fields and unsupported native shapefiles as source-configuration errors; do not hide them with empty tables or guessed files
 - [ ] Re-enter credentials for each data source (OAuth, SQL auth, etc.)
 - [ ] Refresh data to confirm connectivity
 - [ ] For BigQuery: verify the billing project ID is correct

@@ -5,14 +5,22 @@ projects (`.pbip`, PBIR v4.0 + TMDL) without leaving VS Code. The extension is a
 thin front-end over the Python migration engine that lives in the repository
 root (`migrate.py`).
 
+**Current compatibility:** the extension's migration action still targets a
+single workbook file; the current engine requires a folder and rejects direct
+single-file generation. Use the [local browser UI](../docs/LOCAL_WEB_UI.md) or
+`python migrate.py batch FOLDER --output-dir OUTPUT` from the repository root
+until the adapter is updated. Assessment/preview helpers do not establish a
+successful migration or native validation. See the
+[extension guide](../docs/VS_CODE_EXTENSION.md).
+
 ## Features
 
 - **Workbook tree view** — browse datasources, tables, columns, worksheets,
   dashboards, and parameters extracted from a workbook.
 - **Assess migration readiness** — run the 9-category assessment and view the
   results in a webview panel with severity badges and recommendations.
-- **One-click migrate** — convert a workbook to a `.pbip` project with live
-  progress and a link to the output folder.
+- **Migration action (legacy adapter)** — currently incompatible with the
+  folder-only engine generation contract; use the browser or batch CLI.
 - **DAX conversion preview** — side-by-side Tableau → DAX with confidence
   indicators and editable override fields saved to `config.json`.
 - **Syntax highlighting** — TextMate grammars for DAX and Tableau calculation
@@ -31,7 +39,7 @@ root (`migrate.py`).
 | Command | Description |
 |---------|-------------|
 | `Tableau: Assess Migration Readiness` | Run the readiness assessment. |
-| `Tableau: Migrate to Power BI` | Generate a `.pbip` project. |
+| `Tableau: Migrate to Power BI` | Legacy single-file action; use the supported folder workflow above. |
 | `Tableau: Preview DAX Conversions` | Show Tableau → DAX side by side. |
 | `Tableau: Refresh Workbook Tree` | Reload the tree from extraction JSON. |
 

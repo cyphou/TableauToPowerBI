@@ -1,5 +1,7 @@
 # Server-to-Service Migration Guide
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🏢 Enterprise workflow](ENTERPRISE_GUIDE.md) · [🚀 Deployment](DEPLOYMENT_GUIDE.md)
+
 End-to-end guide for migrating a Tableau Server/Cloud site to Power BI Service.
 
 ## Overview
@@ -9,9 +11,11 @@ migration workflows. The enterprise workflow below covers site-wide discovery,
 dependency-aware wave planning, permission mapping, subscription migration,
 and cutover orchestration.
 
-The enterprise server migration pipeline extends the workbook-level migration with
-site-wide discovery, dependency-aware wave planning, permission mapping, subscription
-migration, and cutover orchestration.
+The [local browser interface](LOCAL_WEB_UI.md) does not expose a Server task.
+Download authorized source content through the CLI, then use its local-folder
+workflow if a guided generation step is wanted. Deployment, permissions,
+subscriptions and cutover remain separate operational steps, not proof of an
+automatic site-to-service migration.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐

@@ -3,6 +3,7 @@
 Audit hooks run in fresh interpreters because they cannot be removed.
 """
 import io
+import json
 import os
 import shutil
 import stat
@@ -23,6 +24,7 @@ if PROJECT_ROOT not in sys.path:
 
 import migrate
 from powerbi_import import api_server
+from tests.native_import_test_helpers import forbid_native_payload_io
 from web import app as web_app
 
 
@@ -487,6 +489,24 @@ class TestUploadWorkersAndEntrypoints(UploadTreeTestCase):
         with self.assertRaises(ValueError):
             api_server._migration_options({'unexpected_cli_option': ['--output-dir=/outside']})
 
+    def test_rest_auto_default_and_import_override_are_forwarded_without_a_real_process(self):
+        self.assertEqual(api_server._migration_options({})["model_mode"], "auto")
+        source = self.workbook()
+        output = os.path.join(self.root, "output")
+        os.makedirs(output)
+        for mode in ("auto", "import"):
+            with self.subTest(mode=mode):
+                options = api_server._migration_options({"model_mode": [mode]})
+                self.assertEqual(options["model_mode"], mode)
+                with patch.object(api_server.subprocess, "run") as run:
+                    run.return_value = subprocess.CompletedProcess([], 0, "", "")
+                    api_server._run_upload_worker(source, self.root, output, options)
+                run.assert_called_once()
+                command = run.call_args.args[0]
+                self.assertEqual(command.count("--mode"), 1)
+                self.assertEqual(command[command.index("--mode") + 1], mode)
+                self.assertEqual(run.call_args.kwargs["env"]["TTPBI_UPLOAD_ROOT"], self.root)
+
     def test_worker_forwards_model_mode_and_private_roots(self):
         source = self.workbook()
         output = os.path.join(self.root, 'output')
@@ -770,6 +790,75 @@ class TestHostileWorkerMigrations(UploadTreeTestCase):
         self._assert_no_secret_archived(job['output_dir'], job['job_dir'], secret)
 
 
+class TestNativeImportSourceValidation(UploadTreeTestCase):
+    """PBIP no-copy still validates uploaded declarations without reading bodies."""
+
+    def _metadata(self, directory, filename):
+        metadata = os.path.join(self.root, "metadata")
+        _write(os.path.join(metadata, "datasources.json"), json.dumps([{
+            "tables": [{
+                "name": "NativeFacts",
+                "connection_details": {"type": "CSV", "details": {
+                    "directory": directory, "filename": filename,
+                }},
+            }],
+        }]))
+        return metadata
+
+    def test_metadata_only_upload_validation_rejects_escape_without_native_io(self):
+        upload = os.path.join(self.root, "upload")
+        source = self.workbook("upload/source.twb")
+        outside = _write(os.path.join(self.root, "outside.csv"), "synthetic private body")
+        project = os.path.join(upload, "output")
+        for directory, filename in (
+            ("..", "outside.csv"), ("", outside),
+            ("", r"\\synthetic.invalid\share\outside.csv"),
+        ):
+            with self.subTest(directory=directory, filename=filename):
+                metadata = self._metadata(directory, filename)
+                with patch.dict(os.environ, {"TTPBI_UPLOAD_ROOT": upload}), \
+                        forbid_native_payload_io([outside]), \
+                        self.assertRaisesRegex(
+                            migrate.UploadSecurityError, "relative.*parent traversal",
+                        ):
+                    migrate._stage_declared_local_sources(
+                        source, project, metadata, copy_files=False,
+                    )
+                self.assertFalse(os.path.exists(os.path.join(project, "Data", "outside.csv")))
+        with open(outside, encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), "synthetic private body")
+
+    def test_metadata_only_archive_validation_keeps_exact_member_ambiguity_guard(self):
+        for ambiguous in (False, True):
+            with self.subTest(ambiguous=ambiguous):
+                source = self.package("upload/source.twbx", members={
+                    "source.twb": "<workbook/>",
+                    "Data/source.csv": "id\n1\n",
+                    **({r"Data\source.csv": "id\n2\n"} if ambiguous else {}),
+                })
+                metadata = self._metadata("Data", "source.csv")
+                project = os.path.join(self.root, "upload", "output")
+                with patch.dict(os.environ, {
+                        "TTPBI_UPLOAD_ROOT": os.path.join(self.root, "upload"),
+                }), forbid_native_payload_io(
+                        archive_members={"Data/source.csv", r"Data\source.csv"},
+                ):
+                    if ambiguous:
+                        with self.assertRaisesRegex(
+                                ValueError, "Ambiguous declared archive source",
+                        ):
+                            migrate._stage_declared_local_sources(
+                                source, project, metadata, copy_files=False,
+                            )
+                    else:
+                        stats = migrate._stage_declared_local_sources(
+                            source, project, metadata, copy_files=False,
+                        )
+                        self.assertEqual(stats["referenced"], 1)
+                        self.assertEqual(stats["copied"], 0)
+                self.assertFalse(os.path.exists(os.path.join(project, "Data", "source.csv")))
+
+
 class TestPositiveWorkerMigrations(UploadTreeTestCase):
     def test_private_ui_assessment_reads_a_json_file_not_a_directory(self):
         _write(os.path.join(self.root, 'p', 'Data', 'sales.csv'), 'a,b\nx,2\n')
@@ -792,12 +881,22 @@ class TestPositiveWorkerMigrations(UploadTreeTestCase):
         return project
 
     def test_worker_migrates_workbook_with_relative_csv(self):
-        _write(os.path.join(self.root, 'p', 'Data', 'sales.csv'), 'a,b\nx,2\n')
+        native = _write(os.path.join(self.root, 'p', 'Data', 'sales.csv'), 'a,b\nx,2\n')
         source = _write(os.path.join(self.root, 'p', 'w.twb'), _CSV_TWB)
         with patch.dict(os.environ, {'TTPBI_UPLOAD_ROOT': self.root}):
             migrate._validate_upload_tree(self.root)
         project = self._assert_project(self._migrate(source))
-        with open(os.path.join(project, 'Data', 'sales.csv'), encoding='utf-8') as f:
+        self.assertFalse(os.path.exists(os.path.join(project, 'Data', 'sales.csv')))
+        table = os.path.join(
+            project, 'w.SemanticModel', 'definition', 'tables', 'sales.csv.tmdl',
+        )
+        with open(table, encoding='utf-8') as stream:
+            content = stream.read()
+        self.assertIn('mode: import', content)
+        self.assertIn(f'File.Contents("{native}")', content)
+        self.assertNotRegex(content, r'File\.Contents\("Data[/\\]sales\.csv"\)')
+        self.assertNotIn('File.Contents(DataFolder', content)
+        with open(native, encoding='utf-8') as f:
             self.assertEqual('a,b\nx,2\n', f.read())
 
     def test_worker_migrates_package_with_relative_csv(self):

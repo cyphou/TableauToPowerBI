@@ -249,6 +249,11 @@ class TestSingleMigrationHelpers(unittest.TestCase):
             'Retail.twbx',
             os.path.join('artifacts', 'fabric_projects', 'migrated', 'Retail'),
             'Retail',
+            max_zip_entry_mb=1024,
+            hyper_export_format='auto',
+            hyper_export_max_rows=None,
+            output_format='fabric',
+            quiet=False,
         )
 
     def test_fabric_generation_uses_package_imports(self):

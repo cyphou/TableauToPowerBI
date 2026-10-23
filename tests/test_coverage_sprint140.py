@@ -306,7 +306,7 @@ class TestMigrationSessionConfig(unittest.TestCase):
         s = notebook_api.MigrationSession()
         cfg = s.get_config()
         self.assertEqual(cfg['calendar_start'], 2020)
-        self.assertEqual(cfg['mode'], 'import')
+        self.assertEqual(cfg['mode'], 'auto')
 
     def test_configure_known_option(self):
         s = notebook_api.MigrationSession()

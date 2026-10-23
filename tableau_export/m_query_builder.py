@@ -6,6 +6,7 @@ Each connector type has its own generator function dispatched via _M_GENERATORS.
 """
 
 import logging
+import ntpath
 import re
 
 logger = logging.getLogger(__name__)
@@ -178,11 +179,114 @@ def _gen_m_source_error(table_name, message):
     )
 
 
-def _gen_m_excel(details, table_name, columns):
+def _is_windows_drive_absolute_path(path):
+    return bool(re.match(r'^[A-Za-z]:[\\/]', path))
+
+
+def _is_windows_drive_relative_path(path):
+    return bool(re.match(r'^[A-Za-z]:', path)) and not _is_windows_drive_absolute_path(path)
+
+
+def _is_unc_path(path):
+    return path.startswith(('\\\\', '//'))
+
+
+def _is_posix_absolute_path(path):
+    return path.startswith('/') and not path.startswith('//')
+
+
+def _is_rooted_or_ambiguous_path(path):
+    return (
+        path.startswith(('\\', '/'))
+        or _is_windows_drive_absolute_path(path)
+        or _is_windows_drive_relative_path(path)
+    )
+
+
+def _is_absolute_source_base(path):
+    return (
+        _is_windows_drive_absolute_path(path)
+        or _is_unc_path(path)
+        or _is_posix_absolute_path(path)
+    )
+
+
+def _join_native_source_path(base_dir, relative_path):
+    """Join Tableau's relative path syntax to an absolute native source base."""
+    windows_path = (
+        _is_windows_drive_absolute_path(base_dir)
+        or _is_unc_path(base_dir)
+    )
+    if windows_path:
+        separator = '\\'
+        base_dir = base_dir.replace('/', '\\')
+        relative_path = relative_path.replace('/', '\\')
+    else:
+        separator = '/'
+        relative_path = relative_path.replace('\\', '/')
+
+    if base_dir.endswith(separator):
+        return base_dir + relative_path
+    return base_dir + separator + relative_path
+
+
+def _file_contents(table_name, filename, directory='', native=False, *, source_base_dir=None):
+    """Build a staged or source-relative file binding from metadata, without file I/O."""
+    if not native:
+        name = _file_basename(filename)
+        return name, ('File.Contents(DataFolder & "\\'
+                      + _m_escape_string(name.replace('/', '\\')) + '")')
+
+    path = str(filename)
+    directory = str(directory or '')
+    drive_relative = _is_windows_drive_relative_path(path)
+    rooted = path.startswith(('\\', '/')) or _is_windows_drive_absolute_path(path)
+    if drive_relative:
+        # C:relative is anchored to the current directory on drive C.  Neither
+        # a declared directory nor the workbook base can resolve that safely.
+        directory = ''
+    elif directory and not rooted:
+        if re.fullmatch(r'[A-Za-z]:', directory):
+            # Keep a bare drive prefix drive-relative (C:file, not C:\file).
+            path = directory + path
+        else:
+            separator = '/' if directory.startswith('/') and not directory.startswith('//') else '\\'
+            path = directory + ('' if directory[-1] in '\\/' else separator) + path
+
+    source_base = str(source_base_dir or '')
+    if (_is_absolute_source_base(source_base)
+            and not _is_rooted_or_ambiguous_path(path)):
+        path = _join_native_source_path(source_base, path)
+
+    if not (path.startswith('/') and not path.startswith('//')):
+        path = path.replace('/', '\\')
+    label = ' '.join(path.splitlines()) or path
+    absolute_windows_path = _is_windows_drive_absolute_path(path) or _is_unc_path(path)
+    absolute_posix_path = (
+        _is_posix_absolute_path(source_base)
+        and _is_posix_absolute_path(path)
+    )
+    if not (absolute_windows_path or absolute_posix_path):
+        logger.warning(
+            "Native file source for table %r keeps its declared location %r, "
+            "which is not an absolute Windows path; configure the original "
+            "location before refresh. The binding is not rebased onto DataFolder.",
+            table_name, path,
+        )
+        label += ' (not an absolute path: configure the original location before refresh)'
+    # M treats '#(' as an escape introducer, but backslashes are literal.
+    escaped = _m_escape_string(path).replace('#(', '#(#)(')
+    escaped = escaped.replace('\r', '#(cr)').replace('\n', '#(lf)').replace('\t', '#(tab)')
+    return label, 'File.Contents("' + escaped + '")'
+
+
+def _gen_m_excel(details, table_name, columns, *, use_original_file_paths=False):
     if not details.get('filename'):
         return _gen_m_source_error(table_name, 'Excel source filename is missing; supply an explicit workbook binding.')
-    filename = _file_basename(details['filename'])
-    file_path_bs = _m_escape_string(filename.replace('/', '\\'))
+    label, contents = _file_contents(
+        table_name, details['filename'], details.get('directory'), use_original_file_paths,
+        source_base_dir=(
+            details.get('_source_base_dir') if use_original_file_paths else None))
     sheet_name = _clean_sheet_name(details.get('_source_table', ''), table_name)
     safe_step = '#"' + _m_escape_col_name(table_name) + ' Sheet"'
     if not details.get('_source_table'):
@@ -193,8 +297,8 @@ def _gen_m_excel(details, table_name, columns):
         )
 
     m_query = 'let\n'
-    m_query += f'    // Source Excel: {filename}\n'
-    m_query += f'    Source = Excel.Workbook(File.Contents(DataFolder & "\\{file_path_bs}"), null, true),\n'
+    m_query += f'    // Source Excel: {label}\n'
+    m_query += f'    Source = Excel.Workbook({contents}, null, true),\n'
     m_query += f'    {safe_step} = Source{{[Item="{sheet_name}",Kind="Sheet"]}}[Data],\n'
     m_query += f'    #"Promoted Headers" = Table.PromoteHeaders({safe_step}, [PromoteAllScalars=true]),\n'
     return _append_type_step(m_query, columns)
@@ -233,33 +337,43 @@ def _gen_m_postgresql(details, table_name, columns):
                               f'{server}:{port}', database, 'public')
 
 
-def _gen_m_csv(details, table_name, columns):
+def _gen_m_csv(details, table_name, columns, *, use_original_file_paths=False):
     # A physical text relation is authoritative even when Tableau reuses a
     # named connection whose filename belongs to another relation. Tableau's
     # text driver represents the extension separator as '#' in SQL identifiers.
     relation_file = _unquote_tableau_file_identifier(details.get('_source_table', ''))
     relation_file = re.sub(r'#(csv|tsv|txt|tab)$', r'.\1', relation_file, flags=re.IGNORECASE)
+    directory = details.get('directory')
     if re.search(r'\.(csv|tsv|txt|tab)$', relation_file, re.IGNORECASE):
-        filename = _file_basename(relation_file)
+        filename = relation_file
+        if use_original_file_paths and not directory:
+            directory = ntpath.dirname(details.get('filename') or '')
     elif details.get('filename'):
-        filename = _file_basename(details['filename'])
+        filename = details['filename']
         if relation_file:
             logger.warning(
                 "CSV table %r has no filename in its source relation %r; "
                 "connection filename %r is unverified for this relation.",
-                table_name, relation_file, filename,
+                table_name, relation_file, _file_basename(filename),
             )
     else:
         return _gen_m_source_error(table_name, 'CSV source filename is missing; supply an explicit file binding.')
     delimiter = details.get('delimiter', ',')
     encoding = details.get('encoding', 'utf-8').upper()
     encoding_code = {'UTF-8': '65001', 'UTF8': '65001'}.get(encoding, '65001')
-    file_path_bs = _m_escape_string(filename.replace('/', '\\'))
-    columns_option = f'        Columns={len(columns)},\n' if columns else ''
+    label, contents = _file_contents(
+        table_name, filename, directory, use_original_file_paths,
+        source_base_dir=(
+            details.get('_source_base_dir') if use_original_file_paths else None))
+    # A native model can select only part of the physical CSV schema.
+    columns_option = (
+        f'        Columns={len(columns)},\n'
+        if columns and not use_original_file_paths else ''
+    )
 
     m_query = f'''let
-    // Source CSV: {filename}
-    Source = Csv.Document(File.Contents(DataFolder & "\\{file_path_bs}"), [
+    // Source CSV: {label}
+    Source = Csv.Document({contents}, [
         Delimiter="{_m_escape_string(delimiter)}",
 {columns_option}        Encoding={encoding_code},
         QuoteStyle=QuoteStyle.None
@@ -267,7 +381,15 @@ def _gen_m_csv(details, table_name, columns):
     #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
 '''
     if columns:
-        return _append_type_step(m_query, columns)
+        prev_step = '#"Promoted Headers"'
+        if use_original_file_paths:
+            # Select raw headers before captions can collide with unmodeled fields.
+            step_name, step_expr = m_transform_select_columns(
+                [col['name'] for col in columns])
+            step_expr = step_expr.replace('{prev}', prev_step, 1)
+            m_query += f'    {step_name} = {step_expr},\n'
+            prev_step = step_name
+        return _append_type_step(m_query, columns, prev_step=prev_step)
     else:
         m_query += '    Result = #"Promoted Headers"\nin\n    Result'
         return m_query
@@ -330,9 +452,23 @@ def _gen_m_snowflake(details, table_name, columns):
     return m_query
 
 
-def _gen_m_geojson(details, table_name, columns):
-    filename = _file_basename(details.get('filename', 'file.geojson'))
-    file_path_bs = filename.replace('/', '\\')
+def _gen_m_geojson(details, table_name, columns, *, use_original_file_paths=False):
+    if use_original_file_paths and not details.get('filename'):
+        return _gen_m_source_error(
+            table_name, 'GeoJSON source filename is missing; supply an explicit file binding.')
+    if (use_original_file_paths
+            and ntpath.splitext(str(details.get('filename', '')))[1].lower() == '.shp'):
+        return _gen_m_source_error(
+            table_name,
+            'Native shapefile is not GeoJSON. Configure a supported GeoJSON '
+            'source in Power Query; native spatial data are not converted or '
+            'copied during PBIP migration.',
+        )
+    label, contents = _file_contents(
+        table_name, details.get('filename', 'file.geojson'),
+        details.get('directory'), use_original_file_paths,
+        source_base_dir=(
+            details.get('_source_base_dir') if use_original_file_paths else None))
 
     prop_cols = [col for col in columns if col.get('name', '') != 'Geometry']
     prop_names = ", ".join([f'"{_m_escape_col_name(col["name"])}"' for col in prop_cols])
@@ -349,8 +485,8 @@ def _gen_m_geojson(details, table_name, columns):
     has_geometry = any(col.get('name', '').lower() == 'geometry' for col in columns)
 
     m_query = f'''let
-    // Source GeoJSON: {filename}
-    Source = Json.Document(File.Contents(DataFolder & "\\{file_path_bs}")),
+    // Source GeoJSON: {label}
+    Source = Json.Document({contents}),
     features = Source[features],
     #"Converted to Table" = Table.FromList(features, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
     #"Expanded Column1" = Table.ExpandRecordColumn(#"Converted to Table", "Column1", {{"properties", "geometry"}}),
@@ -518,32 +654,50 @@ def _gen_m_sharepoint(details, table_name, columns):
     return _append_type_step(m_query, columns)
 
 
-def _gen_m_json(details, table_name, columns):
-    filename = _file_basename(details.get('filename', table_name + '.json'))
-    file_path_bs = filename.replace('/', '\\')
+def _gen_m_json(details, table_name, columns, *, use_original_file_paths=False):
+    if use_original_file_paths and not details.get('filename'):
+        return _gen_m_source_error(
+            table_name, 'JSON source filename is missing; supply an explicit file binding.')
+    label, contents = _file_contents(
+        table_name, details.get('filename', table_name + '.json'),
+        details.get('directory'), use_original_file_paths,
+        source_base_dir=(
+            details.get('_source_base_dir') if use_original_file_paths else None))
 
     m_query = 'let\n'
-    m_query += f'    // Source JSON: {filename}\n'
-    m_query += f'    Source = Json.Document(File.Contents(DataFolder & "\\{file_path_bs}")),\n'
+    m_query += f'    // Source JSON: {label}\n'
+    m_query += f'    Source = Json.Document({contents}),\n'
     m_query += '    #"Converted to Table" = if Value.Is(Source, type list) then Table.FromRecords(Source) else Table.FromRecords({Source}),\n'
     m_query += '    #"Promoted Headers" = #"Converted to Table",\n'
     return _append_type_step(m_query, columns)
 
 
-def _gen_m_xml(details, table_name, columns):
-    filename = _file_basename(details.get('filename', table_name + '.xml'))
-    file_path_bs = filename.replace('/', '\\')
+def _gen_m_xml(details, table_name, columns, *, use_original_file_paths=False):
+    if use_original_file_paths and not details.get('filename'):
+        return _gen_m_source_error(
+            table_name, 'XML source filename is missing; supply an explicit file binding.')
+    label, contents = _file_contents(
+        table_name, details.get('filename', table_name + '.xml'),
+        details.get('directory'), use_original_file_paths,
+        source_base_dir=(
+            details.get('_source_base_dir') if use_original_file_paths else None))
 
     m_query = 'let\n'
-    m_query += f'    // Source XML: {filename}\n'
-    m_query += f'    Source = Xml.Tables(File.Contents(DataFolder & "\\{file_path_bs}")),\n'
+    m_query += f'    // Source XML: {label}\n'
+    m_query += f'    Source = Xml.Tables({contents}),\n'
     m_query += '    #"Promoted Headers" = Source,\n'
     return _append_type_step(m_query, columns)
 
 
-def _gen_m_pdf(details, table_name, columns):
-    filename = _file_basename(details.get('filename', table_name + '.pdf'))
-    file_path_bs = filename.replace('/', '\\')
+def _gen_m_pdf(details, table_name, columns, *, use_original_file_paths=False):
+    if use_original_file_paths and not details.get('filename'):
+        return _gen_m_source_error(
+            table_name, 'PDF source filename is missing; supply an explicit file binding.')
+    label, contents = _file_contents(
+        table_name, details.get('filename', table_name + '.pdf'),
+        details.get('directory'), use_original_file_paths,
+        source_base_dir=(
+            details.get('_source_base_dir') if use_original_file_paths else None))
 
     # PDF connector depth: page range and table selection
     start_page = details.get('start_page')
@@ -558,11 +712,11 @@ def _gen_m_pdf(details, table_name, columns):
     options_str = '[' + ', '.join(options_parts) + ']' if options_parts else ''
 
     m_query = 'let\n'
-    m_query += f'    // Source PDF: {filename}\n'
+    m_query += f'    // Source PDF: {label}\n'
     if options_str:
-        m_query += f'    Source = Pdf.Tables(File.Contents(DataFolder & "\\{file_path_bs}"), {options_str}),\n'
+        m_query += f'    Source = Pdf.Tables({contents}, {options_str}),\n'
     else:
-        m_query += f'    Source = Pdf.Tables(File.Contents(DataFolder & "\\{file_path_bs}")),\n'
+        m_query += f'    Source = Pdf.Tables({contents}),\n'
     m_query += f'    Table1 = Source{{{{{table_index}}}}}[Data],\n'
     m_query += '    #"Promoted Headers" = Table.PromoteHeaders(Table1, [PromoteAllScalars=true]),\n'
     return _append_type_step(m_query, columns)
@@ -1337,13 +1491,18 @@ _M_GENERATORS = {
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def generate_power_query_m(connection, table):
+def generate_power_query_m(connection, table, *, use_original_file_paths=False):
     """
     Generates a Power Query M query from a Tableau connection.
 
     Args:
         connection: Dict with connection type and details
         table: Dict with table name and columns
+        use_original_file_paths: Keep native file bindings at their declared
+            locations instead of DataFolder; relative paths use the optional
+            ``details['_source_base_dir']`` context. Generate M only, without
+            file I/O. Defaults to False for staged/Fabric callers. Hyper is
+            unaffected.
 
     Returns:
         str: Complete M query
@@ -1370,6 +1529,10 @@ def generate_power_query_m(connection, table):
                 "exact worksheet navigation must succeed at refresh.",
                 table_name, source_table,
             )
+        if use_original_file_paths and generator in (
+                _gen_m_excel, _gen_m_csv, _gen_m_geojson,
+                _gen_m_json, _gen_m_xml, _gen_m_pdf):
+            return generator(details, table_name, columns, use_original_file_paths=True)
         return generator(details, table_name, columns)
 
     # Fallback — pass conn_type through details for the message

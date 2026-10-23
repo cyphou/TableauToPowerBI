@@ -1,5 +1,10 @@
 # Uploaded workbook source confinement
 
+This document covers the optional upload UI and REST ZIP-upload API, not the
+recommended [local folder-path browser interface](LOCAL_WEB_UI.md).
+For the complete boundary, audit-hook controls and hosting cautions, see
+[Upload Security](../UPLOAD_SECURITY.md).
+
 The Streamlit UI, fallback HTTP UI, and REST batch endpoint run migrations in
 separate processes with the server-owned `TTPBI_UPLOAD_ROOT` environment variable.
 Do not populate this variable from request options, workbook metadata, or batch
@@ -19,7 +24,7 @@ directories.
 
 The REST ZIP endpoint extracts each workbook into a private directory. Sources
 must be embedded in its TWBX/TDSX package; other loose ZIP entries are not source
-files for that workbook. The Web UI accepts workbook files, not arbitrary host
+files for that workbook. The upload UI accepts workbook files, not arbitrary host
 source paths. Assessments use private temporary extraction directories.
 
 The ordinary local CLI and local-path MCP tools remain trusted workflows:

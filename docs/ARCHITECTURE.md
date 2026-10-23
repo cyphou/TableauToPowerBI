@@ -1,8 +1,33 @@
 # Architecture — Tableau to Power BI Migration Tool
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🌐 Local browser](LOCAL_WEB_UI.md) · [✅ Review checklist](MIGRATION_CHECKLIST.md)
+
 ## Pipeline Overview
 
 The migration follows a **2-step pipeline**: Extraction → Generation.
+
+## Entry points and evidence boundaries
+
+| Surface | Entry point | Input / boundary |
+|---------|-------------|------------------|
+| Recommended local browser | `.\run_web_ui.ps1` or `python web\local_server.py` | Trusted, separate local folder paths; same-origin loopback UI/API, default `127.0.0.1:8765`; no uploads |
+| Workbook CLI | `python migrate.py batch FOLDER` | One or many workbooks in a folder; direct single-file generation is retired |
+| Shared-model CLI | `python migrate.py merge WB1 WB2 ...` | Separate shared-model generation path with thin reports |
+| Optional upload UI | `python migrate.py --web-ui` / `web/app.py` | Streamlit when installed, otherwise its stdlib fallback; separate upload/confinement workflow |
+| REST upload API | `python -m powerbi_import.api_server` | ZIP batch upload; `POST /migrate` is retired (410) |
+| MCP | `python -m powerbi_import.mcp_server` | Local tools; `migrate` requires a `directory`; deployment is separately guarded |
+
+The browser client lives in `web/index.html`, `web/app.js`, and `web/style.css`;
+`web/local_server.py` builds fixed batch commands and owns bounded in-memory
+jobs. It does not replace the extraction/generation engine or expose arbitrary
+shell commands. The standalone Tkinter/Windows executable is no longer shipped.
+See the [local browser guide](LOCAL_WEB_UI.md) and
+[upload security contract](../UPLOAD_SECURITY.md).
+
+Static openability, native Desktop loading/refresh, semantic value checks,
+rendered comparisons and remote deployment are separate signals. Unexecuted
+runtime checks stay `not_run`. PBIR schema constants and the `CY26SU04` theme
+name are metadata, not proof of Desktop compatibility.
 
 <p align="center">
   <img src="images/architecture.svg" alt="Architecture diagram" width="960"/>
@@ -73,9 +98,9 @@ For environments without Mermaid rendering:
               |  extract_tableau_data.py       |
               |    +-- datasource_extractor.py |
               |    +-- dax_converter.py        |
-              |        172+ DAX conversions    |
+              |        DAX conversion         |
               |    +-- m_query_builder.py      |
-              |        49 connectors           |
+              |        55 M generators        |
               |        43 transforms           |
               |    +-- prep_flow_parser.py     |
               +---------------+---------------+
@@ -106,7 +131,7 @@ For environments without Mermaid rendering:
               |        tables, columns,       |
               |        measures, RLS roles    |
               |    +-- visual_generator.py     |
-              |        190 visual types        |
+              |        164 mapping records    |
               |    +-- validator.py            |
               |        JSON + TMDL + DAX      |
               +---------------+---------------+
@@ -121,6 +146,74 @@ For environments without Mermaid rendering:
               +-------------------------------+
 ```
 
+## Automatic storage mode and Hyper export
+
+For PBIP generation, decide independently for each source table. An available
+Hyper file is the snapshot to import; its size controls the export format,
+not the storage mode. A native database source without Hyper uses DirectQuery
+when its connector supports it. The user can always choose **Import** instead.
+For a non-Hyper Import source, migrate the connection, schema and Power Query M
+only: do not export native rows or copy native dataset files into the PBIP.
+Power BI retrieves those data at refresh. Hyper is the explicit exception:
+its data are exported and connected to the Import partition.
+
+```mermaid
+flowchart TD
+    Source["Tableau source table"] --> Hyper{"Hyper file present?"}
+    Hyper -->|Yes| Size{"Hyper size > 10 MiB?"}
+    Size -->|Yes| SDK{"Native Hyper input and Hyper SDK available?"}
+    SDK -->|Yes| Parquet["Native Parquet export"]
+    SDK -->|No| Error["Error: incompatible input or missing Hyper API; explicit CSV override available"]
+    Size -->|"No: size <= 10 MiB"| CSV["CSV export: streaming reader or marked sample"]
+    Parquet --> HyperImport["Power BI: Import staged Hyper data"]
+    CSV --> HyperImport
+    Hyper -->|No| Capable{"Connector supports DirectQuery?"}
+    Capable -->|Yes| DirectQuery["Power BI: DirectQuery"]
+    Capable -->|No: Excel, CSV, MySQL, other import-only sources| NativeImport["Power BI: Import connection, schema and M only"]
+    DirectQuery -.->|"User selects Import in UI or --mode import"| NativeImport
+    NativeImport --> Refresh["Power BI loads native data at refresh"]
+```
+
+The default `--mode auto` applies this rule. `--mode import`, or **Import** in
+the local browser, forces Import instead of DirectQuery during generation.
+A mixed-source model can therefore contain both Import and DirectQuery tables.
+Explicit DirectQuery requests for Hyper or import-only files fail rather than
+silently changing the requested mode.
+
+Native file queries point at the original source, not copies in generated
+`Data/`. For a loose workbook, a declared relative binding is resolved against
+the original workbook directory without reading or copying native rows.
+Absolute bindings are preserved. Packaged native files are not extracted or
+rebased onto the archive's parent: unavailable bindings require configuration
+in Power Query. No basename search substitutes another file.
+Native CSV queries do not use the model's selected column count to truncate
+the physical file. After parsing headers, they select exact declared source
+column names before types and caption renames; unmodeled physical fields cannot
+collide with those renames, and missing declared fields still fail explicitly.
+Tableau metadata extraction still runs normally.
+
+The threshold uses the **uncompressed Hyper file**, not the TWBX archive or
+the eventual export: 10 MiB is `10 * 1024 * 1024` bytes. Exactly 10 MiB still
+uses CSV. Parquet needs the existing optional `tableauhyperapi` dependency;
+if it is required but unavailable, the prerequisite must be resolved explicitly.
+SQLite-compatible inputs cannot use the native Parquet writer and fail above
+this threshold unless CSV is explicitly selected. A header-only reader may
+yield a bounded CSV sample; manifests and quality reports never certify that
+sample as complete source data.
+Advanced format overrides do not change Import storage for Hyper files.
+Fabric-native DirectLake generation is a separate target, not this PBIP policy.
+
+Native Parquet export projects Hyper geography columns to WKT text, preserving
+their names, order and nulls; Parquet cannot store Hyper's native geography
+type. Other columns keep their native types. Other unsupported types remain
+explicit export errors. CSV geography serialization is unchanged and may contain
+the SDK's bytes representation. Neither format establishes native spatial parity.
+
+Generating a database connection never refreshes it or proves credential,
+gateway or query-folding availability. Importing a capped extract remains a
+sample, not a full-data validation. See the
+[Hyper options and progress contract](FAQ.md#how-are-hyper-extract-files-handled).
+
 ## Module Responsibilities
 
 ### `tableau_export/` — Extraction Layer
@@ -129,8 +222,8 @@ For environments without Mermaid rendering:
 |--------|---------------|
 | `extract_tableau_data.py` | Main orchestrator — parses TWB/TWBX XML, extracts 23 object types |
 | `datasource_extractor.py` | Datasource extraction (connections, tables, columns, calculations, relationships), including exact packaged-Hyper binding for supported enabled single-object object-graph native/extract pairs while preserving logical-table and physical-column mappings and removing only proven duplicate Extract entries |
-| `dax_converter.py` | 133+ Tableau → DAX formula conversions (LOD, table calcs, security, etc.) |
-| `m_query_builder.py` | Power Query M generator (49 connector types + 43 transformation generators) |
+| `dax_converter.py` | Tableau → DAX conversion and diagnostics (LOD, table calcs, security, etc.) |
+| `m_query_builder.py` | Power Query M generator: 97 dispatch keys including aliases for 55 distinct connector functions, plus transformation helpers |
 | `prep_flow_parser.py` | Tableau Prep flow parser (.tfl/.tflx → Power Query M) |
 | `prep_flow_analyzer.py` | Prep flow profiler — FlowProfile (inputs, outputs, transforms, M queries, assessment), 18 operation types |
 | `server_client.py` | Tableau Server/Cloud REST API client (PAT/password auth, download, batch) |
@@ -142,7 +235,7 @@ For environments without Mermaid rendering:
 | `import_to_powerbi.py` | Generation pipeline orchestrator |
 | `pbip_generator.py` | .pbip project generator (PBIR v4.0 report, visuals, filters, bookmarks, slicers) |
 | `tmdl_generator.py` | Unified semantic model generator (TMDL: tables, columns, measures, relationships) |
-| `visual_generator.py` | Visual container generator (190 visual types, data roles, config templates) |
+| `visual_generator.py` | Visual container generator: runtime inventory of 129 native, 16 approximation and 19 custom-visual mapping records |
 | `m_query_generator.py` | Sample data M query generator |
 | `validator.py` | Artifact validator (JSON, TMDL, DAX semantic validation) |
 | `qa_suite.py` | Post-migration QA report card (sentinels, empty visuals, format coverage, zones, orphan filters, fidelity) |
@@ -200,7 +293,7 @@ healing.py (facade — one import surface, heal_and_verify())
 | `m_healing.py` | `heal_m()` — Power Query M repairs (identifier quoting, trailing commas, paren balance). |
 | `visual_healing.py` | `heal_visual()` — PBIR container repairs; flagship fix moves annotations to the container root (critical load-failure bug). |
 | `openability.py` | `check_openability()` preflight + `extract_m_partitions()` — validates every M partition, executable DAX, JSON file, TMDL, PBIP shell, semantic reference, visual binding, report→model reference and PBIR schema without opening Desktop. |
-| `desktop_probe.py` | `probe_desktop_open()` — best-effort **real** open self-check: launches Power BI Desktop against the `.pbip`, watches for an early crash / FrownDump / error traces, and can verify aggregate row counts through Desktop's local model before capturing a screenshot (Windows + Desktop install; the static preflight stays authoritative). |
+| `desktop_probe.py` | `probe_desktop_open()` — best-effort **real** open self-check: launches Power BI Desktop against the `.pbip`, watches for an early crash / FrownDump / error traces, and can inspect aggregate row counts before a screenshot (Windows + Desktop install; static and native verdicts remain separate). |
 | `autoheal.py` | `AutoHealer` closed loop — deterministic heal → collect residual errors (`StaticValidatorSource`/`LogFileSource`/`PbiDesktopSource`) → optional LLM correction via `LLMGateway` → **re-validate → apply only if valid** (never degrades). Records each applied fix as a `RepairAttempt` (distinct from `HealAction` — it carries the validation outcome). |
 | `recovery_report.py` | Records every applied repair (`record_heal`) into the recovery ledger via duck typing (no import coupling to the healers). |
 | `healing.py` | Unified facade re-exporting the whole subsystem; `heal_and_verify(project_dir)` heals then re-runs the openability preflight, returning `(AutoHealReport, OpenabilityReport)`. |
@@ -208,18 +301,19 @@ healing.py (facade — one import surface, heal_and_verify())
 The static openability gate runs automatically after every PBIP generation, and
 after closed-loop autoheal when autoheal is enabled. A blocking result fails the
 migration and writes `openability_report.json`; `--no-verify-open` is the explicit
-escape hatch. Power BI Desktop is never launched automatically: `--desktop-probe`
-remains an opt-in diagnostic. The subsystem is also reachable through MCP
-(`verify_open`, `autoheal` tools).
+escape hatch. Power BI Desktop is never launched automatically. Batch does not
+forward the legacy `--desktop-probe` or autoheal postprocessing switches.
+Use separately confirmed browser diagnostics or the probe harness below for
+native evidence. The subsystem is also reachable through MCP (`verify_open`,
+`autoheal` tools).
 
-For batch Desktop evidence, run `python scripts/probe_projects.py <projects-dir>`.
+For batch Desktop evidence, run `python scripts\probe_projects.py PROJECTS_DIR`.
 It requires both a loaded Desktop window and a non-empty aggregate data result for
 every M-backed table before saving a screenshot. `--skip-data-check` is diagnostic
 only: it permits a window screenshot without claiming that data loaded.
 
 For a client machine with a non-standard Desktop installation, set
-`POWERBI_DESKTOP_PATH` to the full path of `PBIDesktop.exe`, or pass
-`--powerbi-desktop-path PATH` with `--desktop-probe`. An explicit path must exist
+`POWERBI_DESKTOP_PATH` to the full path of `PBIDesktop.exe`. An explicit path must exist
 and end in `PBIDesktop.exe`; an invalid override fails closed instead of silently
 selecting another installation. Without an override, discovery checks the standard
 `ProgramFiles`, `ProgramW6432`, and `ProgramFiles(x86)` installation roots only;
@@ -238,11 +332,16 @@ repairs a different artifact at a different phase), not duplicates:
 | 3. Expression heal | `healing.py` subsystem (this section) | preflight / post-gen / on-demand | DAX, Power Query (M), visual containers |
 | 4. Recovery ledger | `recovery_report.py` | throughout | records every repair from stages 1–3 (one JSON) |
 | 5. Quality gate | `rollback_engine.py` | after generation | severity verdict → ship / quarantine / rollback |
-| 6. Preceptor report | `preceptor.py` | post-generation, default-on (advisory) | Scores six dimensions and writes coaching; owner-agent dispatch/fixes are not automated |
 
 Stages 1–3 all feed the single recovery ledger (stage 4) via
 `recovery_report.record()` / `record_heal()`; the ledger is duck-typed so it never
 imports the healers, keeping the dependency graph acyclic.
+
+`preceptor.py` is a separate scoring/report surface, not a sixth stage run by
+supported batch/shared-model generation. Those dispatch paths do not invoke
+`PreceptorLoop` or forward its parser switches; preceptor evidence is `not_run`
+unless separately produced. An invoked loop can score unchanged output again;
+it does not dispatch an agent or apply coaching fixes.
 
 ## Data Flow Detail
 
@@ -320,7 +419,6 @@ Key differences from workbook migration:
 - **Assessment grading** — GREEN/YELLOW/RED per flow based on complexity and script usage
 
 ![Prep Flow Lineage Diagram](images/prep_lineage_diagram.png)
-```
 
 ## TMDL Generation Phases
 

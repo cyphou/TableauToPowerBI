@@ -7,11 +7,13 @@ hybrid relationship constraints, and CLI flags.
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
 
 from powerbi_import import tmdl_generator
+from powerbi_import.errors import ConfigurationError
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -66,6 +68,186 @@ def _generate_model(datasources, model_mode='import', composite_threshold=None,
 # ═══════════════════════════════════════════════════════════════════
 # 1. Per-table StorageMode
 # ═══════════════════════════════════════════════════════════════════
+
+class TestCanonicalStorageModeRegressions(unittest.TestCase):
+    """Inspect real generated partitions, not just accepted parser values."""
+
+    def _generate_sql(self, mode, connector="SQL Server"):
+        datasource = _make_datasource([
+            {"name": "Lookup", "columns": ["Key", "Label", "Code"]},
+            {"name": "Facts", "num_columns": [f"Value{i}" for i in range(15)]},
+        ])
+        datasource["connection"] = {
+            "type": connector,
+            "details": {"server": "synthetic.invalid", "database": "SyntheticDB"},
+        }
+        stats, root = _generate_model(datasource, model_mode=mode)
+        self.addCleanup(shutil.rmtree, root, True)
+        self.assertGreaterEqual(stats["tables"], 2)
+        contents = {}
+        for name in ("Lookup", "Facts"):
+            path = os.path.join(root, "definition", "tables", f"{name}.tmdl")
+            self.assertTrue(os.path.isfile(path), f"missing generated table: {path}")
+            with open(path, encoding="utf-8") as stream:
+                contents[name] = stream.read()
+        return root, contents
+
+    def _assert_partition(self, content, expected):
+        self.assertEqual(
+            re.findall(r"^\s*mode:\s+(\w+)\s*$", content, re.M), [expected],
+        )
+
+    def test_lowercase_directquery_cli_generates_directquery_sql_partitions(self):
+        import migrate
+
+        args = migrate._build_argument_parser().parse_args([
+            "synthetic.twb", "--mode", "directquery",
+        ])
+        self.assertEqual(args.mode, "directquery")
+        unused, contents = self._generate_sql(args.mode)
+        for content in contents.values():
+            self._assert_partition(content, "directQuery")
+            self.assertIn('Sql.Database("synthetic.invalid", "SyntheticDB")', content)
+            self.assertNotIn("Csv.Document", content)
+            self.assertNotIn("Parquet.Document", content)
+
+    def test_import_composite_and_legacy_directquery_forms_keep_real_modes(self):
+        cases = (
+            ("import", {"Lookup": "import", "Facts": "import"}),
+            ("composite", {"Lookup": "import", "Facts": "directQuery"}),
+            ("directQuery", {"Lookup": "directQuery", "Facts": "directQuery"}),
+        )
+        for mode, expected in cases:
+            with self.subTest(mode=mode):
+                unused, contents = self._generate_sql(mode)
+                for name, expected_mode in expected.items():
+                    self._assert_partition(contents[name], expected_mode)
+                    self.assertIn(
+                        'Sql.Database("synthetic.invalid", "SyntheticDB")', contents[name],
+                    )
+
+    def test_directlake_api_forms_generate_entity_partitions_not_import_m(self):
+        for mode in ("directLake", "directlake"):
+            with self.subTest(mode=mode):
+                root, contents = self._generate_sql(mode)
+                for content in contents.values():
+                    self._assert_partition(content, "directLake")
+                    self.assertIn("entityName:", content)
+                    self.assertNotIn("Sql.Database", content)
+                    self.assertNotIn("Csv.Document", content)
+                with open(os.path.join(root, "definition", "model.tmdl"),
+                          encoding="utf-8") as stream:
+                    self.assertIn("defaultMode: directLake", stream.read())
+
+    def test_auto_uses_directquery_for_sql_regardless_of_table_width(self):
+        unused, contents = self._generate_sql("auto")
+        for content in contents.values():
+            self._assert_partition(content, "directQuery")
+            self.assertIn('Sql.Database("synthetic.invalid", "SyntheticDB")', content)
+
+    def test_mysql_auto_uses_import_with_diagnostic_and_explicit_import_remains_valid(self):
+        with self.assertLogs(tmdl_generator.logger.name, level="WARNING") as logs:
+            unused, automatic = self._generate_sql("auto", connector="MySQL")
+        diagnostics = "\n".join(logs.output)
+        self.assertIn("MySQL", diagnostics)
+        self.assertIn("Import", diagnostics)
+        self.assertIn("DirectQuery", diagnostics)
+        self.assertNotRegex(diagnostics.lower(), r"\bfile[- ](?:based|backed)\b")
+        unused, explicit_import = self._generate_sql("import", connector="MySQL")
+        for mode, contents in (("auto", automatic), ("import", explicit_import)):
+            with self.subTest(mode=mode):
+                for content in contents.values():
+                    self._assert_partition(content, "import")
+                    self.assertIn("MySQL.Database(", content)
+                    self.assertIn("synthetic.invalid", content)
+                    self.assertIn("SyntheticDB", content)
+                    self.assertNotIn("Csv.Document", content)
+                    self.assertNotIn("Parquet.Document", content)
+
+    def test_mysql_explicit_directquery_and_composite_dq_reject_import_only_connector(self):
+        for mode in ("directquery", "directQuery", "composite"):
+            with self.subTest(mode=mode):
+                with self.assertRaises(ConfigurationError) as raised:
+                    self._generate_sql(mode, connector="MySQL")
+                diagnostic = str(raised.exception)
+                self.assertIn("MySQL", diagnostic)
+                self.assertIn("DirectQuery", diagnostic)
+                self.assertIn("Import", diagnostic)
+                self.assertNotRegex(diagnostic.lower(), r"\bfile[- ](?:based|backed)\b")
+                if mode == "composite":
+                    # Lookup has 3 columns and stays Import; Facts has 15 and
+                    # exceeds the default threshold of 10, so only it needs DQ.
+                    self.assertEqual(raised.exception.item, "Facts")
+
+    def _mixed_sources(self):
+        sql = _make_datasource([{"name": "Native", "num_columns": ["ID", "Amount"]}])
+        sql["name"] = "NativeSource"
+        sql["connection"] = {
+            "type": "SQL Server",
+            "details": {"server": "synthetic.invalid", "database": "SyntheticDB"},
+        }
+        snapshot = _make_datasource([{"name": "Snapshot", "num_columns": ["ID", "Amount"]}])
+        snapshot["name"] = "HyperSource"
+        snapshot["connection"] = {"type": "Hyper", "details": {}}
+        snapshot["tables"][0]["hyper_identity"] = {
+            "workbook": os.path.abspath("synthetic-not-on-disk.twbx"),
+            "archive_member": "Data/Exact/synthetic.hyper",
+            "schema": "Extract", "table": "Snapshot",
+        }
+        return [sql, snapshot]
+
+    def _mixed_contents(self, mode):
+        unused, root = _generate_model(self._mixed_sources(), model_mode=mode)
+        self.addCleanup(shutil.rmtree, root, True)
+        contents = {}
+        for name in ("Native", "Snapshot"):
+            path = os.path.join(root, "definition", "tables", f"{name}.tmdl")
+            self.assertTrue(os.path.isfile(path), path)
+            with open(path, encoding="utf-8") as stream:
+                contents[name] = stream.read()
+        return contents
+
+    def test_auto_resolves_each_table_separately_in_mixed_sql_hyper_workbook(self):
+        for mode in ("auto", None):
+            with self.subTest(mode=mode):
+                contents = self._mixed_contents(mode)
+                self._assert_partition(contents["Native"], "directQuery")
+                self._assert_partition(contents["Snapshot"], "import")
+                self.assertIn("Migration.HyperExportRequired", contents["Snapshot"])
+
+    def test_user_import_override_keeps_both_sql_and_hyper_as_import(self):
+        contents = self._mixed_contents("import")
+        for content in contents.values():
+            self._assert_partition(content, "import")
+        self.assertIn('Sql.Database("synthetic.invalid", "SyntheticDB")', contents["Native"])
+
+    def test_file_connector_auto_stays_import_with_explicit_diagnostic(self):
+        datasource = _make_datasource([{"name": "FileFacts", "columns": ["ID", "Label"]}])
+        datasource["connection"] = {
+            "type": "CSV",
+            "details": {"filename": os.path.abspath("synthetic-not-on-disk.csv")},
+        }
+        with self.assertLogs(tmdl_generator.logger.name, level="WARNING") as logs:
+            unused, root = _generate_model(datasource, model_mode="auto")
+        self.addCleanup(shutil.rmtree, root, True)
+        path = os.path.join(root, "definition", "tables", "FileFacts.tmdl")
+        self.assertTrue(os.path.isfile(path))
+        with open(path, encoding="utf-8") as stream:
+            self._assert_partition(stream.read(), "import")
+        diagnostics = "\n".join(logs.output)
+        self.assertIn("FileFacts", diagnostics)
+        self.assertIn("Import", diagnostics)
+        self.assertIn("DirectQuery", diagnostics)
+        self.assertIn("file", diagnostics.lower())
+
+    def test_explicit_directquery_does_not_certify_a_hyper_snapshot(self):
+        with self.assertRaisesRegex(ConfigurationError, "(?i)(hyper|snapshot|import)"):
+            _generate_model(self._mixed_sources(), model_mode="directquery")
+
+    def test_invalid_storage_mode_is_a_configuration_error(self):
+        with self.assertRaises(ConfigurationError):
+            _generate_model(self._mixed_sources(), model_mode="not_a_storage_mode")
+
 
 class TestPerTableStorageMode(unittest.TestCase):
     """86.1 — Composite mode classifies tables by column count threshold."""

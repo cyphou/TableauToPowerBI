@@ -570,6 +570,67 @@ class TestGenerateProject(unittest.TestCase):
         self.assertEqual(meta["objects_converted"]["dashboards"], 1)
 
 
+class TestAutomaticModelModeEntrypoints(unittest.TestCase):
+    """Primary generator APIs must not silently reinstate the old Import default."""
+
+    def _objects(self):
+        return {
+            "datasources": [{
+                "name": "SyntheticSQL",
+                "connection": {
+                    "type": "SQL Server",
+                    "details": {"server": "synthetic.invalid", "database": "SyntheticDB"},
+                },
+                "tables": [{"name": "Facts", "columns": [
+                    {"name": "ID", "datatype": "integer"},
+                    {"name": "Amount", "datatype": "real"},
+                ]}],
+                "calculations": [], "relationships": [],
+            }],
+            "worksheets": [], "dashboards": [], "calculations": [],
+        }
+
+    def _assert_sql_mode(self, semantic_dir, expected):
+        path = os.path.join(semantic_dir, "definition", "tables", "Facts.tmdl")
+        self.assertTrue(os.path.isfile(path), path)
+        with open(path, encoding="utf-8") as stream:
+            content = stream.read()
+        self.assertEqual(re.findall(r"^\s*mode:\s+(\w+)\s*$", content, re.M), [expected])
+        self.assertIn("Sql.Database(", content)
+        self.assertNotIn("Csv.Document", content)
+        self.assertNotIn("Parquet.Document", content)
+
+    def test_project_default_auto_and_explicit_import_emit_effective_sql_modes(self):
+        cases = (
+            ("Default", {}, "directQuery"),
+            ("Auto", {"model_mode": "auto"}, "directQuery"),
+            ("None", {"model_mode": None}, "directQuery"),
+            ("Import", {"model_mode": "import"}, "import"),
+        )
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory(prefix="project_mode_") as root:
+            for name, options, expected in cases:
+                with self.subTest(name=name), redirect_stdout(io.StringIO()):
+                    generator = PowerBIProjectGenerator(output_dir=root)
+                    generator.generate_project(name, self._objects(), **options)
+                    self._assert_sql_mode(
+                        os.path.join(root, name, name + ".SemanticModel"), expected,
+                    )
+
+    def test_direct_semantic_structure_default_without_project_options_is_auto(self):
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory(prefix="semantic_mode_") as root, \
+                redirect_stdout(io.StringIO()):
+            generator = PowerBIProjectGenerator(output_dir=root)
+            self.assertFalse(hasattr(generator, "_model_mode"))
+            semantic_dir = generator.create_semantic_model_structure(
+                root, "Standalone", self._objects(),
+            )
+            self._assert_sql_mode(semantic_dir, "directQuery")
+
+
 class TestAutomaticShelfRegressions(unittest.TestCase):
     """Automatic mark repair must depend on shelves, never worksheet titles."""
 

@@ -575,6 +575,8 @@ _FINDING_ACTIONS = {
     "fabric_bundle": ("repair", "Fabric"),
     "fabric_runtime": ("note", "Deployer"),
     "tables_missing": ("repair", "Semantic / Wiring"),
+    "hyper_manifest": ("repair", "Wiring / Orchestrator"),
+    "hyper_sampling": ("decide", "Wiring / domain owner"),
     "parameter_coverage": ("repair", "Semantic"),
     "semantic_static": ("repair", "Semantic / DAX"),
     "semantic_runtime": ("repair", "Semantic / DAX"),
@@ -917,6 +919,134 @@ def _handoff_status(status: str, openability: Dict[str, Any]) -> str:
     return "PASS"
 
 
+def _hyper_sampling_evidence(extracted: Dict[str, Any],
+                             project_dir: str) -> Dict[str, Any]:
+    """Read export limits, not row parity; even a complete manifest is static.
+
+    A missing manifest is a finding only when Hyper is actually in use.
+    Invalid or incomplete metadata must never be treated as an unsampled export.
+    """
+    manifest_name = "Data/hyper_exports.json"
+    data_dir = Path(project_dir) / "Data"
+    evidence: Dict[str, Any] = {
+        "status": "not_found",
+        "manifest": manifest_name,
+        "full_data_verified": False,
+        "sampled_export_count": 0,
+        "exports": [],
+        "diagnostics": [],
+    }
+    diagnostics = evidence["diagnostics"]
+    uses_hyper = bool(extracted.get("hyper_files")) or any(
+        str((ds.get("connection") or {}).get(key, "")).lower()
+        in {"hyper", "dataengine"}
+        for ds in extracted.get("datasources", []) or []
+        for key in ("type", "class")
+    ) or any(
+        table.get("hyper_identity")
+        for ds in extracted.get("datasources", []) or []
+        for table in ds.get("tables", []) or []
+    )
+    try:
+        with (data_dir / "hyper_exports.json").open(encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except FileNotFoundError:
+        # Direct quality callers may have artifacts but no source inventory.
+        def scan_error(exc: OSError) -> None:
+            diagnostics.append(
+                f"Cannot inspect Hyper artifacts ({type(exc).__name__}); "
+                "full-data coverage is unverified.")
+
+        if data_dir.is_dir() and not uses_hyper:
+            for _root, _dirs, filenames in os.walk(data_dir, onerror=scan_error):
+                _dirs.sort()
+                if any(
+                    name.lower().endswith(".hyper")
+                    or re.fullmatch(r"hyper_(?:staged_)?[0-9a-f]{64}\.(?:csv|parquet)",
+                                    name, re.IGNORECASE)
+                    for name in filenames
+                ):
+                    uses_hyper = True
+                    break
+        if uses_hyper:
+            diagnostics.append(
+                f"Hyper export manifest {manifest_name} is missing; "
+                "sampled or capped data cannot be ruled out.")
+        return evidence
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        evidence["status"] = "invalid"
+        diagnostics.append(
+            f"Hyper export manifest {manifest_name} cannot be read "
+            f"({type(exc).__name__}); full-data coverage is unverified.")
+        return evidence
+
+    if (not isinstance(manifest, dict)
+            or type(manifest.get("version")) is not int
+            or manifest["version"] != 1
+            or not isinstance(manifest.get("exports"), list)):
+        evidence["status"] = "invalid"
+        diagnostics.append(
+            f"Hyper export manifest {manifest_name} requires version 1 and "
+            "an exports list; full-data coverage is unverified.")
+        return evidence
+
+    evidence["status"] = "static_evidence"
+    if uses_hyper and not manifest["exports"]:
+        diagnostics.append(
+            "Hyper export manifest has no export records for the source "
+            "extracts; full-data coverage is unverified.")
+    for index, record in enumerate(manifest["exports"]):
+        if not isinstance(record, dict):
+            diagnostics.append(f"Hyper export record {index} must be an object.")
+            continue
+        invalid = []
+        for key in ("row_count", "total_rows", "max_rows"):
+            value = record.get(key)
+            if (key not in record
+                    or (value is None and key == "row_count")
+                    or (value is not None and (
+                        type(value) is not int
+                        or value < (1 if key == "max_rows" else 0)))):
+                invalid.append(key)
+        for key in ("sampled", "truncated"):
+            value = record.get(key)
+            if (key not in record
+                    or (type(value) is not bool
+                        and not (key == "truncated" and value is None))):
+                invalid.append(key)
+        rows, total, cap = (record.get(key) for key in
+                            ("row_count", "total_rows", "max_rows"))
+        counts_valid = not any(key in invalid for key in
+                               ("row_count", "total_rows", "max_rows"))
+        if counts_valid and (
+                (total is not None and rows > total)
+                or (cap is not None and rows > cap)):
+            invalid.append("inconsistent row counts")
+        if invalid:
+            diagnostics.append(
+                f"Hyper export record {index} has missing or invalid "
+                f"sampling metadata: {', '.join(invalid)}; "
+                "full-data coverage is unverified.")
+        limited = (
+            record.get("sampled") is True or record.get("truncated") is True
+            or (type(cap) is int and cap > 0)
+            or (counts_valid and total is not None and rows < total)
+        )
+        identity = record.get("identity")
+        evidence["exports"].append({
+            "table": identity.get("table") if isinstance(identity, dict) else None,
+            "filename": record.get("filename") or record.get("csv_filename"),
+            **{key: record.get(key) for key in (
+                "row_count", "total_rows", "max_rows", "sampled", "truncated",
+                "sampling_method")},
+            "limited": limited,
+        })
+        evidence["sampled_export_count"] += int(limited)
+    if diagnostics:
+        evidence["status"] = "invalid"
+    return evidence
+
+
 _QUALITY_POLICIES = {
     "report": {"unresolved_lineage": "warning", "semantic_diagnostics": "ignore", "m_fallback": "warning", "fabric_bundle": "warning", "fabric_runtime": "ignore", "visual_approximation": "warning"},
     "enterprise": {"unresolved_lineage": "warning", "semantic_diagnostics": "blocker", "m_fallback": "blocker", "fabric_bundle": "blocker", "fabric_runtime": "ignore", "visual_approximation": "blocker"},
@@ -1188,6 +1318,22 @@ def build_quality_report(extracted: Dict, project_dir: str,
     findings = _Findings()
     blockers = findings.blockers
     warnings = findings.warnings
+    hyper_sampling = _hyper_sampling_evidence(extracted or {}, project_dir)
+    data = {**data, "hyper_sampling": hyper_sampling}
+    for diagnostic in hyper_sampling["diagnostics"]:
+        findings.add("hyper_manifest", diagnostic, blocker=False,
+                     evidence=[hyper_sampling["manifest"]])
+    if hyper_sampling["sampled_export_count"]:
+        findings.add(
+            "hyper_sampling",
+            f"{hyper_sampling['sampled_export_count']} Hyper export(s) are "
+            "sampled, capped or truncated; migration quality does not represent "
+            "full source data or verify full-row parity.",
+            blocker=False,
+            fix="Export without row caps or sample-only readers, then run "
+                "authorized full-data validation.",
+            evidence=[hyper_sampling["manifest"]],
+        )
     if not openability.openable:
         for issue in openability.blocking_issues:
             findings.add("openability", issue, blocker=True)
@@ -1389,6 +1535,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
             },
         },
     )
+    evidence_manifest["hyper_sampling"] = hyper_sampling
     return MigrationQualityReport(
         report_name=report_name,
         assessment=_assessment_dict(assessment),

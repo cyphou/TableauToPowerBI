@@ -10,8 +10,16 @@ migrated project to Power BI Service / Microsoft Fabric.
   Desktop check is required. The separate MCP `qa` report card is optional.
 - A target workspace ID.
 - Credentials as **environment variables**, never CLI/chat arguments:
-  - `FABRIC_TENANT_ID`, `FABRIC_CLIENT_ID`, `FABRIC_CLIENT_SECRET`, or a managed identity.
-  - `FABRIC_WORKSPACE_ID` (optional default target).
+  - MCP PBIP deployment: `PBI_TENANT_ID`, `PBI_CLIENT_ID`, `PBI_CLIENT_SECRET`,
+    or `PBI_ACCESS_TOKEN`.
+  - Separate Fabric-native deployment: `FABRIC_TENANT_ID`, `FABRIC_CLIENT_ID`,
+    `FABRIC_CLIENT_SECRET`, or the configured managed identity;
+    `FABRIC_WORKSPACE_ID` is an optional default target.
+
+The [local browser UI](../../../../docs/LOCAL_WEB_UI.md) generates files only;
+selecting Fabric there does not deploy them. See the
+[deployment guide](../../../../docs/DEPLOYMENT_GUIDE.md) for target-specific
+authentication and operational bindings.
 
 ## Steps
 

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="164" height="30" viewBox="0 0 164 30" role="img" aria-labelledby="pbip-title">
+  <title id="pbip-title">PBIP project output with PBIR reports and TMDL models</title>
+  <defs>
+    <linearGradient id="pbip-bg" x2="0" y2="1"><stop stop-color="#534316"/><stop offset="1" stop-color="#302A15"/></linearGradient>
+  </defs>
+  <rect x=".5" y=".5" width="163" height="29" rx="7" fill="url(#pbip-bg)" stroke="#968243"/>
+  <g fill="none" stroke="#F2D15B" stroke-width="1.6" stroke-linejoin="round"><rect x="9" y="7" width="18" height="16" rx="2"/><path d="M9 12h18m-14 7v-4m5 4v-5m5 5v-3"/></g>
+  <text x="99" y="19.5" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="12" font-weight="600" fill="#FFF5CF">PBIR + TMDL</text>
+</svg>

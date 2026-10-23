@@ -161,7 +161,7 @@ class TestWizardToArgs(unittest.TestCase):
         config = {'batch': 'workbooks'}
         args = wizard_to_args(config)
         self.assertEqual(args.output_format, 'pbip')
-        self.assertEqual(args.mode, 'import')
+        self.assertEqual(args.mode, 'auto')
         self.assertFalse(args.paginated)
 
     def test_single_file_generation_is_rejected(self):

@@ -460,7 +460,7 @@ class TestMigrationConfig(unittest.TestCase):
 
     def test_default_config(self):
         config = MigrationConfig()
-        self.assertEqual(config.model_mode, 'import')
+        self.assertEqual(config.model_mode, 'auto')
         self.assertEqual(config.culture, 'en-US')
         self.assertEqual(config.calendar_start, 2020)
         self.assertEqual(config.calendar_end, 2030)
@@ -529,7 +529,7 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_no_args_returns_defaults(self):
         config = load_config()
-        self.assertEqual(config.model_mode, 'import')
+        self.assertEqual(config.model_mode, 'auto')
 
     def test_file_only(self):
         temp_dir = make_temp_dir()

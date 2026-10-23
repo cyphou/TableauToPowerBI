@@ -135,7 +135,8 @@ def extract_datasource(datasource_elem, twbx_path=None):
     
     Args:
         datasource_elem: XML element of the datasource
-        twbx_path: Path to the .twbx file (for CSV delimiter detection)
+        twbx_path: Original workbook/datasource path (archive delimiter detection
+            or loose native-file source provenance)
     
     Returns:
         dict with connection, tables, columns, calculations, relationships
@@ -172,7 +173,7 @@ def extract_datasource(datasource_elem, twbx_path=None):
     datasource = {
         'name': ds_name,
         'caption': ds_caption,
-        'connection': extract_connection_details(datasource_elem),
+        'connection': extract_connection_details(datasource_elem, twbx_path=twbx_path),
         'connection_map': connection_map,
         'tables': extract_tables_with_columns(datasource_elem, connection_map),
         'calculations': calcs,
@@ -182,6 +183,14 @@ def extract_datasource(datasource_elem, twbx_path=None):
         'col_local_name_map': _extract_col_local_name_map(datasource_elem),
         'col_type_map': _extract_col_type_map(datasource_elem),
     }
+    # Direct native connections have no named map entry to share with tables.
+    if (not connection_map
+            and not datasource_elem.findall('.//named-connection')
+            and datasource['connection']['details'].get('_source_base_dir')):
+        for table in datasource['tables']:
+            if not table['connection'] and not table['connection_details']:
+                table['connection_details'] = datasource['connection']
+
     # Keep published identity alongside datasources.json. The separate global
     # published-datasource list is not available to --prep's binding planner.
     repositories = [
@@ -1140,7 +1149,7 @@ def _parse_published_datasource_file(file_path):
             ds_elem = root if root.tag == 'datasource' else None
         if ds_elem is None:
             return None
-        return extract_datasource(ds_elem, twbx_path=file_path if ext == '.tdsx' else None)
+        return extract_datasource(ds_elem, twbx_path=file_path)
     except Exception as e:
         logger.warning('Could not parse published datasource file %s: %s', file_path, e)
         return None
@@ -1346,6 +1355,39 @@ def resolve_all_published(datasources, server_client=None,
     }
 
 
+def _with_native_source_context(connection, inner_conn, source_path):
+    """Attach loose-source provenance without opening any native dataset."""
+    details = connection['details']
+    # This private marker comes only from caller-owned source context, not XML.
+    details.pop('_source_base_dir', None)
+    if (not source_path
+            or inner_conn.get('class', '').lower() not in {
+                'csv', 'textscan', 'excel', 'excel-direct', 'geojson',
+                'ogrdirect', 'json', 'xml', 'pdf', 'parquet'}
+            or os.path.splitext(source_path)[1].lower() not in {
+                '.twb', '.twbx', '.tds', '.tdsx'}
+            or not os.path.isfile(source_path)):
+        return connection
+
+    try:
+        # Inspect only the original workbook/datasource container. In
+        # particular, XML misnamed .twbx is loose; real ZIP resources are not.
+        with open(source_path, 'rb') as workbook:
+            if zipfile.is_zipfile(workbook):
+                return connection
+    except OSError as exc:
+        logger.warning(
+            "Could not inspect native source workbook %r: %s; relative file "
+            "bindings require explicit configuration.", source_path, exc)
+        return connection
+
+    details['_source_base_dir'] = os.path.dirname(os.path.abspath(source_path))
+    # Excel's legacy mapping omits directory; retain it verbatim when present.
+    if 'directory' in inner_conn.attrib:
+        details.setdefault('directory', inner_conn.get('directory', ''))
+    return connection
+
+
 def _parse_connection_class(inner_conn, named_conn=None, twbx_path=None):
     """Parses a single Tableau <connection> element into {type, details}.
     
@@ -1355,7 +1397,8 @@ def _parse_connection_class(inner_conn, named_conn=None, twbx_path=None):
     Args:
         inner_conn: XML <connection> element
         named_conn: Optional XML <named-connection> parent (for caption/name)
-        twbx_path: Optional .twbx path (for CSV delimiter auto-detection)
+        twbx_path: Optional original source path (archive delimiter detection
+            or loose native-file source provenance)
     
     Returns:
         dict: {type: str, details: dict}
@@ -1487,7 +1530,7 @@ def _parse_connection_class(inner_conn, named_conn=None, twbx_path=None):
     if conn_class == 'excel-direct':
         result = _build_from_dispatch(inner_conn, _SIMPLE_CONNECTORS['excel-direct'])
         result['details']['caption'] = named_conn.get('caption', '') if named_conn is not None else ''
-        return result
+        return _with_native_source_context(result, inner_conn, twbx_path)
 
     if conn_class == 'textscan':
         csv_filename = inner_conn.get('filename', '')
@@ -1496,7 +1539,7 @@ def _parse_connection_class(inner_conn, named_conn=None, twbx_path=None):
         if not delimiter:
             header = _read_csv_header_from_twbx(twbx_path, csv_directory, csv_filename)
             delimiter = _detect_csv_delimiter(header) if header else ','
-        return {
+        return _with_native_source_context({
             'type': 'CSV',
             'details': {
                 'filename': csv_filename,
@@ -1504,11 +1547,13 @@ def _parse_connection_class(inner_conn, named_conn=None, twbx_path=None):
                 'delimiter': delimiter,
                 'encoding': inner_conn.get('charset', 'utf-8')
             }
-        }
+        }, inner_conn, twbx_path)
 
     # ── Dispatch simple connectors ──────────────────────────────────────────
     if conn_class in _SIMPLE_CONNECTORS:
-        return _build_from_dispatch(inner_conn, _SIMPLE_CONNECTORS[conn_class])
+        return _with_native_source_context(
+            _build_from_dispatch(inner_conn, _SIMPLE_CONNECTORS[conn_class]),
+            inner_conn, twbx_path)
 
     # ── sqlproxy: Tableau Server Published Datasource ──────────────────────
     if conn_class == 'sqlproxy':
@@ -1524,10 +1569,10 @@ def _parse_connection_class(inner_conn, named_conn=None, twbx_path=None):
         }
 
     # ── Fallback for unknown connector types ────────────────────────────────
-    return {
+    return _with_native_source_context({
         'type': conn_class.upper(),
         'details': dict(inner_conn.attrib)
-    }
+    }, inner_conn, twbx_path)
 
 
 def _build_from_dispatch(inner_conn, spec):
@@ -1564,7 +1609,7 @@ def _build_connection_map(datasource_elem, twbx_path=None):
     return conn_map
 
 
-def extract_connection_details(datasource_elem):
+def extract_connection_details(datasource_elem, twbx_path=None):
     """Extracts connection details (Excel, SQL, etc.)"""
     connection_elem = datasource_elem.find('.//connection[@class="federated"]')
     if connection_elem is None:
@@ -1576,12 +1621,17 @@ def extract_connection_details(datasource_elem):
     if named_conn is not None:
         inner_conn = named_conn.find('.//connection')
         if inner_conn is not None:
-            return _parse_connection_class(inner_conn, named_conn)
+            # Add provenance separately: do not introduce packaged CSV reads
+            # into this previously metadata-only connection path.
+            return _with_native_source_context(
+                _parse_connection_class(inner_conn, named_conn),
+                inner_conn, twbx_path)
     
     # Direct connection (no named-connection wrapper) — e.g. sqlproxy
     conn_class = connection_elem.get('class', '')
     if conn_class and conn_class != 'federated':
-        return _parse_connection_class(connection_elem)
+        return _with_native_source_context(
+            _parse_connection_class(connection_elem), connection_elem, twbx_path)
 
     return {'type': 'Unknown', 'details': {}}
 
@@ -1810,34 +1860,28 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
                     table['columns'].append(col)
                     existing_names.add(col['name'])
 
-    # Phase 4: Last-resort fallback — if the sole table still has no columns,
-    # populate from datasource-level <column> elements that are NOT
-    # calculations (physical columns only).
-    final_needing = [t for t in raw_tables.values() if not t['columns']]
-    if final_needing and len(raw_tables) == 1:
-        ds_phys_cols = []
-        ordinal = 0
-        for col_elem in datasource_elem.findall('./column'):
-            if col_elem.find('.//calculation') is not None:
+    # Phase 4: Merge missing datasource-level physical declarations into the
+    # sole table, including partially populated schemas. With multiple tables,
+    # declarations without ownership evidence must not be assigned.
+    if len(raw_tables) == 1:
+        table = next(iter(raw_tables.values()))
+        existing_names = {col['name'] for col in table['columns']}
+        ordinal = len(table['columns'])
+        for col_name, col_elem in column_declarations.items():
+            if not col_name or col_name.startswith(':') or col_name in existing_names:
                 continue
-            if col_elem.get('user:auto-column', '') == 'sheet_link':
-                continue
-            col_name = col_elem.get('name', '').strip('[]')
-            if not col_name:
-                continue
-            ds_phys_cols.append({
+            datatype = col_elem.get('datatype', 'string')
+            table['columns'].append({
                 'name': col_name,
-                'datatype': col_elem.get('datatype', 'string'),
-                'role': 'measure' if col_elem.get('datatype', 'string') in ('real', 'integer') else 'dimension',
+                'datatype': datatype,
+                'role': col_elem.get('role') or (
+                    'measure' if datatype in ('real', 'integer') else 'dimension'),
                 'ordinal': ordinal,
                 'length': None,
                 'nullable': True,
             })
+            existing_names.add(col_name)
             ordinal += 1
-
-        if ds_phys_cols:
-            for table in final_needing:
-                table['columns'] = list(ds_phys_cols)
 
     # Filter out 0-column tables when other tables have columns
     # (e.g. Tableau extract artifacts like 'Extract' tables in .twbx files)

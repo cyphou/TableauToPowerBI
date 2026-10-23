@@ -4,7 +4,15 @@
 
 # Enterprise Deployment Guide
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [☁️ Server migration](SERVER_MIGRATION_GUIDE.md) · [✅ Review checklist](MIGRATION_CHECKLIST.md)
+
 Step-by-step guide for migrating Tableau workbooks to Power BI at enterprise scale (100–500+ workbooks).
+
+This is an operational playbook, not proof that one command automates every
+phase. The [local browser UI](LOCAL_WEB_UI.md) handles local folder generation;
+Server/Cloud access and remote deployment use separate authorized workflows.
+Keep static quality, native refresh, value/visual checks and deployment evidence
+separate. Unexecuted operational gates remain `not_run`.
 
 ## Overview
 
@@ -53,9 +61,10 @@ Discovery → Assessment → Wave Planning → Pilot → Batch Migration → Val
 
    Output: HTML dashboards + JSON reports in the output directory.
 
-2. **Server Assessment**: Score each workbook RED/YELLOW/GREEN (requires Tableau Server)
+2. **Local Portfolio Assessment**: Score downloaded workbooks
+   RED/YELLOW/GREEN; this local command does not require Tableau Server access
    ```bash
-   python migrate.py --batch /path/to/workbooks/ --assess
+   python migrate.py portfolio ./workbooks --output-dir ./assessment
    ```
 
 3. **Strategy Advisor**: Get Import/DirectQuery/Composite recommendations per workbook
@@ -198,12 +207,20 @@ reports and explicitly authorize any subsequent deployment.
 
 ### Schema Drift Detection
 
-Compare a workbook against a previously saved extraction baseline:
-```bash
-python migrate.py workbook.twbx --check-drift /path/to/snapshot_dir
+Compare two saved extraction folders through the Python API:
+```python
+from powerbi_import.schema_drift import detect_schema_drift, load_snapshot
+
+previous = load_snapshot(r"snapshots\before")
+current = load_snapshot(r"snapshots\after")
+report = detect_schema_drift(current, previous)
+print(report.summary())
 ```
 
-Detects added/removed/changed tables, columns, calculations, worksheets, relationships, parameters, and filters. Saves JSON drift report and updated baseline.
+The report detects added, removed and changed extraction objects, including
+tables, columns, calculations, worksheets, relationships, parameters and filters.
+Save the report and a new baseline explicitly if needed. The legacy
+`--check-drift` postprocessing switch is not forwarded by batch generation.
 
 ## Performance Guidelines
 

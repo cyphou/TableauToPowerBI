@@ -314,6 +314,68 @@ def test_single_revalidates_completed_output_even_without_verify_open(
     verify.assert_not_called()
 
 
+class TestHyperSingleCheckpointOptions(TestCase):
+    """Option changes must not silently reuse a differently exported project."""
+
+    @pytest.fixture(autouse=True)
+    def _case(self, single_case):
+        (self.args, self.output, self.extract, self.generate,
+         self.postprocess, self.verify) = single_case
+
+    def _reset(self):
+        for hook in (self.extract, self.generate, self.postprocess, self.verify):
+            hook.reset_mock()
+
+    def _run(self):
+        self.assertEqual(migrate._run_single_migration(self.args), migrate.ExitCode.SUCCESS)
+        state = _state(self.output)
+        self.assertEqual(state["stages"]["generation"]["status"], "completed")
+        self.assertIs(state["stages"]["generation"]["postprocessed"], True)
+        return state["config_signature"]
+
+    def _skip(self):
+        self._reset()
+        signature = self._run()
+        self.extract.assert_not_called()
+        self.generate.assert_not_called()
+        self.postprocess.assert_not_called()
+        return signature
+
+    def test_export_format_cap_zip_limit_and_mode_are_in_checkpoint_signature(self):
+        cases = (
+            ("hyper_export_format", "auto", "csv"),
+            ("hyper_export_max_rows", None, 3),
+            ("max_zip_entry_mb", 2, 4),
+            ("mode", "auto", "import"),
+        )
+        for key, before, after in cases:
+            with self.subTest(option=key):
+                setattr(self.args, key, before)
+                old_signature = self._run()
+                self.assertEqual(self._skip(), old_signature)
+                setattr(self.args, key, after)
+                self._reset()
+                new_signature = self._run()
+                self.assertNotEqual(new_signature, old_signature)
+                self.generate.assert_called_once()
+                self.postprocess.assert_called_once()
+                self.assertEqual(self._skip(), new_signature)
+
+    def test_metadata_sample_limit_is_not_export_cap_and_invalidates_extraction(self):
+        self.args.hyper_rows = 2
+        self.args.hyper_export_max_rows = 7
+        old_signature = self._run()
+        self.assertEqual(self.extract.call_args.kwargs["hyper_max_rows"], 2)
+        self.assertEqual(self.args.hyper_export_max_rows, 7)
+        self._skip()
+        self.args.hyper_rows = 3
+        self._reset()
+        self.assertNotEqual(self._run(), old_signature)
+        self.extract.assert_called_once()
+        self.assertEqual(self.extract.call_args.kwargs["hyper_max_rows"], 3)
+        self.assertEqual(self.args.hyper_export_max_rows, 7)
+
+
 # ── N3 resilience regressions ────────────────────────────────────────────────
 
 _BATCH_HOOKS = (
@@ -666,6 +728,64 @@ class TestEffectiveWorkbookCheckpointConfig(TestCase):
     def test_manifest_effective_calendar_end_change_invalidates(self):
         self._manifest_change('calendar_end', 2025, 2026, 'wb_cal_end')
 
+    def test_hyper_options_and_automatic_mode_invalidate_batch_resume(self):
+        cases = (
+            ("hyper_export_format", "auto", "csv"),
+            ("hyper_export_max_rows", None, 7),
+            ("max_zip_entry_mb", 2, 4),
+            ("model_mode", "auto", "import"),
+        )
+        for key, before, after in cases:
+            with self.subTest(option=key):
+                self.options[key] = before
+                self._run()
+                signature = _entry(self.state)["config_signature"]
+                self._skip()
+                self.options[key] = after
+                self._rerun()
+                self.assertNotEqual(_entry(self.state)["config_signature"], signature)
+                self.assertEqual(self.worker.call_args.kwargs[key], after)
+                self._skip()
+
+    def test_manifest_hyper_cap_wins_over_global_and_only_effective_changes_invalidate(self):
+        entry = {"file": self.name + ".twb", "hyper_export_max_rows": 3}
+        self.options.update(hyper_export_max_rows=20, manifest=[entry])
+        self._run()
+        signature = _entry(self.state)["config_signature"]
+        self.assertEqual(self.worker.call_args.kwargs["hyper_export_max_rows"], 3)
+        self.assertEqual(
+            migrate._convert_hyper_to_csv_in_data.call_args.kwargs["hyper_export_max_rows"], 3,
+        )
+        self.options["hyper_export_max_rows"] = 50
+        self._skip()
+        self.assertEqual(_entry(self.state)["config_signature"], signature)
+        entry["hyper_export_max_rows"] = 4
+        self._rerun()
+        self.assertNotEqual(_entry(self.state)["config_signature"], signature)
+        self.assertEqual(self.worker.call_args.kwargs["hyper_export_max_rows"], 4)
+        self.assertEqual(
+            migrate._convert_hyper_to_csv_in_data.call_args.kwargs["hyper_export_max_rows"], 4,
+        )
+        self._skip()
+
+    def test_parallel_worker_forwards_hyper_options_to_extraction_and_postprocessing(self):
+        self.options.update(
+            parallel=2, model_mode="import", max_zip_entry_mb=4,
+            hyper_export_format="csv", hyper_export_max_rows=7,
+        )
+        self._run()
+        self.worker.assert_called_once()
+        self.assertEqual(self.worker.call_args.kwargs["max_zip_entry_mb"], 4)
+        self.assertEqual(self.extract.call_args.kwargs["max_zip_entry_mb"], 4)
+        self.assertEqual(self.generate.call_args.kwargs["model_mode"], "import")
+        post = migrate._convert_hyper_to_csv_in_data.call_args.kwargs
+        self.assertEqual(post["hyper_export_format"], "csv")
+        self.assertEqual(post["hyper_export_max_rows"], 7)
+        signature = _entry(self.state)["config_signature"]
+        self.options["parallel"] = None
+        self._skip()
+        self.assertEqual(_entry(self.state)["config_signature"], signature)
+
     def test_unchanged_effective_overrides_ignore_changed_globals(self):
         prep = Path(self.options['batch_dir']).parent / 'effective.tfl'
         prep.write_text('{"flow": "effective"}', encoding='utf-8')
@@ -805,7 +925,7 @@ class TestEffectiveWorkbookCheckpointConfig(TestCase):
         # Exact pre-effective-config payload, with globals matching this worker.
         obsolete = {
             'output_format': 'pbip', 'calendar_start': None, 'calendar_end': None,
-            'culture': None, 'model_mode': 'import', 'skip_extraction': False,
+            'culture': None, 'model_mode': 'auto', 'skip_extraction': False,
             'prep_file': None,
         }
         obsolete_signature = hashlib.sha256(
@@ -1462,7 +1582,8 @@ def test_batch_input_unavailable_at_start_never_enters_worker(
     case.worker.assert_called_once()
     assert case.worker.call_args.kwargs['tableau_file'] == str(preceding)
     case.extract.assert_called_once_with(
-        str(preceding), output_dir=case.generate.call_args.kwargs['source_dir'])
+        str(preceding), output_dir=case.generate.call_args.kwargs['source_dir'],
+        max_zip_entry_mb=1024)
     case.generate.assert_called_once()
     case.prep.assert_not_called()
     failed = case.entry()

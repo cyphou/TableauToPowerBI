@@ -31,7 +31,7 @@ class PowerBIImporter:
     
     def import_all(self, generate_pbip=True, report_name=None, output_dir=None,
                    calendar_start=None, calendar_end=None, culture=None,
-                   model_mode='import', output_format='pbip', languages=None,
+                   model_mode='auto', output_format='pbip', languages=None,
                    composite_threshold=None, agg_tables='none',
                    incremental_refresh=False, incremental_refresh_months=12,
                    parameterize=True, optimize_dax=False, time_intelligence='none'):
@@ -161,7 +161,7 @@ class PowerBIImporter:
     
     def generate_powerbi_project(self, report_name, converted_objects, output_dir=None,
                                  calendar_start=None, calendar_end=None, culture=None,
-                                 model_mode='import', output_format='pbip', paginated=False,
+                                 model_mode='auto', output_format='pbip', paginated=False,
                                  languages=None, composite_threshold=None, agg_tables='none',
                                  incremental_refresh=False, incremental_refresh_months=12,
                                  parameterize=True, optimize_dax=False,
@@ -219,7 +219,7 @@ class PowerBIImporter:
     def import_shared_model(self, model_name, all_converted_objects,
                             workbook_names, output_dir=None,
                             calendar_start=None, calendar_end=None,
-                            culture=None, model_mode='import',
+                            culture=None, model_mode='auto',
                             languages=None, force_merge=False,
                             merge_config_path=None, save_config=False,
                             strict_merge=False, workbook_paths=None,
@@ -237,7 +237,7 @@ class PowerBIImporter:
             calendar_start: Start year for Calendar table.
             calendar_end: End year for Calendar table.
             culture: Override culture/locale.
-            model_mode: Semantic model mode (import/directquery/composite).
+            model_mode: Semantic model mode (auto/import/directquery/composite).
             languages: Additional locale strings.
             force_merge: Force merge even with low score.
             merge_config_path: Path to merge config JSON (load saved decisions).
@@ -415,7 +415,7 @@ class PowerBIImporter:
             generator._calendar_start = calendar_start
             generator._calendar_end = calendar_end
             generator._culture = culture
-            generator._model_mode = model_mode or 'import'
+            generator._model_mode = model_mode or 'auto'
             generator._languages = languages
 
             # Generate SemanticModel

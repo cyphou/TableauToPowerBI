@@ -7,13 +7,16 @@ perspectives, cultures, theme, and TMDL file writers.
 
 import io
 import json
+import ntpath
 import os
+import re
 import shutil
 import sys
 import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
+from tests.native_import_test_helpers import forbid_native_payload_io
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -1652,7 +1655,7 @@ class TestLocalSourceErrorRegressions(unittest.TestCase):
         self.assertEqual(tables[0]["partitions"][1]["source"]["expression"], "{1}")
         self.assertEqual(tables[1]["partitions"][0]["source"]["expression"], original)
 
-    def test_public_generation_returns_source_issue_and_persists_refresh_error(self):
+    def test_public_native_import_defers_worksheet_inspection_until_refresh(self):
         from contextlib import redirect_stdout
         connection = {"type": "Excel", "details": {"filename": "synthetic.xlsx"}}
         self._xlsx("synthetic.xlsx", ["Other"])
@@ -1666,20 +1669,194 @@ class TestLocalSourceErrorRegressions(unittest.TestCase):
             }],
             "calculations": [], "columns": [], "relationships": [],
         }]
-        with redirect_stdout(io.StringIO()):
-            stats = generate_tmdl(datasources, "Synthetic", None, self.output)
-        self.assertEqual(stats["source_issues"], [{
-            "table": "Model", "source": "synthetic.xlsx",
-            "issue": "worksheet_not_found", "worksheet": "Exact",
-            "available_worksheets": ["Other"],
-        }])
+        with forbid_native_payload_io([os.path.join(self.data, "synthetic.xlsx")]), \
+                redirect_stdout(io.StringIO()):
+            stats = generate_tmdl(
+                datasources, "Synthetic", None, self.output, parameterize=False,
+            )
+        self.assertEqual(stats["source_issues"], [])
         with open(os.path.join(self.output, "definition", "tables", "Model.tmdl"),
                   encoding="utf-8") as stream:
             written = stream.read()
-        self.assertIn('error Error.Record("Migration.SourceUnavailable"', written)
-        self.assertIn('Worksheet = "Exact"', written)
+        self.assertIn('File.Contents("synthetic.xlsx")', written)
+        self.assertIn('Item="Exact",Kind="Sheet"', written)
+        self.assertNotIn("DataFolder", written)
+        self.assertNotIn("Migration.SourceUnavailable", written)
         self.assertNotIn('Item="Other"', written)
         self.assertNotIn("otherwise #table", written)
+
+
+class TestNativeImportMetadataOnly(unittest.TestCase):
+    """Native Import emits bindings/schema/M without materializing native rows."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="native_import_")
+        self.addCleanup(temporary.cleanup)
+        self.root = temporary.name
+        self.output = os.path.join(self.root, "Report.SemanticModel")
+
+    @staticmethod
+    def _columns():
+        return [{"name": "ID", "datatype": "integer"},
+                {"name": "Amount", "datatype": "real"}]
+
+    def _generate(self, datasources, mode="import"):
+        from contextlib import redirect_stdout
+
+        with redirect_stdout(io.StringIO()):
+            return generate_tmdl(
+                datasources, "Report", None, self.output,
+                model_mode=mode, parameterize=False,
+            )
+
+    def _content(self, table):
+        path = os.path.join(self.output, "definition", "tables", table + ".tmdl")
+        self.assertTrue(os.path.isfile(path), path)
+        with open(path, encoding="utf-8") as stream:
+            content = stream.read()
+        self.assertEqual(re.findall(r"^\s*mode:\s+(\w+)\s*$", content, re.M), ["import"])
+        self.assertIn("sourceColumn: ID", content)
+        self.assertIn("sourceColumn: Amount", content)
+        return content
+
+    def test_sql_import_writes_physical_connection_schema_and_m_without_querying_rows(self):
+        connection = {"type": "SQL Server", "details": {
+            "server": "synthetic.invalid", "database": "SyntheticDB",
+            "schema": "not_the_physical_schema",
+        }}
+        datasource = {
+            "name": "NativeSQL",
+            "connection": connection,
+            "tables": [{
+                "name": "FriendlyCaption", "source_table": "[reporting].[Physical Orders]",
+                "connection_details": connection, "columns": self._columns(),
+            }],
+            "calculations": [], "relationships": [],
+        }
+        with patch("socket.create_connection", side_effect=AssertionError(
+                "SQL rows must not be retrieved during migration")) as network, \
+                patch("socket.socket.connect", side_effect=AssertionError(
+                    "Live source access belongs to refresh")) as socket_connect, \
+                patch("sqlite3.connect", side_effect=AssertionError(
+                    "Native SQL must not be staged through SQLite")) as sqlite, \
+                patch("tableau_export.hyper_reader.read_hyper") as hyper_reader:
+            stats = self._generate([datasource])
+        network.assert_not_called()
+        socket_connect.assert_not_called()
+        sqlite.assert_not_called()
+        hyper_reader.assert_not_called()
+        content = self._content("FriendlyCaption")
+        self.assertIn('Sql.Database("synthetic.invalid", "SyntheticDB")', content)
+        self.assertIn('[Schema="reporting", Item="Physical Orders"]', content)
+        self.assertNotIn('Item="FriendlyCaption"', content)
+        self.assertIn("dataType: int64", content)
+        self.assertIn("dataType: double", content)
+        self.assertNotIn("File.Contents", content)
+        self.assertNotIn("otherwise", content)
+        self.assertEqual(stats["source_issues"], [])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "Data")))
+
+    def test_file_import_preserves_same_basename_per_table_and_never_opens_payloads(self):
+        connections = {}
+        tables = []
+        expected_paths = {}
+        payload_paths = []
+        for name, connector, folder, filename, relation in (
+            ("WestFacts", "CSV", "west", "facts.csv", "[facts#csv]"),
+            ("EastFacts", "CSV", "east", "facts.csv", "[facts#csv]"),
+            ("ExcelFacts", "Excel", "books", "facts.xlsx", "[Exact$]"),
+            ("JsonFacts", "JSON", "json", "facts.json", "facts.json"),
+        ):
+            directory = os.path.join(self.root, "native", folder)
+            os.makedirs(directory)
+            path = os.path.join(directory, filename)
+            with open(path, "wb") as stream:
+                stream.write(b"synthetic body must stay at source; not a parsed dataset")
+            payload_paths.append(path)
+            expected_paths[name] = path
+            connection = {
+                "type": connector, "details": {"directory": directory, "filename": filename},
+            }
+            connections[name] = connection
+            tables.append({
+                "name": name, "source_table": relation, "connection": name,
+                "connection_details": connection, "columns": self._columns(),
+            })
+        datasource = {
+            "name": "NativeFiles",
+            "connection": {"type": "CSV", "details": {"filename": "decoy.csv"}},
+            "connection_map": connections, "tables": tables,
+            "calculations": [], "relationships": [],
+        }
+        for mode in ("auto", "import"):
+            with self.subTest(mode=mode), forbid_native_payload_io(payload_paths):
+                stats = self._generate([datasource], mode=mode)
+            self.assertEqual(stats["source_issues"], [])
+            for name, expected in expected_paths.items():
+                content = self._content(name)
+                paths = re.findall(r'File\.Contents\("((?:[^"]|"")*)"\)', content)
+                self.assertEqual(len(paths), 1, content)
+                self.assertEqual(
+                    ntpath.normpath(paths[0].replace('""', '"')),
+                    ntpath.normpath(expected),
+                )
+                self.assertNotIn("DataFolder", content)
+                self.assertNotIn("decoy.csv", content)
+                self.assertNotIn("Migration.SourceUnavailable", content)
+                self.assertNotIn("otherwise", content)
+                if name == "ExcelFacts":
+                    self.assertIn('Item="Exact",Kind="Sheet"', content)
+            self.assertFalse(os.path.exists(os.path.join(self.root, "Data")))
+
+    def test_native_relative_binding_is_not_replaced_by_output_datafolder(self):
+        datasource = {
+            "name": "RelativeFile",
+            "connection": {"type": "CSV", "details": {
+                "directory": r"..\unavailable-native", "filename": "facts.csv",
+            }},
+            "tables": [{
+                "name": "RelativeFacts", "source_table": "[facts#csv]",
+                "columns": self._columns(),
+            }],
+            "calculations": [], "relationships": [],
+        }
+        data = os.path.join(self.root, "Data")
+        os.makedirs(data)
+        decoy = os.path.join(data, "facts.csv")
+        with open(decoy, "w", encoding="utf-8") as stream:
+            stream.write("ID,Amount\n999,999\n")
+        with forbid_native_payload_io([decoy]):
+            self._generate([datasource])
+        content = self._content("RelativeFacts")
+        self.assertIn(r'File.Contents("..\unavailable-native\facts.csv")', content)
+        self.assertNotIn("DataFolder", content)
+        self.assertNotIn("999", content)
+        self.assertNotIn("Migration.SourceUnavailable", content)
+
+    def test_deferred_payload_access_does_not_hide_invalid_binding_metadata(self):
+        for connector, details, relation, expected_issue in (
+            ("CSV", {"filename": "foreign.csv"}, "[Exact#csv]", "source_relation_mismatch"),
+            ("Excel", {"filename": "exact.xlsx"}, "[namespace].[Exact$]",
+             "source_provenance_unverified"),
+        ):
+            with self.subTest(connector=connector):
+                datasource = {
+                    "name": "InvalidBinding",
+                    "connection": {"type": connector, "details": details},
+                    "tables": [{
+                        "name": "InvalidFacts", "source_table": relation,
+                        "columns": self._columns(),
+                    }],
+                    "calculations": [], "relationships": [],
+                }
+                stats = self._generate([datasource])
+                self.assertEqual(
+                    [issue["issue"] for issue in stats["source_issues"]], [expected_issue],
+                )
+                content = self._content("InvalidFacts")
+                self.assertIn("Migration.SourceUnavailable", content)
+                self.assertIn(expected_issue, content)
+                self.assertNotIn("otherwise", content)
 
 
 class TestSourceErrorsRemainVisible(unittest.TestCase):
@@ -1711,6 +1888,7 @@ class TestSourceErrorsRemainVisible(unittest.TestCase):
         ]}
 
     def test_build_table_never_wraps_generated_connector_or_navigation_steps(self):
+        from powerbi_import.errors import ConfigurationError
         from powerbi_import.tmdl_generator import _build_table, generate_power_query_m
         from tableau_export.m_query_builder import wrap_source_with_try_otherwise
         for connector, native_function in self.connectors:
@@ -1718,10 +1896,24 @@ class TestSourceErrorsRemainVisible(unittest.TestCase):
                 with self.subTest(connector=connector, mode=mode):
                     connection = self._connection(connector)
                     table = self._table()
-                    raw = generate_power_query_m(connection, table)
+                    raw = generate_power_query_m(
+                        connection, table,
+                        use_original_file_paths=(
+                            connector in ('Excel', 'CSV') and mode != 'directquery'
+                        ),
+                    )
                     self.assertEqual(wrap_source_with_try_otherwise(raw), raw)
                     self.assertEqual(wrap_source_with_try_otherwise(
                         raw, ['Ignored "fallback" column']), raw)
+                    if mode == 'directquery' and connector in ('Excel', 'CSV'):
+                        with self.assertRaises(ConfigurationError) as raised:
+                            _build_table(table, connection, [], [], model_mode=mode)
+                        self.assertIn('DirectQuery', str(raised.exception))
+                        self.assertIn(f'file-based {connector}', str(raised.exception))
+                        self.assertIn('Import', str(raised.exception))
+                        self.assertEqual(raised.exception.source, connector)
+                        self.assertEqual(raised.exception.item, table['name'])
+                        continue
                     result = _build_table(table, connection, [], [], model_mode=mode)
                     expr = result['partitions'][0]['source']['expression']
                     self.assertIn(native_function, expr)
@@ -2019,8 +2211,9 @@ class TestColumnDeduplication(unittest.TestCase):
 
     def test_tmdl_writer_dedup_measures(self):
         """_write_table_tmdl deduplicates measures by name."""
-        from powerbi_import.tmdl_generator import _write_table_tmdl
         import tempfile
+
+        from powerbi_import.tmdl_generator import _write_table_tmdl
 
         table = {
             'name': 'Facts',

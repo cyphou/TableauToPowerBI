@@ -1,6 +1,14 @@
 # Power BI Projects Guide (.pbip)
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🌐 Local browser](LOCAL_WEB_UI.md) · [✅ Review checklist](MIGRATION_CHECKLIST.md)
+
 This guide explains how to use Power BI Projects generated automatically during Tableau migration.
+
+Generate projects with the [local browser UI](LOCAL_WEB_UI.md) or
+`python migrate.py batch FOLDER --output-dir OUTPUT`. The batch default is
+`<source-folder>\migrated`; use the actual reported project path. Long names
+may use a deterministic `P_<hash>` identity to fit Desktop path limits.
+Generation and static validation do not establish native loading or refresh.
 
 ## 🎯 What is a Power BI Project?
 
@@ -26,12 +34,19 @@ MyReport.SemanticModel/            # Semantic model folder (TMDL)
     └── model.tmdl                 # Model configuration
 
 MyReport.Report/                   # Report folder (visuals)
-├── report.json
+├── .platform
+├── definition.pbir                # Points to the sibling SemanticModel
 └── definition/
+    ├── version.json
+    ├── report.json
     ├── pages/                     # Report pages
-    │   ├── Page1.json
-    │   └── Page2.json
-    └── report.tmdl
+    │   ├── pages.json             # Page order and active page
+    │   └── {pageId}/
+    │       ├── page.json
+    │       └── visuals/
+    │           └── {visualId}/visual.json
+    ├── bookmarks/                 # When generated from source stories/actions
+    └── RegisteredResources/       # Generated theme and embedded assets
 
 migration_metadata.json            # Migration metadata
 ```
@@ -42,25 +57,32 @@ migration_metadata.json            # Migration metadata
 
 1. Open Power BI Desktop
 2. **File** → **Open** → **Browse reports**
-3. Navigate to `artifacts/powerbi_projects/[ReportName]/`
+3. Navigate to the project directory reported by the migration
 4. Select the file `[ReportName].pbip`
 5. Click **Open**
 
 ### Method 2: Double-click
 
-1. Navigate to `artifacts/powerbi_projects/[ReportName]/`
+1. Navigate to the project directory reported by the migration
 2. Double-click on `[ReportName].pbip`
-3. Power BI Desktop opens automatically
+3. With a supported Power BI Desktop installation and file association, Windows
+   launches Desktop for the project; otherwise use **File → Open** above
 
 ### Method 3: Command line
 
-```bash
-# Windows
-start "C:\path\to\project\MyReport.pbip"
+```powershell
+Start-Process "C:\Migration\Output\MyReport\MyReport.pbip"
 
 # Or with Power BI Desktop directly
-"C:\Program Files\Microsoft Power BI Desktop\bin\PBIDesktop.exe" "C:\path\to\project\MyReport.pbip"
+& "C:\Program Files\Microsoft Power BI Desktop\bin\PBIDesktop.exe" "C:\Migration\Output\MyReport\MyReport.pbip"
 ```
+
+Use an installed Desktop build supporting the generated PBIP/TMDL schemas.
+The generator currently targets page 2.1.0, visualContainer 2.7.0 and
+bookmark 2.1.0, with base-theme name `CY26SU04`; these constants do not certify
+a minimum Desktop version. See the [generation module guide](../powerbi_import/README.md).
+These are opening instructions, not proof that every generated project loads
+or refreshes successfully. Complete the source and review steps below.
 
 ## ⚙️ Initial Setup
 
@@ -71,7 +93,17 @@ After opening the project:
 1. **Home** → **Transform data**
 2. In Power Query Editor:
    - Click on each query
-   - Replace `Source = null` with your actual connection
+   - For native Import, review the generated connection and original file paths:
+     migration generates schema/M, not a copy of the native data
+   - Relative paths from loose workbooks resolve against their original folder;
+     packaged native sources still need an accessible external binding
+   - For Hyper, review the staged CSV/Parquet files and `DataFolder` parameter;
+     Hyper data exports remain enabled
+   - Configure credentials and gateway access separately
+   - Refresh native Import data in Power BI after configuring source access
+   - Inspect the refresh result, then save after successful processing to retain
+     Power BI's local cache; initial refresh/no-data notices are not hidden
+   - Resolve explicit unsupported-source diagnostics rather than replacing every source blindly
    - Examples:
    
    **SQL Server**
@@ -98,14 +130,17 @@ After opening the project:
 3. Validate column **data types**
 4. Check **DAX measures** in the Data pane
 
-### Step 3: Create Visuals
+### Step 3: Review Generated Visuals
 
 1. Go to the **Report** tab
-2. Use the definitions in `MyReport.Report/definition/pages/`
+2. Inspect the pages and visuals already generated from the Tableau source
 3. For each page:
-   - Read the page's JSON file
-   - Create visuals according to the specifications
-   - Position them using x, y, width, height coordinates
+   - Check field roles, filters, interactions and formatting against Tableau
+   - Review approximate/custom visual mappings and required tenant availability
+   - Record native-rendering evidence separately from JSON/schema validation
+
+For reproducible repairs, fix the extractor/generator and regenerate; manual
+project edits are local adjustments and may be overwritten by the next run.
 
 ### Step 4: Save
 
@@ -149,7 +184,7 @@ table 'Sales'
 
 ```tmdl
 measure 'Total Sales' =
-    SUM([Amount])
+    SUM('Sales'[Amount])
     lineageTag: 12345678-1234-1234-1234-123456789abc
     formatString: $#,##0.00
 ```
@@ -157,15 +192,13 @@ measure 'Total Sales' =
 ### Example: Relationship
 
 ```tmdl
-relationship 12345678-1234-1234-1234-123456789abc = {
-    fromTable: 'Sales'
-    fromColumn: 'CustomerID'
-    toTable: 'Customers'
-    toColumn: 'ID'
-    cardinality: manyToOne
+relationship 12345678-1234-1234-1234-123456789abc
+    fromColumn: 'Sales'.CustomerID
+    toColumn: 'Customers'.ID
+    fromCardinality: many
+    toCardinality: one
     crossFilteringBehavior: oneDirection
     isActive: true
-}
 ```
 
 ## 🔧 Common Modifications
@@ -213,15 +246,13 @@ measure 'New Measure' =
 2. Add:
 
 ```tmdl
-relationship [GUID] = {
-    fromTable: 'Table1'
-    fromColumn: 'ID'
-    toTable: 'Table2'
-    toColumn: 'ForeignKey'
-    cardinality: manyToOne
+relationship 87654321-4321-4321-4321-cba987654321
+    fromColumn: 'Table2'.ForeignKey
+    toColumn: 'Table1'.ID
+    fromCardinality: many
+    toCardinality: one
     crossFilteringBehavior: oneDirection
     isActive: true
-}
 ```
 
 ## 🔄 Git Workflow
@@ -229,7 +260,7 @@ relationship [GUID] = {
 ### Initialize Git
 
 ```bash
-cd artifacts/powerbi_projects/MyReport
+cd C:\Migration\Output\MyReport
 git init
 git add .
 git commit -m "Initial commit - Tableau migration"

@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="1200" height="340">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="1200" height="340" role="img" aria-labelledby="banner-title banner-desc">
+  <title id="banner-title">Tableau to Power BI</title>
+  <desc id="banner-desc">Local browser and CLI migration to editable PBIP, PBIR, TMDL, DAX and Power Query M artifacts. Review and native validation are separate steps.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0.3" y2="1">
       <stop offset="0%" stop-color="#0A0E27"/>
@@ -41,7 +43,7 @@
   </defs>
 
   <!-- Deep background -->
-  <rect width="1200" height="340" fill="url(#bg)"/>
+  <rect width="1200" height="340" rx="18" fill="url(#bg)"/>
 
   <!-- Ambient light orbs -->
   <ellipse cx="120" cy="170" rx="250" ry="200" fill="#E97627" opacity="0.04" filter="url(#blur-s)"/>
@@ -96,37 +98,37 @@
   <text x="475" y="105" font-family="Segoe UI, Arial, sans-serif" font-size="42" font-weight="bold" fill="#60B5FF" opacity="0.12" filter="url(#t-glow)">Tableau → Power BI</text>
   <text x="475" y="105" font-family="Segoe UI, Arial, sans-serif" font-size="42" font-weight="bold" fill="url(#title-grad)">Tableau → Power BI</text>
   <text x="475" y="148" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#F2C811">Automated Migration Tool</text>
-  <text x="475" y="178" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="rgba(255,255,255,0.55)">Migrate workbooks to .pbip in seconds — fully automated, zero manual rework</text>
+  <text x="475" y="178" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#B9CBE3">Generate editable projects. Review the evidence. Validate in Power BI.</text>
 
-  <!-- Glass stat cards -->
+  <!-- Artifact cards deliberately avoid live status or release claims. -->
   <g transform="translate(475, 200)">
-    <g><rect width="112" height="56" rx="10" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/><text x="56" y="24" font-family="Segoe UI, sans-serif" font-size="19" font-weight="bold" fill="#F2C811" text-anchor="middle">180+</text><text x="56" y="43" font-family="Segoe UI, sans-serif" font-size="10" fill="rgba(255,255,255,0.55)" text-anchor="middle">DAX Conversions</text></g>
-    <g transform="translate(122,0)"><rect width="112" height="56" rx="10" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/><text x="56" y="24" font-family="Segoe UI, sans-serif" font-size="19" font-weight="bold" fill="#F2C811" text-anchor="middle">118+</text><text x="56" y="43" font-family="Segoe UI, sans-serif" font-size="10" fill="rgba(255,255,255,0.55)" text-anchor="middle">Visual Types</text></g>
-    <g transform="translate(244,0)"><rect width="112" height="56" rx="10" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/><text x="56" y="24" font-family="Segoe UI, sans-serif" font-size="19" font-weight="bold" fill="#F2C811" text-anchor="middle">42</text><text x="56" y="43" font-family="Segoe UI, sans-serif" font-size="10" fill="rgba(255,255,255,0.55)" text-anchor="middle">Connectors</text></g>
-    <g transform="translate(366,0)"><rect width="112" height="56" rx="10" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/><text x="56" y="24" font-family="Segoe UI, sans-serif" font-size="19" font-weight="bold" fill="#F2C811" text-anchor="middle">6,818+</text><text x="56" y="43" font-family="Segoe UI, sans-serif" font-size="10" fill="rgba(255,255,255,0.55)" text-anchor="middle">Tests Passing</text></g>
-    <g transform="translate(488,0)"><rect width="112" height="56" rx="10" fill="rgba(16,124,16,0.15)" stroke="rgba(74,222,128,0.3)" stroke-width="1"/><text x="56" y="24" font-family="Segoe UI, sans-serif" font-size="19" font-weight="bold" fill="#4ADE80" text-anchor="middle">100%</text><text x="56" y="43" font-family="Segoe UI, sans-serif" font-size="10" fill="rgba(255,255,255,0.55)" text-anchor="middle">Fidelity</text></g>
+    <g><rect width="112" height="56" rx="10" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/><text x="56" y="24" font-family="Segoe UI, sans-serif" font-size="19" font-weight="bold" fill="#F2C811" text-anchor="middle">PBIP</text><text x="56" y="43" font-family="Segoe UI, sans-serif" font-size="11" fill="#B9CBE3" text-anchor="middle">Editable projects</text></g>
+    <g transform="translate(122,0)"><rect width="112" height="56" rx="10" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/><text x="56" y="24" font-family="Segoe UI, sans-serif" font-size="19" font-weight="bold" fill="#F2C811" text-anchor="middle">PBIR</text><text x="56" y="43" font-family="Segoe UI, sans-serif" font-size="11" fill="#B9CBE3" text-anchor="middle">Report definition</text></g>
+    <g transform="translate(244,0)"><rect width="112" height="56" rx="10" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/><text x="56" y="24" font-family="Segoe UI, sans-serif" font-size="19" font-weight="bold" fill="#F2C811" text-anchor="middle">TMDL</text><text x="56" y="43" font-family="Segoe UI, sans-serif" font-size="11" fill="#B9CBE3" text-anchor="middle">Semantic model</text></g>
+    <g transform="translate(366,0)"><rect width="112" height="56" rx="10" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/><text x="56" y="24" font-family="Segoe UI, sans-serif" font-size="19" font-weight="bold" fill="#F2C811" text-anchor="middle">DAX / M</text><text x="56" y="43" font-family="Segoe UI, sans-serif" font-size="11" fill="#B9CBE3" text-anchor="middle">Generated code</text></g>
+    <g transform="translate(488,0)"><rect width="112" height="56" rx="10" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/><text x="56" y="24" font-family="Segoe UI, sans-serif" font-size="19" font-weight="bold" fill="#8BD5FF" text-anchor="middle">Review</text><text x="56" y="43" font-family="Segoe UI, sans-serif" font-size="11" fill="#B9CBE3" text-anchor="middle">Quality evidence</text></g>
   </g>
 
   <!-- Terminal prompt — glass with traffic lights -->
-  <rect x="475" y="274" width="400" height="32" rx="8" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/>
+  <rect x="475" y="274" width="440" height="32" rx="8" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/>
   <circle cx="490" cy="290" r="4" fill="#FF5F56" opacity="0.7"/>
   <circle cx="502" cy="290" r="4" fill="#FFBD2E" opacity="0.7"/>
   <circle cx="514" cy="290" r="4" fill="#27C93F" opacity="0.7"/>
   <text x="530" y="295" font-family="Cascadia Code, Consolas, monospace" font-size="13" fill="rgba(255,255,255,0.4)">$</text>
   <text x="545" y="295" font-family="Cascadia Code, Consolas, monospace" font-size="13" fill="#4ADE80">python migrate.py batch ./workbooks</text>
 
-  <!-- Version pill -->
+  <!-- Entry-point pill -->
   <rect x="1078" y="286" width="102" height="26" rx="13" fill="url(#glass)" stroke="url(#glass-b)" stroke-width="1"/>
-  <text x="1129" y="304" font-family="Segoe UI, sans-serif" font-size="12" fill="rgba(255,255,255,0.5)" text-anchor="middle">v38.1.0</text>
+  <text x="1129" y="304" font-family="Segoe UI, sans-serif" font-size="12" fill="#B9CBE3" text-anchor="middle">LOCAL + CLI</text>
 
   <!-- Left pills -->
   <rect x="52" y="212" width="140" height="30" rx="15" fill="url(#glass)" stroke="rgba(233,118,39,0.3)" stroke-width="1"/>
   <circle cx="72" cy="227" r="5" fill="#E97627" opacity="0.6"/>
-  <text x="132" y="232" font-family="Segoe UI, sans-serif" font-size="12" fill="rgba(233,118,39,0.85)" text-anchor="middle">Zero Dependencies</text>
+  <text x="132" y="232" font-family="Segoe UI, sans-serif" font-size="12" fill="#FFBE76" text-anchor="middle">Stdlib core</text>
 
   <rect x="52" y="250" width="140" height="30" rx="15" fill="url(#glass)" stroke="rgba(96,181,255,0.3)" stroke-width="1"/>
   <circle cx="72" cy="265" r="5" fill="#60B5FF" opacity="0.6"/>
-  <text x="132" y="270" font-family="Segoe UI, sans-serif" font-size="12" fill="rgba(96,181,255,0.85)" text-anchor="middle">Python 3.12+</text>
+  <text x="132" y="270" font-family="Segoe UI, sans-serif" font-size="12" fill="#8BD5FF" text-anchor="middle">Python 3.12+</text>
 
   <!-- Bottom accent bar with glow -->
   <rect x="0" y="332" width="1200" height="8" fill="url(#accent)"/>

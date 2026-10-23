@@ -597,7 +597,7 @@ class TestExtractZipSlipIntegration:
         assert content is None
 
     def test_post_generation_twbx_rejects_traversal(self, tmp_path):
-        """Post-generation extraction must not write outside the project."""
+        """Validate all archive paths before writing any packaged payload."""
         twbx_path = str(tmp_path / "malicious.twbx")
         project_dir = tmp_path / "project"
         project_dir.mkdir()
@@ -611,10 +611,11 @@ class TestExtractZipSlipIntegration:
         with pytest.raises(
                 RuntimeError, match="Could not extract TWBX data files") as exc:
             migrate._process_twbx_post_generation(
-                twbx_path, str(project_dir), "malicious")
+                twbx_path, str(project_dir), "malicious", stage_native_files=True)
         assert isinstance(exc.value.__cause__, MigrationSecurityError)
 
-        assert (project_dir / "Data" / "valid.csv").is_file()
+        assert not (project_dir / "Data" / "valid.csv").exists()
+        assert list(project_dir.iterdir()) == []
         assert not outside.exists()
 
 

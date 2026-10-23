@@ -1,5 +1,6 @@
 """Tests for tableau_export/hyper_reader.py — Sprint 30 coverage push."""
 
+import io
 import os
 import sqlite3
 import tempfile
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from unittest import mock
 import tableau_export.hyper_reader as _hyper_reader
 
+from powerbi_import.errors import ConfigurationError, ExtractionError
 from tableau_export.hyper_reader import (
     INLINE_ROW_THRESHOLD,
     _m_literal,
@@ -25,6 +27,146 @@ from tableau_export.hyper_reader import (
     read_hyper,
     read_hyper_from_twbx,
 )
+
+
+class TestBoundedHyperFallbackReads(unittest.TestCase):
+    """Header metadata is a bounded sample, never an eager whole-file read."""
+
+    def test_header_fallback_reads_only_262144_bytes(self):
+        payload = b"Hyper" + b"x" * (512 * 1024)
+        requests = []
+
+        class HeaderStream(io.BytesIO):
+            def read(self, size=-1):
+                if not 0 < size <= 262144:
+                    raise AssertionError(f"unbounded Hyper fallback read: {size}")
+                requests.append(size)
+                return super().read(size)
+
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "synthetic.hyper")
+            with open(path, "wb") as stream:
+                stream.write(payload)
+            with mock.patch.object(_hyper_reader, "_read_hyper_api", return_value=None), \
+                    mock.patch.object(_hyper_reader, "_read_hyper_sqlite", return_value=None), \
+                    mock.patch.object(_hyper_reader, "_read_hyper_header",
+                                      return_value=[]) as header, \
+                    mock.patch.object(_hyper_reader, "open", create=True,
+                                      side_effect=lambda *a, **k: HeaderStream(payload)):
+                result = read_hyper(path, max_rows=2)
+        header.assert_called_once_with(payload[:262144], max_rows=2)
+        self.assertEqual(result["tables"], [])
+        self.assertEqual(requests, [16, 262144])
+
+
+class TestStreamingHyperArchiveCleanup(unittest.TestCase):
+    """Synthetic ZIP entries stream to temporary files that never leak."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        self.archive = os.path.join(self.root, "synthetic.twbx")
+        self.member = "Data/Exact/synthetic.hyper"
+        self.payload = b"Hyper" + b"x" * (2 * 1024 * 1024 + 17)
+        with zipfile.ZipFile(self.archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(self.member, self.payload)
+        self.temporary_paths = []
+        real_temporary_directory = tempfile.TemporaryDirectory
+
+        def temporary_directory(*args, **kwargs):
+            kwargs["dir"] = self.root
+            result = real_temporary_directory(*args, **kwargs)
+            self.temporary_paths.append(result.name)
+            return result
+
+        self.temp_patcher = mock.patch.object(
+            _hyper_reader.tempfile, "TemporaryDirectory", side_effect=temporary_directory,
+        )
+        self.temp_patcher.start()
+        self.addCleanup(self.temp_patcher.stop)
+
+    def _assert_clean(self):
+        self.assertTrue(self.temporary_paths, "The member must be staged on disk")
+        for path in self.temporary_paths:
+            self.assertFalse(os.path.exists(path), f"leaked Hyper temporary file: {path}")
+        self.assertEqual(os.listdir(self.root), ["synthetic.twbx"])
+
+    def test_archive_does_not_use_zipfile_read_and_copies_in_bounded_chunks(self):
+        requests = []
+        real_read = zipfile.ZipExtFile.read
+
+        def bounded_read(stream, size=-1):
+            self.assertGreater(size, 0)
+            self.assertLessEqual(size, 1024 * 1024)
+            requests.append(size)
+            return real_read(stream, size)
+
+        def inspect_staged_file(path, max_rows):
+            self.assertEqual(max_rows, 3)
+            with open(path, "rb") as stream:
+                self.assertEqual(stream.read(), self.payload)
+            return {"tables": [], "format": "hyper", "file_path": path}
+
+        with mock.patch.object(zipfile.ZipFile, "read",
+                               side_effect=AssertionError("whole ZIP member read")), \
+                mock.patch.object(zipfile.ZipExtFile, "read", bounded_read), \
+                mock.patch.object(_hyper_reader, "read_hyper",
+                                  side_effect=inspect_staged_file):
+            result = read_hyper_from_twbx(self.archive, max_rows=3)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["archive_path"], self.member)
+        self.assertGreater(len(requests), 2)
+        self._assert_clean()
+
+    def test_reader_failure_removes_staged_member(self):
+        failure = RuntimeError("synthetic metadata reader failure")
+        with mock.patch.object(_hyper_reader, "read_hyper", side_effect=failure):
+            with self.assertRaises(RuntimeError) as raised:
+                read_hyper_from_twbx(self.archive)
+        self.assertIs(raised.exception, failure)
+        self._assert_clean()
+
+    def test_copy_failure_removes_partial_temporary_file(self):
+        real_read = zipfile.ZipExtFile.read
+        reads = []
+
+        def fail_after_first_chunk(stream, size=-1):
+            self.assertGreater(size, 0)
+            self.assertLessEqual(size, 1024 * 1024)
+            if reads:
+                raise OSError("synthetic archive stream failure")
+            reads.append(size)
+            return real_read(stream, size)
+
+        with mock.patch.object(zipfile.ZipExtFile, "read", fail_after_first_chunk), \
+                mock.patch.object(_hyper_reader, "read_hyper") as reader:
+            with self.assertRaises(ExtractionError) as raised:
+                read_hyper_from_twbx(self.archive)
+        self.assertIsInstance(raised.exception.__cause__, OSError)
+        self.assertIn("synthetic archive stream failure", str(raised.exception.__cause__))
+        reader.assert_not_called()
+        self._assert_clean()
+
+    def test_zip_limit_alias_and_conflict_are_explicit(self):
+        with mock.patch.object(_hyper_reader, "read_hyper",
+                               return_value={"tables": []}) as reader:
+            result = read_hyper_from_twbx(self.archive, max_size_mb=3)
+        self.assertEqual(len(result), 1)
+        reader.assert_called_once()
+        self._assert_clean()
+        with self.assertRaises(ConfigurationError):
+            read_hyper_from_twbx(self.archive, max_zip_entry_mb=3, max_size_mb=4)
+
+    def test_declared_oversize_is_not_opened_and_no_temporary_file_leaks(self):
+        with mock.patch.object(zipfile.ZipFile, "open",
+                               side_effect=AssertionError("oversized member was opened")), \
+                mock.patch.object(_hyper_reader, "read_hyper") as reader:
+            with self.assertRaisesRegex(ValueError, "(?i)(size|limit)"):
+                read_hyper_from_twbx(self.archive, max_zip_entry_mb=1)
+        reader.assert_not_called()
+        self.assertTrue(all(not os.path.exists(path) for path in self.temporary_paths))
+        self.assertEqual(os.listdir(self.root), ["synthetic.twbx"])
 
 
 # ── _m_type_for ────────────────────────────────────────────────────
@@ -508,8 +650,9 @@ class TestReadHyperFromTwbx(unittest.TestCase):
         os.write(fd, b'not a zip file')
         os.close(fd)
         try:
-            results = read_hyper_from_twbx(path)
-            self.assertEqual(results, [])
+            with self.assertRaises(ExtractionError) as raised:
+                read_hyper_from_twbx(path)
+            self.assertIsInstance(raised.exception.__cause__, zipfile.BadZipFile)
         finally:
             os.unlink(path)
 

@@ -5,9 +5,13 @@ Tests connector generators, inject_m_steps chaining, type mapping,
 and all 40+ transformation step generators.
 """
 
+import copy
+import ntpath
 import os
+import re
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
@@ -1459,6 +1463,140 @@ class TestInjectMStepsDedup(unittest.TestCase):
 class TestFileSourceBindingRegressions(unittest.TestCase):
     """Synthetic exact navigation and refresh-error preservation contracts."""
 
+    def test_original_path_option_preserves_directory_unc_and_csv_relation_without_io(self):
+        cases = (
+            ("CSV", {"directory": r"R:\Native West", "filename": "facts.csv"},
+             "[facts#csv]", r"R:\Native West\facts.csv"),
+            ("CSV", {"directory": r"R:\Native East", "filename": "facts.csv"},
+             "[facts#csv]", r"R:\Native East\facts.csv"),
+            ("Excel", {"directory": r"R:\wrong", "filename":
+                       r'\\synthetic.invalid\share\réalisé "net".xlsx'},
+             "[Exact$]", r'\\synthetic.invalid\share\réalisé "net".xlsx'),
+            ("Excel", {"directory": "inputs", "filename": r"books\Exact.xlsx"},
+             "[Exact$]", r"inputs\books\Exact.xlsx"),
+            ("CSV", {"directory": r"R:\Native", "filename": "foreign.csv"},
+             r"[sub\Exact#csv]", r"R:\Native\sub\Exact.csv"),
+            ("CSV", {"directory": r"R:\wrong", "filename": "foreign.csv"},
+             r"[S:\Original\Exact#csv]", r"S:\Original\Exact.csv"),
+            ("CSV", {"directory": r"..\Native", "filename": "foreign.csv"},
+             "[sub/Exact#csv]", r"..\Native\sub\Exact.csv"),
+            ("JSON", {"directory": r"R:\Native JSON", "filename": "facts.json"},
+             "facts.json", r"R:\Native JSON\facts.json"),
+            ("XML", {"directory": r"R:\Native XML", "filename": "facts.xml"},
+             "facts.xml", r"R:\Native XML\facts.xml"),
+        )
+        for connector, details, relation, expected in cases:
+            with self.subTest(connector=connector, expected=expected):
+                connection = {"type": connector, "details": details}
+                table = {
+                    "name": "Friendly Caption", "source_table": relation,
+                    "columns": [{"name": "Amount", "datatype": "real"}],
+                }
+                before = copy.deepcopy((connection, table))
+                with mock.patch("builtins.open", side_effect=AssertionError(
+                        "M generation must defer native payload reads to refresh")) as opened, \
+                        mock.patch("io.open", side_effect=AssertionError(
+                            "M generation must not read native dataset bodies")) as path_opened:
+                    query = generate_power_query_m(
+                        connection, table, use_original_file_paths=True,
+                    )
+                opened.assert_not_called()
+                path_opened.assert_not_called()
+                paths = re.findall(r'File\.Contents\("((?:[^"]|"")*)"\)', query)
+                self.assertEqual(len(paths), 1, query)
+                self.assertEqual(
+                    ntpath.normpath(paths[0].replace('""', '"')), ntpath.normpath(expected),
+                )
+                self.assertNotIn("DataFolder", query)
+                self.assertNotIn("otherwise", query)
+                self.assertIn('{"Amount", type number}', query)
+                if connector == "Excel":
+                    self.assertIn('Item="Exact",Kind="Sheet"', query)
+                self.assertEqual(validate_m_query(query), [])
+                self.assertEqual((connection, table), before)
+
+    def test_native_geojson_and_pdf_escape_literal_paths_and_keep_column_types(self):
+        for connector, extension, source_function in (
+            ("GeoJSON", "geojson", "Json.Document"),
+            ("PDF", "pdf", "Pdf.Tables"),
+        ):
+            with self.subTest(connector=connector):
+                query = generate_power_query_m(
+                    {"type": connector, "details": {
+                        "directory": r"R:\Native Sources",
+                        "filename": 'facts #(lf) "quoted"\r\n\t.' + extension,
+                    }},
+                    {"name": "Facts", "columns": [
+                        {"name": "ID", "datatype": "integer"},
+                        {"name": 'Amount "net"', "datatype": "real"},
+                    ]},
+                    use_original_file_paths=True,
+                )
+                # Source comments may show the raw path; validate escaping only
+                # in the executable File.Contents expression.
+                contents = re.findall(r'File\.Contents\("(?:[^"]|"")*"\)', query)
+                self.assertEqual(contents, [
+                    r'File.Contents("R:\Native Sources\facts #(#)(lf) ""quoted""'
+                    r'#(cr)#(lf)#(tab).' + extension + '")',
+                ])
+                for control in ("\r", "\n", "\t"):
+                    self.assertNotIn(control, contents[0])
+                self.assertIn(source_function + "(" + contents[0], query)
+                self.assertNotIn("DataFolder", query)
+                self.assertIn("Table.TransformColumnTypes", query)
+                self.assertIn('{"ID", Int64.Type}', query)
+                self.assertIn('{"Amount ""net""", type number}', query)
+                self.assertEqual(validate_m_query(query), [])
+
+    def test_original_path_option_is_keyword_only_and_preserves_sql_and_hyper_output(self):
+        for connector, details, expected in (
+            ("SQL Server", {"server": "synthetic.invalid", "database": "SyntheticDB"},
+             'Sql.Database("synthetic.invalid", "SyntheticDB")'),
+            ("Hyper", {}, "// Hyper extract: Facts"),
+        ):
+            with self.subTest(connector=connector):
+                connection = {"type": connector, "details": details}
+                table = {
+                    "name": "Facts", "source_table": "[reporting].[PhysicalFacts]",
+                    "columns": [{"name": "ID", "datatype": "integer"}],
+                }
+                baseline = generate_power_query_m(connection, table)
+                self.assertIn(expected, baseline)
+                for original_paths in (False, True):
+                    self.assertEqual(generate_power_query_m(
+                        connection, table, use_original_file_paths=original_paths,
+                    ), baseline)
+                with self.assertRaises(TypeError):
+                    generate_power_query_m(connection, table, True)
+
+    def test_original_path_option_does_not_mutate_legacy_staged_default(self):
+        connection = {
+            "type": "CSV",
+            "details": {"directory": r"R:\Native", "filename": "foreign.csv"},
+        }
+        table = {"name": "Model", "source_table": "[Exact#csv]", "columns": []}
+        before = copy.deepcopy((connection, table))
+        original = generate_power_query_m(
+            connection, table, use_original_file_paths=True,
+        )
+        self.assertIn(r'File.Contents("R:\Native\Exact.csv")', original)
+        staged = generate_power_query_m(
+            connection, table, use_original_file_paths=False,
+        )
+        self.assertIn(r'File.Contents(DataFolder & "\Exact.csv")', staged)
+        self.assertEqual(generate_power_query_m(connection, table), staged)
+        self.assertEqual((connection, table), before)
+        unknown = {"type": "Synthetic unsupported connector", "details": {
+            "directory": r"R:\Native", "filename": "not-a-supported-source.bin",
+        }}
+        unresolved = generate_power_query_m(
+            unknown, table, use_original_file_paths=True,
+        )
+        self.assertEqual(unresolved, generate_power_query_m(unknown, table))
+        self.assertIn("TODO: Configure the data source", unresolved)
+        self.assertIn("Synthetic unsupported connector", unresolved)
+        self.assertNotIn("File.Contents", unresolved)
+
     def test_excel_normalizes_sql_quotes_and_sheet_marker_not_real_apostrophes(self):
         for relation, expected in (
             ("[namespace].[O'Brien$]", "O'Brien"),
@@ -1509,17 +1647,33 @@ class TestFileSourceBindingRegressions(unittest.TestCase):
                     self.assertNotIn("#table(", query)
 
     def test_missing_file_binding_is_explicit_error_and_not_wrapped(self):
-        for connector in ("Excel", "CSV"):
-            with self.subTest(connector=connector):
-                query = generate_power_query_m(
-                    {"type": connector, "details": {}},
-                    {"name": 'Réalisé "net"', "columns": []},
-                )
-                self.assertIn('error Error.Record("SourceBinding.Error"', query)
-                self.assertIn('Table="Réalisé ""net"""', query)
-                self.assertNotIn("File.Contents", query)
-                self.assertNotIn("#table(", query)
-                self.assertEqual(wrap_source_with_try_otherwise(query, ["id"]), query)
+        staged_defaults = {
+            "GeoJSON": "file.geojson",
+            "JSON": 'Réalisé "net".json',
+            "XML": 'Réalisé "net".xml',
+            "PDF": 'Réalisé "net".pdf',
+        }
+        for connector in ("Excel", "CSV", *staged_defaults):
+            for original_paths in (False, True):
+                with self.subTest(connector=connector, original_paths=original_paths):
+                    connection = {"type": connector, "details": {}}
+                    table = {"name": 'Réalisé "net"', "columns": []}
+                    query = generate_power_query_m(
+                        connection, table,
+                        use_original_file_paths=original_paths,
+                    )
+                    self.assertEqual(wrap_source_with_try_otherwise(query, ["id"]), query)
+                    if connector in staged_defaults and not original_paths:
+                        filename = staged_defaults[connector].replace('"', '""')
+                        self.assertIn(f'File.Contents(DataFolder & "\\{filename}")', query)
+                        self.assertEqual(query, generate_power_query_m(connection, table))
+                        self.assertNotIn("SourceBinding.Error", query)
+                        continue
+                    self.assertIn('error Error.Record("SourceBinding.Error"', query)
+                    self.assertIn("filename is missing", query)
+                    self.assertIn('Table="Réalisé ""net"""', query)
+                    self.assertNotIn("File.Contents", query)
+                    self.assertNotIn("#table(", query)
 
     def test_inherited_excel_binding_warns_and_keeps_exact_relation(self):
         with self.assertLogs("m_query_builder", level="WARNING") as captured:

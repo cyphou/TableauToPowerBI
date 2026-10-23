@@ -7,14 +7,17 @@ Rules for AI coding agents working in this codebase. Read `.github/copilot-instr
 ---
 
 ## Project Context (Quick Reference)
-j'ai
+
 - **Pipeline**: `.twbx` → Extraction (23 JSON files) → Generation (`.pbip` in PBIR v4.0 + TMDL)
 - **Source**: `tableau_export/` (extraction + DAX converter + M query builder)
 - **Target**: `powerbi_import/` (TMDL generator + PBIR report + visual generator)
-- **Tests**: `pytest tests/ --tb=short -q` — historical baseline: **10,798 passed, 66 skipped, 1 xfailed** (10,865 collected across 316 test files); see CI for current results
+- **Tests**: use `python -m pytest` on the relevant files first; see CI for current suite outcomes and `docs/ROADMAP.md` for dated historical evidence
 - **Python**: 3.12+ stdlib only — **no external dependencies** for core migration
 - **Roadmap**: `docs/ROADMAP.md` — check current sprint before starting work
 - **Agents**: 17 implementation agents plus planning and documentation governance agents in `.github/agents/` — see `docs/AGENTS.md`
+- **Local browser**: `.\run_web_ui.ps1` or `python web\local_server.py`; loopback-only folder-path UI, not the optional upload UI/API
+- **Generation**: `python migrate.py batch FOLDER`; one-workbook folders are valid, shared models use `merge`, and direct single-file generation is retired
+- **Evidence**: batch/shared-model generation does not run the preceptor; Desktop refresh/rendering and deployment remain separate authorized checks
 
 ---
 
@@ -64,7 +67,7 @@ These are real bugs that occurred during development. Review before every implem
 - Check `docs/ROADMAP.md` for current sprint context
 
 ### 3. Testing Contract
-- Run `pytest tests/ --tb=short -q` after EVERY implementation change
+- Run the smallest relevant pytest selection after an implementation change; expand to broader/full coverage when the affected scope or targeted results require it
 - If tests fail → fix them before reporting completion
 - New features **require** new tests — no exceptions
 - Never weaken test assertions to make tests pass

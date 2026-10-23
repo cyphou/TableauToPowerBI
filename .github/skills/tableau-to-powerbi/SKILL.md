@@ -29,8 +29,9 @@ it correctly. **Prefer running the CLI over hand-editing generated artifacts.**
    debugging.
 3. **Validate, don't assume.** Every PBIP migration runs the static openability gate
   automatically. Do not disable it except for diagnosis. Power BI Desktop is never
-  launched automatically; use the explicit `--desktop-probe` diagnostic when a real
-  Desktop smoke test is required, or run `scripts/autoplay.py` for deeper QA.
+  launched automatically. Batch does not forward `--desktop-probe`; use separately
+  confirmed local browser diagnostics or `scripts\probe_projects.py` for a native
+  check. Static QA and Desktop evidence remain separate.
 4. **Read before editing generated code.** If a DAX/TMDL/PBIR fix is needed, find the
    *source generator* (see "Where things live") and fix it there so the fix is
    reproducible — not in the emitted artifact.
@@ -58,6 +59,13 @@ and parity can still analyze individual source files; `qa` and
 `package` take folders and follow the batch migration path. Batch mode writes
 unified quality reports and evidence ZIPs by default, but does not run the
 specialized six-check QA suite or assessment report packager.
+
+For a guided local workflow, run `.\run_web_ui.ps1` or
+`python web\local_server.py` from the repository root. This loopback-only
+folder-path UI submits the same batch engine; it is separate from the optional
+Streamlit/upload UI and REST ZIP API. See the
+[local browser guide](../../../docs/LOCAL_WEB_UI.md). Native diagnostics are
+separately confirmed, never automatic migration steps.
 
 Deployment is a separate operation: use the MCP `deploy` tool on a generated
 PBIP project, preview first, then explicitly confirm the write. Batch dispatch
@@ -89,8 +97,9 @@ Use `quality` for one deterministic report combining assessment, feature parity,
 data coverage, interface coverage, and Power BI openability. Use `parity` for the
 feature scorecard, `portfolio` for folder assessment, `plan` for Tableau Server
 migration waves, and `lineage` for Prep flows. The `qa` and `package` folder
-shortcuts follow the batch path rather than running their single-workbook extras. Add
-`--quality-strict` when CI should fail on quality blockers. Use
+shortcuts follow the batch path rather than running their single-workbook extras.
+For a CI quality exit gate, run `quality WORKBOOK --quality-strict` after
+generation; batch does not forward `--quality-strict`. Use
 `--quality-policy report|enterprise|production` to control escalation of
 static semantic diagnostics and unresolved lineage. The semantic runtime
 adapter is offline-safe: without an explicitly authorized executor, runtime
@@ -132,8 +141,11 @@ Assessment/QA/parity runs also write HTML + JSON reports to the output dir.
 | TMDL model (tables, relationships, RLS, hierarchies) | `powerbi_import/tmdl_generator.py` | @semantic |
 | PBIR report / visuals / slicers / themes | `powerbi_import/pbip_generator.py`, `visual_generator.py` | @visual |
 | CLI / pipeline / batch | `migrate.py`, `powerbi_import/import_to_powerbi.py` | @orchestrator |
-| Readiness / parity / diff reports | `powerbi_import/assessment.py`, `parity_registry.py`, `qa_suite.py` | @assessor |
-| Fabric-native generators | `powerbi_import/fabric_*_generator.py`, `lakehouse_generator.py` | @generator |
+| Local browser backend / launcher | `web/local_server.py`, `run_web_ui.ps1` | @orchestrator |
+| Local browser frontend | `web/index.html`, `web/app.js`, `web/style.css` | @web-designer |
+| Readiness assessment | `powerbi_import/assessment.py` | @assessor |
+| Quality / parity / diff evidence | `powerbi_import/migration_quality.py`, `parity_registry.py`, `qa_suite.py` | @evidence |
+| Fabric-native generators | `powerbi_import/fabric_*_generator.py`, `lakehouse_generator.py` | @fabric |
 | Deployment (Fabric / PBI Service) | `powerbi_import/deploy/*.py` | @deployer |
 | Tests | `tests/*.py` | @tester |
 

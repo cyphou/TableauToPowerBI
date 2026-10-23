@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 import zipfile
 
 from powerbi_import.preflight import (
@@ -244,6 +245,129 @@ class TestHappyPath(unittest.TestCase):
         self.assertIn('.twb', SUPPORTED_EXTENSIONS)
         self.assertIn('.twbx', SUPPORTED_EXTENSIONS)
         self.assertIn('.tfl', SUPPORTED_EXTENSIONS)
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Inline virtual Parameters dependencies
+# ════════════════════════════════════════════════════════════════════
+
+class TestInlineVirtualParameters(unittest.TestCase):
+    def _run_dependencies(self, dependencies, declared=(), packaged=False):
+        root = ET.fromstring(_MINIMAL_TWB)
+        for name in declared:
+            ET.SubElement(root.find('datasources'), 'datasource', name=name)
+        worksheet = root.find('worksheets/worksheet')
+        for reference, columns in dependencies:
+            dependency = ET.SubElement(
+                worksheet, 'datasource-dependencies', datasource=reference,
+            )
+            for attributes in columns:
+                ET.SubElement(dependency, 'column', attributes)
+        body = ET.tostring(root, encoding='utf-8')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = (_write_twbx(tmp, twb_body=body) if packaged
+                    else _write_twb(tmp, body=body))
+            return run_preflight(path)
+
+    def _assert_missing_dependency(self, result, reference):
+        self.assertFalse(result.ok, msg=result.format_console())
+        self.assertEqual(
+            [issue.code for issue in result.blockers],
+            ['missing_datasource_reference'],
+        )
+        self.assertIn(repr(reference), result.blockers[0].message)
+
+    def test_named_inline_parameter_columns_with_nonempty_domains_are_valid(self):
+        columns = [
+            {'name': f'[Parameter {index}]', 'param-domain-type': domain}
+            for index, domain in enumerate(('any', 'list', 'range'), start=1)
+        ]
+        # Exercise both one-column and multi-column virtual datasources.
+        for declared_columns in [[column] for column in columns] + [columns]:
+            for packaged in (False, True):
+                with self.subTest(columns=declared_columns, packaged=packaged):
+                    result = self._run_dependencies(
+                        [('Parameters', declared_columns)], packaged=packaged,
+                    )
+                    self.assertTrue(result.ok, msg=result.format_console())
+                    self.assertEqual(result.blockers, [])
+
+    def test_bare_parameters_dependency_is_still_a_blocker(self):
+        for packaged in (False, True):
+            with self.subTest(packaged=packaged):
+                result = self._run_dependencies(
+                    [('Parameters', [])], packaged=packaged,
+                )
+                self._assert_missing_dependency(result, 'Parameters')
+
+    def test_parameter_columns_require_nonempty_names_and_domain_markers(self):
+        invalid_columns = (
+            {'name': '[Parameter 1]'},
+            {'name': '[Parameter 1]', 'param-domain-type': ''},
+            {'param-domain-type': 'list'},
+            {'name': '', 'param-domain-type': 'range'},
+            {},
+        )
+        for column in invalid_columns:
+            for packaged in (False, True):
+                with self.subTest(column=column, packaged=packaged):
+                    result = self._run_dependencies(
+                        [('Parameters', [column])], packaged=packaged,
+                    )
+                    self._assert_missing_dependency(result, 'Parameters')
+
+    def test_mixed_parameter_and_regular_columns_are_blockers_in_either_order(self):
+        parameter = {'name': '[Parameter 1]', 'param-domain-type': 'list'}
+        regular = {'name': '[Customer]', 'datatype': 'string'}
+        for columns in ([parameter, regular], [regular, parameter]):
+            for packaged in (False, True):
+                with self.subTest(columns=columns, packaged=packaged):
+                    result = self._run_dependencies(
+                        [('Parameters', columns)], packaged=packaged,
+                    )
+                    self._assert_missing_dependency(result, 'Parameters')
+
+    def test_only_exact_parameters_reference_gets_the_inline_exception(self):
+        columns = [{'name': '[Parameter 1]', 'param-domain-type': 'any'}]
+        for reference in ('MissingSource', 'parameters', 'Parameters ', 'Parameter'):
+            with self.subTest(reference=reference):
+                result = self._run_dependencies([(reference, columns)])
+                self._assert_missing_dependency(result, reference)
+
+    def test_valid_virtual_parameters_do_not_hide_real_missing_dependencies(self):
+        parameter = ('Parameters', [
+            {'name': '[Parameter 1]', 'param-domain-type': 'range'},
+        ])
+        missing = ('MissingSource', [{'name': '[Customer]'}])
+        for dependencies in ([parameter, missing], [missing, parameter]):
+            with self.subTest(dependencies=dependencies):
+                result = self._run_dependencies(dependencies)
+                self._assert_missing_dependency(result, 'MissingSource')
+
+    def test_each_parameters_dependency_must_independently_prove_it_is_virtual(self):
+        valid = ('Parameters', [
+            {'name': '[Parameter 1]', 'param-domain-type': 'list'},
+        ])
+        for invalid_columns in ([], [{'name': '[Ordinary Column]'}]):
+            invalid = ('Parameters', invalid_columns)
+            for dependencies in ([valid, invalid], [invalid, valid]):
+                with self.subTest(dependencies=dependencies):
+                    result = self._run_dependencies(dependencies)
+                    self._assert_missing_dependency(result, 'Parameters')
+
+    def test_declared_datasources_do_not_need_inline_parameter_markers(self):
+        for reference, columns in (
+            ('Parameters', []),
+            ('Parameters', [{'name': '[Physical Column]'}]),
+            ('ds1', []),
+            ('ds1', [{'name': '[Physical Column]'}]),
+        ):
+            with self.subTest(reference=reference, columns=columns):
+                result = self._run_dependencies(
+                    [(reference, columns)], declared=('Parameters',),
+                )
+                self.assertTrue(result.ok, msg=result.format_console())
+                self.assertEqual(result.blockers, [])
 
 
 # ════════════════════════════════════════════════════════════════════

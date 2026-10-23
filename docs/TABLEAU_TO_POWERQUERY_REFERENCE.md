@@ -1,7 +1,12 @@
 # Tableau Properties → Power Query M Complete Reference
 
-Complete mapping of **every Tableau data source property** to its Power Query M equivalent.
-All connector conversions are implemented in `tableau_export/m_query_builder.py`.
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🗄️ Source strategy](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export) · [🔄 Prep → M](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md)
+
+Reference for Tableau data source properties and Power Query M generation
+patterns. The implemented dispatch table is `_M_GENERATORS` in
+[`m_query_builder.py`](../tableau_export/m_query_builder.py): 97 connection-type
+keys, including aliases, route to 55 distinct generator functions. These are
+generation paths, not 97 independently certified live connectors.
 
 > **Legend**  
 > ✅ Automatic — fully converted by the migration tool  
@@ -13,7 +18,11 @@ All connector conversions are implemented in `tableau_export/m_query_builder.py`
 
 ## 1. Data Source Connectors
 
-### Supported Connectors (23 types)
+### Core Connector Examples
+
+This table is a selected reference, not the complete dispatch inventory.
+Credentials, drivers, gateways, source availability and refresh must be
+validated separately in the target environment.
 
 | # | Tableau Connection | Power Query M Function | Status | Notes |
 |---|-------------------|----------------------|--------|-------|
@@ -60,7 +69,7 @@ All connector conversions are implemented in `tableau_export/m_query_builder.py`
 | 8 | `dataset` (BigQuery) | Dataset navigation step | ✅ | |
 | 9 | `catalog` (Databricks) | Catalog navigation step | ✅ | |
 | 10 | `http_path` (Databricks) | HTTP path parameter | ✅ | |
-| 11 | `filename` | `File.Contents()` path | ✅ | Uses `DataFolder` parameter |
+| 11 | `filename` | `File.Contents()` path | ✅ | Original binding for native Import; `DataFolder` for staged sources |
 | 12 | `directory` | Combined with filename for path | ✅ | |
 | 13 | `delimiter` (CSV) | `Delimiter` option | ✅ | |
 | 14 | `encoding` (CSV) | `Encoding` option (codepage) | ✅ | UTF-8 → 65001 |
@@ -76,9 +85,17 @@ Redshift, table navigation uses the physical Tableau relation
 (`source_table`), not the renamed semantic-model table. A qualified relation
 overrides the default schema; otherwise the connection's explicit schema is
 used. Refresh still requires a reachable server and credentials configured in
-Power BI. For local Excel/CSV sources, the generated project's `DataFolder`
-must contain the declared file; merely having it elsewhere on disk is not
-enough.
+Power BI. For native Excel/CSV Import from a loose workbook, relative file
+bindings resolve against the original workbook directory, without copying or
+reading native rows during migration. Absolute source bindings are preserved.
+Packaged native files are not extracted; configure an accessible original
+binding when necessary. `DataFolder` remains the binding for staged Hyper
+exports, not a replacement for native paths. Native CSV queries infer physical
+width instead of using the selected model-column count as a parsing limit.
+They then select exact declared source column names before type and caption
+transformations, preventing collisions with unmodeled physical fields.
+Missing source columns, delimiters and credentials still require valid source
+metadata or explicit configuration; no alternate file or field is substituted.
 
 ---
 

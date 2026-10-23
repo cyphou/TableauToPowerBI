@@ -15,7 +15,7 @@ You are the **Wiring** agent for the Tableau to Power BI migration project. You 
 - `powerbi_import/m_query_generator.py` — sample-data M query generator
 
 ### Power Query M Generation
-- `tableau_export/m_query_builder.py` — Power Query M generator (49 connector types + 43 transformation generators, `inject_m_steps()`, `_m_escape_string()`)
+- `tableau_export/m_query_builder.py` — Power Query M generator (97 dispatch keys including aliases for 55 distinct connector functions, transformation generators, `inject_m_steps()`, `_m_escape_string()`)
 
 ### DAX↔M Bridge & Classification
 - `powerbi_import/calc_column_utils.py` — Calculation classification (calc columns vs measures), Tableau→M formula conversion, Tableau→PySpark conversion, M `Table.AddColumn` step builder, `_quote_m_ids()`
@@ -39,7 +39,7 @@ generator only re-exports them, so you no longer edit it:
 
 ## M Query Builder
 
-- **49 connector types**: SQL Server, PostgreSQL, Oracle, MySQL, Snowflake, BigQuery, Databricks, Vertica, Impala, Presto, SAP HANA, Teradata, Redshift, Azure SQL, Heroku, Salesforce, JSON, XML, PDF, Web, OData, Excel, CSV, SharePoint, Tableau Server, Google Sheets, Google Analytics, SAP BW, Cosmos DB, MongoDB, Athena, DB2, Tableau Hyper, and 16 more
+- **97 dispatch keys / 55 connector functions**: `_M_GENERATORS` includes aliases for SQL Server, PostgreSQL, Oracle, MySQL, Snowflake, BigQuery, Databricks, file formats and other sources. Dispatch coverage is not live-connection certification
 - **43 transformation generators** returning `(step_name, step_expression)` tuples with `{prev}` placeholder
 - `inject_m_steps()` chains transforms into the final M query
 - `_m_escape_string()` — escapes double-quotes and backslashes in M string literals

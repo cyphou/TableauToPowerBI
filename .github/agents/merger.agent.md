@@ -24,7 +24,7 @@ You are the **Merger** agent for the Tableau to Power BI migration project. You 
 
 ## Constraints
 
-- Do NOT modify TMDL generation internals — delegate to **Generator**
+- Do NOT modify TMDL generation internals — delegate to **@semantic**
 - Do NOT modify assessment scoring — delegate to **Assessor**
 - Do NOT modify test files — delegate to **Tester**
 

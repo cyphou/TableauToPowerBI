@@ -4,6 +4,12 @@
 **Scope:** Tableau source to Power BI Desktop, PBIP, and Fabric migration  
 **Primary outcome:** A migration is reported as complete only when its source inventory, target artifacts, behavior checks, and operator handoff are all backed by evidence.
 
+**Status note (2026-10-22):** This is a long-term design plan, not a checklist
+of shipped features or a current runtime acceptance report. Use the
+[roadmap](ROADMAP.md) for delivered scope and dated evidence, the
+[local browser guide](LOCAL_WEB_UI.md) for the supported guided entry point,
+and the [known limitations](KNOWN_LIMITATIONS.md) for unresolved behavior.
+
 ## Definition of 100% Parity
 
 A numerical score alone cannot prove Tableau and Power BI behave identically. For this project, **100% parity** means:

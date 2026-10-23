@@ -1,10 +1,12 @@
 # Tableau → Power BI Mapping Reference
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🧮 DAX](TABLEAU_TO_DAX_REFERENCE.md) · [🔌 Power Query M](TABLEAU_TO_POWERQUERY_REFERENCE.md)
+
 This document details all mappings between Tableau and Power BI objects to facilitate migration.
 
-> **See also:**  
-> - [TABLEAU_TO_DAX_REFERENCE.md](TABLEAU_TO_DAX_REFERENCE.md) — Complete 172-function Tableau→DAX mapping  
-> - [TABLEAU_TO_POWERQUERY_REFERENCE.md](TABLEAU_TO_POWERQUERY_REFERENCE.md) — Complete 108-property Tableau→Power Query M mapping
+> **See also:**
+> - [TABLEAU_TO_DAX_REFERENCE.md](TABLEAU_TO_DAX_REFERENCE.md) — DAX conversion patterns and approximation boundaries
+> - [TABLEAU_TO_POWERQUERY_REFERENCE.md](TABLEAU_TO_POWERQUERY_REFERENCE.md) — Source properties, connector examples and M generation
 
 ## 📊 Visual Types (164 mapping records)
 The current generator inventory contains **129 native mappings**, **16 explicit

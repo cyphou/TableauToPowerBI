@@ -152,11 +152,12 @@ def run_wizard():
 
     # ── Step 4: Model mode ──
     print("\n─── Step 4: Semantic Model Mode ───")
-    mode_opts = ['Import (fastest queries, data cached)', 
+    mode_opts = ['Auto (Hyper/file sources import; supported databases live)',
+                 'Import (all tables cached)',
                  'DirectQuery (live queries, always fresh)',
                  'Composite (mix of import + DQ)']
     mode_idx = _choose("Model mode:", mode_opts, default=0)
-    config['mode'] = ['import', 'directquery', 'composite'][mode_idx]
+    config['mode'] = ['auto', 'import', 'directquery', 'composite'][mode_idx]
 
     # ── Step 5: Calendar ──
     print("\n─── Step 5: Calendar Table ───")
@@ -222,7 +223,7 @@ def wizard_to_args(config):
         prep=config.get('prep'),
         output_dir=config.get('output_dir'),
         output_format=config.get('output_format', 'pbip'),
-        mode=config.get('mode', 'import'),
+        mode=config.get('mode', 'auto'),
         calendar_start=config.get('calendar_start'),
         calendar_end=config.get('calendar_end'),
         culture=config.get('culture'),

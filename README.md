@@ -1,23 +1,83 @@
 <p align="center">
-  <img src="docs/images/logo-migration-dashboards.png" alt="Tableau to Power BI migration" width="180"/>
+  <a href="docs/README.md"><img src="docs/images/banner.svg" alt="Tableau to Power BI — editable projects, local browser and CLI, reviewable migration evidence" width="1200"/></a>
 </p>
 
 # 🔄 Tableau → Power BI
 
 **Automated Migration Tool** — automatically generate Power BI projects (`.pbip`) from Tableau workbooks (`.twb`/`.twbx`), with validation and manual review or adjustment where required.
 
-| | |
+<p align="center">
+  <a href="pyproject.toml"><img src="docs/images/badge-python.svg" alt="Python 3.12+; standard-library core" height="30"/></a>
+  <a href="docs/POWERBI_PROJECT_GUIDE.md"><img src="docs/images/badge-pbip.svg" alt="PBIP output: PBIR reports and TMDL semantic models" height="30"/></a>
+  <a href="pyproject.toml"><img src="docs/images/badge-license.svg" alt="MIT license declared in package metadata" height="30"/></a>
+  <a href="https://github.com/cyphou/TableauToPowerBI/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/cyphou/TableauToPowerBI/actions/workflows/ci.yml/badge.svg?branch=main" alt="Published main branch CI status, not validation of local changes" height="30"/></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">⚡ Quick start</a> ·
+  <a href="docs/README.md">📚 Documentation</a> ·
+  <a href="docs/ARCHITECTURE.md#automatic-storage-mode-and-hyper-export">🗄️ Source strategy</a> ·
+  <a href="docs/KNOWN_LIMITATIONS.md">⚠️ Limitations</a> ·
+  <a href="CONTRIBUTING.md">🤝 Contribute</a>
+</p>
+
+| At a glance | Current contract |
 |---|---|
-| 🏷️ **Package** | 48.0.0 · roadmap track v48 |
-| 🧪 **Tests** | Historical baseline: 10,798 passed · 66 skipped · 1 xfailed; see CI for current results |
-| 🐍 **Python** | 3.12+ · zero external dependencies |
+| 🏷️ **Package metadata** | 44.0.0 in `pyproject.toml` · roadmap track v48 is separate |
+| 🧪 **Verification** | The CI badge reflects the published `main` branch; see the [roadmap](docs/ROADMAP.md) for scoped local evidence |
+| 🐍 **Python core** | 3.12+ · standard library only; Hyper SDK and deployment dependencies are optional |
+| 📦 **Output** | Editable PBIP projects with PBIR reports, TMDL models and Power Query M; optional local Fabric scaffold |
 | 📜 **License** | MIT |
+| 🎯 **Inventory** | DAX conversion · 164 visual mapping records · 97 connector dispatch keys (55 generators) · 23 object types |
 
-| 🎯 **Capabilities** | 133+ DAX conversions · 164 visual mapping records · 87 connectors · 23 object types |
+## 🧭 Choose your workflow
 
-### Verified baseline
+| Start here | Best for | Next step |
+|---|---|---|
+| 🌐 [Local browser](docs/LOCAL_WEB_UI.md) | Guided migration from local folder paths | Start `.\run_web_ui.ps1` |
+| 💻 [CLI and operator guide](docs/USER_MANUAL.md) | Repeatable folder-based automation | Run `python migrate.py batch FOLDER --output-dir OUTPUT` |
+| 🔎 [Review checklist](docs/MIGRATION_CHECKLIST.md) | Source setup, refresh, save/reopen and visual review | Inspect the generated evidence before publishing |
+| 🏗️ [Architecture and source policy](docs/ARCHITECTURE.md#automatic-storage-mode-and-hyper-export) | Hyper exports, Import and DirectQuery choices | Review the decision diagram |
 
-This repo is currently validated on the following evidence-backed conditions:
+> [!IMPORTANT]
+> Generation, static validation, successful refresh, visual/value parity and
+> remote deployment are separate outcomes. No icon or badge certifies them all.
+
+<details>
+<summary><b>🧪 Dated verification evidence and current capabilities</b></summary>
+
+### Verification evidence
+
+Latest local publication-candidate checks (2026-10-23, Python 3.14.2):
+
+- Full regression suite: **11,826 passed, 66 skipped, 1 xfailed**
+  (**11,893 collected**), with one expected duplicate-ZIP-name fixture warning.
+- This run includes the native Import/refresh-binding follow-ups and passive
+  documentation-asset regressions. Skipped environment-dependent checks remain
+  unexecuted; this is not Desktop refresh, rendered parity or deployment evidence.
+
+Earlier refresh-binding correction checks (2026-10-22):
+
+- **863 targeted tests passed**: 771 affected-path tests plus 92 dedicated
+  datasource-extractor tests. The native-path, full-width CSV, declared-field
+  selection and partial-schema corrections are documented in the [changelog](CHANGELOG.md).
+- These targeted checks are separate from the newer full-suite run above and
+  do not certify native refresh, rendered parity or deployment for every workbook.
+
+Earlier Hyper correction baseline (2026-10-22), before the native Import and
+refresh-binding follow-ups:
+
+- Full regression suite: **11,741 passed, 66 skipped, 1 xfailed**
+  (**11,808 collected**).
+- Real optional Hyper SDK checks: CSV and typed Parquet roundtrips, two schemas
+  sharing a table name, row caps, newline progress, mixed automatic modes and
+  forced Import. A valid **31,391,744-byte Hyper file with 30,000 rows** selected
+  Parquet automatically; its real export was bound to an Import TMDL partition.
+- These are local regression/export checks, not Power BI Desktop refresh,
+  rendering or Fabric deployment evidence.
+
+The following observations predate the Hyper correction slice; they are scoped
+evidence, not a current full-suite or runtime certification:
 
 - `python -m pytest tests/test_pbip_generator_coverage.py tests/test_openability.py -q` passed with `275 passed in 4.41s`.
 - Targeted real-world migrations from `examples/real_world/` generated valid PBIP outputs and passed the local project-generation checks.
@@ -36,28 +96,50 @@ This repo is currently validated on the following evidence-backed conditions:
 - **Evidence packages**: batch quality runs produce an `evidence_package_<workbook>.zip` containing quality status, lineage, M/visual matrices, Fabric evidence, manifests, priorities, and explicit runtime states.
 - **Local browser UI**: start the Python migration interface from a source checkout with `.\run_web_ui.ps1`; see the [local browser guide](docs/LOCAL_WEB_UI.md).
 
-These checks are part of the current verified baseline and are intended to raise confidence in local migration quality without overstating live Desktop or Fabric deployment readiness.
+These observations raise confidence in the stated local checks without
+establishing live Desktop or Fabric deployment readiness.
+
+</details>
+
+<a id="quick-start"></a>
 
 ## ⚡ Quick Start
 
-```bash
+Start the guided interface from a repository checkout:
+
+```powershell
+.\run_web_ui.ps1
+# Or start the same standard-library server directly:
+python web\local_server.py
+```
+
+The browser opens at `http://127.0.0.1:8765/`. Enter separate absolute source
+and output folder paths; no account, cloud hosting, upload, or frontend build
+is needed. Keep the terminal open and stop it with Ctrl+C. Native diagnostics
+require a separate confirmation. See the [local browser guide](docs/LOCAL_WEB_UI.md).
+
+For terminal automation:
+
+```powershell
 # Generate PBIP projects from every workbook in a folder
-python migrate.py batch ./workbooks --output-dir ./output
+python migrate.py batch .\workbooks --output-dir .\output
 ```
 
 > [!TIP]
 > The output is a `.pbip` project (PBIR v4.0). Every PBIP migration automatically
 > runs a static openability gate over project structure, JSON, TMDL, Power Query M,
 > DAX, report/model references, and PBIR schemas. Use `--no-verify-open` only to
-> bypass this gate deliberately. Power BI Desktop is never launched automatically;
-> `--desktop-probe` remains an explicit diagnostic option.
+> bypass this gate deliberately. Power BI Desktop is never launched automatically.
+> For native checks, use the local browser's separately confirmed diagnostics or
+> `python scripts\probe_projects.py PROJECTS_DIR`; batch does not forward the
+> legacy `--desktop-probe` switch.
 
 <details>
 <summary><b>📦 Installation</b></summary>
 
 ```bash
-git clone https://github.com/cyphou/Tableau-To-PowerBI.git
-cd Tableau-To-PowerBI
+git clone https://github.com/cyphou/TableauToPowerBI.git
+cd TableauToPowerBI
 python migrate.py batch ./workbooks --output-dir ./output
 ```
 
@@ -72,7 +154,8 @@ pip install tableauhyperapi           # .hyper extract file reading (v2+ format)
 
 ### More ways to migrate
 
-The public CLI has **14 commands**. These cover the normal workflows:
+The public CLI has **14 commands**, including the legacy `deploy` alias
+described below. These examples cover the other 13 workflows:
 
 ```powershell
 # Migration generation is batch-only; a folder may contain one workbook.
@@ -112,7 +195,10 @@ and `lineage` for Prep flows. `qa FOLDER` and `package FOLDER` follow the batch 
 writes unified quality reports and evidence ZIPs, but does not run the specialized
 six-check QA suite or the assessment report packager. The legacy `--qa` and
 `--report-package` flags are not available through the supported batch-only
-generation path. Add `--quality-strict` when a CI run should fail on quality blockers.
+generation path. For a CI quality exit gate, run
+`python migrate.py quality workbook.twbx --quality-strict` after generation;
+batch does not forward `--quality-strict`, so its exit status alone is not a
+quality PASS.
 Use `--quality-policy report|enterprise|production` to control whether static
 semantic diagnostics and unresolved lineage are informational, warnings, or
 blocking findings. Runtime execution still requires an authorized executor.
@@ -162,14 +248,18 @@ $env:POWERBI_DESKTOP_PATH = "C:\Program Files\Microsoft Power BI Desktop\bin\PBI
 ```
 
 For each report the probe presses **Home > Refresh > Schema and data** through
-UI Automation (English or French UI), waits until the local model holds rows,
-then captures the rendered page. A screenshot is labelled *data verified* only
-when every checked model table contains rows; partial or unavailable loads are
-labelled *data not verified*. `--no-refresh` skips the click and
+UI Automation (English or French UI), checks refresh completion separately from
+aggregate model rows, then captures the rendered page. A screenshot is labelled
+*data verified* only after an observed successful refresh lifecycle and complete
+table checks; rows alone are insufficient, and valid empty tables are not
+refresh errors. `--no-refresh` skips the click and
 `--skip-data-check` captures the window state only. `OPENED` means the
 report window loaded, `CRASHED` means a Desktop crash or error dialog was
-detected, `verified` means rows were found, and `empty` means no usable rows
-were confirmed. Keep the generated HTML/JSON report and screenshots beside the
+detected. `data_load.status=verified` means checked tables contained rows, not
+that refresh succeeded; `refresh.status` records that separate result. Initial
+calculated-object/no-data banners are normal for an unprocessed metadata-only
+model. Configure sources, refresh, inspect the result, then save in Desktop to
+retain its local cache. Keep the generated HTML/JSON report and screenshots beside the
 external output directory; do not copy customer evidence into the repository.
 
 ### Local browser alternative (source checkout)
@@ -179,7 +269,7 @@ The standard-library runner provides a local-folder migration interface:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_web_ui.ps1
 # Or, with Python 3.12+ from the repository root:
-python web/local_server.py
+python web\local_server.py
 ```
 
 It binds only to `http://127.0.0.1:8765/` and opens the browser by default.
@@ -201,7 +291,8 @@ does not automatically run either diagnostic.
 The local browser slice is delivered: the reported real-browser Superstore
 migration succeeded with artifact/log display and a download link; both native
 authorization dialogs were checked, and cancel submitted no job. Native
-execution remains `not_run`; this is not N5 operational acceptance. This slice does not include folder/ZIP upload or a Server workflow. See the
+execution remains `not_run`; this is not N5 operational acceptance. This slice
+does not include folder/ZIP upload or a Server workflow. See the
 [local browser guide](docs/LOCAL_WEB_UI.md) and [operator workflow and boundaries](docs/USER_MANUAL.md#local-browser-alternative-source-checkout).
 The existing `web/app.py` Streamlit workflow is separate; this runner does not
 require Streamlit.
@@ -216,14 +307,36 @@ require Streamlit.
 
 ### 🔄 Complete Extraction
 Parses **23 object types** from `.twb`/`.twbx`:
-datasources, calculations, worksheets, dashboards, filters, parameters, stories, actions, sets, groups, bins, hierarchies, relationships, sort orders, aliases, custom SQL, custom geocoding, published datasources, data blending, hyper metadata, datasource filters, table extensions, linguistic schema
+worksheets, dashboards, datasources, calculations, parameters, filters, stories,
+actions, sets, groups, bins, hierarchies, sort orders, aliases, custom SQL,
+user filters, Hyper metadata, datasource filters, custom geocoding, published
+datasources, data blending, table extensions and linguistic schema. See the
+[extraction contract](tableau_export/README.md).
 
-**Hyper extract data:** `.hyper` files embedded in `.twbx` are automatically converted to CSV and wired into Power Query M expressions via a 3-tier reader chain (`tableauhyperapi` → SQLite → binary scan). Small extracts are inlined directly into `#table()` M partitions; large extracts produce `Csv.Document()` references. Legacy `.tde` files require the `tableauhyperapi` package.
+**Hyper extract data:** packaged `.hyper` tables are staged through exact
+physical identities. Bounded streaming avoids full-table Python lists;
+CSV and optional native Parquet exports are wired into Power Query M.
+Hyper uses Import; native database sources without Hyper use DirectQuery
+when supported. The user can always force Import. For PBIP, native Hyper export
+requires Parquet above 10 MiB and uses CSV otherwise. SQLite-compatible inputs
+above that threshold fail unless CSV is explicitly selected. See the
+[decision diagram](docs/ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
+**Non-Hyper Import migrates the datasource, not its rows:** connection, schema
+and Power Query M are generated without exporting native data or copying native
+Excel/CSV dataset files. Power BI loads those data at refresh using the original
+source binding. Hyper data exports remain enabled.
+The follow-up passed **1,442 targeted tests**; it does not establish native
+Power BI refresh or replace the dated full-suite measurement above.
+Row caps produce review samples, not full-data parity evidence. See the
+[large-extract options and progress](docs/FAQ.md#how-are-hyper-extract-files-handled).
+The header-scan fallback may yield a bounded sample, never a complete export.
+Legacy `.tde` files must
+be converted in Tableau or exported to CSV; `tableauhyperapi` does not read `.tde`.
 
 </td>
 <td width="50%">
 
-### 🧮 133+ DAX Conversions
+### 🧮 DAX Formula Conversion
 Translates Tableau formulas to DAX:
 LOD expressions, table calcs, IF/ELSEIF, ISNULL, CONTAINS, window functions, iterators (SUMX), cross-table RELATED/LOOKUPVALUE, RLS security, regex patterns, SPLIT, statistical functions
 
@@ -232,14 +345,16 @@ LOD expressions, table calcs, IF/ELSEIF, ISNULL, CONTAINS, window functions, ite
 <tr>
 <td>
 
-### 📊 190 Visual Types
-Maps every Tableau mark to Power BI:
+### 📊 164 Visual Mapping Records
+Includes 129 native mappings, 16 approximations, and 19 custom-visual mappings,
+not a guarantee of exact rendering for every Tableau mark:
 bar, line, pie, scatter, map, treemap, waterfall, funnel, gauge, KPI, box plot, word cloud, Sankey, Chord, combo charts, sparklines, and more
 
 </td>
 <td>
 
-### 🔌 87 Data Connectors
+### 🔌 97 Connector Dispatch Keys
+The dispatch table contains aliases for 55 distinct generator functions.
 Generates Power Query M for:
 SQL Server, PostgreSQL, BigQuery, Snowflake, Oracle, MySQL, Databricks, SAP HANA, Excel, CSV, SharePoint, Salesforce, Web, OData, Azure Blob, Vertica, Impala, Presto, Fabric Lakehouse, MongoDB, Cosmos DB, Athena, DB2, ServiceNow, Denodo, Essbase, Splunk, and more
 
@@ -254,8 +369,11 @@ Auto-generates Calendar table, date hierarchies, calculation groups, field param
 </td>
 <td>
 
-### 🚀 Deploy Anywhere
-One-command deploy to **Power BI Service** or **Microsoft Fabric** with Azure AD auth (Service Principal / Managed Identity). Gateway config generation included.
+### 🚀 Separate Publishing Workflow
+Deployment helpers support **Power BI Service** and **Microsoft Fabric** with
+Azure AD authentication (Service Principal / Managed Identity) and gateway
+configuration. Generation does not deploy; preview and authorize the separate
+[deployment workflow](docs/DEPLOYMENT_GUIDE.md).
 
 </td>
 </tr>
@@ -306,6 +424,8 @@ Merge multiple Tableau workbooks into **one shared semantic model** with thin re
 ---
 
 ## ⚙️ How It Works
+
+![Workbook pipeline: Tableau TWB/TWBX, 23 extraction JSON files, then PBIP with PBIR and TMDL](docs/images/pipeline.svg)
 
 ```mermaid
 flowchart LR
@@ -541,11 +661,11 @@ prep_output/
 **Mixed directories** (`.twb` + `.tfl`) produce separate summary tables — workbooks get `.pbip` projects with fidelity scores, prep flows get Power Query M + sources + lineage.
 
 </details>
-### �📂 Generated Output
+### 📂 Generated Output
 
 ```
 YourReport/
-├── YourReport.pbip                     ← Double-click to open in PBI Desktop
+├── YourReport.pbip                     ← Project entry point (supported Desktop required)
 ├── migration_metadata.json             ← Stats, fidelity scores, warnings
 ├── lineage_map.json                    ← Source→target traceability
 ├── credentials_template.json           ← Datasource credential placeholders
@@ -602,7 +722,9 @@ SharedSales/
 
 ---
 
-## 🧮 DAX Conversions (180+ functions)
+<a id="-dax-conversions-180-functions"></a>
+
+## 🧮 DAX Conversions
 
 > **Full reference:** [docs/TABLEAU_TO_DAX_REFERENCE.md](docs/TABLEAU_TO_DAX_REFERENCE.md)
 
@@ -667,7 +789,9 @@ SharedSales/
 
 ---
 
-## 📊 Visual Type Mapping (128+)
+<a id="-visual-type-mapping-128"></a>
+
+## 📊 Visual Type Mapping
 
 <details>
 <summary><b>🎨 Full visual mapping table</b> (click to expand)</summary>
@@ -722,8 +846,8 @@ TableauToPowerBI/
 ├── tableau_export/                            # Tableau extraction
 │   ├── extract_tableau_data.py                #   TWB/TWBX parser (23 object types)
 │   ├── datasource_extractor.py                #   Connection/table/calc extractor
-│   ├── dax_converter.py                       #   133+ DAX formula conversions
-│   ├── m_query_builder.py                     #   49 connectors + 43 transforms
+│   ├── dax_converter.py                       #   Tableau-to-DAX conversion and diagnostics
+│   ├── m_query_builder.py                     #   97 dispatch keys / 55 connector generators
 │   ├── prep_flow_parser.py                    #   Tableau Prep flow parser
 │   ├── prep_flow_analyzer.py                  #   Prep flow profiler & assessment
 │   ├── hyper_reader.py                        #   .hyper file data loader
@@ -732,7 +856,7 @@ TableauToPowerBI/
 ├── powerbi_import/                            # Power BI generation
 │   ├── import_to_powerbi.py                   #   Orchestrator
 │   ├── pbip_generator.py                      #   .pbip project + visuals + filters
-│   ├── visual_generator.py                    #   190 visual types, PBIR configs
+│   ├── visual_generator.py                    #   164 visual mapping records, PBIR configs
 │   ├── tmdl_generator.py                      #   Semantic model → TMDL
 │   ├── dax_optimizer.py                       #   DAX AST optimizer (v25)
 │   ├── assessment.py                          #   Pre-migration assessment
@@ -755,7 +879,9 @@ TableauToPowerBI/
 │   └── deploy/                                #   Deploy to PBI Service / Fabric
 ├── Dockerfile                                 # Docker image for API server
 ├── tests/                                     # Unit, integration, and regression tests
-├── docs/                                      # 18 documentation files
+├── web/                                       # Local browser UI and loopback runner
+├── run_web_ui.ps1                             # Local browser launcher
+├── docs/                                      # Guides and references; see docs/README.md
 └── examples/                                  # Sample Tableau workbooks
 ```
 
@@ -765,27 +891,42 @@ TableauToPowerBI/
 
 ## 📝 CLI Reference
 
+This table includes advanced and legacy parser options, not a promise that every
+option is forwarded by every generation route. Use `batch FOLDER` for workbook
+generation and `merge WORKBOOK...` for shared models. The supported batch path
+does not invoke the legacy single-file postprocessing suites or preceptor.
+Batch dispatch forwards folder/output/Prep settings, extraction reuse,
+calendar/culture, model mode, parallel/resume settings, JSONL/manifest,
+full lineage, static openability, output format, quality policy and dry-run.
+Automatic/forced storage mode, Hyper export format/row limits and ZIP limits are
+also explicit batch controls.
+Other rows below describe separate routes or retained parser options.
+
 | Flag | Description |
 |------|-------------|
 | **Input & Output** | |
-| `workbook.twbx` | Positional argument — path to Tableau workbook |
+| `batch FOLDER` | Generate from a source folder; a workbook file alone is diagnostic input, not a generation command |
 | `--prep FILE` | Tableau Prep flow (.tfl/.tflx) to merge with a workbook |
-| `--output-dir DIR` | Custom output directory (default: `artifacts/powerbi_projects/`) |
+| `--output-dir DIR` | Batch output root; defaults to `<source-folder>\migrated` |
 | `--output-format FORMAT` | Output format: `pbip` (default) or `fabric` |
 | `--dry-run` | Preview migration without writing files |
 | `--skip-extraction` | Skip extraction, re-use existing datasources.json |
-| `--skip-conversion` | Skip DAX/M conversion, re-use existing JSON files |
-| `--rollback` | Backup existing .pbip project before overwriting |
+| `--skip-conversion` | Legacy conversion toggle; not forwarded by batch generation |
+| `--rollback` | Legacy backup toggle; not forwarded by batch generation |
 | **Batch** | |
 | `--batch DIR` | Batch-migrate all .twb/.twbx files in a directory |
 | `--batch-config FILE` | JSON batch config with per-workbook overrides |
 | `--workers N` | Parallel batch processing with N workers |
+| **Hyper extracts** | |
+| `--max-zip-entry-mb N` | Positive uncompressed entry limit in MiB; CLI overrides `TTPBI_MAX_ZIP_ENTRY_MB`, then 1024 MiB |
+| `--hyper-export-format {auto,csv,parquet}` | PBIP `auto`: native Hyper > 10 MiB requires Parquet, otherwise CSV. Above-threshold SQLite-compatible inputs error unless CSV is explicit. Fabric `auto` stays CSV |
+| `--hyper-export-max-rows N` | Positive review-sample cap; environment fallback `TTPBI_HYPER_EXPORT_MAX_ROWS`; unlimited when omitted |
 | **Tableau Server / Cloud** | |
 | `--server URL` | Tableau Server/Cloud URL |
 | `--site SITE_ID` | Tableau site content URL |
 | `--workbook NAME` | Workbook name or LUID to download |
 | `--token-name NAME` | PAT name for Tableau Server auth |
-| `--token-secret SECRET` | PAT secret for Tableau Server auth |
+| `TABLEAU_TOKEN_SECRET` | Environment variable for the PAT secret; do not put secrets in command arguments |
 | `--server-batch PROJECT` | Download all workbooks from a server project (or `all`) |
 | `--server-assets TYPE [...]` | Asset types: `workbooks`, `flows`, `datasources`, `all` |
 | `--server-preserve-folders` | Mirror Tableau Server project folder structure locally |
@@ -814,26 +955,26 @@ TableauToPowerBI/
 | `--calendar-start YEAR` | Calendar table start year (default: 2020) |
 | `--calendar-end YEAR` | Calendar table end year (default: 2030) |
 | `--culture LOCALE` | Culture/locale for linguistic metadata (e.g., `fr-FR`) |
-| `--languages LOCALES` | Multi-language culture TMDL files (e.g., `fr-FR,de-DE`) |
-| `--mode MODE` | Semantic model mode: `import`, `directquery`, or `composite` |
-| `--composite-threshold COLS` | Per-table StorageMode threshold for Import vs DirectQuery |
-| `--agg-tables MODE` | Auto-generate aggregation tables: `auto` or `none` |
-| `--goals` | Convert Tableau Pulse metrics to PBI Goals |
+| `--languages LOCALES` | Shared-model culture files (e.g., `fr-FR,de-DE`); not forwarded by batch |
+| `--mode MODE` | Default `auto`: Hyper/import-only sources use Import, capable native sources use DirectQuery; `import` overrides to Import. Native Import migrates connection/schema/M only; Hyper still exports data. Advanced `directquery`/`composite` remain available |
+| `--composite-threshold COLS` | Legacy per-table storage threshold; not forwarded by batch |
+| `--agg-tables MODE` | Legacy aggregation-table toggle; not forwarded by batch |
+| `--goals` | Legacy Pulse/Goals postprocessing toggle; not forwarded by batch |
 | **Quality & Optimization** | |
 | `--assess` | Run pre-migration assessment and strategy analysis |
 | `--bulk-assess DIR` | Full portfolio assessment on a local folder (readiness + merge + prep lineage) |
 | `--qa` | Legacy QA suite; unavailable through the supported batch-only workflow |
-| `--preceptor` | Automated post-generation scoring on 6 dimensions; writes coaching feedback but does not call an agent or apply fixes. **On by default** (advisory) |
-| `--no-preceptor` | Skip the preceptorship review |
-| `--preceptor-block` | Make the preceptor a hard gate instead of a warning |
-| `--optimize-dax` | Run DAX optimizer (IF→SWITCH, COALESCE, constant folding) |
-| `--no-optimize-dax` | Disable DAX optimizer |
-| `--time-intelligence MODE` | Auto-inject Time Intelligence measures: `auto` or `none` |
-| `--validate-data` | Post-migration data validation (query equivalence) |
-| `--compare` | Generate comparison report (HTML) |
-| `--no-compare` | Disable comparison report generation |
-| `--check-drift DIR` | Compare extraction against saved snapshot for schema drift |
-| `--autoplay` | Post-migration validation checks |
+| `--preceptor` | Legacy parser option; not forwarded by batch/shared-model generation. A separately invoked review scores six dimensions without calling agents or applying fixes |
+| `--no-preceptor` | Legacy parser option; batch/shared-model generation does not invoke the review |
+| `--preceptor-block` | Legacy parser option; does not establish a gate in batch/shared-model generation |
+| `--optimize-dax` | Legacy optimizer toggle; not forwarded by batch |
+| `--no-optimize-dax` | Legacy optimizer toggle; does not disable batch processing |
+| `--time-intelligence MODE` | Legacy Time Intelligence toggle; not forwarded by batch |
+| `--validate-data` | Legacy value-validation toggle; not forwarded by batch |
+| `--compare` | Legacy comparison-report toggle; not forwarded by batch |
+| `--no-compare` | Legacy comparison toggle; does not disable batch quality reports |
+| `--check-drift DIR` | Legacy postprocessing flag, not forwarded by batch; use the [schema-drift Python API](docs/FAQ.md#how-do-i-detect-schema-drift-between-migrations) |
+| `--autoplay` | Legacy QA toggle; not forwarded by batch |
 | **Prep Flows** | |
 | `--prep-lineage PATHS` | Cross-flow lineage analysis for .tfl/.tflx files |
 | **Other** | |
@@ -841,7 +982,7 @@ TableauToPowerBI/
 | `--quiet` / `-q` | Suppress all output except errors |
 | `--log-file FILE` | Write logs to a file |
 | `--wizard` | Launch interactive migration wizard |
-| `--paginated` | Generate paginated report layout |
+| `--paginated` | Legacy paginated-report toggle; not forwarded by batch |
 | `--config FILE` | Load settings from a JSON configuration file |
 | `--telemetry` | Enable anonymous usage telemetry (opt-in) |
 | `--dashboard` | Generate telemetry dashboard |
@@ -933,23 +1074,21 @@ python -m pytest tests/test_openability.py -v         # Static PBIP openability 
 <details>
 <summary><b>📋 Test suite breakdown</b> (click to expand)</summary>
 
-| Test File | Tests | Coverage |
-|-----------|-------|----------|
-| `test_dax_coverage.py` | 168 | Edge cases across all DAX categories |
-| `test_generation_coverage.py` | 145 | TMDL/PBIR generation edge cases |
-| `test_m_query_builder.py` | 102 | Power Query M, 40+ transforms |
-| `test_tmdl_generator.py` | 92 | Semantic model, Calendar, TMDL |
-| `test_dax_converter.py` | 86 | DAX formulas, LOD, table calcs |
-| `test_error_paths.py` | 78 | Error handling, graceful degradation |
-| `test_sprint_features.py` | 78 | Multi-DS, inference, metadata |
-| `test_extract_coverage.py` | 75 | Stories, actions, sets, bins, hierarchies |
-| `test_new_features.py` | 74 | Calc groups, field params, M columns |
-| `test_v5_features.py` | 72 | v5.x features |
-| `test_visual_generator.py` | 65 | 190 visual types, sync, buttons |
-| `test_non_regression.py` | 63 | End-to-end sample workbook migrations |
-| `test_prep_flow_parser.py` | 58 | Prep parsing, DAG, step conversion |
-| `test_assessment.py` | 55 | Pre-migration (8 categories) |
-| + 114 more files | — | Sprint, coverage, layout, E2E, wizard, telemetry… |
+| Test File | Coverage |
+|-----------|----------|
+| `test_dax_coverage.py` | Edge cases across DAX categories |
+| `test_generation_coverage.py` | TMDL/PBIR generation edge cases |
+| `test_m_query_builder.py` | Power Query M connectors and transforms |
+| `test_tmdl_generator.py` | Semantic model, Calendar, TMDL |
+| `test_dax_converter.py` | DAX formulas, LOD, table calcs |
+| `test_error_paths.py` | Error handling and explicit failure paths |
+| `test_extract_coverage.py` | Stories, actions, sets, bins, hierarchies |
+| `test_visual_generator.py` | Visual mappings, sync, buttons |
+| `test_non_regression.py` | End-to-end sample workbook migrations |
+| `test_prep_flow_parser.py` | Prep parsing, DAG, step conversion |
+| `test_assessment.py` | Readiness scoring and diagnostics |
+| `test_cli_wiring.py`, `test_local_web_ui.py` | CLI dispatch and local browser backend |
+| Other test files | See the [test guide](tests/README.md) and CI for current counts/results |
 
 </details>
 
@@ -957,17 +1096,18 @@ python -m pytest tests/test_openability.py -v         # Static PBIP openability 
 
 ```mermaid
 flowchart LR
-    L["🔍 Lint\nflake8 + ruff"] --> T["🧪 Test\nUnit + integration\nPy 3.12–3.14"]
+    L["🔍 Lint\nflake8 + ruff + pyright"] --> T["🧪 Test\nUnit + integration\nPy 3.12–3.14"]
     T --> V["✅ Validate\nStrict .twbx\nmigrations"]
-    V --> S["📦 Staging\nFabric deploy"]
-    S --> P["🚀 Production\nManual approval"]
-    
+
     style L fill:#6366f1,color:#fff
-    style T fill:#22c55e,color:#fff
+    style T fill:#2563eb,color:#fff
     style V fill:#3b82f6,color:#fff
-    style S fill:#f59e0b,color:#000
-    style P fill:#ef4444,color:#fff
 ```
+
+Staging and production deployment jobs are currently disabled in the
+[CI workflow](.github/workflows/ci.yml). A successful CI run is not a Fabric
+deployment or native Desktop refresh result. GitHub Pages documentation
+publishing uses a [separate workflow](.github/workflows/gh-pages.yml).
 
 ### 📊 Migration Report
 
@@ -984,14 +1124,20 @@ The report shows for each migrated workbook:
 
 ## 📚 Documentation
 
+The [documentation hub](docs/README.md) groups guides by operator, conversion
+and developer tasks. Start with the browser guide or the operator manual, then
+use the review checklist before any publishing step.
+
 | Document | Description |
 |----------|-------------|
 | 📘 [User Manual](docs/USER_MANUAL.md) | Operator guide and Tableau → Power BI correspondence table |
 | 📖 [Migration Checklist](docs/MIGRATION_CHECKLIST.md) | Step-by-step migration guide |
 | 🗺️ [Mapping Reference](docs/MAPPING_REFERENCE.md) | Tableau → Power BI mappings |
-| 🔢 [133+ DAX Functions](docs/TABLEAU_TO_DAX_REFERENCE.md) | Complete formula reference |
-| ⚡ [108 Power Query M](docs/TABLEAU_TO_POWERQUERY_REFERENCE.md) | Property reference |
-| 🔄 [165 Prep → M](docs/TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md) | Prep transformation reference |
+| 🌐 [Local Browser UI](docs/LOCAL_WEB_UI.md) | Local launch, folders, diagnostics and troubleshooting |
+| 📚 [Documentation Index](docs/README.md) | All maintained guides and developer references |
+| 🔢 [DAX Function Reference](docs/TABLEAU_TO_DAX_REFERENCE.md) | Conversion patterns, approximations and manual cases |
+| ⚡ [Power Query M Reference](docs/TABLEAU_TO_POWERQUERY_REFERENCE.md) | Source properties, connectors and transformations |
+| 🔄 [Prep → M Reference](docs/TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md) | Prep transformations and supported parser contract |
 | 📋 Prep Flow Lineage | Cross-flow lineage, Power Query M export, merge recommendations (`--batch` / `--prep-lineage`) |
 | 🏗️ [Architecture](docs/ARCHITECTURE.md) | System design overview |
 | 📊 [.pbip Guide](docs/POWERBI_PROJECT_GUIDE.md) | Output format explained |
@@ -1024,8 +1170,8 @@ The report shows for each migrated workbook:
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```bash
-git clone https://github.com/cyphou/Tableau-To-PowerBI.git
-cd Tableau-To-PowerBI
+git clone https://github.com/cyphou/TableauToPowerBI.git
+cd TableauToPowerBI
 python -m pytest tests/ -q  # Make sure tests pass
 ```
 
@@ -1034,3 +1180,5 @@ python -m pytest tests/ -q  # Make sure tests pass
 ## 📜 License
 
 MIT
+
+[⬆️ Back to quick start](#quick-start) · [📚 Documentation hub](docs/README.md) · [🤝 Contributing](CONTRIBUTING.md)

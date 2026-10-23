@@ -95,10 +95,10 @@ Minimum evidence for a clean push:
 
 ## Preceptorship Report and Agent Handoff
 
-The CLI runs the Python preceptor by default after generation. This scores the
-artifact and writes `preceptor_report.json`; it does **not** invoke the Copilot
-`@reviewer` agent, dispatch coaching to an owning agent, or apply a fix. The
-quality report can carry those coaching items into its finding queue.
+Supported `migrate.py --batch` and `--shared-model` generation do not invoke
+the Python preceptor or write `preceptor_report.json`. These dispatch paths
+do not forward preceptor switches. Record preceptor evidence as `not_run`
+unless a separate invocation produces a verified report.
 
 For an MCP-connected agent handling an existing migration, pull only your own
 items by calling `agent_handoff` with your agent name (for example,
@@ -122,9 +122,10 @@ When an agent or operator receives a review report:
      durable resolution history or automatic agent dispatch.
 - Treat escalation as report/CLI state, not an automatic user interaction.
 
-`--no-preceptor` opts out. `--preceptor-block` opts into a hard failure after
-the configured review cycles fail to meet the score threshold. Without an
-external artifact change, those cycles can re-score the same output.
+`--no-preceptor` and `--preceptor-block` do not establish a preceptor gate in
+batch/shared-model generation. A separately invoked review does not dispatch
+Copilot agents or mutate artifacts; without an external edit, repeated cycles
+can re-score the same output.
 
 ### Scoring Dimensions (6)
 1. **Completeness** — all source objects mapped to output
@@ -154,4 +155,4 @@ When your task requires work outside your domain:
 ## Cross-Cutting Utilities
 
 - `powerbi_import/security_validator.py` — Shared security module (path validation, ZIP slip defense, XXE protection, credential redaction). Used by Extractor, Orchestrator, Deployer.
-- `powerbi_import/recovery_report.py` — Self-healing recovery tracker. Used by Generator (TMDL self-repair, visual fallback).
+- `powerbi_import/recovery_report.py` — Self-healing recovery tracker owned by @healing; records model/report/expression repair evidence.

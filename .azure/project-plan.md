@@ -1,7 +1,8 @@
 # Project Plan
 
-**Status**: Planning
+**Status**: Local-browser baseline delivered; remaining design targets noted below
 **Created**: 2026-10-21
+**Documentation review**: 2026-10-22
 **Mode**: AUGMENT
 
 ---
@@ -28,12 +29,19 @@ The user confirmed **offline localhost**, not a backend-free static page. The br
 - [Focused tests](../tests/test_local_web_ui.py): command construction and real loopback HTTP coverage without launching Desktop applications.
 - [Migration engine](../migrate.py): folder-based generation, including folders containing only one workbook.
 
-The browser, runner, launcher, and tests currently exist as working-tree files. Preserve and integrate them; do not overwrite them or create a second server. The standalone desktop application and its Windows executable packaging are not part of this product. Preserve the migration CLI, browser interface, local folder picker, and optional Streamlit interface.
+The browser, runner, launcher, and tests were committed in `12e921e`. Preserve
+them rather than scaffolding a second server. The standalone desktop UI and
+its Windows executable packaging have been removed. Preserve the migration
+CLI, browser interface, optional backend folder picker and optional upload UI.
+The [local browser guide](../docs/LOCAL_WEB_UI.md) describes delivered behavior;
+the preview and design targets below are not a claim that every control shipped.
 
 **Included scope**
 
 1. One local, French-language migration workspace using the existing HTML/CSS/JavaScript and Python architecture.
-2. Source and output folder fields, with visible manual entry and Browse buttons wired to the existing local folder picker.
+2. Source and output folder fields with visible manual entry. Browse controls
+   remain a design target: the backend has a picker endpoint, but the delivered
+   page does not expose Browse buttons.
 3. Batch-only generation using existing options: Power BI or Fabric artifact output, model culture, calendar years, quality policy, and resume.
 4. Real queued/running/completed/error states, bounded technical logs, job history, generated report links, and output ZIP download.
 5. Clear startup, connection, input-validation, unavailable-feature, and subprocess-error messages.
@@ -180,8 +188,8 @@ Migration locale — configuration:
 
 | Field | Example/default | Behavior |
 |-------|-----------------|----------|
-| Dossier source Tableau | `C:\Tableau\Sources` | Required local folder; Browse or manual entry |
-| Dossier de sortie | `C:\MigrationOutput` | Required local output path; Browse or manual entry |
+| Dossier source Tableau | `C:\Tableau\Sources` | Required local folder; delivered page uses manual entry |
+| Dossier de sortie | `C:\MigrationOutput` | Required local output path; delivered page uses manual entry |
 | Format | Projet Power BI (.pbip) | Fabric remains file generation only |
 | Culture | `fr-FR` | Preserve the existing locale choices |
 | Calendrier | 2020 to 2030 | Reject reversed bounds |
@@ -271,12 +279,19 @@ Unknown routes remain explicit errors. Unavailable native checks can be accepted
 
 ## 9. Next Steps
 
-1. Review this local-only plan and its [visual preview](.preview-temp/migration.html). Keep status **Planning** until the user approves implementation.
-2. Preserve the existing working tree and finish the current frontend/runner integration, especially Browse controls, offline explanations, and visible failure states. Do not scaffold another backend or frontend framework.
+1. Use the [local browser guide](../docs/LOCAL_WEB_UI.md) for launch and delivered
+   scope. The [visual preview](.preview-temp/migration.html) remains a design
+   reference with illustrative content, not the live application.
+2. Any future Browse controls need explicit implementation and browser
+   acceptance; they must not be documented as already delivered. Do not
+   scaffold another backend or frontend framework.
 3. Verify the core generation path is offline, including optional environment-driven integrations. Do not invent an unsupported `--offline` CLI flag; use existing controls or make a narrowly scoped, tested change if an actual dependency is discovered.
 4. Extend the focused tests only for changed behavior, then run `python -m pytest tests\test_local_web_ui.py -q`. Use browser checks for JavaScript interactions; HTTP tests alone do not verify them.
 5. Run a public/local sample batch and browser acceptance checks with external network access unavailable. Record actual evidence and fix blockers before claiming the website works end-to-end offline.
-6. Update the README and local web-interface documentation with offline startup, prerequisites, optional readers, diagnostics limitations, output access, and shutdown behavior. Remove the standalone desktop application, executable packaging, launcher, app icon, desktop screenshot, and app-only tests.
+6. Keep the README and local web-interface documentation aligned with startup,
+   prerequisites, optional readers, diagnostics limits, output access and
+   shutdown. The standalone desktop application, executable packaging, launcher,
+   app icon, screenshot and app-only tests were removed in `12e921e`.
 
 **Launch contract after implementation**
 
@@ -289,6 +304,10 @@ python web\local_server.py --port 8765 --no-browser
 Open `http://127.0.0.1:8765/`. Exit the launcher with Ctrl+C. A busy port or missing Python must produce an actionable error, not a false ready message.
 
 **Acceptance criteria**
+
+These are design/release targets, not a statement that each was re-executed.
+The current page has manual path fields only; Browse acceptance remains
+pending. Prior browser observations are recorded separately in the roadmap.
 
 - A clean local launch serves the page and API with all assets available while external networking is unavailable. Browser requests target loopback only; the real generation process must also complete without outbound network access.
 - The source/output Browse buttons populate the correct fields. Cancellation leaves the prior value intact; an unavailable picker visibly explains manual entry.

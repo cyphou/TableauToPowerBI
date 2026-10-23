@@ -418,7 +418,7 @@ class PowerBIProjectGenerator:
         self.last_phase_timings = None
         
     def generate_project(self, report_name, converted_objects, calendar_start=None,
-                         calendar_end=None, culture=None, model_mode='import',
+                         calendar_end=None, culture=None, model_mode='auto',
                          output_format='pbip', paginated=False, languages=None,
                          composite_threshold=None, agg_tables='none',
                          incremental_refresh=False, incremental_refresh_months=12,
@@ -451,7 +451,7 @@ class PowerBIProjectGenerator:
         self._calendar_start = calendar_start
         self._calendar_end = calendar_end
         self._culture = culture
-        self._model_mode = model_mode or 'import'
+        self._model_mode = model_mode or 'auto'
         self._output_format = output_format or 'pbip'
         self._paginated = paginated
         self._languages = languages
@@ -809,7 +809,7 @@ class PowerBIProjectGenerator:
                 calendar_start=getattr(self, '_calendar_start', None),
                 calendar_end=getattr(self, '_calendar_end', None),
                 culture=getattr(self, '_culture', None),
-                model_mode=getattr(self, '_model_mode', 'import'),
+                model_mode=getattr(self, '_model_mode', 'auto'),
                 languages=getattr(self, '_languages', None),
                 composite_threshold=getattr(self, '_composite_threshold', None),
                 agg_tables=getattr(self, '_agg_tables', 'none'),

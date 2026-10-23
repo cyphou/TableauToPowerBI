@@ -28,6 +28,67 @@ from extract_tableau_data import (
     _scan_delimited_sample,
 )
 import extract_tableau_data as etd
+from powerbi_import.errors import ConfigurationError, ExtractionError
+
+
+class TestHyperArchiveIoOptions(unittest.TestCase):
+    """Only synthetic ZIP data; sample and decompression limits stay distinct."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        self.path = os.path.join(self.root, "synthetic.twbx")
+        self.output = os.path.join(self.root, "metadata")
+        with zipfile.ZipFile(self.path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("synthetic.twb", "<workbook/>")
+            archive.writestr("Data/synthetic.hyper", b"HyPe" + b"x" * (1024 * 1024))
+
+    def test_invalid_zip_environment_fails_before_creating_extraction_output(self):
+        with patch.dict(os.environ, {"TTPBI_MAX_ZIP_ENTRY_MB": "0"}):
+            with self.assertRaises(ConfigurationError):
+                TableauExtractor(self.path, output_dir=self.output)
+        self.assertFalse(os.path.exists(self.output))
+        with patch.dict(os.environ, {"TTPBI_MAX_ZIP_ENTRY_MB": "invalid"}):
+            extractor = TableauExtractor(
+                self.path, output_dir=self.output, max_zip_entry_mb=2,
+            )
+        self.assertEqual(extractor.max_zip_entry_mb, 2)
+
+    def test_header_scan_is_bounded_and_deep_reader_gets_explicit_limits(self):
+        extractor = TableauExtractor(
+            self.path, output_dir=self.output, hyper_max_rows=7, max_zip_entry_mb=2,
+        )
+        real_read = zipfile.ZipExtFile.read
+        requests = []
+
+        def bounded_read(stream, size=-1):
+            self.assertGreater(size, 0)
+            self.assertLessEqual(size, 262144)
+            requests.append(size)
+            return real_read(stream, size)
+
+        with patch.object(zipfile.ZipExtFile, "read", bounded_read), \
+                patch.object(zipfile.ZipFile, "read",
+                             side_effect=AssertionError("whole ZIP entry read")), \
+                patch.object(etd, "read_hyper_from_twbx", return_value=[]) as deep:
+            extractor.extract_hyper_metadata()
+        self.assertTrue(requests)
+        deep.assert_called_once_with(self.path, max_rows=7, max_zip_entry_mb=2)
+        self.assertEqual(
+            [entry["path"] for entry in extractor.workbook_data["hyper_files"]],
+            ["Data/synthetic.hyper"],
+        )
+
+    def test_metadata_reader_failure_is_explicit_instead_of_empty_success(self):
+        extractor = TableauExtractor(
+            self.path, output_dir=self.output, max_zip_entry_mb=2,
+        )
+        failure = RuntimeError("synthetic deep reader failure")
+        with patch.object(etd, "read_hyper_from_twbx", side_effect=failure):
+            with self.assertRaises(ExtractionError) as raised:
+                extractor.extract_hyper_metadata()
+        self.assertIs(raised.exception.__cause__, failure)
 
 
 # ═══════════════════════════════════════════════════════════════════

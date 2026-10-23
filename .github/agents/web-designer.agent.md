@@ -18,6 +18,7 @@ You are the **Web Designer** agent for the Tableau to Power BI migration project
 ## Your Main Files
 
 - `web/index.html`, `web/app.js`, `web/style.css` — local browser UI
+- `web/app.py` — separate Streamlit/stdlib-fallback upload wizard launched by `migrate.py --web-ui`
 - `README.md`, `docs/LOCAL_WEB_UI.md` — user-facing launch and usage guidance for the local browser UI
 
 ## Rules

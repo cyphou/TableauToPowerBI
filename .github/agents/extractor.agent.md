@@ -32,12 +32,12 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 
 ## Constraints
 
-- Do NOT modify DAX conversion logic — that's `dax_converter.py` (owned by **Converter**)
-- Do NOT modify M query generation — that's `m_query_builder.py` (owned by **Converter**)
-- Do NOT modify Power BI generation files — delegate to **Generator**
+- Do NOT modify DAX conversion logic — `dax_converter.py` is owned by **@dax**
+- Do NOT modify M query generation — `m_query_builder.py` is owned by **@wiring**
+- Do NOT modify Power BI generation files — delegate to **@semantic**, **@visual**, or **@fabric** as appropriate
 - Do NOT modify test files — delegate to **Tester**
 
-## 17 Extracted Object Types
+## 23 Extracted Object Types
 
 | Type | JSON File | Source XML Elements |
 |------|-----------|-------------------|
@@ -58,6 +58,12 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 | custom_sql | custom_sql.json | `<relation[@type='text']>` |
 | user_filters | user_filters.json | `<user-filter>` |
 | hyper_files | hyper_files.json | `.hyper` embedded data (tables, columns, sample rows) |
+| datasource_filters | datasource_filters.json | Extract/datasource filter definitions |
+| custom_geocoding | custom_geocoding.json | Custom geographic definitions |
+| published_datasources | published_datasources.json | Published datasource references |
+| data_blending | data_blending.json | Cross-datasource blending metadata |
+| table_extensions | table_extensions.json | Table-extension definitions |
+| linguistic_schema | linguistic_schema.json | Linguistic/Q&A metadata |
 
 ## Key Knowledge
 
@@ -66,7 +72,7 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 - Both formats must be extracted and deduplicated into `param_map`
 - Datasource extraction handles `[Table].[Column]` AND bare `[Column]` join clause formats
 - Tableau Server REST API uses PAT or password auth with paginated responses
-- Hyper files are read via SQLite interface — column metadata + row data
+- Hyper readers use optional `tableauhyperapi`, SQLite and metadata-scan fallbacks; metadata-only extraction is not row recovery
 
 ## XML Parsing Rules
 
@@ -89,5 +95,5 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 - **Linguistic schema**: Field captions as Q&A synonyms → `linguisticSchema.xml`
 
 - **Hyper inlining**: Hyper file data injected into M `#table()` partitions or `Csv.Document` — falls back gracefully if `tableauhyperapi` unavailable
-- **REST API server**: `api_server.py` accepts multipart `.twbx` uploads, runs migration in background threads
-- **Schema drift detection**: `--check-drift` compares extraction snapshots to detect structural changes
+- **REST API server**: `POST /migrate/batch` accepts ZIP batch uploads; `POST /migrate` is retired (410). This is separate from the local folder-path browser UI
+- **Schema drift detection**: compare extracted dictionaries with `schema_drift.detect_schema_drift(current, previous)`; the legacy `--check-drift` postprocessing flag is not forwarded by batch generation

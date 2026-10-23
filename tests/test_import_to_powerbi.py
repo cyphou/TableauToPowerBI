@@ -142,6 +142,19 @@ class TestImportAll(unittest.TestCase):
             self.imp.import_all(generate_pbip=False)
         mock_gen.assert_not_called()
 
+    def test_import_all_defaults_to_auto_and_keeps_explicit_import(self):
+        converted = {"datasources": [{"name": "Synthetic", "tables": []}]}
+        for options, expected in (({}, "auto"), ({"model_mode": "auto"}, "auto"),
+                                  ({"model_mode": "import"}, "import")):
+            with self.subTest(options=options), \
+                    patch.object(self.imp, "_load_converted_objects", return_value=converted), \
+                    patch.object(self.imp, "generate_powerbi_project") as generate, \
+                    patch("builtins.print"):
+                self.imp.import_all(output_dir=self.tmpdir, **options)
+                generate.assert_called_once()
+                self.assertEqual(generate.call_args.kwargs["model_mode"], expected)
+                self.assertEqual(generate.call_args.args[1], converted)
+
 
 class TestGeneratePowerBIProject(unittest.TestCase):
     """Test generate_powerbi_project() method."""
@@ -149,13 +162,19 @@ class TestGeneratePowerBIProject(unittest.TestCase):
     def test_calls_generator(self):
         imp = PowerBIImporter()
         converted = {'datasources': [{'name': 'ds'}], 'worksheets': []}
-        with patch('import_to_powerbi.PowerBIProjectGenerator') as MockGen:
-            mock_instance = MagicMock()
-            mock_instance.generate_project.return_value = '/out/report'
-            MockGen.return_value = mock_instance
-            imp.generate_powerbi_project('Report', converted)
-        MockGen.assert_called_once()
-        mock_instance.generate_project.assert_called_once()
+        for options, expected in (({}, "auto"), ({"model_mode": "auto"}, "auto"),
+                                  ({"model_mode": "import"}, "import")):
+            with self.subTest(options=options), \
+                    patch('import_to_powerbi.PowerBIProjectGenerator') as MockGen:
+                mock_instance = MagicMock()
+                mock_instance.generate_project.return_value = '/out/report'
+                MockGen.return_value = mock_instance
+                imp.generate_powerbi_project('Report', converted, **options)
+                MockGen.assert_called_once()
+                mock_instance.generate_project.assert_called_once()
+                self.assertEqual(
+                    mock_instance.generate_project.call_args.kwargs["model_mode"], expected,
+                )
 
     def test_custom_output_dir(self):
         imp = PowerBIImporter()

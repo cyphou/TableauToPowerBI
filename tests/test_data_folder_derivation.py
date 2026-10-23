@@ -117,13 +117,8 @@ class TestWrittenExpression(unittest.TestCase):
                          r'C:\Data')
 
 
-class TestTheTwbFallbackRunsInBothModes(unittest.TestCase):
-    """Batch created a local Data folder and told the user; single did not.
-
-    _extract_twbx_data_files returned early for anything not .twbx, so a
-    single .twb migration shipped a DataFolder pointing nowhere, with no
-    hint of where to put the data. Same workbook, two answers.
-    """
+class TestLegacyStagedDataFolderFallback(unittest.TestCase):
+    """Fabric keeps its staged DataFolder fallback; PBIP native paths do not use it."""
 
     def _project(self, root, folder):
         project = os.path.join(root, 'Sales')
@@ -139,7 +134,7 @@ class TestTheTwbFallbackRunsInBothModes(unittest.TestCase):
         import migrate
         self._project(root, folder)
         args = SimpleNamespace(tableau_file=args_source, output_dir=root,
-                               output_format='pbip')
+                               output_format='fabric')
         buffer = StringIO()
         with redirect_stdout(buffer):
             migrate._extract_twbx_data_files(args, 'Sales')

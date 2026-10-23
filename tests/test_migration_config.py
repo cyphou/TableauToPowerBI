@@ -26,6 +26,39 @@ def _make_args(**kwargs):
     return argparse.Namespace(**kwargs)
 
 
+class TestHyperConfigurationOptions(unittest.TestCase):
+    def test_export_cap_format_and_zip_limit_survive_args_and_config_roundtrip(self):
+        cfg = MigrationConfig.from_args(_make_args(
+            mode="import", max_zip_entry_mb=3, hyper_export_format="csv",
+            hyper_export_max_rows=7,
+        ))
+        self.assertEqual(cfg.model_mode, "import")
+        self.assertEqual(cfg.max_zip_entry_mb, 3)
+        self.assertEqual(cfg.hyper_export_format, "csv")
+        self.assertEqual(cfg.hyper_export_max_rows, 7)
+        copied = MigrationConfig(cfg.to_dict())
+        self.assertEqual(copied.to_dict(), cfg.to_dict())
+
+    def test_absent_options_do_not_clobber_config_but_explicit_auto_still_wins(self):
+        cfg = MigrationConfig({
+            "model": {"mode": "import"},
+            "migration": {
+                "max_zip_entry_mb": 5, "hyper_export_format": "parquet",
+                "hyper_export_max_rows": 11,
+            },
+        })
+        self.assertEqual(cfg.merge_with_args(_make_args()).to_dict(), cfg.to_dict())
+        merged = cfg.merge_with_args(_make_args(
+            mode="auto", max_zip_entry_mb=3, hyper_export_format="auto",
+            hyper_export_max_rows=7,
+        ))
+        self.assertEqual(merged.model_mode, "auto")
+        self.assertEqual(merged.max_zip_entry_mb, 3)
+        self.assertEqual(merged.hyper_export_format, "auto")
+        self.assertEqual(merged.hyper_export_max_rows, 7)
+        self.assertEqual(cfg.model_mode, "import", "Merging must not mutate the file config")
+
+
 class TestFromArgs(unittest.TestCase):
     """Test MigrationConfig.from_args() with various CLI arg combinations."""
 
@@ -70,7 +103,7 @@ class TestFromArgs(unittest.TestCase):
         """Missing attributes on Namespace should keep defaults."""
         args = _make_args()  # Empty namespace
         cfg = MigrationConfig.from_args(args)
-        self.assertEqual(cfg.model_mode, 'import')
+        self.assertEqual(cfg.model_mode, 'auto')
         self.assertEqual(cfg.culture, 'en-US')
         self.assertIsNone(cfg.tableau_file)
         self.assertIsNone(cfg.output_dir)
@@ -84,7 +117,7 @@ class TestFromArgs(unittest.TestCase):
             verbose=False, dry_run=False, log_file=None,
         )
         cfg = MigrationConfig.from_args(args)
-        self.assertEqual(cfg.model_mode, 'import')
+        self.assertEqual(cfg.model_mode, 'auto')
         self.assertEqual(cfg.culture, 'en-US')
         self.assertEqual(cfg.calendar_start, 2020)
         self.assertEqual(cfg.calendar_end, 2030)
@@ -293,7 +326,7 @@ class TestSaveAndLoad(unittest.TestCase):
 
     def test_load_config_no_inputs(self):
         cfg = load_config()
-        self.assertEqual(cfg.model_mode, 'import')
+        self.assertEqual(cfg.model_mode, 'auto')
 
 
 if __name__ == '__main__':

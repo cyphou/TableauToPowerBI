@@ -146,7 +146,7 @@ Each **table** has:
 
 ## Handoff Points
 
-- **From @extractor**: Receives 17 extracted JSON objects (datasources, calculations, parameters, etc.)
+- **From @extractor**: Receives 23 extracted JSON object types (datasources, calculations, parameters, etc.)
 - **From @dax**: Receives validated DAX expressions for measures and calculated columns
 - **From @wiring**: Receives M partition expressions, M calc column steps, classification decisions
 - **To @visual**: Produces the semantic model that visuals bind to (table/column/measure names)

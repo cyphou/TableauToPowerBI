@@ -1,6 +1,25 @@
 # FAQ — Tableau to Power BI Migration
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🌐 Local browser](LOCAL_WEB_UI.md) · [✅ Review checklist](MIGRATION_CHECKLIST.md)
+
 ## General
+
+### How do I open the local browser interface?
+
+From the repository root:
+
+```powershell
+.\run_web_ui.ps1
+# Or use Python directly:
+python web\local_server.py
+```
+
+Open `http://127.0.0.1:8765/`, enter separate local source/output folder
+paths, and keep the terminal open. Ctrl+C stops the server; closing a tab does
+not stop a job. This page needs no account, cloud hosting, upload or frontend
+build. The standalone Windows app/EXE has been removed; the PowerShell script
+only launches the website. Native Power BI/Tableau diagnostics are separate,
+explicitly confirmed actions. See the [local browser guide](LOCAL_WEB_UI.md).
 
 ### Which Tableau files are supported?
 
@@ -8,7 +27,12 @@
 
 ### What is a `.pbip` file?
 
-It is a **Power BI Project** — a text-based file format (JSON + TMDL) that represents a complete Power BI report. It opens directly in Power BI Desktop by double-clicking.
+It is the entry point of a **Power BI Project**, whose sibling folders hold the
+report definition and semantic model as editable JSON and TMDL. Open it from a
+supported Power BI Desktop installation; double-clicking also works when the
+file association is configured. Generation and static validation do not
+guarantee native loading, refresh or visual parity. See the
+[project opening and setup guide](POWERBI_PROJECT_GUIDE.md).
 
 ### Do I need to install Python dependencies?
 
@@ -21,18 +45,104 @@ Optional dependencies for advanced features:
 
 ### How are `.hyper` extract files handled?
 
-When a `.twbx` contains embedded `.hyper` files, the migration automatically:
+Packaged Hyper tables retain their exact workbook, archive member, schema and
+table identity. The generated partition is connected to the matching staged
+export, not a file selected by similar columns or filenames.
 
-1. **Extracts** the `.hyper` file from the TWBX archive
-2. **Reads** column metadata and row data using a 3-tier reader chain:
-   - **Tier 1:** `tableauhyperapi` (pip package) — handles 100% of `.hyper` formats including v2+
-   - **Tier 2:** SQLite fallback — works for older `.hyper` files that are SQLite-compatible
-   - **Tier 3:** Binary header scan — extracts CREATE TABLE/INSERT patterns for metadata-only
-3. **Inlines** small tables (≤500 rows by default) into M `#table()` expressions
-4. **Converts** large tables to CSV files with `Csv.Document()` M expressions
-5. **Patches** TMDL partition expressions to reference the generated CSV files
+The reader chain uses optional `tableauhyperapi`, then SQLite for compatible
+files, then a bounded header scan. A header scan may recover metadata and a
+bounded row sample, not a complete export. Such samples remain marked as
+limited data in manifests and quality reports. Archive copies and CSV export
+use bounded buffers; CSV rewrites use a separate temporary file before replacing their destination,
+including when the original CSV and destination have the same name.
 
-Use `--hyper-rows N` to control the inline/CSV threshold.
+Use these batch options for large extracts:
+
+| Option | Purpose |
+|--------|---------|
+| `--max-zip-entry-mb N` | Positive per-member uncompressed limit in MiB; explicit option overrides `TTPBI_MAX_ZIP_ENTRY_MB`, then the 1024 MiB default |
+| `--mode auto` | Default: Hyper means Import; without Hyper, use DirectQuery when supported, otherwise Import |
+| `--mode import` | Force Import; non-Hyper sources migrate connection/schema/M only, while Hyper still exports its data |
+| `--hyper-export-format auto` | PBIP: Hyper strictly larger than 10 MiB requires native Parquet; at most 10 MiB becomes CSV. Fabric stays CSV |
+| `--hyper-export-format csv` | Explicit CSV export |
+| `--hyper-export-format parquet` | Require native Parquet support; unavailable prerequisites are errors, not silent CSV substitution |
+| `--hyper-export-max-rows N` | Positive export row cap; `TTPBI_HYPER_EXPORT_MAX_ROWS` supplies the environment default; omitted means unlimited |
+
+For example, generate an explicitly limited review project:
+
+```powershell
+python migrate.py batch .\workbooks --output-dir .\review `
+    --max-zip-entry-mb 4096 --hyper-export-format auto `
+    --hyper-export-max-rows 10000
+```
+
+The row cap is a sample, not full-data migration or parity evidence.
+Without a source ordering guarantee, `LIMIT` does not promise a particular
+subset or a stable row order. Source selection, export format and row counts
+must be reviewed in the generated export evidence.
+
+`--hyper-rows` is a separate legacy metadata/inline-sample option. It is not
+an export row cap and is not forwarded by batch generation.
+
+The decision is deliberately simple: **Hyper means Import**, even when the
+workbook also records an original database connection. Without Hyper, a supported
+native database connector uses DirectQuery. Excel, CSV and other import-only
+connectors cannot use DirectQuery and remain Import with an explanation.
+This also applies to the native [MySQL connector](https://learn.microsoft.com/en-us/power-query/connectors/mysql-database#supported-capabilities),
+whose supported storage capability is Import, not DirectQuery.
+Select **Import** in the local browser or pass `--mode import` to override
+automatic DirectQuery. See the
+[decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
+
+For non-Hyper sources, **Import does not mean extracting their data during
+migration**. The PBIP contains the datasource connection, schema and Power Query
+M; Power BI loads the rows on refresh. Native Excel/CSV and other dataset files
+are not copied from the package or source folders into the generated project.
+For loose workbooks, relative file bindings resolve against the original
+workbook directory; absolute bindings stay unchanged. Power Query must be able
+to access that location. Native files inside a TWBX are not extracted or
+rebound to guessed loose files: configure an accessible external source when
+needed. Native CSV parsing determines the full physical width before selecting
+the exact declared source columns by name, rather than truncating the input to
+the model's column count. Selection precedes type and caption transformations:
+an unmodeled physical field cannot collide with a caption rename, while a
+missing declared source field still raises an error.
+Explicitly declared physical columns are also retained when the sole source
+table has a partial nested schema; their declared types and caption mappings
+are preserved instead of creating calculated placeholders. Tableau pseudo-fields
+are excluded from that physical schema. Declarations without proven ownership
+are not assigned to an arbitrary table in a multi-table source.
+Metadata extraction from the Tableau workbook still takes place. Hyper is the
+exception: its data are exported to CSV/Parquet and used by the Import partition.
+
+The size test uses the uncompressed Hyper file: strictly more than
+`10 * 1024 * 1024` bytes chooses Parquet; exactly that size still chooses CSV.
+The existing optional Hyper API is required when Parquet is selected.
+A SQLite-compatible input is not native Hyper: above the PBIP threshold it
+fails explicitly rather than silently using CSV. Select
+`--hyper-export-format csv` explicitly if that compatibility path is intended.
+Fabric-native auto staging remains CSV; explicit Fabric Parquet is unsupported.
+A generated database connection requires credentials and possibly a gateway;
+generation does not contact it or prove that it refreshes.
+
+CSV exports use `Csv.Document()` with header promotion and physical scalar
+typing. Parquet exports use `Parquet.Document()` without CSV header promotion.
+Native Parquet export uses the already optional Hyper API; it does not add a
+core dependency on pandas, pantab or pyarrow.
+
+Hyper geography columns are cast to WKT text for native Parquet export because
+Parquet cannot store Hyper's geography type. Names, order and nulls are preserved;
+other columns keep their native types. Other unsupported types still fail
+explicitly, without dropping columns or falling back to CSV. CSV serialization
+is unchanged and can contain the SDK's bytes representation for geography.
+Exporting a geometry as text does not certify spatial rendering in Power BI.
+
+Long CSV exports report their table, written row count and rate, with a
+percentage and ETA only when a total is available. Intermediate display
+updates are throttled to at most one per two seconds. Terminal output can
+update in place; redirected/browser logs use flushed newline records.
+Native Parquet export has truthful start/completion messages, not an invented
+row-by-row percentage.
 
 For Hyper data staged as CSV, physical columns are typed at the M `Source`
 step immediately after header promotion and before derived calculations.
@@ -53,12 +163,12 @@ it does not establish a general Desktop or all-workbook pass.
 
 ### Why was an Excel source reported missing even though it was inside the TWBX?
 
-Packaged files must be available before semantic source validation. Migration
-now stages exact declared archive members into the project's `Data` folder
-before generation, using the same content-conflict checks as loose sources.
-It does not search by basename or replace a missing member with an unrelated
-file. Regenerate an affected project; merely copying the file into an older
-output does not replace an already-generated unavailable-source partition.
+Native Excel/CSV files inside a TWBX are not extracted, staged into `Data`,
+or rebound by basename during PBIP migration. The project preserves the source
+connection and schema; configure an accessible external source in Power Query
+before requesting a Desktop refresh. A packaged file alone is not an external
+refresh binding. Hyper is the separate exception: its data are exported as CSV
+or Parquet and the generated Import partition reads that export.
 
 ### Why did a date-based calculated column fail on every row in Power Query?
 
@@ -94,7 +204,17 @@ probe checks visible owned refresh state before and after observing rows, and
 again after render settling. Errors, unfinished refresh/pending changes or
 unavailable UI inspection prevent refresh/screenshot verification; loaded row
 counts remain available separately for diagnosis. A benign incomplete/no-data
-banner alone is not classified as a refresh error.
+banner alone is neither a refresh error nor evidence of success. A newly
+generated metadata-only PBIP may show both incomplete/no-data and calculated
+objects needing refresh. Configure source access, run **Home > Refresh >
+Schema and data**, inspect any errors, then save the project after successful
+processing so Power BI can retain its local cache. The migration itself does
+not preload native rows or hide these notices.
+
+A native `.shp` is not JSON. PBIP generation leaves an explicit
+`SourceBinding.Error` requesting a supported GeoJSON binding instead of sending
+the binary file to `Json.Document` and producing a misleading buffer error.
+It does not convert or copy native spatial data.
 
 Worksheet and dashboard extraction uses direct workbook collection members,
 not similarly named nested metadata references. Minimal XML without those
@@ -136,7 +256,11 @@ python migrate.py lineage examples/prep_portfolio/
 
 ### Where is the output?
 
-In `artifacts/powerbi_projects/[ReportName]/[ReportName].pbip`. Double-click to open in Power BI Desktop.
+For batch generation, `--output-dir` is the output root; without it the root
+is `<source-folder>\migrated`. Each workbook has its own project directory,
+and a path-budgeted `P_<hash>` identity may replace a long workbook name.
+Use the reported output path rather than assuming a fixed filename. Opening
+the `.pbip` in Power BI Desktop is a separate validation step.
 
 ### How are standalone Tableau Prep flows (.tfl/.tflx) handled?
 
@@ -352,11 +476,13 @@ Desktop. If it reports `openable=false`, read the listed blocking issues; the mo
 cause is an invalid generated M partition. Fix the source generator, not the emitted
 `.tmdl`. Re-run with `--no-verify-open` only to bypass the gate deliberately for diagnosis.
 
-To attempt automatic recovery before opening, run `--autoheal` (deterministic DAX/M/visual
-healing). Add `--llm-autofix` to allow opt-in LLM correction, which is applied only when the
-result re-validates cleanly. For a best-effort real Desktop smoke test, use the explicit
-`--desktop-probe`. The `--verify-open` verdict applies only to its static checks;
-it does not override a Desktop load or refresh failure.
+For separate deterministic DAX/M/visual recovery, use the MCP `autoheal` tool
+and review the resulting repair evidence. The parser's legacy `--autoheal`,
+`--llm-autofix`, and `--desktop-probe` switches are not forwarded by batch
+generation. Use the local browser's separately confirmed native diagnostic or
+`python scripts\probe_projects.py PROJECTS_DIR` for a Desktop smoke test.
+The `--verify-open` verdict applies only to its static checks; it does not
+override a Desktop load or refresh failure.
 
 ### Can `openable=true` still fail when data is refreshed?
 
@@ -514,12 +640,17 @@ The `merge_assessment.json` file lists all conflicts detected.
 python -m pytest tests/ -v
 ```
 
-The historical full-suite baseline completed with **10,798 passed, 66 skipped, and 1 xfailed** from 10,865 collected tests across 316 files; see CI for current results. Coverage includes DAX conversion, Power Query M generation, TMDL model building, visual generation, project structure, artifact validation, deployment utilities, Fabric-native generation, DAX optimization, cross-platform equivalence testing, and end-to-end non-regression migration.
+See [CI](https://github.com/cyphou/TableauToPowerBI/actions) for current outcomes,
+the [test guide](../tests/README.md) for focused commands, and the
+[roadmap](ROADMAP.md) for dated full-suite measurements. Historical totals are
+not a fresh test run or live Desktop/Fabric evidence.
 
 ### Does the preceptor automatically send fixes to agents?
 
-Not automatically. The CLI runs preceptor scoring by default and writes
-`preceptor_report.json`; it does not invoke Copilot agents or apply coaching.
+No. Supported batch and shared-model CLI generation do not invoke the Python
+preceptor or write `preceptor_report.json`; their dispatches do not forward
+the parser's preceptor switches. A separately invoked preceptor scores
+artifacts but does not invoke Copilot agents or apply coaching.
 With MCP configured, an owner can call `quality_report` and then
 `agent_handoff` with its own name in the same server session to pull only its
 findings. The packet is read-only. After a real artifact change, rerun
@@ -527,8 +658,9 @@ findings. The packet is read-only. After a real artifact change, rerun
 is accepted only if PBIP definition files changed and the finding disappeared.
 An owner can instead acknowledge `not_applicable` with a rationale. Accepted
 ACKs live only in the MCP process (`persisted: false`); they do not trigger an
-agent or persist a resolution history. `--no-preceptor` skips scoring;
-`--preceptor-block` opts into a hard failure after escalation. The legacy
+agent or persist a resolution history. `--no-preceptor` and
+`--preceptor-block` do not establish a preceptor gate for batch/shared-model
+generation. The legacy
 specialized QA suite is not available through the supported batch-only CLI.
 
 ### How do I run the migration as a REST API?
@@ -545,17 +677,24 @@ docker run -p 8000:8000 tableau-to-pbi
 Endpoints: `POST /migrate/batch` (upload a ZIP containing Tableau files),
 `GET /batch/{id}`, `GET /status/{id}`, `GET /download/{id}`, `GET /health`,
 and `GET /jobs`. The retired `POST /migrate` endpoint returns HTTP 410.
+This upload service is not the loopback folder-path browser runner. Review
+the [upload security boundary](../UPLOAD_SECURITY.md) before hosting uploads;
+application-level confinement is not an OS sandbox.
 
 ### How do I detect schema drift between migrations?
 
-Use `--check-drift` to compare the current extraction against a saved snapshot:
+Use the schema-drift Python API to compare saved extraction snapshots.
+The legacy `--check-drift` postprocessing option is not forwarded by supported
+batch generation; a parsed flag does not prove a drift check ran:
 
-```bash
-# First migration creates a baseline snapshot
-python migrate.py workbook.twbx --check-drift /path/to/snapshot_dir
-# ... time passes, Tableau workbook changes ...
-# Re-run to detect drift
-python migrate.py workbook.twbx --check-drift /path/to/snapshot_dir
+```python
+from powerbi_import.schema_drift import detect_schema_drift, load_snapshot
+
+# Each directory contains the extracted JSON for one source revision.
+previous = load_snapshot(r"snapshots\before")
+current = load_snapshot(r"snapshots\after")
+report = detect_schema_drift(current, previous)
+print(report.summary())
 ```
 
 The report lists added/removed/modified tables, columns, calculations, worksheets, relationships, parameters, and filters.

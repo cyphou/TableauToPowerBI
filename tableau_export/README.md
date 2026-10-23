@@ -1,18 +1,21 @@
 # tableau_export — Tableau Extraction
 
-Extracts metadata from Tableau `.twb` and `.twbx` files.
+Extracts metadata from Tableau `.twb` and `.twbx` files. Normal migrations
+should use the [local browser UI](../docs/LOCAL_WEB_UI.md) or the batch CLI;
+the extraction entry point below is for development and diagnosis.
 
 ## Modules
 
 ### `extract_tableau_data.py`
 
-Extraction orchestrator. Parses the Tableau XML, decompresses `.twbx` files, and calls the enhanced extractor.
+Extraction orchestrator. Safely parses Tableau XML, reads packaged workbooks
+and coordinates datasource, worksheet, dashboard and other extractors.
 
 ```bash
 python tableau_export/extract_tableau_data.py your_workbook.twbx
 ```
 
-### `enhanced_datasource_extractor.py`
+### `datasource_extractor.py`
 
 Main extractor. For each Tableau datasource:
 
@@ -22,11 +25,34 @@ Main extractor. For each Tableau datasource:
 - **Connections**: Excel, CSV, GeoJSON, SQL Server, PostgreSQL
 - **Parameters**: names and default values
 
-Also includes the **DAX converter** (`convert_tableau_formula_to_dax()`) which transforms Tableau formulas into valid DAX.
+### `dax_converter.py`
+
+Converts Tableau formulas to DAX and preserves diagnostics for approximate or
+unsupported expressions. See the [DAX reference](../docs/TABLEAU_TO_DAX_REFERENCE.md).
+
+### `m_query_builder.py`
+
+Generates Power Query M connections and transformation steps. Its 97 dispatch
+keys include aliases for 55 distinct connector generator functions; live
+connectivity and refresh are separate checks.
+
+### Prep, Hyper and Server helpers
+
+- `prep_flow_parser.py` parses supported Prep dialects into M; standalone
+  flows export M/source definitions, not empty PBIP reports.
+- `prep_flow_analyzer.py` supplies per-flow schema, graph and assessment data.
+- `hyper_reader.py` uses optional `tableauhyperapi`, SQLite and metadata-scan
+  fallbacks with bounded archive copies and header scans. Metadata-only
+  extraction may supply a bounded sample, never complete data; `.tde` is not
+  read. Packaged Hyper snapshots remain Import sources:
+  [automatic mode and export diagram](../docs/ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
+- `server_client.py` handles authorized Tableau Server/Cloud REST access.
 
 ## Output
 
-JSON files in `tableau_export/`:
+The extractor emits 23 JSON object types in its configured extraction
+directory. The migration orchestrator manages per-workbook snapshots; use
+`TTPBI_EXTRACT_DIR` when isolating a direct diagnostic extraction.
 
 | File | Content |
 |------|---------|
@@ -37,5 +63,25 @@ JSON files in `tableau_export/`:
 | `parameters.json` | Parameters |
 | `filters.json` | Filters |
 | `stories.json` | Stories |
+| `actions.json` | Filter, highlight, URL, navigation, parameter and set actions |
+| `sets.json` | Set definitions |
+| `groups.json` | Manual groups |
+| `bins.json` | Bin definitions |
+| `hierarchies.json` | Drill hierarchies |
+| `sort_orders.json` | Sort metadata |
+| `aliases.json` | Field value aliases |
+| `custom_sql.json` | Custom SQL definitions |
+| `user_filters.json` | User filters and security mappings |
+| `hyper_files.json` | Hyper extraction metadata and available rows |
+| `datasource_filters.json` | Extract/datasource-level filters |
+| `custom_geocoding.json` | Custom geographic definitions |
+| `published_datasources.json` | Published datasource references |
+| `data_blending.json` | Cross-datasource blending metadata |
+| `table_extensions.json` | Table-extension definitions |
+| `linguistic_schema.json` | Linguistic/Q&A metadata |
 
-> **Note**: only `datasources.json` is used by the `.pbip` generation pipeline. The other JSON files are informational.
+These files are not merely informational: generation consumes the relevant
+object types for the semantic model, pages, visuals, filters, bookmarks,
+security and quality evidence. The contract is
+`TableauExtractor.EXTRACTION_OUTPUT_TYPES` in
+[`extract_tableau_data.py`](extract_tableau_data.py).

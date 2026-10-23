@@ -319,8 +319,8 @@ When a calculated column references a literal-value measure (e.g., a Tableau par
 
 After migration, verify:
 
-1. **Generated files:** `artifacts/powerbi_projects/<name>/`
-2. **Open the .pbip** in Power BI Desktop (December 2025+)
+1. **Generated files:** use the path reported by `batch FOLDER --output-dir OUTPUT`; without an explicit output root, batch uses `<source-folder>\migrated`
+2. **Open the .pbip** in an installed Desktop build supporting the generated PBIP/TMDL schemas; a static pass does not certify native compatibility
 3. **Check relationships** in Model view — verify cardinality
 4. **Test DAX measures** — check for syntax errors in the formula bar
 5. **Compare visuals** with the original Tableau workbook
@@ -331,7 +331,7 @@ After migration, verify:
 
 - `.twb` files do not contain data — configure data sources in Power Query after import
 - `.twbx` files are packaged but the extracted data is referenced via Power Query M expressions
-- The tool supports 80+ Tableau-to-DAX formula conversions
+- See the [DAX reference](../../docs/TABLEAU_TO_DAX_REFERENCE.md) for conversion patterns and approximation limits
 - Date tables are auto-generated when date columns are detected
 - Geographic columns get `dataCategory` annotations (City, Latitude, Longitude, etc.)
 

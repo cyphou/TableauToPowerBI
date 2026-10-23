@@ -16,7 +16,7 @@ Example configuration file (migration_config.json):
         "report_name": null
     },
     "model": {
-        "mode": "import",
+        "mode": "auto",
         "culture": "en-US",
         "calendar_start": 2020,
         "calendar_end": 2030
@@ -31,6 +31,9 @@ Example configuration file (migration_config.json):
     "migration": {
         "skip_extraction": false,
         "skip_conversion": false,
+        "hyper_export_format": "auto",
+        "hyper_export_max_rows": null,
+        "max_zip_entry_mb": null,
         "dry_run": false,
         "rollback": false,
         "verbose": false,
@@ -60,7 +63,7 @@ _DEFAULTS = {
         'report_name': None,
     },
     'model': {
-        'mode': 'import',
+        'mode': 'auto',
         'culture': 'en-US',
         'calendar_start': 2020,
         'calendar_end': 2030,
@@ -75,6 +78,9 @@ _DEFAULTS = {
         'rollback': False,
         'verbose': False,
         'log_file': None,
+        'max_zip_entry_mb': None,
+        'hyper_export_format': 'auto',
+        'hyper_export_max_rows': None,
     },
     'plugins': [],
 }
@@ -95,7 +101,39 @@ class MigrationConfig:
         """
         self._config = copy.deepcopy(_DEFAULTS)
         if config_dict:
-            self._merge(self._config, config_dict)
+            incoming = copy.deepcopy(config_dict)
+            # Continue accepting the flat shape used by config.example.json
+            # while keeping the nested schema as the canonical representation.
+            flat_fields = {
+                'tableau_file': ('source', 'tableau_file'),
+                'prep_flow': ('source', 'prep_flow'),
+                'output_dir': ('output', 'directory'),
+                'output_format': ('output', 'format'),
+                'report_name': ('output', 'report_name'),
+                'model_mode': ('model', 'mode'),
+                'mode': ('model', 'mode'),
+                'culture': ('model', 'culture'),
+                'calendar_start': ('model', 'calendar_start'),
+                'calendar_end': ('model', 'calendar_end'),
+                'skip_extraction': ('migration', 'skip_extraction'),
+                'skip_conversion': ('migration', 'skip_conversion'),
+                'dry_run': ('migration', 'dry_run'),
+                'rollback': ('migration', 'rollback'),
+                'verbose': ('migration', 'verbose'),
+                'log_file': ('migration', 'log_file'),
+                'max_zip_entry_mb': ('migration', 'max_zip_entry_mb'),
+                'hyper_export_format': ('migration', 'hyper_export_format'),
+                'hyper_export_max_rows': ('migration', 'hyper_export_max_rows'),
+            }
+            for field, (section, key) in flat_fields.items():
+                if field not in incoming:
+                    continue
+                value = incoming.pop(field)
+                section_values = incoming.setdefault(section, {})
+                if not isinstance(section_values, dict):
+                    raise ValueError(f"Configuration section '{section}' must be an object")
+                section_values.setdefault(key, value)
+            self._merge(self._config, incoming)
 
     @classmethod
     def from_file(cls, filepath):
@@ -149,7 +187,7 @@ class MigrationConfig:
             data['output']['format'] = args.output_format
 
         # Model
-        if hasattr(args, 'mode') and args.mode:
+        if hasattr(args, 'mode') and args.mode is not None:
             data['model']['mode'] = args.mode
         if hasattr(args, 'culture') and args.culture:
             data['model']['culture'] = args.culture
@@ -171,6 +209,12 @@ class MigrationConfig:
             data['migration']['verbose'] = True
         if hasattr(args, 'log_file') and args.log_file:
             data['migration']['log_file'] = args.log_file
+        for key in (
+                'max_zip_entry_mb', 'hyper_export_format',
+                'hyper_export_max_rows'):
+            value = getattr(args, key, None)
+            if value is not None:
+                data['migration'][key] = value
 
         return cls(data)
 
@@ -186,6 +230,16 @@ class MigrationConfig:
         cli_config = MigrationConfig.from_args(args)
         result = copy.deepcopy(self._config)
         self._merge_nondefault(result, cli_config._config, _DEFAULTS)
+        # ``auto`` is the default mode too, so compare against parser None to
+        # retain the CLI's precedence when the user explicitly selects auto.
+        if getattr(args, 'mode', None) is not None:
+            result['model']['mode'] = args.mode
+        for key in (
+                'max_zip_entry_mb', 'hyper_export_format',
+                'hyper_export_max_rows'):
+            value = getattr(args, key, None)
+            if value is not None:
+                result['migration'][key] = value
         return MigrationConfig(result)
 
     @staticmethod
@@ -271,6 +325,18 @@ class MigrationConfig:
     @property
     def log_file(self):
         return self._config['migration']['log_file']
+
+    @property
+    def max_zip_entry_mb(self):
+        return self._config['migration']['max_zip_entry_mb']
+
+    @property
+    def hyper_export_format(self):
+        return self._config['migration']['hyper_export_format']
+
+    @property
+    def hyper_export_max_rows(self):
+        return self._config['migration']['hyper_export_max_rows']
 
     @property
     def plugins(self):

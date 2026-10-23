@@ -4,6 +4,21 @@ The `vscode-extension/` directory contains a VS Code extension that wraps the
 Python migration engine (`migrate.py`) so you can assess, preview, and migrate
 Tableau workbooks without leaving the editor.
 
+## Current integration limit
+
+The extension's **Migrate** action still builds a single-file command
+(`migrate.py WORKBOOK`). Current engine generation is folder-based and rejects
+that command. Until the extension is wired to the batch contract, use the
+[local browser UI](LOCAL_WEB_UI.md) or run this from the repository root:
+
+```powershell
+python migrate.py batch .\workbooks --output-dir .\output
+```
+
+A folder containing one workbook is valid. The extension's assessment and
+preview helpers are separate; their presence does not prove migration, refresh
+or native rendering. This documentation update does not change extension code.
+
 ## Installation (from source)
 
 The extension is not yet published to the Marketplace. To run it locally:
@@ -34,12 +49,12 @@ code --install-extension tableau-to-powerbi-40.0.0.vsix
 | Command | Palette title | What it does |
 |---------|---------------|--------------|
 | `tableauToPowerBI.assess` | Tableau: Assess Migration Readiness | Runs the 9-category assessment and opens a results panel. |
-| `tableauToPowerBI.migrate` | Tableau: Migrate to Power BI | Generates a `.pbip` project with live progress. |
+| `tableauToPowerBI.migrate` | Tableau: Migrate to Power BI | Legacy file-targeted action; use the local browser or batch CLI until this adapter is updated. |
 | `tableauToPowerBI.previewDax` | Tableau: Preview DAX Conversions | Shows Tableau → DAX side by side with editable overrides. |
 | `tableauToPowerBI.refreshTree` | Tableau: Refresh Workbook Tree | Reloads the tree from extraction JSON. |
 
 Right-click a `.twb`/`.twbx` file in the Explorer to access **Assess** and
-**Migrate** directly.
+**Migrate** actions. The migration limitation above still applies.
 
 ## Views
 
@@ -81,7 +96,7 @@ Extension Host via a lightweight `vscode` stub:
 
 ```bash
 cd vscode-extension
-npm test   # 38 unit tests
+npm test   # pure-helper unit tests; see the run output for current counts
 ```
 
 ## Development notes

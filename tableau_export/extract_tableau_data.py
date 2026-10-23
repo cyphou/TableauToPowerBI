@@ -7,6 +7,7 @@ and exports them in JSON format for conversion to Power BI.
 
 import os
 import sys
+import ntpath
 import json
 import logging
 import zipfile
@@ -14,8 +15,19 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 import re
 from copy import deepcopy
-from datasource_extractor import extract_datasource
-from hyper_reader import read_hyper_from_twbx
+
+# Legacy script/top-level callers need the sibling security modules on sys.path.
+_EXPORT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PI_DIR = os.path.join(os.path.dirname(_EXPORT_DIR), 'powerbi_import')
+for _module_dir in (_EXPORT_DIR, _PI_DIR):
+    if _module_dir not in sys.path:
+        sys.path.insert(0, _module_dir)
+try:
+    from .datasource_extractor import extract_datasource
+    from .hyper_reader import read_hyper_from_twbx
+except ImportError:
+    from datasource_extractor import extract_datasource
+    from hyper_reader import read_hyper_from_twbx
 try:
     from .safe_xml import (
         ExtractionWarning,
@@ -35,19 +47,19 @@ except ImportError:
         safe_get_attr,
     )
 
-# Import security utilities — resolve path to powerbi_import
-_PI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'powerbi_import')
-if _PI_DIR not in sys.path:
-    sys.path.insert(0, _PI_DIR)
-from powerbi_import.errors import ExtractionError
 try:
-    from security_validator import (
-        safe_zip_extract_member, safe_parse_xml, SecurityError,
+    from powerbi_import.errors import ConfigurationError, ExtractionError
+    from powerbi_import.security_validator import (
+        get_zip_entry_limit_mb, safe_zip_extract_member, safe_parse_xml, SecurityError,
         validate_path, ALLOWED_EXTENSIONS,
     )
-    _HAS_SECURITY = True
-except ImportError:
-    _HAS_SECURITY = False
+except ModuleNotFoundError:
+    from errors import ConfigurationError, ExtractionError
+    from security_validator import (
+        get_zip_entry_limit_mb, safe_zip_extract_member, safe_parse_xml, SecurityError,
+        validate_path, ALLOWED_EXTENSIONS,
+    )
+_HAS_SECURITY = True
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +287,9 @@ class TableauExtractor:
         'table_extensions', 'linguistic_schema',
     )
     
-    def __init__(self, tableau_file, output_dir=None, hyper_max_rows=None):
+    def __init__(self, tableau_file, output_dir=None, hyper_max_rows=None,
+                 max_zip_entry_mb=None):
+        self.max_zip_entry_mb = get_zip_entry_limit_mb(max_zip_entry_mb)
         self.tableau_file = tableau_file
         self.output_dir = output_dir or os.environ.get('TTPBI_EXTRACT_DIR', 'tableau_export/')
         self.workbook_data = {}
@@ -415,7 +429,7 @@ class TableauExtractor:
                             context=name,
                         )
                         continue
-                    if os.path.isabs(name):
+                    if os.path.isabs(name) or ntpath.isabs(name):
                         logger.warning("Skipping ZIP entry with absolute path: %s", name)
                         self._warn_extraction(
                             ExtractionWarningCode.UNSAFE_ZIP_ENTRY.value,
@@ -426,7 +440,8 @@ class TableauExtractor:
 
                     if name.endswith('.twb') or name.endswith('.tds'):
                         if _HAS_SECURITY:
-                            content = safe_zip_extract_member(z, name)
+                            content = safe_zip_extract_member(
+                                z, name, max_size_mb=self.max_zip_entry_mb)
                             self._workbook_archive_member = name
                             return content.decode('utf-8')
                         else:
@@ -2693,7 +2708,21 @@ class TableauExtractor:
                             }
                             # Attempt to parse header for column metadata
                             try:
-                                raw = z.read(info.filename)
+                                normalized = info.filename.replace('\\', '/')
+                                if ('..' in normalized.split('/')
+                                        or os.path.isabs(info.filename)
+                                        or ntpath.isabs(info.filename)):
+                                    raise SecurityError(
+                                        'Unsafe Hyper ZIP entry: ' + info.filename)
+                                if info.file_size > self.max_zip_entry_mb * 1024 * 1024:
+                                    raise ValueError(
+                                        "ZIP entry {!r} exceeds size limit ({} MiB)".format(
+                                            info.filename, self.max_zip_entry_mb))
+                                # Only the header region is useful here. The
+                                # catalog reader below streams a validated copy
+                                # to disk; never allocate a whole archive member.
+                                with z.open(info.filename) as stream:
+                                    raw = stream.read(262_144)
                                 header_str = raw[:min(4096, len(raw))]
                                 # Detect format signature
                                 if header_str[:4] == b'HyPe':
@@ -2746,11 +2775,15 @@ class TableauExtractor:
                                     avg_bytes_per_col = 20
                                     estimated = entry['size_bytes'] // max(ncols * avg_bytes_per_col, 1)
                                     entry['estimated_row_count'] = max(estimated, 0)
-                            except Exception as exc:
-                                logger.debug("Could not parse hyper header: %s", exc)
+                            except (zipfile.BadZipFile, OSError, KeyError) as exc:
+                                raise ExtractionError(
+                                    'Could not read Hyper archive header',
+                                    source=self.tableau_file, item=info.filename) from exc
                             hyper_files.append(entry)
             except (zipfile.BadZipFile, OSError, KeyError) as exc:
-                logger.debug("Could not read hyper files from archive: %s", exc)
+                raise ExtractionError(
+                    'Could not read Hyper metadata from archive',
+                    source=self.tableau_file) from exc
         self.workbook_data['hyper_files'] = hyper_files
         if hyper_files:
             total_tables = sum(len(h.get('tables', [])) for h in hyper_files)
@@ -2770,6 +2803,7 @@ class TableauExtractor:
             try:
                 deep_results = read_hyper_from_twbx(
                     self.tableau_file, max_rows=self.hyper_max_rows,
+                    max_zip_entry_mb=self.max_zip_entry_mb,
                 )
                 if deep_results:
                     # Merge deep data (actual row counts, richer sample rows)
@@ -2810,8 +2844,11 @@ class TableauExtractor:
                             if total > 0:
                                 entry['actual_row_count'] = total
                     logger.debug("Hyper reader enriched %d file(s)", len(deep_results))
+            except (ConfigurationError, ExtractionError, SecurityError, ValueError):
+                raise
             except Exception as exc:
-                logger.debug("Hyper reader enrichment failed: %s", exc)
+                raise ExtractionError(
+                    'Hyper reader enrichment failed', source=self.tableau_file) from exc
 
     # ------------------------------------------------------------------
     # Helpers for Hyper sample-row extraction

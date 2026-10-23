@@ -1,24 +1,124 @@
 <p align="center">
-  <img src="images/logo-migration-dashboards.png" alt="Tableau to Power BI migration" width="140"/>
+  <a href="../README.md"><img src="images/logo-migration-dashboards.png" alt="Tableau to Power BI project overview" width="104"/></a>
 </p>
 
 # Documentation
 
-Reference documentation for the Tableau to Power BI migration engine.
+**Find the right guide, run locally, and review the evidence.** This hub groups
+the maintained Tableau to Power BI documentation by the task you want to finish.
 
-## Guides
+[🏠 Project overview](../README.md) · [🌐 Local browser](LOCAL_WEB_UI.md) · [✅ Review checklist](MIGRATION_CHECKLIST.md) · [⚠️ Limitations](KNOWN_LIMITATIONS.md) · [📈 Roadmap](ROADMAP.md)
 
-- [USER_MANUAL.md](USER_MANUAL.md) — Operator guide, workflows, validation states, and Tableau ↔ Power BI correspondence table
-- [POWERBI_PROJECT_GUIDE.md](POWERBI_PROJECT_GUIDE.md) — Understanding and using `.pbip` projects
-- [MAPPING_REFERENCE.md](MAPPING_REFERENCE.md) — Tableau ↔ Power BI mappings (190 visuals, formulas, interactions)
-- [TABLEAU_TO_DAX_REFERENCE.md](TABLEAU_TO_DAX_REFERENCE.md) — Complete 133+-function Tableau → DAX mapping
-- [TABLEAU_TO_POWERQUERY_REFERENCE.md](TABLEAU_TO_POWERQUERY_REFERENCE.md) — Complete 108-property Tableau → Power Query M mapping (25 connectors)
-- [TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md) — Complete 165-operation Tableau Prep → Power Query M transformation mapping
-- [FAQ.md](FAQ.md) — Frequently asked questions
-- [ROADMAP.md](ROADMAP.md) — Release gates, verified evidence, and active semantic-validation work
-- [LOCAL_WEB_UI.md](LOCAL_WEB_UI.md) — Local browser UI, launcher, and runtime requirements
-- [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) — Fabric deployment and client-side Desktop opening validation
-- [SERVER_MIGRATION_GUIDE.md](SERVER_MIGRATION_GUIDE.md) — Server/Cloud migration and optional official Tableau MCP evidence
+![Extract metadata, convert formulas, generate editable projects, run locally, review evidence and publish separately](images/features.svg)
+
+## Start here
+
+| Your goal | Read first | Continue with |
+|---|---|---|
+| 🌐 Migrate with the guided interface | [Local browser UI](LOCAL_WEB_UI.md) | Start `.\run_web_ui.ps1`; enter separate local source/output folder paths |
+| 💻 Automate a folder of workbooks | [Operator manual](USER_MANUAL.md) | `python migrate.py batch .\workbooks --output-dir .\output`; a one-workbook folder is valid |
+| 🗄️ Choose Import or DirectQuery | [Source-mode decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export) | Review Hyper export rules and the explicit Import override |
+| 🔎 Check the generated result | [Review checklist](MIGRATION_CHECKLIST.md) | Configure sources, verify refresh, save/reopen, then compare values and visuals |
+| 🚀 Publish with authorization | [Deployment guide](DEPLOYMENT_GUIDE.md) | Preview separately; generation does not deploy or prove runtime readiness |
+
+The local browser runner, the optional Streamlit/upload interface, and the REST
+upload API are separate surfaces. The standalone Windows desktop application
+and executable packaging have been removed; PowerShell remains a browser
+launcher, and Power BI/Tableau Desktop remain optional diagnostic prerequisites.
+
+## Operator guides
+
+| Guide | What it covers |
+|---|---|
+| 📘 [User manual](USER_MANUAL.md) | Workflows, validation states and Tableau ↔ Power BI correspondence |
+| 🌐 [Local browser UI](LOCAL_WEB_UI.md) | Launcher, folder paths, diagnostics and troubleshooting |
+| ✅ [Review checklist](MIGRATION_CHECKLIST.md) | Post-generation refresh, security and release checks |
+| 📦 [Power BI project guide](POWERBI_PROJECT_GUIDE.md) | PBIP layout, source configuration and save/reopen |
+| ❓ [FAQ](FAQ.md) | Common questions and actionable refresh guidance |
+| ⚠️ [Known limitations](KNOWN_LIMITATIONS.md) | Unsupported features, approximations and runtime boundaries |
+| 🧩 [Tableau versions](TABLEAU_VERSION_COMPATIBILITY.md) | File formats and version-validation scope |
+| 🚀 [Deployment guide](DEPLOYMENT_GUIDE.md) | Separately authorized publishing and client-side native checks |
+| ☁️ [Tableau Server/Cloud](SERVER_MIGRATION_GUIDE.md) | Server migration and optional official Tableau MCP evidence |
+| 🏢 [Enterprise guide](ENTERPRISE_GUIDE.md) | Portfolio assessment, migration waves, governance and handoff |
+| 🔐 [Upload security](UPLOAD_SECURITY.md) | Uploaded-source confinement, distinct from trusted local paths |
+
+### Source strategy at a glance
+
+| Source | PBIP behavior | Data handling |
+|---|---|---|
+| Hyper at most 10 MiB, uncompressed | **Import + CSV** | Export the Hyper snapshot |
+| Hyper strictly above 10 MiB, uncompressed | **Import + native Parquet** | Requires the optional Hyper SDK; failures stay explicit |
+| No Hyper | **DirectQuery where supported**, otherwise Import | Migrate connection, schema and M; do not extract or copy native dataset files |
+
+The user can always select **Import** instead of automatic DirectQuery.
+Power BI reads native Import rows at refresh, after source access is configured.
+Fabric keeps its separate staging contract. See the
+[decision diagram and exceptions](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
+
+## Conversion references
+
+| Reference | What to look up |
+|---|---|
+| 🗺️ [Mapping reference](MAPPING_REFERENCE.md) | 164 visual mapping records, formulas and interactions |
+| 🧮 [Tableau → DAX](TABLEAU_TO_DAX_REFERENCE.md) | Conversion patterns, approximations and manual cases |
+| 🔌 [Tableau → Power Query M](TABLEAU_TO_POWERQUERY_REFERENCE.md) | Source properties and connectors; 97 dispatch keys route to 55 generators |
+| 🔄 [Tableau Prep → M](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md) | Prep patterns and the bounded producer-dialect/parser contract |
+
+## Developer and project references
+
+| Guide | What it covers |
+|---|---|
+| 🏗️ [Architecture](ARCHITECTURE.md) | Extraction/generation, entry points and validation layers |
+| 🤖 [Agent architecture](AGENTS.md) | Specialist ownership, handoffs and coordination |
+| 🛠️ [Agent-facing tools](AGENT_SURFACE.md) | MCP, evidence, remediation and owner-pull handoff |
+| 🧩 [Plugin SDK](PLUGIN_SDK.md) | Versioned API and legacy-hook adapters |
+| 💻 [VS Code extension](VS_CODE_EXTENSION.md) | Setup and current CLI integration limits |
+| 📈 [Roadmap](ROADMAP.md) | Current priorities, release gates and dated evidence |
+| 🧭 [Evolution plan](FULL_MIGRATION_EVOLUTION_PLAN.md) | Long-term direction, not a declaration of delivered parity |
+| 🤝 [Contributing](../CONTRIBUTING.md) | Development setup and review workflow |
+| 🧪 [Test guide](../tests/README.md) | Test commands and evidence boundaries |
+| 📝 [Changelog](../CHANGELOG.md) | Unreleased changes and historical release notes |
+
+- Module guides: [extraction](../tableau_export/README.md) and [generation](../powerbi_import/README.md)
+- Public fixtures: [sample workbooks](../examples/tableau_samples/README.md), [real-world sources](../examples/real_world/SOURCES.md) and [golden snapshots](../tests/golden/README.md)
+- Plugin examples: [legacy hooks](../examples/plugins/README.md)
+
+Package metadata currently declares `44.0.0`; the roadmap's v48 track and
+historical changelog entries are not package-release or runtime certification.
+Use [CI](https://github.com/cyphou/TableauToPowerBI/actions) for current test
+results rather than treating historical totals as live counts.
+Local badges describe metadata and formats, not a release, refresh, parity or
+deployment verdict. The root README's CI badge reports the published `main`
+branch, not uncommitted local changes.
+
+### Build the documentation locally
+
+From the repository root:
+
+```powershell
+python .github\scripts\build_docs.py docs .\build\docs
+python -m pytest tests\test_build_docs.py -q
+```
+
+Open `build\docs\index.html` to inspect the generated pages. The standard-library
+publisher copies only PNG, JPEG, GIF, WebP and strictly validated passive SVG
+assets from `docs\images`. It rejects symlinks, Windows junctions, unsupported
+file types and unsafe SVG content with a file-specific build error. SVGs may
+use static geometry, text, accessibility metadata, gradients and local
+`url(#id)` references, but not scripts, event handlers, stylesheets, animation,
+external resources or embedded HTML. The maintained hero, feature, pipeline,
+architecture and badge illustrations retain their authored metadata and local
+references. The publisher preserves bounded presentation HTML and rewrites
+sibling guide links to HTML. Links to repository source files outside
+the documentation point to the published `main` branch on GitHub. This is a
+minimal Markdown publisher, not a complete GitHub Flavored Markdown renderer;
+Mermaid blocks remain code in these pages. GitHub renders the Markdown sources
+and Mermaid separately.
+
+> [!NOTE]
+> Static quality, native refresh, saved/reopened state, value/visual comparison
+> and deployment each need their own evidence. Unexecuted runtime checks remain
+> `not_run`; see the [review checklist](MIGRATION_CHECKLIST.md).
 
 ## Quick Reference
 
@@ -115,6 +215,7 @@ CLI, batch, MCP, Notebook, and Fabric outputs on the same provenance contract.
 | `migrate.py` | CLI entry point, batch support, logging |
 | `tableau_export/` | Tableau XML parsing, DAX conversion, Power Query M generation |
 | `powerbi_import/` | .pbip generation, TMDL, visuals, validation, deployment |
+| `web/`, `run_web_ui.ps1` | Local browser assets, loopback runner and launcher; separate optional upload UI |
 | `tests/` | Unit, integration, and regression tests; see CI for current results |
 | `artifacts/` | Generated .pbip projects |
-| `.github/workflows/` | CI/CD pipeline (lint, test, validate, deploy) |
+| `.github/workflows/` | CI lint/test/validation and GitHub Pages documentation publishing; service deployment jobs in `ci.yml` are disabled |

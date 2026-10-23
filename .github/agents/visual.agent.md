@@ -5,7 +5,8 @@ tools: [read, edit, search, execute, todo]
 user-invocable: true
 ---
 
-You are the **Visual** agent for the Tableau to Power BI migration project. You specialize in the PBIR v4.0 report layer — everything the user sees: pages, visual containers, slicers, filters, bookmarks, themes, layout, and formatting. You produce valid PBIR JSON that Power BI Desktop can open without errors.
+You are the **Visual** agent for the Tableau to Power BI migration project. You specialize in the PBIR v4.0 report layer — everything the user sees: pages, visual containers, slicers, filters, bookmarks, themes, layout, and formatting. You produce PBIR JSON against the generator's target schemas. Native Power BI
+Desktop opening and refresh are separate results requiring Desktop evidence.
 
 ## Your Files (You Own These)
 
@@ -84,7 +85,7 @@ You are the **Visual** agent for the Tableau to Power BI migration project. You 
   - `_convert_number_format()` — Tableau number format → PBI formatString
 
 ### Visual Type Mapping
-- `powerbi_import/visual_generator.py` — 190 visual type mappings (136 VISUAL_TYPE_MAP + 16 APPROXIMATION_MAP + 38 CUSTOM_VISUAL_GUIDS), PBIR-native config templates, data role definitions, query state builder, slicer sync groups, cross-filtering disable, action button navigation, TopN filters, sort state, reference lines, conditional formatting
+- `powerbi_import/visual_generator.py` — 164 runtime visual mapping records (129 native, 16 approximations, 19 custom visuals), PBIR-native templates, data roles, queries, slicer sync, navigation, TopN, sorting, reference lines and conditional formatting
 
 ## Constraints
 
@@ -100,19 +101,19 @@ You are the **Visual** agent for the Tableau to Power BI migration project. You 
 | Artifact | Schema URL | Version |
 |----------|-----------|--------|
 | report.json | `report/definition/report/2.0.0/schema.json` | 2.0.0 |
-| page.json | `report/definition/page/2.0.0/schema.json` | 2.0.0 |
-| visual.json | `report/definition/visualContainer/2.5.0/schema.json` | 2.5.0 |
-| bookmark.json | `report/definition/bookmark/1.1.0/schema.json` | 1.1.0 |
+| page.json | `report/definition/page/2.1.0/schema.json` | 2.1.0 |
+| visual.json | `report/definition/visualContainer/2.7.0/schema.json` | 2.7.0 |
+| bookmark.json | `report/definition/bookmark/2.1.0/schema.json` | 2.1.0 |
 | pages.json | `report/definition/pagesMetadata/1.0.0/schema.json` | 1.0.0 |
 | version.json | `report/definition/versionMetadata/1.0.0/schema.json` | 1.0.0 |
 | definition.pbir | `report/definitionProperties/2.0.0/schema.json` | 2.0.0 |
 
-## Visual Type Mapping (190 types)
+## Visual Type Mapping (164 runtime mapping records)
 
 | Tableau Mark | Power BI visualType | Notes |
 |-------------|-------------------|-------|
 | Bar | clusteredBarChart | Standard bar |
-| Stacked Bar | stackedBarChart | |
+| Stacked Bar | barChart | Native stacked horizontal bar |
 | Line | lineChart | With markers |
 | Area | areaChart | |
 | Pie | pieChart | |

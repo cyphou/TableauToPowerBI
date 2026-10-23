@@ -4,6 +4,8 @@
 
 # Contributing to Tableau to Power BI Migration Tool
 
+[🏠 Overview](README.md) · [📚 Documentation](docs/README.md) · [🧪 Test guide](tests/README.md) · [📝 Changelog](CHANGELOG.md)
+
 Thank you for your interest in contributing! This guide covers the development setup, coding standards, and contribution workflow.
 
 ---
@@ -13,27 +15,33 @@ Thank you for your interest in contributing! This guide covers the development s
 ### Prerequisites
 
 - Python 3.12+ (tested on 3.12–3.14)
-- Power BI Desktop (December 2025+) for validating output
+- Power BI Desktop with PBIP/TMDL support for optional native validation;
+  generation and static tests do not require Desktop
 - Git
 
 ### Getting Started
 
-```bash
+```powershell
 # Clone the repository
-git clone <repo-url>
+git clone https://github.com/cyphou/TableauToPowerBI.git
 cd TableauToPowerBI
 
 # Create a virtual environment
 python -m venv .venv
-.venv\Scripts\activate   # Windows
-# source .venv/bin/activate  # macOS/Linux
+.\.venv\Scripts\Activate.ps1
 
 # Install development dependencies
-pip install -r requirements.txt
+python -m pip install "pytest>=7" "pytest-cov>=4" "coverage>=7"
 
 # Run tests
-python -m unittest discover -s tests -v
+python -m pytest tests\ -q
 ```
+
+On macOS/Linux, activate with `source .venv/bin/activate` and use the platform's
+path separators. These are the test tools listed in the `dev` extra of
+`pyproject.toml`; `requirements.txt` documents the dependency-free core and
+does not install the test runner. Lint/type-check jobs install their own tools
+as declared in CI.
 
 ### Project Structure
 
@@ -42,7 +50,9 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a detailed architecture ove
 ```
 tableau_export/   → Extraction layer (Tableau XML → JSON)
 powerbi_import/   → Generation layer (JSON → .pbip project)
-tests/            → Unit and integration tests (10,798 passed, 66 skipped, 1 xfailed in the latest full run; 10,865 collected across 316 files)
+tests/            → Unit, integration, and regression tests; see CI for current results
+web/              → Local browser assets and standard-library loopback runner
+run_web_ui.ps1    → Convenience launcher for the local browser UI
 docs/             → Documentation
 examples/         → Sample Tableau workbooks
 artifacts/        → Migration output
@@ -82,6 +92,18 @@ If your change requires a new dependency, it must be behind a `try/except Import
 
 ## Testing
 
+Documentation presentation changes should also keep the static publisher
+working, without adding a Markdown dependency:
+
+```powershell
+python -m pytest tests\test_build_docs.py -q
+python .github\scripts\build_docs.py docs .\build\docs
+```
+
+Open `build\docs\index.html` for a local review of the generated pages and
+images. GitHub Markdown and the minimal static publisher are different
+renderers; check links and diagrams in the intended surface.
+
 ### Running Tests
 
 ```bash
@@ -112,7 +134,8 @@ python -m pytest tests/test_dax_converter.py::TestDaxConverter::test_isnull_to_i
 | `test_non_regression.py` | Per-sample project regression |
 | `test_integration.py` | End-to-end pipeline tests |
 | `test_assessment.py` | Pre-migration assessment |
-| ... | 316 test files total — see [README](README.md) for full list |
+| `test_cli_wiring.py`, `test_local_web_ui.py` | CLI contract and local browser backend |
+| ... | See the [test guide](tests/README.md) and CI for the current suite |
 
 ### Writing Tests
 
@@ -171,7 +194,7 @@ flowchart LR
 
 3. **Add the upstream remote** (to stay in sync):
    ```bash
-   git remote add upstream https://github.com/cyphou/Tableau-To-PowerBI.git
+   git remote add upstream https://github.com/cyphou/TableauToPowerBI.git
    ```
 
 4. **Create a feature branch** from `main`:

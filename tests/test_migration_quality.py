@@ -351,6 +351,54 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertIn('summary', report.visual_mappings)
         self.assertEqual(report.visual_mappings['summary']['status_counts']['approximation'], 16)
 
+    def test_sampled_or_capped_hyper_manifest_cannot_receive_clean_full_data_handoff(self):
+        cases = (
+            {"row_count": 2, "total_rows": 37, "max_rows": 2,
+             "sampled": True, "truncated": True},
+            {"row_count": 2, "total_rows": None, "max_rows": None,
+             "sampled": True, "truncated": None},
+        )
+        for limits in cases:
+            with self.subTest(limits=limits), tempfile.TemporaryDirectory() as root:
+                data = Path(root, "Data")
+                data.mkdir()
+                (data / "synthetic.csv").write_text("id\n1\n2\n", encoding="utf-8")
+                record = {
+                    "identity": {
+                        "workbook": str(Path(root, "synthetic.twbx")),
+                        "archive_member": "Data/synthetic.hyper",
+                        "schema": "Extract", "table": "Facts",
+                    },
+                    "format": "csv", "filename": "synthetic.csv",
+                    "csv_filename": "synthetic.csv", "columns": ["id"], **limits,
+                }
+                (data / "hyper_exports.json").write_text(
+                    json.dumps({"version": 1, "exports": [record]}), encoding="utf-8",
+                )
+                report = self._build(project_dir=root)
+                self.assertNotEqual(
+                    report.status, "PASS",
+                    "Static schema checks cannot certify capped/sample-only data",
+                )
+                serialized = json.loads(json.dumps(report.to_dict(), default=str))
+                self.assertIs(
+                    serialized["data"]["hyper_sampling"]["full_data_verified"], False,
+                )
+                self.assertIs(
+                    serialized["evidence_manifest"]["hyper_sampling"]["full_data_verified"],
+                    False,
+                )
+                self.assertIn(serialized["handoff_status"], ("WARN", "BLOCKED"))
+                self.assertEqual(
+                    serialized["evidence_manifest"]["handoff"]["status"],
+                    serialized["handoff_status"],
+                )
+                diagnostics = "\n".join(report.warnings + report.blockers).lower()
+                self.assertTrue(
+                    any(word in diagnostics for word in ("sample", "capped", "truncated")),
+                    diagnostics,
+                )
+
     def test_production_policy_blocks_visual_approximations(self):
         report = self._build(
             quality_policy='production',

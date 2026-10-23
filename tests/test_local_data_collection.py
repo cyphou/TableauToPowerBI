@@ -127,7 +127,9 @@ class TestLocalDataCollection(unittest.TestCase):
             z.writestr("Data/Extracts/embedded.csv", "packaged\n")
         _write(os.path.join(self.src_dir, "linked.geojson"), "{}")
         project = _project(self.root, ["embedded.csv", "linked.geojson"])
-        migrate._process_twbx_post_generation(twbx, project, NAME)
+        migrate._process_twbx_post_generation(
+            twbx, project, NAME, stage_native_files=True,
+        )
         stats = migrate._collect_local_data_files(twbx, project, NAME)
         data = os.path.join(project, "Data")
         self.assertTrue(os.path.isfile(os.path.join(data, "embedded.csv")))

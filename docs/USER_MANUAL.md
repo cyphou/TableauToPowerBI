@@ -1,5 +1,7 @@
 # User Manual — Tableau to Power BI Migration
 
+[🏠 Overview](../README.md) · [📚 Documentation](README.md) · [🌐 Local browser](LOCAL_WEB_UI.md) · [✅ Review checklist](MIGRATION_CHECKLIST.md)
+
 This manual explains how to run a Tableau to Power BI migration with this repository, what files are produced, and how common Tableau concepts map to Power BI. It is written for migration operators, BI developers, and reviewers who need to understand the generated output without reading the source code.
 
 ## 1. What This Tool Does
@@ -101,7 +103,7 @@ or Streamlit install is required. Run from the repository root:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_web_ui.ps1
 # Equivalent direct runner:
-python web/local_server.py
+python web\local_server.py
 ```
 
 The launcher prefers `.venv\Scripts\python.exe`, then `python` on PATH.
@@ -123,7 +125,8 @@ measurements are recorded in the [roadmap](ROADMAP.md#local-browser-slice--bound
 
 1. Supply an existing **local source folder** and a separate **local output
    folder** on this computer. They must not contain one another. Type or paste
-   paths; a native folder chooser is optional and may be unavailable. This is
+   paths; the delivered page uses manual entry. The backend's optional native
+   folder-picker endpoint is not exposed by a Browse control in this page.
    This is not a browser upload service: this slice provides no folder/ZIP
    upload, cloud input, or Server task.
 2. Use the bulk route for one or many workbooks (`.twb`/`.twbx`). Standalone
@@ -204,7 +207,7 @@ A typical PBIP migration produces:
 | `<Report>.pbip` | Power BI project entry file |
 | `<Report>.Report/` | PBIR report pages, visuals, bookmarks, report metadata |
 | `<Report>.SemanticModel/` | TMDL tables, measures, relationships, roles, cultures, M partitions |
-| `Data/` | Staged CSV files, including converted Hyper extract data when applicable |
+| `Data/` | Staged Hyper CSV/Parquet data when applicable; non-Hyper PBIP Import keeps native source bindings instead of copying datasets |
 | `openability_report.json` | Static check that the PBIP structure, JSON, TMDL, DAX, and M are valid |
 | `migration_metadata.json` | Source, output, and run metadata |
 | `lineage_map.json` | Source-to-target lineage evidence |
@@ -301,8 +304,8 @@ This table summarizes the practical migration target for common Tableau objects.
 | Dashboard | PBIR report page | Dashboard objects become page visuals, text, images, slicers, or controls | Check page size and layout after generation |
 | Worksheet | PBIR visual container | Mark type and shelves map to a Power BI visual type | Some Tableau sheets are intentionally tables, cards, or treemaps based on shelf structure |
 | Story | Bookmark set | Story points become Power BI bookmarks | Review navigation order and bookmark state |
-| Datasource | Power Query M partition or Fabric source | Connector metadata becomes M source logic or Fabric scaffold | Credentials are never migrated; configure them in Power BI/Fabric |
-| Tableau extract `.hyper` | CSV staging plus M `Csv.Document` or inline table | Hyper data is staged in `Data/` and referenced by the semantic model | Proprietary Hyper v2+ may need optional `tableauhyperapi` |
+| Datasource | Power Query M partition or Fabric source | Non-Hyper PBIP Import migrates connection/schema/M only; Power BI loads rows at refresh. Fabric keeps its separate staging contract | Credentials and original file access must be configured in Power BI/Fabric |
+| Tableau extract `.hyper` | CSV/Parquet staging plus M `Csv.Document` / `Parquet.Document` | Hyper data are exported to `Data/` and referenced by Import partitions; PBIP auto uses Parquet strictly above 10 MiB, CSV otherwise | Native Parquet requires optional `tableauhyperapi`; row caps and header samples are limited-data evidence |
 | Table | TMDL table | Columns, partitions, and relationships are generated | Review relationship direction and cardinality |
 | Column | TMDL column | Data type, hidden state, data category, sort metadata, and descriptions are preserved where possible | Special characters are quoted in M and TMDL |
 | Measure / calculated field | DAX measure or calculated column | Classification depends on aggregation, row context, and references | Validate complex calculations and table calculations |
@@ -351,7 +354,7 @@ After migration:
 | Symptom | First place to check | Typical cause |
 |---|---|---|
 | PBIP will not open | `openability_report.json` | Invalid JSON, TMDL, DAX, M, or broken model/report reference |
-| Data is missing | `Data/`, M partitions, datasource assessment | Credentials, unsupported source, or Hyper reader limitation |
+| Data is missing | Native source bindings and refresh configuration; `Data/` for Hyper; datasource assessment | Native Import loads only at Power BI refresh; missing credentials/file access, unsupported source, or limited Hyper export |
 | Visual is a table instead of a chart | Quality report and worksheet shelves | Tableau mark/shelf structure may only support a table/card/treemap target |
 | Filter missing | Interface coverage and parity evidence | Tableau filter may be all-selected, virtual, or unsupported Top-N |
 | URL action missing | Parity report | Dynamic placeholder URL was suppressed to avoid a wrong static button |

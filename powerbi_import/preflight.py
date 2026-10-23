@@ -320,7 +320,17 @@ def _check_xml_coherence(root: Optional[ET.Element], result: PreflightResult) ->
 
     for dependency in root.iter("datasource-dependencies"):
         ref = dependency.attrib.get("datasource", "")
-        if ref and ref not in datasources:
+        # Tableau may declare its virtual Parameters datasource inline here,
+        # without a workbook-level datasource. The name alone is not proof:
+        # every declared column must carry Tableau's parameter-domain marker.
+        columns = dependency.findall("column")
+        virtual_parameters = (
+            ref == "Parameters"
+            and bool(columns)
+            and all(column.get("name") and column.get("param-domain-type")
+                    for column in columns)
+        )
+        if ref and ref not in datasources and not virtual_parameters:
             result.add(BLOCKER, "missing_datasource_reference",
                        f"Worksheet references missing datasource {ref!r}",
                        "Restore the datasource or update the worksheet dependency")

@@ -36,7 +36,7 @@ You are the **Deployer** agent for the Tableau to Power BI migration project. Yo
 
 ## Constraints
 
-- Do NOT modify generation logic — delegate to **Generator**
+- Do NOT modify generation logic — delegate to **@semantic**, **@visual**, or **@fabric** as appropriate
 - Do NOT modify CLI argument parsing — delegate to **Orchestrator**
 - Do NOT modify test files — delegate to **Tester**
 - **Optional dependencies only**: `azure-identity`, `requests`, `pydantic-settings`

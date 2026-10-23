@@ -36,7 +36,149 @@ import time
 import zipfile
 import xml.etree.ElementTree as ET
 
+from powerbi_import.errors import ConfigurationError
+
 logger = logging.getLogger(__name__)
+
+# Accept the public CLI spelling and the canonical TMDL spelling, but keep
+# emitted partition modes in their canonical form.
+_MODEL_MODE_ALIASES = {
+    'auto': 'auto',
+    'import': 'import',
+    'directquery': 'directQuery',
+    'composite': 'composite',
+    'directlake': 'directLake',
+}
+_CANONICAL_MODEL_MODES = frozenset(_MODEL_MODE_ALIASES.values())
+
+# Tableau Hyper/extract sources are snapshots, not DirectQuery-capable live
+# bindings. Their connection labels and exact physical identities are positive
+# evidence for Import mode in auto mode.
+_HYPER_SOURCE_CONNECTORS = frozenset({
+    'dataengine', 'extract', 'hyper',
+})
+
+# The native Power Query MySQL connector supports Import, not DirectQuery.
+_IMPORT_ONLY_CONNECTORS = frozenset({
+    'mysql',
+})
+
+# Keep auto selection to connector types with established native relational
+# DirectQuery paths in the generated model. This is intentionally a small
+# operational allowlist, not a full capability catalog.
+_AUTO_DIRECTQUERY_CONNECTORS = frozenset({
+    'amazon redshift', 'azure sql', 'azure sql database', 'azure synapse',
+    'bigquery', 'databricks', 'ibm db2', 'ibm db2 deep',
+    'microsoft sql server', 'oracle', 'postgres', 'postgresql',
+    'redshift', 'sap bw', 'sap hana', 'snowflake', 'sql server', 'sqlserver',
+    'synapse', 'teradata', 'teradata deep',
+})
+
+# These connectors resolve to local/file-backed M sources and cannot be used
+# by a DirectQuery partition. This is intentionally a narrow safety check, not
+# a certification list for every connector's DirectQuery capabilities.
+_NON_DIRECTQUERY_FILE_CONNECTORS = frozenset({
+    'csv', 'dataengine', 'excel', 'extract', 'file', 'filesystem',
+    'geojson', 'hyper', 'json', 'parquet', 'pdf', 'text', 'textscan', 'xml',
+})
+
+
+def _normalize_model_mode(model_mode):
+    """Return the canonical storage-mode spelling or reject invalid input."""
+    if model_mode is None or (
+            isinstance(model_mode, str) and not model_mode.strip()):
+        return 'auto'
+    if isinstance(model_mode, str):
+        if model_mode in _CANONICAL_MODEL_MODES:
+            return model_mode
+        normalized = _MODEL_MODE_ALIASES.get(model_mode.strip().casefold())
+        if normalized:
+            return normalized
+    raise ConfigurationError(
+        "Invalid model_mode; expected auto, import, directquery, composite, or directLake",
+        item=repr(model_mode),
+        source='tmdl_generator',
+    )
+
+
+def _validate_directquery_partition_source(
+        partition_mode, connection, table, m_query_override):
+    """Reject obvious local-file sources before emitting an invalid DQ partition."""
+    if partition_mode != 'directQuery':
+        return
+
+    connection_type = connection.get('type', '')
+    connector = (
+        connection_type.strip().casefold()
+        if isinstance(connection_type, str) else ''
+    )
+    hyper_identity = table.get('hyper_identity')
+    has_pending_hyper_source = (
+        _has_exact_hyper_identity(hyper_identity)
+        and (
+            not m_query_override
+            or (
+                isinstance(m_query_override, str)
+                and 'Migration.HyperExportRequired' in m_query_override
+            )
+        )
+    )
+    if connector in _IMPORT_ONLY_CONNECTORS:
+        raise ConfigurationError(
+            "DirectQuery is not supported for the native MySQL connector; "
+            "Power Query's MySQL connector supports Import mode only. Use Import "
+            "mode, or raise the composite threshold so this table stays in Import.",
+            item=table.get('name', 'Table1'),
+            source=connection_type or 'MySQL',
+        )
+    if connector not in _NON_DIRECTQUERY_FILE_CONNECTORS and not has_pending_hyper_source:
+        return
+
+    if has_pending_hyper_source:
+        source_label = 'a packaged Hyper snapshot'
+        source_type = connection_type or 'Hyper extract'
+    else:
+        source_label = f'a file-based {connection_type or "unknown"} source'
+        source_type = connection_type or 'file'
+    raise ConfigurationError(
+        f"DirectQuery cannot be used with {source_label}; a live DirectQuery-capable "
+        "source is required. Use Import mode or provide an explicit live-source "
+        "binding, or raise the composite threshold to keep this table in Import.",
+        item=table.get('name', 'Table1'),
+        source=source_type,
+    )
+
+
+def _auto_partition_mode(connection, table):
+    """Choose per-table mode from explicit source identity and connector support."""
+    connection_type = connection.get('type', '')
+    connector = (
+        connection_type.strip().casefold()
+        if isinstance(connection_type, str) else ''
+    )
+    if (_has_exact_hyper_identity(table.get('hyper_identity'))
+            or connector in _HYPER_SOURCE_CONNECTORS):
+        return 'import'
+    if connector in _IMPORT_ONLY_CONNECTORS:
+        logger.warning(
+            "Auto storage mode selected Import for table %r: the native MySQL "
+            "connector supports Import mode only, not DirectQuery.",
+            table.get('name', 'Table1'),
+        )
+        return 'import'
+    if connector in _AUTO_DIRECTQUERY_CONNECTORS:
+        return 'directQuery'
+
+    if connector in _NON_DIRECTQUERY_FILE_CONNECTORS:
+        reason = 'is file-backed and cannot be used by a DirectQuery partition'
+    else:
+        reason = 'has no supported native DirectQuery binding'
+    logger.warning(
+        "Auto storage mode selected Import for table %r: connector %r %s.",
+        table.get('name', 'Table1'), connection_type or 'unknown', reason,
+    )
+    return 'import'
+
 
 # Add path to import from tableau_export
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
@@ -196,7 +338,7 @@ def _apply_dax_optimization(model):
 
 def generate_tmdl(datasources, report_name, extra_objects, output_dir,
                   calendar_start=None, calendar_end=None, culture=None,
-                  model_mode='import', languages=None,
+                  model_mode='auto', languages=None,
                   composite_threshold=None, agg_tables='none',
                   incremental_refresh=False, incremental_refresh_months=12,
                   parameterize=True, optimize_dax=False, time_intelligence='none'):
@@ -212,8 +354,11 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         calendar_start: Start year for Calendar table (default: 2020)
         calendar_end: End year for Calendar table (default: 2030)
         culture: Override culture/locale (default: en-US)
-        model_mode: 'import', 'directquery', or 'composite'
-                    Controls partition mode for all tables
+        model_mode: 'auto' (default) chooses Import for Hyper/file-backed
+                    sources and DirectQuery otherwise, per table. Explicit
+                    'import', 'directquery'/'directQuery', and 'composite'
+                    retain their existing behavior; internal Fabric callers
+                    may also use 'directLake'.
         languages: Comma-separated additional locales (e.g. 'fr-FR,de-DE')
         composite_threshold: Column count threshold for composite mode.
                     Tables with more columns than this → directQuery, fewer → import.
@@ -743,7 +888,7 @@ from powerbi_import.tmdl_lineage import (  # noqa: E402,F401
 
 def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
                           calendar_start=None, calendar_end=None, culture=None,
-                          model_mode='import', composite_threshold=None,
+                          model_mode='auto', composite_threshold=None,
                           agg_tables='none'):
     """
     Build a complete semantic model from extracted Tableau datasources.
@@ -757,9 +902,10 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
     if extra_objects is None:
         extra_objects = {}
 
+    model_mode = _normalize_model_mode(model_mode)
     effective_culture = culture or "en-US"
 
-    is_direct_lake = (model_mode or '').lower() == 'directlake'
+    is_direct_lake = model_mode == 'directLake'
     model = {
         "name": report_name,
         "compatibilityLevel": 1604 if is_direct_lake else 1550,
@@ -777,7 +923,7 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
     model['_calendar_end'] = calendar_end
 
     # Store model mode for partition generation
-    model['_model_mode'] = model_mode or 'import'
+    model['_model_mode'] = model_mode
     model['_composite_threshold'] = composite_threshold
     model['_agg_tables'] = agg_tables or 'none'
     model['_direct_lake'] = extra_objects.get('_direct_lake', {})
@@ -809,7 +955,7 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
     _apply_source_measure_formats(model, datasources, extra_objects, ctx)
 
     # Phase 13: Composite model post-processing
-    if (model_mode or 'import') == 'composite':
+    if model_mode in ('composite', 'auto'):
         _enforce_hybrid_relationship_constraints(model)
         if (agg_tables or 'none') == 'auto':
             _generate_aggregation_tables(model)
@@ -2649,7 +2795,7 @@ def _materialize_fixed_dimension_columns(model):
 
 def _build_table(table, connection, calculations, columns_metadata, dax_context=None,
                  col_metadata_map=None, extra_objects=None, m_query_override='',
-                 model_mode='import', composite_threshold=None):
+                 model_mode='auto', composite_threshold=None):
     """
     Create a semantic model table with columns, partitions and measures.
 
@@ -2661,7 +2807,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         dax_context: Dict with calc_map, param_map, column_table_map, measure_names
         col_metadata_map: Dict {col_name: {hidden, semantic_role, description, ...}}
         extra_objects: Dict with sets, groups, bins, aliases
-        model_mode: 'import', 'directquery', or 'composite'
+        model_mode: 'auto' selects storage mode from this table's source;
+                    explicit import/directQuery/composite remain supported.
 
     Returns:
         dict: Complete table definition
@@ -2673,8 +2820,23 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     if extra_objects is None:
         extra_objects = {}
 
+    model_mode = _normalize_model_mode(model_mode)
     table_name = table.get('name', 'Table1')
     columns = table.get('columns', [])
+
+    # Determine the final storage mode once, retaining the TMDL casing for
+    # DirectQuery and the existing per-table composite threshold.
+    partition_mode = 'import'
+    if model_mode == 'auto':
+        partition_mode = _auto_partition_mode(connection, table)
+    elif model_mode == 'directQuery':
+        partition_mode = 'directQuery'
+    elif model_mode == 'composite':
+        threshold = composite_threshold if composite_threshold is not None else 10
+        if len(columns) > threshold:
+            partition_mode = 'directQuery'
+    _validate_directquery_partition_source(
+        partition_mode, connection, table, m_query_override)
 
     # Apply DS-level type overrides to columns BEFORE M query generation
     # so that sample data in #table matches the BIM dataType.
@@ -2685,13 +2847,33 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         if ds_dt and ds_dt != col.get('datatype', ''):
             col['datatype'] = ds_dt
 
-    is_direct_lake = (model_mode or '').lower() == 'directlake'
+    is_direct_lake = model_mode == 'directLake'
     if not is_direct_lake:
         # Generate M query: use Prep flow override if available, else generate from connection
         if m_query_override:
             m_query = m_query_override
         else:
-            m_query = generate_power_query_m(connection, table)
+            connection_type = connection.get('type', '')
+            is_hyper_source = (
+                _has_exact_hyper_identity(table.get('hyper_identity'))
+                or (
+                    isinstance(connection_type, str)
+                    and connection_type.strip().casefold() in _HYPER_SOURCE_CONNECTORS
+                )
+            )
+            use_original_file_paths = (
+                partition_mode == 'import' and not is_hyper_source
+            )
+            if use_original_file_paths:
+                # Native Import sources keep their declared source binding.
+                # Do not copy or inspect their local data during generation;
+                # Power Query resolves the original path at refresh. Hyper is
+                # deliberately excluded because its exact identity is staged
+                # separately by the Hyper export path.
+                m_query = generate_power_query_m(
+                    connection, table, use_original_file_paths=True)
+            else:
+                m_query = generate_power_query_m(connection, table)
 
         # Inject TWB-embedded transformation steps from column metadata
         m_steps = _build_m_transform_steps(columns, col_metadata_map)
@@ -2734,17 +2916,6 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     # Whatever the partition renames, the model must ask for the produced
     # name; deriving both from one map stops the two sides drifting apart.
     rename_map = m_rename_map(columns, col_metadata_map)
-
-    # Determine partition mode based on model_mode
-    # For composite: large tables use directQuery, small/lookup use import
-    partition_mode = model_mode if model_mode in ('import', 'directQuery') else 'import'
-    if model_mode == 'composite':
-        threshold = composite_threshold if composite_threshold is not None else 10
-        col_count = len(columns)
-        if col_count > threshold:
-            partition_mode = 'directQuery'
-        else:
-            partition_mode = 'import'
 
     if is_direct_lake:
         from .fabric_naming import sanitize_table_name

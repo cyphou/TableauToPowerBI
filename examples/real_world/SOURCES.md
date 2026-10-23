@@ -53,6 +53,12 @@ These files were downloaded from public GitHub repositories for testing purposes
 
 ## Migration Test Results
 
+These are previously recorded conversion/fidelity observations, not a fresh
+execution in the current revision or proof of data refresh, rendered parity or
+deployment. Use [CI](https://github.com/cyphou/TableauToPowerBI/actions) and the
+[roadmap](../../docs/ROADMAP.md) for dated current evidence. A public repository
+without an explicit license does not by itself grant redistribution rights.
+
 | File | Fidelity | Worksheets | Tables | Notes |
 |------|----------|------------|--------|-------|
 | `global_superstores_db.twb` | 100.0% | 20 | 2 | 4 calcs, 4 groups, 1 bin |
