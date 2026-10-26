@@ -1978,13 +1978,14 @@ class TableauExtractor:
         print(f"  ✓ {len(groups)} groups extracted")
     
     def extract_bins(self, root):
-        """Extract legacy bins; class='bin' is emitted as a calculation only."""
+        """Extract legacy numeric bins; calculation bins and groups use other paths."""
         bins = []
         
         for ds in self._findall_root_cached(root, './/datasource'):
             for col in ds.findall('.//column'):
                 calc_elem = col.find('.//calculation')
-                if calc_elem is not None and calc_elem.get('class') == 'bin':
+                if calc_elem is not None and calc_elem.get('class') in ('bin', 'categorical-bin'):
+                    # These are extracted as calculations and groups, respectively.
                     continue
                 bin_elem = col.find('.//bin')
                 if bin_elem is not None:

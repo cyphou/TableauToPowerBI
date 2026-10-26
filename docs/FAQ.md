@@ -46,13 +46,17 @@ Optional dependencies for advanced features:
 ### How are `.hyper` extract files handled?
 
 Packaged Hyper tables retain their exact workbook, archive member, schema and
-table identity. The generated partition is connected to the matching staged
-export, not a file selected by similar columns or filenames.
+table identity. PBIP generation exports all rows present in the snapshot and
+requires each migrated table's Import partition to read its matching staged
+CSV/Parquet file. It does not select a file by similar columns or filenames,
+or switch back to the original database connection.
 
 The reader chain uses optional `tableauhyperapi`, then SQLite for compatible
-files, then a bounded header scan. A header scan may recover metadata and a
-bounded row sample, not a complete export. Such samples remain marked as
-limited data in manifests and quality reports. Archive copies and CSV export
+files, then a bounded header scan for metadata. PBIP full export requires a
+complete reader; header/sample rows cannot substitute for it. Missing full
+reader support, unknown/inconsistent source and export counts, incomplete
+exports or unbound required tables are errors, not successful partial imports.
+Archive copies and CSV export
 use bounded buffers; CSV rewrites use a separate temporary file before replacing their destination,
 including when the original CSV and destination have the same name.
 
@@ -62,24 +66,32 @@ Use these batch options for large extracts:
 |--------|---------|
 | `--max-zip-entry-mb N` | Positive per-member uncompressed limit in MiB; explicit option overrides `TTPBI_MAX_ZIP_ENTRY_MB`, then the 1024 MiB default |
 | `--mode auto` | Default: Hyper means Import; without Hyper, use DirectQuery when supported, otherwise Import |
-| `--mode import` | Force Import; non-Hyper sources migrate connection/schema/M only, while Hyper still exports its data |
+| `--mode import` | Force Import; non-Hyper sources generate connection/schema/M without native row export. Explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path; Hyper still exports its data |
 | `--hyper-export-format auto` | PBIP: Hyper strictly larger than 10 MiB requires native Parquet; at most 10 MiB becomes CSV. Fabric stays CSV |
 | `--hyper-export-format csv` | Explicit CSV export |
 | `--hyper-export-format parquet` | Require native Parquet support; unavailable prerequisites are errors, not silent CSV substitution |
-| `--hyper-export-max-rows N` | Positive export row cap; `TTPBI_HYPER_EXPORT_MAX_ROWS` supplies the environment default; omitted means unlimited |
+| `--hyper-export-max-rows N` | Retained for limited diagnostic/Fabric staging uses; PBIP Hyper migrations reject a resolved cap, including `TTPBI_HYPER_EXPORT_MAX_ROWS` |
 
-For example, generate an explicitly limited review project:
+For example, generate complete Hyper-backed projects with a larger archive
+member limit, without setting a row cap:
 
 ```powershell
-python migrate.py batch .\workbooks --output-dir .\review `
-    --max-zip-entry-mb 4096 --hyper-export-format auto `
-    --hyper-export-max-rows 10000
+python migrate.py batch .\workbooks --output-dir .\output `
+    --max-zip-entry-mb 4096 --hyper-export-format auto
 ```
 
-The row cap is a sample, not full-data migration or parity evidence.
-Without a source ordering guarantee, `LIMIT` does not promise a particular
-subset or a stable row order. Source selection, export format and row counts
-must be reviewed in the generated export evidence.
+A cap inherited from the environment is still a cap: remove it before a full
+PBIP Hyper migration. Limited exports made through other diagnostic/staging
+paths remain samples, with no guaranteed subset or stable order from `LIMIT`.
+The PBIP gate checks file integrity and the final Import bindings as well as
+row counts and schemas. Exported files alone do not prove that Power BI
+loaded their data; native refresh and saved/reopened model checks are separate.
+
+On Windows, native Parquet is written through a private ASCII transit path
+then copied by Python to the requested output path, preserving accents in the
+final project location. If no writable staging path satisfies the job's
+security boundary, export stops with an explicit error rather than writing
+outside that boundary or silently changing format.
 
 `--hyper-rows` is a separate legacy metadata/inline-sample option. It is not
 an export row cap and is not forwarded by batch generation.
@@ -96,11 +108,14 @@ automatic DirectQuery. See the
 
 For non-Hyper sources, **Import does not mean extracting their data during
 migration**. The PBIP contains the datasource connection, schema and Power Query
-M; Power BI loads the rows on refresh. Native Excel/CSV and other dataset files
-are not copied from the package or source folders into the generated project.
+M; Power BI loads the rows on refresh. One native-file copy is supported: an
+Excel workbook explicitly packaged in a TWBX is copied byte-for-byte, unchanged,
+into the generated `Data/` folder and bound by its absolute path. No rows are
+parsed or exported during that copy. Loose native files and packaged non-Excel
+files are not copied into the generated project.
 For loose workbooks, relative file bindings resolve against the original
 workbook directory; absolute bindings stay unchanged. Power Query must be able
-to access that location. Native files inside a TWBX are not extracted or
+to access that location. Other native files inside a TWBX are not copied or
 rebound to guessed loose files: configure an accessible external source when
 needed. Native CSV parsing determines the full physical width before selecting
 the exact declared source columns by name, rather than truncating the input to
@@ -161,14 +176,25 @@ it does not establish a general Desktop or all-workbook pass.
 
 ## Migration
 
-### Why was an Excel source reported missing even though it was inside the TWBX?
+### How is an Excel workbook inside a TWBX bound for refresh?
 
-Native Excel/CSV files inside a TWBX are not extracted, staged into `Data`,
-or rebound by basename during PBIP migration. The project preserves the source
-connection and schema; configure an accessible external source in Power Query
-before requesting a Desktop refresh. A packaged file alone is not an external
-refresh binding. Hyper is the separate exception: its data are exported as CSV
-or Parquet and the generated Import partition reads that export.
+For trusted local per-workbook batch generation, regenerate older output to
+receive the packaged-Excel correction. The exact
+declared Excel resource is copied unchanged into the project's `Data/` folder,
+and Power Query references that copy's absolute path. A similarly named file
+beside the TWBX is not substituted, because it can contain different data.
+This copies the original workbook binary, not a CSV/Parquet export or row sample.
+
+Moving or renaming the project requires updating the absolute source path.
+Service refresh needs a gateway or other supported access to that file.
+The copy includes every sheet and the workbook metadata; treat output and ZIP
+downloads as containing source data and do not commit them. Copying does not
+prove that sheets/columns exist or that Desktop refresh succeeds.
+
+Packaged CSV and other non-Excel native files still require accessible external
+bindings. Hyper data are exported separately as CSV or Parquet.
+Uploaded jobs and shared-model/add-to-model/remove-from-model workflows do not
+use this Excel-copy path; Fabric keeps its separate staging behavior.
 
 ### Why did a date-based calculated column fail on every row in Power Query?
 

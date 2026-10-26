@@ -23,7 +23,7 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
   - `prep_flow_parser.py`: Tableau Prep flow parser (.tfl/.tflx → Power Query M) — DAG traversal, Clean/Join/Aggregate/Union/Pivot steps, expression converter, merge with TWB datasources
   - `prep_flow_analyzer.py`: Per-flow metadata extraction for lineage analysis — parses individual .tfl/.tflx files and extracts FlowProfile objects (inputs, outputs, transforms with action-level detail, DAG statistics, complexity signals). Extracts 18 operation types from Clean steps (rename, filter, remove columns, calculated fields, etc.), join key columns, aggregate group-by/agg columns, script types, output columns. `analyze_flow()`, `analyze_flows_bulk()`
   - `server_client.py`: Tableau Server/Cloud REST API client — PAT/password auth, workbook download, datasource listing, batch download, regex search, context manager, paginated API fetching (`_paginated_get`), 9 new endpoints: `list_users`, `list_groups`, `list_views`, `get_workbook_connections`, `list_schedules`, `get_site_info`, `list_prep_flows`, `download_prep_flow`, `get_server_summary`, `get_workbook_extract_tasks`, `get_workbook_subscriptions`
-  - `hyper_reader.py`: Hyper file data loader — 3-tier reader chain (tableauhyperapi → sqlite3 → binary header scan), schema discovery, type mapping (28 types), M expression generation (#table inline / Csv.Document), CSV export (`export_hyper_to_csv`), relationship inference (`infer_hyper_relationships`), metadata enrichment with recommendations
+  - `hyper_reader.py`: Hyper metadata/diagnostic reader — tableauhyperapi → sqlite3 → binary header scan, schema discovery, type mapping (28 types), legacy sample M helpers, CSV export (`export_hyper_to_csv`), relationship inference (`infer_hyper_relationships`). PBIP orchestration requires a full reader and complete CSV/Parquet-to-Import bindings; header samples cannot satisfy migration.
   - `pulse_extractor.py`: Tableau Pulse metric extractor — parses Pulse metric definitions from TWB XML (metric name, measure, time dimension, filters, goals)
   - `safe_xml.py`: Safe XML parsing utilities — XXE-protected ElementTree parser for secure TWB/TWBX processing
 - **powerbi_import/**: Power BI project generation
@@ -76,7 +76,7 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
   - `regression_suite.py`: Regression suite — snapshot generation (tables, measures, filters, formula hashes), snapshot comparison with drift detection
   - `recovery_report.py`: Self-healing recovery report — records every auto-repair action (category, severity, description, action, follow-up), JSON export, MigrationReport integration via `merge_into()`
   - `preceptor.py`: Separate scoring/report engine — 6 dimensions, SSIM screenshot comparison and structured coaching. Supported `--batch` and `--shared-model` generation do not invoke it or write `preceptor_report.json`; those dispatches do not forward preceptor switches. A separately invoked review does not dispatch agents or apply their fixes.
-  - `security_validator.py`: Centralized security utilities — path validation (null byte, traversal, extension whitelist), ZIP slip defense (`safe_zip_extract_member`), XML XXE protection (`safe_parse_xml`), credential detection/redaction (10 patterns), M query credential scrubbing, template substitution sanitization, migration artifact scanning
+  - `security_validator.py`: Centralized security utilities — path validation (null byte, traversal, extension whitelist), ZIP slip defense (`safe_zip_extract_member`), XML XXE protection (`safe_parse_xml`), UNC/device-path classification with lexical identity keys for project-controlled paths (`is_non_local_windows_path`, `lexical_path_key`, `canonical_path_key`), credential detection/redaction (10 patterns), M query credential scrubbing, template substitution sanitization, migration artifact scanning
   - `governance.py`: Enterprise governance framework — `GovernanceEngine` (naming conventions, PII detection, sensitivity labels), `AuditTrail` (append-only JSONL with SHA-256 hashing), `run_governance()` convenience function, configurable warn/enforce modes
   - `sla_tracker.py`: Migration SLA tracker — per-workbook time/fidelity/validation compliance, `SLATracker` with `start()`/`record_result()`/`get_report()`, `SLAReport` with compliance rate and JSON export
   - `monitoring.py`: Monitoring integration — export metrics to Azure Monitor, Prometheus, or structured JSON. `MigrationMonitor` with `record_metric()`/`record_event()`/`record_migration()`/`flush()`. Backend system (json/azure/prometheus/none)
@@ -222,7 +222,7 @@ Key functions:
 | aliases | aliases.json | Column aliases |
 | custom_sql | custom_sql.json | Custom SQL queries |
 | user_filters | user_filters.json | User filters, security rules → PBI RLS roles |
-| hyper_files | hyper_files.json | Hyper file row data for M partition inlining |
+| hyper_files | hyper_files.json | Hyper metadata and diagnostic rows; full PBIP data come from staged CSV/Parquet exports |
 | datasource_filters | datasource_filters.json | Extract-level filters per datasource |
 | custom_geocoding | custom_geocoding.json | Custom geocoding definitions |
 | published_datasources | published_datasources.json | Published datasource references |
@@ -363,7 +363,7 @@ not a guarantee of exact rendered parity or tenant custom-visual availability.
 - **Multi-language cultures**: `--languages fr-FR,de-DE` generates multiple culture TMDL files with translated display folders (Dimensions→Dimensionen, Measures→Mesures, etc.) and translated calendar column names
 - **Tableau Pulse → PBI Goals**: `--goals` flag converts Tableau Pulse metric definitions to Power BI Goals/Scorecard JSON artifacts
 - **Dynamic parameters**: Tableau 2024.3+ database-query-driven parameters → M partition with `Value.NativeQuery()` for dynamic parameter refresh
-- **Hyper data loading**: `.hyper` files read via SQLite interface — column metadata + row data injected into M `#table()` expressions
+- **Hyper data loading**: Complete snapshot export through a full reader to CSV (uncompressed Hyper <= 10 MiB) or native Parquet (> 10 MiB), then exact physical-identity Import bindings. Reject capped/sample-only exports and unresolved bindings; never substitute the historical live source. Metadata/legacy `#table()` samples are diagnostic, not full-data imports. Static export/binding evidence is separate from native refresh and saved-state validation.
 - **SCRIPT_* → Python/R visuals**: `SCRIPT_BOOL/INT/REAL/STR` Tableau functions → PBI `scriptVisual` containers (Python or R) with script text and input columns
 - **diagramLayout.json**: empty layout file — Power BI Desktop auto-fills on first open
 - **Parameters**: Tableau parameters → PBI What-If parameter tables:

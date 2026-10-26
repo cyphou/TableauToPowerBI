@@ -67,26 +67,38 @@ output and is not forwarded.
 | Flag | Purpose |
 |------|---------|
 | `--max-zip-entry-mb N` | Positive per-entry uncompressed limit in MiB; explicit option > `TTPBI_MAX_ZIP_ENTRY_MB` > 1024 MiB |
-| `--mode {auto,import,directquery,composite}` | Default `auto`: Hyper/import-only files use Import, capable native sources use DirectQuery; `import` overrides to Import. Non-Hyper Import migrates connection/schema/M only, not native rows; Hyper still exports data |
+| `--mode {auto,import,directquery,composite}` | Default `auto`: Hyper/import-only files use Import, capable native sources use DirectQuery; `import` overrides to Import. No native row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Hyper still exports data |
 | `--hyper-export-format {auto,csv,parquet}` | PBIP `auto`: Hyper strictly > 10 MiB requires native Parquet, otherwise CSV; Fabric `auto` remains CSV |
-| `--hyper-export-max-rows N` | Positive export cap; explicit option > `TTPBI_HYPER_EXPORT_MAX_ROWS`; omitted means unlimited |
+| `--hyper-export-max-rows N` | Positive limited diagnostic/Fabric staging cap; explicit option > `TTPBI_HYPER_EXPORT_MAX_ROWS`. A resolved cap is rejected for a full PBIP Hyper migration |
 
-Invalid limits are errors, not silent defaults. Metadata-only scans do not
-establish full-data export. A capped export is a sample, with no guaranteed
-subset/order from an unordered query, and must not be treated as full-data
-parity. Hyper snapshots always use Import. Native
+Invalid limits are errors, not silent defaults. Omitting the flag does not
+remove an environment cap: clear it before a full PBIP Hyper migration.
+PBIP requires full rows and exact Import bindings; metadata-only samples,
+unknown/mismatched counts and missing bindings cannot satisfy that contract.
+Limited diagnostic/staging exports have no guaranteed subset/order from an
+unordered query and are not full-data parity evidence.
+Hyper snapshots always use Import; do not substitute a live source. Native
 connection generation is not a refresh or credential test. Required Parquet
 needs the optional Hyper API; missing support is an explicit prerequisite error.
 SQLite-compatible inputs above the PBIP threshold fail rather than silently
 choosing CSV; an explicit CSV override remains possible. Fabric Parquet is not
-supported. Header-reader samples remain explicitly limited-data evidence.
+supported. Header-reader samples cannot be used as full PBIP export fallbacks.
+Native Parquet uses private authorized ASCII staging before Python publishes
+to the requested destination; no writable permitted staging path means an
+explicit export error, not a format change or escape from an upload boundary.
 Progress in redirected/browser logs uses newline records; percentage/ETA
 require a known total. See the [Hyper guide](../../../../docs/FAQ.md#how-are-hyper-extract-files-handled).
 The [decision diagram](../../../../docs/ARCHITECTURE.md#automatic-storage-mode-and-hyper-export)
 separates storage mode from Hyper export format.
-For PBIP native Import, source dataset files are not staged or copied into the
-project. Keep or configure their original file bindings; Power BI retrieves the
-rows at refresh. This does not disable Tableau metadata extraction or Hyper
+For PBIP native Import, an Excel workbook explicitly packaged in a TWBX is copied
+unchanged into the project's `Data/` folder and bound by its absolute path.
+This applies to trusted local per-workbook batch generation, not uploaded jobs
+or shared-model/add-to-model/remove-from-model workflows.
+Do not parse/export its rows or substitute a similarly named loose file.
+Loose native files and packaged non-Excel files are not copied; keep or configure
+their original bindings. Power BI retrieves native rows at refresh.
+Update absolute Excel paths when moving output and keep source-bearing copies
+and ZIPs out of repositories. This does not disable Tableau metadata extraction or Hyper
 CSV/Parquet exports. Fabric retains its separate staging contract.
 
 ## Performance baselines

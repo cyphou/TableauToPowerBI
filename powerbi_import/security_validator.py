@@ -5,6 +5,7 @@ Sprint 97: Security Hardening across all agents.
 
 Provides:
 - Path validation and traversal protection
+- Non-local (UNC/device) path classification for metadata-derived paths
 - ZIP archive safe extraction (ZIP slip defense)
 - XML parsing with XXE protection
 - Credential detection and redaction in output artifacts
@@ -127,6 +128,61 @@ def validate_output_dir(path):
             return False, f"Cannot write to system directory: {resolved}"
 
     return True, None
+
+
+_LOCAL_DRIVE_RE = re.compile(r'(?:\\\\[?.]\\)?[A-Za-z]:')
+
+
+def is_non_local_windows_path(path):
+    """Return True for UNC, device-namespace, volume and NT-object Windows paths.
+
+    These forms name a host or device rather than a local drive. They are
+    acceptable as an operator-selected folder, but a path read from project
+    metadata must never be resolved through the filesystem: ``os.path.realpath``
+    opens its argument, so a crafted ``\\\\host\\share`` value could make this
+    process contact an arbitrary SMB host and leak an NTLM challenge response.
+    The check is lexical and applies on every platform.
+    """
+    normalized = os.fsdecode(path).replace('/', '\\')
+    if normalized.startswith('\\??\\'):
+        return True
+    drive = ntpath.splitdrive(normalized)[0]
+    return bool(drive) and not _LOCAL_DRIVE_RE.fullmatch(drive)
+
+
+def _absolute_path_text(path):
+    path = os.fsdecode(path)
+    return path if is_non_local_windows_path(path) else os.path.abspath(path)
+
+
+def lexical_path_key(path):
+    """Return a case-normalized identity key for ``path`` using no filesystem I/O.
+
+    Use it for every path read from project metadata. A symlink, junction or
+    short-name alias keeps a key different from its target: following one lets
+    a crafted project make this process contact an arbitrary SMB host exactly
+    like a UNC value does, so such an alias is refused rather than resolved.
+    """
+    absolute = _absolute_path_text(path)
+    if is_non_local_windows_path(absolute):
+        return ntpath.normcase(ntpath.normpath(absolute))
+    return os.path.normcase(absolute)
+
+
+def canonical_path_key(path):
+    """Return the identity key of ``path`` after resolving its links.
+
+    Reserve this for a path the operator chose, such as the project directory,
+    and never for a value read from project metadata: ``os.path.realpath``
+    opens its argument. A non-local Windows path (see
+    ``is_non_local_windows_path``) is only normalized lexically, which is enough
+    to compare it with the path the operator chose and never contacts the host
+    it names.
+    """
+    absolute = _absolute_path_text(path)
+    if is_non_local_windows_path(absolute):
+        return lexical_path_key(absolute)
+    return os.path.normcase(os.path.realpath(absolute))
 
 
 # ── ZIP safe extraction ──────────────────────────────────────────────────────

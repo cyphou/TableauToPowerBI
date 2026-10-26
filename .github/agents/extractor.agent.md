@@ -72,7 +72,7 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 - Both formats must be extracted and deduplicated into `param_map`
 - Datasource extraction handles `[Table].[Column]` AND bare `[Column]` join clause formats
 - Tableau Server REST API uses PAT or password auth with paginated responses
-- Hyper readers use optional `tableauhyperapi`, SQLite and metadata-scan fallbacks; metadata-only extraction is not row recovery
+- Hyper metadata readers use optional `tableauhyperapi`, SQLite and bounded scans; metadata samples are not complete data. PBIP migrations require a full reader and all Hyper rows exported to CSV/Parquet, with exact Import bindings; reject row caps or sample-only fallback.
 
 ## XML Parsing Rules
 
@@ -94,6 +94,6 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 - **Multi-connection blending**: Single worksheets referencing 2+ datasources → separate M partitions + merge-append
 - **Linguistic schema**: Field captions as Q&A synonyms → `linguisticSchema.xml`
 
-- **Hyper inlining**: Hyper file data injected into M `#table()` partitions or `Csv.Document` — falls back gracefully if `tableauhyperapi` unavailable
+- **Hyper snapshot binding**: Preserve explicit packaged workbook/member/schema/table identities, including named Hyper connections and declared extract aliases. PBIP orchestration stages complete CSV/Parquet data and checks final Import references; missing full-reader support or unresolved identity is an explicit failure, not an inline sample or empty-table replacement.
 - **REST API server**: `POST /migrate/batch` accepts ZIP batch uploads; `POST /migrate` is retired (410). This is separate from the local folder-path browser UI
 - **Schema drift detection**: compare extracted dictionaries with `schema_drift.detect_schema_drift(current, previous)`; the legacy `--check-drift` postprocessing flag is not forwarded by batch generation

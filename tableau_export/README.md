@@ -25,6 +25,12 @@ Main extractor. For each Tableau datasource:
 - **Connections**: Excel, CSV, GeoJSON, SQL Server, PostgreSQL
 - **Parameters**: names and default values
 
+For active Hyper sources, physical declarations determine the columns, rename
+maps, types and calculation routing. Historical native declarations remain
+provenance only. Logical groups and table/object pseudo-fields are not physical
+source columns; categorical-bin memberships are extracted as groups, not
+duplicate numeric bins.
+
 ### `dax_converter.py`
 
 Converts Tableau formulas to DAX and preserves diagnostics for approximate or
@@ -44,7 +50,10 @@ connectivity and refresh are separate checks.
 - `hyper_reader.py` uses optional `tableauhyperapi`, SQLite and metadata-scan
   fallbacks with bounded archive copies and header scans. Metadata-only
   extraction may supply a bounded sample, never complete data; `.tde` is not
-  read. Packaged Hyper snapshots remain Import sources:
+  read. Packaged Hyper snapshots remain Import sources; PBIP orchestration
+  requires full CSV/Parquet exports and exact Import bindings rather than
+  using metadata samples as successful row recovery. Row caps/sample-only
+  readers or unresolved required bindings block a full PBIP migration:
   [automatic mode and export diagram](../docs/ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
 - `server_client.py` handles authorized Tableau Server/Cloud REST access.
 

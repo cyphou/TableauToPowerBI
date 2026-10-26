@@ -29,9 +29,13 @@ import time
 from datetime import datetime
 from enum import IntEnum
 
-from powerbi_import.errors import ConfigurationError, GenerationError
+from powerbi_import.errors import (
+    MigrationError, ConfigurationError, ExtractionError, GenerationError,
+    ValidationError,
+)
 from powerbi_import.security_validator import (
     get_zip_entry_limit_mb,
+    lexical_path_key,
     safe_zip_copy_member,
     safe_zip_extract_member,
     SecurityError,
@@ -87,6 +91,7 @@ def _get_extract_dir():
 
 _extract_dir_local = threading.local()
 _upload_security_violation = False
+_upload_write_root = None
 
 
 class UploadSecurityError(SecurityError, ValueError, OSError):
@@ -211,12 +216,14 @@ def _validate_upload_tree(root, max_size_mb=None):
 
 def _install_upload_copy_guard(output_dir):
     """Process-wide read/copy defense, only in a dedicated upload subprocess."""
+    global _upload_write_root
     root = _upload_root()
     if not root:
         return
     if not output_dir:
         raise UploadSecurityError("Uploads require an explicit output directory")
     output = os.path.realpath(output_dir)
+    _upload_write_root = output
     roots = (root, output)
     code_root = os.path.dirname(os.path.abspath(__file__))
     runtime_roots = tuple(os.path.realpath(p) for p in
@@ -357,10 +364,10 @@ def _resolve_hyper_options(*, hyper_export_format='auto',
             "Fabric output currently requires CSV file staging; "
             "--hyper-export-format parquet is not supported with "
             "--output-format fabric")
+    resolved_max_rows = _resolve_hyper_export_max_rows(hyper_export_max_rows)
     return {
         'hyper_export_format': hyper_export_format,
-        'hyper_export_max_rows': _resolve_hyper_export_max_rows(
-            hyper_export_max_rows),
+        'hyper_export_max_rows': resolved_max_rows,
         'max_zip_entry_mb': get_zip_entry_limit_mb(max_zip_entry_mb),
     }
 
@@ -1695,13 +1702,25 @@ def _run_batch_config(args):
                 results[basename] = {'success': False, 'error': 'prep'}
                 continue
 
-        # Fabric stages payloads before source validation. Uploaded PBIP still
-        # validates declarations for confinement without staging native data.
-        _stage_declared_local_sources(
-            tableau_file,
-            os.path.join(out_dir or os.path.join(
-                'artifacts', 'powerbi_projects', 'migrated'), basename),
-            copy_files=getattr(args, 'output_format', 'pbip') == 'fabric')
+        output_is_fabric = getattr(args, 'output_format', 'pbip') == 'fabric'
+        try:
+            _stage_declared_local_sources(
+                tableau_file,
+                os.path.join(out_dir or os.path.join(
+                    'artifacts', 'powerbi_projects', 'migrated'), basename),
+                copy_files=output_is_fabric,
+                packaged_excel=not output_is_fabric,
+                max_zip_entry_mb=hyper_options['max_zip_entry_mb'])
+        except (GenerationError, ConfigurationError, SecurityError, OSError,
+                ValueError, zipfile.BadZipFile) as exc:
+            if output_is_fabric or _upload_root():
+                raise
+            logger.error("Packaged source staging failed for %s: %s",
+                         basename, exc)
+            results[basename] = {
+                'success': False, 'error': 'source_staging',
+                'error_details': str(exc)}
+            continue
 
         # Generate
         file_results['generation'] = run_generation(
@@ -1762,13 +1781,23 @@ def _run_batch_config(args):
                             or local_source_stats.get('already_present'))):
                         _set_data_folder_for_hyper_exports(
                             project_dir, basename)
+                if not output_is_fabric:
+                    _sync_final_calendar_source_expressions(project_dir, basename)
+                    _export_power_query_files(project_dir, basename)
+                    _shorten_report_artifact_path(project_dir, basename)
+                    _require_hyper_import(
+                        project_dir, extract_dir=_get_extract_dir())
             except Exception as exc:
                 logger.exception(
                     "Postprocessing failed for batch-config workbook %s",
                     basename)
                 results[basename] = {
-                    'success': False, 'error': 'postprocessing',
+                    'success': False,
+                    'error': ('hyper_import' if isinstance(exc, GenerationError)
+                              and exc.source == 'hyper_import'
+                              else 'postprocessing'),
                     'error_details': str(exc),
+                    'quality_status': 'FAIL',
                 }
                 continue
 
@@ -2007,6 +2036,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
 
     file_results = {}
     extracted_objects = {}
+    hyper_import_error = None
 
     # Step 1: Extract
     if not skip_extraction:
@@ -2036,11 +2066,12 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                     'output_dir': workbook_output_dir,
                     'error_details': f"Prep flow parsing or merge failed: {wb_prep}"}
 
-    # Fabric retains the legacy payload staging. PBIP upload jobs still parse
-    # declared paths for confinement, but neither read nor copy native sources.
+    # Uploaded PBIP remains validation-only; local PBIP copies packaged Excel.
     _stage_declared_local_sources(
         tableau_file, os.path.join(workbook_output_dir, basename),
-        copy_files=output_format == 'fabric')
+        copy_files=output_format == 'fabric',
+        packaged_excel=output_format != 'fabric',
+        max_zip_entry_mb=hyper_options['max_zip_entry_mb'])
 
     # Step 2: Generate
     file_results['generation'] = run_generation(
@@ -2100,12 +2131,22 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         _export_power_query_files(project_dir, basename)
         if output_format != 'fabric':
             _shorten_report_artifact_path(project_dir, basename)
+            try:
+                _require_hyper_import(
+                    project_dir, extracted=extracted_objects or None,
+                    extract_dir=_get_extract_dir(), output_format=output_format)
+                file_results['hyper_import'] = True
+            except GenerationError as exc:
+                hyper_import_error = str(exc)
+                file_results['hyper_import'] = False
+                logger.error("Hyper Import gate failed for %s: %s",
+                             display_name, exc)
 
     if file_results.get('generation') and verify_open:
         project_dir = os.path.join(workbook_output_dir, basename)
         file_results['openability'] = _run_openability_gate(project_dir)
 
-    quality_status = None
+    quality_status = 'FAIL' if hyper_import_error else None
     quality_json = None
     if file_results.get('generation') and extracted_objects:
         try:
@@ -2132,7 +2173,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
             ]
             write_evidence_package(quality_report, evidence_zip, extra_files=extra_files)
             print(f"  Evidence package: {evidence_zip}")
-            quality_status = quality_report.status
+            quality_status = 'FAIL' if hyper_import_error else quality_report.status
         except (ImportError, OSError, ValueError) as exc:
             logger.warning("Quality report failed for %s: %s", display_name, exc)
 
@@ -2144,6 +2185,10 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     if 'openability' in file_results:
         stage_results['validation'] = (
             'completed' if file_results.get('openability') else 'failed')
+    if 'hyper_import' in file_results:
+        stage_results['validation'] = (
+            'completed' if file_results['hyper_import']
+            and file_results.get('openability', True) else 'failed')
     return {
         'success': all_ok,
         'stages': stage_results,
@@ -2154,6 +2199,8 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         'metadata_path': os.path.join(workbook_output_dir, basename, 'migration_metadata.json'),
         'quality_status': quality_status,
         'quality_json': quality_json,
+        **({'error': 'hyper_import', 'error_details': hyper_import_error}
+           if hyper_import_error else {}),
     }
 
 
@@ -2632,9 +2679,8 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 # No stable sentinel may validate an earlier success. Leave
                 # source failure reporting to the isolated migration worker.
                 return None
-        # Version 4 also invalidates projects staged under the old native-file
-        # copy policy, even when their remaining options happen to match.
-        config['signature_version'] = 4
+        # Invalidate output predating packaged-Excel binding/full Hyper Import.
+        config['signature_version'] = 6
         return hashlib.sha256(
             json.dumps(config, sort_keys=True, default=str).encode('utf-8')
         ).hexdigest()
@@ -3402,9 +3448,10 @@ def _add_migration_args(parser):
         metavar='N',
         type=_positive_int_argument,
         default=None,
-        help='Optional positive row cap (default unlimited; also settable with '
-             'TTPBI_HYPER_EXPORT_MAX_ROWS). LIMIT has no ORDER BY, so capped '
-             'rows are an arbitrary, non-deterministic sample'
+        help='Optional positive cap for diagnostic/Fabric Hyper exports '
+             '(also TTPBI_HYPER_EXPORT_MAX_ROWS); PBIP Hyper migrations reject '
+             'resolved caps and require all rows. Capped LIMIT has no ORDER '
+             'BY and is an arbitrary, non-deterministic sample, not full data'
     )
 
     parser.add_argument(
@@ -4498,7 +4545,7 @@ Common options:
   --max-zip-entry-mb N  Set the per-ZIP-member decompression limit
   --mode MODE         Use auto (default), import, directquery, or composite
   --hyper-export-format FMT  PBIP auto: CSV <=10 MiB, Parquet >10 MiB
-  --hyper-export-max-rows N  Cap exported Hyper rows (arbitrary sample)
+  --hyper-export-max-rows N  Diagnostic/Fabric cap; PBIP Hyper rejects caps
 
 Compatibility:
   Project generation requires a source folder, --batch, --batch-config,
@@ -6224,6 +6271,19 @@ def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
                             'hyper_export_max_rows'],
                         output_format=output_format, quiet=quiet,
                         merge_manifest=True, extract_dir=extract_dir)
+                if output_format == 'pbip':
+                    # All members must be exported before validating the shared
+                    # model; an intermediate merge manifest is not completion.
+                    _sync_final_calendar_source_expressions(
+                        shared_project_dir, model_name)
+                    _export_power_query_files(shared_project_dir, model_name)
+                    shared_extracted = {
+                        key: [item for converted in all_converted
+                              for item in (converted.get(key) or [])]
+                        for key in ('datasources', 'hyper_files')
+                    }
+                    _require_hyper_import(
+                        shared_project_dir, extracted=shared_extracted)
                 if output_format == 'pbip' and verify_open:
                     project_dir = os.path.dirname(result['model_path'])
                     if not _run_openability_gate(project_dir):
@@ -6232,6 +6292,11 @@ def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
             else:
                 return ExitCode.GENERAL_ERROR
 
+    except GenerationError as e:
+        logger.error("Shared model migration failed: %s", e, exc_info=True)
+        print(f"\nError: {e}")
+        return (ExitCode.VALIDATION_FAILED if e.source == 'hyper_import'
+                else ExitCode.GENERAL_ERROR)
     except Exception as e:
         logger.error("Shared model migration failed: %s", e, exc_info=True)
         print(f"\nError: {e}")
@@ -8124,6 +8189,28 @@ def _hyper_identity_key(identity):
     return values if all(isinstance(v, str) and v for v in values) else None
 
 
+def _hyper_binding_identity_key(identity):
+    """Exact packaged identity or an explicitly declared loose-file identity.
+
+    A loose Hyper file has no archive member. Its producer must supply the
+    resolved local source, schema and table; table/header resemblance is never
+    a substitute for that lineage. The source is compared lexically because it
+    is read back from project metadata and must never be opened.
+    """
+    packaged = _hyper_identity_key(identity)
+    if packaged is not None:
+        return ('packaged',) + packaged
+    if (not isinstance(identity, dict)
+            or set(identity) != {'source_file', 'schema', 'table'}
+            or not all(isinstance(identity.get(field), str)
+                       and identity[field]
+                       for field in ('source_file', 'schema', 'table'))
+            or not os.path.isabs(identity['source_file'])):
+        return None
+    return ('local', lexical_path_key(identity['source_file']),
+            identity['schema'], identity['table'])
+
+
 def _atomic_write_text(path, content, encoding='utf-8'):
     """Publish text through a sibling temporary file, preserving old bytes on error."""
     directory = os.path.dirname(os.path.abspath(path))
@@ -8155,6 +8242,180 @@ def _atomic_write_json(path, value):
     _atomic_write_text(path, payload)
 
 
+def _is_hyper_row_count(value):
+    """A full-data count is a measured nonnegative integer, never a boolean."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _hyper_export_fingerprint(path):
+    """Hash the finished bytes in bounded chunks before atomic publication."""
+    digest = hashlib.sha256()
+    size_bytes = 0
+    with open(path, 'rb') as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size_bytes += len(chunk)
+    return {'sha256': digest.hexdigest(), 'size_bytes': size_bytes}
+
+
+def _has_verified_full_hyper_export(record):
+    """Old/sample manifests cannot authorize a full-data source binding.
+
+    This is an export-proof prerequisite, not the final Import binding gate.
+    The shared quality helper also checks the final files against these hashes.
+    """
+    if not isinstance(record, dict):
+        return False
+    record_format = record.get('format')
+    columns = record.get('columns')
+    digest = record.get('sha256')
+    size_bytes = record.get('size_bytes')
+    return (
+        record.get('full_extract_verified') is True
+        and isinstance(record_format, str)
+        and record_format in ('csv', 'parquet')
+        and record.get('sampled') is False
+        and record.get('truncated') is False
+        and record.get('max_rows') is None
+        and record.get('row_count_source') == {
+            'csv': 'csv_writer', 'parquet': 'hyper_copy',
+        }.get(record_format)
+        and _is_hyper_row_count(record.get('total_rows'))
+        and _is_hyper_row_count(record.get('row_count'))
+        and record['row_count'] == record['total_rows']
+        and isinstance(columns, list) and bool(columns)
+        and all(isinstance(column, str) for column in columns)
+        and len(set(columns)) == len(columns)
+        and isinstance(digest, str) and len(digest) == 64
+        and all(character in '0123456789abcdef' for character in digest)
+        and isinstance(size_bytes, int)
+        and _is_hyper_row_count(size_bytes) and size_bytes > 0
+    )
+
+
+def _remove_hyper_export_tree(path):
+    """Clean only a known private directory; never hide residual data."""
+    if not path:
+        return True
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        logger.error("Could not clean private Hyper export directory %s",
+                     path, exc_info=True)
+        return False
+    return True
+
+
+def _make_hyper_ascii_transit(out_dir):
+    """Create a private native-COPY directory at a writable ASCII absolute path.
+
+    Test actual directory creation, not just the nearest ASCII ancestor or the
+    default tempfile base (which may itself be Unicode). Uploaded jobs may use
+    neither an ancestor outside the job nor a location outside the copy guard's
+    write boundary. No process-wide tempfile/environment setting is changed.
+    """
+    upload_root = _upload_root()
+    candidates = []
+    seen = set()
+
+    def add_ancestors(path):
+        current = os.path.abspath(os.fsdecode(path))
+        while current not in seen:
+            seen.add(current)
+            candidates.append(current)
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+
+    add_ancestors(out_dir)
+    if upload_root:
+        add_ancestors(_upload_write_root or upload_root)
+    else:
+        add_ancestors(tempfile.gettempdir())
+        add_ancestors(os.getcwd())
+
+    last_error = None
+    for candidate in candidates:
+        resolved = os.path.realpath(candidate)
+        if not candidate.isascii() or not resolved.isascii():
+            continue
+        if upload_root:
+            try:
+                _confine_upload_path(candidate, upload_root)
+                if _upload_write_root:
+                    _confine_upload_path(candidate, _upload_write_root)
+            except UploadSecurityError:
+                continue
+        if not os.path.isdir(resolved) or not os.access(resolved, os.W_OK):
+            continue
+        try:
+            return tempfile.mkdtemp(prefix='.ttpbi-hyper-', dir=resolved)
+        except OSError as exc:
+            last_error = exc
+            logger.debug("ASCII Hyper staging candidate is not writable: %s",
+                         resolved, exc_info=True)
+    raise GenerationError(
+        "Native Parquet export needs a writable, entirely ASCII absolute "
+        "staging path. No allowed candidate is available. Choose an ASCII "
+        "output/job root with write access (uploaded jobs cannot stage outside "
+        "their authorized root), or explicitly select CSV.",
+        source='hyper_export') from last_error
+
+
+def _require_hyper_import(project_dir, *, extracted=None, extract_dir=None,
+                          output_format='pbip'):
+    """Run the shared static full-export/Import gate, never a native load.
+
+    Keep this after the last partition/calendar repair and final M export in
+    every orchestration route. Evidence owns the diagnostics and report schema.
+    """
+    if output_format != 'pbip':
+        return None
+    try:
+        from powerbi_import.migration_quality import build_hyper_import_evidence
+
+        if extracted is None:
+            extracted = {}
+            source_dir = extract_dir or _get_extract_dir()
+            for name in ('datasources', 'hyper_files'):
+                path = os.path.join(source_dir, name + '.json')
+                if os.path.isfile(path):
+                    with open(path, encoding='utf-8') as stream:
+                        extracted[name] = json.load(stream)
+        evidence = build_hyper_import_evidence(extracted, project_dir)
+    except Exception as exc:
+        raise GenerationError(
+            f"Could not validate the required Hyper full Import contract: {exc}",
+            item=os.path.basename(os.path.normpath(project_dir)),
+            source='hyper_import') from exc
+    if (not isinstance(evidence, dict)
+            or not isinstance(evidence.get('status'), str)
+            or not evidence['status']
+            or not isinstance(evidence.get('diagnostics'), list)):
+        raise GenerationError(
+            "The Hyper Import evidence helper returned an invalid result",
+            item=os.path.basename(os.path.normpath(project_dir)),
+            source='hyper_import')
+    diagnostics = evidence['diagnostics']
+    if (diagnostics or evidence['status'] not in
+            ('not_applicable', 'static_verified')):
+        raise GenerationError(
+            "Required Hyper full-export/Import binding checks failed: "
+            + json.dumps(diagnostics or [evidence['status']],
+                         ensure_ascii=False, default=str),
+            item=os.path.basename(os.path.normpath(project_dir)),
+            source='hyper_import')
+    logger.info("Static Hyper Import gate: %s; native runtime not run",
+                evidence['status'])
+    return evidence
+
+
 class _HyperCsvExports(dict):
     """Legacy stem map plus lossless physical export records.
 
@@ -8167,7 +8428,8 @@ class _HyperCsvExports(dict):
         self.exports = []
 
 
-def _stage_pending_hyper_partition(content, data_dir, export_records):
+def _stage_pending_hyper_partition(content, data_dir, export_records, *,
+                                   require_full=False, binding_updates=None):
     """Resolve only the semantic producer's exact identity-bearing error.
 
     The final TMDL table declaration and the error's Table must agree. Neither
@@ -8200,15 +8462,17 @@ def _stage_pending_hyper_partition(content, data_dir, export_records):
         identity = json.loads(pending.group(3).replace('""', '"'))
     except (TypeError, ValueError):
         return content
-    key = _hyper_identity_key(identity)
+    key = _hyper_binding_identity_key(identity)
     if key is None or pending_table != table_name:
         return content
     matches = [record for record in export_records
                if isinstance(record, dict)
-               and _hyper_identity_key(record.get('identity')) == key]
+               and _hyper_binding_identity_key(record.get('identity')) == key]
     if len(matches) != 1:
         return content
     record = matches[0]
+    if require_full and not _has_verified_full_hyper_export(record):
+        return content
     record_format = record.get('format')
     if record_format is None and record.get('csv_filename'):
         record_format = 'csv'  # version-1 manifest compatibility
@@ -8261,9 +8525,13 @@ def _stage_pending_hyper_partition(content, data_dir, export_records):
         binding['csv_filename'] = filename
     else:
         binding.update({'filename': filename, 'format': 'parquet'})
-    staged = record.setdefault('staged_files', [])
-    if binding not in staged:
-        staged.append(binding)
+    if binding_updates is None:
+        staged = record.setdefault('staged_files', [])
+        if binding not in staged:
+            staged.append(binding)
+    else:
+        # Orchestration commits this only after the final partition write.
+        binding_updates.append((record, binding))
     return updated
 
 
@@ -8274,6 +8542,41 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                                   output_format='pbip', quiet=False,
                                   max_zip_entry_mb=None,
                                   merge_manifest=False, extract_dir=None):
+    """Export/reconcile under one rollback boundary, including TMDL failures."""
+    transaction = {}
+    try:
+        return _convert_hyper_to_csv_in_data_impl(
+            data_dir, source_basename, project_dir,
+            packaged_hyper=packaged_hyper,
+            hyper_export_format=hyper_export_format,
+            hyper_export_max_rows=hyper_export_max_rows,
+            output_format=output_format, quiet=quiet,
+            max_zip_entry_mb=max_zip_entry_mb,
+            merge_manifest=merge_manifest, extract_dir=extract_dir,
+            _transaction=transaction)
+    except BaseException as exc:
+        rollback = transaction.get('rollback')
+        if rollback is not None:
+            try:
+                rollback()
+            except Exception:
+                logger.error("Hyper export rollback failed; preserving the "
+                             "primary exception", exc_info=True)
+        if isinstance(exc, Exception) and not isinstance(exc, MigrationError):
+            raise GenerationError(
+                f"Hyper export/reconciliation failed: {exc}",
+                source='hyper_export') from exc
+        raise
+
+
+def _convert_hyper_to_csv_in_data_impl(data_dir, source_basename, project_dir,
+                                      packaged_hyper=None, *,
+                                      hyper_export_format='auto',
+                                      hyper_export_max_rows=None,
+                                      output_format='pbip', quiet=False,
+                                      max_zip_entry_mb=None,
+                                      merge_manifest=False, extract_dir=None,
+                                      _transaction):
     """Convert Hyper data with bounded-memory CSV/Parquet writers and wire M.
 
     When a TWBX contains only Hyper extracts (no Excel files), the generated M
@@ -8293,6 +8596,7 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
         hyper_export_max_rows=hyper_export_max_rows,
         max_zip_entry_mb=max_zip_entry_mb,
         output_format=output_format)
+    require_full = output_format == 'pbip'
     effective_export_format = options['hyper_export_format']
     if output_format == 'fabric' and effective_export_format == 'auto':
         logger.info(
@@ -8305,7 +8609,9 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
     authoritative = packaged_hyper is not None
     export_records = []
     manifest_path = os.path.join(data_dir, 'hyper_exports.json')
+    manifest_hyper_context = False
     if (packaged_hyper is None or merge_manifest) and os.path.isfile(manifest_path):
+        manifest_hyper_context = True  # A malformed manifest cannot prove absence.
         try:
             with open(manifest_path, encoding='utf-8') as stream:
                 manifest = json.load(stream)
@@ -8320,6 +8626,7 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                 records = manifest.get('exports', [])
                 if isinstance(records, list):
                     export_records = [r for r in records if isinstance(r, dict)]
+                    manifest_hyper_context = bool(records)
             else:
                 authoritative = True
         except (OSError, ValueError, AttributeError):
@@ -8337,6 +8644,29 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
             for fname in files:
                 if fname.lower().endswith('.hyper'):
                     hyper_files.append(os.path.join(root, fname))
+    if require_full and options['hyper_export_max_rows'] is not None:
+        has_hyper_context = bool(
+            hyper_files or export_records or manifest_hyper_context)
+        if not has_hyper_context:
+            pending_tables = os.path.join(
+                project_dir, f'{source_basename}.SemanticModel',
+                'definition', 'tables', '*.tmdl')
+            for path in _glob.glob(pending_tables):
+                try:
+                    with open(path, encoding='utf-8') as stream:
+                        pending_content = stream.read()
+                except OSError:
+                    continue
+                if ('Migration.HyperExportRequired' in pending_content
+                        or 'annotation Migration_HyperIdentity' in pending_content):
+                    has_hyper_context = True
+                    break
+        if has_hyper_context:
+            raise ConfigurationError(
+                "PBIP Hyper migrations require complete exports and reject "
+                "resolved row caps, including TTPBI_HYPER_EXPORT_MAX_ROWS. "
+                "Remove the cap; capped exports are diagnostic/Fabric "
+                "staging only, not full-data PBIP migrations.")
     if not hyper_files and not authoritative:
         return
 
@@ -8365,7 +8695,8 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
             except OSError:
                 source_size = 0
             may_reuse_legacy_csv = (
-                options['hyper_export_format'] == 'auto'
+                not require_full
+                and options['hyper_export_format'] == 'auto'
                 and source_size <= 10 * 1024 * 1024
                 and options['hyper_export_max_rows'] is None)
             if existing_csv and not authoritative and may_reuse_legacy_csv:
@@ -8383,26 +8714,106 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                 identity=identity,
                 export_format=effective_export_format,
                 max_rows=options['hyper_export_max_rows'],
-                quiet=quiet)
-            if (hyper_path in package_context
+                quiet=quiet, require_full=require_full)
+            if ((require_full or hyper_path in package_context)
                     and not converted.exports):
                 member = identity.get('archive_member')
                 raise GenerationError(
-                    "A selected packaged Hyper member produced no exportable "
+                    "A selected Hyper source produced no exportable "
                     "tables; the existing Hyper export manifest was preserved",
                     item=member if isinstance(member, str) else None,
                     source="hyper_export")
             new_export_records.extend(converted.exports)
             converted_now += len(converted.exports)
     except BaseException:
-        if export_stage_dir:
-            shutil.rmtree(export_stage_dir, ignore_errors=True)
+        _remove_hyper_export_tree(export_stage_dir)
         raise
 
     # Publish staged files transactionally, keeping backups until the manifest
     # has been atomically committed below.
     publication_backups = []
     published_files = []
+    tmdl_originals = {}
+    rollback_attempted = False
+
+    def rollback_exports():
+        """Restore data and successful partition writes before propagating."""
+        nonlocal rollback_attempted
+        if rollback_attempted:
+            return
+        rollback_attempted = True
+        restored = True
+        for path, original in reversed(list(tmdl_originals.items())):
+            try:
+                _atomic_write_text(path, original)
+            except Exception:
+                restored = False
+                logger.error("Could not restore TMDL %s after Hyper failure",
+                             path, exc_info=True)
+        for destination in reversed(published_files):
+            try:
+                os.unlink(destination)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                restored = False
+                logger.error("Could not retract Hyper output %s",
+                             destination, exc_info=True)
+        for backup, destination in reversed(publication_backups):
+            try:
+                os.replace(backup, destination)
+            except Exception:
+                restored = False
+                logger.error("Could not restore Hyper output %s from %s",
+                             destination, backup, exc_info=True)
+        if restored:
+            _remove_hyper_export_tree(export_stage_dir)
+        elif export_stage_dir:
+            logger.error("Retaining Hyper staging/backups for recovery: %s",
+                         export_stage_dir)
+
+    _transaction['rollback'] = rollback_exports
+
+    def commit_bindings(updates):
+        for record, binding in updates:
+            staged = record.setdefault('staged_files', [])
+            binding_key = (
+                binding.get('table'),
+                binding.get('filename') or binding.get('csv_filename'),
+                binding.get('format', 'csv'))
+            # A freshly rewritten alias replaces its old byte/count proof.
+            staged[:] = [
+                prior for prior in staged
+                if not isinstance(prior, dict) or (
+                    prior.get('table'),
+                    prior.get('filename') or prior.get('csv_filename'),
+                    prior.get('format', 'csv')) != binding_key
+            ]
+            staged.append(binding)
+
+    def publish_binding_file(temporary, destination):
+        """Keep a rewritten full-data partition file in the same transaction."""
+        if require_full and destination not in published_files:
+            if os.path.exists(destination):
+                fd, backup = tempfile.mkstemp(
+                    prefix='.hyper-binding-backup-', suffix='.tmp',
+                    dir=export_stage_dir or data_dir)
+                os.close(fd)
+                try:
+                    os.replace(destination, backup)
+                except BaseException:
+                    try:
+                        os.unlink(backup)
+                    except OSError:
+                        logger.error("Could not remove unused Hyper backup %s",
+                                     backup, exc_info=True)
+                    raise
+                publication_backups.append((backup, destination))
+            os.replace(temporary, destination)
+            published_files.append(destination)
+        else:
+            os.replace(temporary, destination)
+
     try:
         filenames = [record.get('filename') for record in new_export_records]
         if len(filenames) != len(set(filenames)):
@@ -8424,22 +8835,12 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                 publication_backups.append((backup, destination))
             os.replace(staged_path, destination)
             published_files.append(destination)
-    except BaseException:
-        for destination in reversed(published_files):
-            try:
-                os.unlink(destination)
-            except OSError:
-                logger.error("Could not retract partial Hyper output %s",
-                             destination, exc_info=True)
-        for backup, destination in reversed(publication_backups):
-            try:
-                if os.path.exists(backup):
-                    os.replace(backup, destination)
-            except OSError:
-                logger.error("Could not restore Hyper output %s",
-                             destination, exc_info=True)
-        if export_stage_dir:
-            shutil.rmtree(export_stage_dir, ignore_errors=True)
+    except BaseException as exc:
+        rollback_exports()
+        if isinstance(exc, Exception) and not isinstance(exc, MigrationError):
+            raise GenerationError(
+                f"Could not publish the Hyper export transaction: {exc}",
+                source='hyper_export') from exc
         raise
 
     # A fresh export supersedes previous rows only for the exact physical
@@ -8480,8 +8881,12 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
         if isinstance(identity, dict):
             identity_key = json.dumps(
                 identity, sort_keys=True, ensure_ascii=False)
-            staged_files = list(
-                prior_staged_by_identity.get(identity_key, []))
+            # An alias from an older raw export is not proof that this fresh
+            # full export feeds it, even when row counts happen to agree.
+            # Re-record aliases only after their current partition write.
+            staged_files = (
+                [] if require_full else
+                list(prior_staged_by_identity.get(identity_key, [])))
             current_staged = merged_record.get('staged_files')
             for binding in (
                     current_staged if isinstance(current_staged, list) else []):
@@ -8494,7 +8899,9 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
         filename = record.get('filename') or record.get('csv_filename')
         if (isinstance(filename, str) and os.path.basename(filename) == filename
                 and os.path.isfile(os.path.join(data_dir, filename))
-                and record.get('format', 'csv') == 'csv'):
+                and record.get('format', 'csv') == 'csv'
+                and (not require_full
+                     or _has_verified_full_hyper_export(record))):
             csv_map[str(index)] = record.get('csv_filename') or filename
 
     if converted_now and not quiet:
@@ -8517,8 +8924,12 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
             record.get('filename') or record.get('csv_filename')))
     ]
     if not csv_map and not export_records:
-        if export_stage_dir:
-            shutil.rmtree(export_stage_dir, ignore_errors=True)
+        if require_full and new_export_records:
+            raise GenerationError(
+                "The newly written Hyper exports disappeared before "
+                "reconciliation; full Import cannot be verified",
+                source='hyper_import')
+        _remove_hyper_export_tree(export_stage_dir)
         return
 
     # Patch TMDL table files to bind the selected CSV or Parquet artifact.
@@ -8569,12 +8980,12 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
             for tbl in ds.get('tables', []):
                 tbl_name = tbl.get('name', '')
                 src_table = tbl.get('source_table', '')
-                if authoritative and tbl_name:
-                    key = _hyper_identity_key(tbl.get('hyper_identity'))
+                if (authoritative or require_full) and tbl_name:
+                    key = _hyper_binding_identity_key(tbl.get('hyper_identity'))
                     matches = []
                     for record in export_records:
                         if (key is None
-                                or _hyper_identity_key(
+                                or _hyper_binding_identity_key(
                                     record.get('identity')) != key):
                             continue
                         filename = record.get('filename') or record.get(
@@ -8587,8 +8998,11 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                                 and os.path.basename(filename) == filename
                                 and os.path.isfile(os.path.join(
                                     data_dir, filename))):
-                            matches.append((filename, fmt))
-                    if len(matches) == 1:
+                            matches.append((filename, fmt, record))
+                    if (len(matches) == 1
+                            and (not require_full
+                                 or _has_verified_full_hyper_export(
+                                     matches[0][2]))):
                         tmdl_identity_candidates.setdefault(tbl_name, set()).add(
                             (key, matches[0][0], matches[0][1]))
                 elif tbl_name and src_table:
@@ -8610,7 +9024,7 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
     except (OSError, ValueError) as exc:
         logger.warning("Could not load extraction metadata for Hyper routing: %s", exc)
 
-    if authoritative:
+    if authoritative or require_full:
         tmdl_to_file = {
             name: (next(iter(candidates))[1], next(iter(candidates))[2])
             for name, candidates in tmdl_identity_candidates.items()
@@ -8625,25 +9039,47 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
 
     csv_headers_by_file = _csv_header_sets(data_dir, csv_map.values())
 
-    tmdl_originals = {}
     for tmdl_path in _glob.glob(os.path.join(tables_dir, '*.tmdl')):
         try:
             with open(tmdl_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-        except OSError:
+        except OSError as exc:
+            if require_full:
+                rollback_exports()
+                raise GenerationError(
+                    f"Could not read a required Hyper partition: {exc}",
+                    item=os.path.basename(tmdl_path),
+                    source='hyper_import') from exc
             continue
 
         # An Excel source whose workbook was not packaged is served by the one
         # converted extract that carries every column the partition expects.
         original = content
-        if authoritative and 'Migration.HyperExportRequired' in content:
+        binding_updates = []
+        if ((authoritative or require_full)
+                and 'Migration.HyperExportRequired' in content):
             content = _stage_pending_hyper_partition(
-                content, data_dir, export_records)
+                content, data_dir, export_records, require_full=require_full,
+                binding_updates=binding_updates)
             if content != original:
                 try:
+                    if require_full:
+                        tmdl_originals.setdefault(tmdl_path, original)
                     _atomic_write_text(tmdl_path, content)
                     tmdl_originals.setdefault(tmdl_path, original)
-                except OSError as exc:
+                    commit_bindings(binding_updates)
+                except BaseException as exc:
+                    if require_full:
+                        rollback_exports()
+                        if isinstance(exc, Exception):
+                            raise GenerationError(
+                                f"Could not write the required Hyper Import "
+                                f"partition: {exc}",
+                                item=os.path.basename(tmdl_path),
+                                source='hyper_import') from exc
+                        raise
+                    if not isinstance(exc, OSError):
+                        raise
                     logger.warning(
                         "Could not bind Hyper export in %s: %s",
                         os.path.basename(tmdl_path), exc)
@@ -8665,9 +9101,9 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                         _re.findall(r'"((?:[^"]|"")*)"', excel_block.group(2))]
             table_name = os.path.splitext(os.path.basename(tmdl_path))[0]
             chosen = (
-                tmdl_to_file.get(table_name) if authoritative
+                tmdl_to_file.get(table_name) if (authoritative or require_full)
                 else None)
-            if chosen is None and not authoritative:
+            if chosen is None and not authoritative and not require_full:
                 csv_choice = _pick_csv_for_columns(
                     expected, csv_headers_by_file)
                 if csv_choice:
@@ -8691,38 +9127,33 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                                "partition left unchanged", os.path.basename(tmdl_path))
 
         # Also replace inline/fallback #table() sources when an unambiguous
-        # exported file maps to this exact table/source_table.
-        if '#table(' in content and (csv_map or export_records):
+        # exported file maps to this exact table/source_table. An already-bound
+        # Source may legitimately use #table() in later derived steps; those
+        # expressions must not trigger a second CSV staging/rewrite.
+        htable_pattern = (
+            r'Source\s*=\s*try\s+'
+            r'#table\(\s*\{([^}]*)\}\s*,\s*\{'
+            r'.*?'
+            r'\}\s*\)\s+'
+            r'otherwise\s+'
+            r'#table\(\s*\{[^}]*\}\s*,\s*\{\s*\}\s*\)'
+            r'(?:\s*//[^\n]*)?')
+        htable_match = _re.search(htable_pattern, content, flags=_re.DOTALL)
+        if htable_match and (csv_map or export_records):
+            tmdl_cols = [
+                column.replace('""', '"') for column in
+                _re.findall(r'"((?:[^"]|"")*)"', htable_match.group(1))
+            ]
             tmdl_table_name = os.path.splitext(os.path.basename(tmdl_path))[0]
             matched = tmdl_to_file.get(tmdl_table_name)
-            if matched is None and not authoritative:
-                inline_cols = _re.search(
-                    r'Source\s*=\s*try\s+#table\(\s*\{([^}]*)\}', content)
-                if inline_cols:
-                    csv_choice = _pick_csv_for_columns(
-                        [column.replace('""', '"') for column in
-                         _re.findall(r'"((?:[^"]|"")*)"',
-                                     inline_cols.group(1))],
-                        csv_headers_by_file)
-                    if csv_choice:
-                        matched = (csv_choice, 'csv')
+            if matched is None and not authoritative and not require_full:
+                csv_choice = _pick_csv_for_columns(
+                    tmdl_cols, csv_headers_by_file)
+                if csv_choice:
+                    matched = (csv_choice, 'csv')
 
             if matched:
                 matched_file, matched_format = matched
-                htable_pattern = (
-                    r'Source\s*=\s*try\s+'
-                    r'#table\(\s*\{[^}]*\}\s*,\s*\{'
-                    r'.*?'
-                    r'\}\s*\)\s+'
-                    r'otherwise\s+'
-                    r'#table\(\s*\{[^}]*\}\s*,\s*\{\s*\}\s*\)'
-                    r'(?:\s*//[^\n]*)?')
-                col_match = _re.search(
-                    r'#table\(\s*\{([^}]*)\}', content)
-                tmdl_cols = (
-                    [column.replace('""', '"') for column in
-                     _re.findall(r'"((?:[^"]|"")*)"', col_match.group(1))]
-                    if col_match else [])
                 source_record = next(
                     (record for record in export_records
                      if (record.get('filename') or record.get('csv_filename'))
@@ -8754,9 +9185,16 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                                 elif physical_name + suffix in tmdl_set:
                                     physical_to_model[physical_name] = (
                                         physical_name + suffix)
+                            if (require_full and
+                                    set(tmdl_cols) - set(physical_to_model.values())):
+                                raise ValidationError(
+                                    "The exact Hyper source lacks required "
+                                    "physical model columns; refusing to "
+                                    "fabricate empty values",
+                                    item=tmdl_table_name, source='hyper_import')
 
                             table_csv_name = f'{tmdl_table_name}.csv'
-                            if authoritative:
+                            if authoritative or require_full:
                                 digest = hashlib.sha256(json.dumps(
                                     [matched_file, tmdl_table_name],
                                     ensure_ascii=False).encode('utf-8')).hexdigest()
@@ -8791,6 +9229,14 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                                         if not batch:
                                             break
                                         for row in batch:
+                                            if (require_full and
+                                                    len(row) != len(physical_columns)):
+                                                raise ValidationError(
+                                                    "A staged Hyper CSV row "
+                                                    "has an invalid physical "
+                                                    "column count",
+                                                    item=tmdl_table_name,
+                                                    source='hyper_import')
                                             writer.writerow([
                                                 row[index_by_model[column]]
                                                 if column in index_by_model
@@ -8804,10 +9250,19 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                                             source_record.get('row_count'))
                                     target.flush()
                                     os.fsync(target.fileno())
+                                if (require_full and (
+                                        not _is_hyper_row_count(
+                                            source_record.get('row_count'))
+                                        or rows_written != source_record['row_count'])):
+                                    raise ValidationError(
+                                        "The staged Hyper partition row count "
+                                        "does not match the verified raw export",
+                                        item=tmdl_table_name,
+                                        source='hyper_import')
                                 # Close the source before replacement. This is
                                 # required on Windows when source == destination.
                                 source.close()
-                                os.replace(temporary, table_csv_path)
+                                publish_binding_file(temporary, table_csv_path)
                                 tracker.finish(
                                     rows_written,
                                     source_record.get('row_count'),
@@ -8820,11 +9275,28 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                                     pass
                                 try:
                                     os.unlink(temporary)
-                                except OSError:
+                                except FileNotFoundError:
                                     pass
+                                except OSError:
+                                    logger.error(
+                                        "Could not remove failed Hyper staging "
+                                        "file %s", temporary, exc_info=True)
                                 tracker.fail(str(exc), rows_written)
                                 raise
-                    except (OSError, UnicodeError, _csv.Error, ValueError) as exc:
+                    except BaseException as exc:
+                        if require_full:
+                            rollback_exports()
+                            if (isinstance(exc, Exception)
+                                    and not isinstance(exc, MigrationError)):
+                                raise GenerationError(
+                                    f"Could not stage the required Hyper "
+                                    f"partition file: {exc}",
+                                    item=tmdl_table_name,
+                                    source='hyper_import') from exc
+                            raise
+                        if not isinstance(
+                                exc, (OSError, UnicodeError, _csv.Error, ValueError)):
+                            raise
                         logger.warning(
                             "Could not stream-rewrite Hyper CSV %s: %s",
                             matched_file, exc)
@@ -8846,10 +9318,23 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                             + source_expression + ', {'
                             + ', '.join(type_changes) + '}, "en-US")')
                     replacement = 'Source = ' + source_expression
-                    binding = {
+                    csv_binding: dict[str, object] = {
                         'table': tmdl_table_name,
                         'csv_filename': table_csv_name,
                     }
+                    if require_full:
+                        try:
+                            csv_binding.update(
+                                _hyper_export_fingerprint(table_csv_path))
+                            csv_binding['row_count'] = rows_written
+                        except OSError as exc:
+                            rollback_exports()
+                            raise GenerationError(
+                                f"Could not fingerprint the required staged "
+                                f"Hyper partition: {exc}",
+                                item=tmdl_table_name,
+                                source='hyper_import') from exc
+                    binding = csv_binding
                 else:
                     physical_columns = source_record.get('columns', [])
                     if not physical_columns or not tmdl_cols:
@@ -8860,6 +9345,7 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                         remote_map = tmdl_col_remote.get(
                             tmdl_table_name, {})
                         rename_pairs = []
+                        mapped_columns = set()
                         for physical_name in physical_columns:
                             model_name = None
                             if (physical_name in remote_map
@@ -8869,10 +9355,19 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                                 model_name = physical_name
                             elif physical_name + suffix in tmdl_set:
                                 model_name = physical_name + suffix
+                            if model_name is not None:
+                                mapped_columns.add(model_name)
                             if model_name and model_name != physical_name:
                                 rename_pairs.append(
                                     '{' + _m_literal(physical_name) + ', '
                                     + _m_literal(model_name) + '}')
+                        if require_full and set(tmdl_cols) - mapped_columns:
+                            rollback_exports()
+                            raise ValidationError(
+                                "The exact Hyper Parquet source lacks required "
+                                "physical model columns; refusing null "
+                                "substitution", item=tmdl_table_name,
+                                source='hyper_import')
                         escaped_name = matched_file.replace('"', '""')
                         source_expression = (
                             'Parquet.Document(File.Contents(DataFolder & '
@@ -8881,12 +9376,14 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                             source_expression = (
                                 'Table.RenameColumns(' + source_expression
                                 + ', {' + ', '.join(rename_pairs)
-                                + '}, MissingField.Ignore)')
+                                + ('}, MissingField.Error)' if require_full
+                                   else '}, MissingField.Ignore)'))
                         source_expression = (
                             'Table.SelectColumns(' + source_expression + ', {'
                             + ', '.join(_m_literal(column)
                                         for column in tmdl_cols)
-                            + '}, MissingField.UseNull)')
+                            + ('}, MissingField.Error)' if require_full
+                               else '}, MissingField.UseNull)'))
                         type_changes = _hyper_csv_type_changes(
                             content, tmdl_cols,
                             tmdl_col_types.get(tmdl_table_name, {}))
@@ -8906,25 +9403,36 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                         binding = None
 
                 if replacement:
-                    new_content = _re.sub(
-                        htable_pattern, lambda _match: replacement, content,
-                        flags=_re.DOTALL)
+                    new_content = (
+                        content[:htable_match.start()] + replacement
+                        + content[htable_match.end():])
                     if new_content != content:
                         content = new_content
                         for record in export_records:
                             if ((record.get('filename')
                                  or record.get('csv_filename'))
                                     == matched_file):
-                                staged_files = record.setdefault(
-                                    'staged_files', [])
-                                if binding not in staged_files:
-                                    staged_files.append(binding)
+                                binding_updates.append((record, binding))
 
         if content != original:
             try:
+                if require_full:
+                    tmdl_originals.setdefault(tmdl_path, original)
                 _atomic_write_text(tmdl_path, content)
                 tmdl_originals.setdefault(tmdl_path, original)
-            except OSError as exc:
+                commit_bindings(binding_updates)
+            except BaseException as exc:
+                if require_full:
+                    rollback_exports()
+                    if isinstance(exc, Exception):
+                        raise GenerationError(
+                            f"Could not write the required Hyper Import "
+                            f"partition: {exc}",
+                            item=os.path.basename(tmdl_path),
+                            source='hyper_import') from exc
+                    raise
+                if not isinstance(exc, OSError):
+                    raise
                 logger.warning(
                     "Could not atomically update TMDL %s: %s",
                     os.path.basename(tmdl_path), exc)
@@ -8937,38 +9445,23 @@ def _convert_hyper_to_csv_in_data(data_dir, source_basename, project_dir,
                     'authoritative': bool(authoritative),
                     'exports': export_records,
                 })
-    except BaseException:
-        for tmdl_path, original in reversed(list(tmdl_originals.items())):
-            try:
-                _atomic_write_text(tmdl_path, original)
-            except OSError:
-                logger.error(
-                    "Could not restore TMDL %s after Hyper export failure",
-                    tmdl_path, exc_info=True)
-        for destination in reversed(published_files):
-            try:
-                os.unlink(destination)
-            except OSError:
-                logger.error("Could not retract Hyper output %s",
-                             destination, exc_info=True)
-        for backup, destination in reversed(publication_backups):
-            try:
-                if os.path.exists(backup):
-                    os.replace(backup, destination)
-            except OSError:
-                logger.error("Could not restore Hyper output %s",
-                             destination, exc_info=True)
-        if export_stage_dir:
-            shutil.rmtree(export_stage_dir, ignore_errors=True)
+    except BaseException as exc:
+        rollback_exports()
+        if isinstance(exc, Exception) and not isinstance(exc, MigrationError):
+            raise GenerationError(
+                f"Could not commit the Hyper export manifest: {exc}",
+                source='hyper_export') from exc
         raise
     else:
+        # Only the manifest commit ends the data/partition transaction.
+        _transaction.pop('rollback', None)
         for backup, _destination in publication_backups:
             try:
                 os.unlink(backup)
             except OSError:
-                logger.warning("Could not remove Hyper output backup %s", backup)
-        if export_stage_dir:
-            shutil.rmtree(export_stage_dir, ignore_errors=True)
+                logger.error("Could not remove Hyper output backup %s",
+                             backup, exc_info=True)
+        _remove_hyper_export_tree(export_stage_dir)
 
 
 def _hyper_csv_type_changes(content, physical_columns, source_types):
@@ -9056,12 +9549,14 @@ def _pick_csv_for_columns(expected, headers_by_file):
 
 def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                         export_format='auto', max_rows=None, progress=None,
-                        quiet=False):
+                        quiet=False, require_full=False):
     """Export Hyper tables using bounded-memory CSV or native Parquet writers.
 
     The returned dict preserves the legacy stem-to-filename view. Its
     ``.exports`` list is authoritative and records exact physical identity,
     output format, schema, row counts, and any explicit sampling.
+    ``require_full`` is set by PBIP orchestration; explicit capped/sample
+    diagnostic callers retain the default False.
     """
     from powerbi_import.progress import StreamingProgress
 
@@ -9069,6 +9564,10 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
         raise ConfigurationError(
             "Hyper export format must be 'auto', 'csv', or 'parquet'")
     max_rows = _resolve_hyper_export_max_rows(max_rows)
+    if require_full and max_rows is not None:
+        raise ConfigurationError(
+            "Full Hyper export rejects max_rows, including "
+            "TTPBI_HYPER_EXPORT_MAX_ROWS; remove the cap before migrating PBIP")
 
     results = _HyperCsvExports()
     input_stem = os.path.splitext(os.path.basename(hyper_path))[0]
@@ -9119,10 +9618,49 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
             yield batch
 
     def _count_failed(label, exc):
+        if require_full:
+            raise ExtractionError(
+                f"Cannot verify a full Hyper export: source COUNT(*) failed "
+                f"for {label}: {exc}",
+                item=label, source='hyper_export') from exc
         logger.warning(
             "Could not count Hyper rows for %s (%s); total remains unknown",
             label, exc)
         return None
+
+    def _checked_source_count(value, label):
+        if _is_hyper_row_count(value):
+            return value
+        error = ExtractionError(
+            "Source COUNT(*) is not a measured nonnegative integer",
+            item=label, source='hyper_export')
+        return _count_failed(label, error)
+
+    def _verify_full_table(columns, total_rows, written_rows, label):
+        if not require_full:
+            return
+        if (not isinstance(columns, list) or not columns
+                or not all(isinstance(column, str) for column in columns)
+                or len(set(columns)) != len(columns)):
+            raise ValidationError(
+                "Full Hyper export requires a complete, unique physical "
+                "column schema", item=label, source='hyper_export')
+        if (not _is_hyper_row_count(total_rows)
+                or not _is_hyper_row_count(written_rows)
+                or total_rows != written_rows):
+            raise ValidationError(
+                "Full Hyper export row counts are unverified or inconsistent: "
+                f"source={total_rows!r}, written={written_rows!r}",
+                item=label, source='hyper_export')
+
+    def _record_full_export(record, temporary, count_source):
+        if require_full:
+            _verify_full_table(
+                record['columns'], record['total_rows'], record['row_count'],
+                f"{record['identity']['schema']}.{record['identity']['table']}")
+            record.update(_hyper_export_fingerprint(temporary))
+            record['full_extract_verified'] = True
+            record['row_count_source'] = count_source
 
     def _publish_exports(pending):
         """Publish every finished sibling temp, restoring old files on error."""
@@ -9165,6 +9703,14 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
     def _stage_csv(table, schema, name, columns, select_sql, connection,
                    row_source, total_rows, fmt='csv', sampled=False,
                    sampling_method=None):
+        if require_full:
+            # Validate COUNT/schema before even creating the reserved writer.
+            _verify_full_table(columns, total_rows, total_rows,
+                               f"{schema}.{name}")
+            if sampled:
+                raise ExtractionError(
+                    "A sampled reader cannot supply a full Hyper migration",
+                    item=f"{schema}.{name}", source='hyper_export')
         filename = _output_name(schema, name, table['count'], fmt)
         destination = os.path.join(out_dir, filename)
         fd, temporary = tempfile.mkstemp(
@@ -9178,9 +9724,19 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                 for batch in _batches(row_source):
                     for row in batch:
                         if isinstance(row, dict):
+                            if require_full and set(row) != set(columns):
+                                raise ValidationError(
+                                    "A Hyper row does not match its physical "
+                                    "column schema", item=f"{schema}.{name}",
+                                    source='hyper_export')
                             values = [row.get(column, '') for column in columns]
                         else:
                             values = row
+                        if require_full and len(values) != len(columns):
+                            raise ValidationError(
+                                "A Hyper row has a different physical column "
+                                "count", item=f"{schema}.{name}",
+                                source='hyper_export')
                         writer.writerow(values)
                         written_rows += 1
                     tracker.update(written_rows, total_rows)
@@ -9215,6 +9771,7 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                 record['csv_filename'] = filename
             if sampling_method:
                 record['sampling_method'] = sampling_method
+            _record_full_export(record, temporary, 'csv_writer')
             table['pending'] = {
                 'temporary': temporary,
                 'destination': destination,
@@ -9228,11 +9785,14 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
             try:
                 os.close(fd)
             except OSError:
-                pass
+                pass  # fdopen normally already closed the descriptor.
             try:
                 os.unlink(temporary)
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError:
+                logger.error("Could not remove failed Hyper CSV temp %s",
+                             temporary, exc_info=True)
             tracker.fail("writer failed; temporary output discarded",
                          written_rows)
             raise
@@ -9241,9 +9801,9 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
         try:
             value = connection.execute_scalar_query(
                 f"SELECT COUNT(*) FROM {qualified_name}")
-            return int(value)
         except Exception as exc:
             return _count_failed(label, exc)
+        return _checked_source_count(value, label)
 
     def _start_table(schema, name, filename):
         tracker = _make_progress()
@@ -9280,24 +9840,24 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                 })
         return table_entries
 
-    def _api_error_types(api_module):
-        errors = [OSError, RuntimeError]
-        api_exception = getattr(api_module, 'HyperException', None)
-        if (isinstance(api_exception, type)
-                and issubclass(api_exception, BaseException)):
-            errors.append(api_exception)
-        return tuple(dict.fromkeys(errors))
-
     # PBIP auto uses CSV through 10 MiB and native Parquet only above 10 MiB.
     # Fabric selects CSV upstream.
     try:
         input_size = os.path.getsize(hyper_path)
-    except OSError:
+    except OSError as exc:
+        if require_full:
+            raise ExtractionError(
+                f"Could not stat the Hyper source: {exc}",
+                item=os.path.basename(hyper_path), source='hyper_export') from exc
         input_size = 0
     try:
         with open(hyper_path, 'rb') as source:
             is_sqlite = source.read(16).startswith(b'SQLite format 3\x00')
-    except OSError:
+    except OSError as exc:
+        if require_full:
+            raise ExtractionError(
+                f"Could not inspect the Hyper source: {exc}",
+                item=os.path.basename(hyper_path), source='hyper_export') from exc
         is_sqlite = False
 
     api_module = None
@@ -9337,7 +9897,12 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
             "Parquet Hyper export requires the optional tableauhyperapi "
             "package; install it or select CSV")
 
-    os.makedirs(out_dir, exist_ok=True)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as exc:
+        raise GenerationError(
+            f"Could not create the Hyper export directory: {exc}",
+            source='hyper_export') from exc
     staged = []
     trackers = []
 
@@ -9356,11 +9921,12 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
         name = table_entry['name']
         filename = _output_name(schema, name, table_info['count'], 'parquet')
         destination = os.path.join(out_dir, filename)
-        fd, temporary = tempfile.mkstemp(
-            prefix='.' + filename + '.', suffix='.parquet.tmp', dir=out_dir)
-        os.close(fd)
         tracker = table_info['progress']
         total_rows = table_info['total_rows']
+        _verify_full_table(table_entry['columns'], total_rows, total_rows,
+                           f"{schema}.{name}")
+        fd, temporary = tempfile.mkstemp(
+            prefix='.' + filename + '.', suffix='.parquet.tmp', dir=out_dir)
         projection = '*'
         if table_entry['geography_columns']:
             # Native Parquet cannot store TABGEOGRAPHY. Hyper's text cast
@@ -9380,16 +9946,53 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                 "Hyper export for %s is capped at %d rows; LIMIT has no "
                 "ORDER BY, so this is an arbitrary, non-deterministic sample",
                 name, max_rows)
-        native_path = os.path.abspath(temporary).replace('\\', '/')
-        copy_sql = (
-            f"COPY ({select_sql}) TO {_sql_literal(native_path)} "
-            "WITH (FORMAT PARQUET)")
         try:
-            result = connection.execute_command(copy_sql)
-            if not os.path.isfile(temporary) or os.path.getsize(temporary) == 0:
-                raise OSError("tableauhyperapi COPY did not create the Parquet file")
-            copied_rows = result if isinstance(result, int) and result >= 0 else None
-            if copied_rows is None and total_rows is not None:
+            # Keep the target reservation open. Native COPY sees only a unique,
+            # private ASCII absolute path; Python handles the Unicode target.
+            with os.fdopen(fd, 'wb') as target:
+                transit_dir = _make_hyper_ascii_transit(out_dir)
+                primary_error = False
+                try:
+                    native_file = os.path.join(transit_dir, 'export.parquet')
+                    native_path = native_file.replace('\\', '/')
+                    copy_sql = (
+                        f"COPY ({select_sql}) TO {_sql_literal(native_path)} "
+                        "WITH (FORMAT PARQUET)")
+                    result = connection.execute_command(copy_sql)
+                    if (not os.path.isfile(native_file)
+                            or os.path.getsize(native_file) == 0):
+                        raise GenerationError(
+                            "tableauhyperapi COPY did not create a nonempty "
+                            "Parquet file in its private ASCII transit",
+                            item=f"{schema}.{name}", source='hyper_export')
+                    copied_rows = result if _is_hyper_row_count(result) else None
+                    _verify_full_table(
+                        table_entry['columns'], total_rows, copied_rows,
+                        f"{schema}.{name}")
+                    with open(native_file, 'rb') as source:
+                        source_bytes = os.fstat(source.fileno()).st_size
+                        shutil.copyfileobj(source, target, length=1024 * 1024)
+                    target.flush()
+                    if os.fstat(target.fileno()).st_size != source_bytes:
+                        raise ValidationError(
+                            "The Parquet transit transfer changed the file "
+                            "byte count", item=f"{schema}.{name}",
+                            source='hyper_export')
+                    os.fsync(target.fileno())
+                except BaseException:
+                    primary_error = True
+                    raise
+                finally:
+                    if (not _remove_hyper_export_tree(transit_dir)
+                            and not primary_error):
+                        raise GenerationError(
+                            "Parquet transfer completed but its private ASCII "
+                            "transit could not be cleaned; export not published",
+                            item=f"{schema}.{name}", source='hyper_export')
+            # Diagnostic callers may retain their historical count estimate;
+            # a full export above always requires COPY's measured count.
+            if (not require_full and copied_rows is None
+                    and total_rows is not None):
                 copied_rows = min(total_rows, max_rows) if max_rows else total_rows
             truncated = (
                 None if total_rows is None or copied_rows is None
@@ -9411,6 +10014,7 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
             if max_rows is not None:
                 record['sampling_method'] = (
                     "LIMIT without ORDER BY; arbitrary, non-deterministic subset")
+            _record_full_export(record, temporary, 'hyper_copy')
             staged.append({
                 'temporary': temporary,
                 'destination': destination,
@@ -9420,12 +10024,24 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                 'total_rows': total_rows,
                 'sampled': sampled,
             })
-        except BaseException:
+        except BaseException as exc:
+            try:
+                os.close(fd)
+            except OSError:
+                pass  # fdopen normally already closed the reservation.
             try:
                 os.unlink(temporary)
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError:
+                logger.error("Could not remove failed Hyper Parquet temp %s",
+                             temporary, exc_info=True)
             tracker.fail("Parquet COPY failed; temporary output discarded")
+            if (require_full and isinstance(exc, Exception)
+                    and not isinstance(exc, MigrationError)):
+                raise GenerationError(
+                    f"Native Parquet export failed: {exc}",
+                    item=f"{schema}.{name}", source='hyper_export') from exc
             raise
 
     try:
@@ -9440,25 +10056,26 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                     Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU)
                 connection = Connection(process.endpoint, hyper_path)
                 api_tables = _api_catalog(connection)
-            except _api_error_types(api_module) as exc:
+            except Exception as exc:
                 api_setup_error = exc
                 if connection is not None:
                     try:
                         connection.close()
                     except Exception:
-                        logger.debug("Hyper connection cleanup failed", exc_info=True)
+                        logger.error("Hyper connection cleanup failed", exc_info=True)
                 if process is not None:
                     try:
                         process.close()
                     except Exception:
-                        logger.debug("Hyper process cleanup failed", exc_info=True)
+                        logger.error("Hyper process cleanup failed", exc_info=True)
                 connection = process = None
             if api_setup_error is not None:
-                if actual_format == 'parquet':
-                    raise RuntimeError(
-                        f"tableauhyperapi could not open Hyper file "
-                        f"{os.path.basename(hyper_path)}: {api_setup_error}"
-                    ) from api_setup_error
+                if require_full or actual_format == 'parquet':
+                    raise ExtractionError(
+                        "tableauhyperapi could not read the complete Hyper "
+                        f"catalog: {api_setup_error}",
+                        item=os.path.basename(hyper_path),
+                        source='hyper_export') from api_setup_error
                 logger.info(
                     "tableauhyperapi could not read %s (%s); trying the "
                     "SQLite/metadata CSV readers",
@@ -9466,6 +10083,12 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
             elif connection is not None:
                 try:
                     table_count = len(api_tables)
+                    if require_full and not table_count:
+                        raise ExtractionError(
+                            "The Hyper catalog contains no exportable tables; "
+                            "an empty catalog is not a verified zero-row table",
+                            item=os.path.basename(hyper_path),
+                            source='hyper_export')
                     for table_entry in api_tables:
                         schema = table_entry['schema']
                         name = table_entry['name']
@@ -9519,13 +10142,20 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                         try:
                             connection.close()
                         except Exception:
-                            logger.debug("Hyper connection cleanup failed", exc_info=True)
+                            logger.error("Hyper connection cleanup failed", exc_info=True)
                     if process is not None:
                         try:
                             process.close()
                         except Exception:
-                            logger.debug("Hyper process cleanup failed", exc_info=True)
+                            logger.error("Hyper process cleanup failed", exc_info=True)
                     raise
+
+        if require_full and not is_sqlite:
+            raise ExtractionError(
+                "Full native Hyper export requires the optional "
+                "tableauhyperapi SDK. Metadata/sample readers cannot supply "
+                "a PBIP migration; make the full reader available and retry.",
+                item=os.path.basename(hyper_path), source='hyper_export')
 
         # SQLite cursor streaming (catalog and column metadata are small; data
         # rows are consumed in fetchmany batches and never fetchall'ed).
@@ -9557,13 +10187,23 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                 sqlite_connection.close()
                 sqlite_connection = None
             if actual_format == 'parquet':
-                raise RuntimeError(
+                raise ExtractionError(
                     "Native Parquet export requires tableauhyperapi to read "
-                    "the Hyper catalog") from exc
+                    "the Hyper catalog", source='hyper_export') from exc
+            if require_full:
+                raise ExtractionError(
+                    f"Could not read the complete SQLite-compatible Hyper "
+                    f"catalog: {exc}", item=os.path.basename(hyper_path),
+                    source='hyper_export') from exc
             sqlite_tables = None
 
         if sqlite_tables is not None:
             table_count = len(sqlite_tables)
+            if require_full and not table_count:
+                raise ExtractionError(
+                    "The SQLite-compatible Hyper catalog contains no "
+                    "exportable tables; no full extract can be verified",
+                    item=os.path.basename(hyper_path), source='hyper_export')
             for table_entry in sqlite_tables:
                 schema = table_entry['schema']
                 name = table_entry['name']
@@ -9575,9 +10215,13 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                 try:
                     count_cursor.execute(
                         f"SELECT COUNT(*) FROM {table_entry['quoted']}")
-                    total_rows = int(count_cursor.fetchone()[0])
+                    count_result = count_cursor.fetchone()
+                    count_value = count_result[0] if count_result else None
                 except Exception as exc:
                     total_rows = _count_failed(f"{schema}.{name}", exc)
+                else:
+                    total_rows = _checked_source_count(
+                        count_value, f"{schema}.{name}")
                 finally:
                     count_cursor.close()
                 table_info['total_rows'] = total_rows
@@ -9616,9 +10260,10 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
         try:
             from tableau_export.hyper_reader import read_hyper
         except ImportError as exc:
-            raise RuntimeError(
+            raise ExtractionError(
                 "No supported Hyper reader is available; install the optional "
-                "tableauhyperapi package for full exports") from exc
+                "tableauhyperapi package for full exports",
+                source='hyper_export') from exc
         logger.warning(
             "tableauhyperapi is unavailable for %s; CSV output may contain "
             "only the metadata reader's sample rows",
@@ -9628,32 +10273,43 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
         fallback_tables = (
             fallback_result.get('tables', [])
             if isinstance(fallback_result, dict) else [])
+        if not isinstance(fallback_tables, list) or not fallback_tables:
+            raise ExtractionError(
+                "No Hyper reader returned an exportable table; metadata "
+                "reader setup failure is not an empty-table export",
+                item=os.path.basename(hyper_path), source='hyper_export')
         table_count = len(fallback_tables)
         for table in fallback_tables:
             if not isinstance(table, dict):
-                continue
+                raise ExtractionError(
+                    "The metadata reader returned an invalid table",
+                    item=os.path.basename(hyper_path), source='hyper_export')
             schema = table.get('schema', '')
             name = table.get('table', 'data')
             columns = [
                 col.get('name', '') for col in table.get('columns', [])
                 if isinstance(col, dict) and col.get('name')
             ]
+            if not columns:
+                raise ExtractionError(
+                    "The metadata reader returned no physical column schema",
+                    item=name, source='hyper_export')
             filename = _output_name(schema, name, table_count, 'csv')
             table_info = _start_table(schema, name, filename)
             trackers.append(table_info['progress'])
             table_info['count'] = table_count
             total_value = table.get('row_count', table.get('total_rows'))
-            try:
-                total_rows = int(total_value) if total_value is not None else None
-                if total_rows is not None and total_rows < 0:
-                    total_rows = None
-            except (TypeError, ValueError):
-                total_rows = None
+            total_rows = total_value if _is_hyper_row_count(total_value) else None
             # A metadata reader can know the source row count while returning
             # only sampled data rows. Keep that count for progress and evidence;
             # sampled=True below still prevents claiming a full-data export.
             table_info['progress'].set_total(total_rows)
             sample_rows = table.get('sample_rows', []) or []
+            if not sample_rows and total_rows != 0:
+                raise ExtractionError(
+                    "The metadata reader returned no sample rows and did not "
+                    "verify an empty source table", item=name,
+                    source='hyper_export')
             if max_rows is not None:
                 sample_rows = sample_rows[:max_rows]
             method = (
@@ -9669,12 +10325,12 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                 "the result is not a full extract", name)
         _finish_staged_exports()
         return results
-    except BaseException:
+    except BaseException as exc:
         if 'sqlite_connection' in locals() and sqlite_connection is not None:
             try:
                 sqlite_connection.close()
             except Exception:
-                logger.debug("SQLite cleanup failed", exc_info=True)
+                logger.error("SQLite cleanup failed", exc_info=True)
         for item in staged:
             try:
                 if os.path.exists(item['temporary']):
@@ -9684,6 +10340,12 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
                              item['temporary'], exc_info=True)
         for tracker in trackers:
             tracker.fail("export transaction failed; staged files discarded")
+        if (require_full and isinstance(exc, Exception)
+                and not isinstance(exc, MigrationError)):
+            raise GenerationError(
+                f"Full Hyper export transaction failed: {exc}",
+                item=os.path.basename(hyper_path),
+                source='hyper_export') from exc
         raise
 
 
@@ -10615,7 +11277,8 @@ def _shorten_report_artifact_path(project_dir, source_basename):
 
 
 def _stage_declared_local_sources(source_path, project_dir, source_dir=None, *,
-                                  copy_files=True):
+                                  copy_files=True, packaged_excel=False,
+                                  max_zip_entry_mb=None):
     """Stage exact declared file bindings before semantic source validation.
 
     Unlike post-generation discovery, this uses extraction metadata, so an
@@ -10628,11 +11291,18 @@ def _stage_declared_local_sources(source_path, project_dir, source_dir=None, *,
     binding and Power BI loads it on refresh. In an uploaded job this still
     parses and confines declared paths, but never opens or copies source data.
     Fabric retains its existing file-staging behavior.
+
+    Trusted local PBIP callers enable ``packaged_excel`` to copy only exact
+    declared Excel members unchanged and rebind them before generation.
     """
     import ntpath
     import re
 
     upload_root = _upload_root()
+    if packaged_excel and not copy_files and not upload_root:
+        return _stage_packaged_excel_sources(
+            source_path, project_dir, source_dir,
+            max_zip_entry_mb=max_zip_entry_mb)
     stats = {'referenced': 0, 'copied': 0, 'already_present': 0, 'not_found': 0}
     if not copy_files and not upload_root:
         return stats
@@ -10849,13 +11519,377 @@ def _stage_declared_local_sources(source_path, project_dir, source_dir=None, *,
     return stats
 
 
+_WINDOWS_RESERVED_NAMES = frozenset(
+    ['CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$']
+    + [device + digit for device in ('COM', 'LPT')
+       for digit in '123456789\u00b9\u00b2\u00b3'])
+
+
+class _PackagedExcelSink:
+    """Hash the exact bytes streamed to a temporary source copy."""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._digest = hashlib.sha256()
+        self.size = 0
+
+    def write(self, chunk):
+        written = self._stream.write(chunk)
+        self._digest.update(chunk)
+        self.size += len(chunk)
+        return written
+
+    def hexdigest(self):
+        return self._digest.hexdigest()
+
+
+def _packaged_excel_rooted(path):
+    import ntpath
+    return path.startswith(('\\', '/')) or bool(ntpath.splitdrive(path)[0])
+
+
+def _packaged_excel_details(connection):
+    if not isinstance(connection, dict):
+        return None
+    if str(connection.get('type', '')).lower() not in ('excel', 'excel-direct'):
+        return None
+    details = connection.get('details')
+    return details if isinstance(details, dict) else None
+
+
+def _packaged_excel_identity(details, workbook):
+    """Recover an earlier staged binding's original declaration on a rerun."""
+    filename = details.get('filename')
+    directory = details.get('directory') or ''
+    restaged = False
+    marker = details.get('_packaged_source')
+    if (isinstance(marker, dict)
+            and isinstance(marker.get('declared_filename'), str)
+            and isinstance(marker.get('workbook'), str)
+            and os.path.normcase(os.path.abspath(marker['workbook']))
+            == os.path.normcase(workbook)
+            and marker.get('staged_path') == filename):
+        filename = marker['declared_filename']
+        directory = marker.get('declared_directory') or ''
+        restaged = True
+    if (not isinstance(filename, str) or not filename
+            or not isinstance(directory, str)
+            or '\0' in filename or '\0' in directory):
+        return None
+    return filename, directory, restaged
+
+
+def _packaged_excel_key(filename, directory):
+    import ntpath
+    declared = filename if _packaged_excel_rooted(filename) else ntpath.join(
+        directory, filename)
+    if _packaged_excel_rooted(declared):
+        return None
+    return declared.replace('\\', '/')
+
+
+def _packaged_excel_output_name(member):
+    import ntpath
+    portable = member.replace('\\', '/')
+    parts = portable.split('/')
+    name = parts[-1]
+    if (not name or ':' in portable or portable.startswith('/')
+            or ntpath.isabs(portable) or '..' in parts
+            or any(ord(char) < 32 for char in portable)
+            or any(char in '<>"|?*' for char in name)
+            or name != name.rstrip(' .')
+            or name.split('.', 1)[0].rstrip(' ').upper()
+            in _WINDOWS_RESERVED_NAMES):
+        raise SecurityError(f"Unsafe packaged Excel member name: {member!r}")
+    return name
+
+
+def _packaged_excel_is_link(path):
+    """Include Windows name-surrogate reparse points, but not cloud placeholders."""
+    import stat
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    if not getattr(info, 'st_file_attributes', 0) & 0x400:
+        return False
+    tag = getattr(info, 'st_reparse_tag', None)
+    return tag is None or bool(tag & 0x20000000)
+
+
+def _copy_packaged_excel_member(archive, member, destination, project_dir,
+                                limit_mb):
+    """Stream unchanged bytes atomically; never replace different existing data."""
+    data_dir = os.path.dirname(destination)
+    temporary = None
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+                'wb', dir=data_dir, delete=False, prefix='.xl-',
+                suffix='.tmp') as stream:
+            temporary = stream.name
+            sink = _PackagedExcelSink(stream)
+            safe_zip_copy_member(
+                archive, member, sink, target_dir=project_dir,
+                max_size_mb=limit_mb)
+            stream.flush()
+            os.fsync(stream.fileno())
+        digest = sink.hexdigest()
+        if os.path.lexists(destination):
+            if (_packaged_excel_is_link(destination)
+                    or not os.path.isfile(destination)):
+                raise SecurityError(
+                    "Packaged Excel destination is not a regular file: "
+                    f"{destination!r}")
+            if MigrationCheckpoint.hash_file(destination) != digest:
+                raise GenerationError(
+                    "Packaged Excel destination conflicts with different "
+                    f"existing data: {destination!r}",
+                    item=member, source='packaged_excel')
+            status = 'already_present'
+        else:
+            os.replace(temporary, destination)
+            temporary = None
+            status = 'copied'
+        return status, digest, sink.size
+    except (GenerationError, SecurityError, ConfigurationError):
+        raise
+    except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise GenerationError(
+            f"Cannot stage packaged Excel source {member!r}: {exc}",
+            item=member, source='packaged_excel') from exc
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError as exc:
+                logger.warning(
+                    "Could not remove packaged Excel temporary file %s: %s",
+                    temporary, exc)
+
+
+def _stage_packaged_excel_sources(source_path, project_dir, source_dir=None, *,
+                                  max_zip_entry_mb=None):
+    """Stage exact packaged Excel declarations and rebind every metadata alias.
+
+    Match the declared path at archive root or relative to the internal TWB,
+    never a basename or loose neighbour. Preserve declarations for external or
+    missing sources. Provenance supports idempotent staging from original bytes.
+    """
+    import posixpath
+
+    stats = {'referenced': 0, 'copied': 0, 'already_present': 0,
+             'not_found': 0, 'rebound': 0, 'packaged_excel': []}
+    if not source_path or not zipfile.is_zipfile(source_path):
+        return stats
+    metadata = os.path.join(source_dir or _get_extract_dir(), 'datasources.json')
+    try:
+        with open(metadata, encoding='utf-8') as stream:
+            datasources = json.load(stream)
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not stage packaged Excel sources: %s", exc)
+        return stats
+    if not isinstance(datasources, list):
+        logger.warning(
+            "Could not stage packaged Excel sources: %s is not a list", metadata)
+        return stats
+    workbook = os.path.abspath(source_path)
+    data_dir = os.path.join(project_dir, 'Data')
+    planned = {}
+    declared_by_member = {}
+    provenance = {}
+    try:
+        archive = zipfile.ZipFile(source_path)
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise GenerationError(
+            f"Cannot open workbook package {source_path!r}: {exc}",
+            item=source_path, source='packaged_excel') from exc
+    with archive:
+        members = {}
+        twb_members = []
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            portable = info.filename.replace('\\', '/')
+            members.setdefault(portable, []).append(info.filename)
+            if portable.lower().endswith('.twb'):
+                twb_members.append(portable)
+        input_stem = os.path.splitext(
+            os.path.basename(source_path))[0].casefold()
+        matching = [
+            member for member in twb_members
+            if os.path.splitext(posixpath.basename(member))[0].casefold()
+            == input_stem]
+        workbook_member = (
+            matching[0] if len(matching) == 1
+            else twb_members[0] if len(twb_members) == 1 else None)
+        workbook_dir = (
+            posixpath.dirname(workbook_member) if workbook_member else '')
+        for datasource in datasources:
+            if not isinstance(datasource, dict):
+                continue
+            connections = datasource.get('connection_map')
+            if not isinstance(connections, dict):
+                connections = {}
+            for table in datasource.get('tables') or []:
+                if (not isinstance(table, dict)
+                        or _hyper_identity_key(table.get('hyper_identity'))):
+                    continue
+                reference = table.get('connection')
+                connection = (
+                    (connections.get(reference)
+                     if isinstance(reference, str) else None)
+                    or table.get('connection_details')
+                    or datasource.get('connection'))
+                details = _packaged_excel_details(connection)
+                identity = (_packaged_excel_identity(details, workbook)
+                            if details is not None else None)
+                key = (_packaged_excel_key(identity[0], identity[1])
+                       if identity else None)
+                if not key or key in planned:
+                    continue
+                if '..' in key.split('/'):
+                    raise SecurityError(
+                        f"Unsafe declared archive source: {key!r}")
+                found = list(members.get(key, ()))
+                if workbook_dir:
+                    found.extend(
+                        members.get(posixpath.join(workbook_dir, key), ()))
+                if len(found) > 1:
+                    raise GenerationError(
+                        f"Ambiguous packaged Excel source {key!r}: "
+                        f"{len(found)} exact archive members match",
+                        item=key, source='packaged_excel')
+                member = found[0] if found else None
+                planned[key] = member
+                if member is not None:
+                    declared_by_member.setdefault(member, identity[:2])
+        missing = [key for key, member in planned.items() if member is None]
+        for key in missing:
+            logger.warning(
+                "Declared packaged Excel source %r has no exact archive "
+                "member; its binding is left as declared", key)
+        staged = list(dict.fromkeys(
+            member for member in planned.values() if member is not None))
+        stats['not_found'] = len(missing)
+        stats['referenced'] = len(staged) + len(missing)
+        if staged:
+            if os.path.lexists(data_dir):
+                if _packaged_excel_is_link(data_dir):
+                    raise SecurityError(
+                        f"Packaged Excel Data folder is a link: {data_dir!r}")
+                if not os.path.isdir(data_dir):
+                    raise GenerationError(
+                        f"Packaged Excel Data path is not a folder: {data_dir!r}",
+                        item=data_dir, source='packaged_excel')
+            project_real = os.path.normcase(os.path.realpath(project_dir))
+            data_real = os.path.normcase(os.path.realpath(data_dir))
+            try:
+                contained = os.path.commonpath(
+                    (data_real, project_real)) == project_real
+            except ValueError:
+                contained = False
+            if not contained:
+                raise SecurityError(
+                    f"Packaged Excel Data folder escapes the project: {data_dir!r}")
+            targets = {}
+            owners = {}
+            for member in staged:
+                name = _packaged_excel_output_name(member)
+                owner = owners.setdefault(name.casefold(), member)
+                if owner != member:
+                    raise GenerationError(
+                        f"Packaged Excel members {owner!r} and {member!r} "
+                        f"would both be staged as {name!r}",
+                        item=member, source='packaged_excel')
+                destination = os.path.join(data_dir, name)
+                if os.path.lexists(destination) and (
+                        _packaged_excel_is_link(destination)
+                        or not os.path.isfile(destination)):
+                    raise SecurityError(
+                        "Packaged Excel destination is not a regular file: "
+                        f"{destination!r}")
+                targets[member] = destination
+            limit_mb = get_zip_entry_limit_mb(max_zip_entry_mb)
+            for member in staged:
+                destination = targets[member]
+                status, digest, size = _copy_packaged_excel_member(
+                    archive, member, destination, project_dir, limit_mb)
+                stats[status] += 1
+                filename, directory = declared_by_member[member]
+                provenance[member] = {
+                    'workbook': workbook,
+                    'archive_member': member,
+                    'declared_filename': filename,
+                    'declared_directory': directory,
+                    'staged_path': os.path.abspath(destination),
+                    'sha256': digest,
+                    'size': size,
+                }
+                stats['packaged_excel'].append(
+                    dict(provenance[member], status=status))
+                logger.info(
+                    "Packaged Excel source %s: %r -> %s (sha256 %s, %d bytes)",
+                    status, member, destination, digest, size)
+
+    changed = False
+    for datasource in datasources:
+        if not isinstance(datasource, dict):
+            continue
+        aliases = [datasource.get('connection')]
+        connection_map = datasource.get('connection_map')
+        if isinstance(connection_map, dict):
+            aliases.extend(connection_map.values())
+        aliases.extend(
+            table.get('connection_details')
+            for table in datasource.get('tables') or []
+            if isinstance(table, dict))
+        for connection in aliases:
+            details = _packaged_excel_details(connection)
+            identity = (_packaged_excel_identity(details, workbook)
+                        if details is not None else None)
+            if identity is None:
+                continue
+            filename, directory, restaged = identity
+            key = _packaged_excel_key(filename, directory)
+            member = planned.get(key) if key else None
+            if member is not None:
+                marker = dict(provenance[member], declared_filename=filename,
+                              declared_directory=directory)
+                stats['rebound'] += 1
+                if (details.get('filename') != marker['staged_path']
+                        or 'directory' in details
+                        or details.get('_packaged_source') != marker):
+                    details['filename'] = marker['staged_path']
+                    details.pop('directory', None)
+                    details['_packaged_source'] = marker
+                    changed = True
+            elif restaged:
+                details['filename'] = filename
+                if directory:
+                    details['directory'] = directory
+                details.pop('_packaged_source', None)
+                changed = True
+    if changed:
+        try:
+            _atomic_write_json(metadata, datasources)
+        except (OSError, TypeError, ValueError) as exc:
+            raise GenerationError(
+                f"Cannot persist packaged Excel bindings to {metadata!r}: {exc}",
+                item=metadata, source='packaged_excel') from exc
+    if stats['referenced']:
+        logger.info(
+            "Staged packaged Excel sources: %s",
+            {key: value for key, value in stats.items()
+             if key != 'packaged_excel'})
+    return stats
+
+
 def _collect_local_data_files(source_path, project_dir, source_basename,
                               search_root=None, *, hyper_only=False):
     """Copy exact source references into Data/ for legacy/Fabric callers.
 
-    ``hyper_only`` is used by PBIP orchestration to preserve Hyper export while
-    leaving native CSV/Excel/etc. bindings at their declared paths. Returns
-    counters only.
+    ``hyper_only`` preserves Hyper export without additional native copies;
+    packaged Excel was staged and rebound before generation. Returns counters.
     """
     stats = {'referenced': 0, 'already_present': 0, 'copied': 0,
              'ambiguous': 0, 'not_found': 0}
@@ -11086,6 +12120,15 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename, *,
     try:
         with zipfile.ZipFile(source_path, 'r') as zf:
             infos = zf.infolist()
+            if (output_format == 'pbip'
+                    and options['hyper_export_max_rows'] is not None
+                    and any(not info.is_dir()
+                            and info.filename.lower().endswith('.hyper')
+                            for info in infos)):
+                raise ConfigurationError(
+                    "PBIP Hyper migrations reject resolved row caps, "
+                    "including TTPBI_HYPER_EXPORT_MAX_ROWS; remove the cap "
+                    "before exporting this packaged Hyper snapshot.")
             image_member_targets = {}
 
             def _safe_project_target(relative_path, *, allow_directory_root=False):
@@ -11794,9 +12837,8 @@ def _run_single_migration_impl(args):
         'hyper_export_max_rows': hyper_options['hyper_export_max_rows'],
         'hyper_rows': getattr(args, 'hyper_rows', None),
         'max_zip_entry_mb': hyper_options['max_zip_entry_mb'],
-        # Force regeneration of projects created while PBIP staged native
-        # dataset files into Data/.
-        'signature_version': 4,
+        # Invalidate output predating packaged-Excel binding/full Hyper Import.
+        'signature_version': 6,
     }
     try:
         source_signature = MigrationCheckpoint.hash_file(args.tableau_file)
@@ -11813,8 +12855,12 @@ def _run_single_migration_impl(args):
     def _generation_failed(exc):
         # The generator publishes its entry point before CLI postprocessing.
         # Do not leave that marker advertising an incomplete/unsafe project.
-        if os.path.isfile(pbip_path):
-            os.remove(pbip_path)
+        try:
+            if os.path.isfile(pbip_path):
+                os.remove(pbip_path)
+        except OSError:
+            logger.error("Could not retract the incomplete PBIP marker %s",
+                         pbip_path, exc_info=True)
         checkpoint.mark('generation', 'failed', error=str(exc))
         results['generation'] = False
         progress.fail("Generation or final output validation failed")
@@ -11929,9 +12975,12 @@ def _run_single_migration_impl(args):
         progress.start("Generating Power BI project")
         checkpoint.mark('generation', 'running')
         try:
+            output_is_fabric = getattr(args, 'output_format', 'pbip') == 'fabric'
             _stage_declared_local_sources(
                 args.tableau_file, project_dir,
-                copy_files=getattr(args, 'output_format', 'pbip') == 'fabric')
+                copy_files=output_is_fabric,
+                packaged_excel=not output_is_fabric,
+                max_zip_entry_mb=hyper_options['max_zip_entry_mb'])
             results['generation'] = run_generation(
                 report_name=source_basename,
                 output_dir=args.output_dir,
@@ -12093,6 +13142,27 @@ def _run_single_migration_impl(args):
                                failure_mode='quarantined', rollback_result=rollback_result)
             if getattr(args, 'strict', False):
                 return ExitCode.VALIDATION_FAILED
+
+    # Final PBIP contract, including reused generations and optional repairs.
+    # Refresh M exports after the last possible partition/calendar change.
+    if (results.get('generation') and not args.dry_run
+            and getattr(args, 'output_format', 'pbip') == 'pbip'):
+        try:
+            _sync_final_calendar_source_expressions(project_dir, source_basename)
+            _export_power_query_files(project_dir, source_basename)
+            _require_hyper_import(
+                project_dir, extract_dir=_get_extract_dir())
+        except Exception as exc:
+            if not isinstance(exc, GenerationError):
+                exc = GenerationError(
+                    f"Final Hyper Import validation could not complete: {exc}",
+                    item=source_basename, source='hyper_import')
+            checkpoint.mark(
+                'validation', 'failed', check='hyper_import', error=str(exc))
+            if getattr(args, 'quality_report', False):
+                _run_quality_report(args, source_basename)
+            _generation_failed(exc)
+            return ExitCode.VALIDATION_FAILED
 
     # Step 3h: Issue reporting (Phase 10, --report-issue flag)
     if getattr(args, 'report_issue', False) and results.get('generation') and not args.dry_run:

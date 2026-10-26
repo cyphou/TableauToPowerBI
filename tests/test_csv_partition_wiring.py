@@ -1,12 +1,14 @@
 """CSV partitions are wired to the right file and match its real header."""
 
 import base64
+import hashlib
 import io
 import ntpath
 import os
 import csv
 import json
 import re
+import sqlite3
 import struct
 import tempfile
 import unittest
@@ -184,7 +186,7 @@ def _write(path, data, encoding="utf-8"):
     return path
 
 
-def _project(root, tables):
+def _project(root, tables, *, identities=None, source_columns=None):
     """tables: {table_name: partition M body}. Returns the project dir."""
     project = os.path.join(root, NAME)
     definition = os.path.join(project, f"{NAME}.SemanticModel", "definition")
@@ -192,9 +194,120 @@ def _project(root, tables):
     _write(os.path.join(definition, "expressions.tmdl"),
            f'expression DataFolder = "{data}" meta [IsParameterQuery=true]\n')
     for table, body in tables.items():
+        identity = (identities or {}).get(table)
+        annotation = ""
+        if identity is not None:
+            annotation = (
+                "\n\tannotation Migration_HyperIdentity = "
+                + json.dumps(identity, ensure_ascii=True, separators=(",", ":"))
+                + "\n"
+            )
+        declarations = ""
+        for column, datatype in (source_columns or {}).get(table, {}).items():
+            quoted = "'" + column.replace("'", "''") + "'"
+            declarations += (
+                f"\tcolumn {quoted}\n\t\tdataType: {datatype}\n"
+                f"\t\tsourceColumn: {quoted}\n\n"
+            )
+        mode = "\t\tmode: import\n" if identity is not None else ""
         _write(os.path.join(definition, "tables", f"{table}.tmdl"),
-               f"table {table}\n\tpartition {table} = m\n\t\tsource =\n{body}\n")
+               f"table {table}\n{declarations}\tpartition {table} = m\n"
+               f"{mode}\t\tsource =\n{body}\n{annotation}")
     return project
+
+
+def _write_sqlite_hyper(path, columns, rows, table="Physical"):
+    """A genuine, fully countable SQLite-compatible extract, not a sample."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path):
+        os.unlink(path)
+
+    def quote(name):
+        return '"' + name.replace('"', '""') + '"'
+
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE TABLE " + quote(table) + " ("
+            + ", ".join(quote(column) + " TEXT" for column in columns) + ")"
+        )
+        connection.executemany(
+            "INSERT INTO " + quote(table) + " VALUES ("
+            + ", ".join("?" for unused in columns) + ")",
+            rows,
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return path
+
+
+def _sqlite_hyper_fixture(root, data, filename, columns, rows, table="Physical"):
+    """Package only public synthetic data and retain its exact source identity."""
+    path = _write_sqlite_hyper(os.path.join(data, filename), columns, rows, table)
+    workbook = os.path.abspath(os.path.join(root, "synthetic.twbx"))
+    member = "Data/" + filename
+    new_archive = not os.path.exists(workbook)
+    with zipfile.ZipFile(workbook, "w" if new_archive else "a") as archive:
+        if new_archive:
+            archive.writestr("synthetic.twb", "<workbook/>")
+        archive.write(path, member)
+    package = {"workbook": workbook, "archive_member": member}
+    return dict(package, schema="main", table=table), {
+        "path": path, "identity": package,
+    }
+
+
+def _full_export_record(path, identity, *, columns=None, row_count=None,
+                        fmt="csv"):
+    """Build fixture proof from finished bytes and measured CSV rows/header."""
+    if fmt == "csv":
+        with open(path, encoding="utf-8", newline="") as stream:
+            reader = csv.reader(stream)
+            actual_columns = next(reader)
+            actual_rows = 0
+            for row in reader:
+                if len(row) != len(actual_columns):
+                    raise AssertionError("Synthetic full CSV has a malformed row")
+                actual_rows += 1
+        if columns is not None and list(columns) != actual_columns:
+            raise AssertionError("Synthetic full CSV has the wrong header")
+        if row_count is not None and row_count != actual_rows:
+            raise AssertionError("Synthetic full CSV has the wrong row count")
+        columns, row_count = actual_columns, actual_rows
+    elif not columns or type(row_count) is not int or row_count < 0:
+        raise AssertionError("Synthetic Parquet proof needs declared COPY metadata")
+    digest = hashlib.sha256()
+    size_bytes = 0
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size_bytes += len(chunk)
+    record = {
+        "identity": dict(identity), "format": fmt,
+        "filename": os.path.basename(path), "columns": list(columns),
+        "row_count": row_count, "total_rows": row_count,
+        "max_rows": None, "sampled": False, "truncated": False,
+        "full_extract_verified": True,
+        "row_count_source": "csv_writer" if fmt == "csv" else "hyper_copy",
+        "sha256": digest.hexdigest(), "size_bytes": size_bytes,
+    }
+    if fmt == "csv":
+        record["csv_filename"] = record["filename"]
+    return record
+
+
+def _pending_hyper_error(table, identity):
+    def m_string(value):
+        return '"' + value.replace('"', '""') + '"'
+
+    return (
+        'error Error.Record("Migration.HyperExportRequired", '
+        '"Packaged Hyper export has not been staged to CSV or Parquet", '
+        "[Table = " + m_string(table) + ", Identity = "
+        + m_string(json.dumps(identity, ensure_ascii=True, separators=(",", ":")))
+        + "])"
+    )
 
 
 def _csv_partition(filename, columns, delimiter=",", count=None):
@@ -612,66 +725,168 @@ class TestHyperCsvRouting(unittest.TestCase):
 
     def test_each_excel_partition_is_routed_to_its_own_extract_csv(self):
         with tempfile.TemporaryDirectory() as root:
+            data = os.path.join(root, NAME, "Data")
+            identities, members, metadata = {}, [], []
+            for model, filename, columns, rows in (
+                ("Sales", "sales_extract.hyper", ["Region", "Amount"], [("N", "1")]),
+                ("Stock", "stock_extract.hyper", ["Item", "Qty"], [("A", "2")]),
+            ):
+                identity, member = _sqlite_hyper_fixture(
+                    root, data, filename, columns, rows, table=model + " Physical",
+                )
+                identities[model] = identity
+                members.append(member)
+                metadata.append({
+                    "name": model, "hyper_identity": identity,
+                    "cols_physical_map": {column: column for column in columns},
+                    "columns": [{"name": column, "datatype": "string"}
+                                for column in columns],
+                })
             project = _project(root, {
                 "Sales": _excel_partition("sales.xlsx", ["Region", "Amount"]),
                 "Stock": _excel_partition("stock.xlsx", ["Item", "Qty"]),
+            }, identities=identities, source_columns={
+                "Sales": {"Region": "string", "Amount": "string"},
+                "Stock": {"Item": "string", "Qty": "string"},
             })
-            data = os.path.join(project, "Data")
-            _write(os.path.join(data, "sales_extract.csv"), "Region,Amount\nN,1\n")
-            _write(os.path.join(data, "stock_extract.csv"), "Item,Qty\nA,2\n")
-            _write(os.path.join(data, "sales_extract.hyper"), b"x")
-            _write(os.path.join(data, "stock_extract.hyper"), b"x")
-            migrate._convert_hyper_to_csv_in_data(data, NAME, project)
-            self.assertIn("sales_extract.csv", _read(project, "Sales"))
-            self.assertIn("stock_extract.csv", _read(project, "Stock"))
-            self.assertNotIn("stock_extract.csv", _read(project, "Sales"))
+            stale = {
+                "sales_extract.csv": b"Region,Amount\nstale,-1\n",
+                "stock_extract.csv": b"Item,Qty\nstale,-1\n",
+            }
+            for filename, payload in stale.items():
+                _write(os.path.join(data, filename), payload)
+            extract = os.path.join(root, "extract")
+            _write(os.path.join(extract, "datasources.json"),
+                   json.dumps([{"tables": metadata}]))
+            migrate._convert_hyper_to_csv_in_data(
+                data, NAME, project, packaged_hyper=members, extract_dir=extract,
+            )
+            with open(os.path.join(data, "hyper_exports.json"), encoding="utf-8") as stream:
+                records = json.load(stream)["exports"]
+            self.assertEqual(len(records), 2)
+            exports = {record["identity"]["table"]: record for record in records}
+            for model, columns, row in (
+                ("Sales", ["Region", "Amount"], ["N", "1"]),
+                ("Stock", ["Item", "Qty"], ["A", "2"]),
+            ):
+                record = exports[model + " Physical"]
+                filename = record["filename"]
+                self.assertEqual(record["identity"], identities[model])
+                self.assertEqual(
+                    record, _full_export_record(os.path.join(data, filename),
+                                                identities[model]),
+                )
+                self.assertIn(filename, _read(project, model))
+                self.assertNotIn(filename, _read(
+                    project, "Stock" if model == "Sales" else "Sales",
+                ))
+                with open(os.path.join(data, filename), newline="",
+                          encoding="utf-8") as stream:
+                    self.assertEqual(list(csv.reader(stream)), [columns, row])
+            for filename, payload in stale.items():
+                with open(os.path.join(data, filename), "rb") as stream:
+                    self.assertEqual(stream.read(), payload)
 
     def test_packaged_excel_file_is_kept(self):
         with tempfile.TemporaryDirectory() as root:
-            project = _project(root, {"Sales": _excel_partition("sales.xlsx", ["Region"])})
-            data = os.path.join(project, "Data")
-            _write(os.path.join(data, "sales.xlsx"), b"xlsx")
-            _write(os.path.join(data, "e.csv"), "Region\nN\n")
-            _write(os.path.join(data, "e.hyper"), b"x")
-            migrate._convert_hyper_to_csv_in_data(data, NAME, project)
-            self.assertIn("Excel.Workbook", _read(project, "Sales"))
+            data = os.path.join(root, NAME, "Data")
+            identity, member = _sqlite_hyper_fixture(
+                root, data, "e.hyper", ["Region"], [("N",)],
+            )
+            project = _project(root, {
+                "Sales": _excel_partition("sales.xlsx", ["Region"]),
+                "Snapshot": _excel_partition("snapshot-not-packaged.xlsx", ["Region"]),
+            }, identities={"Snapshot": identity},
+                source_columns={"Snapshot": {"Region": "string"}})
+            excel_bytes = b"PK\x03\x04synthetic-packaged-excel\x00\xff"
+            _write(os.path.join(data, "sales.xlsx"), excel_bytes)
+            old_csv = b"Region\nstale\n"
+            _write(os.path.join(data, "e.csv"), old_csv)
+            _write(os.path.join(root, "datasources.json"), json.dumps([{"tables": [{
+                "name": "Snapshot", "hyper_identity": identity,
+                "cols_physical_map": {"Region": "Region"},
+                "columns": [{"name": "Region", "datatype": "string"}],
+            }]}]))
+            before = _read(project, "Sales")
+            migrate._convert_hyper_to_csv_in_data(
+                data, NAME, project, packaged_hyper=[member], extract_dir=root,
+            )
+            self.assertEqual(_read(project, "Sales"), before)
+            self.assertIn("Excel.Workbook", before)
+            with open(os.path.join(data, "sales.xlsx"), "rb") as stream:
+                self.assertEqual(stream.read(), excel_bytes)
+            with open(os.path.join(data, "e.csv"), "rb") as stream:
+                self.assertEqual(stream.read(), old_csv)
+            with open(os.path.join(data, "hyper_exports.json"), encoding="utf-8") as stream:
+                records = json.load(stream)["exports"]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0], _full_export_record(
+                os.path.join(data, records[0]["filename"]), identity,
+            ))
+            self.assertIn(records[0]["filename"], _read(project, "Snapshot"))
 
     def test_uses_datasource_metadata_from_active_extract_directory(self):
         with tempfile.TemporaryDirectory() as root:
+            data = os.path.join(root, NAME, "Data")
+            identity, member = _sqlite_hyper_fixture(
+                root, data, "orders_extract.hyper", ["PhysicalOrder"], [("123",)],
+            )
             project = _project(root, {
                 "Orders": '\t\t\t\tSource = try #table({"Order ID"}, {}) '
                           'otherwise #table({"Order ID"}, {})\n'
-            })
-            data = os.path.join(project, "Data")
+            }, identities={"Orders": identity},
+                source_columns={"Orders": {"Order ID": "string"}})
             _write(os.path.join(data, "orders_extract.csv"),
-                   "PhysicalOrder\n123\n")
-            _write(os.path.join(data, "orders_extract.hyper"), b"x")
+                   "PhysicalOrder\nstale\n")
             extract_dir = os.path.join(root, "extract")
             _write(os.path.join(extract_dir, "datasources.json"), json.dumps([{
                 "tables": [{
                     "name": "Orders",
                     "source_table": "orders_extract",
+                    "hyper_identity": identity,
                     "cols_physical_map": {"PhysicalOrder": "Order ID"},
+                    "columns": [{"name": "Order ID", "datatype": "string"}],
                 }]
             }]))
 
             with mock.patch.object(migrate._extract_dir_local, "path", extract_dir,
                                    create=True):
-                migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+                migrate._convert_hyper_to_csv_in_data(
+                    data, NAME, project, packaged_hyper=[member],
+                )
 
-            with open(os.path.join(data, "Orders.csv"), encoding="utf-8",
+            with open(os.path.join(data, "hyper_exports.json"), encoding="utf-8") as stream:
+                record = json.load(stream)["exports"][0]
+            self.assertEqual(record["identity"], identity)
+            staged = record["staged_files"][0]["csv_filename"]
+            self.assertRegex(staged, r"^hyper_staged_[0-9a-f]{64}\.csv$")
+            self.assertIn(staged, _read(project, "Orders"))
+            with open(os.path.join(data, staged), encoding="utf-8",
                       newline="") as stream:
-                self.assertEqual(next(csv.reader(stream)), ["Order ID"])
+                self.assertEqual(list(csv.reader(stream)), [["Order ID"], ["123"]])
+            raw_proof = _full_export_record(
+                os.path.join(data, record["filename"]), identity,
+            )
+            self.assertEqual({key: record[key] for key in raw_proof}, raw_proof)
+            with open(os.path.join(data, "orders_extract.csv"), "rb") as stream:
+                self.assertEqual(stream.read(), b"PhysicalOrder\nstale\n")
 
     def test_extract_csv_name_follows_hyper_file_not_inner_table(self):
-        import csv
         with tempfile.TemporaryDirectory() as out:
             hyper = os.path.join(out, "federated_abc.hyper")
-            _write(hyper, b"not a real hyper")
+            _write_sqlite_hyper(hyper, ["id"], [("synthetic",)], table="Inner Physical")
             name = os.path.splitext(os.path.basename(hyper))[0]
-            self.assertTrue(migrate._hyper_to_csv_files(hyper, out, NAME, csv) == {}
-                            or all(k.startswith(name) for k in
-                                   migrate._hyper_to_csv_files(hyper, out, NAME, csv)))
+            result = migrate._hyper_to_csv_files(
+                hyper, out, NAME, csv, require_full=True,
+            )
+            self.assertEqual(dict(result), {name: name + ".csv"})
+            self.assertEqual(result.exports, [_full_export_record(
+                os.path.join(out, name + ".csv"),
+                {"schema": "main", "table": "Inner Physical"},
+            )])
+            with open(os.path.join(out, name + ".csv"), encoding="utf-8",
+                      newline="") as stream:
+                self.assertEqual(list(csv.reader(stream)), [["id"], ["synthetic"]])
 
 
 class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
@@ -691,12 +906,21 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
         return dict(self.package_identity, schema=schema, table=table)
 
     def _routing_project(self, identities):
-        project = _project(self.root, {"Model": _excel_partition("missing.xlsx", ["id"])})
+        declared = {}
+        if (len(identities) == 1 and isinstance(identities[0], dict)
+                and set(identities[0]) == {"workbook", "archive_member", "schema", "table"}):
+            declared["Model"] = identities[0]
+        project = _project(
+            self.root, {"Model": _excel_partition("missing.xlsx", ["id"])},
+            identities=declared, source_columns={"Model": {"id": "string"}},
+        )
         data = os.path.join(project, "Data")
         extract = os.path.join(self.root, "extract")
         _write(os.path.join(extract, "datasources.json"), json.dumps([
             {"name": f"source-{index}", "tables": [{
                 "name": "Model", "source_table": "legacy",
+                "columns": [{"name": "id", "datatype": "string"}],
+                "cols_physical_map": {"id": "id"},
                 **({"hyper_identity": identity} if identity is not None else {}),
             }]}
             for index, identity in enumerate(identities)
@@ -707,6 +931,14 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
         return project, data
 
     def _manifest(self, data, records):
+        # Identity/ambiguity tests must not pass just because old fixture
+        # records lack the independent full-export prerequisite.
+        for record in records:
+            filename = record.get("filename") or record["csv_filename"]
+            record.update(_full_export_record(
+                os.path.join(data, filename), record["identity"],
+                columns=record["columns"],
+            ))
         return _write(os.path.join(data, "hyper_exports.json"),
                       json.dumps({"version": 1, "exports": records}))
 
@@ -730,7 +962,7 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
                 mock.patch("tableau_export.hyper_reader.read_hyper") as fallback_reader:
             result = migrate._hyper_to_csv_files(
                 os.path.join(self.root, "staged.hyper"), self.root, NAME, csv,
-                identity=self.package_identity,
+                identity=self.package_identity, require_full=True,
             )
             connection.close.assert_called_once()
             migrate._convert_hyper_to_csv_in_data(
@@ -762,6 +994,10 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
                              self.package_identity["archive_member"])
             self.assertEqual(record["columns"], columns)
             self.assertRegex(record["csv_filename"], r"^hyper_[0-9a-f]{64}\.csv$")
+            self.assertEqual(record, _full_export_record(
+                os.path.join(self.root, record["filename"]), record["identity"],
+                columns=columns, row_count=1,
+            ))
             with open(os.path.join(self.root, record["csv_filename"]),
                       encoding="utf-8", newline="") as stream:
                 self.assertEqual(list(csv.reader(stream)), [columns, ["1", "synthetic", "3"]])
@@ -784,7 +1020,8 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
                            return_value={"tables": tables}), \
                 self.assertLogs(migrate.logger.name, level="WARNING") as warnings:
             result = migrate._hyper_to_csv_files(
-                "synthetic.hyper", self.root, NAME, csv, identity=self.package_identity
+                "synthetic.hyper", self.root, NAME, csv,
+                identity=self.package_identity, require_full=False,
             )
         self.assertEqual([r["identity"] for r in result.exports],
                          [self._identity(table=name) for name in names])
@@ -807,26 +1044,24 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
         project, data = self._routing_project([None])
         path = _write(os.path.join(project, "Elsewhere", "data.hyper"), b"synthetic")
         _write(os.path.join(data, "data_old.csv"), "id\nwrong\n")
-        filename = "hyper_" + "a" * 64 + ".csv"
-        record = {
-            "identity": self._identity(), "format": "csv",
-            "filename": filename, "csv_filename": filename, "columns": ["id"],
-            "row_count": 1, "total_rows": 1, "max_rows": None,
-            "sampled": False, "truncated": False,
-        }
+        api = StreamingHyperApi(
+            columns=["id"], rows=[("right",)], total_rows=1,
+            table_pairs=[("Extract", "Physical")],
+        )
+        real_reader = migrate._hyper_to_csv_files
+        fresh_records = []
 
         def export_exact_member(hyper_path, output_dir, prefix, csv_module, **kwargs):
             self.assertEqual(hyper_path, path)
             self.assertEqual(kwargs["identity"], self.package_identity)
             self.assertEqual(os.path.dirname(output_dir), data)
             self.assertNotEqual(output_dir, data)
-            _write(os.path.join(output_dir, filename), "id\nright\n")
-            converted = migrate._HyperCsvExports()
-            converted[os.path.splitext(filename)[0]] = filename
-            converted.exports = [dict(record)]
+            converted = real_reader(hyper_path, output_dir, prefix, csv_module, **kwargs)
+            fresh_records.extend(dict(record) for record in converted.exports)
             return converted
 
-        with mock.patch.object(migrate, "_hyper_to_csv_files",
+        with mock.patch.dict("sys.modules", {"tableauhyperapi": api.module}), \
+                mock.patch.object(migrate, "_hyper_to_csv_files",
                                side_effect=export_exact_member) as reader:
             migrate._convert_hyper_to_csv_in_data(
                 data, NAME, project,
@@ -836,9 +1071,15 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
         export_stage = reader.call_args.args[1]
         reader.assert_called_once_with(
             path, export_stage, NAME, csv, identity=self.package_identity,
-            export_format="auto", max_rows=None, quiet=False,
+            export_format="auto", max_rows=None, quiet=False, require_full=True,
         )
         self.assertFalse(os.path.exists(export_stage))
+        self.assertEqual(len(fresh_records), 1)
+        record = fresh_records[0]
+        filename = record["filename"]
+        self.assertEqual(record, _full_export_record(
+            os.path.join(data, filename), self._identity(), row_count=1,
+        ))
         with open(os.path.join(data, filename), encoding="utf-8") as stream:
             self.assertEqual(stream.read(), "id\nright\n")
         with open(os.path.join(data, "data_old.csv"), encoding="utf-8") as stream:
@@ -847,6 +1088,9 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
             self.assertEqual(json.load(stream), {
                 "version": 1, "authoritative": True, "exports": [record],
             })
+        api.connection.execute_list_query.assert_not_called()
+        self.assertTrue(api.results)
+        self.assertTrue(all(result.closed for result in api.results))
 
     def test_empty_selected_reader_raises_and_preserves_manifest_without_fallback(self):
         project, data = self._routing_project([None])
@@ -996,6 +1240,7 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
         _write(os.path.join(extract, "datasources.json"), json.dumps([{"tables": [{
             "name": "Model", "hyper_identity": self._identity(),
             "cols_physical_map": {"id": "Identifier"},
+            "columns": [{"name": "Identifier", "datatype": "string"}],
         }]}]))
         body = (
             '\t\t\t\tlet\n'
@@ -1003,12 +1248,16 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
             'otherwise #table({"Identifier"}, {})\n'
             '\t\t\t\tin\n\t\t\t\t\tSource'
         )
-        project = _project(self.root, {"Model": body})
+        project = _project(
+            self.root, {"Model": body}, identities={"Model": self._identity()},
+            source_columns={"Model": {"Identifier": "string"}},
+        )
         filename = "hyper_" + "a" * 64 + ".csv"
         raw = "id\nsynthetic\n"
         _write(os.path.join(data, filename), raw)
         record = {"identity": self._identity(), "csv_filename": filename, "columns": ["id"]}
         self._manifest(data, [record])
+        raw_proof = dict(record)
         migrate._convert_hyper_to_csv_in_data(data, NAME, project)
         with open(os.path.join(data, "hyper_exports.json"), encoding="utf-8") as stream:
             manifest = json.load(stream)
@@ -1021,8 +1270,17 @@ class TestHyperPhysicalIdentityRegressions(unittest.TestCase):
         self.assertEqual(staged["table"], "Model")
         self.assertRegex(staged["csv_filename"], r"^hyper_staged_[0-9a-f]{64}\.csv$")
         self.assertIn(staged["csv_filename"], _read(project, "Model"))
-        with open(os.path.join(data, filename), encoding="utf-8") as stream:
-            self.assertEqual(stream.read(), raw)
+        with open(os.path.join(data, filename), "rb") as stream:
+            self.assertEqual(stream.read(), raw.encode("utf-8"))
+        self.assertEqual(
+            {key: exported[key] for key in raw_proof}, raw_proof,
+        )
+        staged_proof = _full_export_record(
+            os.path.join(data, staged["csv_filename"]), self._identity(),
+            columns=["Identifier"], row_count=1,
+        )
+        for key in ("sha256", "size_bytes", "row_count"):
+            self.assertEqual(staged[key], staged_proof[key])
         with open(os.path.join(data, staged["csv_filename"]), encoding="utf-8") as stream:
             self.assertEqual(stream.read(), "Identifier\nsynthetic\n")
         migrate._convert_hyper_to_csv_in_data(data, NAME, project)
@@ -1487,12 +1745,12 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
                             "tables", "unrelated-artifact.tmdl")
         _write(path, content)
         filename = "hyper_" + "c" * 64 + ".parquet"
-        _write(os.path.join(data, filename), b"PAR1synthetic-markerPAR1")
-        record = {
-            "identity": dict(self.identity), "format": "parquet", "filename": filename,
-            "columns": ["id", "Amount"], "row_count": 2, "total_rows": 2,
-            "max_rows": None, "sampled": False, "truncated": False,
-        }
+        artifact = _write(os.path.join(data, filename), b"PAR1synthetic-markerPAR1")
+        # Static routing fixture only; native SDK tests validate real Parquet.
+        record = _full_export_record(
+            artifact, self.identity, columns=["id", "Amount"],
+            row_count=2, fmt="parquet",
+        )
         manifest = os.path.join(data, "hyper_exports.json")
         extract = os.path.join(self.root, "metadata")
         _write(os.path.join(extract, "datasources.json"), json.dumps([self._datasource()]))
@@ -1781,9 +2039,10 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
         project = _project(self.root, {})
         data = os.path.join(project, "Data")
         filename = "hyper_" + "b" * 64 + ".csv"
-        _write(os.path.join(data, filename), "id,Other\n1,3.5\n")
-        record = {"identity": second_identity, "csv_filename": filename,
-                  "columns": ["id", "Other"]}
+        artifact = _write(os.path.join(data, filename), "id,Other\n1,3.5\n")
+        record = _full_export_record(
+            artifact, second_identity, columns=["id", "Other"], row_count=1,
+        )
         _write(os.path.join(data, "hyper_exports.json"),
                json.dumps({"version": 1, "exports": [record]}))
         directory = os.path.join(project, f"{NAME}.SemanticModel", "definition", "tables")
@@ -1819,9 +2078,12 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
         path = os.path.join(project, f"{NAME}.SemanticModel", "definition",
                             "tables", "legacy.tmdl")
         _write(path, content)
-        _write(os.path.join(data, self.filename), "id,Amount\n1,2.5\n")
+        artifact = _write(os.path.join(data, self.filename), "id,Amount\n1,2.5\n")
         _write(os.path.join(data, "legacy.csv"), "id,Amount\n1,999\n")
-        record = dict(self.record, identity=dict(self.identity, schema="foreign"))
+        record = _full_export_record(
+            artifact, dict(self.identity, schema="foreign"),
+            columns=["id", "Amount"], row_count=1,
+        )
         _write(os.path.join(data, "hyper_exports.json"),
                json.dumps({"version": 1, "exports": [record]}))
         extract = os.path.join(self.root, "extract")
@@ -1925,13 +2187,32 @@ class TestHyperCsvTypeChanges(unittest.TestCase):
 class TestHyperCsvSourceTyping(unittest.TestCase):
     """Regression: Csv.Document must not expose text to numeric/date calculations."""
 
-    def _make_project(self, root):
+    def _make_project(self, root, *, hyper_filename="orders_extract.hyper",
+                      rows=None, pending=False, physical_columns=None):
+        data = os.path.join(root, NAME, "Data")
+        self.physical_columns = physical_columns or [
+            "qty_raw", "amount_raw", "date_raw", "updated_raw",
+        ]
+        self.source_rows = rows if rows is not None else [
+            ["2", "1234.5", "2026-10-15", "2026-10-15 09:30:00"],
+        ]
+        self.identity, member = _sqlite_hyper_fixture(
+            root, data, hyper_filename, self.physical_columns, self.source_rows,
+            table="Physical Orders",
+        )
+        self.packaged_hyper = [member]
+        self.pending = pending
         source = (
             '\t\t\t\tlet\n'
             '\t\t\t\t\tSource = try #table({"Qty", "Amount", "Order Date", "Updated"}, '
             '{{2, 1234.5, #date(2026, 10, 15), #datetime(2026, 10, 15, 9, 30, 0)}}) '
             'otherwise #table({"Qty", "Amount", "Order Date", "Updated"}, {}),\n'
         )
+        if pending:
+            source = (
+                '\t\t\t\tlet\n\t\t\t\t\tSource = '
+                + _pending_hyper_error("Orders", self.identity) + ",\n"
+            )
         downstream = (
             '\t\t\t\t\t#"Added Margin" = Table.AddColumn(Source, "Margin", '
             'each [Amount] / [Qty], type number),\n'
@@ -1941,7 +2222,9 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
             '{{"Margin", type number}, {"Year", Int64.Type}})\n'
             '\t\t\t\tin\n\t\t\t\t\t#"Changed Types"'
         )
-        project = _project(root, {"Orders": source + downstream})
+        project = _project(
+            root, {"Orders": source + downstream}, identities={"Orders": self.identity},
+        )
         path = os.path.join(project, f"{NAME}.SemanticModel", "definition",
                             "tables", "Orders.tmdl")
         with open(path, "a", encoding="utf-8") as stream:
@@ -1955,24 +2238,28 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
             ):
                 stream.write(f"\n\tcolumn '{display}'\n\t\tdataType: {dtype}\n"
                              f"\t\tsourceColumn: {physical}\n")
-        data = os.path.join(project, "Data")
-        _write(os.path.join(data, "orders_extract.hyper"), b"unused: CSV already exists")
-        _write(os.path.join(data, "orders_extract.csv"),
-               "qty_raw,amount_raw,date_raw,updated_raw\n"
-               "2,1234.5,2026-10-15,2026-10-15 09:30:00\n")
+        prior = io.StringIO(newline="")
+        writer = csv.writer(prior)
+        writer.writerow(self.physical_columns)
+        writer.writerows(self.source_rows)
+        self.legacy_bytes = prior.getvalue().encode("utf-8")
+        self.legacy_csv = os.path.join(
+            data, os.path.splitext(hyper_filename)[0] + ".csv",
+        )
+        _write(self.legacy_csv, self.legacy_bytes)
         extract = os.path.join(root, "extract")
         metadata = [{
             "tables": [{
-                "name": "Orders", "source_table": "orders_extract",
-                "cols_physical_map": {
-                    "qty_raw": "Qty", "amount_raw": "Amount",
-                    "date_raw": "Order Date", "updated_raw": "Updated",
-                },
+                "name": "Orders", "source_table": os.path.splitext(hyper_filename)[0],
+                "hyper_identity": self.identity,
+                "cols_physical_map": dict(zip(
+                    self.physical_columns, ["Qty", "Amount", "Order Date", "Updated"],
+                )),
                 "columns": [
-                    {"name": "qty_raw", "datatype": "integer"},
-                    {"name": "amount_raw", "datatype": "real"},
-                    {"name": "date_raw", "datatype": "date"},
-                    {"name": "updated_raw", "datatype": "datetime"},
+                    *({"name": column, "datatype": datatype}
+                      for column, datatype in zip(self.physical_columns, (
+                          "integer", "real", "date", "datetime",
+                      ))),
                     {"name": "Margin", "datatype": "real"},
                     {"name": "Year", "datatype": "integer"},
                 ],
@@ -1981,10 +2268,47 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
         _write(os.path.join(extract, "datasources.json"), json.dumps(metadata))
         return project, data, extract, downstream, metadata
 
-    def _assert_source_types(self, text, entries, downstream, table="Orders"):
+    def _convert(self, data, project):
+        source = self.packaged_hyper[0]["path"]
+        with open(source, "rb") as stream:
+            source_bytes = stream.read()
+        migrate._convert_hyper_to_csv_in_data(
+            data, NAME, project, packaged_hyper=self.packaged_hyper,
+        )
+        with open(os.path.join(data, "hyper_exports.json"), encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        self.assertIs(manifest["authoritative"], True)
+        self.assertEqual(len(manifest["exports"]), 1)
+        self.export = manifest["exports"][0]
+        raw_path = os.path.join(data, self.export["filename"])
+        proof = _full_export_record(
+            raw_path, self.identity, columns=self.physical_columns,
+            row_count=len(self.source_rows),
+        )
+        self.assertEqual({key: self.export[key] for key in proof}, proof)
+        self.assertEqual(len(self.export["staged_files"]), 1)
+        binding = self.export["staged_files"][0]
+        self.assertEqual(binding["table"], "Orders")
+        self.bound_filename = binding["csv_filename"]
+        self.assertNotEqual(self.bound_filename, os.path.basename(self.legacy_csv))
+        if not self.pending:
+            staged_proof = _full_export_record(
+                os.path.join(data, self.bound_filename), self.identity,
+                row_count=len(self.source_rows),
+            )
+            for key in ("sha256", "size_bytes", "row_count"):
+                self.assertEqual(binding[key], staged_proof[key])
+        with open(self.legacy_csv, "rb") as stream:
+            self.assertEqual(stream.read(), self.legacy_bytes)
+        with open(source, "rb") as stream:
+            self.assertEqual(stream.read(), source_bytes)
+
+    def _assert_source_types(self, text, entries, downstream):
+        separator = "\\" if self.pending else "\\\\"
         expected_source = (
             'Source = Table.TransformColumnTypes(Table.PromoteHeaders('
-            'Csv.Document(File.Contents(DataFolder & "\\\\' + table + '.csv"), '
+            'Csv.Document(File.Contents(DataFolder & "' + separator
+            + self.bound_filename + '"), '
             '[Delimiter=",", Encoding=65001, QuoteStyle=QuoteStyle.Csv]), '
             '[PromoteAllScalars=true]), {' + ", ".join(entries) + '}, "en-US"),\n'
         )
@@ -1995,31 +2319,22 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
         self.assertNotIn("#table(", text)
 
     def _same_path_case(self, root):
-        project, data, extract, downstream, metadata = self._make_project(root)
-        os.replace(os.path.join(data, "orders_extract.hyper"),
-                   os.path.join(data, "Orders.hyper"))
-        os.replace(os.path.join(data, "orders_extract.csv"),
-                   os.path.join(data, "Orders.csv"))
         rows = [
             ["2", "1234.5", "2026-10-15", "2026-10-15 09:30:00"],
             ["7", "0.25", "2026-10-22", "2026-10-22 13:15:05"],
         ]
-        with open(os.path.join(data, "Orders.csv"), "w",
-                  encoding="utf-8", newline="") as stream:
-            writer = csv.writer(stream)
-            writer.writerow(["qty_raw", "amount_raw", "date_raw", "updated_raw"])
-            writer.writerows(rows)
-        metadata[0]["tables"][0]["source_table"] = "Orders"
-        _write(os.path.join(extract, "datasources.json"), json.dumps(metadata))
+        project, data, extract, downstream, unused_metadata = self._make_project(
+            root, hyper_filename="Orders.hyper", rows=rows,
+        )
         return project, data, extract, downstream, rows
 
     def _assert_same_path_result(self, project, data, downstream, rows):
-        with open(os.path.join(data, "Orders.csv"),
+        with open(os.path.join(data, self.bound_filename),
                   encoding="utf-8", newline="") as stream:
             self.assertEqual(
                 list(csv.reader(stream)),
                 [["Qty", "Amount", "Order Date", "Updated"]] + rows,
-                "Opening the staged destination must not truncate its own source",
+                "Caption staging must preserve every row of the complete source",
             )
         self._assert_source_types(
             _read(project, "Orders"),
@@ -2029,12 +2344,32 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
         )
 
     def test_source_equals_staged_csv_retains_both_rows_captions_and_source_types(self):
-        with tempfile.TemporaryDirectory() as root:
-            project, data, extract, downstream, rows = self._same_path_case(root)
-            with mock.patch.object(migrate, "_get_extract_dir", return_value=extract):
-                migrate._convert_hyper_to_csv_in_data(data, NAME, project)
-            self._assert_same_path_result(project, data, downstream, rows)
-            self.assertEqual(set(os.listdir(data)), {"Orders.hyper", "Orders.csv"})
+        for output_format in ("pbip", "fabric"):
+            with self.subTest(output_format=output_format), \
+                    tempfile.TemporaryDirectory() as root:
+                project, data, extract, downstream, rows = self._same_path_case(root)
+                with mock.patch.object(migrate, "_get_extract_dir", return_value=extract):
+                    if output_format == "pbip":
+                        self._convert(data, project)
+                    else:
+                        # Genuine legacy diagnostic path: only this mode can
+                        # reuse and rewrite Orders.csv in place. Full PBIP
+                        # instead proves a fresh raw export and a separate alias.
+                        migrate._convert_hyper_to_csv_in_data(
+                            data, NAME, project, output_format="fabric",
+                        )
+                        self.bound_filename = "Orders.csv"
+                self._assert_same_path_result(project, data, downstream, rows)
+                if output_format == "pbip":
+                    self.assertRegex(
+                        self.bound_filename, r"^hyper_staged_[0-9a-f]{64}\.csv$",
+                    )
+                    self.assertEqual(set(os.listdir(data)), {
+                        "Orders.hyper", "Orders.csv", "hyper_exports.json",
+                        self.export["filename"], self.bound_filename,
+                    })
+                else:
+                    self.assertEqual(set(os.listdir(data)), {"Orders.hyper", "Orders.csv"})
 
     def test_caption_staging_consumes_csv_as_a_stream_not_list_reader(self):
         real_reader = csv.reader
@@ -2056,19 +2391,20 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
             project, data, extract, downstream, rows = self._same_path_case(root)
             with mock.patch.object(migrate, "_get_extract_dir", return_value=extract), \
                     mock.patch.object(csv, "reader", side_effect=StreamingOnlyReader):
-                migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+                self._convert(data, project)
             self._assert_same_path_result(project, data, downstream, rows)
 
     def test_restores_metadata_types_immediately_after_promotion_before_calculations(self):
         with tempfile.TemporaryDirectory() as root:
             project, data, extract, downstream, _ = self._make_project(root)
             with mock.patch.object(migrate._extract_dir_local, "path", extract, create=True):
-                migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+                self._convert(data, project)
             self._assert_source_types(_read(project, "Orders"), [
                 '{"Qty", Int64.Type}', '{"Amount", type number}',
                 '{"Order Date", type date}', '{"Updated", type datetime}',
             ], downstream)
-            with open(os.path.join(data, "Orders.csv"), encoding="utf-8", newline="") as stream:
+            with open(os.path.join(data, self.bound_filename),
+                      encoding="utf-8", newline="") as stream:
                 self.assertEqual(list(csv.reader(stream)), [
                     ["Qty", "Amount", "Order Date", "Updated"],
                     ["2", "1234.5", "2026-10-15", "2026-10-15 09:30:00"],
@@ -2080,7 +2416,7 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
             metadata[0]["tables"][0]["columns"] = [{"name": "date_raw", "datatype": "date"}]
             _write(os.path.join(extract, "datasources.json"), json.dumps(metadata))
             with mock.patch.object(migrate._extract_dir_local, "path", extract, create=True):
-                migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+                self._convert(data, project)
             self._assert_source_types(_read(project, "Orders"), [
                 '{"Qty", Int64.Type}', '{"Amount", type number}',
                 '{"Order Date", type date}', '{"Updated", type datetime}',
@@ -2089,18 +2425,19 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
     def test_unavailable_metadata_falls_back_to_model_source_columns(self):
         for snapshot in (None, "{invalid json", "[]"):
             with self.subTest(snapshot=snapshot), tempfile.TemporaryDirectory() as root:
-                project, data, extract, downstream, _ = self._make_project(root)
+                project, data, extract, downstream, _ = self._make_project(
+                    root, pending=True,
+                    physical_columns=["Qty", "Amount", "Order Date", "Updated"],
+                )
                 path = os.path.join(extract, "datasources.json")
                 if snapshot is None:
                     os.unlink(path)
                 else:
                     _write(path, snapshot)
-                # Without metadata routing, matching is based on actual caption headers.
-                _write(os.path.join(data, "orders_extract.csv"),
-                       "Qty,Amount,Order Date,Updated\n"
-                       "2,1234.5,2026-10-15,2026-10-15 09:30:00\n")
+                # The semantic producer's explicit identity, not header overlap,
+                # authorizes the full source when type metadata is unavailable.
                 with mock.patch.object(migrate._extract_dir_local, "path", extract, create=True):
-                    migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+                    self._convert(data, project)
                 self._assert_source_types(_read(project, "Orders"), [
                     '{"Qty", Int64.Type}', '{"Amount", type number}',
                     '{"Order Date", type datetime}', '{"Updated", type datetime}',
@@ -2108,40 +2445,68 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
 
     def test_quoted_headers_survive_csv_routing_and_source_type_literals(self):
         with tempfile.TemporaryDirectory() as root:
+            data = os.path.join(root, NAME, "Data")
+            self.physical_columns = ['Customer\'s "Amount"']
+            self.source_rows = [["1234.5"]]
+            self.identity, member = _sqlite_hyper_fixture(
+                root, data, "orders_extract.hyper",
+                self.physical_columns, self.source_rows,
+            )
+            self.packaged_hyper = [member]
+            self.pending = False
             body = (
                 'Source = try #table({"Customer\'s ""Amount"""}, {}) '
                 'otherwise #table({"Customer\'s ""Amount"""}, {})'
             )
-            project = _project(root, {"Orders": body})
+            project = _project(root, {"Orders": body}, identities={"Orders": self.identity})
             path = os.path.join(project, f"{NAME}.SemanticModel", "definition",
                                 "tables", "Orders.tmdl")
             with open(path, "a", encoding="utf-8") as stream:
                 stream.write("\n\tcolumn 'Display Caption'\n\t\tdataType: double\n"
                              "\t\tsourceColumn: 'Customer''s \"Amount\"'\n")
-            data = os.path.join(project, "Data")
-            _write(os.path.join(data, "orders_extract.hyper"), b"x")
-            _write(os.path.join(data, "orders_extract.csv"),
-                   '"Customer\'s ""Amount"""\n1234.5\n')
+            self.legacy_csv = os.path.join(data, "orders_extract.csv")
+            self.legacy_bytes = b'"Customer\'s ""Amount"""\n1234.5\n'
+            _write(self.legacy_csv, self.legacy_bytes)
+            _write(os.path.join(root, "datasources.json"), json.dumps([{"tables": [{
+                "name": "Orders", "hyper_identity": self.identity,
+                "cols_physical_map": {self.physical_columns[0]: self.physical_columns[0]},
+                "columns": [{"name": self.physical_columns[0]}],
+            }]}]))
             with mock.patch.object(migrate._extract_dir_local, "path", root, create=True):
-                migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+                self._convert(data, project)
             text = _read(project, "Orders")
             self.assertIn('[PromoteAllScalars=true]), '
                           '{{"Customer\'s ""Amount""", type number}}, "en-US")', text)
             self.assertNotIn("#table(", text)
-            with open(os.path.join(data, "Orders.csv"), encoding="utf-8", newline="") as stream:
+            with open(os.path.join(data, self.bound_filename),
+                      encoding="utf-8", newline="") as stream:
                 self.assertEqual(list(csv.reader(stream)), [['Customer\'s "Amount"'], ["1234.5"]])
 
     def test_untyped_schema_still_promotes_headers_without_guessing_types(self):
         with tempfile.TemporaryDirectory() as root:
+            data = os.path.join(root, NAME, "Data")
+            self.physical_columns = ["Unknown"]
+            self.source_rows = [["1234.5"]]
+            self.identity, member = _sqlite_hyper_fixture(
+                root, data, "orders_extract.hyper",
+                self.physical_columns, self.source_rows,
+            )
+            self.packaged_hyper = [member]
+            self.pending = False
             project = _project(root, {
                 "Orders": 'Source = try #table({"Unknown"}, {}) '
                           'otherwise #table({"Unknown"}, {})',
-            })
-            data = os.path.join(project, "Data")
-            _write(os.path.join(data, "orders_extract.hyper"), b"x")
-            _write(os.path.join(data, "orders_extract.csv"), "Unknown\n1234.5\n")
+            }, identities={"Orders": self.identity})
+            self.legacy_csv = os.path.join(data, "orders_extract.csv")
+            self.legacy_bytes = b"Unknown\n1234.5\n"
+            _write(self.legacy_csv, self.legacy_bytes)
+            _write(os.path.join(root, "datasources.json"), json.dumps([{"tables": [{
+                "name": "Orders", "hyper_identity": self.identity,
+                "cols_physical_map": {"Unknown": "Unknown"},
+                "columns": [{"name": "Unknown"}],
+            }]}]))
             with mock.patch.object(migrate._extract_dir_local, "path", root, create=True):
-                migrate._convert_hyper_to_csv_in_data(data, NAME, project)
+                self._convert(data, project)
             text = _read(project, "Orders")
             self.assertIn("Source = Table.PromoteHeaders(Csv.Document(", text)
             self.assertNotIn("Table.TransformColumnTypes", text)

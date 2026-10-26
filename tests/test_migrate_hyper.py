@@ -1050,6 +1050,7 @@ class TestHyperOptionWiring(unittest.TestCase):
             "name": "SyntheticSource", "connection": {"type": "Hyper", "details": {}},
             "tables": [{"name": "Facts", "columns": [{"name": "id", "datatype": "integer"}]}],
         }]}
+        sequence = mock.Mock()
         module_root = os.path.dirname(os.path.abspath(migrate.__file__))
         # These legacy module names are normally exposed by the orchestrator
         # only after this test must resolve its patch targets. Scope the path
@@ -1062,7 +1063,12 @@ class TestHyperOptionWiring(unittest.TestCase):
                 mock.patch("extract_tableau_data.TableauExtractor") as extractor, \
                 mock.patch("import_to_powerbi.PowerBIImporter") as importer, \
                 mock.patch.object(migrate, "_process_twbx_post_generation") as post, \
+                mock.patch.object(migrate, "_require_hyper_import") as import_gate, \
                 redirect_stdout(io.StringIO()):
+            # Forwarding-only fixture: no model, exported data, or manifest.
+            # Mock validation, but retain its ordering after postprocessing.
+            sequence.attach_mock(post, "postprocessing")
+            sequence.attach_mock(import_gate, "import_gate")
             extractor.return_value.extract_all.return_value = True
             importer.return_value._load_converted_objects.return_value = converted
             importer.return_value.import_shared_model.return_value = {
@@ -1084,6 +1090,14 @@ class TestHyperOptionWiring(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["hyper_export_format"], "csv")
         self.assertEqual(post.call_args.kwargs["hyper_export_max_rows"], 7)
         self.assertEqual(post.call_args.kwargs["max_zip_entry_mb"], 3)
+        import_gate.assert_called_once_with(
+            os.path.join(self.output, "Shared"),
+            extracted={"datasources": converted["datasources"], "hyper_files": []},
+        )
+        self.assertEqual(
+            [call[0] for call in sequence.mock_calls],
+            ["postprocessing", "import_gate"],
+        )
 
     def test_batch_config_entry_overrides_global_options_before_extraction_and_export(self):
         config = os.path.join(self.root, "batch.json")

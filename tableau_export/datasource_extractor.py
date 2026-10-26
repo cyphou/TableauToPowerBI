@@ -13,7 +13,12 @@ import csv
 import re
 import logging
 import copy
+from typing import NoReturn
 from dax_converter import _reverse_tableau_bracket_escape
+try:
+    from powerbi_import.errors import ExtractionError
+except ModuleNotFoundError:  # Legacy callers put powerbi_import on sys.path.
+    from errors import ExtractionError
 try:
     from .safe_xml import safe_findall, safe_findtext, safe_get_attr
     from .extract_primitives import _extract_calculation_formula
@@ -235,6 +240,8 @@ def extract_datasource(datasource_elem, twbx_path=None):
             c['name']: name for c in table['columns']}
         # Existing datasource-scoped calculation routing now has exactly one
         # host. Do not stamp a raw table name: the model may rename collisions.
+    else:
+        _rebuild_extract_join_field_maps(original_elem, datasource)
 
     # Rename 'sqlproxy' tables to use the datasource caption.
     # Published datasources (hosted on Tableau Server) expose a single relation
@@ -314,7 +321,7 @@ def _native_datasource_context(datasource_elem, force=False):
 
 
 def _bind_packaged_hyper_identities(datasource_elem, tables, twbx_path):
-    """Bind explicit extract relations to exact packaged members, without guesses.
+    """Bind explicit Hyper relations to exact packaged members, without guesses.
 
     This records XML-declared identities, not proof of a successful export.
     Consumers must join all four keys to the catalog-backed export manifest.
@@ -328,15 +335,29 @@ def _bind_packaged_hyper_identities(datasource_elem, tables, twbx_path):
     except (OSError, zipfile.BadZipFile):
         return
 
+    extracts = [e for e in _active_extract_elements(datasource_elem)
+                if _extract_context_tag(e) == 'extract']
+    if not extracts:
+        # A main Hyper source needs no <extract> or connection-level table
+        # attributes. Do not select it instead of an enabled extract.
+        return _bind_main_hyper_relations(datasource_elem, tables, twbx_path, members)
+    if len(extracts) != 1 or extracts[0].get('enabled', '').lower() == 'false':
+        return
+    if _bind_physical_extract_join(datasource_elem, tables, twbx_path, members):
+        return
+
     # A relational native context may only bind as a complete materialized
-    # object. Never bind its staging alias while leaving native leaves active,
-    # including when the strict object-context proof fails.
+    # object OR the explicitly paired per-table extract join proven above.
+    # Never bind a staging alias when either complete proof fails.
     relational_context = any(
         _extract_context_tag(e) == 'properties' and e.get('context') == ''
         and any(_extract_context_tag(r) == 'relation'
                 and r.get('type') != 'table' for r in _active_extract_elements(e))
         for e in _active_extract_elements(datasource_elem))
-    if relational_context:
+    relational_extract = any(
+        _extract_context_tag(e) == 'relation' and e.get('type') != 'table'
+        for extract in extracts for e in _active_extract_elements(extract))
+    if relational_context or relational_extract:
         return _bind_object_context_extract(datasource_elem, tables, twbx_path, members)
 
     # Match bracketed components as units: dots inside identifiers are literal.
@@ -393,6 +414,708 @@ def _bind_packaged_hyper_identities(datasource_elem, tables, twbx_path):
             table['hyper_identity'] = dict(identity)
 
     return _bind_object_context_extract(datasource_elem, tables, twbx_path, members)
+
+
+def _hyper_table_parts(value):
+    """Parse a complete schema/table declaration, not a filename or alias."""
+    match = re.fullmatch(r'\[((?:[^\]]|\]\])*)\]\.\[((?:[^\]]|\]\])*)\]', value)
+    return tuple(p.replace(']]', ']') for p in match.groups()) if match else None
+
+
+def _hyper_relation_identity(connection, relation, twbx_path, members):
+    """Read an identity only after the caller proves connection ownership."""
+    member = connection.get('dbname', '')
+    parts = _hyper_table_parts(relation.get('table', ''))
+    if (connection.get('class') != 'hyper'
+            or not member.lower().endswith('.hyper') or members.count(member) != 1
+            or parts is None or not all(parts)):
+        return None
+    return {
+        'workbook': os.path.abspath(twbx_path),
+        'archive_member': member,
+        'schema': parts[0],
+        'table': parts[1],
+    }
+
+
+def _has_declared_hyper_fields(table):
+    return table.get('hyper_extract_metadata', {}).get('binding') in (
+        'declared_physical_extract_join', 'declared_main_hyper_source')
+
+
+def _is_tableau_pseudo_field(name, datatype=''):
+    """Recognize Tableau's declared table/object identities, not user captions."""
+    parts = _relation_ref_parts(name)
+    return (datatype == 'table'
+            or bool(parts and parts[0] == '__tableau_internal_object_id__')
+            or name == '__tableau_internal_object_id__')
+
+
+def _rebuild_extract_join_field_maps(datasource_elem, datasource):
+    """Replace logical/native routing history with proven Hyper source fields.
+
+    Bound columns already carry validated extract local names and types. Only
+    captions explicitly declared for those same local identities may extend
+    their routing keys; excluded native fields and bare physical names cannot.
+    Keep the prior maps as provenance, never as active calculation candidates.
+    """
+    tables = datasource.get('tables', [])
+    if not tables or any(not _has_declared_hyper_fields(table) for table in tables):
+        return
+    kinds = {table['hyper_extract_metadata']['binding'] for table in tables}
+    if len(kinds) != 1:
+        raise ExtractionError(
+            'Packaged Hyper field routing mixes incompatible declaration scopes',
+            item=datasource.get('name', ''), source='datasource_extractor')
+    binding = next(iter(kinds))
+    bindings = {}
+    for table in tables:
+        for column in table['columns']:
+            local, dtype = column.get('name', ''), column.get('datatype', '')
+            if not local or not dtype:
+                raise ExtractionError(
+                    'Packaged Hyper snapshot routing requires declared local field names and types',
+                    item=table['name'], source='datasource_extractor')
+            bindings.setdefault(local, set()).add((table['name'], local, dtype))
+    local_bindings = {local: set(values) for local, values in bindings.items()}
+    for column in datasource_elem:
+        if _extract_context_tag(column) != 'column':
+            continue
+        parts = _relation_ref_parts(column.get('name', ''))
+        caption = column.get('caption', '')
+        if len(parts) == 1 and parts[0] in local_bindings and caption:
+            bindings.setdefault(caption, set()).update(local_bindings[parts[0]])
+    name_map, type_map, local_map = {}, {}, {}
+    for reference, candidates in bindings.items():
+        if len(candidates) != 1:
+            raise ExtractionError(
+                'Packaged Hyper snapshot field routing has conflicting local/caption declarations',
+                item=reference, source='datasource_extractor')
+        alias, local, dtype = next(iter(candidates))
+        name_map[reference], type_map[reference], local_map[reference] = alias, dtype, local
+    metadata = dict(datasource.get('hyper_extract_metadata') or {})
+    metadata.setdefault('native_col_local_name_map', dict(datasource.get('col_local_name_map') or {}))
+    metadata.setdefault('native_col_type_map', dict(datasource.get('col_type_map') or {}))
+    metadata.update({
+        'binding': binding,
+        'routing_validation': ('exact_declared_main_source_fields_and_captions'
+                               if binding == 'declared_main_hyper_source'
+                               else 'exact_declared_extract_fields_and_captions'),
+        'field_local_name_map': local_map,
+    })
+    datasource['hyper_extract_metadata'] = metadata
+    datasource['col_local_name_map'] = name_map
+    datasource['col_type_map'] = type_map
+
+
+def _extract_formula_references(formula):
+    """Yield complete field references, excluding comments and string literals."""
+    bracket = r'\[((?:[^\]]|\]\])*)\]'
+    tokens = re.finditer(
+        r'//[^\r\n]*|/\*.*?(?:\*/|\Z)|'
+        r'''"(?:\\.|""|[^"\\])*"|'(?:\\.|''|[^'\\])*'|'''
+        + bracket + r'(?:\s*\.\s*' + bracket + r')*',
+        formula, re.DOTALL)
+    for token in tokens:
+        if token.group().startswith('['):
+            yield tuple(p.replace(']]', ']') for p in re.findall(bracket, token.group()))
+
+
+def _validate_extract_join_references(datasource_elem, fields, tables, *, main_source=False):
+    """Require declared snapshot lineage for executable joins and calculations.
+
+    Native schema history is not a snapshot field requirement. Only exact
+    local identities, explicit column captions, and qualified physical maps
+    may resolve references; unresolved/ambiguous dependencies fail closed.
+    """
+    local_names = {alias: {c['name'] for c in value['columns']}
+                   for alias, value in fields.items()}
+    owners = {}
+    for table in tables:
+        for column in table.get('columns', []) + fields[table['name']]['columns']:
+            owners.setdefault(column['name'], set()).add(table['name'])
+    calculated, parameters, captions = set(), set(), {}
+    for column in datasource_elem:
+        if _extract_context_tag(column) != 'column':
+            continue
+        parts = _relation_ref_parts(column.get('name', ''))
+        if len(parts) != 1:
+            continue
+        name = parts[0]
+        if any(_extract_context_tag(e) == 'calculation' for e in column):
+            calculated.add(name)
+        if column.get('param-domain-type') is not None:
+            parameters.add(name)
+        if column.get('caption'):
+            captions.setdefault(column.get('caption'), set()).add(name)
+    for container in _active_extract_elements(datasource_elem):
+        if _extract_context_tag(container) == 'parameters':
+            parameters.update(e.get('name', '').strip('[]') for e in container
+                              if _extract_context_tag(e) == 'parameter')
+
+    def fail(kind, reference, item):
+        context = 'main source' if main_source else 'join'
+        raise ExtractionError(
+            f'Packaged Hyper {context} {kind} field has no unambiguous declared '
+            + ('source' if main_source else 'extract') + ' lineage: '
+            + reference, item=item, source='datasource_extractor')
+
+    def require(parts, kind, item):
+        if (kind == 'calculation' and len(parts) == 2
+                and parts[0] == 'Parameters' and parts[0] not in fields):
+            return  # explicit Tableau parameter scope, not a physical table
+        alias = None
+        if len(parts) == 2:
+            if parts[0] in fields:
+                alias = parts[0]
+            elif parts[0] not in (datasource_elem.get('name'), datasource_elem.get('caption')):
+                fail(kind, '.'.join(parts), item)
+        elif len(parts) != 1:
+            fail(kind, '.'.join(parts), item)
+        name = parts[-1]
+        if name not in owners and name in captions:
+            if len(captions[name]) != 1:
+                fail(kind, '.'.join(parts), item)
+            name = next(iter(captions[name]))
+        if alias is None and name in calculated | parameters and name not in owners:
+            return
+        candidates = owners.get(name, set())
+        if alias is not None:
+            candidates = candidates & {alias}
+            if not candidates:
+                # A physical reference must be explicitly qualified and present
+                # in this alias's declared extract map, never matched by name.
+                name = fields[alias]['mapping'].get(name)
+                candidates = {alias} if name is not None else set()
+        if len(candidates) != 1:
+            fail(kind, '.'.join(parts), item)
+        owner = next(iter(candidates))
+        if name not in local_names[owner]:
+            fail(kind, '.'.join(parts), f'{owner}.{name}')
+
+    def predicates(node):
+        if isinstance(node, dict):
+            if node.get('reference') and node.get('column'):
+                parts = ((node['table'], node['column']) if node.get('table')
+                         else (node['column'],))
+                require(parts, 'relationship', node['reference'])
+            elif isinstance(node.get('expression'), str):
+                for parts in _extract_formula_references(node['expression']):
+                    require(parts, 'relationship', node['expression'])
+            for value in node.values():
+                predicates(value)
+        elif isinstance(node, list):
+            for value in node:
+                predicates(value)
+
+    predicates(extract_relation_metadata(datasource_elem))
+    for calculation in extract_calculations(datasource_elem):
+        for parts in _extract_formula_references(calculation.get('formula', '')):
+            require(parts, 'calculation', calculation.get('name', ''))
+
+
+def _physical_extract_join_fields(datasource_elem, connection, physical_leaves, tables):
+    """Validate complete per-alias field lineage from the enabled extract."""
+    return _declared_hyper_relation_fields(
+        datasource_elem, connection, physical_leaves, tables)
+
+
+def _declared_hyper_relation_fields(datasource_elem, connection, physical_leaves,
+                                    tables, *, main_source=False):
+    """Read fields only from a proven relation's owning source scope.
+
+    Source metadata explicitly declares alias, physical/local names and types.
+    Main sources may instead declare physical columns on their relation leaves.
+    Global logical, group and table-object declarations cannot add source fields.
+    """
+    tag = _extract_context_tag
+
+    def children(elem, name):
+        return [e for e in elem if tag(e) == name]
+
+    def identifier(value):
+        match = re.fullmatch(r'\[((?:[^\]]|\]\])*)\]', value)
+        return match.group(1).replace(']]', ']') if match else None
+
+    source_label = 'source' if main_source else 'extract'
+
+    def fail(message, alias=None) -> NoReturn:
+        context = 'main-source' if main_source else 'join'
+        raise ExtractionError(
+            f'Packaged Hyper {context} field mapping is incomplete or ambiguous: ' + message,
+            item=alias or datasource_elem.get('name', ''),
+            source='datasource_extractor')
+
+    aliases = [e.get('name') for e in physical_leaves]
+    fields = {alias: {'columns': [], 'mapping': {}} for alias in aliases}
+    local_names = {alias: set() for alias in aliases}
+    definitions = {}
+    calculated = set()
+    for column in children(datasource_elem, 'column'):
+        name = identifier(column.get('name', ''))
+        if not name:
+            continue
+        definitions.setdefault(name, []).append(column)
+        if children(column, 'calculation'):
+            calculated.add(name)
+    existing = {t['name']: {c.get('name'): c for c in t.get('columns', [])}
+                for t in tables}
+    records_nodes = children(connection, 'metadata-records')
+    if len(records_nodes) > 1 or (not main_source and len(records_nodes) != 1):
+        fail(f'one declared {source_label} metadata-records scope is required')
+    records = []
+    for record in records_nodes[0] if records_nodes else ():
+        if tag(record) != 'metadata-record' or record.get('class') != 'column':
+            continue
+
+        def text(key, required=True):
+            nodes = children(record, key)
+            if len(nodes) > 1 or (required and len(nodes) != 1):
+                fail(f'missing or repeated {source_label} column ' + key)
+            return (nodes[0].text or '').strip() if nodes else ''
+
+        local, dtype = text('local-name'), text('local-type')
+        if _is_tableau_pseudo_field(local, dtype):
+            continue
+        records.append({
+            'alias': identifier(text('parent-name')), 'remote': text('remote-name'),
+            'local': identifier(local), 'datatype': dtype,
+            'ordinal': text('ordinal', False), 'nullable': text('contains-null', False),
+        })
+    if main_source and not records_nodes:
+        # Relation-local physical declarations are also proof. A global
+        # datasource <column> is never a fallback for missing source metadata.
+        declared_maps = {}
+        for cols in children(connection, 'cols'):
+            for entry in cols:
+                if tag(entry) is None:
+                    continue
+                pair = _hyper_table_parts(entry.get('value', ''))
+                local = identifier(entry.get('key', ''))
+                if (tag(entry) != 'map' or pair is None or pair[0] not in aliases
+                        or not local or pair in declared_maps):
+                    fail('main source rename lacks an unambiguous physical declaration')
+                declared_maps[pair] = local
+        for physical in physical_leaves:
+            alias = physical.get('name')
+            columns_nodes = children(physical, 'columns')
+            if len(columns_nodes) != 1:
+                fail('no declared source metadata or sole physical leaf column scope', alias)
+            for column in columns_nodes[0]:
+                if tag(column) is None:
+                    continue
+                remote, dtype = column.get('name', ''), column.get('datatype', '')
+                if _is_tableau_pseudo_field(remote, dtype):
+                    continue
+                if tag(column) != 'column':
+                    fail('unknown physical leaf column declaration', alias)
+                remote = _reverse_tableau_bracket_escape(remote)
+                records.append({
+                    'alias': alias, 'remote': remote,
+                    'local': declared_maps.get((alias, remote), remote),
+                    'datatype': dtype, 'ordinal': column.get('ordinal', ''),
+                    'nullable': column.get('nullable', ''),
+                })
+    for record in records:
+        alias, remote, local, dtype = (
+            record['alias'], record['remote'], record['local'], record['datatype'])
+        if alias not in aliases:
+            fail(f'{source_label} column parent is not a declared relation alias')
+        if (not remote or not local
+                or dtype not in ('string', 'integer', 'real', 'boolean', 'date', 'datetime', 'spatial')):
+            fail(f'{source_label} columns require explicit physical/local names and a supported type', alias)
+        mapping = fields[alias]['mapping']
+        if remote in mapping or local in local_names[alias]:
+            fail(f'repeated physical or logical {source_label} column', alias)
+        mapping[remote] = local
+        local_names[alias].add(local)
+        presentation = existing[alias].get(local, {})
+        column = {key: presentation[key] for key in (
+            'caption', 'hidden', 'default_format', 'description',
+            'semantic_role', 'default_aggregation', 'type') if key in presentation}
+        # Keep logical presentation, but not native types/ordinals/nullability.
+        column.update(name=local, remote_name=remote, datatype=dtype,
+                      ordinal=len(fields[alias]['columns']), nullable=True)
+        declarations = definitions.get(local, [])
+        roles = {e.get('role') for e in declarations if e.get('role')}
+        if len(roles) > 1:
+            fail(f'conflicting declared roles for {source_label} column ' + local, alias)
+        column['role'] = next(iter(roles)) if roles else (
+            'measure' if dtype in ('integer', 'real') else 'dimension')
+        ordinal, nullable = record['ordinal'], record['nullable']
+        if ordinal:
+            try:
+                column['ordinal'] = int(ordinal)
+            except ValueError:
+                fail(f'invalid declared {source_label} column ordinal', alias)
+        if nullable:
+            if nullable.lower() not in ('true', 'false'):
+                fail(f'invalid declared {source_label} column nullability', alias)
+            column['nullable'] = nullable.lower() == 'true'
+        fields[alias]['columns'].append(column)
+
+    cols = children(connection, 'cols')
+    if len(cols) > 1:
+        fail(f'multiple {source_label} rename scopes')
+    if cols:
+        seen_remote, seen_local = set(), set()
+        for entry in cols[0]:
+            if tag(entry) is None:
+                continue
+            pair, local = _hyper_table_parts(entry.get('value', '')), identifier(entry.get('key', ''))
+            if tag(entry) != 'map' or pair is None or pair[0] not in aliases or not local:
+                fail(f'{source_label} rename lacks an exact alias/physical/local declaration')
+            alias, remote = pair
+            if ((alias, remote) in seen_remote or (alias, local) in seen_local
+                    or fields[alias]['mapping'].get(remote) != local):
+                fail(f'{source_label} renames conflict with declared column metadata', alias)
+            seen_remote.add((alias, remote))
+            seen_local.add((alias, local))
+    for physical in physical_leaves:
+        alias = physical.get('name')
+        if not fields[alias]['columns']:
+            fail(f'no declared {source_label} column lineage for relation', alias)
+        columns_nodes = children(physical, 'columns')
+        if len(columns_nodes) > 1:
+            fail(f'multiple {source_label} leaf column scopes', alias)
+        if columns_nodes:
+            seen = set()
+            types = {c['remote_name']: c['datatype'] for c in fields[alias]['columns']}
+            for column in columns_nodes[0]:
+                if tag(column) is None:
+                    continue
+                if _is_tableau_pseudo_field(
+                        column.get('name', ''), column.get('datatype', '')):
+                    continue
+                remote = _reverse_tableau_bracket_escape(column.get('name', ''))
+                if (tag(column) != 'column' or remote in seen or remote not in types
+                        or column.get('datatype') != types[remote]):
+                    fail(f'{source_label} leaf columns conflict with declared physical fields/types', alias)
+                seen.add(remote)
+            if seen and seen != set(types):
+                fail(f'{source_label} leaf columns do not cover declared physical fields', alias)
+    for table in tables:
+        alias = table['name']
+        names = [c.get('name') for c in table.get('columns', [])]
+        if len(names) != len(set(names)):
+            fail('repeated native/model column declaration', alias)
+        # An enabled snapshot may intentionally contain only the fields used
+        # by the workbook, while the native connection retains an older/full
+        # schema. Do not import that history as nonexistent source columns.
+        fields[alias]['excluded_native_columns'] = sorted(
+            set(names) - local_names[alias] - calculated, key=str)
+    if not main_source:
+        _validate_extract_join_references(datasource_elem, fields, tables)
+    return fields
+
+
+def _bind_main_hyper_relations(datasource_elem, tables, twbx_path, members):
+    """Bind main-source origins and corroborating object references, fail closed.
+
+    Named references resolve only within the sole main connection. Object
+    properties cannot originate a binding, and every declaration of an alias
+    must corroborate the same physical source and connection reference.
+    """
+    tag = _extract_context_tag
+    active = list(_active_extract_elements(datasource_elem))
+    parents = {child: parent for parent in active for child in parent}
+    roots = [e for e in datasource_elem if tag(e) == 'connection']
+    if len(roots) != 1:
+        return
+    root = roots[0]
+    source_nodes = set(_active_extract_elements(root))
+    named = {}
+    for elem in source_nodes:
+        if tag(elem) != 'named-connection':
+            continue
+        parent = parents.get(elem)
+        if not (parent is root or (
+                parent is not None and tag(parent) == 'named-connections'
+                and parents.get(parent) is root)):
+            return
+        named.setdefault(elem.get('name', ''), []).append(elem)
+
+    def named_connection(ref):
+        candidates = named.get(ref, []) if ref else []
+        if len(candidates) != 1:
+            return None
+        connections = [e for e in candidates[0] if tag(e) == 'connection']
+        return connections[0] if len(connections) == 1 else None
+
+    def origin(relation):
+        parent = parents.get(relation)
+        while parent is not None and tag(parent) == 'relation':
+            parent = parents.get(parent)
+        if parent is None or tag(parent) != 'connection':
+            return None
+        ref = relation.get('connection', '')
+        if parent is root and root.get('class') == 'federated':
+            connection = named_connection(ref)
+        else:
+            connection = parent
+            if parent is root:
+                owner_ref = root.get('name', '')
+            else:
+                owner = parents.get(parent)
+                if owner is None or tag(owner) != 'named-connection':
+                    return None
+                owner_ref = owner.get('name', '')
+                if named_connection(owner_ref) is not parent:
+                    return None
+            if ref and ref != owner_ref:
+                return None
+        if connection is None:
+            return None
+        identity = _hyper_relation_identity(connection, relation, twbx_path, members)
+        return (identity, connection, ref, parent) if identity is not None else None
+
+    def object_reference(relation):
+        parent = parents.get(relation)
+        while parent is not None and tag(parent) == 'relation':
+            parent = parents.get(parent)
+        if (parent is None or tag(parent) != 'properties'
+                or parent.get('context', '') != ''):
+            return False
+        for expected in ('object', 'objects', 'object-graph'):
+            parent = parents.get(parent)
+            if parent is None or tag(parent) != expected:
+                return False
+        return parents.get(parent) is datasource_elem
+
+    declarations = {}
+    for relation in active:
+        if tag(relation) == 'relation' and relation.get('type') == 'table':
+            declarations.setdefault(relation.get('name', ''), []).append(relation)
+    pending = []
+    for table in tables:
+        candidates = declarations.get(table.get('name', ''), [])
+        sources = [e for e in candidates if e in source_nodes]
+        origins = [origin(e) for e in sources]
+        if not origins or origins[0] is None:
+            continue
+        identity, connection, ref, scope = origins[0]
+        if any(candidate != origins[0] for candidate in origins):
+            continue
+        if not any(
+                ('source_table' not in table
+                 or table['source_table'] == e.get('table', '').strip('[]'))
+                and ('connection' not in table
+                     or table['connection'] == e.get('connection', ''))
+                for e in candidates):
+            continue  # deduplication selected an inactive/undeclared source
+        parts = identity['schema'], identity['table']
+        if (any(any(tag(e) == 'relation' for e in relation)
+                or (relation not in source_nodes and not (
+                    object_reference(relation)
+                    and _hyper_table_parts(relation.get('table', '')) == parts
+                    and relation.get('connection', '') in ('', ref)))
+                for relation in candidates)
+                or table.get('hyper_identity') not in (None, identity)):
+            continue
+        pending.append((table, identity, scope, sources[0]))
+    if not pending or len(pending) != len(tables):
+        return  # no partial schema/routing rewrite across ambiguous source aliases
+    scopes = {}
+    for table, identity, scope, relation in pending:
+        scopes.setdefault(scope, []).append((table, relation))
+    fields = {}
+    for scope, entries in scopes.items():
+        fields.update(_declared_hyper_relation_fields(
+            datasource_elem, scope, [relation for _, relation in entries],
+            [table for table, _ in entries], main_source=True))
+    _validate_extract_join_references(datasource_elem, fields, tables, main_source=True)
+    physical_types = {}
+    for table, identity, _, _ in pending:
+        for column in fields[table['name']]['columns']:
+            key = (identity['archive_member'], identity['schema'], identity['table'],
+                   column['remote_name'])
+            if key in physical_types and physical_types[key] != column['datatype']:
+                raise ExtractionError(
+                    'Packaged main Hyper aliases declare conflicting types for the same physical field',
+                    item=f"{table['name']}.{column['remote_name']}", source='datasource_extractor')
+            physical_types[key] = column['datatype']
+    # Commit only the schema explicitly declared by each source connection.
+    # Preserve global logical/group/pseudo declarations as evidence, not data.
+    for table, identity, scope, _ in pending:
+        alias = table['name']
+        excluded = fields[alias]['excluded_native_columns']
+        table['hyper_extract_metadata'] = {
+            'binding': 'declared_main_hyper_source',
+            'field_mapping_validation': 'exact_declared_main_source_metadata',
+            'catalog_validation': 'required_at_export',
+            'source_metadata_scope': ('main_connection' if scope is root
+                                      else 'named_hyper_connection'),
+            'native_columns': table.get('columns', []),
+            'native_cols_physical_map': dict(table.get('cols_physical_map') or {}),
+            'excluded_nonphysical_columns': excluded,
+            'excluded_nonphysical_columns_reason': 'not_declared_in_main_hyper_source',
+            'required_field_validation': 'exact_declared_source_join_and_calculation_lineage',
+        }
+        table['hyper_identity'] = dict(identity)
+        table['columns'] = fields[alias]['columns']
+        table['cols_physical_map'] = fields[alias]['mapping']
+        if excluded:
+            logger.warning(
+                'Packaged main Hyper source for %s excludes %d datasource-only '
+                'logical/group/pseudo columns without physical declarations (sample: %s); '
+                'original metadata is retained and no source columns are fabricated',
+                alias, len(excluded), ', '.join(str(name) for name in excluded[:5]))
+
+
+def _bind_physical_extract_join(datasource_elem, tables, twbx_path, members):
+    """Retain a declared per-table Hyper join without materializing its object.
+
+    This bounded case requires one enabled extract, one direct Hyper connection,
+    and a single object with both contexts repeating the source/extract trees.
+    Ordered join topology and exact aliases pair leaves; all repeated table and
+    connection declarations must agree. Reusable physical tables are allowed,
+    but repeated/conflicting aliases and independent relations are not.
+    """
+    tag = _extract_context_tag
+
+    def children(elem, name):
+        return [e for e in elem if tag(e) == name]
+
+    active = list(_active_extract_elements(datasource_elem))
+    if any('...' in (tag(e) or '') for e in active):
+        return False  # unknown feature policy; known inactive branches are skipped
+    extracts = [e for e in active if tag(e) == 'extract']
+    if (len(extracts) != 1 or extracts[0] not in list(datasource_elem)
+            or extracts[0].get('enabled', '').lower() != 'true'):
+        return False
+    extract = extracts[0]
+    connections = [e for e in _active_extract_elements(extract) if tag(e) == 'connection']
+    if len(connections) != 1 or connections[0] not in list(extract):
+        return False
+    connection = connections[0]
+    if connection.get('class') != 'hyper':
+        return False
+    roots, graphs = children(datasource_elem, 'connection'), children(datasource_elem, 'object-graph')
+    if len(roots) != 1 or len(graphs) != 1:
+        return False
+    root = roots[0]
+    objects_nodes = children(graphs[0], 'objects')
+    if len(objects_nodes) != 1:
+        return False
+    objects = children(objects_nodes[0], 'object')
+    if len(objects) != 1 or not objects[0].get('id'):
+        return False
+    properties = children(objects[0], 'properties')
+    if (len(properties) != 2
+            or any('context' not in p.attrib for p in properties)
+            or sorted(p.get('context', '') for p in properties) != ['', 'extract']):
+        return False
+    native_props = next(p for p in properties if p.get('context') == '')
+    extract_props = next(p for p in properties if p.get('context') == 'extract')
+    relation_roots = [children(e, 'relation')
+                      for e in (root, connection, native_props, extract_props)]
+    if any(len(relations) != 1 or relations[0].get('type') != 'join'
+           for relations in relation_roots):
+        return False
+
+    visited = set()
+
+    def tree(relation, leaves):
+        visited.add(relation)
+        nested = children(relation, 'relation')
+        kind = relation.get('type')
+        if kind == 'table':
+            if nested or not relation.get('name') or not relation.get('table'):
+                return None
+            leaves.append(relation)
+            return ('table', relation.get('name'), relation.get('table'),
+                    relation.get('connection', ''))
+        if kind != 'join' or len(nested) != 2 or not relation.get('join'):
+            return None
+        branches = [tree(e, leaves) for e in nested]
+        if any(branch is None for branch in branches):
+            return None
+        return ('join', relation.get('join'), *branches)
+
+    signatures, leaf_sets = [], []
+    for relations in relation_roots:
+        leaves = []
+        signatures.append(tree(relations[0], leaves))
+        leaf_sets.append(leaves)
+    if (any(s is None for s in signatures) or signatures[0] != signatures[2]
+            or signatures[1] != signatures[3]
+            or any(tag(e) == 'relation' and e not in visited for e in active)):
+        return False
+
+    def topology(signature):
+        if signature[0] == 'table':
+            return ('table', signature[1])
+        return ('join', signature[1], topology(signature[2]), topology(signature[3]))
+
+    if topology(signatures[0]) != topology(signatures[1]):
+        return False
+    native_leaves, physical_leaves = leaf_sets[:2]
+    aliases = [e.get('name') for e in native_leaves]
+    if (len(set(aliases)) != len(aliases) or len(tables) != len(aliases)
+            or {t.get('name') for t in tables} != set(aliases)):
+        return False
+    parents = {child: parent for parent in _active_extract_elements(root) for child in parent}
+    named = [e for e in _active_extract_elements(root) if tag(e) == 'named-connection']
+    identities = {}
+    for native, physical in zip(native_leaves, physical_leaves):
+        ref = native.get('connection', '')
+        candidates = [e for e in named if ref and e.get('name') == ref]
+        if len(candidates) != 1:
+            return False
+        owner = parents.get(candidates[0])
+        if not (owner is root or (
+                owner is not None and tag(owner) == 'named-connections'
+                and parents.get(owner) is root)):
+            return False
+        sources = children(candidates[0], 'connection')
+        if (len(sources) != 1 or not sources[0].get('class')
+                or physical.get('connection', '') not in ('', connection.get('name', ''))):
+            return False
+        identity = _hyper_relation_identity(connection, physical, twbx_path, members)
+        if identity is None:
+            return False
+        identities[native.get('name')] = identity
+    if any(t.get('hyper_identity') not in (None, identities[t['name']]) for t in tables):
+        return False
+    fields = _physical_extract_join_fields(
+        datasource_elem, connection, physical_leaves, tables)
+    physical_types = {}
+    for alias, declared in fields.items():
+        identity = identities[alias]
+        for column in declared['columns']:
+            key = (identity['schema'], identity['table'], column['remote_name'])
+            if key in physical_types and physical_types[key] != column['datatype']:
+                raise ExtractionError(
+                    'Packaged Hyper join aliases declare conflicting types for the same physical field',
+                    item=f"{alias}.{column['remote_name']}", source='datasource_extractor')
+            physical_types[key] = column['datatype']
+    # Commit only after every alias has complete extract field proof. Preserve
+    # native topology/connections and the prior field metadata as provenance;
+    # only declared extract columns and renames become the pending source.
+    for table in tables:
+        alias = table['name']
+        table['hyper_extract_metadata'] = {
+            'binding': 'declared_physical_extract_join',
+            'object_id': objects[0].get('id'),
+            'field_mapping_validation': 'exact_declared_extract_metadata',
+            'catalog_validation': 'required_at_export',
+            'native_columns': table.get('columns', []),
+            'native_cols_physical_map': dict(table.get('cols_physical_map') or {}),
+            'required_field_validation': 'exact_declared_join_and_calculation_lineage',
+            'excluded_native_columns': fields[alias]['excluded_native_columns'],
+            'excluded_native_columns_reason': 'not_declared_in_active_extract_snapshot',
+        }
+        table['hyper_identity'] = dict(identities[alias])
+        table['columns'] = fields[alias]['columns']
+        table['cols_physical_map'] = fields[alias]['mapping']
+        excluded = fields[alias]['excluded_native_columns']
+        if excluded:
+            logger.warning(
+                'Packaged Hyper snapshot for %s excludes %d native-only schema columns '
+                'not declared in the extract (sample: %s); native metadata is retained '
+                'and required join/calculation lineage was validated',
+                alias, len(excluded), ', '.join(str(name) for name in excluded[:5]))
+    return True
 
 
 def _bind_object_context_extract(datasource_elem, tables, twbx_path, members):
@@ -831,6 +1554,10 @@ def _ensure_relationship_columns(datasource):
             table_obj, col_names = table_map[tname]
             if col in col_names:
                 continue
+            if _has_declared_hyper_fields(table_obj):
+                raise ExtractionError(
+                    'Packaged Hyper join relationship column has no exact declared extract mapping',
+                    item=f'{tname}.{col}', source='datasource_extractor')
             # Check with table suffix (Salesforce pattern: 'Id' → 'Id (TableName)')
             suffixed = f"{col} ({tname})"
             if suffixed in col_names:
@@ -876,12 +1603,18 @@ def _ensure_calc_referenced_columns(datasource):
 
     # Collect all column names referenced in calc formulas
     referenced_cols = set()
+    executable_refs = set()
+    has_declared_fields = any(_has_declared_hyper_fields(t) for t in tables)
     for calc in calcs:
         formula = calc.get('formula', '')
         if formula:
             referenced_cols.update(re.findall(r'\[([^\]]+)\]', formula))
+            if has_declared_fields:
+                executable_refs.update(parts[-1] for parts in _extract_formula_references(formula))
 
     # Add missing columns to their parent table
+    calculated_names = {
+        calc['name'].strip('[]') for calc in calcs if calc.get('name')}
     for col_name in referenced_cols:
         parent_table = col_map.get(col_name)
         if not parent_table or parent_table not in table_lookup:
@@ -889,6 +1622,18 @@ def _ensure_calc_referenced_columns(datasource):
         table_obj, col_names = table_lookup[parent_table]
         if col_name in col_names:
             continue
+        if _has_declared_hyper_fields(table_obj):
+            if col_name not in executable_refs:
+                continue  # comments, literals and qualified scope names are not fields
+            local = (datasource.get('hyper_extract_metadata') or {}).get(
+                'field_local_name_map', {}).get(col_name)
+            if local in col_names:
+                continue  # an explicit snapshot caption needs no new source column
+            if col_name in calculated_names:
+                continue  # a declared calculation is not a physical source field
+            raise ExtractionError(
+                'Packaged Hyper join calculation column has no exact declared extract mapping',
+                item=f'{parent_table}.{col_name}', source='datasource_extractor')
         # Check with table suffix
         suffixed = f"{col_name} ({parent_table})"
         if suffixed in col_names:

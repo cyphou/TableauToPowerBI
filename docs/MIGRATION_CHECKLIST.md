@@ -36,7 +36,9 @@ for those outputs. Keep client source files and generated evidence outside Git.
 ## 2. Data Source Connections
 
 - [ ] Go to **Transform Data** → verify each data source connection
-- [ ] For native Import, configure accessible original file paths and the declared CSV separator; migration does not extract or copy native datasets, including Excel/CSV packaged in a TWBX
+- [ ] For an Excel workbook explicitly packaged in a TWBX, verify the unchanged copy in the generated `Data/` folder and its absolute Power Query path; do not substitute a similarly named loose file
+- [ ] For other native Import sources, configure accessible original file paths and the declared CSV separator; migration does not export native rows or copy loose/native non-Excel datasets
+- [ ] If the project moves, update the copied Excel's absolute source path; keep source-bearing output and downloadable ZIPs out of repositories
 - [ ] For Hyper Import, check the matching exported CSV/Parquet and its source identity; above 10 MiB uncompressed uses native Parquet automatically
 - [ ] Treat missing declared fields and unsupported native shapefiles as source-configuration errors; do not hide them with empty tables or guessed files
 - [ ] Re-enter credentials for each data source (OAuth, SQL auth, etc.)

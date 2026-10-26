@@ -207,7 +207,7 @@ A typical PBIP migration produces:
 | `<Report>.pbip` | Power BI project entry file |
 | `<Report>.Report/` | PBIR report pages, visuals, bookmarks, report metadata |
 | `<Report>.SemanticModel/` | TMDL tables, measures, relationships, roles, cultures, M partitions |
-| `Data/` | Staged Hyper CSV/Parquet data when applicable; non-Hyper PBIP Import keeps native source bindings instead of copying datasets |
+| `Data/` | Hyper CSV/Parquet exports and unchanged copies of explicitly packaged Excel workbooks; copied Excel sources use absolute paths. Other native sources retain original bindings |
 | `openability_report.json` | Static check that the PBIP structure, JSON, TMDL, DAX, and M are valid |
 | `migration_metadata.json` | Source, output, and run metadata |
 | `lineage_map.json` | Source-to-target lineage evidence |
@@ -215,6 +215,10 @@ A typical PBIP migration produces:
 | Quality HTML/JSON reports | Human-readable and machine-readable migration evidence |
 
 Do not edit generated files as the long-term fix. If the output is wrong, fix the extractor or generator and rerun the migration.
+
+The unchanged packaged-Excel copy applies to trusted local per-workbook batch
+generation, not uploaded jobs or shared-model/add-to-model/remove-from-model
+workflows. Fabric keeps its separate staging contract.
 
 ## 5. Understanding Validation States
 
@@ -304,7 +308,7 @@ This table summarizes the practical migration target for common Tableau objects.
 | Dashboard | PBIR report page | Dashboard objects become page visuals, text, images, slicers, or controls | Check page size and layout after generation |
 | Worksheet | PBIR visual container | Mark type and shelves map to a Power BI visual type | Some Tableau sheets are intentionally tables, cards, or treemaps based on shelf structure |
 | Story | Bookmark set | Story points become Power BI bookmarks | Review navigation order and bookmark state |
-| Datasource | Power Query M partition or Fabric source | Non-Hyper PBIP Import migrates connection/schema/M only; Power BI loads rows at refresh. Fabric keeps its separate staging contract | Credentials and original file access must be configured in Power BI/Fabric |
+| Datasource | Power Query M partition or Fabric source | Non-Hyper PBIP Import generates connection/schema/M without row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Power BI loads rows at refresh. Fabric keeps its separate staging contract | Configure credentials/file access; update absolute copied-Excel paths when moving output and keep source-bearing output out of repositories |
 | Tableau extract `.hyper` | CSV/Parquet staging plus M `Csv.Document` / `Parquet.Document` | Hyper data are exported to `Data/` and referenced by Import partitions; PBIP auto uses Parquet strictly above 10 MiB, CSV otherwise | Native Parquet requires optional `tableauhyperapi`; row caps and header samples are limited-data evidence |
 | Table | TMDL table | Columns, partitions, and relationships are generated | Review relationship direction and cardinality |
 | Column | TMDL column | Data type, hidden state, data category, sort metadata, and descriptions are preserved where possible | Special characters are quoted in M and TMDL |

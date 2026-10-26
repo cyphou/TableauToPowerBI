@@ -119,12 +119,16 @@ checks owned refresh completion separately from aggregate model rows.
 An observed successful refresh lifecycle and complete table checks are required
 for a *data verified* screenshot; rows alone are not sufficient, and a valid
 empty table is not itself an error. For PBIP, Hyper data are exported to staged CSV/Parquet
-files and connected to Import partitions. Non-Hyper Import migrates the native
-datasource connection, schema and M only: native Excel/CSV and other dataset
-files are not searched for and copied into `Data/`. Configure their original
-file paths, credentials and any gateway before asking Power BI to refresh.
+files and connected to Import partitions. Non-Hyper Import generates the native
+datasource connection, schema and M without row export. An Excel workbook
+explicitly packaged in a TWBX is copied unchanged into `Data/` and bound by its
+absolute path. Loose native files and packaged non-Excel files are not copied.
+Configure source paths, credentials and any gateway before asking Power BI to refresh.
 Loose-workbook relative bindings resolve against the original workbook folder;
-packaged native files are not extracted or rebound to guessed paths.
+other packaged native files are not copied or rebound to guessed paths.
+Moving the project requires updating the copied Excel's absolute path, and
+service refresh needs access to it. It contains all sheets and workbook
+metadata: keep source-bearing output and downloadable ZIPs out of repositories.
 Initial calculated-object/no-data banners are expected for an unprocessed
 metadata-only model, not proof of either success or failure. After a successful
 refresh, save in Desktop to retain its local cache and verify by reopening.

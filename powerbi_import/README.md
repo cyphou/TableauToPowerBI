@@ -40,10 +40,16 @@ Converts extracted data into TMDL (Tabular Model Definition Language) files:
   Import; supported native sources without Hyper use DirectQuery. Users can
   always force Import with `--mode import`. See the
   [mode/export decision diagram](../docs/ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
-- Non-Hyper Import generates the connection, schema and M only, using original
-  native file bindings instead of copying datasets. Power BI loads those rows
-  at refresh. Hyper remains the exception with staged CSV/Parquet data;
-  Fabric retains its separate staging contract.
+- Non-Hyper Import generates the connection, schema and M without native row
+  export. Orchestration copies an explicitly packaged Excel workbook unchanged
+  into `Data/` and supplies its absolute path before generation; loose native
+  files and packaged non-Excel files retain original bindings without copying.
+  This exception is in trusted local per-workbook batch orchestration, not
+  uploaded jobs or shared-model/add-to-model/remove-from-model workflows.
+  Power BI loads native rows at refresh. Hyper requires complete CSV/Parquet
+  exports and exact Import bindings; capped/sample-only exports and unbound
+  required files block PBIP success. Static export/binding checks do not prove
+  native loading or saved state. Fabric retains its separate staging contract.
 - `database.tmdl` — compatibility
 - `model.tmdl` — culture, data source version
 - `relationships.tmdl` — relationships between tables

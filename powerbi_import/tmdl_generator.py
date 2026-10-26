@@ -1829,7 +1829,7 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
             table_literal = str(table_name).replace('"', '""')
             pending_error = (
                 'error Error.Record("Migration.HyperExportRequired", '
-                '"Packaged Hyper export has not been staged to a CSV", '
+                '"Packaged Hyper export has not been staged to CSV or Parquet", '
                 f'[Table = "{table_literal}", Identity = "{staged_identity}"])'
             )
             m_query_override = f'let\n    Source = {pending_error}\nin\n    Source'

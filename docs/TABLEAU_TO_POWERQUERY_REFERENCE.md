@@ -88,7 +88,10 @@ used. Refresh still requires a reachable server and credentials configured in
 Power BI. For native Excel/CSV Import from a loose workbook, relative file
 bindings resolve against the original workbook directory, without copying or
 reading native rows during migration. Absolute source bindings are preserved.
-Packaged native files are not extracted; configure an accessible original
+An Excel workbook explicitly packaged in a TWBX is copied unchanged into the
+generated `Data/` folder and bound by its absolute path; no native rows are
+parsed/exported. Moving output requires updating that path. Other packaged
+native files are not copied; configure an accessible original
 binding when necessary. `DataFolder` remains the binding for staged Hyper
 exports, not a replacement for native paths. Native CSV queries infer physical
 width instead of using the selected model-column count as a parsing limit.

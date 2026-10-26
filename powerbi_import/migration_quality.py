@@ -11,6 +11,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import csv
+import hashlib
+import ntpath
+import stat
 from pathlib import Path
 from urllib.parse import quote
 from dataclasses import dataclass, field
@@ -31,10 +35,11 @@ from powerbi_import.html_template import (
     stat_grid,
 )
 from powerbi_import.interface_diff import compare_report_interface
-from powerbi_import.openability import check_openability
+from powerbi_import.openability import check_openability, extract_m_partitions
 from powerbi_import.parity_registry import scan_project
 from powerbi_import.powerquery_diff import compare_report_tables
 from powerbi_import.quality_grades import color as grade_color
+from powerbi_import.security_validator import canonical_path_key, lexical_path_key
 from powerbi_import.semantic_execution_validator import SemanticExecutionValidator
 from powerbi_import.semantic_runtime import validate_semantic_execution
 from powerbi_import.semantic_fixtures import load_semantic_fixture
@@ -84,6 +89,7 @@ class MigrationQualityReport:
     desktop: Dict[str, Any] = field(default_factory=dict)
     fabric: Dict[str, Any] = field(default_factory=dict)
     fabric_evidence: Dict[str, Any] = field(default_factory=dict)
+    hyper_import: Dict[str, Any] = field(default_factory=dict)
     semantic_context: Dict[str, Any] = field(default_factory=dict)
     m_emitters: Dict[str, Any] = field(default_factory=dict)
     visual_mappings: Dict[str, Any] = field(default_factory=dict)
@@ -124,6 +130,7 @@ class MigrationQualityReport:
             "desktop": self.desktop,
             "fabric": self.fabric,
             "fabric_evidence": self.fabric_evidence,
+            "hyper_import": self.hyper_import,
             "semantic_context": self.semantic_context,
             "m_emitters": self.m_emitters,
             "visual_mappings": self.visual_mappings,
@@ -163,6 +170,73 @@ class MigrationQualityReport:
         html += self._render_obj(self.openability_confidence)
         html += self._raw_details(self.openability_confidence)
         html += section_close()
+        if self.hyper_import:
+            hyper_status = self.hyper_import.get("status", "unverified")
+            html += section_open(
+                "quality-hyper-import",
+                text("Hyper full Import evidence", "Preuves d’importation complète Hyper"),
+                "⇄",
+            )
+            html += data_table(
+                [text("Check", "Contrôle"), text("Evidence", "Preuve")],
+                [
+                    [text("Static status", "État statique"),
+                     badge(str(hyper_status),
+                           {"static_verified": "success", "failed": "fail"}.get(
+                               hyper_status, "gray"))],
+                    [text("Runtime", "Exécution"),
+                     badge(str(self.hyper_import.get("runtime_status", "not_run")),
+                           "gray")],
+                    [text("Full data parity", "Parité complète des données"),
+                     badge("not verified", "gray")],
+                    [text("Exports", "Exportations"),
+                     esc(str(len(self.hyper_import.get("exports", []) or [])))],
+                ],
+                detail=True,
+            )
+            export_rows = []
+            for item in self.hyper_import.get("exports", []) or []:
+                identity = item.get("identity") if isinstance(item, dict) else {}
+                identity = identity if isinstance(identity, dict) else {}
+                identity_label = ".".join(
+                    str(identity.get(key, "")) for key in ("schema", "table")
+                    if identity.get(key) is not None
+                ) or text("identity unavailable", "identité indisponible")
+                item_status = str(item.get("status", "unverified"))
+                export_rows.append([
+                    esc(str(item.get("filename") or "—")),
+                    esc(str(item.get("format") or "—")),
+                    esc(identity_label),
+                    esc(f"{item.get('row_count', '—')} / "
+                        f"{item.get('total_rows', '—')}"),
+                    esc(str(len(item.get("bindings", []) or []))),
+                    badge(item_status,
+                          {"static_verified": "success", "failed": "fail"}.get(
+                              item_status, "gray")),
+                ])
+            if export_rows:
+                html += data_table(
+                    [text("File", "Fichier"), text("Format", "Format"),
+                     text("Physical identity", "Identité physique"),
+                     text("Rows / total", "Lignes / total"),
+                     text("Final bindings", "Liaisons finales"),
+                     text("Status", "État")],
+                    export_rows,
+                    table_id="quality-hyper-import-exports",
+                    sortable=True,
+                    searchable=True,
+                )
+            html += self._html_list(
+                self.hyper_import.get("diagnostics", []) or [],
+                text("No static Hyper Import blockers.",
+                     "Aucun blocage d’importation Hyper statique."),
+            )
+            html += "<p>" + ui(str(self.hyper_import.get(
+                "verification_scope",
+                "Static file and binding evidence only; runtime and full data parity are not verified.",
+            ))) + "</p>"
+            html += self._raw_details(self.hyper_import)
+            html += section_close()
         handoff = {
             "handoff_status": self.handoff_status,
             "strategy": self.strategy,
@@ -205,6 +279,7 @@ class MigrationQualityReport:
             "interface": self.interface,
             "openability": self.openability,
             "fabric": self.fabric,
+            "hyper_import": self.hyper_import,
             "strategy": self.strategy,
             "lineage": self.lineage,
         }
@@ -577,6 +652,7 @@ _FINDING_ACTIONS = {
     "tables_missing": ("repair", "Semantic / Wiring"),
     "hyper_manifest": ("repair", "Wiring / Orchestrator"),
     "hyper_sampling": ("decide", "Wiring / domain owner"),
+    "hyper_import": ("repair", "Wiring / Orchestrator"),
     "parameter_coverage": ("repair", "Semantic"),
     "semantic_static": ("repair", "Semantic / DAX"),
     "semantic_runtime": ("repair", "Semantic / DAX"),
@@ -947,27 +1023,25 @@ def _hyper_sampling_evidence(extracted: Dict[str, Any],
         for ds in extracted.get("datasources", []) or []
         for table in ds.get("tables", []) or []
     )
+    manifest_path = data_dir / "hyper_exports.json"
+    linked = _hyper_manifest_link(str(data_dir), str(manifest_path))
+    if linked:
+        # The project is untrusted input: a link here can point at a remote host.
+        if uses_hyper:
+            evidence["status"] = "invalid"
+            diagnostics.append(
+                f"{linked} must not be a link; full-data coverage is unverified.")
+        return evidence
     try:
-        with (data_dir / "hyper_exports.json").open(encoding="utf-8") as handle:
+        with manifest_path.open(encoding="utf-8") as handle:
             manifest = json.load(handle)
     except FileNotFoundError:
         # Direct quality callers may have artifacts but no source inventory.
-        def scan_error(exc: OSError) -> None:
-            diagnostics.append(
-                f"Cannot inspect Hyper artifacts ({type(exc).__name__}); "
-                "full-data coverage is unverified.")
-
-        if data_dir.is_dir() and not uses_hyper:
-            for _root, _dirs, filenames in os.walk(data_dir, onerror=scan_error):
-                _dirs.sort()
-                if any(
-                    name.lower().endswith(".hyper")
-                    or re.fullmatch(r"hyper_(?:staged_)?[0-9a-f]{64}\.(?:csv|parquet)",
-                                    name, re.IGNORECASE)
-                    for name in filenames
-                ):
-                    uses_hyper = True
-                    break
+        if not uses_hyper:
+            uses_hyper, scan_issues = _hyper_project_data_signals(str(data_dir))
+            diagnostics.extend(
+                f"{issue} Full-data coverage is unverified."
+                for issue in scan_issues)
         if uses_hyper:
             diagnostics.append(
                 f"Hyper export manifest {manifest_name} is missing; "
@@ -1045,6 +1119,2613 @@ def _hyper_sampling_evidence(extracted: Dict[str, Any],
     if diagnostics:
         evidence["status"] = "invalid"
     return evidence
+
+
+_HYPER_PACKAGED_IDENTITY_FIELDS = (
+    "workbook", "archive_member", "schema", "table",
+)
+_HYPER_LOCAL_IDENTITY_FIELDS = ("source_file", "schema", "table")
+_HYPER_MANIFEST = "Data/hyper_exports.json"
+_HYPER_EXPORT_FILE_RE = re.compile(
+    r"hyper_(?:staged_)?[0-9a-f]{64}\.(?:csv|parquet)$", re.IGNORECASE)
+_HYPER_TMDL_TABLE_RE = re.compile(
+    r"(?m)^table[ \t]+('(?:[^']|'')*'|[^\r\n]+?)[ \t]*$")
+_HYPER_ANNOTATION_RE = re.compile(
+    r"^[ \t]+annotation[ \t]+Migration_HyperIdentity[ \t]*="
+    r"[ \t]*(.*?)[ \t]*\r?$", re.MULTILINE)
+_HYPER_PARTITION_RE = re.compile(
+    r"^\tpartition[ \t]+(.+?)[ \t]*=[ \t]*(\w+)[ \t]*$")
+_HYPER_PARTITION_MODE_RE = re.compile(
+    r"^\t\tmode[ \t]*:[ \t]*(\S+)[ \t]*$")
+_HYPER_DATA_FOLDER_DECL_RE = re.compile(
+    r"^expression[ \t]+(?:'DataFolder'|DataFolder)[ \t]*=")
+_HYPER_DATA_FOLDER_LITERAL_RE = re.compile(
+    r'^expression[ \t]+(?:\'DataFolder\'|DataFolder)[ \t]*=[ \t]*'
+    r'("(?:[^"]|"")*")(?:[ \t]+meta\b.*)?[ \t]*$')
+
+
+def _hyper_identity_key(identity: Any) -> Optional[tuple[str, ...]]:
+    """Return the exact packaged identity key used by the migration binder.
+
+    Keep this local instead of importing ``migrate``: quality is also imported
+    by the orchestration module, and workbook captions or filenames must never
+    be used to reconstruct the physical archive identity.
+    """
+    if (not isinstance(identity, dict)
+            or set(identity) != set(_HYPER_PACKAGED_IDENTITY_FIELDS)):
+        return None
+    values: list[str] = []
+    for field_name in _HYPER_PACKAGED_IDENTITY_FIELDS:
+        value = identity.get(field_name)
+        if not isinstance(value, str) or not value:
+            return None
+        values.append(value)
+    return tuple(values)
+
+
+def _local_hyper_identity_key(identity: Any) -> Optional[tuple[str, ...]]:
+    """Return an explicit loose-file identity without inventing an archive member.
+
+    ``source_file`` is project metadata, so it is compared lexically and never
+    resolved through the filesystem.
+    """
+    if (not isinstance(identity, dict)
+            or set(identity) != set(_HYPER_LOCAL_IDENTITY_FIELDS)):
+        return None
+    source_file = identity.get("source_file")
+    schema = identity.get("schema")
+    table = identity.get("table")
+    if not isinstance(source_file, str) or not source_file:
+        return None
+    if not isinstance(schema, str) or not schema:
+        return None
+    if not isinstance(table, str) or not table:
+        return None
+    if "\x00" in source_file or not os.path.isabs(source_file):
+        return None
+    try:
+        normalized_source = lexical_path_key(source_file)
+    except (OSError, ValueError):
+        return None
+    return ("local", normalized_source, schema, table)
+
+
+def _hyper_binding_identity_key(identity: Any) -> Optional[tuple[str, ...]]:
+    """Return a namespaced packaged or explicitly declared local identity."""
+    packaged = _hyper_identity_key(identity)
+    if packaged is not None:
+        return ("packaged",) + packaged
+    return _local_hyper_identity_key(identity)
+
+
+def _hyper_identity_payload(identity: Any) -> Any:
+    """Return a stable, field-ordered identity payload for evidence JSON."""
+    if _hyper_identity_key(identity) is not None:
+        return {field: identity[field] for field in _HYPER_PACKAGED_IDENTITY_FIELDS}
+    if _local_hyper_identity_key(identity) is not None:
+        return {field: identity[field] for field in _HYPER_LOCAL_IDENTITY_FIELDS}
+    return identity
+
+
+def _hyper_identity_label(identity: Any) -> str:
+    if not isinstance(identity, dict):
+        return "identity unavailable"
+    schema, table = identity.get("schema"), identity.get("table")
+    if isinstance(schema, str) and isinstance(table, str):
+        return f"{schema}.{table}"
+    return "identity unavailable"
+
+
+@dataclass(frozen=True)
+class _HyperMToken:
+    """One small M lexical token; strings and comments stay distinguishable."""
+
+    kind: str
+    value: str
+    start: int = -1
+    end: int = -1
+
+
+class _HyperMParseError(ValueError):
+    """Raised when M structure cannot be proven by the static binding reader."""
+
+
+def _hyper_m_word(token: _HyperMToken, value: Optional[str] = None) -> bool:
+    """Match M keywords while allowing tokens hidden in an inactive branch."""
+    if token.kind not in {"word", "inactive"}:
+        return False
+    return value is None or token.value.casefold() == value.casefold()
+
+
+def _hyper_m_active_word(token: _HyperMToken, value: str) -> bool:
+    """Match an active M identifier, excluding tokens in constant dead branches."""
+    return token.kind == "word" and token.value.casefold() == value.casefold()
+
+
+def _tokenize_hyper_m(source: str) -> list[_HyperMToken]:
+    """Tokenize the small M surface used for Import file binding proofs.
+
+    Strings and quoted identifiers remain opaque tokens; line and nested block
+    comments are discarded so filenames mentioned only in comments cannot
+    authorize a partition.
+    """
+    tokens: list[_HyperMToken] = []
+    index, length = 0, len(source)
+    while index < length:
+        char = source[index]
+        if char.isspace():
+            index += 1
+            continue
+        if source.startswith("//", index):
+            newline = source.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if source.startswith("/*", index):
+            start = index
+            depth = 1
+            index += 2
+            while index < length and depth:
+                if source.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif source.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            if depth:
+                raise _HyperMParseError(
+                    f"unterminated block comment at character {start}")
+            continue
+        if source.startswith('#"', index):
+            start = index
+            index += 2
+            value = []
+            while index < length:
+                if source[index] == '"':
+                    if index + 1 < length and source[index + 1] == '"':
+                        value.append('"')
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                value.append(source[index])
+                index += 1
+            else:
+                raise _HyperMParseError(
+                    f"unterminated quoted identifier at character {start}")
+            tokens.append(_HyperMToken("qident", "".join(value), start, index))
+            continue
+        if char == '"':
+            start = index
+            index += 1
+            value = []
+            while index < length:
+                if source[index] == '"':
+                    if index + 1 < length and source[index + 1] == '"':
+                        value.append('"')
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                value.append(source[index])
+                index += 1
+            else:
+                raise _HyperMParseError(
+                    f"unterminated text literal at character {start}")
+            tokens.append(_HyperMToken("string", "".join(value), start, index))
+            continue
+        if char == "#" and index + 1 < length and (
+                source[index + 1].isalpha() or source[index + 1] == "_"):
+            start = index
+            index += 2
+            while index < length and (
+                    source[index].isalnum() or source[index] == "_"):
+                index += 1
+            tokens.append(_HyperMToken("word", source[start:index], start, index))
+            continue
+        if char.isalpha() or char == "_":
+            start = index
+            index += 1
+            while index < length and (
+                    source[index].isalnum() or source[index] == "_"):
+                index += 1
+            tokens.append(_HyperMToken("word", source[start:index], start, index))
+            continue
+        if char.isdigit():
+            start = index
+            index += 1
+            while index < length and (
+                    source[index].isalnum() or source[index] in "._"):
+                index += 1
+            tokens.append(_HyperMToken("number", source[start:index], start, index))
+            continue
+        tokens.append(_HyperMToken("symbol", char, index, index + 1))
+        index += 1
+    return tokens
+
+
+def _hyper_m_delimiters(tokens: list[_HyperMToken], stop: int) -> list[int]:
+    """Return the open-delimiter stack immediately before ``stop``."""
+    stack: list[int] = []
+    opening = {"(": ")", "[": "]", "{": "}"}
+    closing = {value: key for key, value in opening.items()}
+    for index, token in enumerate(tokens[:stop]):
+        if token.kind != "symbol":
+            continue
+        if token.value in opening:
+            stack.append(index)
+        elif token.value in closing:
+            if not stack or tokens[stack[-1]].value != closing[token.value]:
+                raise _HyperMParseError(
+                    f"unbalanced closing delimiter at token {index}")
+            stack.pop()
+    return stack
+
+
+def _hyper_m_conditional_bounds(tokens: list[_HyperMToken], start: int
+                                ) -> tuple[int, int]:
+    """Find a matching top-level ``then`` and ``else`` for one M if."""
+    stack = _hyper_m_delimiters(tokens, start)
+    base = list(stack)
+    nested_ifs = 0
+    then_index = -1
+    for index in range(start + 1, len(tokens)):
+        token = tokens[index]
+        if token.kind == "symbol":
+            if token.value in "([{":
+                stack.append(index)
+            elif token.value in ")]}":
+                if not stack or tokens[stack[-1]].value != {
+                    ")": "(", "]": "[", "}": "{",
+                }[token.value]:
+                    raise _HyperMParseError(
+                        f"unbalanced delimiter at token {index}")
+                stack.pop()
+            continue
+        if stack != base:
+            continue
+        if _hyper_m_word(token, "if"):
+            nested_ifs += 1
+        elif _hyper_m_word(token, "then"):
+            if then_index < 0:
+                then_index = index
+        elif _hyper_m_word(token, "else"):
+            if nested_ifs:
+                nested_ifs -= 1
+            elif then_index >= 0:
+                return then_index, index
+    raise _HyperMParseError(
+        f"conditional at token {start} has no matching then/else")
+
+
+def _hyper_m_else_end(tokens: list[_HyperMToken], else_index: int) -> int:
+    """Return a conservative end for an else expression at its delimiter level."""
+    base = _hyper_m_delimiters(tokens, else_index)
+    stack = list(base)
+    nested_lets = 0
+    nested_ifs = 0
+    opening = {"(": ")", "[": "]", "{": "}"}
+    closing = {value: key for key, value in opening.items()}
+    for index in range(else_index + 1, len(tokens)):
+        token = tokens[index]
+        if token.kind == "symbol":
+            if token.value in opening:
+                stack.append(index)
+            elif token.value in closing:
+                if not stack or tokens[stack[-1]].value != closing[token.value]:
+                    raise _HyperMParseError(
+                        f"unbalanced delimiter at token {index}")
+                if len(stack) == len(base):
+                    return index
+                stack.pop()
+            elif token.value == "," and stack == base and nested_lets == 0:
+                return index
+            continue
+        if stack != base:
+            continue
+        if _hyper_m_word(token, "let"):
+            nested_lets += 1
+        elif _hyper_m_word(token, "in"):
+            if nested_lets:
+                nested_lets -= 1
+            else:
+                return index
+        elif _hyper_m_word(token, "if"):
+            nested_ifs += 1
+        elif _hyper_m_word(token, "else"):
+            if nested_ifs:
+                nested_ifs -= 1
+            else:
+                return index
+    return len(tokens)
+
+
+def _hyper_m_hide_constant_dead_branches(
+        tokens: list[_HyperMToken]) -> list[_HyperMToken]:
+    """Hide literal-boolean dead branches without evaluating general M.
+
+    Unknown conditions are left intact. A conservative expression boundary
+    can hide more than the dead branch, which can only cause a missing-binding
+    failure; it cannot make an unreachable source file count as active.
+    """
+    dead: set[int] = set()
+    for index, token in enumerate(tokens):
+        if not _hyper_m_word(token, "if") or index in dead:
+            continue
+        try:
+            then_index, else_index = _hyper_m_conditional_bounds(tokens, index)
+        except _HyperMParseError:
+            continue
+        condition = tokens[index + 1:then_index]
+        if (len(condition) == 1 and condition[0].kind == "word"
+                and condition[0].value.casefold() in {"true", "false"}):
+            if condition[0].value.casefold() == "false":
+                dead.update(range(then_index + 1, else_index))
+            else:
+                dead.update(range(else_index + 1,
+                                  _hyper_m_else_end(tokens, else_index)))
+    return [
+        _HyperMToken(
+            "inactive" if index in dead and token.kind != "symbol"
+            else token.kind,
+            token.value, token.start, token.end,
+        )
+        for index, token in enumerate(tokens)
+    ]
+
+
+def _hyper_m_root_let(tokens: list[_HyperMToken]
+                      ) -> Optional[tuple[int, Dict[str, list[_HyperMToken]],
+                                          list[_HyperMToken]]]:
+    """Parse a root M let expression and return bindings plus its body."""
+    if not tokens or not _hyper_m_word(tokens[0], "let"):
+        return None
+    stack: list[int] = []
+    nested_lets = 0
+    in_index = -1
+    opening = {"(": ")", "[": "]", "{": "}"}
+    closing = {value: key for key, value in opening.items()}
+    for index in range(1, len(tokens)):
+        token = tokens[index]
+        if token.kind == "symbol":
+            if token.value in opening:
+                stack.append(index)
+            elif token.value in closing:
+                if not stack or tokens[stack[-1]].value != closing[token.value]:
+                    raise _HyperMParseError(
+                        f"unbalanced delimiter at token {index}")
+                stack.pop()
+            continue
+        if stack:
+            continue
+        if _hyper_m_word(token, "let"):
+            nested_lets += 1
+        elif _hyper_m_word(token, "in"):
+            if nested_lets:
+                nested_lets -= 1
+            else:
+                in_index = index
+                break
+    if in_index < 0:
+        raise _HyperMParseError("root let expression has no matching in")
+
+    bindings: Dict[str, list[_HyperMToken]] = {}
+    segment_start = 1
+    stack = []
+    nested_lets = 0
+    segments = []
+    for index in range(1, in_index + 1):
+        token = tokens[index]
+        if token.kind == "symbol":
+            if token.value in opening:
+                stack.append(index)
+            elif token.value in closing:
+                if not stack or tokens[stack[-1]].value != closing[token.value]:
+                    raise _HyperMParseError(
+                        f"unbalanced delimiter at token {index}")
+                stack.pop()
+            elif token.value == "," and not stack and nested_lets == 0:
+                segments.append(tokens[segment_start:index])
+                segment_start = index + 1
+            continue
+        if stack:
+            continue
+        if index < in_index and _hyper_m_word(token, "let"):
+            nested_lets += 1
+        elif index < in_index and _hyper_m_word(token, "in") and nested_lets:
+            nested_lets -= 1
+    segments.append(tokens[segment_start:in_index])
+    for segment in segments:
+        if (len(segment) < 2
+                or segment[0].kind not in {"word", "qident"}
+                or segment[1].kind != "symbol"
+                or segment[1].value != "="):
+            raise _HyperMParseError("root let contains an unsupported binding")
+        name = segment[0].value
+        if name in bindings:
+            raise _HyperMParseError(
+                f"root let repeats binding {name!r}")
+        bindings[name] = segment[2:]
+    return in_index, bindings, tokens[in_index + 1:]
+
+
+def _hyper_m_references(tokens: list[_HyperMToken],
+                        names: set[str]) -> set[str]:
+    """Find simple lexical references to root let names, not record fields."""
+    found: set[str] = set()
+    square_depth = 0
+    for index, token in enumerate(tokens):
+        if token.kind == "symbol":
+            if token.value == "[":
+                square_depth += 1
+            elif token.value == "]" and square_depth:
+                square_depth -= 1
+            continue
+        if (square_depth or token.kind not in {"word", "qident"}
+                or token.value not in names):
+            continue
+        previous = tokens[index - 1] if index else None
+        if previous and previous.kind == "symbol" and previous.value == ".":
+            continue
+        found.add(token.value)
+    return found
+
+
+def _hyper_m_file_calls(tokens: list[_HyperMToken]
+                        ) -> list[tuple[int, int, list[_HyperMToken]]]:
+    """Find direct reachable ``File.Contents(...)`` calls in a token stream."""
+    calls = []
+    for index in range(len(tokens) - 3):
+        if not (_hyper_m_active_word(tokens[index], "File")
+                and tokens[index + 1].kind == "symbol"
+                and tokens[index + 1].value == "."
+                and _hyper_m_active_word(tokens[index + 2], "Contents")
+                and tokens[index + 3].kind == "symbol"
+                and tokens[index + 3].value == "("):
+            continue
+        stack = []
+        close_index = -1
+        for cursor in range(index + 3, len(tokens)):
+            token = tokens[cursor]
+            if token.kind != "symbol":
+                continue
+            if token.value in "([{":
+                stack.append(token.value)
+            elif token.value in ")]}":
+                if (not stack or stack[-1] != {
+                    ")": "(", "]": "[", "}": "{",
+                }[token.value]):
+                    raise _HyperMParseError(
+                        f"File.Contents call has unbalanced delimiter at token {cursor}")
+                stack.pop()
+                if not stack:
+                    close_index = cursor
+                    break
+        if close_index < 0:
+            raise _HyperMParseError(
+                f"File.Contents call at token {index} is unterminated")
+        argument_end = close_index
+        argument_stack = []
+        for cursor in range(index + 4, close_index):
+            token = tokens[cursor]
+            if token.kind != "symbol":
+                continue
+            if token.value in "([{":
+                argument_stack.append(token.value)
+            elif token.value in ")]}":
+                if argument_stack:
+                    argument_stack.pop()
+            elif token.value == "," and not argument_stack:
+                argument_end = cursor
+                break
+        calls.append((index, close_index,
+                      tokens[index + 4:argument_end]))
+    return calls
+
+
+def _hyper_m_active_segments(source: str) -> list[list[_HyperMToken]]:
+    """Return the terminal expression plus its reachable root-let bindings."""
+    tokens = _hyper_m_hide_constant_dead_branches(_tokenize_hyper_m(source))
+    parsed = _hyper_m_root_let(tokens)
+    if parsed is None:
+        if any(_hyper_m_word(token, "let") for token in tokens):
+            if _hyper_m_file_calls(tokens):
+                raise _HyperMParseError(
+                    "file reads inside a non-root or nested let are not "
+                    "statically resolved")
+        return [tokens]
+
+    _in_index, bindings, body = parsed
+    names = set(bindings)
+    reachable = _hyper_m_references(body, names)
+    pending = list(sorted(reachable))
+    while pending:
+        name = pending.pop()
+        newly_referenced = _hyper_m_references(bindings[name], names) - reachable
+        reachable.update(newly_referenced)
+        pending.extend(sorted(newly_referenced))
+
+    active_segments = [body] + [
+        bindings[name] for name in sorted(reachable)
+    ]
+    for segment in active_segments:
+        if any(_hyper_m_word(token, "let") for token in segment):
+            if _hyper_m_file_calls(segment):
+                raise _HyperMParseError(
+                    "file reads inside a nested let are not statically resolved")
+    return active_segments
+
+
+def _hyper_m_active_file_calls(source: str
+                               ) -> list[tuple[int, int, list[_HyperMToken]]]:
+    """Return file reads in reachable let bindings and the final expression."""
+    calls: list[tuple[int, int, list[_HyperMToken]]] = []
+    for segment in _hyper_m_active_segments(source):
+        calls.extend(_hyper_m_file_calls(segment))
+    return calls
+
+
+def _hyper_m_conditional_source_issues(source: str) -> list[str]:
+    """Do not treat a conditionally unused file binding as the final source."""
+    tokens = _hyper_m_hide_constant_dead_branches(_tokenize_hyper_m(source))
+    parsed = _hyper_m_root_let(tokens)
+    if parsed is None:
+        segments = [tokens]
+        file_binding_names: set[str] = set()
+    else:
+        _in_index, bindings, body = parsed
+        names = set(bindings)
+        dependencies = {
+            name: _hyper_m_references(value, names)
+            for name, value in bindings.items()
+        }
+        reachable = _hyper_m_references(body, names)
+        pending = list(reachable)
+        while pending:
+            name = pending.pop()
+            new_names = dependencies[name] - reachable
+            reachable.update(new_names)
+            pending.extend(new_names)
+        file_binding_names = {
+            name for name, value in bindings.items()
+            if name in reachable and _hyper_m_file_calls(value)
+        }
+        changed = True
+        while changed:
+            changed = False
+            for name, deps in dependencies.items():
+                if (name in reachable and name not in file_binding_names
+                        and deps & file_binding_names):
+                    file_binding_names.add(name)
+                    changed = True
+        segments = [body] + [
+            bindings[name] for name in sorted(reachable)
+        ]
+
+    issues = []
+    for segment in segments:
+        for index, token in enumerate(segment):
+            if not _hyper_m_active_word(token, "if"):
+                continue
+            try:
+                then_index, else_index = _hyper_m_conditional_bounds(
+                    segment, index)
+                else_end = _hyper_m_else_end(segment, else_index)
+            except _HyperMParseError:
+                issues.append("M conditional structure is not statically resolved")
+                continue
+            condition = segment[index + 1:then_index]
+            if (len(condition) == 1 and condition[0].kind == "word"
+                    and condition[0].value.casefold() in {"true", "false"}):
+                continue
+            branches = (
+                segment[then_index + 1:else_index],
+                segment[else_index + 1:else_end],
+            )
+            condition_refs = _hyper_m_references(
+                condition, file_binding_names)
+            branch_refs = set().union(*(
+                _hyper_m_references(branch, file_binding_names)
+                for branch in branches
+            ))
+            if condition_refs and not branch_refs:
+                issues.append(
+                    "file-backed let binding is used only to choose an "
+                    "unverified conditional result")
+            if any(_hyper_m_file_calls(branch) for branch in branches):
+                issues.append(
+                    "File.Contents is inside a condition whose selected branch "
+                    "cannot be proven")
+                continue
+            if file_binding_names and any(
+                    _hyper_m_references(branch, file_binding_names)
+                    for branch in branches):
+                issues.append(
+                    "a file-backed let binding is conditionally selected against "
+                    "an unverified alternative")
+    return sorted(set(issues))
+
+
+def _hyper_safe_basename(value: Any) -> bool:
+    """Accept only one ordinary filename component, never a link or traversal."""
+    if (not isinstance(value, str) or not value or "\x00" in value
+            or value in {".", ".."} or "/" in value or "\\" in value
+            or os.path.basename(value) != value or ntpath.basename(value) != value):
+        return False
+    return True
+
+
+def _hyper_realpath(path: str) -> str:
+    """Resolve a path the operator chose, never a value read from metadata.
+
+    Only the project's own Data directory and artifacts already verified not to
+    be links reach this function; metadata paths use ``lexical_path_key``.
+    """
+    return canonical_path_key(path)
+
+
+def _hyper_trusted_dir_keys(directory: str) -> tuple[str, str]:
+    """Return the lexical and resolved keys of an operator-chosen directory."""
+    return lexical_path_key(directory), _hyper_realpath(directory)
+
+
+def _hyper_trusted_file_keys(directory: str, filename: Any) -> frozenset[str]:
+    """Return the keys naming one manifest export inside the verified directory.
+
+    Only the directory is resolved. The file name is a checked basename and the
+    file itself may be a link, so it is never handed to the filesystem.
+    """
+    if not _hyper_safe_basename(filename):
+        return frozenset()
+    return frozenset(
+        lexical_path_key(os.path.join(key, filename))
+        for key in _hyper_trusted_dir_keys(directory))
+
+
+def _hyper_is_link(path: str, info: os.stat_result) -> bool:
+    """Reject symlinks, Windows reparse points, and multiply-linked files."""
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(info, "st_file_attributes", 0)
+    return (
+        stat.S_ISLNK(info.st_mode)
+        or bool(reparse and attributes & reparse)
+        or (stat.S_ISREG(info.st_mode) and getattr(info, "st_nlink", 1) > 1)
+        or os.path.islink(path)
+    )
+
+
+def _hyper_manifest_link(data_dir: str, manifest_path: str) -> Optional[str]:
+    """Name a link met on the way to the manifest, without following it."""
+    for label, path in (("Project Data path", data_dir),
+                        ("Hyper export manifest", manifest_path)):
+        try:
+            info = os.lstat(path)
+        except OSError:
+            return None
+        if _hyper_is_link(path, info):
+            return label
+    return None
+
+
+def _hyper_file_digest(path: str) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size_bytes = 0
+    with open(path, "rb") as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size_bytes += len(chunk)
+    return digest.hexdigest(), size_bytes
+
+
+def _hyper_csv_evidence(path: str, expected_columns: list[str],
+                        expected_rows: int) -> tuple[bool, Optional[int], str]:
+    """Count CSV records incrementally and verify the physical header/schema."""
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as stream:
+            reader = csv.reader(stream)
+            header = next(reader, None)
+            if header is None or not header:
+                return False, None, "CSV has no physical header row"
+            if header != expected_columns:
+                return False, None, (
+                    "CSV header does not match the export's declared physical columns")
+            row_count = 0
+            for row_count, row in enumerate(reader, start=1):
+                if len(row) != len(header):
+                    return False, row_count - 1, (
+                        f"CSV record {row_count} has {len(row)} fields; "
+                        f"the declared schema has {len(header)}")
+            if row_count != expected_rows:
+                return False, row_count, (
+                    f"CSV contains {row_count} data rows; manifest declares "
+                    f"{expected_rows}")
+            return True, row_count, ""
+    except (OSError, UnicodeError, csv.Error) as exc:
+        return False, None, (
+            f"CSV cannot be streamed for header/count verification "
+            f"({type(exc).__name__})")
+
+
+def _hyper_record_proof(record: Dict[str, Any], index: int
+                        ) -> tuple[Optional[tuple[str, ...]], list[str]]:
+    """Validate manifest-only proof fields and return an exact identity key."""
+    issues: list[str] = []
+    identity = record.get("identity")
+    key = _hyper_binding_identity_key(identity)
+    if key is None:
+        issues.append("identity must be an exact packaged or explicit local identity")
+    record_format = record.get("format")
+    if not isinstance(record_format, str) or record_format not in {"csv", "parquet"}:
+        issues.append("format must be csv or parquet")
+    file_name = record.get("filename")
+    if not isinstance(file_name, str) or not _hyper_safe_basename(file_name):
+        issues.append("filename must be a safe basename without links or traversal")
+    elif os.path.splitext(file_name)[1].lower() != (
+            ".csv" if record.get("format") == "csv" else ".parquet"):
+        issues.append("filename extension does not match format")
+    columns = record.get("columns")
+    if (not isinstance(columns, list) or not columns
+            or not all(isinstance(column, str) for column in columns)
+            or len(set(columns)) != len(columns)):
+        issues.append("columns must be a nonempty list of unique strings")
+    for field_name in ("row_count", "total_rows"):
+        value = record.get(field_name)
+        if type(value) is not int or value < 0:
+            issues.append(f"{field_name} must be a nonnegative nonboolean integer")
+    if (type(record.get("row_count")) is int
+            and type(record.get("total_rows")) is int
+            and record.get("row_count") != record.get("total_rows")):
+        issues.append("row_count must equal total_rows")
+    if "max_rows" not in record or record.get("max_rows") is not None:
+        issues.append("max_rows must be present and null for a complete export")
+    if record.get("sampled") is not False:
+        issues.append("sampled must be false for a complete export")
+    if record.get("truncated") is not False:
+        issues.append("truncated must be false for a complete export")
+    if record.get("full_extract_verified") is not True:
+        issues.append("full_extract_verified proof is missing")
+    expected_count_source = {
+        "csv": "csv_writer",
+        "parquet": "hyper_copy",
+    }.get(record_format) if isinstance(record_format, str) else None
+    if record.get("row_count_source") != expected_count_source:
+        issues.append(
+            "row_count_source must identify the measured CSV writer or native "
+            "Parquet COPY count")
+    digest = record.get("sha256")
+    if (not isinstance(digest, str) or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)):
+        issues.append("sha256 must be a lowercase 64-character digest")
+    size_bytes = record.get("size_bytes")
+    if type(size_bytes) is not int or size_bytes <= 0:
+        issues.append("size_bytes must be a positive nonboolean integer")
+    return key, issues
+
+
+def _hyper_annotation_identity(raw: str, relative_path: str
+                               ) -> tuple[Optional[Any], Optional[str]]:
+    try:
+        identity = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, (
+            f"{relative_path}: Migration_HyperIdentity is not valid JSON")
+    if _hyper_binding_identity_key(identity) is None:
+        return identity, (
+            f"{relative_path}: Migration_HyperIdentity is not an exact packaged "
+            "or explicit local identity")
+    return identity, None
+
+
+def _hyper_tmdl_partition_blocks(content: str
+                                 ) -> list[dict[str, Any]]:
+    """Read final partition kinds and modes from actual TMDL declarations."""
+    lines = content.splitlines()
+    blocks = []
+    starts = []
+    for index, line in enumerate(lines):
+        match = _HYPER_PARTITION_RE.match(line)
+        if match:
+            name = match.group(1).strip()
+            if name.startswith("'") and name.endswith("'"):
+                name = name[1:-1].replace("''", "'")
+            starts.append((index, name, match.group(2).casefold()))
+    for position, (start, name, kind) in enumerate(starts):
+        end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
+        modes = [
+            match.group(1).casefold()
+            for line in lines[start + 1:end]
+            if (match := _HYPER_PARTITION_MODE_RE.match(line))
+        ]
+        blocks.append({
+            "name": name,
+            "kind": kind,
+            "modes": modes,
+            "line": start + 1,
+        })
+    return blocks
+
+
+def _hyper_data_folder(model_definition: str, project_root: str,
+                       expected_data_dir: str
+                       ) -> tuple[Optional[str], Optional[str]]:
+    """Match one authored DataFolder literal against the project's Data dir.
+
+    The literal is project metadata: it is compared lexically with the keys of
+    the operator-chosen directory and is never resolved or opened.
+    """
+    expressions_path = os.path.join(model_definition, "expressions.tmdl")
+    try:
+        expressions_info = os.lstat(expressions_path)
+        if (_hyper_is_link(expressions_path, expressions_info)
+                or not stat.S_ISREG(expressions_info.st_mode)):
+            return None, (
+                "expressions.tmdl is not a regular file; DataFolder is unresolved")
+        with open(expressions_path, "r", encoding="utf-8-sig") as stream:
+            lines = stream.read().splitlines()
+    except FileNotFoundError:
+        return None, "expressions.tmdl is missing; DataFolder is unresolved"
+    except (OSError, UnicodeError) as exc:
+        return None, (
+            f"expressions.tmdl cannot be read ({type(exc).__name__}); "
+            "DataFolder is unresolved")
+
+    declarations = []
+    for line in lines:
+        stripped = line.strip()
+        if not _HYPER_DATA_FOLDER_DECL_RE.match(stripped):
+            continue
+        match = _HYPER_DATA_FOLDER_LITERAL_RE.match(stripped)
+        if not match:
+            declarations.append(None)
+            continue
+        raw = match.group(1)[1:-1].replace('""', '"')
+        raw = raw.replace("\\\\", "\\").replace('\\"', '"')
+        declarations.append(raw)
+    if len(declarations) != 1 or not isinstance(declarations[0], str):
+        return None, (
+            "expressions.tmdl must contain one literal DataFolder declaration")
+    value = declarations[0]
+    if "\x00" in value:
+        return None, "DataFolder contains a NUL character"
+    if not (os.path.isabs(value) or ntpath.isabs(value)):
+        value = os.path.join(project_root, value)
+    lexical_key, resolved = _hyper_trusted_dir_keys(expected_data_dir)
+    if (lexical_path_key(value) not in (lexical_key, resolved)
+            or not os.path.isdir(resolved)):
+        return None, (
+            "DataFolder does not resolve to the existing project Data directory")
+    return resolved, None
+
+
+def _hyper_m_path(argument: list[_HyperMToken], data_folder: Optional[str],
+                  project_root: str) -> tuple[Optional[str], str]:
+    """Resolve the narrow literal or DataFolder path forms used by generated M."""
+    while (len(argument) >= 2 and argument[0].kind == "symbol"
+           and argument[0].value == "(" and argument[-1].kind == "symbol"
+           and argument[-1].value == ")"):
+        depth = 0
+        encloses = True
+        for index, token in enumerate(argument):
+            if token.kind != "symbol":
+                continue
+            if token.value == "(":
+                depth += 1
+            elif token.value == ")":
+                depth -= 1
+                if depth == 0 and index != len(argument) - 1:
+                    encloses = False
+                    break
+        if not encloses:
+            break
+        argument = argument[1:-1]
+    value: Optional[str] = None
+    via = "literal"
+    if len(argument) == 1 and argument[0].kind == "string":
+        value = argument[0].value
+    elif (len(argument) == 3 and _hyper_m_word(argument[0], "DataFolder")
+          and argument[1].kind == "symbol" and argument[1].value == "&"
+          and argument[2].kind == "string"):
+        if data_folder is None:
+            return None, "DataFolder cannot be resolved"
+        suffix = argument[2].value.lstrip("\\/")
+        value = os.path.join(data_folder, suffix)
+        via = "DataFolder"
+    else:
+        return None, "File.Contents path is not a supported literal or DataFolder expression"
+    if not value or "\x00" in value:
+        return None, "File.Contents path is empty or contains a NUL character"
+    if os.path.isabs(value) or ntpath.isabs(value):
+        return lexical_path_key(value), via
+    return None, "relative File.Contents path must use the declared DataFolder"
+
+
+def _hyper_m_call_arguments(tokens: list[_HyperMToken], qualifier: str,
+                            method: str
+                            ) -> list[list[list[_HyperMToken]]]:
+    """Return positional argument token lists for direct dotted M calls."""
+    calls = []
+    for index in range(len(tokens) - 3):
+        if not (_hyper_m_active_word(tokens[index], qualifier)
+                and tokens[index + 1].kind == "symbol"
+                and tokens[index + 1].value == "."
+                and _hyper_m_active_word(tokens[index + 2], method)
+                and tokens[index + 3].kind == "symbol"
+                and tokens[index + 3].value == "("):
+            continue
+        stack = []
+        end = -1
+        for cursor in range(index + 3, len(tokens)):
+            token = tokens[cursor]
+            if token.kind != "symbol":
+                continue
+            if token.value in "([{":
+                stack.append(token.value)
+            elif token.value in ")]}":
+                if (not stack or stack[-1] != {
+                    ")": "(", "]": "[", "}": "{",
+                }[token.value]):
+                    raise _HyperMParseError(
+                        f"{qualifier}.{method} call has unbalanced delimiters")
+                stack.pop()
+                if not stack:
+                    end = cursor
+                    break
+        if end < 0:
+            raise _HyperMParseError(
+                f"{qualifier}.{method} call has no closing parenthesis")
+        args = []
+        start = index + 4
+        nested = []
+        for cursor in range(start, end):
+            token = tokens[cursor]
+            if token.kind != "symbol":
+                continue
+            if token.value in "([{":
+                nested.append(token.value)
+            elif token.value in ")]}":
+                if nested:
+                    nested.pop()
+            elif token.value == "," and not nested:
+                args.append(tokens[start:cursor])
+                start = cursor + 1
+        args.append(tokens[start:end])
+        calls.append(args)
+    return calls
+
+
+def _hyper_m_call_positions(tokens: list[_HyperMToken], qualifier: str,
+                            method: str) -> list[int]:
+    return [
+        index for index in range(len(tokens) - 3)
+        if (_hyper_m_active_word(tokens[index], qualifier)
+            and tokens[index + 1].kind == "symbol"
+            and tokens[index + 1].value == "."
+            and _hyper_m_active_word(tokens[index + 2], method)
+            and tokens[index + 3].kind == "symbol"
+            and tokens[index + 3].value == "(")
+    ]
+
+
+def _hyper_m_reader_consumes_file(source: str, reader: str) -> int:
+    """Count reachable format readers whose input is the exact File.Contents value."""
+    tokens = _hyper_m_hide_constant_dead_branches(_tokenize_hyper_m(source))
+    parsed = _hyper_m_root_let(tokens)
+    if parsed is None:
+        if any(_hyper_m_word(token, "let") for token in tokens) \
+                and _hyper_m_file_calls(tokens):
+            raise _HyperMParseError(
+                "file reads inside a non-root or nested let are not "
+                "statically resolved")
+        segments = [tokens]
+        file_backed: set[str] = set()
+    else:
+        _in_index, bindings, body = parsed
+        names = set(bindings)
+        dependencies = {
+            name: _hyper_m_references(expression, names)
+            for name, expression in bindings.items()
+        }
+        file_backed = {
+            name for name, expression in bindings.items()
+            if _hyper_m_file_calls(expression)
+        }
+        changed = True
+        while changed:
+            changed = False
+            for name, dependencies_for_name in dependencies.items():
+                if name not in file_backed and dependencies_for_name & file_backed:
+                    file_backed.add(name)
+                    changed = True
+        # Reuse reachability parsing so unused root bindings cannot count.
+        segments = _hyper_m_active_segments(source)
+
+    count = 0
+    for segment in segments:
+        for args in _hyper_m_call_arguments(segment, reader, "Document"):
+            if not args:
+                continue
+            if _hyper_m_file_calls(args[0]):
+                count += 1
+                continue
+            if file_backed and _hyper_m_references(args[0], file_backed):
+                count += 1
+    return count
+
+
+def _hyper_m_unwrap(tokens: list[_HyperMToken]) -> list[_HyperMToken]:
+    """Remove only parentheses enclosing the entire expression."""
+    while (len(tokens) >= 2 and tokens[0].kind == "symbol"
+           and tokens[0].value == "("):
+        depth = 0
+        closing = -1
+        for index, token in enumerate(tokens):
+            if token.kind != "symbol":
+                continue
+            if token.value == "(":
+                depth += 1
+            elif token.value == ")":
+                depth -= 1
+                if depth == 0:
+                    closing = index
+                    break
+        if closing != len(tokens) - 1:
+            break
+        tokens = tokens[1:-1]
+    return tokens
+
+
+def _hyper_m_container(tokens: list[_HyperMToken], opening: str, closing: str
+                       ) -> Optional[list[list[_HyperMToken]]]:
+    """Split a complete literal container, without mining nested strings."""
+    if (len(tokens) < 2 or tokens[0].kind != "symbol"
+            or tokens[0].value != opening or tokens[-1].kind != "symbol"
+            or tokens[-1].value != closing):
+        return None
+    items = []
+    start = 1
+    stack = []
+    for index, token in enumerate(tokens[1:-1], 1):
+        if token.kind != "symbol":
+            continue
+        if token.value in "([{":
+            stack.append(token.value)
+        elif token.value in ")]}":
+            if not stack or stack.pop() != {
+                    ")": "(", "]": "[", "}": "{",
+            }[token.value]:
+                return None
+        elif token.value == "," and not stack:
+            items.append(tokens[start:index])
+            start = index + 1
+    if stack:
+        return None
+    if start < len(tokens) - 1:
+        items.append(tokens[start:-1])
+    elif items:
+        return None
+    return items
+
+
+def _hyper_m_literal_list(tokens: list[_HyperMToken]
+                          ) -> Optional[list[list[_HyperMToken]]]:
+    return _hyper_m_container(_hyper_m_unwrap(tokens), "{", "}")
+
+
+def _hyper_m_outer_call(tokens: list[_HyperMToken]
+                        ) -> Optional[tuple[str, list[list[_HyperMToken]]]]:
+    """Read one complete call, not a nested/unreachable function mention."""
+    tokens = _hyper_m_unwrap(tokens)
+    if tokens and _hyper_m_active_word(tokens[0], "#table"):
+        args = _hyper_m_container(tokens[1:], "(", ")")
+        return ("#table", args) if args is not None else None
+    if (len(tokens) < 5 or tokens[0].kind != "word"
+            or tokens[1].kind != "symbol" or tokens[1].value != "."
+            or tokens[2].kind != "word"):
+        return None
+    args = _hyper_m_container(tokens[3:], "(", ")")
+    return ((tokens[0].value + "." + tokens[2].value, args)
+            if args is not None else None)
+
+
+def _hyper_m_identifier(tokens: list[_HyperMToken], source: str
+                        ) -> Optional[str]:
+    """Read a literal quoted/generalized field name without M evaluation."""
+    if len(tokens) == 1 and tokens[0].kind == "qident":
+        name = tokens[0].value
+    elif tokens and all(token.kind in {"word", "number"} for token in tokens):
+        name = source[tokens[0].start:tokens[-1].end]
+    else:
+        return None
+    if not name or "#(" in name or "/*" in name or "//" in name:
+        return None
+    return name
+
+
+def _hyper_m_field_references(tokens: list[_HyperMToken], source: str
+                              ) -> set[str]:
+    """Read row selectors, including names such as ``[Close Date]``.
+
+    Computed selectors, record literals and explicit non-row selectors stay
+    unsupported rather than silently supplying a column dependency.
+    """
+    found: set[str] = set()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.kind != "symbol" or token.value != "[":
+            index += 1
+            continue
+        closing = index + 1
+        while closing < len(tokens) and not (
+                tokens[closing].kind == "symbol"
+                and tokens[closing].value == "]"):
+            closing += 1
+        name = _hyper_m_identifier(tokens[index + 1:closing], source)
+        if closing == len(tokens) or name is None:
+            raise _HyperMParseError(
+                "computed/record field expression has unsupported row dependencies")
+        previous = tokens[index - 1] if index else None
+        if previous is not None and (
+                previous.kind in {"qident", "string", "number"}
+                or (previous.kind == "word"
+                    and previous.value.casefold() not in {
+                        "each", "if", "then", "else", "and", "or", "not",
+                        "try", "otherwise", "_",
+                    })
+                or (previous.kind == "symbol" and previous.value in ")]}")):
+            raise _HyperMParseError(
+                "explicit non-row field selector is not statically inferred")
+        found.add(name)
+        index = closing + 1
+    return found
+
+
+@dataclass
+class _HyperMSchema:
+    """Private static shape, with literal lookups distinct from file tables."""
+
+    kind: str
+    columns: dict[str, str] = field(default_factory=dict)
+    nested: dict[str, "_HyperMSchema"] = field(default_factory=dict)
+    literal_rows: Optional[list[dict[str, tuple[str, str]]]] = None
+
+
+def _hyper_m_schema_derivations(
+        source: str, raw_columns: set[str]
+        ) -> tuple[set[str], set[str], set[str], list[str]]:
+    """Propagate names along actual table inputs, never a union of step names.
+
+    Let aliases resolve by dependency. A later, sibling, invalid or cyclic
+    addition cannot supply a field to an earlier row expression. Only explicit
+    literal lookups may add nested join/expansion columns. This does not execute
+    M or certify column values, loaded rows, or source-to-target parity.
+    """
+    tokens = _hyper_m_unwrap(
+        _hyper_m_hide_constant_dead_branches(_tokenize_hyper_m(source)))
+    parsed = _hyper_m_root_let(tokens)
+    bindings = parsed[1] if parsed else {}
+    body = parsed[2] if parsed else tokens
+    issues: list[str] = []
+    cache: dict[str, Optional[_HyperMSchema]] = {}
+    visiting: set[str] = set()
+
+    def literal_text(value: list[_HyperMToken]) -> Optional[str]:
+        value = _hyper_m_unwrap(value)
+        if (len(value) == 1 and value[0].kind == "string"
+                and "#(" not in value[0].value):
+            return value[0].value
+        return None
+
+    def literal_names(value: list[_HyperMToken]) -> Optional[list[str]]:
+        items = _hyper_m_literal_list(value)
+        if items is None:
+            name = literal_text(value)
+            return [name] if name is not None else None
+        names = []
+        for item in items:
+            name = literal_text(item)
+            if name is None:
+                return None
+            names.append(name)
+        return names
+
+    def literal_scalar(value: list[_HyperMToken]
+                       ) -> Optional[tuple[str, str]]:
+        value = _hyper_m_unwrap(value)
+        if len(value) == 1:
+            token = value[0]
+            if token.kind == "string" and "#(" not in token.value:
+                return "text", token.value
+            if token.kind == "word" and token.value in {"null", "true", "false"}:
+                return ("null" if token.value == "null" else "logical",
+                        token.value)
+        text = "".join(token.value for token in value)
+        if (value and all(token.kind == "number" or (
+                token.kind == "symbol" and token.value in "+-")
+                for token in value)
+                and re.fullmatch(r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", text)):
+            return "number", text
+        return None
+
+    def row_dependencies(value: list[_HyperMToken],
+                         available: dict[str, str], label: str) -> bool:
+        value = _hyper_m_unwrap(value)
+        if not value or not _hyper_m_active_word(value[0], "each"):
+            issues.append(
+                f"{label}: only an explicit each row expression is statically inferred")
+            return False
+        expression = _hyper_m_unwrap(value[1:])
+        if literal_scalar(expression) == ("null", "null"):
+            issues.append(f"{label} fabricates its output with a literal null")
+            return False
+        if any(_hyper_m_active_word(token, keyword)
+               for token in expression for keyword in ("let", "each")):
+            issues.append(f"{label}: nested row-scope dependencies are unverified")
+            return False
+        external = _hyper_m_references(expression, set(bindings))
+        if external:
+            issues.append(
+                f"{label}: non-row dependencies are not statically inferred: "
+                + ", ".join(sorted(external)))
+            return False
+        if any(_hyper_m_call_positions(expression, "Record", method)
+               for method in ("Field", "FieldOrDefault", "SelectFields")):
+            issues.append(
+                f"{label}: dynamic Record field dependencies are unverified")
+            return False
+        if _hyper_m_call_positions(expression, "Value", "NativeQuery"):
+            issues.append(f"{label}: native-query scalar dependencies are unverified")
+            return False
+        try:
+            fields = _hyper_m_field_references(expression, source)
+        except _HyperMParseError as exc:
+            issues.append(f"{label}: {exc}")
+            return False
+        missing = fields - set(available)
+        if missing:
+            issues.append(
+                f"{label} references field(s) absent from its proven input "
+                "schema: " + ", ".join(sorted(missing)))
+            return False
+        null_terms = [
+            token for token in expression
+            if token.kind != "symbol"
+            and not any(_hyper_m_active_word(token, keyword)
+                        for keyword in ("try", "otherwise"))
+        ]
+        if null_terms and all(_hyper_m_active_word(token, "null")
+                              for token in null_terms):
+            issues.append(f"{label} fabricates its output with literal nulls")
+            return False
+        # Do not infer arbitrary global parameters/functions as row fields.
+        keywords = {
+            "if", "then", "else", "and", "or", "not", "null", "true", "false",
+            "try", "otherwise", "each", "type", "as", "is", "nullable",
+            "text", "number", "logical", "date", "datetime", "time",
+        }
+        scalar_namespaces = {
+            "Text", "Number", "Date", "DateTime", "DateTimeZone", "Time",
+            "Duration", "Logical", "List", "Binary", "Value", "Character",
+            "Int64", "Currency", "Percentage", "Day", "Week", "RoundingMode",
+            "Precision", "RelativePosition", "Comparer", "Occurrence", "Order",
+        }
+        scalar_constructors = {
+            "#date", "#datetime", "#datetimezone", "#time", "#duration",
+        }
+        square_depth = 0
+        for index, token in enumerate(expression):
+            if token.kind == "symbol":
+                if token.value == "[":
+                    square_depth += 1
+                elif token.value == "]":
+                    square_depth -= 1
+                continue
+            if square_depth or token.kind not in {"word", "qident"}:
+                continue
+            previous = expression[index - 1] if index else None
+            following = expression[index + 1] if index + 1 < len(expression) else None
+            dotted = any(item is not None and item.kind == "symbol"
+                         and item.value == "." for item in (previous, following))
+            if (following is not None and following.kind == "symbol"
+                    and following.value == "."
+                    and not (previous is not None and previous.kind == "symbol"
+                             and previous.value == ".")
+                    and token.value not in scalar_namespaces):
+                issues.append(
+                    f"{label}: qualified scalar dependency {token.value!r} "
+                    "is not supported by static inference")
+                return False
+            row_selector = (token.value == "_" and following is not None
+                            and following.kind == "symbol" and following.value == "[")
+            # Only intrinsic scalar constructors in call position qualify.
+            # Quoted identifiers, unknown hash symbols and #table/#binary
+            # constructors remain unsupported; arguments still pass all field
+            # and scalar-dependency checks above and below.
+            scalar_constructor = (
+                token.kind == "word" and token.value in scalar_constructors
+                and not dotted and following is not None
+                and following.kind == "symbol" and following.value == "("
+            )
+            if (not dotted and not row_selector and not scalar_constructor
+                    and token.value not in keywords):
+                issues.append(
+                    f"{label}: scalar dependency {token.value!r} is not statically inferred")
+                return False
+        return True
+
+    def csv_reader_options(args: list[list[_HyperMToken]]) -> bool:
+        if len(args) == 1:
+            return True
+        options = _hyper_m_container(_hyper_m_unwrap(args[1]), "[", "]")
+        if options is None:
+            issues.append("Csv.Document options are not an explicit literal record")
+            return False
+        seen: set[str] = set()
+        for option in options:
+            if (len(option) < 3 or option[1].kind != "symbol"
+                    or option[1].value != "="):
+                issues.append("Csv.Document has an unsupported option declaration")
+                return False
+            name = _hyper_m_identifier(option[:1], source)
+            value = _hyper_m_unwrap(option[2:])
+            dotted = "".join(token.value for token in value)
+            supported = (
+                (name == "Delimiter" and literal_text(value) == ",")
+                or (name == "Encoding" and literal_scalar(value) == ("number", "65001"))
+                or (name == "QuoteStyle" and dotted == "QuoteStyle.Csv")
+                or (name == "CsvStyle" and dotted in {
+                    "CsvStyle.QuoteAfterDelimiter", "CsvStyle.QuoteAlways"})
+                or (name == "ExtraValues" and dotted in {
+                    "ExtraValues.Error", "ExtraValues.Ignore"})
+                or (name == "Columns" and (
+                    literal_scalar(value) == ("null", "null")
+                    or literal_scalar(value) == ("number", str(len(raw_columns)))))
+            )
+            if name is None or name in seen or not supported:
+                issues.append(
+                    f"Csv.Document option {name!r} does not prove the physical "
+                    "UTF-8 CSV schema used for header/count verification")
+                return False
+            seen.add(name)
+        return True
+
+    def literal_lookup(args: list[list[_HyperMToken]]) -> Optional[_HyperMSchema]:
+        if len(args) != 2:
+            issues.append("literal #table lookup requires an explicit schema and rows")
+            return None
+        schema = _hyper_m_unwrap(args[0])
+        names = literal_names(schema)
+        if names is None and len(schema) >= 4 and (
+                _hyper_m_active_word(schema[0], "type")
+                and _hyper_m_active_word(schema[1], "table")):
+            declarations = _hyper_m_container(schema[2:], "[", "]")
+            names = []
+            for declaration in declarations if declarations is not None else [[]]:
+                equals = next((index for index, item in enumerate(declaration)
+                               if item.kind == "symbol" and item.value == "="), -1)
+                name = _hyper_m_identifier(declaration[:equals], source) if equals > 0 else None
+                datatype = [item.value for item in declaration[equals + 1:]]
+                if datatype[:1] == ["nullable"]:
+                    datatype = datatype[1:]
+                if name is None or datatype not in (
+                        ["text"], ["number"], ["logical"], ["any"]):
+                    names = None
+                    break
+                names.append(name)
+        rows = _hyper_m_literal_list(args[1])
+        if (not names or len(set(names)) != len(names) or rows is None or not rows):
+            issues.append(
+                "lookup #table requires unique literal columns and nonempty literal rows")
+            return None
+        values: list[dict[str, tuple[str, str]]] = []
+        for row in rows:
+            cells = _hyper_m_literal_list(row)
+            if cells is None or len(cells) != len(names):
+                issues.append("lookup #table row width does not match its declared schema")
+                return None
+            measured = []
+            for cell in cells:
+                scalar = literal_scalar(cell)
+                if scalar is None:
+                    issues.append("lookup #table contains a nonliteral/unsupported cell")
+                    return None
+                measured.append(scalar)
+            values.append(dict(zip(names, measured)))
+        return _HyperMSchema(
+            "lookup", {name: "literal" for name in names}, literal_rows=values)
+
+    def infer(value: list[_HyperMToken], depth: int = 0) -> Optional[_HyperMSchema]:
+        value = _hyper_m_unwrap(value)
+        if depth > 128:
+            issues.append("M schema dependency depth exceeds the static inference limit")
+            return None
+        if len(value) == 1 and value[0].kind in {"word", "qident"}:
+            name = value[0].value
+            if name in cache:
+                return cache[name]
+            if name not in bindings:
+                issues.append(f"M dependency {name!r} is not statically resolved")
+                return None
+            if name in visiting:
+                issues.append(f"M schema dependency cycle includes {name!r}")
+                return None
+            visiting.add(name)
+            state = infer(bindings[name], depth + 1)
+            visiting.remove(name)
+            cache[name] = state
+            return state
+        if value and _hyper_m_active_word(value[0], "try"):
+            issues.append(
+                "table/source-level try fallback prevents proof that the "
+                "produced Hyper file supplies the final table")
+            return None
+        call = _hyper_m_outer_call(value)
+        if call is None:
+            issues.append("M table expression has unsupported static schema dependencies")
+            return None
+        method, args = call
+        if method == "#table":
+            return literal_lookup(args)
+        arities = {
+            "File.Contents": {1, 2}, "Binary.Buffer": {1},
+            "Csv.Document": {1, 2}, "Parquet.Document": {1},
+            "Table.PromoteHeaders": {1, 2}, "Table.RenameColumns": {2, 3},
+            "Table.AddColumn": {3, 4}, "Table.SelectColumns": {2, 3},
+            "Table.RemoveColumns": {2, 3}, "Table.ReorderColumns": {2, 3},
+            "Table.TransformColumnTypes": {2, 3}, "Table.NestedJoin": {5, 6},
+            "Table.ExpandTableColumn": {3, 4}, "Table.ReplaceValue": {5},
+            "Table.SelectRows": {2}, "Table.Buffer": {1, 2},
+            "Table.Sort": {2}, "Table.Distinct": {1, 2},
+        }
+        if method in arities and len(args) not in arities[method]:
+            issues.append(f"{method} has an unsupported static argument count")
+            return None
+        if method == "File.Contents":
+            return _HyperMSchema("binary")
+        if not args or not args[0]:
+            issues.append(f"{method} has no statically inferred input")
+            return None
+        state = infer(args[0], depth + 1)
+        if state is None:
+            return None
+        if method in {"Csv.Document", "Parquet.Document", "Binary.Buffer"}:
+            if state.kind != "binary":
+                issues.append(f"{method} does not consume the proven file binary")
+                return None
+            if method == "Binary.Buffer":
+                return state
+            if method == "Csv.Document":
+                if not csv_reader_options(args):
+                    return None
+                return _HyperMSchema("csv")  # Physical names require promotion.
+            return _HyperMSchema("table", {name: "raw" for name in raw_columns})
+        if method == "Table.PromoteHeaders":
+            if state.kind != "csv":
+                issues.append(
+                    "Table.PromoteHeaders has no unmodified physical CSV header proof")
+                return None
+            return _HyperMSchema("table", {name: "raw" for name in raw_columns})
+        if state.kind != "table":
+            issues.append(
+                f"{method} input is not a proven file-backed named table; "
+                "CSV requires physical header promotion")
+            return None
+        output = dict(state.columns)
+        nested = dict(state.nested)
+        if method == "Table.RenameColumns":
+            pairs = _hyper_m_literal_list(args[1]) if len(args) >= 2 else None
+            if pairs and all(literal_text(pair) is not None for pair in pairs):
+                pairs = [args[1]]  # M also permits one {"old", "new"} pair.
+            if pairs is None:
+                issues.append("Table.RenameColumns requires explicit literal pairs")
+                return None
+            for pair in pairs:
+                names = literal_names(pair)
+                if names is None or len(names) != 2:
+                    issues.append("Table.RenameColumns contains an unsupported rename pair")
+                    return None
+                old, new = names
+                if old not in output:
+                    issues.append(
+                        f"Table.RenameColumns source {old!r} is absent from "
+                        "its proven input schema")
+                elif old != new:
+                    if new in output:
+                        issues.append(f"Table.RenameColumns target {new!r} already exists")
+                    else:
+                        del output[old]
+                        output[new] = "renamed"
+                        if old in nested:
+                            nested[new] = nested.pop(old)
+        elif method == "Table.AddColumn":
+            name = literal_text(args[1]) if len(args) >= 2 else None
+            if name is None or len(args) < 3:
+                issues.append("Table.AddColumn requires an explicit literal name")
+                return None
+            if name in output:
+                issues.append(f"Table.AddColumn target {name!r} already exists in its input")
+            elif row_dependencies(args[2], output, f"Table.AddColumn {name!r}"):
+                output[name] = "added"
+        elif method in {
+                "Table.SelectColumns", "Table.RemoveColumns",
+                "Table.ReorderColumns", "Table.TransformColumnTypes"}:
+            items = args[1] if len(args) >= 2 else []
+            names = literal_names(items)
+            if method == "Table.TransformColumnTypes":
+                pairs = _hyper_m_literal_list(items)
+                if pairs is None:
+                    issues.append(f"{method} has unsupported dynamic column names")
+                    return None
+                type_names: list[str] = []
+                for pair in pairs:
+                    entry = _hyper_m_literal_list(pair)
+                    name = literal_text(entry[0]) if entry else None
+                    if entry is None or len(entry) != 2 or name is None:
+                        issues.append(f"{method} has unsupported dynamic column names")
+                        return None
+                    type_names.append(name)
+                names = type_names
+            if names is None:
+                issues.append(f"{method} has unsupported dynamic column names")
+                return None
+            missing = set(names) - set(output)
+            if missing:
+                issues.append(
+                    f"{method} references field(s) absent from its proven input "
+                    "schema: " + ", ".join(sorted(missing)))
+            if method == "Table.SelectColumns":
+                output = {name: output[name] for name in names if name in output}
+            elif method == "Table.RemoveColumns":
+                output = {name: origin for name, origin in output.items()
+                          if name not in names}
+            nested = {name: shape for name, shape in nested.items() if name in output}
+        elif method == "Table.NestedJoin":
+            right = infer(args[2], depth + 1) if len(args) >= 5 else None
+            left_keys = literal_names(args[1]) if len(args) >= 2 else None
+            right_keys = literal_names(args[3]) if len(args) >= 4 else None
+            name = literal_text(args[4]) if len(args) >= 5 else None
+            join_kind = "".join(item.value for item in args[5]) if len(args) == 6 else ""
+            if (right is None or right.kind != "lookup"
+                    or right.literal_rows is None or not left_keys or not right_keys
+                    or len(left_keys) != len(right_keys) or name is None
+                    or len(args) not in {5, 6}
+                    or join_kind not in {"", "JoinKind.LeftOuter"}):
+                issues.append(
+                    "Table.NestedJoin requires explicit left-outer keys and "
+                    "a proven literal lookup")
+                return None
+            if (set(left_keys) - set(output)
+                    or set(right_keys) - set(right.columns) or name in output):
+                issues.append(
+                    "Table.NestedJoin has missing input/lookup keys or an "
+                    "existing nested-column target")
+                return None
+            keys = [tuple(row[key] for key in right_keys) for row in right.literal_rows]
+            if (len(keys) != len(set(keys))
+                    or any(cell[0] == "null" for key in keys for cell in key)):
+                issues.append(
+                    "literal lookup join keys must be unique and non-null")
+                return None
+            output[name] = "nested"
+            nested[name] = right
+        elif method == "Table.ExpandTableColumn":
+            name = literal_text(args[1]) if len(args) >= 2 else None
+            fields = literal_names(args[2]) if len(args) >= 3 else None
+            targets = literal_names(args[3]) if len(args) == 4 else fields
+            lookup = nested.get(name) if name is not None else None
+            if (name is None or lookup is None
+                    or lookup.literal_rows is None or not fields
+                    or targets is None or len(fields) != len(targets)
+                    or len(args) not in {3, 4} or len(set(targets)) != len(targets)
+                    or set(fields) - set(lookup.columns)
+                    or set(targets) & (set(output) - {name})):
+                issues.append(
+                    "Table.ExpandTableColumn requires explicit proven lookup "
+                    "fields and unique output names")
+                return None
+            for column in fields:
+                if all(row[column][0] == "null" for row in lookup.literal_rows):
+                    issues.append(
+                        f"lookup expansion {column!r} fabricates a literal-null column")
+                    return None
+            del output[name]
+            del nested[name]
+            output.update({target: "lookup" for target in targets})
+        elif method == "Table.ReplaceValue":
+            names = literal_names(args[4]) if len(args) == 5 else None
+            replacer = "".join(item.value for item in args[3]) if len(args) == 5 else ""
+            if (names is None or set(names) - set(output)
+                    or literal_scalar(args[1]) is None
+                    or literal_scalar(args[2]) is None
+                    or replacer not in {"Replacer.ReplaceValue", "Replacer.ReplaceText"}):
+                issues.append(
+                    "Table.ReplaceValue has unsupported replacement/column dependencies")
+                return None
+        elif method == "Table.SelectRows":
+            if len(args) < 2 or not row_dependencies(
+                    args[1], output, "Table.SelectRows"):
+                return None
+        elif method not in {"Table.Buffer", "Table.Sort", "Table.Distinct"}:
+            issues.append(f"{method} output schema is not supported by static inference")
+            return None
+        return _HyperMSchema("table", output, nested)
+
+    state = infer(body)
+    output = state.columns if state is not None and state.kind == "table" else {}
+    if state is not None and state.kind != "table":
+        issues.append(
+            "final M output has no proven file-backed named table schema "
+            "(CSV header promotion is required)")
+    return (
+        {name for name in output if name not in state.nested} if state else set(),
+        {name for name, origin in output.items() if origin in {"added", "lookup"}},
+        {name for name, origin in output.items() if origin == "renamed"},
+        sorted(set(issues)),
+    )
+
+
+def _hyper_schema_evidence(table_path: str, expression: str,
+                           raw_columns: list[str]
+                           ) -> tuple[Dict[str, Any], list[str]]:
+    """Check declared sourceColumn mappings against raw and statically inferred M."""
+    from powerbi_import.artifact_diff import _parse_tmdl_table
+    from powerbi_import.openability import _literal_final_projection
+
+    relative = os.path.basename(table_path)
+    diagnostics: list[str] = []
+    parsed = _parse_tmdl_table(table_path)
+    if not isinstance(parsed, dict):
+        return ({"status": "unverified", "checked_source_columns": 0,
+                 "derived_source_columns": [], "missing_source_columns": []},
+                [f"{relative}: TMDL columns could not be statically parsed"])
+    columns = parsed.get("columns")
+    if not isinstance(columns, list) or not columns:
+        return ({"status": "unverified", "checked_source_columns": 0,
+                 "derived_source_columns": [], "missing_source_columns": []},
+                [f"{relative}: final model columns are unavailable for source-schema checks"])
+
+    raw = set(raw_columns)
+    segments = _hyper_m_active_segments(expression)
+    available, added, renamed, derivation_issues = _hyper_m_schema_derivations(
+        expression, raw)
+    diagnostics.extend(f"{relative}: {issue}" for issue in derivation_issues)
+    projection = _literal_final_projection(expression)
+    active_missing_ignore = any(
+        _hyper_m_word(segment[index], "MissingField")
+        and index + 2 < len(segment)
+        and segment[index + 1].kind == "symbol"
+        and segment[index + 1].value == "."
+        and _hyper_m_word(segment[index + 2], "Ignore")
+        for segment in segments
+        for index in range(len(segment))
+        if segment[index].kind == "word"
+    )
+    if active_missing_ignore:
+        diagnostics.append(
+            f"{relative}: active M uses MissingField.Ignore; required "
+            "sourceColumn output coverage cannot be proven statically")
+    mapping_names = []
+    missing = []
+    derived = []
+    for column in columns:
+        if not isinstance(column, dict) or "sourceColumn" not in column:
+            continue
+        source_column = column.get("sourceColumn")
+        if not isinstance(source_column, str) or not source_column:
+            missing.append(str(column.get("name") or "<unnamed>"))
+            diagnostics.append(
+                f"{relative}: sourceColumn is empty or invalid on a final model column")
+            continue
+        mapping_names.append(source_column)
+        if source_column not in available:
+            missing.append(source_column)
+            if active_missing_ignore:
+                reason = (
+                    "MissingField.Ignore cannot establish a required source mapping")
+            else:
+                reason = (
+                    "sourceColumn is absent from the proven final M schema; "
+                    "the export and supported transformations do not establish it")
+            diagnostics.append(
+                f"{relative}: {reason}: {source_column!r}")
+        elif source_column in added or source_column in renamed:
+            derived.append(source_column)
+        if projection is not None and source_column not in projection:
+            diagnostics.append(
+                f"{relative}: sourceColumn {source_column!r} is absent from the "
+                'terminal #"Model Columns" projection')
+            if source_column not in missing:
+                missing.append(source_column)
+
+    if not mapping_names:
+        diagnostics.append(
+            f"{relative}: no final sourceColumn mapping is available; "
+            "raw-to-model schema coverage is unverified")
+    return ({
+        "status": "static_verified" if not diagnostics else "unverified",
+        "checked_source_columns": len(mapping_names),
+        "derived_source_columns": sorted(set(derived)),
+        "missing_source_columns": sorted(set(missing)),
+        "inferred_output_columns": sorted(available),
+        "terminal_projection": (
+            sorted(projection) if projection is not None else None),
+        "runtime_row_schema": "not_verified",
+    }, diagnostics)
+
+
+def _hyper_value_signals(value: Any, key_hint: str = "") -> bool:
+    """Recognize explicit Hyper connector/file evidence without caption guesses."""
+    hint = key_hint.casefold()
+    if isinstance(value, dict):
+        if value.get("hyper_identity") is not None:
+            return True
+        if hint == "hyper_files" and bool(value):
+            return True
+        return any(_hyper_value_signals(item, str(key))
+                   for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        if hint == "hyper_files" and bool(value):
+            return True
+        return any(_hyper_value_signals(item, key_hint) for item in value)
+    if not isinstance(value, str):
+        return False
+    if hint == "hyper_files" and value.strip():
+        return True
+    candidate = value.strip()
+    if re.search(r"(?i)(?:^|[\\/])[^\\/]+\.hyper(?:$|[?#])", candidate):
+        return True
+    if hint in {
+            "type", "class", "connector", "connection_type", "dbtype",
+            "connection"}:
+        return candidate.casefold() in {"hyper", "dataengine"}
+    return False
+
+
+def _hyper_source_identity_inventory(
+        extracted: Dict[str, Any]) -> tuple[dict[tuple[str, ...], set[str]],
+                                            list[str], bool]:
+    """Collect explicit source identities and Hyper connector omissions."""
+    identities: dict[tuple[str, ...], set[str]] = {}
+    diagnostics: list[str] = []
+    uses_hyper = _hyper_value_signals(extracted)
+    seen: set[int] = set()
+    stack = [extracted]
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        if isinstance(current, dict):
+            seen.add(id(current))
+            if "hyper_identity" in current:
+                identity = current.get("hyper_identity")
+                key = _hyper_binding_identity_key(identity)
+                if key is None:
+                    diagnostics.append(
+                        "Extracted Hyper source table has an invalid or incomplete "
+                        "explicit physical identity.")
+                else:
+                    alias = current.get("name")
+                    alias_names = identities.setdefault(key, set())
+                    if isinstance(alias, str) and alias:
+                        alias_names.add(alias)
+                    else:
+                        alias_names.add("")
+            stack.extend(reversed(list(current.values())))
+        elif isinstance(current, (list, tuple)):
+            seen.add(id(current))
+            stack.extend(reversed(list(current)))
+
+    datasources = extracted.get("datasources", [])
+    if isinstance(datasources, dict):
+        datasources = [datasources]
+    if isinstance(datasources, list):
+        for datasource in datasources:
+            if not isinstance(datasource, dict):
+                continue
+            connection_values = [
+                datasource.get("connection"),
+                datasource.get("connection_details"),
+                datasource.get("connection_map"),
+            ]
+            is_hyper_ds = any(
+                _hyper_value_signals(value) for value in connection_values)
+            if not is_hyper_ds:
+                continue
+            tables = datasource.get("tables", [])
+            if not isinstance(tables, list):
+                diagnostics.append(
+                    "Hyper datasource has no readable table inventory.")
+                continue
+            for table in tables:
+                if not isinstance(table, dict):
+                    diagnostics.append(
+                        "Hyper datasource contains a malformed table record.")
+                elif table.get("hyper_identity") is None:
+                    diagnostics.append(
+                        "Hyper datasource table lacks an exact packaged or "
+                        "explicit local source identity.")
+    return identities, diagnostics, uses_hyper
+
+
+def _hyper_project_tmdl_tables(project_root: str
+                               ) -> tuple[list[dict[str, Any]], list[str], bool]:
+    """Read final model tables and detect unresolved Hyper source markers."""
+    tables: list[dict[str, Any]] = []
+    diagnostics: list[str] = []
+    uses_hyper = False
+    try:
+        with os.scandir(project_root) as entries:
+            model_entries = sorted(
+                (entry for entry in entries
+                 if entry.name.endswith(".SemanticModel")),
+                key=lambda entry: entry.name.casefold(),
+            )
+    except OSError as exc:
+        return [], [
+            f"Cannot inspect final semantic models ({type(exc).__name__})."
+        ], False
+    for model_entry in model_entries:
+        model_path = model_entry.path
+        try:
+            model_stat = os.lstat(model_path)
+        except OSError as exc:
+            diagnostics.append(
+                f"{model_entry.name}: cannot inspect semantic model "
+                f"({type(exc).__name__})")
+            continue
+        if _hyper_is_link(model_path, model_stat):
+            diagnostics.append(
+                f"{model_entry.name}: semantic model directory is a link")
+            continue
+        try:
+            if not model_entry.is_dir(follow_symlinks=False):
+                continue
+        except OSError as exc:
+            diagnostics.append(
+                f"{model_entry.name}: cannot inspect semantic model "
+                f"({type(exc).__name__})")
+            continue
+        definition = os.path.join(model_path, "definition")
+        try:
+            definition_stat = os.lstat(definition)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            diagnostics.append(
+                f"{model_entry.name}: cannot inspect model definition "
+                f"({type(exc).__name__})")
+            continue
+        if (_hyper_is_link(definition, definition_stat)
+                or not stat.S_ISDIR(definition_stat.st_mode)):
+            diagnostics.append(
+                f"{model_entry.name}: model definition is not a regular directory")
+            continue
+        tables_dir = os.path.join(definition, "tables")
+        try:
+            tables_stat = os.lstat(tables_dir)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            diagnostics.append(
+                f"{model_entry.name}: cannot inspect final table directory "
+                f"({type(exc).__name__})")
+            continue
+        if (_hyper_is_link(tables_dir, tables_stat)
+                or not stat.S_ISDIR(tables_stat.st_mode)):
+            diagnostics.append(
+                f"{model_entry.name}: final table directory is not a regular directory")
+            continue
+        try:
+            with os.scandir(tables_dir) as entries:
+                table_entries = sorted(
+                    (entry for entry in entries
+                     if entry.name.lower().endswith(".tmdl")),
+                    key=lambda entry: entry.name.casefold(),
+                )
+        except OSError as exc:
+            diagnostics.append(
+                f"{model_entry.name}: cannot list final tables "
+                f"({type(exc).__name__})")
+            continue
+        for table_entry in table_entries:
+            relative = os.path.relpath(table_entry.path, project_root)
+            try:
+                table_info = os.lstat(table_entry.path)
+            except OSError as exc:
+                diagnostics.append(
+                    f"{relative}: cannot inspect final table file "
+                    f"({type(exc).__name__})")
+                continue
+            if (_hyper_is_link(table_entry.path, table_info)
+                    or not stat.S_ISREG(table_info.st_mode)):
+                diagnostics.append(f"{relative}: final TMDL file is not regular")
+                continue
+            try:
+                with open(table_entry.path, "r", encoding="utf-8-sig") as stream:
+                    content = stream.read()
+            except (OSError, UnicodeError) as exc:
+                diagnostics.append(
+                    f"{relative}: final TMDL cannot be read "
+                    f"({type(exc).__name__})")
+                continue
+            annotations = list(_HYPER_ANNOTATION_RE.finditer(content))
+            if annotations:
+                uses_hyper = True
+            m_partitions = extract_m_partitions(content)
+            unresolved_marker = False
+            for _partition_name, expression in m_partitions:
+                try:
+                    active_segments = _hyper_m_active_segments(expression)
+                except _HyperMParseError:
+                    try:
+                        active_segments = [_tokenize_hyper_m(expression)]
+                    except _HyperMParseError:
+                        active_segments = []
+                for segment in active_segments:
+                    if any(
+                            token.kind == "string"
+                            and token.value == "Migration.HyperExportRequired"
+                            for token in segment):
+                        unresolved_marker = True
+                    for index in range(len(segment) - 2):
+                        if (_hyper_m_active_word(segment[index], "Migration")
+                                and segment[index + 1].kind == "symbol"
+                                and segment[index + 1].value == "."
+                                and _hyper_m_active_word(
+                                    segment[index + 2], "HyperExportRequired")):
+                            unresolved_marker = True
+                            break
+                    if unresolved_marker:
+                        break
+                if unresolved_marker:
+                    break
+            if unresolved_marker:
+                uses_hyper = True
+                diagnostics.append(
+                    f"{relative}: unresolved Migration.HyperExportRequired "
+                    "marker remains in an active final M partition")
+            if not annotations:
+                for _partition_name, expression in m_partitions:
+                    try:
+                        calls = _hyper_m_active_file_calls(expression)
+                    except _HyperMParseError:
+                        continue
+                    for _start, _end, argument in calls:
+                        if any(
+                                token.kind == "string"
+                                and (
+                                    token.value.casefold().endswith(".hyper")
+                                    or _HYPER_EXPORT_FILE_RE.fullmatch(
+                                        ntpath.basename(token.value.rstrip("\\/")))
+                                )
+                                for token in argument):
+                            uses_hyper = True
+                            break
+                    if uses_hyper:
+                        break
+            if len(annotations) > 1:
+                diagnostics.append(
+                    f"{relative}: table has multiple Migration_HyperIdentity "
+                    "annotations")
+                continue
+            if not annotations:
+                continue
+            declaration = _HYPER_TMDL_TABLE_RE.search(content)
+            table_name = None
+            if declaration:
+                table_name = declaration.group(1).strip()
+                if table_name.startswith("'") and table_name.endswith("'"):
+                    table_name = table_name[1:-1].replace("''", "'")
+            if not table_name:
+                diagnostics.append(
+                    f"{relative}: annotated TMDL table declaration is missing")
+                continue
+            identity, identity_issue = _hyper_annotation_identity(
+                annotations[0].group(1), relative)
+            if identity_issue:
+                diagnostics.append(identity_issue)
+            tables.append({
+                "path": table_entry.path,
+                "relative_path": relative,
+                "definition": definition,
+                "content": content,
+                "name": table_name,
+                "identity": identity,
+                "identity_key": _hyper_binding_identity_key(identity),
+            })
+    return tables, diagnostics, uses_hyper
+
+
+def _hyper_manifest_preflight(manifest_path: str
+                              ) -> tuple[str, Optional[Dict[str, Any]], bool,
+                                         Optional[str]]:
+    """Inspect manifest existence/shape before deciding Hyper applicability."""
+    data_dir = os.path.dirname(manifest_path)
+    try:
+        data_info = os.lstat(data_dir)
+    except FileNotFoundError:
+        return "missing", None, False, None
+    except OSError as exc:
+        return "unreadable", None, True, (
+            f"Hyper export manifest cannot be inspected "
+            f"({type(exc).__name__}).")
+    if _hyper_is_link(data_dir, data_info) or not stat.S_ISDIR(data_info.st_mode):
+        # Opening anything through a Data link would follow it to wherever the
+        # project metadata points, so the manifest is not read. The Data
+        # diagnostics already report this when the project really uses Hyper.
+        return "unreadable", None, False, None
+    try:
+        info = os.lstat(manifest_path)
+    except FileNotFoundError:
+        return "missing", None, False, None
+    except OSError as exc:
+        return "unreadable", None, True, (
+            f"Hyper export manifest cannot be inspected "
+            f"({type(exc).__name__}).")
+    if _hyper_is_link(manifest_path, info) or not stat.S_ISREG(info.st_mode):
+        return "invalid", None, True, (
+            "Hyper export manifest must be a regular file, not a link.")
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return "invalid", None, True, (
+            f"Hyper export manifest cannot be read "
+            f"({type(exc).__name__}).")
+    if not isinstance(manifest, dict):
+        return "invalid", None, True, (
+            "Hyper export manifest must contain a JSON object.")
+    exports = manifest.get("exports")
+    if not isinstance(exports, list):
+        return "invalid", None, True, (
+            "Hyper export manifest requires an exports list.")
+    if type(manifest.get("version")) is not int or manifest.get("version") != 1:
+        return "invalid", None, True, (
+            "Hyper export manifest requires version 1.")
+    return "available", manifest, bool(exports), None
+
+
+def _hyper_safe_artifact_file(data_dir: str, filename: str
+                              ) -> tuple[Optional[str], Optional[os.stat_result],
+                                         Optional[str]]:
+    """Resolve a manifest basename only when it is an ordinary Data file."""
+    if not _hyper_safe_basename(filename):
+        return None, None, "filename is not a safe basename"
+    path = os.path.join(data_dir, filename)
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None, None, "file is missing from the project Data directory"
+    except OSError as exc:
+        return None, None, f"file cannot be inspected ({type(exc).__name__})"
+    if _hyper_is_link(path, info) or not stat.S_ISREG(info.st_mode):
+        return None, info, "file is not a regular non-link artifact"
+    data_real = _hyper_realpath(data_dir)
+    file_real = _hyper_realpath(path)
+    try:
+        contained = os.path.commonpath((data_real, file_real)) == data_real
+    except ValueError:
+        contained = False
+    if not contained:
+        return None, info, "file resolves outside the project Data directory"
+    return path, info, None
+
+
+def _hyper_validate_export_record(raw_record: Dict[str, Any], index: int,
+                                  data_dir: str
+                                  ) -> tuple[dict[str, Any],
+                                             Optional[tuple[str, ...]]]:
+    """Verify one manifest record against the final artifact bytes."""
+    key, proof_issues = _hyper_record_proof(raw_record, index)
+    record_diagnostics = [
+        f"Hyper export record {index}: {issue}" for issue in proof_issues
+    ]
+    filename = raw_record.get("filename")
+    fmt = raw_record.get("format")
+    identity = raw_record.get("identity")
+    item: dict[str, Any] = {
+        "manifest_index": index,
+        "filename": filename,
+        "format": fmt,
+        "identity": _hyper_identity_payload(identity),
+        "row_count": raw_record.get("row_count"),
+        "total_rows": raw_record.get("total_rows"),
+        "max_rows": raw_record.get("max_rows"),
+        "sampled": raw_record.get("sampled"),
+        "truncated": raw_record.get("truncated"),
+        "columns": list(raw_record.get("columns", []))
+        if isinstance(raw_record.get("columns"), list) else None,
+        "sha256": raw_record.get("sha256"),
+        "size_bytes": raw_record.get("size_bytes"),
+        "row_count_source": raw_record.get("row_count_source"),
+        "bindings": [],
+        "diagnostics": record_diagnostics,
+        "status": "failed",
+    }
+    artifact_path = None
+    initial_info = None
+    if isinstance(filename, str) and _hyper_safe_basename(filename):
+        artifact_path, initial_info, file_issue = _hyper_safe_artifact_file(
+            data_dir, filename)
+        if file_issue:
+            record_diagnostics.append(
+                f"Hyper export record {index}: {file_issue}.")
+    else:
+        file_issue = None
+    if artifact_path and initial_info is not None:
+        try:
+            digest, size_bytes = _hyper_file_digest(artifact_path)
+            after_hash = os.lstat(artifact_path)
+            signature_before = (
+                initial_info.st_size, initial_info.st_mtime_ns,
+                initial_info.st_ino, initial_info.st_dev,
+            )
+            signature_after = (
+                after_hash.st_size, after_hash.st_mtime_ns,
+                after_hash.st_ino, after_hash.st_dev,
+            )
+            if signature_before != signature_after:
+                record_diagnostics.append(
+                    f"Hyper export record {index}: file changed during "
+                    "integrity verification.")
+            if digest != raw_record.get("sha256"):
+                record_diagnostics.append(
+                    f"Hyper export record {index}: SHA-256 does not match "
+                    "the final artifact.")
+            if size_bytes != raw_record.get("size_bytes"):
+                record_diagnostics.append(
+                    f"Hyper export record {index}: byte size does not match "
+                    "the final artifact.")
+            if fmt == "csv" and isinstance(raw_record.get("columns"), list) \
+                    and type(raw_record.get("row_count")) is int:
+                csv_ok, csv_rows, csv_issue = _hyper_csv_evidence(
+                    artifact_path, raw_record["columns"],
+                    raw_record["row_count"])
+                item["csv_rows_measured"] = csv_rows
+                if not csv_ok:
+                    record_diagnostics.append(
+                        f"Hyper export record {index}: {csv_issue}.")
+                try:
+                    after_csv = os.lstat(artifact_path)
+                except OSError as exc:
+                    record_diagnostics.append(
+                        f"Hyper export record {index}: file cannot be restated "
+                        f"after CSV counting ({type(exc).__name__}).")
+                else:
+                    csv_signature = (
+                        after_csv.st_size, after_csv.st_mtime_ns,
+                        after_csv.st_ino, after_csv.st_dev,
+                    )
+                    if csv_signature != signature_before:
+                        record_diagnostics.append(
+                            f"Hyper export record {index}: file changed during "
+                            "CSV verification.")
+            elif fmt == "parquet":
+                item["parquet_row_count_evidence"] = "measured_hyper_copy"
+                item["parquet_recount"] = "not_run"
+        except OSError as exc:
+            record_diagnostics.append(
+                f"Hyper export record {index}: file integrity read failed "
+                f"({type(exc).__name__}).")
+    item["diagnostics"] = record_diagnostics
+    return item, key
+
+
+def _hyper_project_data_signals(data_dir: str
+                                ) -> tuple[bool, list[str]]:
+    """Recognize retained Hyper sources/exports without trusting file contents."""
+    try:
+        root_info = os.lstat(data_dir)
+    except FileNotFoundError:
+        return False, []
+    except OSError as exc:
+        return False, [
+            f"Project Data artifacts cannot be inspected "
+            f"({type(exc).__name__})."
+        ]
+    if (_hyper_is_link(data_dir, root_info)
+            or not stat.S_ISDIR(root_info.st_mode)):
+        return False, ["Project Data path is not a regular directory."]
+    found = False
+    issues: list[str] = []
+    pending = [data_dir]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                ordered = sorted(entries, key=lambda item: item.name.casefold())
+        except OSError as exc:
+            relative = os.path.relpath(directory, data_dir)
+            label = "Data" if relative == "." else f"Data/{relative}"
+            issues.append(
+                f"{label}: cannot inspect Hyper artifacts "
+                f"({type(exc).__name__}).")
+            continue
+        for entry in ordered:
+            lower_name = entry.name.casefold()
+            if (lower_name.endswith(".hyper")
+                    or _HYPER_EXPORT_FILE_RE.fullmatch(entry.name)):
+                found = True
+            try:
+                info = os.lstat(entry.path)
+            except OSError as exc:
+                relative = os.path.relpath(entry.path, data_dir)
+                issues.append(
+                    f"Data/{relative}: cannot inspect artifact "
+                    f"({type(exc).__name__}).")
+                continue
+            if _hyper_is_link(entry.path, info):
+                continue
+            try:
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(entry.path)
+            except OSError as exc:
+                relative = os.path.relpath(entry.path, data_dir)
+                issues.append(
+                    f"Data/{relative}: cannot inspect artifact "
+                    f"({type(exc).__name__}).")
+    return found, issues
+
+
+def _hyper_verify_table_binding(
+        table: Dict[str, Any], export: Dict[str, Any],
+        project_root: str, data_dir: str,
+        data_folder_cache: Dict[str, tuple[Optional[str], Optional[str]]]
+        ) -> tuple[dict[str, Any], list[str]]:
+    """Verify one annotation, final Import M partition, exact file and schema."""
+    relative = table["relative_path"]
+    issues: list[str] = []
+    blocks = _hyper_tmdl_partition_blocks(table["content"])
+    m_partitions = extract_m_partitions(table["content"])
+    if len(blocks) != 1:
+        issues.append(
+            "final table must have exactly one partition for a full Hyper Import binding")
+    if len(m_partitions) != 1:
+        issues.append(
+            "final table must have exactly one reachable M partition")
+    partition = blocks[0] if len(blocks) == 1 else {}
+    partition_name = partition.get("name") if partition else None
+    expression = next((
+        query for name, query in m_partitions if name == partition_name
+    ), None)
+    if partition:
+        if partition.get("kind") != "m":
+            issues.append(
+                "final Hyper partition must be M, not a calculated/direct-query partition")
+        if partition.get("modes") != ["import"]:
+            issues.append("final Hyper partition mode must be exactly import")
+    if expression is None:
+        issues.append(
+            "final Import M partition source expression is missing or ambiguous")
+
+    path_via = "unresolved"
+    schema_evidence: Dict[str, Any] = {
+        "status": "unverified",
+        "checked_source_columns": 0,
+        "derived_source_columns": [],
+        "missing_source_columns": [],
+        "runtime_row_schema": "not_verified",
+    }
+    if expression is not None:
+        try:
+            conditional_issues = _hyper_m_conditional_source_issues(expression)
+            issues.extend(conditional_issues)
+            active_segments = _hyper_m_active_segments(expression)
+            calls = []
+            for segment in active_segments:
+                calls.extend(_hyper_m_file_calls(segment))
+            if len(calls) != 1:
+                issues.append(
+                    "final M partition must have exactly one reachable "
+                    "File.Contents read; unused bindings and #table "
+                    "substitutes are not source proof")
+                call_argument = None
+            else:
+                call_argument = calls[0][2]
+
+            expected_reader = (
+                "Csv" if export.get("format") == "csv" else
+                "Parquet" if export.get("format") == "parquet" else None
+            )
+            reader_count = (
+                _hyper_m_reader_consumes_file(expression, expected_reader)
+                if expected_reader else 0
+            )
+            if not reader_count:
+                issues.append(
+                    "final M partition does not pass the produced file to the "
+                    "document reader matching its CSV/Parquet format")
+
+            if call_argument is not None and isinstance(
+                    export.get("filename"), str):
+                needs_data_folder = any(
+                    _hyper_m_word(token, "DataFolder")
+                    for token in call_argument)
+                data_folder = None
+                if needs_data_folder:
+                    definition = table["definition"]
+                    if definition not in data_folder_cache:
+                        data_folder_cache[definition] = _hyper_data_folder(
+                            definition, project_root, data_dir)
+                    data_folder, folder_issue = data_folder_cache[definition]
+                    if folder_issue:
+                        issues.append(folder_issue)
+                resolved_path, path_result = _hyper_m_path(
+                    call_argument, data_folder, project_root)
+                if resolved_path is None:
+                    issues.append(path_result)
+                else:
+                    path_via = path_result
+                    if resolved_path not in _hyper_trusted_file_keys(
+                            data_dir, export["filename"]):
+                        issues.append(
+                            "final M File.Contents path does not resolve to the "
+                            "exact canonical manifest export file; caption-staged "
+                            "alias files are not verified by this contract and "
+                            "staged_files is informational only")
+        except _HyperMParseError as exc:
+            issues.append(
+                "final M source reachability is unsupported "
+                f"({str(exc)}); exact file binding is unverified")
+    if expression is not None and isinstance(export.get("columns"), list):
+        try:
+            schema_evidence, schema_issues = _hyper_schema_evidence(
+                table["path"], expression, export["columns"])
+            issues.extend(schema_issues)
+        except _HyperMParseError as exc:
+            issues.append(
+                "final sourceColumn schema inference is unsupported "
+                f"({str(exc)})")
+    elif expression is not None:
+        issues.append(
+            "declared export columns are unavailable for final sourceColumn checks")
+
+    binding = {
+        "table": table["name"],
+        "table_file": relative,
+        "partition": partition_name,
+        "mode": ((partition.get("modes") or [None])[0]
+                 if partition else None),
+        "path_source": path_via,
+        "schema": schema_evidence,
+        "status": "static_verified" if not issues
+        and not export.get("diagnostics") else "failed",
+        "diagnostics": sorted(set(issues)),
+    }
+    return binding, binding["diagnostics"]
+
+
+def build_hyper_import_evidence(extracted: Dict[str, Any],
+                                project_dir: str) -> Dict[str, Any]:
+    """Build fail-closed static evidence for complete Hyper Import artifacts.
+
+    This report verifies export metadata, final artifact bytes, CSV physical
+    rows/header where applicable, exact identities and reachable M partition
+    bindings. It never executes M, reads Parquet through an SDK, refreshes a
+    model, or certifies runtime-loaded rows or source-to-target data parity.
+    """
+    extracted = extracted if isinstance(extracted, dict) else {}
+    diagnostics: list[str] = []
+    result: Dict[str, Any] = {
+        "status": "not_applicable",
+        "runtime_status": "not_run",
+        "manifest": _HYPER_MANIFEST,
+        "manifest_status": "not_applicable",
+        "diagnostics": diagnostics,
+        "exports": [],
+        "bindings": [],
+        "verification_scope": (
+            "Static manifest, file integrity, CSV header/count, sourceColumn "
+            "and final Import binding evidence only. Runtime load/refresh, "
+            "Parquet row recount, deployment, and full data parity are not verified. "
+            "Bindings must consume the canonical hashed manifest export; "
+            "caption-staged aliases are not authorized by staged_files."
+        ),
+    }
+    try:
+        project_root = os.path.abspath(os.fspath(project_dir))
+    except (TypeError, ValueError, OSError) as exc:
+        result["status"] = "failed"
+        result["manifest_status"] = "unavailable"
+        diagnostics.append(
+            f"Hyper evidence project path is unavailable ({type(exc).__name__}).")
+        return result
+
+    source_identities, source_issues, extracted_uses_hyper = (
+        _hyper_source_identity_inventory(extracted))
+    diagnostics.extend(source_issues)
+    tmdl_tables, tmdl_issues, tmdl_uses_hyper = (
+        _hyper_project_tmdl_tables(project_root))
+    data_dir = os.path.join(project_root, "Data")
+    data_uses_hyper, data_issues = _hyper_project_data_signals(data_dir)
+    manifest_path = os.path.join(data_dir, "hyper_exports.json")
+    manifest_status, manifest, manifest_uses_hyper, manifest_issue = (
+        _hyper_manifest_preflight(manifest_path))
+    if manifest_issue:
+        diagnostics.append(manifest_issue)
+    uses_hyper = (
+        extracted_uses_hyper or tmdl_uses_hyper or manifest_uses_hyper
+        or data_uses_hyper)
+    if not uses_hyper:
+        result["manifest_status"] = manifest_status
+        result["diagnostics"] = []
+        return result
+
+    result["status"] = "failed"
+    result["manifest_status"] = manifest_status
+    diagnostics.extend(tmdl_issues)
+    diagnostics.extend(data_issues)
+    if manifest_status == "missing":
+        diagnostics.append(
+            "Hyper is required, but Data/hyper_exports.json is missing; "
+            "full export proof cannot be established.")
+
+    data_missing = False
+    try:
+        data_info = os.lstat(data_dir)
+    except FileNotFoundError:
+        data_info = None
+        data_missing = True
+    except OSError as exc:
+        data_info = None
+        diagnostics.append(
+            f"Project Data directory cannot be inspected "
+            f"({type(exc).__name__}).")
+    if data_info is None and data_missing:
+        diagnostics.append(
+            "Hyper is required, but the project Data directory is missing.")
+    elif data_info is not None and (
+            _hyper_is_link(data_dir, data_info)
+          or not stat.S_ISDIR(data_info.st_mode)):
+        diagnostics.append(
+            "Project Data path must be a regular directory, not a link.")
+
+    records = manifest.get("exports", []) if isinstance(manifest, dict) else []
+    if manifest is not None and not records:
+        diagnostics.append(
+            "Hyper is required, but the versioned export manifest has no records.")
+    exports: list[dict[str, Any]] = []
+    identity_to_exports: dict[tuple[str, ...], list[int]] = {}
+    filename_to_indices: dict[str, list[int]] = {}
+    for index, raw_record in enumerate(records):
+        if not isinstance(raw_record, dict):
+            message = f"Hyper export record {index} must be a JSON object."
+            diagnostics.append(message)
+            exports.append({
+                "manifest_index": index,
+                "filename": None,
+                "format": None,
+                "identity": None,
+                "row_count": None,
+                "total_rows": None,
+                "bindings": [],
+                "status": "failed",
+                "diagnostics": [message],
+            })
+            continue
+        item, key = _hyper_validate_export_record(
+            raw_record, index, data_dir)
+        if key is not None:
+            identity_to_exports.setdefault(key, []).append(index)
+        filename = raw_record.get("filename")
+        if isinstance(filename, str):
+            filename_to_indices.setdefault(filename, []).append(index)
+        exports.append(item)
+        diagnostics.extend(item["diagnostics"])
+
+    for key, indices in sorted(
+            identity_to_exports.items(), key=lambda pair: pair[0]):
+        if len(indices) > 1:
+            identity = exports[indices[0]].get("identity")
+            diagnostics.append(
+                "Hyper export manifest contains multiple records for one exact "
+                f"physical identity ({_hyper_identity_label(identity)}).")
+    for filename, indices in sorted(filename_to_indices.items()):
+        if len(indices) > 1:
+            diagnostics.append(
+                f"Hyper export manifest reuses filename {filename!r} across records.")
+            for index in indices:
+                message = (
+                    f"Hyper export record {index}: filename is duplicated in "
+                    "the manifest.")
+                if message not in exports[index].get("diagnostics", []):
+                    exports[index].setdefault("diagnostics", []).append(message)
+
+    annotated_identities: dict[tuple[str, ...], int] = {}
+    for table in tmdl_tables:
+        identity_key = table.get("identity_key")
+        if identity_key is not None:
+            annotated_identities[identity_key] = (
+                annotated_identities.get(identity_key, 0) + 1)
+    for key, aliases in sorted(source_identities.items(), key=lambda pair: pair[0]):
+        label = _hyper_identity_label({
+            "schema": key[-2], "table": key[-1],
+        })
+        if key not in annotated_identities:
+            diagnostics.append(
+                f"Extracted Hyper identity has no final table annotation: {label}.")
+        alias_count = len({alias for alias in aliases if alias}) or 1
+        if annotated_identities.get(key, 0) < alias_count:
+            diagnostics.append(
+                "Final Hyper table annotations do not cover every extracted alias "
+                f"for {label} ({annotated_identities.get(key, 0)} final / "
+                f"{alias_count} source).")
+    if not tmdl_tables:
+        diagnostics.append(
+            "Hyper source evidence has no final table with an exact "
+            "Migration_HyperIdentity annotation.")
+
+    data_folder_cache: Dict[
+        str, tuple[Optional[str], Optional[str]]
+    ] = {}
+    for table in tmdl_tables:
+        identity_key = table.get("identity_key")
+        relative = table["relative_path"]
+        if identity_key is None:
+            diagnostics.append(
+                f"{relative}: exact Hyper identity cannot be bound to an export.")
+            continue
+        matching = identity_to_exports.get(identity_key, [])
+        if len(matching) != 1:
+            diagnostics.append(
+                f"{relative}: exact Hyper identity resolves to {len(matching)} "
+                "manifest export records; exactly one is required.")
+            continue
+        export_index = matching[0]
+        export = exports[export_index]
+        binding, binding_issues = _hyper_verify_table_binding(
+            table, export, project_root, data_dir, data_folder_cache)
+        export["bindings"].append(binding)
+        result["bindings"].append({
+            "identity": export.get("identity"),
+            "filename": export.get("filename"),
+            **binding,
+        })
+        diagnostics.extend(
+            f"{relative}: {issue}" for issue in binding_issues)
+
+    for index, export in enumerate(exports):
+        if not export.get("bindings"):
+            message = (
+                "required Hyper export is not consumed by a final annotated "
+                "Import table")
+            export.setdefault("diagnostics", []).append(message)
+            diagnostics.append(
+                f"Hyper export record {index} is unconsumed by a final annotated "
+                "Import table.")
+        export["status"] = (
+            "static_verified"
+            if not export.get("diagnostics")
+            and export.get("bindings")
+            and all(binding.get("status") == "static_verified"
+                    for binding in export["bindings"])
+            else "failed"
+        )
+    if extracted_uses_hyper and not source_identities and not tmdl_tables:
+        diagnostics.append(
+            "Hyper source is present, but no exact explicit physical identity "
+            "is available; filename/table heuristics are not accepted.")
+
+    result["exports"] = exports
+    result["bindings"] = sorted(
+        result["bindings"],
+        key=lambda item: (
+            str(item.get("table_file", "")).casefold(),
+            str(item.get("partition", "")).casefold(),
+            str(item.get("filename", "")).casefold(),
+        ),
+    )
+    result["diagnostics"] = sorted(set(diagnostics))
+    result["status"] = (
+        "static_verified" if not result["diagnostics"] else "failed")
+    result["source_identity_count"] = len(source_identities)
+    result["final_annotated_table_count"] = len(tmdl_tables)
+    result["runtime_status"] = "not_run"
+    return result
 
 
 _QUALITY_POLICIES = {
@@ -1319,7 +4000,36 @@ def build_quality_report(extracted: Dict, project_dir: str,
     blockers = findings.blockers
     warnings = findings.warnings
     hyper_sampling = _hyper_sampling_evidence(extracted or {}, project_dir)
-    data = {**data, "hyper_sampling": hyper_sampling}
+    if fabric_evidence.get("status") == "not_present":
+        hyper_import = build_hyper_import_evidence(
+            extracted or {}, project_dir)
+    else:
+        hyper_import = {
+            "status": "not_applicable",
+            "runtime_status": "not_run",
+            "manifest_status": "not_applicable",
+            "manifest": _HYPER_MANIFEST,
+            "diagnostics": [],
+            "exports": [],
+            "bindings": [],
+            "verification_scope": (
+                "Fabric DirectLake uses separate current sampling evidence; "
+                "full PBIP Hyper Import validation was not invoked."),
+        }
+    data = {
+        **data,
+        "hyper_sampling": hyper_sampling,
+        "hyper_import": hyper_import,
+    }
+    for diagnostic in hyper_import.get("diagnostics", []) or []:
+        findings.add(
+            "hyper_import",
+            diagnostic,
+            blocker=True,
+            fix="Repair full Hyper export proof or final Import binding, then "
+                "rerun the deterministic static quality gate.",
+            evidence=[hyper_import.get("manifest", _HYPER_MANIFEST)],
+        )
     for diagnostic in hyper_sampling["diagnostics"]:
         findings.add("hyper_manifest", diagnostic, blocker=False,
                      evidence=[hyper_sampling["manifest"]])
@@ -1536,6 +4246,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         },
     )
     evidence_manifest["hyper_sampling"] = hyper_sampling
+    evidence_manifest["hyper_import"] = hyper_import
     return MigrationQualityReport(
         report_name=report_name,
         assessment=_assessment_dict(assessment),
@@ -1554,6 +4265,7 @@ def build_quality_report(extracted: Dict, project_dir: str,
         openability_confidence=confidence,
         fabric=fabric,
         fabric_evidence=fabric_evidence,
+        hyper_import=hyper_import,
         semantic_context=semantic_context,
         m_emitters=m_emitters,
         visual_mappings=visual_mappings,

@@ -74,11 +74,19 @@ job. Do not expose the loopback runner on a network interface.
    For Power BI projects, leave storage mode on **Automatique**, or select
    **Import** to override DirectQuery. Automatic mode imports Hyper snapshots
    and uses DirectQuery only for capable native sources without Hyper.
-   For non-Hyper Import, only the datasource connection, schema and M are
-   migrated; Power BI loads the data at refresh. Hyper data still export.
+   Non-Hyper Import generates the datasource connection, schema and M without
+   exporting rows. An explicitly packaged Excel workbook is copied unchanged
+   into the project's `Data/` folder and bound by its absolute path; loose
+   native files and packaged non-Excel files are not copied.
+   Power BI loads native rows at refresh. Hyper data still export.
 4. Start the migration and follow its real status and technical log.
 5. Open the generated reports or project artifacts from the result list, or
    download the completed output as a ZIP.
+
+Copied Excel workbooks contain source data, including all sheets and metadata.
+Treat their output ZIPs accordingly and keep them out of repositories. Moving
+the project requires updating absolute Excel source paths; copying alone does
+not establish successful native refresh or parity.
 
 The browser cannot browse or upload folders from the local computer. Enter or
 paste the absolute paths directly into the two folder fields.
@@ -96,8 +104,10 @@ The [storage-mode diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-expo
 also shows the PBIP native Hyper export rule: above 10 MiB requires Parquet,
 otherwise CSV. Above-threshold SQLite-compatible inputs fail unless CSV is
 explicitly selected through the CLI; the browser keeps automatic export.
-Native Import does not copy source Excel/CSV dataset files into the PBIP;
-configure their original paths and credentials in Power Query when needed.
+Native Import does not export source rows. Explicitly packaged Excel is copied
+unchanged into `Data/` and bound by absolute path; loose native files and packaged
+non-Excel files are not copied. Configure their original paths and credentials
+in Power Query when needed.
 Fabric keeps its separate DirectLake/CSV artifact path.
 
 ## Local data and safety

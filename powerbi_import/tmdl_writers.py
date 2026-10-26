@@ -1184,6 +1184,19 @@ def _write_table_tmdl(tables_dir, table):
         lines.append("\tannotation Copilot_DateTable = true")
     lines.append(f"\tannotation Copilot_TableDescription = {_generate_table_description(table)}")
 
+    # Match the generator's exact-identity contract without a circular import.
+    # The source identity is independent of the table alias and filename.
+    hyper_identity = table.get('hyper_identity')
+    identity_fields = ('workbook', 'archive_member', 'schema', 'table')
+    if (isinstance(hyper_identity, dict)
+            and all(isinstance(hyper_identity.get(key), str) and hyper_identity[key]
+                    for key in identity_fields)):
+        identity_json = json.dumps(
+            {key: hyper_identity[key] for key in identity_fields},
+            ensure_ascii=True, separators=(',', ':'),
+        )
+        lines.append(f"\tannotation Migration_HyperIdentity = {identity_json}")
+
     # Lineage annotations (from merge)
     source_wbs = table.get('_source_workbooks', [])
     if source_wbs:

@@ -17,6 +17,13 @@ upload-confined or OS-sandboxed workflow described here.
   server-owned `TTPBI_UPLOAD_ROOT` and a private `TTPBI_EXTRACT_DIR` to that
   child process; it does not set the upload root in the shared server process.
   Extraction staging is inside the job's private output directory.
+- Native Hyper-to-Parquet writing needs an entirely ASCII staging path because
+  of the Windows SDK's Unicode-output-path defect. Its private transit must
+  remain inside the authorized job boundary. If no writable authorized ASCII
+  path exists, the export fails; it does not use an external temporary directory
+  or relax confinement. Python publishes the finished file at the requested
+  destination. Complete PBIP migrations also reject capped/sample-only Hyper
+  exports and unresolved Import bindings.
 - Uploaded names are reduced to a validated basename. Before extraction,
   workbook/package references and archive members are checked: parent
   traversal, absolute paths (including POSIX-rooted, drive-qualified and UNC
@@ -38,6 +45,45 @@ upload-confined or OS-sandboxed workflow described here.
 - The local CLI remains a trusted local workflow: when
   `TTPBI_UPLOAD_ROOT` is absent, its existing local source discovery behavior
   is unchanged.
+
+## Hyper project metadata
+
+- The read-only Hyper import check reads absolute paths that are stored in the
+  generated project: the `Migration_HyperIdentity` TMDL annotation, the
+  `Data/hyper_exports.json` manifest, the `DataFolder` parameter and
+  `File.Contents` literals. Those values are untrusted input, so none of them
+  is ever resolved through the filesystem. Each one is normalized as text
+  (`lexical_path_key`: absolute form, separators, case, `.` and `..`) and
+  compared with the keys of the `Data` folder the operator selected: its own
+  spelling and its resolved location. A UNC or device-namespace path
+  (`\\host\share`, `\\?\UNC\...`, `\\.\...`, `\??\...`), or a local-looking
+  path that runs through a symlink or junction, therefore cannot make
+  verification open a connection to a host it names. A UNC output folder that
+  the operator selected still matches itself, and so does a project that the
+  operator reached through a link of their own choosing.
+- Inside the project, a `Data` directory, `expressions.tmdl`, export file or
+  manifest that is a symlink, a Windows reparse point (junction) or a
+  multiply-linked file is reported and is never opened, listed or followed.
+  That includes the manifest read and the Hyper artifact scan of the sampling
+  check, which does not descend into links either.
+- The cost of this rule is that an alias of the `Data` folder through a link
+  or an 8.3 short name, written into the project metadata, is not accepted.
+  Regenerate the project at its real location instead.
+- The scope is the Hyper checks. The generic project scanners (the TMDL, PBIR
+  and report walkers of the quality gate, the openability check) and the MCP
+  `quality_report(project_dir)` tool read the project tree as it is given and
+  do not test for links. Treat any project that this tool did not generate as
+  untrusted input, and do not point those readers at it from a workstation
+  that can reach hostile network shares.
+- A drive letter that the user mapped to a network share (for example `Z:` to
+  `\\host\share`) cannot be told apart from a local drive by its text and is
+  treated as local. Project metadata cannot create that mapping.
+- The generated TMDL annotation, `Data/hyper_exports.json` and the quality
+  report contain the absolute path of the source workbook. The exact path is
+  part of the extract identity, and the staged CSV/Parquet files and packaged
+  Excel sources are bound by absolute path by design. Keep generated projects
+  and reports inside the trust zone of the workstation that produced them and
+  review them before sharing them outside it.
 
 REST callers continue to submit the `model_mode` field (`import`,
 `directquery`, or `composite`). The server forwards its value to the CLI as

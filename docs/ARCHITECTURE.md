@@ -153,25 +153,44 @@ Hyper file is the snapshot to import; its size controls the export format,
 not the storage mode. A native database source without Hyper uses DirectQuery
 when its connector supports it. The user can always choose **Import** instead.
 For a non-Hyper Import source, migrate the connection, schema and Power Query M
-only: do not export native rows or copy native dataset files into the PBIP.
-Power BI retrieves those data at refresh. Hyper is the explicit exception:
-its data are exported and connected to the Import partition.
+without exporting native rows. An explicitly declared Excel workbook packaged
+in a TWBX is copied unchanged into the PBIP project's `Data/` folder and bound
+by its absolute path. Loose native files and packaged non-Excel files are not
+copied. Power BI retrieves native rows at refresh. Hyper is different:
+all rows already present in each migrated Hyper table are exported, then
+connected to the corresponding Import partition. Do not replace the snapshot
+with its historical live connection or reapply its already-materialized joins
+and filters as if it were that live source.
+
+The packaged-Excel exception applies to trusted local per-workbook generation
+through batch folders/manifests and batch configuration. Uploaded jobs remain
+validation-only; shared-model, add-to-model and remove-from-model workflows do
+not stage or rebind packaged Excel through this path. Fabric's separate staging
+contract is unchanged.
 
 ```mermaid
 flowchart TD
     Source["Tableau source table"] --> Hyper{"Hyper file present?"}
-    Hyper -->|Yes| Size{"Hyper size > 10 MiB?"}
+    Hyper -->|Yes| Complete["Read complete Hyper tables; no row cap or metadata sample"]
+    Complete --> Size{"Uncompressed Hyper size > 10 MiB?"}
     Size -->|Yes| SDK{"Native Hyper input and Hyper SDK available?"}
-    SDK -->|Yes| Parquet["Native Parquet export"]
+    SDK -->|Yes| Parquet["Complete native Parquet export"]
     SDK -->|No| Error["Error: incompatible input or missing Hyper API; explicit CSV override available"]
-    Size -->|"No: size <= 10 MiB"| CSV["CSV export: streaming reader or marked sample"]
-    Parquet --> HyperImport["Power BI: Import staged Hyper data"]
-    CSV --> HyperImport
+    Size -->|"No: size <= 10 MiB"| CSV["Complete CSV export"]
+    Parquet --> Check["Check identity, schema, row counts and file integrity"]
+    CSV --> Check
+    Check --> HyperImport["Power BI: exact file binding in Import"]
+    HyperImport --> Gate["Fail if an export is incomplete or a required table is unbound"]
+    Gate --> Runtime["Separate authorized native refresh and value checks"]
     Hyper -->|No| Capable{"Connector supports DirectQuery?"}
     Capable -->|Yes| DirectQuery["Power BI: DirectQuery"]
-    Capable -->|No: Excel, CSV, MySQL, other import-only sources| NativeImport["Power BI: Import connection, schema and M only"]
+    Capable -->|No: Excel, CSV, MySQL, other import-only sources| NativeImport["Power BI: Import connection, schema and M; no native row export"]
     DirectQuery -.->|"User selects Import in UI or --mode import"| NativeImport
-    NativeImport --> Refresh["Power BI loads native data at refresh"]
+    NativeImport --> PackagedExcel{"Excel explicitly packaged in TWBX?"}
+    PackagedExcel -->|Yes| ExcelCopy["Unchanged Excel copy in Data; absolute-path M binding"]
+    PackagedExcel -->|No| Original["Keep original native source binding"]
+    ExcelCopy --> Refresh["Power BI loads native data at refresh"]
+    Original --> Refresh
 ```
 
 The default `--mode auto` applies this rule. `--mode import`, or **Import** in
@@ -180,10 +199,15 @@ A mixed-source model can therefore contain both Import and DirectQuery tables.
 Explicit DirectQuery requests for Hyper or import-only files fail rather than
 silently changing the requested mode.
 
-Native file queries point at the original source, not copies in generated
-`Data/`. For a loose workbook, a declared relative binding is resolved against
+Native file queries point at the original source, except for explicitly
+packaged Excel workbooks copied unchanged into generated `Data/`. The copy
+preserves the original binary, all sheets and metadata; it is not an export of
+selected rows. Treat it as source data and keep it out of repositories.
+Its absolute path must be updated if the project moves, and a gateway needs
+access to it for service refresh. Copying alone does not prove refresh or parity.
+For a loose workbook, a declared relative binding is resolved against
 the original workbook directory without reading or copying native rows.
-Absolute bindings are preserved. Packaged native files are not extracted or
+Absolute bindings are preserved. Other packaged native files are not copied or
 rebased onto the archive's parent: unavailable bindings require configuration
 in Power Query. No basename search substitutes another file.
 Native CSV queries do not use the model's selected column count to truncate
@@ -197,9 +221,10 @@ the eventual export: 10 MiB is `10 * 1024 * 1024` bytes. Exactly 10 MiB still
 uses CSV. Parquet needs the existing optional `tableauhyperapi` dependency;
 if it is required but unavailable, the prerequisite must be resolved explicitly.
 SQLite-compatible inputs cannot use the native Parquet writer and fail above
-this threshold unless CSV is explicitly selected. A header-only reader may
-yield a bounded CSV sample; manifests and quality reports never certify that
-sample as complete source data.
+this threshold unless CSV is explicitly selected. PBIP generation requires a
+reader that can stream the entire table: a metadata/header sample is not an
+export fallback. A resolved row cap, including one inherited from the
+environment, is an explicit error for a Hyper PBIP migration.
 Advanced format overrides do not change Import storage for Hyper files.
 Fabric-native DirectLake generation is a separate target, not this PBIP policy.
 
@@ -209,9 +234,24 @@ type. Other columns keep their native types. Other unsupported types remain
 explicit export errors. CSV geography serialization is unchanged and may contain
 the SDK's bytes representation. Neither format establishes native spatial parity.
 
+Native Parquet `COPY` uses a private ASCII staging directory to avoid the
+Windows SDK's accented-output-path defect. Python copies the result into a
+reserved temporary file beside the final Unicode destination before atomic
+publication. Uploads must remain inside their authorized job boundary; if no
+writable authorized ASCII staging path exists, export fails explicitly.
+No scan or deletion of similarly named, incorrectly encoded paths is performed.
+
+The manifest records full physical identity, source/export row counts, columns
+and file-integrity evidence. The final gate checks actual Import partitions
+and the files they reference, not just manifest `staged_files` declarations.
+Incomplete, unresolved or unconsumed required exports block success.
+These are static export/binding checks, not evidence that Desktop has loaded
+or saved the model. Native refresh, save/reopen, values and screenshots need
+their own authorized validation.
+
 Generating a database connection never refreshes it or proves credential,
-gateway or query-folding availability. Importing a capped extract remains a
-sample, not a full-data validation. See the
+gateway or query-folding availability. Limited low-level diagnostic exports
+and Fabric's separate staging behavior are not full PBIP imports. See the
 [Hyper options and progress contract](FAQ.md#how-are-hyper-extract-files-handled).
 
 ## Module Responsibilities
