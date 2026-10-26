@@ -4,9 +4,69 @@
 
 ## Unreleased
 
+- Require complete Hyper snapshot exports for PBIP and exact CSV/Parquet file
+  bindings to Import partitions. Reject row caps (including environment caps),
+  sample-only readers, unknown/inconsistent counts and unresolved required
+  bindings instead of accepting a partial model. Keep the uncompressed 10 MiB
+  format threshold, native-source no-row-export behavior and separate Fabric
+  DirectLake contract. Preserve explicit main/named Hyper sources and
+  multi-table extract aliases through physical source identities; record those
+  identities in TMDL for final read-only binding checks.
+  Rebuild column/type/routing maps from active physical declarations rather
+  than inactive native metadata. Keep logical groups and table/object
+  pseudo-fields out of physical source columns; do not duplicate categorical
+  memberships as numeric bins. Follow declared M renames, derived columns,
+  literal lookup joins and recognized scalar date/time constructors when
+  proving final schema coverage, while rejecting unknown dependencies.
+  Route native Parquet writing through private authorized ASCII staging and
+  publish via Python at the actual destination, including accented paths.
+  Keep failed exports and cleanup errors visible. These export/static checks
+  do not certify native refresh, saved model data or rendered parity.
+
+- Security: stop the Hyper import check from resolving project-controlled
+  paths. The identity annotation, export manifest, `DataFolder` and
+  `File.Contents` values (UNC and device-namespace paths such as `\\host\share`,
+  `\\?\UNC\...`, `\\.\...` and `\??\...`, and local-looking paths that run
+  through a symlink or junction) are normalized and compared as text with the
+  keys of the operator-selected `Data` folder, and never reach `realpath`, so a
+  tampered project cannot trigger an outbound SMB connection during
+  verification. A `Data` directory, `expressions.tmdl`, export file or
+  sampling manifest that is a link is reported without being opened, and the
+  sampling scan no longer descends into junctions. An alias of the `Data`
+  folder through a link or an 8.3 short name is no longer accepted. Document
+  that generated TMDL, the manifest and the quality report carry the source
+  workbook's absolute path, that a drive letter mapped to a share is treated
+  as local, and that the generic project scanners do not test for links.
+
+- Refresh the two French documentation PowerPoints: 15-slide overview/business
+  case and 23-slide architecture/workflow guide, with editable diagrams,
+  speaker-note references, the Hyper/source policy at generation (including the
+  unchanged packaged-Excel copy into `Data/`), shared models,
+  Prep/Fabric routes, optional Microsoft authoring tooling and separate quality
+  gates. Consolidate their source into one generator with the compatible
+  technical-guide entrypoint. Replace stale counts and unsubstantiated savings
+  claims with dated evidence and an explicitly illustrative, adjustable
+  effort/TCO model; document optional `python-pptx` authoring and rebuild commands.
+
+- Write PBIR story/swap bookmarks as indexed `<name>.bookmark.json` files.
+  Keep legacy bookmark discovery in static openability, parity and interaction
+  evidence, and diagnose missing index targets instead of silently missing them.
+  Normalize Gantt approximations before role construction so a source without
+  a category preserves its measures in an explicitly annotated table rather
+  than an invalid clustered bar. Omit a funnel's unsupported default value-axis
+  toggle without silently dropping explicit source settings. Serialize bound
+  data bars as `columnFormatting.dataBars` with metadata-only selectors and
+  expression-wrapped colors/booleans, using the same formatter in both visual
+  producers. Only when bound bars are emitted, upgrade legacy `matrix`/`table`
+  to `pivotTable`/`tableEx` and record the compatibility adjustment; visuals
+  without emitted bars keep their type. Document optional
+  Microsoft authoring validation, separate from core migration dependencies
+  and model/Desktop/refresh/deployment evidence.
+
 - Resolve native Import relative file bindings against the original loose
   workbook/datasource directory, without reading or copying native rows.
-  Preserve absolute paths and packaged-source configuration boundaries.
+  Preserve absolute paths and packaged-source configuration boundaries except
+  for the separately documented unchanged packaged-Excel copy.
   Do not truncate native CSV physical width to the selected model-column count.
   Select the declared raw source columns after header parsing and before type
   or caption transformations, so unmodeled physical fields cannot collide with
@@ -25,10 +85,20 @@
   and nulls; keep other unsupported-type failures explicit and CSV behavior
   unchanged. Neither change establishes source-value or visual parity.
 
+- In trusted local per-workbook batch generation, copy an explicitly declared
+  Excel workbook packaged in a TWBX unchanged into the generated PBIP project's
+  `Data/` folder and bind its absolute path before
+  generating Power Query M. Do not select a similarly named loose file or
+  convert/export Excel rows. Keep missing, ambiguous, unsafe or conflicting
+  sources explicit. Uploaded jobs and shared-model/add-to-model workflows are
+  outside this exception. Moving the project requires updating the absolute binding;
+  the copy contains source data and must not be committed.
+
 - Keep non-Hyper PBIP Import datasource-only: generate the connection, schema
-  and Power Query M without exporting native rows or copying native dataset
-  files. Retain original file bindings for a later Power BI refresh, separate
-  from the staged Hyper data folder. Hyper still exports its data to CSV/Parquet
+  and Power Query M without exporting native rows. Loose native files and
+  packaged non-Excel dataset files are not copied. Apart from the unchanged
+  packaged-Excel copy described above, retain original file bindings for a later
+  Power BI refresh. Hyper still exports its data to CSV/Parquet
   using the existing 10 MiB rule; Fabric keeps its separate staging behavior.
 
 - Simplify PBIP source selection: Hyper snapshots use Import; native sources
@@ -42,8 +112,9 @@
   export provenance and throttled progress in terminal/browser logs. Required
   Parquet uses the existing optional Hyper API; unavailable prerequisites and
   failed exports are explicit errors, not partial-success fallbacks. Capped
-  exports and header-reader samples remain explicitly limited data. The central
-  quality report records those limits before determining status and handoff.
+  and header-reader diagnostics remain limited data; the later full-Hyper
+  contract above rejects them for PBIP generation. The central quality report
+  records those limits before determining status and handoff.
   These changes do not establish native refresh parity.
 
 - Refresh the maintained documentation for the local-browser product and

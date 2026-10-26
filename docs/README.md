@@ -19,6 +19,7 @@ the maintained Tableau to Power BI documentation by the task you want to finish.
 | 💻 Automate a folder of workbooks | [Operator manual](USER_MANUAL.md) | `python migrate.py batch .\workbooks --output-dir .\output`; a one-workbook folder is valid |
 | 🗄️ Choose Import or DirectQuery | [Source-mode decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export) | Review Hyper export rules and the explicit Import override |
 | 🔎 Check the generated result | [Review checklist](MIGRATION_CHECKLIST.md) | Configure sources, verify refresh, save/reopen, then compare values and visuals |
+| 🧰 Add Microsoft's static PBIR check | [Optional authoring validation](POWERBI_PROJECT_GUIDE.md#optional-microsoft-pbir-validation) | Validate the generated `.Report` separately; no Node/MCP dependency is added to core migration |
 | 🚀 Publish with authorization | [Deployment guide](DEPLOYMENT_GUIDE.md) | Preview separately; generation does not deploy or prove runtime readiness |
 
 The local browser runner, the optional Streamlit/upload interface, and the REST
@@ -48,12 +49,79 @@ launcher, and Power BI/Tableau Desktop remain optional diagnostic prerequisites.
 |---|---|---|
 | Hyper at most 10 MiB, uncompressed | **Import + CSV** | Export the Hyper snapshot |
 | Hyper strictly above 10 MiB, uncompressed | **Import + native Parquet** | Requires the optional Hyper SDK; failures stay explicit |
-| No Hyper | **DirectQuery where supported**, otherwise Import | Migrate connection, schema and M; do not extract or copy native dataset files |
+| No Hyper | **DirectQuery where supported**, otherwise Import | No native row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Loose native files and packaged non-Excel files are not copied |
 
 The user can always select **Import** instead of automatic DirectQuery.
 Power BI reads native Import rows at refresh, after source access is configured.
+The packaged-Excel exception covers trusted local per-workbook batch generation,
+not uploaded jobs or shared-model/add-to-model workflows.
 Fabric keeps its separate staging contract. See the
 [decision diagram and exceptions](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
+
+## Presentations: architecture and business value
+
+Two French decks, edition **26 October 2026**, use editable PowerPoint diagrams
+and speaker notes with source references. Their source-policy slide includes the
+packaged-Excel exception; its absolute-path/privacy limitations are in the
+[source architecture](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
+
+| Deck | Audience and content |
+|---|---|
+| [Vision and business case — 15 slides](https://github.com/cyphou/TableauToPowerBI/blob/main/docs/Tableau_to_PowerBI_Migration.pptx) | Value proposition, workflow, source policy, dated evidence, illustrative time savings, TCO and pilot acceptance |
+| [Architecture and workflows — 23 slides](https://github.com/cyphou/TableauToPowerBI/blob/main/docs/Tableau_to_PowerBI_Migration_Guide.pptx) | Two-step pipeline, PBIP/TMDL/PBIR, Hyper decision diagram, shared models, Prep, Fabric, quality gates, agent ownership and optional Microsoft tooling |
+
+The links target the repository's published `main` branch; local regenerated
+copies live alongside this guide. The minimal HTML publisher does not copy
+PowerPoint packages. Until a refresh is committed and pushed, the local files
+are the updated edition, not the published branch.
+
+### Regenerate the decks
+
+Presentation authoring requires the **optional** `python-pptx` package, tested
+with **1.0.2**. It is not a core migration dependency.
+From the repository root:
+
+```powershell
+python -m pip install "python-pptx==1.0.2"
+python docs\generate_pptx.py --deck both
+
+# One deck, custom destination:
+python docs\generate_pptx.py --deck overview --output .\output\business-case.pptx
+
+# Compatible technical-guide entrypoint:
+python scripts\generate_presentation.py --output .\output\technical-guide.pptx
+```
+
+The [canonical generator](../docs/generate_pptx.py) owns both decks; the
+[compatibility entrypoint](../scripts/generate_presentation.py) defaults to the
+technical guide. `--output-dir` changes the destination for the two standard
+filenames; `--output` selects one file and cannot be combined with `--deck both`.
+
+### Commercial assumptions, not a productivity benchmark
+
+The model assumes **100 reports**, **16 manual hours/report**, **80 hours of
+setup**, a loaded rate of **€100/hour**, and eight-hour person-days. Assisted
+effort includes human review, remediation and validation.
+
+| Illustrative scenario | Assisted hours/report | Total hours, including setup | Hours saved | Effort reduction | Labor-equivalent value |
+|---|---:|---:|---:|---:|---:|
+| Prudent | 8 | 880 | 720 | 45% | €72,000 |
+| Central | 5 | 580 | 1,020 | 63.75% | €102,000 |
+| Ambitious | 3 | 380 | 1,220 | 76.25% | €122,000 |
+
+`Hours saved = reports × manual hours − (setup + reports × assisted hours)`.
+These are **illustrative capacity values**, not measured time savings,
+guaranteed cash savings, elapsed delivery times or net ROI. Deduct additional
+costs not already counted in assisted labor: licensing/capacity, storage,
+gateways, integration, training and operations. Do not subtract the same setup
+or labor twice. A comparative ROI uses
+`(manual cost − total assisted cost) / total assisted cost`, with the same
+scope and time horizon. Calibrate the assumptions on a representative pilot.
+
+The decks separately label the **23 October 2026** local tests and ten-report
+Microsoft static-validation results. Those observations do not measure
+productivity or establish model execution, Desktop opening, refresh, rendered
+parity or deployment.
 
 ## Conversion references
 

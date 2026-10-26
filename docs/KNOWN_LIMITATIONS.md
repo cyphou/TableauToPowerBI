@@ -24,7 +24,7 @@ local generation is not proof of native refresh or runtime parity.
 
 | Area | Limitation | Impact |
 |------|-----------|--------|
-| **Hyper files** | Exact physical identities route packaged snapshots to Import. PBIP auto requires native Parquet when the uncompressed Hyper file is strictly > 10 MiB, otherwise CSV; Fabric auto remains CSV. CSV rewrites and archive copies use bounded buffers and atomic replacement. `--hyper-export-max-rows N` explicitly creates a sample; `--hyper-rows` is separate legacy metadata sampling, not a batch export cap. | Proprietary Hyper and native Parquet require optional `tableauhyperapi`. SQLite handles compatible inputs, but cannot provide native Parquet: above the PBIP threshold it requires an explicit CSV override. The bounded header scan may yield metadata and sample rows, never complete data. Required Parquet support errors are explicit. See the [decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export). |
+| **Hyper files** | PBIP requires complete snapshot export and exact CSV/Parquet-to-Import bindings. Auto requires native Parquet when the uncompressed Hyper file is strictly > 10 MiB, otherwise CSV; Fabric auto remains CSV. Row caps, including environment caps, and metadata-only sample readers are rejected for complete PBIP migrations. Missing/incomplete/unbound required exports block success. `--hyper-rows` remains separate legacy metadata sampling, not a batch export cap. | Proprietary Hyper and native Parquet require optional `tableauhyperapi`. SQLite handles compatible inputs, but cannot provide native Parquet: above the PBIP threshold it requires an explicit CSV override. Native Parquet needs a writable, authorized ASCII transit directory; uploads cannot escape their job boundary to obtain one. Full-export/static binding checks do not prove Desktop loading, saved state or parity. See the [decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export). |
 | **TDE files (legacy)** | ⚠️ `.tde` is the **pre-2018 legacy extract format** and cannot be read by any tier (not a Hyper database, not SQLite-compatible). Tables get a placeholder `#table()` partition with a `TODO` comment. | Re-save the workbook in Tableau Desktop to convert `.tde` → `.hyper`, or manually export data to CSV |
 | **Tableau Server/Cloud** | ✅ `--server` CLI flag enables direct extraction from Tableau Server/Cloud via REST API (PAT or password auth). Live connections still need reconfiguration in PBI |
 | **Tableau 2024.3+** | ✅ Dynamic parameters with database queries fully extracted and converted to M partition with `Value.NativeQuery()`. Dynamic zone visibility parses conditions and maps to PBI bookmark visibility toggles. Table extensions (Einstein Discovery, external API) generate M `Web.Contents()` or placeholder. Linguistic schema extraction feeds PBI Q&A synonyms. | Some newer Tableau 2024.3+ features may still need manual adjustment |
@@ -32,6 +32,30 @@ local generation is not proof of native refresh or runtime parity.
 | **OAuth credentials** | Credential metadata is stripped by design | Data source connections need re-authentication in Power BI |
 | **Nested layout containers** | ✅ IMPROVED — Grid-snapping engine handles 3-level nesting; 4+ levels may lose precision | Very deeply nested containers may need manual adjustment |
 | **Rich tooltips** | HTML/custom layout tooltips are converted to run-level text (bold, color, font_size extracted) | Complex HTML tooltip layouts are not preserved |
+
+Strict Hyper Import evidence requires a persistent exact source identity.
+Loose Hyper inputs without that identity and legacy caption-staged CSV aliases
+are not certified by the full-import gate; a filename or `staged_files` claim
+alone cannot establish a binding. Derived groups require explicit membership
+metadata: hidden Tableau clustering without recoverable declarations is not
+reconstructed from the physical Hyper columns.
+
+Hyper verification reads absolute paths stored in the generated project (the
+`Migration_HyperIdentity` annotation, `Data/hyper_exports.json`, the `DataFolder`
+parameter and `File.Contents` literals). None of them is resolved through the
+filesystem: each is normalized as text and compared with the keys of the `Data`
+folder the operator selected, so a UNC path, a device-namespace path or a
+local-looking path routed through a symlink or junction cannot make
+verification contact a remote host. A `Data` directory, `expressions.tmdl`,
+export file or manifest that is a link is reported and never opened. The cost is
+that an alias of the `Data` folder through a link or an 8.3 short name is not
+accepted; regenerate the project at its real location. A drive letter mapped to
+a network share looks local and is treated as local. The generic project
+scanners and the MCP `quality_report(project_dir)` tool do not test for links,
+so treat a project that this tool did not generate as untrusted input. Those
+artifacts and the quality report also embed the source workbook's absolute
+path, so share generated projects only within the trust zone that produced
+them. See [Upload Security](../UPLOAD_SECURITY.md#hyper-project-metadata).
 
 Native Hyper geography is exported as WKT text in Parquet, not as a native
 spatial column. CSV geography serialization remains the SDK's bytes
@@ -51,14 +75,25 @@ table. Explicit DirectQuery requests for Hyper or import-only files fail
 instead of producing an invalid file-backed DirectQuery model.
 
 Non-Hyper Import generates only the connection, schema and Power Query M.
-Migration does not export native rows or copy native Excel/CSV and other dataset
-files into the project. Loose-workbook relative paths are resolved against the
+Migration does not export native rows. An Excel workbook explicitly packaged
+in a TWBX is copied unchanged into the generated `Data/` folder and bound by its
+absolute path; loose native files and packaged non-Excel files are not copied.
+This exception covers trusted local per-workbook batch generation only, not
+uploaded jobs or shared-model/add-to-model/remove-from-model workflows.
+Loose-workbook relative paths are resolved against the
 original workbook directory without dataset I/O; absolute paths are preserved.
-Packaged native data are not extracted or rebound to guessed files, and
+Other packaged native data are not copied or rebound to guessed files, and
 drive-relative/ambiguous paths still need explicit configuration. Source
 delimiters and schemas must agree with the file. Credentials and source access
 are required when Power BI loads the data at refresh.
 Hyper data still export to CSV/Parquet and use Import.
+
+The packaged-Excel copy preserves every sheet and the workbook metadata; it
+contains source data, including when included in a downloadable output ZIP.
+Keep it out of repositories. Moving the project requires updating its absolute
+Power Query source path; service refresh requires gateway/file access.
+A byte-for-byte copy does not prove sheet/column validity, successful refresh,
+saved/reopened state or value/visual parity.
 
 Native shapefiles cannot be parsed by the GeoJSON M connector. PBIP emits an
 actionable `SourceBinding.Error`; supply a supported GeoJSON source separately.
@@ -195,7 +230,7 @@ Generated expressions still require runtime and source-value checks.
 | Tableau Visual | PBI Mapping | Gap |
 |---------------|------------|-----|
 | Sankey / Chord / Network | ✅ Custom visual GUID (`sankeyDiagram`, `chordChart`, `networkNavigator`) or `decompositionTree` fallback | Custom visuals require AppSource installation in PBI Desktop |
-| Gantt Bar / Lollipop | ✅ `ganttChart` (custom visual GUID) | Custom visual; time-axis semantics preserved |
+| Gantt Bar / Lollipop | `clusteredBarChart`; annotated `tableEx` fallback without a category | Approximation; time-axis parity is not established |
 | Butterfly / Waffle | hundredPercentStackedBarChart | ✅ IMPROVED — negate-one-measure hint in approximation note |
 | Calendar Heat Map | matrix | ✅ IMPROVED — auto-enables conditional formatting properties + migration note |
 | Explicit Packed Bubble / Strip Plot | scatterChart | Explicit marks may use scatter; size encoding can populate Size, but required scatter roles need review |
@@ -214,7 +249,7 @@ Generated expressions still require runtime and source-value checks.
 | **Prep #81 incomplete clean dialect coverage** | N2's first bounded `.v2018_3_3.Remap` slice supports observed explicit JSON-encoded TEXT maps standalone and in grouped clean actions: simultaneous exact case-sensitive lookup preserves unmatched values/nulls. Missing/non-string upstream fields and invalid/ambiguous maps reject. `groupMethodProps` is provenance for the materialized map, not fuzzy execution. Static source-to-TMDL tests cover conversion and M/schema preservation; native refresh/value execution remains `not_run`. N1 is partial (one observed dialect of eight). The other seven dialects (`ValueFilter`, `RichRangeFilter`, `RangeFilter`, `RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter`, `RichNullFilter`) remain unsupported and lack demonstrated producer payloads. M helper availability/analyzer classification is not parser support. Existing #82/#83 safeguards are preserved. See the [Prep dialect evidence](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#clean-node-dialect-evidence-status). |
 | **M identifier quoting** | ✅ FIXED — Column names with special characters (hyphens, slashes, parentheses, etc.) are now auto-quoted as `[#"Name"]` in M expressions. Previously, names like `Sub-Category` caused "Invalid identifier" errors |
 | **Custom SQL params** | ✅ IMPLEMENTED — `Value.NativeQuery()` with parameter record binding and `[EnableFolding=true]` |
-| **Hyper data** | Packaged extracts use staged CSV/Parquet partitions with exact physical identity, not full-dataset M `#table()` inlining. Metadata/header fallback may supply only a bounded sample, which manifests and quality reports flag as limited data. See the [Hyper contract](FAQ.md#how-are-hyper-extract-files-handled). |
+| **Hyper data** | Packaged extracts require complete staged CSV/Parquet sources and exact physical-identity Import bindings, not sample/empty M `#table()` substitutes. Metadata/header fallback remains diagnostic only; it cannot satisfy a full PBIP migration. File counts/hashes and bindings are checked independently of native loaded-row and value parity. See the [Hyper contract](FAQ.md#how-are-hyper-extract-files-handled). |
 | **Query folding** | ✅ IMPLEMENTED — `m_transform_buffer()` + `m_transform_join(buffer_right=True)` for `Table.Buffer()` folding boundaries |
 | **PDF connector** | ✅ IMPROVED — `Pdf.Tables(File.Contents(...), [StartPage=N, EndPage=M])` with page range and table index selection |
 | **Salesforce connector** | ✅ IMPROVED — SOQL passthrough via `Value.NativeQuery()`, API version specification, relationship traversal via `Table.ExpandRecordColumn()` |

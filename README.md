@@ -56,6 +56,19 @@ Latest local publication-candidate checks (2026-10-23, Python 3.14.2):
   documentation-asset regressions. Skipped environment-dependent checks remain
   unexecuted; this is not Desktop refresh, rendered parity or deployment evidence.
 
+Separate Microsoft authoring check (2026-10-23, CLI `0.5.0`):
+
+- Regenerated the ten public/synthetic sample workbooks and checked their
+  `.Report` directories with schema validation enabled: **4/10 passing and
+  22 errors before the corrections; 10/10 passing, 0 errors and 0 warnings
+  afterward**. See the [scoped roadmap evidence](docs/ROADMAP.md).
+- Unified migration quality remains **4 PASS / 6 WARN / 0 FAIL**; its existing
+  approximation and connector warnings are not overridden by the external check.
+  This is PBIR evidence only, not TMDL/DAX engine, Desktop or refresh validation.
+- The subsequent local regression run passed **11,850 tests**, with **66 skipped**,
+  **1 xfailed** and **1 warning**. This is separate from the earlier
+  publication-candidate baseline above and is not live CI status.
+
 Earlier refresh-binding correction checks (2026-10-22):
 
 - **863 targeted tests passed**: 771 affected-path tests plus 92 dedicated
@@ -88,6 +101,7 @@ evidence, not a current full-suite or runtime certification:
 ### Current capabilities
 
 - **Static validation hardened around real-world blockers**: the generator now uses a stricter model/report contract and removes synthetic Tableau field references that were causing invalid visual-control bindings.
+- **Optional Microsoft authoring check**: use the separately installed `powerbi-report-author` CLI to review generated PBIR roles, formatting and bookmark references. See the [local validation procedure](docs/POWERBI_PROJECT_GUIDE.md#optional-microsoft-pbir-validation); this is not model-engine or Desktop runtime evidence.
 - **Quality evidence is explicit and deterministic**: static validation, warnings, and repair actions are recorded without overstating live Desktop/Fabric readiness.
 - **MCP and CLI surfaces remain stable**: the concise 14-command CLI and quality/prioritization flows continue to document the verified static path cleanly.
 - **Safety-first automation**: deployment remains dry-run by default, credentials stay in environment variables, and optional AI assistance only acts on verified findings.
@@ -313,23 +327,36 @@ user filters, Hyper metadata, datasource filters, custom geocoding, published
 datasources, data blending, table extensions and linguistic schema. See the
 [extraction contract](tableau_export/README.md).
 
-**Hyper extract data:** packaged `.hyper` tables are staged through exact
-physical identities. Bounded streaming avoids full-table Python lists;
-CSV and optional native Parquet exports are wired into Power Query M.
+**Hyper extract data:** export the complete packaged snapshot, then bind its
+CSV or native Parquet files to Import partitions through exact physical
+identities. Bounded streaming avoids full-table Python lists. Missing exports,
+unknown or mismatched row counts, incomplete data and missing Import bindings
+block the PBIP migration; producing a file alone is not a successful import.
 Hyper uses Import; native database sources without Hyper use DirectQuery
 when supported. The user can always force Import. For PBIP, native Hyper export
 requires Parquet above 10 MiB and uses CSV otherwise. SQLite-compatible inputs
 above that threshold fail unless CSV is explicitly selected. See the
 [decision diagram](docs/ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
 **Non-Hyper Import migrates the datasource, not its rows:** connection, schema
-and Power Query M are generated without exporting native data or copying native
-Excel/CSV dataset files. Power BI loads those data at refresh using the original
-source binding. Hyper data exports remain enabled.
-The follow-up passed **1,442 targeted tests**; it does not establish native
+and Power Query M are generated without exporting native rows. One exception
+to the native-file no-copy rule: an Excel workbook explicitly packaged in a
+TWBX is copied unchanged into the project's `Data/` folder and bound by its
+absolute path. Loose native files and packaged non-Excel files are not copied.
+This exception covers trusted local per-workbook batch generation, not uploaded
+jobs or shared-model/add-to-model/remove-from-model workflows.
+Power BI loads native rows at refresh. Hyper data exports remain enabled.
+The earlier no-copy follow-up passed **1,442 targeted tests**, before the
+packaged-Excel exception; it does not establish native
 Power BI refresh or replace the dated full-suite measurement above.
-Row caps produce review samples, not full-data parity evidence. See the
+PBIP Hyper migrations reject row caps, including
+`TTPBI_HYPER_EXPORT_MAX_ROWS`, rather than silently generating a partial model.
+Metadata/header samples cannot replace a full reader. The original database
+connection is not substituted for an available Hyper snapshot. See the
 [large-extract options and progress](docs/FAQ.md#how-are-hyper-extract-files-handled).
-The header-scan fallback may yield a bounded sample, never a complete export.
+Parquet uses a private ASCII transit path for native SDK writing, then Python
+publishes the file at its actual destination, including accented paths.
+Export completeness and static binding checks do not certify native refresh,
+saved model data or visual parity.
 Legacy `.tde` files must
 be converted in Tableau or exported to CSV; `tableauhyperapi` does not read `.tde`.
 
@@ -810,7 +837,7 @@ SharedSales/
 | Automatic | `table` | Default table |
 | Map / Density | `map` | |
 | Polygon / Multipolygon | `filledMap` | Choropleth |
-| Gantt Bar | `ganttChart` | Custom visual |
+| Gantt Bar | `clusteredBarChart` | Approximation; annotated `tableEx` fallback without a category |
 | Histogram | `clusteredColumnChart` | |
 | Box Plot | `boxAndWhisker` | |
 | Waterfall | `waterfallChart` | |
@@ -920,7 +947,7 @@ Other rows below describe separate routes or retained parser options.
 | **Hyper extracts** | |
 | `--max-zip-entry-mb N` | Positive uncompressed entry limit in MiB; CLI overrides `TTPBI_MAX_ZIP_ENTRY_MB`, then 1024 MiB |
 | `--hyper-export-format {auto,csv,parquet}` | PBIP `auto`: native Hyper > 10 MiB requires Parquet, otherwise CSV. Above-threshold SQLite-compatible inputs error unless CSV is explicit. Fabric `auto` stays CSV |
-| `--hyper-export-max-rows N` | Positive review-sample cap; environment fallback `TTPBI_HYPER_EXPORT_MAX_ROWS`; unlimited when omitted |
+| `--hyper-export-max-rows N` | Positive diagnostic/Fabric staging cap; environment fallback `TTPBI_HYPER_EXPORT_MAX_ROWS`; a resolved cap is rejected for full PBIP Hyper generation |
 | **Tableau Server / Cloud** | |
 | `--server URL` | Tableau Server/Cloud URL |
 | `--site SITE_ID` | Tableau site content URL |
@@ -956,7 +983,7 @@ Other rows below describe separate routes or retained parser options.
 | `--calendar-end YEAR` | Calendar table end year (default: 2030) |
 | `--culture LOCALE` | Culture/locale for linguistic metadata (e.g., `fr-FR`) |
 | `--languages LOCALES` | Shared-model culture files (e.g., `fr-FR,de-DE`); not forwarded by batch |
-| `--mode MODE` | Default `auto`: Hyper/import-only sources use Import, capable native sources use DirectQuery; `import` overrides to Import. Native Import migrates connection/schema/M only; Hyper still exports data. Advanced `directquery`/`composite` remain available |
+| `--mode MODE` | Default `auto`: Hyper/import-only sources use Import, capable native sources use DirectQuery; `import` overrides to Import. Native Import generates connection/schema/M without row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Hyper still exports data. Advanced `directquery`/`composite` remain available |
 | `--composite-threshold COLS` | Legacy per-table storage threshold; not forwarded by batch |
 | `--agg-tables MODE` | Legacy aggregation-table toggle; not forwarded by batch |
 | `--goals` | Legacy Pulse/Goals postprocessing toggle; not forwarded by batch |

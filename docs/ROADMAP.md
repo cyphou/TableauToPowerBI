@@ -97,7 +97,38 @@ The current browser control was checked at 390px with no horizontal overflow
 or mutation request on selection; this is not a new full browser migration run.
 Native Power BI Desktop refresh and rendered parity remain `not_run`.
 
-Follow-up contract: non-Hyper PBIP Import migrates only datasource connections,
+### Complete Hyper export and Import binding — 2026-10-26
+
+**Delivered locally — static export/binding slice:** preserve the Hyper snapshot, export all its rows to CSV
+(<= 10 MiB uncompressed Hyper) or native Parquet (> 10 MiB), then verify
+the exact Import file binding. Do not substitute the historical live source.
+The 2026-10-22 result above is historical evidence for its tested paths, not
+proof of the later reported missing CSV bindings or accented-path behavior.
+
+This follow-up fixes Unicode Parquet output through authorized private ASCII
+staging, rejects capped/sample-only PBIP export paths, and adds fail-closed
+export/binding checks. Physical source declarations also govern column maps,
+types and calculation routing; native history remains provenance only.
+Logical groups and table/object pseudo-fields are not imported as phantom
+source columns, and categorical memberships are not duplicated as numeric bins.
+
+Local acceptance (2026-10-26): **997 targeted tests passed, zero skipped**;
+this is not a new full-suite total. Real SDK regressions cover accented
+Parquet destinations and a generated Hyper file above 10 MiB. A fresh batch
+generated all four local workbook projects with CLI exit 0. Independent SDK
+catalog/count checks and streaming CSV readback verified **five exports,
+12,073 rows and eight final Hyper Import bindings** from three source Hyper
+files. The fourth workbook retained its packaged Excel unchanged, with an
+absolute binding. Original source hashes were unchanged.
+
+All three Hyper evidence sections are `static_verified`, with no Hyper
+diagnostics. Overall quality is **two PASS, two WARN, zero FAIL**; advisory
+assessment/review findings are not a certificate of full report parity.
+Native loading, save/reopen, value comparison and screenshot comparison remain
+`not_run` for this slice.
+
+Earlier follow-up contract (superseded only for explicitly packaged Excel by
+the 2026-10-26 decision below): non-Hyper PBIP Import migrates only datasource connections,
 schema and Power Query M; native dataset files are not staged or copied.
 Power BI retrieves their rows at refresh using accessible original source
 bindings. Loose-workbook relative paths resolve against the original workbook
@@ -127,12 +158,34 @@ partially populated table. Tableau pseudo-fields are excluded, ambiguous
 multi-table declarations stay unresolved, and unsupported native shapefiles
 produce a source-binding diagnostic instead of being parsed as JSON.
 
-Native rows are still not extracted or copied by migration; Hyper exports and
+Native rows are still not exported by migration; the packaged-Excel binary-copy
+exception below supersedes the earlier file no-copy rule for that case only. Hyper exports and
 Fabric staging keep their separate contracts. Source credentials, missing
 external files, undeclared separators and spatial-source configuration remain
 explicit operator actions. Generation and these regression checks do not
 certify refresh, saved/reopened state, value/visual parity or deployment for
 every workbook.
+
+### Packaged Excel source binding — 2026-10-26
+
+**In progress; exception-specific regression coverage pending.** In trusted local per-workbook
+batch generation, an explicitly declared Excel
+workbook packaged in a TWBX must be copied byte-for-byte, unchanged, into the
+generated PBIP project's `Data/` folder. Generate its Power Query binding from
+that copy's actual absolute path. Do not select loose neighbours, parse/export
+native rows, copy packaged non-Excel sources or change Hyper/Fabric behavior.
+Uploaded jobs and shared-model/add-to-model/remove-from-model workflows are
+outside this exception.
+The output contains source data; exclude it from repositories, and update the
+absolute binding if the project moves. Copy/hash/path regression evidence and
+native refresh evidence must be recorded separately before closing this item.
+
+Interim local checks passed **442 existing targeted tests** across 11 affected
+files, with one expected synthetic duplicate-ZIP warning. These are compatibility
+checks, not the new exception-specific regression coverage. A separately
+authorized local workbook also passed copy/hash/absolute-path checks, static
+openability and native Desktop refresh. That private run is not a general
+refresh, saved/reopened-state or value/visual-parity certification.
 
 ### Delivered in the latest fixes
 
@@ -379,7 +432,7 @@ are all documented. The list is intentionally broader than the parity score.
 | Aliases | Named measure or generated display column | Alias evidence and value comparison | Semantic |
 | Custom SQL | Value.NativeQuery or approved connector query | Query text, binding, and credential prerequisite | Wiring / Deployer |
 | User filters | RLS roles and membership handoff | Role expression and assignment state | Semantic / Deployer |
-| Hyper files | Imported/staged table or explicit unsupported-format finding | Row/schema evidence and source hash | Extractor / Fabric |
+| Hyper files | Complete snapshot export and exact Import binding (PBIP), separate Fabric staging, or explicit failure | Full row/column coverage, file integrity and exact final partition reference; native loaded-row proof separately | Extractor / Orchestrator / Semantic / Evidence / Fabric |
 | Datasource filters | Report/data-scope filter | Scope-level filter evidence | Visual / Wiring |
 | Custom geocoding | Geographic category or registered shape resource | Category/resource presence and map review | Visual / Extractor |
 | Published datasources | Bound semantic source or connection handoff | Published-source identity and binding evidence | Tableau / Deployer |
@@ -1361,6 +1414,37 @@ Every workbook sits at `STATIC_PASS` and nothing in the engine can raise it.
 Raised from reading the generated reports rather than from a report figure: a
 large share of visuals were plain tables.
 
+- **Microsoft authoring contract corrections (2026-10-23, @visual).** *Done for
+  the scoped static corpus.* Applied the installed Microsoft
+  `skills-for-fabric` report-authoring references and verified capabilities to
+  the deterministic producers, without adding a core dependency. Regenerated
+  the same ten public/synthetic `examples/tableau_samples/*.twb` workbooks and
+  ran `powerbi-report-author 0.5.0 validate` on each `.Report` directory, with
+  remote schema validation enabled:
+  - Before: **4/10 passed; 22 errors, 0 warnings** across the other six reports
+    (18 bookmark-index references, three unsupported formatting objects and one
+    missing category role).
+  - After: **10/10 passed; 0 errors, 0 warnings**. Corrections cover flat indexed
+    bookmark files, supported per-column data bars, the funnel's default axis
+    toggle and measure-only Gantt fallback. The static bookmark gate and
+    parity/interaction readers recognize the corrected layout while retaining
+    legacy discovery. Data-bar compatibility upgrades legacy table/matrix types
+    only when bound bars are emitted, with an explicit note.
+  - Unified migration quality is unchanged at **4 PASS / 6 WARN / 0 FAIL**,
+    including the same twelve warning entries. A validator pass does not erase
+    source limitations or confer a quality/runtime certificate.
+  - Follow-up local regression run with Python 3.14.2:
+    `python -m pytest -q --tb=short` passed **11,850 tests**, with **66 skipped**,
+    **1 xfailed** and **1 warning**. This is the authoring slice's full-suite
+    observation, separate from the earlier publication-candidate totals.
+  - TMDL/DAX engine validation remains `not_run`: model-authoring MCP is gated
+    by its unaccepted EULA, which was not bypassed. Desktop rendering, refresh
+    and deployment also remain `not_run`. No native dataset extraction or
+    customer-corpus rerun was performed. This ten-workbook result is separate
+    from the historical 27-workbook observations below and from pytest totals.
+  - The [optional operator procedure](POWERBI_PROJECT_GUIDE.md#optional-microsoft-pbir-validation)
+    distinguishes the default schema check from `--no-schema` offline mode.
+
 - **Marks-card KPI sheets.** *Done — 28 table-like worksheets, now 12.* A sheet
   that leaves Rows and Columns empty and puts its measure on the Text shelf is
   Tableau's "big number" card. Both the `Text` mark (mapped straight to
@@ -1381,16 +1465,20 @@ large share of visuals were plain tables.
   Salesforce sheets mix Text and Columns; one is empty; one is a Heat Map,
   correctly a matrix.
 
-- **Found while looking, then measured properly.** `visual_generator.py` reads
-  as the visual builder; it is consumed as a lookup registry. Production
-  imports **ten names** from it — three maps and seven helpers — and builds its
-  visuals in `pbip_generator`. The other **48 of its 55 top-level functions are
+- **Historical helper-surface audit.** At that audit, `visual_generator.py`
+  read as the visual builder but was consumed as a lookup registry. Production
+  imported **ten names** from it — three maps and seven helpers — and built its
+  visuals in `pbip_generator`. The other **48 of its 55 top-level functions were
   referenced by no production code at all**, including `_build_visual_filters`
   (measured at zero calls across four migrations), `create_visual_container`,
   `build_query_state` and the tooltip, sparkline, small-multiples and
   sync-group builders. **38 of them are named by a test**, so the module reads
   as covered. `tests/test_visual_generator_surface.py` now pins the ten, so
-  wiring a builder in becomes a decision rather than an accident.
+  wiring a builder in becomes a decision rather than an accident. These are the
+  original audit's counts, not a live inventory. The Microsoft authoring
+  correction uses the shared data-bar formatter; the declared production import
+  surface is now **12 names: three maps and nine helpers**, not a measurement
+  of transitive function reachability.
 
   What this does *not* show: that the unreached features are broken or missing.
   Absence in the output only means the corpus never asked. Checking the source

@@ -49,6 +49,7 @@ MyReport.Report/                   # Report folder (visuals)
     └── RegisteredResources/       # Generated theme and embedded assets
 
 migration_metadata.json            # Migration metadata
+Data/                              # Unchanged packaged Excel copies and/or Hyper CSV/Parquet
 ```
 
 ## 🚀 Opening a Power BI Project
@@ -90,15 +91,28 @@ or refreshes successfully. Complete the source and review steps below.
 
 After opening the project:
 
+The packaged-Excel copy below is available for trusted local per-workbook batch
+generation. Uploaded jobs and shared-model/add-to-model/remove-from-model
+workflows are outside this exception.
+
 1. **Home** → **Transform data**
 2. In Power Query Editor:
    - Click on each query
    - For native Import, review the generated connection and original file paths:
-     migration generates schema/M, not a copy of the native data
+     migration generates schema/M without exporting native rows
+   - An Excel workbook explicitly packaged in a TWBX is copied unchanged into
+     the project's `Data/` folder and bound by its absolute path, not replaced
+     by a similarly named loose file
+   - Update that absolute path if the project moves. The copy includes all
+     sheets and workbook metadata; keep source-bearing output/ZIPs out of
+     repositories. Copying alone does not establish successful refresh
    - Relative paths from loose workbooks resolve against their original folder;
-     packaged native sources still need an accessible external binding
-   - For Hyper, review the staged CSV/Parquet files and `DataFolder` parameter;
-     Hyper data exports remain enabled
+     other packaged native sources still need an accessible external binding
+   - For Hyper, review the complete staged CSV/Parquet files, their recorded
+     counts/identities and the absolute `DataFolder` parameter. Every required
+     export must have its exact Import binding; incomplete or unbound results
+     block generation. Do not replace the snapshot with its historical live
+     connection. Static checks do not prove that Desktop has loaded the data
    - Configure credentials and gateway access separately
    - Refresh native Import data in Power BI after configuring source access
    - Inspect the refresh result, then save after successful processing to retain
@@ -141,6 +155,41 @@ After opening the project:
 
 For reproducible repairs, fix the extractor/generator and regenerate; manual
 project edits are local adjustments and may be overwritten by the next run.
+
+#### Optional Microsoft PBIR validation
+
+The [Microsoft skills-for-fabric authoring workflows](https://github.com/microsoft/skills-for-fabric)
+provide an additional report check with the separately installed
+`powerbi-report-author` CLI. The migration engine does not install or invoke it
+automatically; Python's standard library remains sufficient for core migration.
+The commands below were exercised with CLI version `0.5.0`.
+
+Run it against the generated **`.Report` directory**, not the semantic model:
+
+```powershell
+powerbi-report-author validate '.\output\Sales\Sales.Report' --out '.\pbir-validation.json'
+
+# Offline mode: skip remote JSON-Schema checks.
+powerbi-report-author validate '.\output\Sales\Sales.Report' --no-schema --out '.\pbir-validation-offline.json'
+```
+
+Default validation retrieves the referenced JSON schemas. `--no-schema` skips
+that part, so an offline pass must not be reported as a schema-validation pass.
+Inspect the exit code and the saved `data.result`, `errorCount`, `warningCount`
+and `diagnostics` fields; diagnostic codes are keys in the `diagnostics` object.
+Do not discard a failed check or replace it with the migration's quality status.
+
+Use the CLI's `catalog describe` and `formatting describe-property` commands to
+verify the exact visual roles and formatting properties before changing a
+generator. A property supported by `tableEx` need not be supported by legacy
+`table`; the same distinction applies to `pivotTable` and `matrix`. Keep
+regression tests for the verified contract and regenerate after a repair.
+
+This is a **read-only static PBIR check**, not TMDL/DAX engine validation,
+Desktop loading, refresh, rendered parity or deployment. Those results remain
+`not_run` until separately authorized and executed. Model-authoring MCP also
+requires its own setup and explicit acceptance of its license terms; this
+report-validation procedure neither accepts them nor connects to a model.
 
 ### Step 4: Save
 

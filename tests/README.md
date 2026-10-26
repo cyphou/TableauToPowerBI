@@ -31,6 +31,7 @@ python -m coverage report --fail-under=80
 |------|----------------------|
 | Extraction | `test_extraction.py`, `test_extract_coverage.py` |
 | Native refresh bindings | `test_native_refresh_binding.py`, `test_csv_partition_wiring.py`, `test_datasource_extractor.py` |
+| Complete Hyper exports and Import | `test_hyper_full_import.py`, `test_migrate_hyper.py` |
 | DAX and M | `test_dax_converter.py`, `test_m_query_builder.py` |
 | TMDL and PBIR | `test_tmdl_generator.py`, `test_pbip_generator.py`, `test_visual_generator.py` |
 | Static openability | `test_openability.py` |
@@ -62,7 +63,8 @@ python -m pytest `
     tests\test_datasource_extractor.py -q
 ```
 
-These synthetic regression checks cover original native bindings, no native
+These synthetic regression checks predate the packaged-Excel binary-copy
+exception. They cover original native bindings, no native
 dataset reads/copies, full CSV width and declared-field projection, exact
 physical names and captions, partial source schemas, pseudo-field exclusion,
 and preserved Hyper/Fabric paths. The earlier **11,741-pass** full-suite
@@ -73,6 +75,56 @@ synthetic duplicate-ZIP-name fixture. These are dated local observations, not
 live CI status. Skipped environment-dependent checks remain unexecuted.
 Do not reinterpret these measurements as a Desktop refresh, save/reopen,
 visual/value parity or deployment certificate.
+
+## Complete Hyper export and Import regressions
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+    tests\test_hyper_full_import.py `
+    tests\test_migrate_hyper.py `
+    tests\test_datasource_extractor.py `
+    tests\test_csv_partition_wiring.py `
+    tests\test_security_validator.py `
+    tests\test_migration_quality.py -q
+```
+
+These synthetic tests exercise complete row/schema/hash evidence, rejection of
+PBIP row caps and sample-only readers, exact XML source identities and final
+Import bindings, and rollback after failed publication. Native sources without
+Hyper and the opaque packaged-Excel copy keep their separate contracts.
+
+The metadata-containment cases (`TestLexicalPathKey`,
+`TestHyperMetadataPathContainment`, `TestHyperMetadataLinkContainment`) feed
+UNC, device-namespace and link-routed paths to the Hyper checks. They create
+real symlinks or junctions where the platform allows (otherwise they skip) and
+run under the guard in `link_test_helpers.py`, which records and refuses every
+call that would follow a link, so no run can reach a network share.
+
+Two cases use the optional Hyper SDK to create valid native fixtures: an export
+to an accented path with spaces/apostrophes, and a genuinely generated Hyper
+larger than 10 MiB that must select Parquet. They skip only when the SDK is
+absent. The low-level diagnostic API may still produce explicitly labeled
+samples; those do not satisfy complete PBIP migration. Passing these tests
+verifies static exports/bindings, not a Desktop refresh, saved cache or rendered
+comparison.
+
+## Microsoft authoring contract regressions
+
+PBIR regressions cover flat bookmark files and index references, legacy
+bookmark discovery, per-field formatting, funnel capabilities and category-less
+Gantt approximations. These tests use local synthetic fixtures; they do not
+require Node.js, model-authoring MCP or a Power BI connection.
+
+For an independent check of generated reports, follow the
+[optional Microsoft PBIR validation procedure](../docs/POWERBI_PROJECT_GUIDE.md#optional-microsoft-pbir-validation).
+Record the validator version, the exact generated corpus and its diagnostics
+separately from pytest results and unified migration quality. Skipping remote
+schemas with `--no-schema` is an offline check, not full schema validation.
+Neither mode verifies semantic-model execution, refresh or rendered parity.
+
+The **2026-10-23** authoring follow-up ran the full suite with Python **3.14.2**:
+**11,850 passed, 66 skipped, 1 xfailed, 1 warning**. This later observation is
+separate from the native-binding/publication baseline above and from live CI.
 
 ## Documentation and agent checks
 
