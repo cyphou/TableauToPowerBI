@@ -28,6 +28,10 @@ source-to-target status without treating approximations as native parity.
 | Gantt Bar / Lollipop | clusteredBarChart | Approximation |
 | Butterfly Chart / Waffle | hundredPercentStackedBarChart | |
 
+The Gantt approximation is normalized before query-role construction. If the
+source has measures but no category dimension, use an annotated table fallback
+instead of fabricating a category or emitting a bar with an empty required role.
+
 For Automatic marks, one dimension on Rows, one aggregated measure on Columns,
 and categorical Color select a horizontal stacked bar; reversing the shelves
 selects a stacked column. Explicit marks, dual-axis charts, and an extracted
@@ -64,6 +68,11 @@ when they would misrepresent that separate Text encoding.
 | Pie | pieChart | |
 | Donut / Ring / Rose / SemiCircle | donutChart | Empty center |
 | Funnel | funnel | |
+
+Funnel capabilities do not include `valueAxis`. The generated default show-only
+toggle is omitted. Explicit source axis/reference-line settings are not silently
+discarded; they remain a compatibility gap requiring review rather than a claim
+that the funnel supports them.
 
 ### Combo & Dual Axis
 
@@ -105,6 +114,15 @@ separately and do not supply scatter point grain.
 | Automatic | table | Default table |
 | Crosstab | matrix | Rows and columns |
 | Heat Map / Highlight Table / Calendar | matrix | With conditional formatting |
+
+Bound data bars use `columnFormatting.dataBars`, targeted by the value
+projection's exact `queryRef` in a metadata-only selector. When bars are actually
+emitted, legacy `table` and `matrix` containers use `tableEx` and `pivotTable`
+respectively, with a migration note; the legacy types do not expose that
+property in the checked Microsoft capabilities. Without emitted bars, their
+type is unchanged. Both visual producers retain existing value formatting and
+do not invent a selector for an unbound target. This is a gated formatting
+compatibility adjustment, not a change to the visual mapping inventory.
 
 ### Tree, Hierarchy & Flow
 

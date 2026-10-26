@@ -1264,6 +1264,13 @@ class PowerBIProjectGenerator:
                 key = mark_type.lower().replace(' ', '').replace('_', '')
                 self._used_custom_guids[key] = guid_info
 
+        # Normalize the Gantt approximation before query construction.  The
+        # native clustered bar requires Category and Y; its normal role
+        # fallback can then preserve measure-only sources as a table instead
+        # of emitting an invalid Category-less bar.
+        if visual_type == 'ganttChart':
+            visual_type = 'clusteredBarChart'
+
         # Validate scatter chart: needs at least one measure for X/Y axes.
         # Circle/Shape marks sometimes produce scatterChart but lack measures.
         if visual_type == 'scatterChart' and ws_data:
@@ -1505,8 +1512,31 @@ class PowerBIProjectGenerator:
         }
 
         # Visual objects: encodings (labels, legend, axes, colors)
-        visual_objects = self._build_visual_objects(ws_name, ws_data, visual_type)
         bound_state = visual_json["visual"].get("query", {}).get("queryState", {})
+        visual_objects = self._build_visual_objects(
+            ws_name, ws_data, visual_type, query_state=bound_state)
+        if any('dataBars' in item.get('properties', {})
+               for item in visual_objects.get('columnFormatting', [])):
+            # Only visuals with actual data bars need the compatible type:
+            # matrix/table capabilities do not expose columnFormatting.dataBars.
+            compatible_type = {'matrix': 'pivotTable', 'table': 'tableEx'}.get(visual_type)
+            if compatible_type:
+                visual_json["visual"]["visualType"] = compatible_type
+                visual_json.setdefault('annotations', []).append({
+                    'name': 'MigrationNote',
+                    'value': (
+                        f'Legacy {visual_type} mapped to {compatible_type} to preserve data bars; '
+                        'existing query projections and formatting retained.'
+                    ),
+                })
+                visual_type = compatible_type
+        unbound_data_bars = ws_data.pop('_unresolved_data_bar_fields', []) if ws_data else []
+        if unbound_data_bars:
+            visual_json.setdefault('annotations', []).append({
+                'name': 'MigrationNote',
+                'value': 'Data bars could not bind to projected Values fields; review required: ' +
+                         ', '.join(unbound_data_bars),
+            })
         if ws_data and bound_state:
             if visual_type not in ('tableEx', 'table'):
                 self._build_color_encoding_objects(
@@ -1572,8 +1602,6 @@ class PowerBIProjectGenerator:
                     }
                 visual_json["visual"]["visualContainerObjects"]["border"] = [{"properties": border_props}]
 
-        if visual_json.get('visual', {}).get('visualType') == 'ganttChart':
-            visual_json['visual']['visualType'] = 'clusteredBarChart'
         vis = visual_json["visual"]
         if 'query' not in vis and vis.get('visualType') in _REQUIRED_VISUAL_ROLES:
             label = (ws_data or {}).get('name') or 'Worksheet'
@@ -4478,6 +4506,14 @@ class PowerBIProjectGenerator:
                                 for m in all_fields[:10]]
             }
             ws_data['_override_visual_type'] = 'tableEx'
+            fallback_note = (
+                f'{visual_type} requires a category dimension, but no source '
+                'category was available; available measures were preserved as a table.'
+            )
+            previous_note = ws_data.get('_visual_mapping_note')
+            ws_data['_visual_mapping_note'] = (
+                f'{previous_note}; {fallback_note}' if previous_note
+                else fallback_note)
 
         # Post-process: remove None entries from projections (fields that
         # failed _bim_sym validation in _make_projection_entry) and drop
@@ -4919,16 +4955,15 @@ class PowerBIProjectGenerator:
     def _write_bookmark_files(self, def_dir, bookmarks):
         """Write bookmarks as individual PBIR bookmark files.
 
-        Each bookmark gets its own directory under ``definition/bookmarks/``,
-        plus the ``bookmarks.json`` index. Without that index Power BI Desktop
-        refuses the whole project with a bare "Something went wrong".
+        PBIR stores each bookmark in a top-level ``<name>.bookmark.json``
+        file under ``definition/bookmarks/``; ``bookmarks.json`` indexes those
+        file names.
         """
         bookmarks_dir = os.path.join(def_dir, 'bookmarks')
+        os.makedirs(bookmarks_dir, exist_ok=True)
         written = []
         for bm in bookmarks:
             bm_name = bm["name"]
-            bm_dir = os.path.join(bookmarks_dir, bm_name)
-            os.makedirs(bm_dir, exist_ok=True)
             bookmark_json = {
                 "$schema": SCHEMA_BOOKMARK,
                 "name": bm["name"],
@@ -4937,7 +4972,10 @@ class PowerBIProjectGenerator:
             }
             if bm.get("options"):
                 bookmark_json["options"] = bm["options"]
-            _write_json(os.path.join(bm_dir, 'bookmark.json'), bookmark_json)
+            _write_json(
+                os.path.join(bookmarks_dir, f'{bm_name}.bookmark.json'),
+                bookmark_json,
+            )
             written.append(bm_name)
 
         if written:
@@ -5554,7 +5592,7 @@ class PowerBIProjectGenerator:
 
         return deduped
     
-    def _build_visual_objects(self, ws_name, ws_data, visual_type):
+    def _build_visual_objects(self, ws_name, ws_data, visual_type, query_state=None):
         """Builds visual objects (title, colors, labels, legend, axes).
 
         Orchestrator that delegates to focused sub-methods.
@@ -5572,7 +5610,9 @@ class PowerBIProjectGenerator:
             value_cell=visual_type in ('card', 'multiRowCard'))
         self._build_legend_objects(objects, mark_encoding, formatting)
         self._build_axis_objects(objects, ws_data, visual_type)
-        self._build_visual_styling_objects(objects, ws_data, visual_type, formatting, mark_encoding)
+        self._build_visual_styling_objects(
+            objects, ws_data, visual_type, formatting, mark_encoding,
+            query_state=query_state)
         self._build_color_encoding_objects(objects, ws_data, visual_type, mark_encoding)
         self._build_analytics_objects(objects, ws_data, visual_type, formatting)
 
@@ -5581,6 +5621,19 @@ class PowerBIProjectGenerator:
                            'shapeMap', 'treemap', 'gauge', 'kpi'):
             objects.pop('categoryAxis', None)
             objects.pop('valueAxis', None)
+        if visual_type == 'funnel':
+            # Funnel capabilities expose categoryAxis but not valueAxis.  The
+            # default show toggle carries no formatting intent because the
+            # visual has no value axis; retain explicit axis settings (such as
+            # reference lines) so unsupported source behavior is not silently
+            # discarded.
+            value_axis = objects.get('valueAxis')
+            if value_axis and all(
+                    isinstance(axis, dict)
+                    and isinstance(axis.get('properties', {}), dict)
+                    and set(axis.get('properties', {})).issubset({'show'})
+                    for axis in value_axis):
+                objects.pop('valueAxis', None)
         if visual_type == 'card':
             for labels in objects.get('labels', []):
                 labels.get('properties', {}).pop('show', None)
@@ -5914,7 +5967,8 @@ class PowerBIProjectGenerator:
                 objects["valueAxis"][0]["properties"]["secShow"] = _L("true")
                 objects["valueAxis"][0]["properties"]["secAxisLabel"] = _L("true")
 
-    def _build_visual_styling_objects(self, objects, ws_data, visual_type, formatting, mark_encoding):
+    def _build_visual_styling_objects(self, objects, ws_data, visual_type, formatting, mark_encoding,
+                                      query_state=None):
         """Background, table formatting, data bars, totals, padding."""
         color_enc = mark_encoding.get('color', {})
 
@@ -5967,17 +6021,63 @@ class PowerBIProjectGenerator:
                     }
                 objects["gridlines"] = [{"properties": grid_props}]
 
-        # Data bars for table/matrix columns
+        # Data bars are columnFormatting instances, selected by the exact
+        # projected queryRef. The container writer maps legacy table/matrix
+        # types only when bars are emitted, since their capabilities lack it.
         if visual_type in ('tableEx', 'matrix', 'pivotTable', 'table'):
             value_fields = [f for f in ws_data.get('fields', [])
                             if f.get('role') == 'measure']
             if value_fields and color_enc.get('type') == 'quantitative':
-                data_bar_props = {
-                    "show": _L("true"),
-                    "positiveColor": {"solid": {"color": _L("'#4472C4'")}},
-                    "negativeColor": {"solid": {"color": _L("'#ED7D31'")}},
-                }
-                objects["dataBar"] = [{"properties": data_bar_props}]
+                color_field = color_enc.get('field')
+                if isinstance(color_field, str) and color_field.strip():
+                    color_name = self._clean_field_name(color_field).casefold()
+                    matching_fields = [
+                        f for f in value_fields
+                        if isinstance(f.get('name'), str)
+                        and self._clean_field_name(f['name']).casefold() == color_name
+                    ]
+                    if matching_fields:
+                        value_fields = matching_fields
+
+                from visual_generator import _build_data_bar_config
+                data_bar_rules = []
+                seen_refs = set()
+                for value_field in value_fields:
+                    field_name = value_field.get('name', '')
+                    if not isinstance(field_name, str) or not field_name:
+                        continue
+                    resolved = self._make_projection_entry(value_field)
+                    projections = [resolved] if resolved else []
+                    if query_state is not None:
+                        projections = [
+                            p for p in query_state.get('Values', {}).get('projections', [])
+                            if resolved and p.get('queryRef')
+                            and p.get('field') == resolved.get('field')
+                        ]
+                    if not projections:
+                        unbound = ws_data.setdefault('_unresolved_data_bar_fields', [])
+                        if field_name not in unbound:
+                            unbound.append(field_name)
+                    for projection in projections:
+                        query_ref = projection.get('queryRef')
+                        if not query_ref or query_ref in seen_refs:
+                            continue
+                        seen_refs.add(query_ref)
+                        data_bar_rules.append(_build_data_bar_config(query_ref))
+
+                if data_bar_rules:
+                    objects.setdefault('columnFormatting', []).extend(data_bar_rules)
+                    values_objects = objects.setdefault('values', [{'properties': {}}])
+                    if not values_objects:
+                        values_objects.append({'properties': {}})
+                    values_properties = values_objects[0].setdefault('properties', {})
+                    row_style = formatting.get('worksheet_style', {})
+                    band_color = (row_style.get('band-color', '#F2F2F2')
+                                  if isinstance(row_style, dict) else '#F2F2F2')
+                    values_properties.setdefault(
+                        'backColor',
+                        {"solid": {"color": _L(f"'{band_color}'")}},
+                    )
 
             # Default row banding fallback
             if "values" not in objects:

@@ -1,31 +1,61 @@
 """Tests targeting uncovered lines in visual_generator.py for Sprint 30 coverage push."""
 
+import inspect
 import json
 import unittest
 
 from powerbi_import.visual_generator import (
-    resolve_visual_type,
-    get_approximation_note,
-    get_custom_visual_guid_for_approx,
-    _calculate_proportional_layout,
-    _build_visual_query_state,
+    _L,
+    APPROXIMATION_MAP,
+    CUSTOM_VISUAL_GUIDS,
+    VISUAL_TYPE_MAP,
     _apply_visual_decorations,
+    _build_data_bar_config,
+    _build_dynamic_reference_line,
+    _build_small_multiples_config,
     _build_visual_filters,
+    _build_visual_query_state,
+    _calculate_proportional_layout,
     build_query_state,
-    generate_visual_containers,
-    generate_script_visual,
-    create_visual_container,
     create_filters_config,
     create_projections,
     create_prototype_query,
-    _build_small_multiples_config,
-    _build_dynamic_reference_line,
-    _build_data_bar_config,
-    _L,
-    VISUAL_TYPE_MAP,
-    APPROXIMATION_MAP,
-    CUSTOM_VISUAL_GUIDS,
+    create_visual_container,
+    generate_script_visual,
+    generate_visual_containers,
+    get_approximation_note,
+    get_custom_visual_guid_for_approx,
+    resolve_visual_type,
 )
+
+
+def _expected_data_bar_instance(query_ref, *, positive_color="#4472C4",
+                                negative_color="#ED7D31",
+                                axis_color="#CCCCCC",
+                                reverse_direction=False, hide_text=False):
+    """Canonical PBIR conditional-formatting instance for one projection."""
+    def literal(value):
+        return {"expr": {"Literal": {"Value": value}}}
+
+    return {
+        "properties": {
+            "dataBars": {
+                "positiveColor": {
+                    "solid": {"color": literal(f"'{positive_color}'")},
+                },
+                "negativeColor": {
+                    "solid": {"color": literal(f"'{negative_color}'")},
+                },
+                "axisColor": {
+                    "solid": {"color": literal(f"'{axis_color}'")},
+                },
+                "reverseDirection": literal(
+                    "true" if reverse_direction else "false"),
+                "hideText": literal("true" if hide_text else "false"),
+            },
+        },
+        "selector": {"metadata": query_ref},
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -338,15 +368,166 @@ class TestApplyVisualDecorations(unittest.TestCase):
         self.assertIn("constantLine", vo.get("objects", {}))
         self.assertIn("referenceLine", vo.get("objects", {}))
 
-    def test_data_bars_table(self):
-        ws = {
+    def test_data_bars_matrix_use_exact_projection_selector(self):
+        measure_name = "Revenu net €"
+        table_name = "Finances & opérations"
+        measure_query_ref = f"{table_name}.{measure_name}"
+        worksheet = {
             "name": "Test",
-            "dataBars": [{"column": "Revenue", "minColor": "#FFF", "maxColor": "#000"}],
+            "visualType": "matrix",
+            "measures": [{
+                "name": measure_name,
+                "label": measure_name,
+                "expression": "SUM(Revenue)",
+            }],
+            "dataBars": [{
+                "queryRef": measure_query_ref,
+                "maxColor": "#007ACC",
+                "negativeColor": "#CC3300",
+                "axisColor": "#222222",
+                "reverseDirection": True,
+                "showBarOnly": True,
+                # Old value bounds are not supported by this PBIR format.
+                "minimumValue": 0,
+                "maximumValue": 100,
+            }],
         }
-        ctm = {"Revenue": "Sales"}
-        vo = self._make_visual_obj()
-        _apply_visual_decorations(ws, "text", "tableEx", "Test", ctm, vo)
-        self.assertIn("values", vo.get("objects", {}))
+        container = create_visual_container(
+            worksheet,
+            visual_id="data-bars-matrix",
+            measure_lookup={
+                measure_name: (table_name, "SUM('Finances & opérations'[Revenue])"),
+            },
+        )
+        visual = container["visual"]
+        projections = visual["query"]["queryState"]["Values"]["projections"]
+        self.assertEqual(len(projections), 1)
+        self.assertEqual(projections[0]["queryRef"], measure_query_ref)
+        self.assertEqual(projections[0]["field"], {"Measure": {
+            "Expression": {"SourceRef": {"Entity": table_name}},
+            "Property": measure_name,
+        }})
+        self.assertEqual(visual["visualType"], "pivotTable")
+        self.assertEqual(
+            visual["objects"]["columnFormatting"],
+            [_expected_data_bar_instance(
+                measure_query_ref,
+                positive_color="#007ACC",
+                negative_color="#CC3300",
+                axis_color="#222222",
+                reverse_direction=True,
+                hide_text=True,
+            )],
+        )
+        self.assertNotIn("dataBar", visual["objects"])
+        self.assertIn({
+            "name": "MigrationNote",
+            "value": (
+                "Legacy matrix mapped to pivotTable to preserve data bars; "
+                "existing query projections and formatting retained."
+            ),
+        }, container["annotations"])
+        self.assertNotIn("annotations", visual)
+
+    def test_data_bars_table_keep_exact_named_and_physical_aggregation_refs(self):
+        measure_name = "Revenu net €"
+        table_name = "Finances & opérations"
+        measure_query_ref = f"{table_name}.{measure_name}"
+        aggregate_query_ref = f"Sum({table_name}.Revenue)"
+        worksheet = {
+            "name": "Test",
+            "visualType": "tableEx",
+            "measures": [{
+                "name": measure_name,
+                "label": measure_name,
+                "expression": "SUM(Revenue)",
+            }, {
+                # Revenue is a physical numeric column, not an unregistered
+                # named measure. This shape follows the query builder's
+                # supported expression + column-table-map route.
+                "name": "Revenue",
+                "label": "Revenue",
+                "expression": "SUM(Revenue)",
+            }],
+            "dataBars": [
+                {"queryRef": measure_query_ref},
+                {"queryRef": aggregate_query_ref},
+            ],
+        }
+        container = create_visual_container(
+            worksheet,
+            visual_id="data-bars-table",
+            col_table_map={"Revenue": table_name},
+            measure_lookup={
+                measure_name: (table_name, "SUM('Finances & opérations'[Revenue])"),
+            },
+        )
+        visual = container["visual"]
+        projections = visual["query"]["queryState"]["Values"]["projections"]
+        self.assertEqual(
+            [projection["queryRef"] for projection in projections],
+            [measure_query_ref, aggregate_query_ref],
+        )
+        self.assertEqual(projections[0]["field"], {"Measure": {
+            "Expression": {"SourceRef": {"Entity": table_name}},
+            "Property": measure_name,
+        }})
+        self.assertEqual(projections[1]["field"], {"Aggregation": {
+            "Expression": {"Column": {
+                "Expression": {"SourceRef": {"Entity": table_name}},
+                "Property": "Revenue",
+            }},
+            "Function": 0,
+        }})
+        self.assertEqual(
+            visual["objects"]["columnFormatting"],
+            [
+                _expected_data_bar_instance(measure_query_ref),
+                _expected_data_bar_instance(aggregate_query_ref),
+            ],
+        )
+        self.assertEqual(visual["visualType"], "tableEx")
+        self.assertFalse(any(
+            note.get("name") == "MigrationNote"
+            for note in container.get("annotations", [])
+        ))
+
+    def test_unbound_data_bar_does_not_invent_selector_or_modernize_matrix(self):
+        measure_name = "Revenu net €"
+        valid_query_ref = "Sales.Revenu net €"
+        requested_query_ref = "Sales.Mesure manquante €"
+        worksheet = {
+            "name": "Test",
+            "visualType": "matrix",
+            "measures": [{
+                "name": measure_name,
+                "label": measure_name,
+                "expression": "SUM(Revenue)",
+            }],
+            "dataBars": [{"queryRef": requested_query_ref}],
+        }
+        container = create_visual_container(
+            worksheet,
+            visual_id="unbound-data-bars-matrix",
+            measure_lookup={
+                measure_name: ("Sales", "SUM(Sales[Revenue])"),
+            },
+        )
+        visual = container["visual"]
+        self.assertEqual(visual["visualType"], "matrix")
+        self.assertEqual(
+            visual["query"]["queryState"]["Values"]["projections"][0]["queryRef"],
+            valid_query_ref,
+        )
+        self.assertNotIn("columnFormatting", visual.get("objects", {}))
+        self.assertTrue(any(
+            note.get("name") == "MigrationNote"
+            and note.get("value") ==
+            "Data bars could not bind to projected Values fields; review "
+            f"required: {requested_query_ref}"
+            for note in container.get("annotations", [])
+        ))
+        self.assertNotIn("annotations", visual)
 
     def test_small_multiples(self):
         ws = {
@@ -517,14 +698,64 @@ class TestBuildDynamicReferenceLine(unittest.TestCase):
 
 
 class TestBuildDataBarConfig(unittest.TestCase):
-    def test_basic(self):
-        result = _build_data_bar_config("Revenue", "Sales", "#FFF", "#000", False)
-        self.assertIsNotNone(result)
-        self.assertIsInstance(result, dict)
+    def test_api_signature_keeps_options_keyword_only(self):
+        parameters = inspect.signature(_build_data_bar_config).parameters
+        self.assertEqual(list(parameters), [
+            "query_ref", "positive_color", "negative_color", "axis_color",
+            "reverse_direction", "hide_text",
+        ])
+        self.assertIs(
+            parameters["query_ref"].kind,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+        self.assertEqual({
+            name: parameter.kind
+            for name, parameter in parameters.items()
+            if name != "query_ref"
+        }, {
+            "positive_color": inspect.Parameter.KEYWORD_ONLY,
+            "negative_color": inspect.Parameter.KEYWORD_ONLY,
+            "axis_color": inspect.Parameter.KEYWORD_ONLY,
+            "reverse_direction": inspect.Parameter.KEYWORD_ONLY,
+            "hide_text": inspect.Parameter.KEYWORD_ONLY,
+        })
+        self.assertEqual({
+            name: parameter.default
+            for name, parameter in parameters.items()
+        }, {
+            "query_ref": inspect.Parameter.empty,
+            "positive_color": "#4472C4",
+            "negative_color": "#ED7D31",
+            "axis_color": "#CCCCCC",
+            "reverse_direction": False,
+            "hide_text": False,
+        })
 
-    def test_show_bar_only(self):
-        result = _build_data_bar_config("Cost", "Finance", "#FFF", "#F00", True)
-        self.assertIsNotNone(result)
+    def test_default_configuration_matches_supported_contract(self):
+        query_ref = "Sales.Net revenue €"
+        result = _build_data_bar_config(query_ref)
+        self.assertEqual(result, _expected_data_bar_instance(query_ref))
+        self.assertNotIn("id", result)
+        self.assertNotIn("field", result)
+
+    def test_custom_colors_direction_and_visibility(self):
+        query_ref = "Sum(Finances & opérations.Chiffre net €)"
+        result = _build_data_bar_config(
+            query_ref,
+            positive_color="#007ACC",
+            negative_color="#CC3300",
+            axis_color="#222222",
+            reverse_direction=True,
+            hide_text=True,
+        )
+        self.assertEqual(result, _expected_data_bar_instance(
+            query_ref,
+            positive_color="#007ACC",
+            negative_color="#CC3300",
+            axis_color="#222222",
+            reverse_direction=True,
+            hide_text=True,
+        ))
 
 
 class TestBuildSmallMultiplesConfig(unittest.TestCase):

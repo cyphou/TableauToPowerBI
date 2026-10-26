@@ -4,15 +4,16 @@ Targets uncovered lines identified by coverage report (340 lines, 77.2% → 90%+
 Complements tests/test_pbip_generator.py (existing 47 tests covering basic paths).
 """
 
+import copy
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.pbip_generator import (
@@ -38,6 +39,31 @@ def _init_field_map(gen, field_map=None, measure_names=None,
     gen._bim_measure_names = set(bim_measure_names or [])
     gen._main_table = main_table
     gen._datasources_ref = datasources_ref or []
+
+
+def _expected_data_bar_instance(query_ref):
+    """Canonical PBIR conditional-formatting instance for one projection."""
+    def literal(value):
+        return {"expr": {"Literal": {"Value": value}}}
+
+    return {
+        "properties": {
+            "dataBars": {
+                "positiveColor": {
+                    "solid": {"color": literal("'#4472C4'")},
+                },
+                "negativeColor": {
+                    "solid": {"color": literal("'#ED7D31'")},
+                },
+                "axisColor": {
+                    "solid": {"color": literal("'#CCCCCC'")},
+                },
+                "reverseDirection": literal("false"),
+                "hideText": literal("false"),
+            },
+        },
+        "selector": {"metadata": query_ref},
+    }
 
 
 # ─── Module-level helpers ───────────────────────────────────────────────
@@ -2846,6 +2872,7 @@ class TestBuildVisualStylingObjects(unittest.TestCase):
 
     def setUp(self):
         self.gen = _make_generator()
+        self.addCleanup(shutil.rmtree, self.gen.output_dir, ignore_errors=True)
 
     def test_background_color(self):
         objects = {}
@@ -2900,12 +2927,46 @@ class TestBuildVisualStylingObjects(unittest.TestCase):
         self.assertIn('gridlines', objects)
 
     def test_data_bars(self):
-        objects = {}
-        ws = {'formatting': {}, 'fields': [{'role': 'measure'}]}
-        me = {'color': {'type': 'quantitative'}}
-        self.gen._build_visual_styling_objects(
-            objects, ws, 'tableEx', {}, me)
-        self.assertIn('dataBar', objects)
+        _init_field_map(
+            self.gen,
+            field_map={'Revenue': ('Sales', 'Net Revenue')},
+            measure_names={'Revenue'},
+            bim_measure_names={'Net Revenue'},
+            main_table='Sales',
+        )
+        self.gen._actual_bim_symbols = {('Sales', 'Net Revenue')}
+        self.gen._actual_bim_measure_names = {'Net Revenue'}
+        self.gen._actual_bim_measure_types = {
+            ('Sales', 'Net Revenue'): 'double',
+        }
+        ws = {
+            'formatting': {},
+            'fields': [{'name': 'Revenue', 'role': 'measure'}],
+        }
+        me = {'color': {'type': 'quantitative', 'field': 'Revenue'}}
+        projection = self.gen._make_projection_entry({'name': 'Revenue'})
+        self.assertEqual(projection['queryRef'], 'Sales.Net Revenue')
+        self.assertEqual(projection['field'], {'Measure': {
+            'Expression': {'SourceRef': {'Entity': 'Sales'}},
+            'Property': 'Net Revenue',
+        }})
+        query_state = {'Values': {'projections': [projection]}}
+        for visual_type in ('tableEx', 'matrix'):
+            with self.subTest(visual_type=visual_type):
+                objects = {}
+                self.gen._build_visual_styling_objects(
+                    objects, ws, visual_type, {}, me,
+                    query_state=query_state)
+                values = objects['values'][0]['properties']
+                self.assertEqual(
+                    objects['columnFormatting'],
+                    [_expected_data_bar_instance('Sales.Net Revenue')],
+                )
+                self.assertEqual(values['backColor'], {
+                    'solid': {'color': _L("'#F2F2F2'")},
+                })
+                self.assertNotIn('dataBar', values)
+                self.assertNotIn('dataBar', objects)
 
     def test_default_row_banding_table(self):
         """Default banding fallback for table visuals."""
@@ -2938,6 +2999,160 @@ class TestBuildVisualStylingObjects(unittest.TestCase):
         }}])
         self.assertNotIn('visualContainerStyle', objects)
         self.assertNotIn('visualContainerPadding', objects)
+
+
+class TestDataBarVisualCompatibility(unittest.TestCase):
+    """Bound bars use supported formatting metadata and gate legacy type changes."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = temporary.name
+        self.gen = _make_generator(self.root)
+        _init_field_map(
+            self.gen,
+            field_map={
+                'Region': ('Sales', 'Region'),
+                'Revenue': ('Sales', 'Net Revenue'),
+            },
+            measure_names={'Revenue'},
+            bim_measure_names={'Net Revenue'},
+            main_table='Sales',
+        )
+        self.gen._actual_bim_symbols = {
+            ('Sales', 'Region'), ('Sales', 'Net Revenue'),
+        }
+        self.gen._actual_bim_column_types = {('Sales', 'Region'): 'string'}
+        self.gen._actual_bim_measure_names = {'Net Revenue'}
+        self.gen._actual_bim_measure_types = {
+            ('Sales', 'Net Revenue'): 'double',
+        }
+        self._serial = 0
+
+    def _worksheet(self, chart_type, bound=True):
+        measure_name = 'Revenue' if bound else 'Unavailable Revenue'
+        if not bound:
+            self.gen._field_map[measure_name] = ('Sales', 'Missing Revenue')
+            self.gen._measure_names.add(measure_name)
+        fields = [
+            {'name': 'Region', 'shelf': 'rows', 'role': 'dimension'},
+            {'name': 'Revenue', 'shelf': 'columns', 'role': 'measure'},
+        ]
+        if not bound:
+            # Keep a real, projected Values measure in the visual. Only the
+            # quantitative color target is unresolved; otherwise the visual's
+            # ordinary missing-role fallback obscures the no-bars behavior.
+            fields.append({
+                'name': measure_name, 'shelf': 'columns', 'role': 'measure',
+            })
+        return {
+            'name': 'Data bar worksheet',
+            'chart_type': chart_type,
+            'fields': fields,
+            'formatting': {
+                'worksheet_style': {'band-color': '#E8EEF0'},
+            },
+            'mark_encoding': {'color': {
+                'type': 'quantitative', 'field': measure_name,
+            }},
+        }
+
+    def _emit(self, worksheet, force_visual_type=None):
+        self._serial += 1
+        visuals_dir = os.path.join(self.root, f'visuals_{self._serial}')
+        zone = {
+            'worksheetName': worksheet['name'],
+            'position': {'x': 0, 'y': 0, 'w': 400, 'h': 300},
+        }
+        if force_visual_type is None:
+            self.gen._create_visual_worksheet(
+                visuals_dir, worksheet, zone, 1.0, 1.0, 0,
+                [worksheet], {},
+            )
+        else:
+            # Exercise the legacy raw-table branch itself. The regular
+            # resolver already normalizes that source type to tableEx.
+            with patch.object(
+                    self.gen, '_resolve_worksheet_visual_type',
+                    return_value=force_visual_type):
+                self.gen._create_visual_worksheet(
+                    visuals_dir, worksheet, zone, 1.0, 1.0, 0,
+                    [worksheet], {},
+                )
+        paths = list(Path(visuals_dir).rglob('visual.json'))
+        self.assertEqual(len(paths), 1)
+        return json.loads(paths[0].read_text(encoding='utf-8'))
+
+    def test_bound_data_bars_map_legacy_visuals_and_keep_query_formatting(self):
+        for legacy_type, compatible_type, forced_type in (
+                ('matrix', 'pivotTable', None),
+                ('table', 'tableEx', 'table')):
+            with self.subTest(legacy_type=legacy_type):
+                payload = self._emit(
+                    self._worksheet(legacy_type),
+                    force_visual_type=forced_type,
+                )
+                visual = payload['visual']
+                self.assertEqual(visual['visualType'], compatible_type)
+
+                projections = visual['query']['queryState']['Values']['projections']
+                revenue_projection = next(
+                    projection for projection in projections
+                    if projection['queryRef'] == 'Sales.Net Revenue')
+                self.assertEqual(revenue_projection['field'], {'Measure': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': 'Net Revenue',
+                }})
+                self.assertEqual(
+                    visual['objects']['columnFormatting'],
+                    [_expected_data_bar_instance('Sales.Net Revenue')],
+                )
+                self.assertEqual(
+                    visual['objects']['values'][0]['properties']['backColor'],
+                    {'solid': {'color': _L("'#E8EEF0'")}},
+                )
+                self.assertNotIn(
+                    'dataBar',
+                    visual['objects']['values'][0]['properties'])
+                expected_note = {
+                    'name': 'MigrationNote',
+                    'value': (
+                        f'Legacy {legacy_type} mapped to {compatible_type} to '
+                        'preserve data bars; existing query projections and '
+                        'formatting retained.'
+                    ),
+                }
+                self.assertIn(expected_note, payload['annotations'])
+
+    def test_unbound_data_bar_has_review_note_without_selector_or_type_change(self):
+        for legacy_type, forced_type in (('matrix', None), ('table', 'table')):
+            with self.subTest(legacy_type=legacy_type):
+                payload = self._emit(
+                    self._worksheet(legacy_type, bound=False),
+                    force_visual_type=forced_type,
+                )
+                visual = payload['visual']
+                self.assertEqual(visual['visualType'], legacy_type)
+                query_state = visual['query']['queryState']
+                values_projections = query_state['Values']['projections']
+                revenue_projection = next(
+                    projection for projection in values_projections
+                    if projection['queryRef'] == 'Sales.Net Revenue')
+                self.assertEqual(revenue_projection['field'], {'Measure': {
+                    'Expression': {'SourceRef': {'Entity': 'Sales'}},
+                    'Property': 'Net Revenue',
+                }})
+                self.assertNotIn('columnFormatting', visual['objects'])
+                self.assertNotIn(
+                    'dataBar',
+                    visual['objects']['values'][0]['properties'])
+                self.assertTrue(any(
+                    note.get('name') == 'MigrationNote'
+                    and note.get('value') ==
+                    'Data bars could not bind to projected Values fields; '
+                    'review required: Unavailable Revenue'
+                    for note in payload.get('annotations', [])
+                ))
 
 
 # ─── _build_color_encoding_objects ──────────────────────────────────
@@ -3988,6 +4203,44 @@ class TestBuildVisualObjectsOrchestrator(unittest.TestCase):
                 self.assertEqual(properties['start'], _L('0D'))
                 self.assertEqual(properties['end'], _L('100D'))
 
+    def test_funnel_omits_only_default_value_axis_and_keeps_explicit_axis_gap(self):
+        """Pin serialized source properties; this is not a CLI-validity claim."""
+        gen = _make_generator()
+        self.addCleanup(shutil.rmtree, gen.output_dir, ignore_errors=True)
+        _init_field_map(gen, main_table='Synthetic')
+
+        default_objects = gen._build_visual_objects(
+            'Synthetic Funnel',
+            {'formatting': {'axis': {'display': 'true'}}},
+            'funnel',
+        )
+        self.assertIn('categoryAxis', default_objects)
+        self.assertNotIn('valueAxis', default_objects)
+
+        explicit_objects = gen._build_visual_objects(
+            'Synthetic Funnel',
+            {
+                'formatting': {'axis': {'display': 'true'}},
+                'axes': {
+                    'y': {'auto_range': False, 'range_min': 5, 'range_max': 80},
+                },
+                'reference_lines': [{
+                    'type': 'average',
+                    'field': 'Revenue',
+                    'label': 'Tableau average',
+                }],
+            },
+            'funnel',
+        )
+        self.assertIn('valueAxis', explicit_objects)
+        value_axis = explicit_objects['valueAxis'][0]['properties']
+        self.assertEqual(value_axis['start'], _L('5D'))
+        self.assertEqual(value_axis['end'], _L('80D'))
+        self.assertEqual(
+            value_axis['referenceLine'][0]['properties']['type'],
+            _L("'Average'"),
+        )
+
     def test_card_label_font_is_preserved_without_show_property(self):
         gen = _make_generator()
         self.addCleanup(shutil.rmtree, gen.output_dir, ignore_errors=True)
@@ -4041,6 +4294,193 @@ class TestBuildVisualObjectsOrchestrator(unittest.TestCase):
             'fontSize': _L('13D'),
             'fontColor': {'solid': {'color': _L("'#234567'")}},
         }}]})
+
+
+class TestGanttDashboardMappingContract(unittest.TestCase):
+    """Dashboard visuals must follow source fields, not report-name heuristics."""
+
+    _TABLE = 'Synthetic Metrics'
+    _MEASURES = (
+        'Elapsed work',
+        'Planned effort',
+        'Completed effort',
+        'Remaining effort',
+    )
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.gen = _make_generator(self.tmpdir.name)
+        self.gen._actual_bim_measure_names = set(self._MEASURES)
+        self.gen._actual_bim_measure_types = {
+            (self._TABLE, name): 'double' for name in self._MEASURES
+        }
+        self.gen._actual_bim_symbols = (
+            {(self._TABLE, 'Work item')}
+            | {(self._TABLE, name) for name in self._MEASURES}
+        )
+
+    def _converted(self):
+        calculations = [{
+            'name': f'[Calc_{index}]',
+            'caption': measure,
+            'role': 'measure',
+            'formula': 'SUM([Amount])',
+        } for index, measure in enumerate(self._MEASURES, start=1)]
+        datasource = {
+            'name': 'Synthetic datasource',
+            'tables': [{
+                'name': self._TABLE,
+                'columns': [{'name': 'Work item', 'role': 'dimension'}],
+            }],
+            'calculations': calculations,
+        }
+        worksheets = [
+            {
+                'name': 'Measure-only Gantt',
+                'chart_type': 'ganttChart',
+                'fields': [
+                    {'name': measure, 'shelf': 'rows'}
+                    for measure in self._MEASURES
+                ],
+            },
+            {
+                'name': 'Categorized Gantt',
+                'chart_type': 'ganttChart',
+                'fields': [
+                    {'name': 'Work item', 'shelf': 'rows'},
+                    {'name': 'Elapsed work', 'shelf': 'columns'},
+                ],
+            },
+        ]
+        return {
+            'dashboards': [{
+                'name': 'Synthetic overview',
+                'size': {'width': 1000, 'height': 700},
+                'worksheets': [ws['name'] for ws in worksheets],
+                'objects': [
+                    {
+                        'type': 'worksheetReference',
+                        'worksheetName': ws['name'],
+                        'position': {
+                            'x': index * 500, 'y': 0, 'w': 480, 'h': 320,
+                        },
+                    }
+                    for index, ws in enumerate(worksheets)
+                ],
+            }],
+            'worksheets': worksheets,
+            'datasources': [datasource],
+            'calculations': calculations,
+            'stories': [],
+            'filters': [],
+            'datasource_filters': [],
+            'actions': [],
+            'parameters': [],
+            'custom_shapes': [],
+        }
+
+    def _render(self, report_name):
+        self.gen.create_report_structure(
+            self.tmpdir.name, report_name, copy.deepcopy(self._converted()))
+        report_dir = os.path.join(self.tmpdir.name, f'{report_name}.Report')
+        pages_dir = os.path.join(report_dir, 'definition', 'pages')
+        with open(os.path.join(pages_dir, 'pages.json'), encoding='utf-8') as handle:
+            pages_index = json.load(handle)
+        self.assertEqual(pages_index['pageOrder'], ['ReportSection'])
+        with open(os.path.join(
+                pages_dir, 'ReportSection', 'page.json'), encoding='utf-8') as handle:
+            dashboard_page = json.load(handle)
+        self.assertEqual(dashboard_page['displayName'], 'Synthetic overview')
+
+        visual_files = sorted(Path(pages_dir, 'ReportSection', 'visuals')
+                              .rglob('visual.json'))
+        self.assertEqual(len(visual_files), 2)
+        visuals = {}
+        for path in visual_files:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+            title_literal = payload['visual']['visualContainerObjects']['title'][0][
+                'properties']['text']['expr']['Literal']['Value']
+            title = title_literal[1:-1].replace("''", "'")
+            visuals[title] = payload
+        self.assertEqual(set(visuals), {
+            'Measure-only Gantt', 'Categorized Gantt',
+        })
+        return visuals
+
+    @staticmethod
+    def _stable_contract(visuals):
+        """Exclude generated visual IDs while comparing source-driven output."""
+        return sorted(
+            (
+                title,
+                payload['visual']['visualType'],
+                payload['visual'].get('query'),
+                payload.get('annotations', []),
+            )
+            for title, payload in visuals.items()
+        )
+
+    def test_dashboard_gantt_fallback_preserves_measures_and_real_category(self):
+        # Neither report name mentions Gantt; chart behavior comes from the
+        # source worksheet type and its actual resolved fields.
+        visuals = self._render('Quarterly Overview')
+
+        measure_only = visuals['Measure-only Gantt']
+        self.assertEqual(measure_only['visual']['visualType'], 'tableEx')
+        query_state = measure_only['visual']['query']['queryState']
+        self.assertEqual(set(query_state), {'Values'})
+        self.assertNotIn('Category', query_state)
+        self.assertNotIn('Indicator', query_state)
+        projections = query_state['Values']['projections']
+        self.assertEqual(len(projections), 4)
+        self.assertEqual(
+            {projection['queryRef'] for projection in projections},
+            {f'{self._TABLE}.{name}' for name in self._MEASURES},
+        )
+        self.assertEqual(
+            {projection['field']['Measure']['Property']
+             for projection in projections},
+            set(self._MEASURES),
+        )
+        self.assertTrue(all(set(projection['field']) == {'Measure'}
+                            for projection in projections))
+        notes = [annotation['value']
+                 for annotation in measure_only.get('annotations', [])
+                 if annotation.get('name') == 'MigrationNote']
+        expected_fallback_note = (
+            'clusteredBarChart requires a category dimension, but no source '
+            'category was available; available measures were preserved as a table.')
+        self.assertEqual(notes, [expected_fallback_note])
+        self.assertNotIn('annotations', measure_only['visual'])
+
+        categorized = visuals['Categorized Gantt']
+        self.assertEqual(categorized['visual']['visualType'], 'clusteredBarChart')
+        categorized_state = categorized['visual']['query']['queryState']
+        self.assertEqual(set(categorized_state), {'Category', 'Y'})
+        self.assertEqual(
+            categorized_state['Category']['projections'][0]['field'],
+            {'Column': {
+                'Expression': {'SourceRef': {'Entity': self._TABLE}},
+                'Property': 'Work item',
+            }},
+        )
+        self.assertEqual(
+            categorized_state['Y']['projections'][0]['field'],
+            {'Measure': {
+                'Expression': {'SourceRef': {'Entity': self._TABLE}},
+                'Property': 'Elapsed work',
+            }},
+        )
+        self.assertFalse(any(
+            annotation.get('name') == 'MigrationNote'
+            for annotation in categorized.get('annotations', [])
+        ))
+
+    def test_dashboard_contract_is_deterministic_and_report_name_independent(self):
+        first = self._render('Northwind Portfolio')
+        second = self._render('Quarterly Operations')
+        self.assertEqual(self._stable_contract(first), self._stable_contract(second))
 
 
 class TestWorksheetContainerObjects(unittest.TestCase):
@@ -4109,11 +4549,34 @@ class TestWorksheetContainerObjects(unittest.TestCase):
             'categoryAxis': [{'properties': {'show': _L('true')}}],
             'labels': [{'properties': {'fontSize': _L('12D')}}],
         }
+        expected_query_state = {
+            'Category': {'projections': [{
+                'field': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Synthetic'}},
+                    'Property': 'Region',
+                }},
+                'queryRef': 'Synthetic.Region',
+                'nativeQueryRef': 'Region',
+                'active': True,
+            }]},
+            'Y': {'projections': [{
+                'field': {'Measure': {
+                    'Expression': {'SourceRef': {'Entity': 'Synthetic'}},
+                    'Property': 'Revenue',
+                }},
+                'queryRef': 'Synthetic.Revenue',
+                'nativeQueryRef': 'Revenue',
+                'active': True,
+            }]},
+        }
         with patch.object(self.gen, '_build_visual_objects',
                           return_value={**container_objects, **chart_objects}) as mock_build:
             payload = self._create_worksheet_visual()
         mock_build.assert_called_once_with('Synthetic Chart', self.worksheet,
-                                           'clusteredBarChart')
+                                           'clusteredBarChart',
+                                           query_state=expected_query_state)
+        self.assertEqual(payload['visual']['query']['queryState'],
+                         expected_query_state)
         self.assertNotIn('visualContainerObjects', payload)
         visual = payload['visual']
         self.assertEqual(visual['visualType'], 'clusteredBarChart')

@@ -59,12 +59,22 @@ def build_interaction_graph(
                 "path": _relative(path, project_dir),
             })
 
-    bookmarks = []
+    bookmarks_dir = os.path.join(report_dir, "definition", "bookmarks")
+    bookmark_paths = {}
     for path in sorted(glob.glob(os.path.join(
-            report_dir, "definition", "bookmarks", "*", "bookmark.json"))):
+            bookmarks_dir, "*.bookmark.json"))):
+        name = os.path.basename(path)[:-len(".bookmark.json")]
+        bookmark_paths[name] = path
+    for path in sorted(glob.glob(os.path.join(
+            bookmarks_dir, "*", "bookmark.json"))):
+        name = os.path.basename(os.path.dirname(path))
+        bookmark_paths.setdefault(name, path)
+
+    bookmarks = []
+    for name, path in sorted(bookmark_paths.items()):
         payload = _load_json(path) or {}
         bookmarks.append({
-            "name": payload.get("displayName") or os.path.basename(os.path.dirname(path)),
+            "name": payload.get("displayName") or name,
             "path": _relative(path, project_dir),
         })
     source_actions = extracted.get("actions", []) or []

@@ -196,8 +196,8 @@ class TestSwapBookmarks(unittest.TestCase):
             'dashboards': [{
                 'name': 'D1', 'objects': [], 'width': 1000, 'height': 800,
                 'dynamic_zone_visibility': [
-                    {'worksheet': 'Sheet1', 'condition': 'param=1'},
-                    {'worksheet': 'Sheet2', 'condition': 'param=2'},
+                    {'zone_name': 'Sheet1', 'field': 'param', 'value': '1'},
+                    {'zone_name': 'Sheet2', 'field': 'param', 'value': '2'},
                 ]
             }],
             'worksheets': [],
@@ -219,22 +219,82 @@ class TestSwapBookmarks(unittest.TestCase):
         bookmarks_dir = os.path.join(project_dir, 'Test.Report', 'definition', 'bookmarks')
         self.assertTrue(os.path.isdir(bookmarks_dir))
         # The folder also holds the bookmarks.json index Power BI requires.
-        self.assertTrue(os.path.isfile(
-            os.path.join(bookmarks_dir, 'bookmarks.json')))
-        bookmark_dirs = [d for d in os.listdir(bookmarks_dir)
-                         if os.path.isdir(os.path.join(bookmarks_dir, d))]
-        self.assertGreater(len(bookmark_dirs), 0)
-        # Verify each bookmark file has correct schema
-        for bm_dir in bookmark_dirs:
-            bm_path = os.path.join(bookmarks_dir, bm_dir, 'bookmark.json')
-            self.assertTrue(os.path.isfile(bm_path))
-            with open(bm_path) as f:
+        index_path = os.path.join(bookmarks_dir, 'bookmarks.json')
+        self.assertTrue(os.path.isfile(index_path))
+        with open(index_path, encoding='utf-8') as f:
+            index = json.load(f)
+        self.assertEqual(
+            index['$schema'],
+            'https://developer.microsoft.com/json-schemas/fabric/item/report/'
+            'definition/bookmarksMetadata/1.0.0/schema.json',
+        )
+        indexed_names = [item['name'] for item in index['items']]
+        self.assertGreater(len(indexed_names), 0)
+        self.assertEqual(len(indexed_names), len(set(indexed_names)))
+        self.assertEqual(
+            [entry for entry in os.listdir(bookmarks_dir)
+             if os.path.isdir(os.path.join(bookmarks_dir, entry))],
+            [],
+        )
+
+        # PBIR uses one <name>.bookmark.json file per bookmark directly in the
+        # indexed directory. Every reference must resolve to exactly one file.
+        bookmark_files = {
+            filename[:-len('.bookmark.json')]
+            for filename in os.listdir(bookmarks_dir)
+            if filename.endswith('.bookmark.json')
+        }
+        self.assertEqual(set(indexed_names), bookmark_files)
+        bookmark_payloads = {}
+        for bm_name in indexed_names:
+            bm_path = os.path.join(bookmarks_dir, f'{bm_name}.bookmark.json')
+            self.assertTrue(os.path.isfile(bm_path), bm_path)
+            with open(bm_path, encoding='utf-8') as f:
                 bm = json.load(f)
-            self.assertIn('$schema', bm)
-            self.assertIn('bookmark/', bm['$schema'])
-            self.assertIn('name', bm)
-            self.assertIn('displayName', bm)
+            self.assertEqual(
+                bm['$schema'],
+                'https://developer.microsoft.com/json-schemas/fabric/item/report/'
+                'definition/bookmark/2.1.0/schema.json',
+            )
+            self.assertEqual(bm['name'], bm_name)
+            self.assertTrue(bm['displayName'])
             self.assertIn('explorationState', bm)
+            state = bm['explorationState']
+            self.assertEqual(state['activeSection'], 'ReportSection')
+            self.assertIn('ReportSection', state['sections'])
+            bookmark_payloads[bm_name] = bm
+
+        # Dynamic-zone swap options and target names survive writing and remain
+        # attached to the indexed bookmark, rather than being lost in the report.
+        swap_bookmarks = [bm for name, bm in bookmark_payloads.items()
+                          if name.startswith('Swap_')]
+        self.assertEqual(len(swap_bookmarks), 2)
+        swap_targets = set()
+        for bm in swap_bookmarks:
+            target = bm['options']['targetVisualNames'][0]
+            self.assertIn(target, {'Sheet1', 'Sheet2'})
+            hidden_zone = 'Sheet2' if target == 'Sheet1' else 'Sheet1'
+            self.assertEqual(bm['displayName'], f'Show {target}')
+            self.assertEqual(bm['options'], {
+                'applyOnlyToTargetVisuals': True,
+                'targetVisualNames': [target],
+            })
+            self.assertEqual(bm['explorationState'], {
+                'version': '1.0',
+                'activeSection': 'ReportSection',
+                'sections': {
+                    'ReportSection': {
+                        'visualContainers': {
+                            hidden_zone: {
+                                'singleVisual': {},
+                                'display': {'mode': 'hidden'},
+                            },
+                        },
+                    },
+                },
+            })
+            swap_targets.add(target)
+        self.assertEqual(swap_targets, {'Sheet1', 'Sheet2'})
 
 
 # ─── Custom visual repository (lines 992-999) ───────────────────────

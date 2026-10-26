@@ -1,10 +1,9 @@
 """What the generation path actually depends on in ``visual_generator``.
 
-The module reads as the visual builder, and its tests reinforce that: 38 of its
-55 top-level functions are named by a test while no migration ever calls them.
-Production imports eleven names from it — three lookup maps and eight helpers —
-and builds its visuals in ``pbip_generator``. Pinning that surface means the
-day someone wires a builder in is a decision, not an accident.
+The module currently has 57 top-level functions, while ``pbip_generator``
+builds the production visuals. Production imports twelve names from this
+module — three lookup maps and nine helpers. Pinning that surface means the day
+someone wires a builder in is a decision, not an accident.
 """
 
 import ast
@@ -21,6 +20,7 @@ EXPECTED_SURFACE = {
     'VISUAL_DATA_ROLES',
     'VISUAL_TYPE_MAP',
     '_build_dynamic_reference_line',
+    '_build_data_bar_config',
     '_build_motion_chart_bookmarks',
     'build_categorical_color_objects',
     'clear_auto_generated_measures',
@@ -89,6 +89,22 @@ class TestVisualGeneratorSurface(unittest.TestCase):
         self.assertEqual(len(calls[0].args), 2)
         self.assertEqual({kw.arg for kw in calls[0].keywords},
                          {'resolve_field', 'clean_field'})
+
+    def test_data_bar_helper_uses_the_projected_query_ref_signature(self):
+        self.assertEqual(_imported_names()['_build_data_bar_config'],
+                         {'pbip_generator.py'})
+        with open(os.path.join(_REPO, 'powerbi_import', 'pbip_generator.py'),
+                  encoding='utf-8-sig') as handle:
+            tree = ast.parse(handle.read())
+        calls = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name)
+                 and node.func.id == '_build_data_bar_config']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0].args), 1)
+        self.assertIsInstance(calls[0].args[0], ast.Name)
+        self.assertEqual(calls[0].args[0].id, 'query_ref')
+        self.assertEqual(calls[0].keywords, [])
 
 
 class TestNoByteOrderMark(unittest.TestCase):

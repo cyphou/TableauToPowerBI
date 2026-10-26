@@ -241,19 +241,36 @@ class TestDynamicReferenceLines(unittest.TestCase):
 
 
 class TestDataBars(unittest.TestCase):
-    """Tests for data bar configuration on table/matrix visuals."""
+    """Tests for supported, projection-scoped data bar configuration."""
 
     def test_data_bar_config(self):
-        config = _build_data_bar_config('Amount', 'Sales')
-        self.assertIn('positiveColor', config)
-        self.assertIn('negativeColor', config)
-        self.assertIn('axisColor', config)
-
-    def test_data_bar_has_column_name(self):
-        config = _build_data_bar_config('Revenue', 'Sales')
-        # Column name is in the field property
-        self.assertIn('field', config)
-        self.assertEqual(config['field']['Column']['Property'], 'Revenue')
+        query_ref = 'Sales.Net Amount €'
+        config = _build_data_bar_config(query_ref)
+        self.assertEqual(set(config), {'properties', 'selector'})
+        self.assertEqual(set(config['properties']), {'dataBars'})
+        self.assertEqual(config['selector'], {'metadata': query_ref})
+        properties = config['properties']['dataBars']
+        self.assertEqual(set(properties), {
+            'positiveColor', 'negativeColor', 'axisColor',
+            'reverseDirection', 'hideText',
+        })
+        self.assertEqual(properties['positiveColor']['solid']['color'], {
+            'expr': {'Literal': {'Value': "'#4472C4'"}},
+        })
+        self.assertEqual(properties['negativeColor']['solid']['color'], {
+            'expr': {'Literal': {'Value': "'#ED7D31'"}},
+        })
+        self.assertEqual(properties['axisColor']['solid']['color'], {
+            'expr': {'Literal': {'Value': "'#CCCCCC'"}},
+        })
+        self.assertEqual(properties['reverseDirection'], {
+            'expr': {'Literal': {'Value': 'false'}},
+        })
+        self.assertEqual(properties['hideText'], {
+            'expr': {'Literal': {'Value': 'false'}},
+        })
+        self.assertNotIn('id', config)
+        self.assertNotIn('field', config)
 
 
 # ═══════════════════════════════════════════════════════════════════════

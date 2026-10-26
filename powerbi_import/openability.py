@@ -967,23 +967,66 @@ def _check_path_length(project_dir) -> CheckResult:
 
 
 def _check_bookmarks_index(project_dir: str) -> CheckResult:
-    """A bookmarks folder needs its bookmarks.json index.
+    """Require an index whose bookmark names resolve to matching files.
 
-    Power BI reads the index to know which bookmarks exist. Without it the
-    whole project is refused with a bare "Something went wrong", naming
-    neither the folder nor the bookmark.
+    PBIR uses flat <name>.bookmark.json files. Keep recognizing legacy
+    <name>/bookmark.json files so their missing indexes are still diagnosed.
     """
     issues = []
     for root, dirs, files in os.walk(project_dir):
         if os.path.basename(root) != "bookmarks":
             continue
-        entries = [d for d in dirs
-                   if os.path.isfile(os.path.join(root, d, "bookmark.json"))]
-        if entries and "bookmarks.json" not in files:
-            rel = os.path.relpath(root, project_dir)
+        suffix = ".bookmark.json"
+        entries = {name[:-len(suffix)]: os.path.join(root, name)
+                   for name in files if name.endswith(suffix)}
+        for name in dirs:
+            legacy_path = os.path.join(root, name, "bookmark.json")
+            if os.path.isfile(legacy_path):
+                entries.setdefault(name, legacy_path)
+        if "bookmarks.json" not in files:
+            if entries:
+                rel = os.path.relpath(root, project_dir)
+                issues.append(
+                    f"{rel} holds {len(entries)} bookmark(s) but no "
+                    "bookmarks.json index")
+            continue
+        index_path = os.path.join(root, "bookmarks.json")
+        index_rel = os.path.relpath(index_path, project_dir)
+        index = _read_json(index_path)
+        if not isinstance(index, dict) or not isinstance(index.get("items"), list):
             issues.append(
-                f"{rel} holds {len(entries)} bookmark(s) but no "
-                "bookmarks.json index")
+                f"{index_rel}: invalid bookmarks index; expected an object "
+                "with an 'items' list")
+            continue
+        seen = set()
+        for position, item in enumerate(index["items"]):
+            name = item.get("name") if isinstance(item, dict) else None
+            if not isinstance(name, str) or not name.strip():
+                issues.append(
+                    f"{index_rel}: items[{position}] must contain a "
+                    "non-empty string 'name'")
+                continue
+            if name in seen:
+                issues.append(
+                    f"{index_rel}: duplicate bookmark name {name!r} in items")
+                continue
+            seen.add(name)
+            bookmark_path = entries.get(name)
+            if bookmark_path is None:
+                issues.append(
+                    f"{index_rel}: bookmark {name!r} references missing file "
+                    f"'{name}.bookmark.json' (or legacy '{name}/bookmark.json')")
+                continue
+            bookmark = _read_json(bookmark_path)
+            bookmark_rel = os.path.relpath(bookmark_path, project_dir)
+            if not isinstance(bookmark, dict):
+                issues.append(
+                    f"{bookmark_rel}: invalid bookmark; expected an object "
+                    f"with name {name!r}")
+            elif bookmark.get("name") != name:
+                issues.append(
+                    f"{bookmark_rel}: bookmark name {bookmark.get('name')!r} "
+                    f"does not match filename/index name {name!r}")
     return CheckResult("bookmarks_index", not issues, "error", issues)
 
 

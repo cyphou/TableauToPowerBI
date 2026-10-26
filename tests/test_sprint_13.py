@@ -515,17 +515,61 @@ class TestCustomVisualGUIDIntegration(unittest.TestCase):
 
 
 class TestDynamicRefLineBuilders(unittest.TestCase):
-    """Integration: _build_data_bar_config returns valid structure."""
+    """Dynamic reference lines and data bars use supported PBIR shapes."""
 
     def test_data_bar_config(self):
-        config = _build_data_bar_config('Revenue', 'Sales')
-        self.assertEqual(config['id'], 'dataBar_Revenue')
-        self.assertIn('field', config)
-        self.assertIn('positiveColor', config)
+        query_ref = 'Sales.Revenue €'
+        config = _build_data_bar_config(query_ref)
+        self.assertEqual(config, {
+            'properties': {
+                'dataBars': {
+                    'positiveColor': {'solid': {'color': {
+                        'expr': {'Literal': {'Value': "'#4472C4'"}},
+                    }}},
+                    'negativeColor': {'solid': {'color': {
+                        'expr': {'Literal': {'Value': "'#ED7D31'"}},
+                    }}},
+                    'axisColor': {'solid': {'color': {
+                        'expr': {'Literal': {'Value': "'#CCCCCC'"}},
+                    }}},
+                    'reverseDirection': {
+                        'expr': {'Literal': {'Value': 'false'}},
+                    },
+                    'hideText': {
+                        'expr': {'Literal': {'Value': 'false'}},
+                    },
+                },
+            },
+            'selector': {'metadata': query_ref},
+        })
 
     def test_data_bar_custom_colors(self):
-        config = _build_data_bar_config('Col', 'T', min_color='#000', max_color='#FFF')
-        self.assertEqual(config['positiveColor']['solid']['color'], '#FFF')
+        query_ref = 'Sum(Finances.Chiffre net €)'
+        config = _build_data_bar_config(
+            query_ref,
+            positive_color='#FFF',
+            negative_color='#000',
+            axis_color='#ABC',
+            reverse_direction=True,
+            hide_text=True,
+        )
+        self.assertEqual(config['selector'], {'metadata': query_ref})
+        properties = config['properties']['dataBars']
+        self.assertEqual(properties['positiveColor']['solid']['color'], {
+            'expr': {'Literal': {'Value': "'#FFF'"}},
+        })
+        self.assertEqual(properties['negativeColor']['solid']['color'], {
+            'expr': {'Literal': {'Value': "'#000'"}},
+        })
+        self.assertEqual(properties['axisColor']['solid']['color'], {
+            'expr': {'Literal': {'Value': "'#ABC'"}},
+        })
+        self.assertEqual(properties['reverseDirection'], {
+            'expr': {'Literal': {'Value': 'true'}},
+        })
+        self.assertEqual(properties['hideText'], {
+            'expr': {'Literal': {'Value': 'true'}},
+        })
 
 
 if __name__ == '__main__':

@@ -39,8 +39,8 @@ def _full_project(root, name="Demo"):
                "valueAxis": [{"properties": {"referenceLine": [
                    {"type": "Constant", "value": "10D"}
                ]}}]}}}))
-    _write(os.path.join(report, "bookmarks", "b1", "bookmark.json"),
-           json.dumps({"name": "b1"}))
+    _write(os.path.join(report, "bookmarks", "b1.bookmark.json"),
+           json.dumps({"name": "b1", "displayName": "Bookmark one"}))
 
     _write(os.path.join(model, "tables", "Top N.tmdl"),
            "table 'Top N'\n\tpartition 'Top N' = calculated\n"
@@ -133,6 +133,30 @@ class TestProbesCanFail(unittest.TestCase):
             evidence = collect_target_evidence(tmp, "Demo")
         self.assertNotIn("action_url", evidence)
         self.assertNotIn("action_nav", evidence)
+
+    def test_a_flat_bookmark_file_is_evidence_of_story_bookmarks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(os.path.join(
+                tmp, "Demo.Report", "definition", "bookmarks",
+                "Story point.bookmark.json"),
+                json.dumps({"name": "Story point", "displayName": "Story point"}))
+            evidence = collect_target_evidence(tmp, "Demo")
+        self.assertEqual(
+            evidence["story_bookmarks"],
+            ["Demo.Report/definition/bookmarks/Story point.bookmark.json"],
+        )
+
+    def test_a_legacy_nested_bookmark_file_remains_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(os.path.join(
+                tmp, "Demo.Report", "definition", "bookmarks",
+                "Legacy point", "bookmark.json"),
+                json.dumps({"name": "Legacy point"}))
+            evidence = collect_target_evidence(tmp, "Demo")
+        self.assertEqual(
+            evidence["story_bookmarks"],
+            ["Demo.Report/definition/bookmarks/Legacy point/bookmark.json"],
+        )
 
     def test_a_web_url_column_is_evidence_of_a_dynamic_url_action(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -718,8 +718,17 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
             for path in sorted(glob.glob(os.path.join(data_dir, "*.csv")))
         ]
 
-    for path in glob.glob(os.path.join(
-            report_dir, "definition", "bookmarks", "*", "bookmark.json")):
+    bookmarks_dir = os.path.join(report_dir, "definition", "bookmarks")
+    bookmark_paths = {}
+    for path in sorted(glob.glob(os.path.join(
+            bookmarks_dir, "*.bookmark.json"))):
+        name = os.path.basename(path)[:-len(".bookmark.json")]
+        bookmark_paths[name] = path
+    for path in sorted(glob.glob(os.path.join(
+            bookmarks_dir, "*", "bookmark.json"))):
+        name = os.path.basename(os.path.dirname(path))
+        bookmark_paths.setdefault(name, path)
+    for path in sorted(bookmark_paths.values()):
         add("story_bookmarks", path)
 
     tables_glob = os.path.join(semantic_dir, "definition", "tables", "*.tmdl")

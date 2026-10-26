@@ -39,6 +39,42 @@ class TestInteractionGraph(unittest.TestCase):
         action = next(edge for edge in result["edges"] if edge["kind"] == "action")
         self.assertEqual(action["destination"], "Details")
 
+    def test_reads_flat_and_legacy_bookmarks_preferring_flat_duplicate(self):
+        with tempfile.TemporaryDirectory() as root:
+            bookmarks_dir = os.path.join(
+                root, "Demo.Report", "definition", "bookmarks")
+            bookmark_files = {
+                os.path.join(bookmarks_dir, "story-one.bookmark.json"): {
+                    "name": "story-one", "displayName": "Flat version",
+                },
+                os.path.join(bookmarks_dir, "story-one", "bookmark.json"): {
+                    "name": "story-one", "displayName": "Legacy duplicate",
+                },
+                os.path.join(bookmarks_dir, "legacy-only", "bookmark.json"): {
+                    "name": "legacy-only", "displayName": "Legacy only",
+                },
+            }
+            for path, payload in bookmark_files.items():
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle)
+
+            result = build_interaction_graph({}, root, "Demo")
+
+        self.assertEqual(result["status"], "scanned")
+        self.assertEqual(result["summary"]["bookmark_count"], 2)
+        bookmarks = {bookmark["name"]: bookmark
+                     for bookmark in result["bookmarks"]}
+        self.assertEqual(set(bookmarks), {"Flat version", "Legacy only"})
+        self.assertEqual(
+            bookmarks["Flat version"]["path"],
+            "Demo.Report/definition/bookmarks/story-one.bookmark.json",
+        )
+        self.assertEqual(
+            bookmarks["Legacy only"]["path"],
+            "Demo.Report/definition/bookmarks/legacy-only/bookmark.json",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

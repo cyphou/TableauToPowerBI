@@ -66,6 +66,35 @@ def _column_table_map():
     }
 
 
+def _expected_data_bar_instance(query_ref, *, positive_color="#4472C4",
+                                negative_color="#ED7D31",
+                                axis_color="#CCCCCC",
+                                reverse_direction=False, hide_text=False):
+    """Canonical PBIR conditional-formatting instance for one projection."""
+    def literal(value):
+        return {"expr": {"Literal": {"Value": value}}}
+
+    return {
+        "properties": {
+            "dataBars": {
+                "positiveColor": {
+                    "solid": {"color": literal(f"'{positive_color}'")},
+                },
+                "negativeColor": {
+                    "solid": {"color": literal(f"'{negative_color}'")},
+                },
+                "axisColor": {
+                    "solid": {"color": literal(f"'{axis_color}'")},
+                },
+                "reverseDirection": literal(
+                    "true" if reverse_direction else "false"),
+                "hideText": literal("true" if hide_text else "false"),
+            },
+        },
+        "selector": {"metadata": query_ref},
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  Calculation Groups
 # ═══════════════════════════════════════════════════════════════════
@@ -536,9 +565,32 @@ class TestVisualObjectExtensions(unittest.TestCase):
     def setUp(self):
         self.gen = PowerBIProjectGenerator.__new__(PowerBIProjectGenerator)
         self.gen._main_table = "Sales"
+        self.gen._field_map = {}
+        self.gen._measure_names = set()
+        self.gen._bim_measure_names = set()
+        self.gen._actual_bim_measure_names = set()
+        self.gen._actual_bim_measure_types = {}
+        self.gen._actual_bim_column_types = {}
+        self.gen._actual_bim_symbols = set()
+        self.gen._datasources_ref = []
 
-    def _build(self, ws_data, visual_type='clusteredBarChart'):
-        return self.gen._build_visual_objects("Test", ws_data, visual_type)
+    def _build(self, ws_data, visual_type='clusteredBarChart',
+               query_state=None):
+        return self.gen._build_visual_objects(
+            "Test", ws_data, visual_type, query_state=query_state)
+
+    def _bind_measures(self, field_map):
+        """Bind extracted measure names to exact synthetic model symbols."""
+        self.gen._field_map = dict(field_map)
+        pairs = set(field_map.values())
+        props = {prop for _, prop in pairs}
+        self.gen._measure_names = set(field_map) | props
+        self.gen._bim_measure_names = props
+        self.gen._actual_bim_measure_names = props
+        self.gen._actual_bim_measure_types = {
+            pair: 'double' for pair in pairs
+        }
+        self.gen._actual_bim_symbols = pairs
 
     def test_trend_lines(self):
         ws = {'trend_lines': [
@@ -614,13 +666,260 @@ class TestVisualObjectExtensions(unittest.TestCase):
         self.assertIn("dataPoint", objs)
         self.assertEqual(len(objs["dataPoint"]), 2)
 
-    def test_data_bars_for_table(self):
+    def test_data_bars_for_table_and_matrix(self):
+        entity = 'Sales Ledger'
+        field_name = 'Amount'
+        property_name = 'Montant net (€)'
+        self._bind_measures({field_name: (entity, property_name)})
+        query_ref = f'{entity}.{property_name}'
+        for visual_type in ('tableEx', 'matrix'):
+            with self.subTest(visual_type=visual_type):
+                ws = {
+                    'chart_type': visual_type,
+                    'fields': [{
+                        'name': field_name, 'shelf': 'rows', 'role': 'measure',
+                    }],
+                    'mark_encoding': {'color': {
+                        'type': 'quantitative', 'field': field_name,
+                    }},
+                }
+                query = self.gen._build_visual_query(ws)
+                projection = query['queryState']['Values']['projections'][0]
+                self.assertEqual(projection['queryRef'], query_ref)
+                self.assertEqual(projection['field'], {'Measure': {
+                    'Expression': {'SourceRef': {'Entity': entity}},
+                    'Property': property_name,
+                }})
+
+                objs = self._build(ws, visual_type, query['queryState'])
+                values = objs['values'][0]['properties']
+                self.assertEqual(
+                    objs['columnFormatting'],
+                    [_expected_data_bar_instance(query_ref)],
+                )
+                self.assertEqual(values['backColor'], {
+                    'solid': {'color': {
+                        'expr': {'Literal': {'Value': "'#F2F2F2'"}},
+                    }},
+                })
+                self.assertNotIn('dataBar', values)
+                self.assertNotIn('dataBar', objs)
+
+    def test_each_values_measure_gets_an_independent_data_bar_rule(self):
+        entity = 'Financial Results'
+        measure_bindings = {
+            'Revenu net €': (entity, 'Revenue, net (€)'),
+            'Marge brute %': (entity, 'Gross margin %'),
+        }
+        self._bind_measures(measure_bindings)
         ws = {
-            'fields': [{'name': 'Amount', 'role': 'measure'}],
+            'chart_type': 'tableEx',
+            'fields': [
+                {'name': field_name, 'shelf': 'rows', 'role': 'measure'}
+                for field_name in measure_bindings
+            ],
             'mark_encoding': {'color': {'type': 'quantitative'}},
         }
-        objs = self._build(ws, 'tableEx')
-        self.assertIn("dataBar", objs)
+
+        query = self.gen._build_visual_query(ws)
+        projections = query['queryState']['Values']['projections']
+        query_refs = [
+            f'{entity}.Revenue, net (€)',
+            f'{entity}.Gross margin %',
+        ]
+        self.assertEqual([projection['queryRef'] for projection in projections],
+                         query_refs)
+        self.assertEqual([projection['field'] for projection in projections], [
+            {'Measure': {
+                'Expression': {'SourceRef': {'Entity': entity}},
+                'Property': 'Revenue, net (€)',
+            }},
+            {'Measure': {
+                'Expression': {'SourceRef': {'Entity': entity}},
+                'Property': 'Gross margin %',
+            }},
+        ])
+
+        objects = self._build(ws, 'tableEx', query['queryState'])
+        values = objects['values'][0]['properties']
+        self.assertEqual(
+            objects['columnFormatting'],
+            [_expected_data_bar_instance(ref) for ref in query_refs],
+        )
+        self.assertEqual(values['backColor'], {
+            'solid': {'color': {
+                'expr': {'Literal': {'Value': "'#F2F2F2'"}},
+            }},
+        })
+        self.assertNotIn('dataBar', values)
+        self.assertNotIn('dataBar', objects)
+
+    def test_physical_measure_data_bar_keeps_its_aggregation_expression(self):
+        entity = 'Fact Sales – Europe'
+        field_name = 'Chiffre net €'
+        property_name = 'Net revenue (EUR)'
+        pair = (entity, property_name)
+        self.gen._field_map = {field_name: pair}
+        self.gen._measure_names = {field_name}
+        self.gen._bim_measure_names = set()
+        self.gen._actual_bim_measure_names = set()
+        self.gen._actual_bim_measure_types = {}
+        self.gen._actual_bim_column_types = {pair: 'double'}
+        self.gen._actual_bim_symbols = {pair}
+        ws = {
+            'chart_type': 'tableEx',
+            'fields': [{
+                'name': field_name, 'shelf': 'rows', 'role': 'measure',
+            }],
+            'mark_encoding': {'color': {
+                'type': 'quantitative', 'field': field_name,
+            }},
+        }
+
+        query = self.gen._build_visual_query(ws)
+        projection = query['queryState']['Values']['projections'][0]
+        query_ref = f'{entity}.{property_name}'
+        self.assertEqual(projection['queryRef'], query_ref)
+        self.assertEqual(projection['field'], {
+            'Aggregation': {
+                'Expression': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': entity}},
+                    'Property': property_name,
+                }},
+                'Function': 0,
+            },
+        })
+        objects = self._build(ws, 'tableEx', query['queryState'])
+        self.assertEqual(
+            objects['columnFormatting'],
+            [_expected_data_bar_instance(query_ref)],
+        )
+        self.assertNotIn(
+            'dataBar', objects['values'][0]['properties'])
+
+    def test_data_bar_selector_binds_one_unicode_measure_by_wrapped_expression(self):
+        entity = 'Finances & opérations'
+        selected_name = 'Revenu net €'
+        other_name = 'Marge brute – régionale'
+        selected_property = 'Chiffre d’affaires (€)'
+        other_property = 'Marge brute – régionale'
+        self._bind_measures({
+            selected_name: (entity, selected_property),
+            other_name: (entity, other_property),
+        })
+        ws = {
+            'chart_type': 'tableEx',
+            'fields': [
+                {'name': selected_name, 'shelf': 'rows', 'role': 'measure'},
+                {'name': other_name, 'shelf': 'rows', 'role': 'measure'},
+            ],
+            'mark_encoding': {'color': {
+                'type': 'quantitative',
+                # The selector may carry a Tableau aggregation prefix; spaces
+                # and non-ASCII characters in the field identity are retained.
+                'field': f'sum:{selected_name}',
+            }},
+        }
+
+        query = self.gen._build_visual_query(ws)
+        projections = query['queryState']['Values']['projections']
+        self.assertEqual([projection['queryRef'] for projection in projections], [
+            f'{entity}.{selected_property}',
+            f'{entity}.{other_property}',
+        ])
+        self.assertEqual(projections[0]['field'], {
+            'Measure': {
+                'Expression': {'SourceRef': {'Entity': entity}},
+                'Property': selected_property,
+            },
+        })
+        objects = self._build(ws, 'tableEx', query['queryState'])
+        self.assertEqual(
+            objects['columnFormatting'],
+            [_expected_data_bar_instance(
+                f'{entity}.{selected_property}')],
+        )
+        values = objects['values'][0]['properties']
+        self.assertNotIn('dataBar', values)
+        self.assertNotIn('dataBar', objects)
+
+    def test_duplicate_measure_targets_keep_existing_banding_color(self):
+        entity = 'Mesures consolidées'
+        field_name = 'Écart net (€)'
+        property_name = 'Écart net calculé (€)'
+        self._bind_measures({field_name: (entity, property_name)})
+        ws = {
+            'fields': [
+                {'name': field_name, 'role': 'measure'},
+                {'name': field_name, 'role': 'measure'},
+            ],
+            'formatting': {
+                'worksheet_style': {'band-color': '#E8EEF0'},
+            },
+            'mark_encoding': {'color': {
+                'type': 'quantitative', 'field': field_name,
+            }},
+        }
+
+        objects = self._build(ws, 'tableEx')
+        values = objects['values'][0]['properties']
+        self.assertEqual(
+            objects['columnFormatting'],
+            [_expected_data_bar_instance(f'{entity}.{property_name}')],
+        )
+        self.assertEqual(values['backColor'], {
+            'solid': {'color': {
+                'expr': {'Literal': {'Value': "'#E8EEF0'"}},
+            }},
+        })
+        self.assertNotIn('dataBar', values)
+        self.assertNotIn('dataBar', objects)
+
+    def test_identical_source_fields_produce_deterministic_data_bar_objects(self):
+        entity = 'Financial Metrics'
+        field_name = 'Région – montant net'
+        property_name = 'Revenue €'
+        self._bind_measures({field_name: (entity, property_name)})
+        worksheet = {
+            'fields': [{'name': field_name, 'role': 'measure'}],
+            'mark_encoding': {'color': {
+                'type': 'quantitative', 'field': field_name,
+            }},
+        }
+
+        first = self._build(copy.deepcopy(worksheet), 'tableEx')
+        second = self._build(copy.deepcopy(worksheet), 'tableEx')
+        self.assertEqual(first, second)
+        self.assertEqual(
+            first['columnFormatting'],
+            [_expected_data_bar_instance(f'{entity}.{property_name}')],
+        )
+
+    def test_data_bar_formatting_does_not_change_card_values_role(self):
+        entity = 'Finance'
+        field_name = 'Net Revenue'
+        property_name = 'Revenue €'
+        self._bind_measures({field_name: (entity, property_name)})
+        worksheet = {
+            'chart_type': 'card',
+            'fields': [{'name': field_name, 'shelf': 'rows', 'role': 'measure'}],
+            'mark_encoding': {'color': {
+                'type': 'quantitative', 'field': field_name,
+            }},
+        }
+
+        query = self.gen._build_visual_query(worksheet)
+        self.assertEqual(set(query['queryState']), {'Values'})
+        self.assertEqual(query['queryState']['Values']['projections'][0]['field'], {
+            'Measure': {
+                'Expression': {'SourceRef': {'Entity': entity}},
+                'Property': property_name,
+            },
+        })
+        objects = self._build(worksheet, 'card')
+        self.assertNotIn('dataBar', objects)
+        self.assertNotIn('columnFormatting', objects)
+        self.assertNotIn('values', objects)
 
     def test_default_row_banding_for_table(self):
         ws = {'formatting': {}}  # non-empty ws_data to pass the early return

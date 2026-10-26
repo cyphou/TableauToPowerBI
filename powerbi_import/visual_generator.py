@@ -2284,34 +2284,26 @@ def _build_dynamic_reference_line(ref_type, field_name=None, table_name=None,
     return ref_config
 
 
-def _build_data_bar_config(column_name, table_name, min_color='#FFFFFF',
-                            max_color='#4472C4', show_bar_only=False):
-    """Build data bar conditional formatting for table/matrix columns.
+def _build_data_bar_config(query_ref, *, positive_color='#4472C4',
+                           negative_color='#ED7D31', axis_color='#CCCCCC',
+                           reverse_direction=False, hide_text=False):
+    """Build one columnFormatting instance for tableEx/pivotTable data bars.
 
-    Args:
-        column_name: Column to apply data bars to
-        table_name: Table containing the column
-        min_color: Color for minimum value (default white)
-        max_color: Color for maximum value (default blue)
-        show_bar_only: If True, hide the value and only show the bar
-
-    Returns:
-        dict: Data bar rule for conditional formatting
+    ``query_ref`` must be copied from the target value projection, including
+    any aggregation, spaces, or Unicode. Data bars use a metadata-only selector,
+    not a field expression or dataViewWildcard.
     """
     return {
-        "id": f"dataBar_{column_name}",
-        "field": {
-            "Column": {
-                "Expression": {"SourceRef": {"Entity": table_name}},
-                "Property": column_name,
-            },
+        "properties": {
+            "dataBars": {
+                "positiveColor": {"solid": {"color": _L(f"'{positive_color}'")}},
+                "negativeColor": {"solid": {"color": _L(f"'{negative_color}'")}},
+                "axisColor": {"solid": {"color": _L(f"'{axis_color}'")}},
+                "reverseDirection": _L("true" if reverse_direction else "false"),
+                "hideText": _L("true" if hide_text else "false"),
+            }
         },
-        "positiveColor": {"solid": {"color": max_color}},
-        "negativeColor": {"solid": {"color": "#FF4444"}},
-        "axisColor": {"solid": {"color": "#CCCCCC"}},
-        "showBarOnly": show_bar_only,
-        "minimumValue": None,
-        "maximumValue": None,
+        "selector": {"metadata": query_ref},
     }
 
 
@@ -2960,27 +2952,74 @@ def _apply_visual_decorations(worksheet, visual_type, pbi_type, visual_name, ctm
         bubble_props["bubbleSizeBy"] = _L("'Value'")
         visual_obj["objects"]["bubbles"] = [{"properties": bubble_props}]
 
-    # ── Data bars for table/matrix columns ─────────────────────
-    if pbi_type in ('tableEx', 'matrix'):
+    # ── Data bars bound to the visual's existing value projections ──
+    if pbi_type in ('tableEx', 'pivotTable', 'matrix', 'table'):
         data_bars = worksheet.get('dataBars', worksheet.get('data_bars', []))
         if data_bars:
+            value_projections = list(visual_obj.get("query", {}).get(
+                "queryState", {}).get("Values", {}).get("projections", []))
+            # Older field-based queries also carry resolved projection refs.
+            for role in ('Values', 'values'):
+                value_projections.extend(
+                    visual_obj.get("projections", {}).get(role, []))
             bar_rules = []
+            seen_refs = set()
+            unbound_fields = []
             for db in data_bars:
                 col_name = db.get('column', db.get('field', ''))
-                tbl_name = ctm.get(col_name, 'Table')
-                bar_rules.append(_build_data_bar_config(
-                    col_name, tbl_name,
-                    min_color=db.get('minColor', '#FFFFFF'),
-                    max_color=db.get('maxColor', '#4472C4'),
-                    show_bar_only=db.get('showBarOnly', False),
-                ))
+                requested_ref = db.get('queryRef', col_name)
+                tbl_name = ctm.get(col_name)
+                matched = False
+                for projection in value_projections:
+                    query_ref = projection.get('queryRef')
+                    expression = projection.get('field', {})
+                    if 'Aggregation' in expression:
+                        expression = expression['Aggregation'].get('Expression', {})
+                    field = expression.get('Measure', expression.get('Column', {}))
+                    entity = field.get('Expression', {}).get('SourceRef', {}).get('Entity')
+                    names = (projection.get('nativeQueryRef'),
+                             projection.get('displayName'), field.get('Property'))
+                    if not query_ref or not (
+                            requested_ref == query_ref or
+                            (not db.get('queryRef') and col_name and col_name in names
+                             and (not tbl_name or tbl_name == entity
+                                  or 'Measure' in expression))):
+                        continue
+                    matched = True
+                    if query_ref in seen_refs:
+                        continue
+                    seen_refs.add(query_ref)
+                    bar_rules.append(_build_data_bar_config(
+                        query_ref,
+                        positive_color=db.get('positiveColor', db.get('maxColor', '#4472C4')),
+                        negative_color=db.get('negativeColor', '#ED7D31'),
+                        axis_color=db.get('axisColor', '#CCCCCC'),
+                        reverse_direction=db.get('reverseDirection', False),
+                        hide_text=db.get('hideText', db.get('showBarOnly', False)),
+                    ))
+                if not matched:
+                    unbound_fields.append(requested_ref or '<unnamed field>')
             if bar_rules:
-                visual_obj.setdefault("objects", {})
-                visual_obj["objects"]["values"] = [{
-                    "properties": {
-                        "dataBar": bar_rules,
-                    }
-                }]
+                visual_obj.setdefault("objects", {}).setdefault(
+                    "columnFormatting", []).extend(bar_rules)
+                # CLI capability metadata verifies dataBars only on these
+                # compatible types. Do not modernize visuals without bars.
+                compatible_type = {'matrix': 'pivotTable', 'table': 'tableEx'}.get(pbi_type)
+                if compatible_type:
+                    visual_obj["visualType"] = compatible_type
+                    visual_obj.setdefault("annotations", []).append({
+                        "name": "MigrationNote",
+                        "value": (
+                            f"Legacy {pbi_type} mapped to {compatible_type} to preserve data bars; "
+                            "existing query projections and formatting retained."
+                        ),
+                    })
+            if unbound_fields:
+                visual_obj.setdefault("annotations", []).append({
+                    "name": "MigrationNote",
+                    "value": "Data bars could not bind to projected Values fields; review required: " +
+                             ', '.join(dict.fromkeys(unbound_fields)),
+                })
 
     # ── Small Multiples ───────────────────────────────────────
     sm_field = worksheet.get('smallMultiples', worksheet.get('small_multiples', {}))

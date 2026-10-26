@@ -396,14 +396,31 @@ class TestTargetEvidence(unittest.TestCase):
 
     def test_collects_bookmark_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
-            bookmark = os.path.join(tmp, "Demo.Report", "definition",
-                                    "bookmarks", "b1", "bookmark.json")
-            os.makedirs(os.path.dirname(bookmark), exist_ok=True)
-            with open(bookmark, "w", encoding="utf-8") as fh:
-                fh.write('{}')
+            bookmarks_dir = os.path.join(
+                tmp, "Demo.Report", "definition", "bookmarks")
+            flat_bookmark = os.path.join(bookmarks_dir, "b1.bookmark.json")
+            legacy_bookmark = os.path.join(bookmarks_dir, "b1", "bookmark.json")
+            for bookmark in (flat_bookmark, legacy_bookmark):
+                os.makedirs(os.path.dirname(bookmark), exist_ok=True)
+                with open(bookmark, "w", encoding="utf-8") as fh:
+                    json.dump({"name": "b1"}, fh)
             evidence = collect_target_evidence(tmp, "Demo")
         self.assertEqual(evidence["story_bookmarks"],
-                         ["Demo.Report/definition/bookmarks/b1/bookmark.json"])
+                         ["Demo.Report/definition/bookmarks/b1.bookmark.json"])
+
+    def test_collects_legacy_bookmark_when_no_flat_duplicate_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bookmark = os.path.join(
+                tmp, "Demo.Report", "definition", "bookmarks",
+                "legacy-only", "bookmark.json")
+            os.makedirs(os.path.dirname(bookmark), exist_ok=True)
+            with open(bookmark, "w", encoding="utf-8") as fh:
+                json.dump({"name": "legacy-only"}, fh)
+            evidence = collect_target_evidence(tmp, "Demo")
+        self.assertEqual(
+            evidence["story_bookmarks"],
+            ["Demo.Report/definition/bookmarks/legacy-only/bookmark.json"],
+        )
 
     def test_collects_dashboard_page_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
