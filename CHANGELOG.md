@@ -19,6 +19,17 @@
   `ArtifactValidator.validate_dax_formula`, which also rejects Tableau function
   leaks, unresolved `[Parameters].[X]` references and `//` comments.
 
+- Fix `discover_multi_table_hyper()` against the real `tableauhyperapi`. It read
+  a `Nullability.is_nullable` attribute that the SDK enum does not have, so the
+  error was logged and swallowed and the function fell back to the SQLite probe,
+  which returns no tables for a real Hyper file. It now compares with
+  `Nullability.NULLABLE`, and `_read_hyper_api()` takes the schema name from the
+  enumerated schema instead of the optional `TableName.schema_name`. The shared
+  Hyper API test doubles now expose a faithful `Nullability` enum, and new
+  regression tests cover both nullability members, including a real two-schema
+  `.hyper` file when the SDK is installed (skipped otherwise). No production
+  caller uses this function yet.
+
 - Name the retained source in the quality report when an enabled extract hides
   another connection: the Hyper Import section gains a bilingual **Source
   decision** table (datasource, retained packaged Hyper snapshot, unused

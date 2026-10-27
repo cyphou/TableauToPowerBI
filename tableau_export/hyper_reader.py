@@ -170,7 +170,8 @@ def _read_hyper_api(file_path, max_rows=20):
                         )
 
                         tables.append({
-                            'schema': tbl.schema_name.name.unescaped,
+                            # The enumerated schema: TableName.schema_name is Optional in the SDK stubs.
+                            'schema': schema.name.unescaped,
                             'table': tname,
                             'qualified_table': str(tbl),
                             'columns': columns,
@@ -1015,7 +1016,7 @@ def discover_multi_table_hyper(file_path):
 
     # Try tableauhyperapi first
     try:
-        from tableauhyperapi import Connection, HyperProcess, Telemetry  # type: ignore[import-not-found]
+        from tableauhyperapi import Connection, HyperProcess, Nullability, Telemetry  # type: ignore[import-not-found]
         with HyperProcess(Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU) as hp:
             with Connection(hp.endpoint, file_path) as conn:
                 catalog = conn.catalog
@@ -1031,7 +1032,7 @@ def discover_multi_table_hyper(file_path):
                                 'name': col.name.unescaped,
                                 'hyper_type': col_type,
                                 'm_type': m_type,
-                                'nullable': col.nullability.is_nullable,
+                                'nullable': col.nullability == Nullability.NULLABLE,
                             })
                         # Get row count
                         row_count = conn.execute_scalar_query(

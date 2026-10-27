@@ -1,5 +1,6 @@
 """Tests for tableau_export/hyper_reader.py — Sprint 30 coverage push."""
 
+import contextlib
 import io
 import os
 import sqlite3
@@ -27,6 +28,7 @@ from tableau_export.hyper_reader import (
     read_hyper,
     read_hyper_from_twbx,
 )
+from tests.hyper_test_helpers import Nullability
 
 
 class TestBoundedHyperFallbackReads(unittest.TestCase):
@@ -327,7 +329,7 @@ class TestHyperApiSchemaIdentity(unittest.TestCase):
             columns=[SimpleNamespace(
                 name=SimpleNamespace(unescaped="Value"),
                 type="INTEGER",
-                nullability=SimpleNamespace(is_nullable=True),
+                nullability=Nullability.NULLABLE,
             )]
         )
         self.connection.execute_scalar_query.return_value = 2
@@ -339,6 +341,7 @@ class TestHyperApiSchemaIdentity(unittest.TestCase):
             Connection=mock.Mock(return_value=self.connection),
             Telemetry=SimpleNamespace(DO_NOT_SEND_USAGE_DATA_TO_TABLEAU=0),
             TableName=TableName,
+            Nullability=Nullability,
         )
         patcher = mock.patch.dict("sys.modules", {"tableauhyperapi": api})
         patcher.start()
@@ -378,6 +381,85 @@ class TestHyperApiSchemaIdentity(unittest.TestCase):
                 "name": "Value", "hyper_type": "INTEGER",
                 "m_type": "Int64.Type", "nullable": True,
             }])
+
+    def test_discover_multi_table_maps_each_nullability_member(self):
+        self.connection.catalog.get_table_definition.return_value = SimpleNamespace(
+            columns=[
+                SimpleNamespace(
+                    name=SimpleNamespace(unescaped=name), type="INTEGER",
+                    nullability=nullability,
+                )
+                for name, nullability in (
+                    ("Required", Nullability.NOT_NULLABLE),
+                    ("Optional", Nullability.NULLABLE),
+                )
+            ]
+        )
+        with mock.patch("sqlite3.connect") as sqlite_reader:
+            tables = _hyper_reader.discover_multi_table_hyper(self.path)
+            sqlite_reader.assert_not_called()
+        self.assertEqual(len(tables), len(self.identities))
+        for table in tables:
+            self.assertEqual(
+                [(c["name"], c["nullable"]) for c in table["columns"]],
+                [("Required", False), ("Optional", True)],
+            )
+
+
+class TestHyperApiRealSdk(unittest.TestCase):
+    """The real SDK has an enum Nullability and an Optional TableName.schema_name."""
+
+    def setUp(self):
+        try:
+            import tableauhyperapi as api
+        except ImportError:
+            self.skipTest("optional tableauhyperapi SDK is not installed")
+        tmp = tempfile.TemporaryDirectory(prefix="hyper-discover-", dir=os.getcwd())
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        self.path = os.path.join(self.root, "synthetic.hyper")
+        telemetry = api.Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU
+        with api.HyperProcess(telemetry, parameters={"log_dir": self.root}) as process:
+            with api.Connection(
+                    process.endpoint, self.path, api.CreateMode.CREATE_AND_REPLACE,
+            ) as connection:
+                for schema in ("Extract", "Other Schema"):
+                    connection.catalog.create_schema(api.SchemaName(schema))
+                orders = api.TableName("Extract", "Orders")
+                connection.catalog.create_table(api.TableDefinition(orders, [
+                    api.TableDefinition.Column(
+                        "required", api.SqlType.text(), api.Nullability.NOT_NULLABLE),
+                    api.TableDefinition.Column("optional", api.SqlType.double()),
+                ]))
+                connection.execute_command(
+                    f"INSERT INTO {orders} VALUES ('a', 1.5), ('b', NULL)")
+                facts = api.TableName("Other Schema", "Facts")
+                connection.catalog.create_table(api.TableDefinition(facts, [
+                    api.TableDefinition.Column("amount", api.SqlType.double()),
+                ]))
+                connection.execute_command(f"INSERT INTO {facts} VALUES (2.5)")
+
+    def test_discover_multi_table_reports_real_nullability_and_schemas(self):
+        # The readers start Hyper without a log_dir, so hyperd.log lands in the cwd.
+        with contextlib.chdir(self.root):
+            tables = _hyper_reader.discover_multi_table_hyper(self.path)
+        found = {(t["schema"], t["table"]): t for t in tables}
+        self.assertEqual(set(found), {("Extract", "Orders"), ("Other Schema", "Facts")})
+        self.assertEqual(found[("Extract", "Orders")]["row_count"], 2)
+        self.assertEqual(found[("Other Schema", "Facts")]["row_count"], 1)
+        self.assertEqual(
+            [(c["name"], c["nullable"]) for c in found[("Extract", "Orders")]["columns"]],
+            [("required", False), ("optional", True)],
+        )
+
+    def test_read_hyper_reports_real_schema_names(self):
+        with contextlib.chdir(self.root):
+            result = read_hyper(self.path, max_rows=2)
+        self.assertEqual(result["format"], "hyper_api")
+        self.assertEqual(
+            {(t["schema"], t["table"]) for t in result["tables"]},
+            {("Extract", "Orders"), ("Other Schema", "Facts")},
+        )
 
 
 class TestReadHyperSqlite(unittest.TestCase):

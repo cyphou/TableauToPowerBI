@@ -4,6 +4,7 @@ These implement the context-managed execute_query API, not the materializing
 execute_list_query shortcut. No Tableau installation or workbook is needed.
 """
 
+import enum
 import itertools
 import re
 from types import SimpleNamespace
@@ -12,6 +13,13 @@ from unittest import mock
 
 def quote_identifier(value):
     return '"' + value.replace('"', '""') + '"'
+
+
+class Nullability(enum.Enum):
+    """Same members as tableauhyperapi.Nullability, which has no ``is_nullable``."""
+
+    NOT_NULLABLE = 0
+    NULLABLE = 1
 
 
 class HyperTableName:
@@ -92,7 +100,7 @@ class StreamingHyperApi:
             columns=[SimpleNamespace(
                 name=SimpleNamespace(unescaped=name),
                 type="TEXT",
-                nullability=SimpleNamespace(is_nullable=True),
+                nullability=Nullability.NULLABLE,
             ) for name in self.columns],
         )
         self.connection.execute_scalar_query.side_effect = self._count
@@ -108,6 +116,7 @@ class StreamingHyperApi:
             Connection=mock.Mock(return_value=self.connection),
             Telemetry=SimpleNamespace(DO_NOT_SEND_USAGE_DATA_TO_TABLEAU=0),
             TableName=HyperTableName,
+            Nullability=Nullability,
         )
 
     def _close_connection(self, *unused):

@@ -20,7 +20,7 @@ from unittest import mock
 
 import migrate
 from powerbi_import.errors import ConfigurationError
-from tests.hyper_test_helpers import StreamingHyperApi
+from tests.hyper_test_helpers import Nullability, StreamingHyperApi
 
 
 class TestStreamingHyperCsvExport(unittest.TestCase):
@@ -489,7 +489,7 @@ class TestNativeHyperExportFormats(unittest.TestCase):
             SimpleNamespace(
                 name=SimpleNamespace(unescaped=name),
                 type=SimpleNamespace(tag=SimpleNamespace(name=tag)),
-                nullability=SimpleNamespace(is_nullable=True),
+                nullability=Nullability.NULLABLE,
             )
             for name, tag in columns_and_tags
         ]
