@@ -1829,14 +1829,16 @@ class TestNativeImportMetadataOnly(unittest.TestCase):
         data = os.path.join(self.root, "Data")
         os.makedirs(data)
         decoy = os.path.join(data, "facts.csv")
+        # Not hex-like on purpose: the generated TMDL embeds random UUIDs.
+        sentinel = "DECOY_ROW"
         with open(decoy, "w", encoding="utf-8") as stream:
-            stream.write("ID,Amount\n999,999\n")
+            stream.write(f"ID,Amount\n{sentinel},{sentinel}\n")
         with forbid_native_payload_io([decoy]):
             self._generate([datasource])
         content = self._content("RelativeFacts")
         self.assertIn(r'File.Contents("..\unavailable-native\facts.csv")', content)
         self.assertNotIn("DataFolder", content)
-        self.assertNotIn("999", content)
+        self.assertNotIn(sentinel, content)
         self.assertNotIn("Migration.SourceUnavailable", content)
 
     def test_deferred_payload_access_does_not_hide_invalid_binding_metadata(self):
