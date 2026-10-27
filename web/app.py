@@ -44,6 +44,16 @@ except ImportError:
     st = None
 
 
+def _new_job_dir():
+    """Create a private job directory on its canonical path.
+
+    Upload confinement compares real and lexical paths, so a temp root reached
+    through an alias (Windows 8.3 names, macOS /var) is resolved up front, as
+    the REST server does.
+    """
+    return os.path.realpath(tempfile.mkdtemp(prefix='tableau_migrate_'))
+
+
 def _zip_directory(source_dir, zip_path, job_dir=None):
     """Create a ZIP archive of a directory."""
     if not job_dir:
@@ -209,7 +219,7 @@ def run_streamlit_app():
     if 'step' not in st.session_state:
         st.session_state.step = 1
     if 'tmp_dir' not in st.session_state:
-        st.session_state.tmp_dir = tempfile.mkdtemp(prefix='tableau_migrate_')
+        st.session_state.tmp_dir = _new_job_dir()
     if 'file_paths' not in st.session_state:
         st.session_state.file_paths = []
     if 'assessment' not in st.session_state:
@@ -458,7 +468,7 @@ def run_streamlit_app():
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.session_state.step = 1
-            st.session_state.tmp_dir = tempfile.mkdtemp(prefix='tableau_migrate_')
+            st.session_state.tmp_dir = _new_job_dir()
             st.rerun()
 
 
@@ -539,7 +549,8 @@ def run_fallback_server(port=8501):
                 ]
                 if not file_items:
                     raise ValueError("No file uploaded")
-                with tempfile.TemporaryDirectory(prefix='tableau_migrate_') as tmp_dir:
+                with tempfile.TemporaryDirectory(prefix='tableau_migrate_') as created_dir:
+                    tmp_dir = os.path.realpath(created_dir)
                     source_dir = os.path.join(tmp_dir, 'source')
                     os.mkdir(source_dir)
                     for filename, data in file_items:

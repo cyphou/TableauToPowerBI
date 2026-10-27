@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 # Ensure project root is on path
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -602,6 +603,25 @@ class TestWebUI(unittest.TestCase):
                     ValueError, 'Missing server-owned private job directory'):
                 _zip_directory(src, zip_path)
             self.assertFalse(os.path.exists(zip_path))
+
+    def test_job_dir_is_canonical_when_the_temp_root_is_an_alias(self):
+        from powerbi_import.api_server import _confined_path
+        from tests.link_test_helpers import make_directory_link
+        from web.app import _new_job_dir
+        with tempfile.TemporaryDirectory() as scratch:
+            target = os.path.join(scratch, 'target')
+            os.mkdir(target)
+            alias = os.path.join(scratch, 'alias')
+            make_directory_link(self, alias, target)
+            with mock.patch.object(tempfile, 'tempdir', alias):
+                job = _new_job_dir()
+            self.assertEqual(job, os.path.realpath(job))
+            self.assertTrue(job.startswith(os.path.realpath(target)))
+            source = os.path.join(job, 'source')
+            os.mkdir(source)
+            # Confinement answers with canonical paths, so only a canonical
+            # root accepts its own answer back.
+            self.assertEqual(_confined_path(source, job), source)
 
     def test_zip_directory_rejects_paths_outside_private_job(self):
         from web.app import _zip_directory
