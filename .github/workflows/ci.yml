@@ -74,6 +74,9 @@ jobs:
         run: pip install coverage pytest
 
       - name: Run unit tests with coverage
+        # bash on every OS: the default pwsh on Windows only reports the exit
+        # code of the last command, so a failing pytest/coverage gate was hidden.
+        shell: bash
         run: |
           coverage run -m pytest tests/ -v --tb=short
           coverage report --fail-under=80
@@ -81,7 +84,7 @@ jobs:
           coverage html
 
       - name: Run performance tests
-        run: python -m pytest tests/test_performance.py -v --tb=short
+        run: python -m pytest tests/test_performance.py tests/test_perf_benchmark.py -v --tb=short
 
       - name: Run snapshot tests
         run: python -m pytest tests/test_snapshot.py -v --tb=short

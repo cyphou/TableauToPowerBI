@@ -6,6 +6,11 @@ Success criteria (from ROADMAP.md Sprint 132):
     - Peak RSS < 2 GB  (tracked via tracemalloc)
     - Full pipeline < 180 s
 
+The wall-clock limits are only enforced on an uninstrumented interpreter. Under
+coverage's tracer the 3.12 CI jobs needed 220-344 s for the generation and
+pipeline runs (limits: 120 s and 180 s), so CI runs this module a second time,
+without coverage, where the limits are enforced.
+
 Run:
     py -m pytest tests/test_perf_benchmark.py -v --tb=short
 """
@@ -17,6 +22,7 @@ import tempfile
 import time
 import tracemalloc
 import unittest
+from unittest import mock
 
 # Project root on path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +53,24 @@ FIXTURE_PARAMS = dict(
     num_hierarchies=15,
     seed=42,
 )
+
+
+def _timing_is_instrumented():
+    """True while a tracer, profiler or monitoring tool (coverage, debugger) is active."""
+    if sys.gettrace() is not None or sys.getprofile() is not None:
+        return True
+    monitoring = getattr(sys, 'monitoring', None)
+    return monitoring is not None and any(
+        monitoring.get_tool(tool_id) is not None for tool_id in range(6))
+
+
+def _assert_within_limit(test, elapsed, limit, label):
+    if _timing_is_instrumented():
+        print(f'\n  {label}: {elapsed:.2f}s (limit of {limit}s not enforced '
+              f'while a tracer or coverage is active)')
+        return
+    test.assertLess(
+        elapsed, limit, f'{label} took {elapsed:.2f}s (limit: {limit}s)')
 
 
 class TestLargeWorkbookPerformance(unittest.TestCase):
@@ -88,10 +112,8 @@ class TestLargeWorkbookPerformance(unittest.TestCase):
         print(f'\n  Extraction: {elapsed:.2f}s | peak RSS: {peak_mb:.1f} MB')
 
         self.assertTrue(result, 'Extraction returned False (failure)')
-        self.assertLess(
-            elapsed, THRESHOLD_EXTRACTION_SECONDS,
-            f'Extraction took {elapsed:.2f}s (limit: {THRESHOLD_EXTRACTION_SECONDS}s)',
-        )
+        _assert_within_limit(
+            self, elapsed, THRESHOLD_EXTRACTION_SECONDS, 'Extraction')
         self.assertLess(
             peak_mb, THRESHOLD_PEAK_MEMORY_MB,
             f'Extraction peak memory {peak_mb:.1f} MB (limit: {THRESHOLD_PEAK_MEMORY_MB} MB)',
@@ -126,10 +148,8 @@ class TestLargeWorkbookPerformance(unittest.TestCase):
         peak_mb = peak_bytes / (1024 * 1024)
         print(f'\n  Generation: {elapsed:.2f}s | peak RSS: {peak_mb:.1f} MB')
 
-        self.assertLess(
-            elapsed, THRESHOLD_GENERATION_SECONDS,
-            f'Generation took {elapsed:.2f}s (limit: {THRESHOLD_GENERATION_SECONDS}s)',
-        )
+        _assert_within_limit(
+            self, elapsed, THRESHOLD_GENERATION_SECONDS, 'Generation')
         self.assertLess(
             peak_mb, THRESHOLD_PEAK_MEMORY_MB,
             f'Generation peak memory {peak_mb:.1f} MB (limit: {THRESHOLD_PEAK_MEMORY_MB} MB)',
@@ -172,14 +192,43 @@ class TestLargeWorkbookPerformance(unittest.TestCase):
         print(f'\n  Full pipeline: {elapsed:.2f}s | peak RSS: {peak_mb:.1f} MB')
 
         self.assertTrue(result)
-        self.assertLess(
-            elapsed, THRESHOLD_PIPELINE_SECONDS,
-            f'Full pipeline took {elapsed:.2f}s (limit: {THRESHOLD_PIPELINE_SECONDS}s)',
-        )
+        _assert_within_limit(
+            self, elapsed, THRESHOLD_PIPELINE_SECONDS, 'Full pipeline')
         self.assertLess(
             peak_mb, THRESHOLD_PEAK_MEMORY_MB,
             f'Pipeline peak memory {peak_mb:.1f} MB (limit: {THRESHOLD_PEAK_MEMORY_MB} MB)',
         )
+
+
+class TestTimingGuard(unittest.TestCase):
+    """The wall-clock limits are skipped only while something instruments the run."""
+
+    @staticmethod
+    def _instrumented(trace=None, profile=None, monitoring_tools=None):
+        monitoring = mock.Mock()
+        monitoring.get_tool.side_effect = (monitoring_tools or {}).get
+        with mock.patch.object(sys, 'gettrace', return_value=trace), \
+                mock.patch.object(sys, 'getprofile', return_value=profile), \
+                mock.patch.object(sys, 'monitoring', monitoring, create=True):
+            return _timing_is_instrumented()
+
+    def test_clean_interpreter_is_not_instrumented(self):
+        self.assertFalse(self._instrumented())
+
+    def test_tracer_profiler_and_monitoring_tool_are_detected(self):
+        self.assertTrue(self._instrumented(trace=object()))
+        self.assertTrue(self._instrumented(profile=object()))
+        self.assertTrue(self._instrumented(monitoring_tools={1: 'coverage.py'}))
+
+    def test_limit_is_enforced_without_instrumentation(self):
+        with mock.patch(f'{__name__}._timing_is_instrumented', return_value=False):
+            with self.assertRaises(AssertionError):
+                _assert_within_limit(self, 5.0, 1, 'Slow step')
+            _assert_within_limit(self, 0.5, 1, 'Fast step')
+
+    def test_limit_is_not_enforced_under_instrumentation(self):
+        with mock.patch(f'{__name__}._timing_is_instrumented', return_value=True):
+            _assert_within_limit(self, 500.0, 1, 'Slow step')
 
 
 class TestMemoryCeiling(unittest.TestCase):
