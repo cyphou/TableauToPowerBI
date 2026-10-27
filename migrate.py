@@ -6434,7 +6434,10 @@ def _run_add_to_model(args):
 
             assessment = result['assessment']
             field_mapping = build_field_mapping(assessment, basename)
-            thin_gen = ThinReportGenerator(manifest.model_name, model_dir)
+            thin_gen = ThinReportGenerator(
+                manifest.model_name, model_dir,
+                model_context=gen.export_model_context() if sm_dir else None,
+            )
             thin_gen.generate_thin_report(basename, new_extracted, field_mapping=field_mapping)
 
             val = result.get('validation', {})

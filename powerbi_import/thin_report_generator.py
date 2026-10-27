@@ -11,7 +11,10 @@ Usage::
 
     from powerbi_import.thin_report_generator import ThinReportGenerator
 
-    gen = ThinReportGenerator("SharedModel", "/output/dir")
+    # model_context is the name index of the model the reports bind to, e.g.
+    # PowerBIProjectGenerator.export_model_context() after the model is written.
+    gen = ThinReportGenerator("SharedModel", "/output/dir",
+                              model_context=model_context)
     gen.generate_thin_report("SalesOverview", converted_objects, field_mapping)
 """
 
@@ -32,7 +35,8 @@ class ThinReportGenerator:
     """Generates a thin report (.Report/) referencing an external semantic model."""
 
     def __init__(self, semantic_model_name: str, output_dir: str,
-                 live_connection: Optional[str] = None, item_id: Optional[str] = None):
+                 live_connection: Optional[str] = None, item_id: Optional[str] = None,
+                 model_context: Optional[dict] = None):
         """
         Args:
             semantic_model_name: Name of the shared semantic model directory.
@@ -40,11 +44,18 @@ class ThinReportGenerator:
             live_connection: Optional ``WORKSPACE_ID/MODEL_NAME`` for byConnection
                 wiring instead of byPath. When set, the report references a
                 deployed Fabric semantic model via workspace connection string.
+            model_context: Name index of the semantic model the reports bind to,
+                as returned by ``PowerBIProjectGenerator.export_model_context``
+                or by the TMDL generator statistics. Fields are resolved against
+                it, so visuals use the model's table, column and measure names
+                and bind measures as measures. Without it they keep the raw
+                Tableau names and do not match the model.
         """
         self.semantic_model_name = semantic_model_name
         self.output_dir = os.path.abspath(output_dir)
         self.live_connection = live_connection
         self.item_id = item_id
+        self.model_context = model_context
 
     def generate_thin_report(self, report_name: str,
                              converted_objects: dict,
@@ -168,6 +179,8 @@ class ThinReportGenerator:
 
         # Create a temporary generator to reuse report content creation
         generator = PowerBIProjectGenerator(output_dir=self.output_dir)
+        if self.model_context:
+            generator.apply_model_context(self.model_context)
 
         # Use the existing report creation method but with a custom byPath
         # The report_dir is already created, so we directly call the internal

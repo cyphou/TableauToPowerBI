@@ -31,8 +31,10 @@ CONTROLS = [
         "name": "--live-connection stops reaching the thin report generator",
         "file": "powerbi_import/import_to_powerbi.py",
         "old": "thin_gen = ThinReportGenerator(model_name, thin_report_dir,\n"
-               "                                       live_connection=live_connection)",
-        "new": "thin_gen = ThinReportGenerator(model_name, thin_report_dir)",
+               "                                       live_connection=live_connection,\n"
+               "                                       model_context=model_context)",
+        "new": "thin_gen = ThinReportGenerator(model_name, thin_report_dir,\n"
+               "                                       model_context=model_context)",
         "test": "tests/test_cli_flag_wiring.py",
     },
     {
@@ -194,6 +196,46 @@ CONTROLS = [
         "new": "        _skip = lambda *a, **k: None\n"
                "        _skip(os.path.join(model_report_dir, 'definition', 'pages', 'pages.json'), {",
         "test": "tests/test_shared_model.py",
+    },
+
+    # ── Thin report model context ──────────────────────────────────────
+    {
+        "name": "shared-model thin reports lose the model's name index",
+        "file": "powerbi_import/import_to_powerbi.py",
+        "old": "live_connection=live_connection,\n"
+               "                                       model_context=model_context)",
+        "new": "live_connection=live_connection)",
+        "test": "tests/test_thin_report_model_context.py",
+    },
+    {
+        "name": "the Fabric project report loses the model's name index",
+        "file": "powerbi_import/fabric_project_generator.py",
+        "old": "                    item_id=item_registry['Report'],\n"
+               "                    model_context=sm_stats,",
+        "new": "                    item_id=item_registry['Report'],",
+        "test": "tests/test_thin_report_model_context.py",
+    },
+    {
+        "name": "--add-to-model reports lose the regenerated model's name index",
+        "file": "migrate.py",
+        "old": "model_context=gen.export_model_context() if sm_dir else None,",
+        "new": "model_context=None,",
+        "test": "tests/test_thin_report_model_context.py",
+    },
+    {
+        "name": "the thin report generator stops applying its model context",
+        "file": "powerbi_import/thin_report_generator.py",
+        "old": "        if self.model_context:\n"
+               "            generator.apply_model_context(self.model_context)",
+        "new": "        pass",
+        "test": "tests/test_thin_report_model_context.py",
+    },
+    {
+        "name": "the PBIP generator stops recording its model's name index",
+        "file": "powerbi_import/pbip_generator.py",
+        "old": "            self.apply_model_context(stats)\n",
+        "new": "",
+        "test": "tests/test_thin_report_model_context.py",
     },
 
     # ── Documented surface ─────────────────────────────────────────────

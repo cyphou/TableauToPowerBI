@@ -385,6 +385,9 @@ class PowerBIImporter:
 
         # 4. Generate the shared semantic model (or full Fabric project)
         fabric_results: dict = {}
+        # Name index of the generated model; thin reports resolve their fields
+        # against it so that visuals match the model's own names.
+        model_context = None
         if output_format == 'fabric':
             print(f"\n  Step 3: Generating Fabric project '{model_name}' "
                   f"(Lakehouse + Dataflow + Notebook + SemanticModel + Pipeline)...")
@@ -411,6 +414,7 @@ class PowerBIImporter:
             )
             # The Fabric generator places all artifacts inside project_dir
             fabric_project_path = fabric_results.get('project_path', project_dir)
+            model_context = fabric_results.get('artifacts', {}).get('semantic_model')
             # Also set sm_dir to wherever the SemanticModel was generated
             for dirpath, dirnames, _files in os.walk(fabric_project_path):
                 for d in dirnames:
@@ -433,6 +437,7 @@ class PowerBIImporter:
             sm_dir = generator.create_semantic_model_structure(
                 project_dir, model_name, merged
             )
+            model_context = generator.export_model_context()
         print(f"  [OK] Shared SemanticModel created: {sm_dir}")
 
         # Create a model-explorer report so the model can be opened in PBI Desktop
@@ -454,7 +459,8 @@ class PowerBIImporter:
         orphaned_issue_count = 0
 
         thin_gen = ThinReportGenerator(model_name, thin_report_dir,
-                                       live_connection=live_connection)
+                                       live_connection=live_connection,
+                                       model_context=model_context)
 
         # Build cross-report navigation
         nav_configs = build_cross_report_navigation(workbook_names, model_name)

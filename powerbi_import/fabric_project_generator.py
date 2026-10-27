@@ -172,6 +172,7 @@ class FabricProjectGenerator:
                     project_name,
                     project_dir,
                     item_id=item_registry['Report'],
+                    model_context=sm_stats,
                 )
                 report_dir = report_gen.generate_thin_report(
                     project_name,

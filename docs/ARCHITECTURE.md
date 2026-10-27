@@ -283,7 +283,7 @@ and Fabric's separate staging behavior are not full PBIP imports. See the
 | `migration_report.py` | Per-item fidelity tracking and migration status reporting |
 | `shared_model.py` | Multi-workbook merge engine: fingerprint-based table matching, column overlap scoring, measure/column/parameter conflict resolution |
 | `merge_assessment.py` | Merge assessment reporter: JSON + console output, scoring (0–100), merge/partial/separate recommendation |
-| `thin_report_generator.py` | Thin report generator: PBIR `byPath` wiring, field remapping for namespaced measures |
+| `thin_report_generator.py` | Thin report generator: PBIR `byPath` wiring, field remapping for namespaced measures, and the written model's name index (`model_context`) so visuals bind to the model's own table, column and measure names |
 | `api_server.py` | REST API server: stdlib `http.server`, POST /migrate/batch (ZIP upload), GET /batch/{id}, GET /status/{id}, GET /download/{id}, GET /health, GET /jobs; POST /migrate returns HTTP 410 |
 | `schema_drift.py` | Schema drift detection: compare extraction snapshots, detect added/removed/changed objects |
 | `prep_lineage.py` | Cross-flow lineage graph engine: build PrepLineageGraph from FlowProfile objects, match outputs→inputs |

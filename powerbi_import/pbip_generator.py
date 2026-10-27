@@ -840,22 +840,9 @@ class PowerBIProjectGenerator:
             # (aggregation, column refs, role) and may differ from Tableau's
             # role='measure' metadata â€” a calculated column like DATEDIFF()
             # has role='measure' in Tableau but is a column in the BIM model.
-            self._actual_bim_measure_names = stats.get('actual_bim_measures', set())
-            self._actual_bim_symbols = stats.get('actual_bim_symbols', set())
-            self._actual_bim_column_types = stats.get('actual_bim_column_types', {})
-            self._actual_bim_column_categories = stats.get(
-                'actual_bim_column_categories', {})
-            self._actual_bim_measure_types = stats.get('actual_bim_measure_types', {})
+            self.apply_model_context(stats)
             # Read the emitted model, never infer a calendar from field names.
             self._related_month_bindings = self._read_related_month_bindings(sm_dir)
-            self._measure_rename_map = stats.get('measure_rename_map', {})
-
-            # Store table rename map for multi-datasource entity resolution.
-            # When multiple datasources share the same table name, the TMDL
-            # generator renames colliding tables.  The report generator must
-            # use the same renamed names in visual Entity references.
-            self._table_rename_map = stats.get('table_rename_map', {})
-            self._column_rename_map = stats.get('column_rename_map', {})
 
             # Write lineage map alongside the project for traceability
             lineage = stats.get('lineage')
@@ -868,6 +855,51 @@ class PowerBIProjectGenerator:
             import traceback
             traceback.print_exc()
             raise
+
+    def apply_model_context(self, context):
+        """Adopt the name index of a semantic model this generator did not write.
+
+        ``context`` has the shape of the statistics returned by
+        ``tmdl_generator.generate_tmdl`` (``export_model_context`` returns the
+        same shape). Visual generation resolves every field against this index.
+        Without it a field keeps its raw Tableau name and a measure is bound as
+        an aggregated column, so the visual no longer matches the model.
+
+        Each report gets its own copy, so one report can never alter another.
+        """
+        self._actual_bim_measure_names = set(context.get('actual_bim_measures') or set())
+        self._actual_bim_symbols = set(context.get('actual_bim_symbols') or set())
+        self._actual_bim_column_types = dict(context.get('actual_bim_column_types') or {})
+        self._actual_bim_column_categories = dict(
+            context.get('actual_bim_column_categories') or {})
+        self._actual_bim_measure_types = dict(context.get('actual_bim_measure_types') or {})
+        self._measure_rename_map = dict(context.get('measure_rename_map') or {})
+        # When several datasources share a table name the TMDL generator
+        # renames the colliding tables. Visual Entity references must use the
+        # same renamed names.
+        self._table_rename_map = dict(context.get('table_rename_map') or {})
+        self._column_rename_map = dict(context.get('column_rename_map') or {})
+        self._related_month_bindings = dict(context.get('related_month_bindings') or {})
+
+    def export_model_context(self):
+        """Return the name index of the semantic model this generator wrote.
+
+        The result can be given to ``apply_model_context`` or to
+        ``ThinReportGenerator`` so that reports bound to the model resolve
+        their fields exactly as the model's own report does.
+        """
+        return {
+            'actual_bim_measures': set(getattr(self, '_actual_bim_measure_names', ())),
+            'actual_bim_symbols': set(getattr(self, '_actual_bim_symbols', ())),
+            'actual_bim_column_types': dict(getattr(self, '_actual_bim_column_types', {})),
+            'actual_bim_column_categories': dict(
+                getattr(self, '_actual_bim_column_categories', {})),
+            'actual_bim_measure_types': dict(getattr(self, '_actual_bim_measure_types', {})),
+            'measure_rename_map': dict(getattr(self, '_measure_rename_map', {})),
+            'table_rename_map': dict(getattr(self, '_table_rename_map', {})),
+            'column_rename_map': dict(getattr(self, '_column_rename_map', {})),
+            'related_month_bindings': dict(getattr(self, '_related_month_bindings', {})),
+        }
 
     def _read_related_month_bindings(self, sm_dir):
         """Find verified month columns behind active, exact date relationships.
