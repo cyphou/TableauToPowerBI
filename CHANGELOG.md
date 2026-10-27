@@ -4,6 +4,47 @@
 
 ## Unreleased
 
+- Change the corpus gate so that it accounts for every artefact instead of
+  stopping at "migration exited 7". `scripts/check_corpus_gate.py` now reads
+  the batch state that `migrate.py --batch` records, names each artefact that
+  failed (error category and details) and each blocker with the artefact that
+  owns it, and checks the exit code against that state (0 when everything
+  migrated, 7 otherwise). A missing corpus directory is a failure. The gate
+  refuses to run without the Hyper reader (`tableauhyperapi`) instead of
+  judging a degraded corpus, and the `corpus-gate` CI job now installs it;
+  without it the `real_world` batch failed 8 workbooks instead of 5. **This
+  changes the gate's semantics.** Five artefacts that are known not to migrate
+  are recorded, each with its reason, in `examples/corpus_known_limitations.json`:
+  `Cache.twbx`, `SampleWB.twbx` and `RESTAPISample.twb` (their extracts are
+  legacy `.tde` files, which the Hyper API refuses with "invalid magic value in
+  header", so no complete export exists; re-saving them as `.hyper` in Tableau
+  Desktop would make them migratable), the empty flow `SampleFlow.tfl`, and
+  `tableau_prep_book.tfl` (Prep `superNode` containers are not implemented).
+  The match is exact in both directions: an unlisted failure, another error
+  category or details, an unrecorded or vanished blocker, and a listed artefact
+  that now migrates or no longer exists all fail the gate, so the list can only
+  shrink. No entry excuses a project that will not open or has no openability
+  verdict, and the file is rejected when it carries unknown fields or repeated
+  keys. The tests run a real two-artefact batch and pin the exit code and the
+  file discovery against `migrate.py`; nineteen deliberate-defect controls keep
+  them able to fail.
+
+- Make the 14 synthetic flows of `examples/prep_portfolio` parse under the
+  strict Prep parser. They were written for the former lenient parser, which
+  ignored what it could not prove; since `212a56c` only 3 of the 14 parsed, so
+  `migrate.py --batch examples/prep_portfolio` failed on the other 11. All 14
+  now parse and the batch exits 0 and writes the cross-flow lineage report. The
+  fixtures were corrected, not the parser: joins name their sides and keys,
+  pivots use the supported flat `columnsToRows` shape, and actions use the keys
+  the parser consumes. Some corrections change what a fixture contains: flow 11
+  expressed its `rowsToColumns` pivot (refused by design) with three
+  conditional columns and a SUM aggregate; flow 10 lost a `RemoveDuplicates`
+  action that no parser path supports, and its node was renamed; flows 06 and
+  07 no longer declare `anomaly_score`, because the Python script node that
+  would add it is passed through unexecuted; flow 13 uses substring instead of
+  prefix replacements; flows 08, 13 and 14 were restructured around the way the
+  parser drops the right-hand join key.
+
 - Stop the credential scan from treating ordinary English as an HTTP Basic
   credential. The `basic_auth` rule matched any word after "Basic", so the
   `preceptor-review` job failed on every workbook whose quality report listed

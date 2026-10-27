@@ -172,6 +172,26 @@ workbook never renumbers the others and invalidates their snapshots.
   confirming the change is intentional.
 - `tests/test_fixture_naming.py` fails the build if a workbook name reappears.
 
+### Corpus Gate
+
+The CI `corpus-gate` job migrates the three example batches
+(`examples/tableau_samples`, `examples/real_world`, `examples/prep_portfolio`)
+and fails when an artefact does not migrate, a project will not open, or a
+quality report lists a blocker. It needs the Hyper reader and refuses to run
+without it. Run it as CI does:
+
+```bash
+pip install tableauhyperapi
+python scripts/check_corpus_gate.py --output-dir /tmp/corpus_gate
+```
+
+[`examples/corpus_known_limitations.json`](examples/corpus_known_limitations.json)
+records the few artefacts that are known not to migrate, each with its reason
+and the exact failure that was reviewed. The match runs both ways, so the list
+can only shrink: an artefact that now migrates, fails differently or reports
+other blockers fails the gate until its entry is removed or revisited. Fix the
+regression instead of adding an entry to silence it.
+
 ## Contribution Workflow
 
 We use a **fork-based** workflow. External contributors do not have write access to the main repository — all changes come through Pull Requests.

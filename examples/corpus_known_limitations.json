@@ -1,0 +1,64 @@
+{
+  "_comment": "Reviewed list of corpus artefacts that are KNOWN not to migrate. scripts/check_corpus_gate.py treats it as an exact match in both directions: an artefact that fails and is not listed fails the gate, and a listed artefact that now migrates, fails differently or reports other blockers fails the gate too, so this file can only shrink towards empty. Keys are '<batch>/<artefact path inside the batch>'. 'category' is the batch state's error category, every 'details' fragment must occur in its error details (keep them free of absolute paths), 'blockers' is the exact set of quality-report blockers, and 'reason' says why the limitation is accepted. Do not add an entry to silence a regression.",
+  "version": 1,
+  "known_limitations": {
+    "real_world/Cache.twbx": {
+      "category": "hyper_import",
+      "details": [
+        "Required Hyper full-export/Import binding checks failed"
+      ],
+      "blockers": [
+        "Hyper datasource table lacks an exact packaged or explicit local source identity.",
+        "Hyper is required, but Data/hyper_exports.json is missing; full export proof cannot be established.",
+        "Hyper is required, but the project Data directory is missing.",
+        "Hyper source evidence has no final table with an exact Migration_HyperIdentity annotation.",
+        "Hyper source is present, but no exact explicit physical identity is available; filename/table heuristics are not accepted."
+      ],
+      "reason": "The workbook packages only a legacy .tde extract (Data/en_US-US/Sales Target.tde). The Hyper API refuses it ('invalid magic value in header'), so no complete CSV/Parquet export can be produced, and sampling or falling back to the historical live source is not acceptable. Re-saving the extract as .hyper in Tableau Desktop would make it migratable."
+    },
+    "real_world/SampleWB.twbx": {
+      "category": "hyper_import",
+      "details": [
+        "Required Hyper full-export/Import binding checks failed"
+      ],
+      "blockers": [
+        "Hyper datasource table lacks an exact packaged or explicit local source identity.",
+        "Hyper is required, but Data/hyper_exports.json is missing; full export proof cannot be established.",
+        "Hyper is required, but the project Data directory is missing.",
+        "Hyper source evidence has no final table with an exact Migration_HyperIdentity annotation.",
+        "Hyper source is present, but no exact explicit physical identity is available; filename/table heuristics are not accepted."
+      ],
+      "reason": "The workbook packages only a legacy .tde extract (Data/Tableau Samples/World Indicators.tde), which the Hyper API refuses ('invalid magic value in header'). No complete export exists, and sampling or the historical live source is not acceptable. Re-saving the extract as .hyper in Tableau Desktop would make it migratable."
+    },
+    "real_world/RESTAPISample.twb": {
+      "category": "hyper_import",
+      "details": [
+        "Required Hyper full-export/Import binding checks failed"
+      ],
+      "blockers": [
+        "Hyper datasource table lacks an exact packaged or explicit local source identity.",
+        "Hyper is required, but Data/hyper_exports.json is missing; full export proof cannot be established.",
+        "Hyper is required, but the project Data directory is missing.",
+        "Hyper source evidence has no final table with an exact Migration_HyperIdentity annotation.",
+        "Hyper source is present, but no exact explicit physical identity is available; filename/table heuristics are not accepted."
+      ],
+      "reason": "An unpackaged .twb whose datasource points at the relative extract Data/Tableau Samples/World Indicators.tde. The extract is not shipped with it, and the same file packaged in SampleWB.twbx is a legacy .tde that the Hyper API refuses ('invalid magic value in header'), so no complete export exists."
+    },
+    "real_world/SampleFlow.tfl": {
+      "category": "conversion",
+      "details": [
+        "no nodes; no outputs can be produced"
+      ],
+      "blockers": [],
+      "reason": "Empty flow from tableau/server-client-python's test assets: it declares no nodes, so there is nothing to convert."
+    },
+    "real_world/tableau_prep_book.tfl": {
+      "category": "analysis",
+      "details": [
+        "Unknown Prep baseType 'superNode'"
+      ],
+      "blockers": [],
+      "reason": "Real flow from 'Visual Analytics with Tableau' built on SuperUnion/SuperJoin container nodes (baseType superNode). The strict Prep parser does not implement them and refuses instead of guessing. Open product gap, tracked here until container nodes are supported."
+    }
+  }
+}
