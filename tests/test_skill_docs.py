@@ -4,10 +4,12 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from scripts.validate_skills import (  # noqa: E402
+    _display_path,
     _frontmatter_field,
     _known_cli_flags,
     _split_frontmatter,
@@ -111,6 +113,30 @@ class TestValidateSkillsAggregate(unittest.TestCase):
                          "--token-secret ABCDEF1234567890XYZ\n")
             errors = validate_skill(skill, known_flags={"--help", "--token-secret"})
             self.assertTrue(any("secret" in e for e in errors))
+
+
+class TestSkillOnAnotherDrive(unittest.TestCase):
+    """On Windows relpath() raises when the skill and the repo are on different drives."""
+
+    def test_display_path_falls_back_to_the_path(self):
+        other_drive = ValueError("path is on mount 'C:', start on mount 'D:'")
+        with mock.patch("scripts.validate_skills.os.path.relpath", side_effect=other_drive):
+            self.assertEqual(_display_path("elsewhere"), "elsewhere")
+
+    def test_display_path_is_repo_relative_on_the_same_drive(self):
+        self.assertEqual(
+            _display_path(_SKILL),
+            os.path.join(".github", "skills", "tableau-to-powerbi", "SKILL.md"))
+
+    def test_validate_skill_reports_findings_with_the_full_path(self):
+        other_drive = ValueError("path is on mount 'C:', start on mount 'D:'")
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = os.path.join(tmp, "SKILL.md")
+            with open(skill, "w", encoding="utf-8") as fh:
+                fh.write("no frontmatter\n")
+            with mock.patch("scripts.validate_skills.os.path.relpath", side_effect=other_drive):
+                errors = validate_skill(skill, known_flags={"--help"})
+        self.assertEqual(errors, [f"{skill}: missing YAML frontmatter"])
 
 
 if __name__ == "__main__":

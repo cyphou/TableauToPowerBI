@@ -92,12 +92,20 @@ def _known_cli_flags() -> set:
     return flags
 
 
+def _display_path(path: str) -> str:
+    """Repo-relative path for messages; the path itself when it is on another drive."""
+    try:
+        return os.path.relpath(path, _ROOT)
+    except ValueError:
+        return path
+
+
 def validate_skill(path: str, known_flags=None) -> list:
     """Return a list of error strings for a single SKILL.md (empty == clean)."""
     errors = []
     with open(path, "r", encoding="utf-8") as fh:
         text = fh.read()
-    rel = os.path.relpath(path, _ROOT)
+    rel = _display_path(path)
 
     fm, body = _split_frontmatter(text)
     if not fm:
