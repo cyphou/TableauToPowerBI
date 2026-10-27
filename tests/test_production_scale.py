@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import time
+from unittest import mock
 
 import pytest
 
@@ -29,6 +30,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, 'tableau_export'))
 #  1. SLA Tracker
 # ═══════════════════════════════════════════════════════════════════
 
+import sla_tracker
 from sla_tracker import SLAReport, SLAResult, SLATracker
 
 
@@ -69,10 +71,15 @@ class TestSLATracker:
 
     def test_time_breach(self):
         tracker = SLATracker({"max_migration_seconds": 0.001})
-        tracker.start("wb.twbx")
-        time.sleep(0.01)
-        result = tracker.record_result("wb.twbx", fidelity=95.0, validation_passed=True)
+        # Fake clock: before Python 3.13 the Windows monotonic clock ticks every
+        # ~15.6 ms, so a short real sleep can be measured as 0.0 s.
+        with mock.patch.object(sla_tracker, "time") as fake_time:
+            fake_time.monotonic.side_effect = [100.0, 100.5]
+            tracker.start("wb.twbx")
+            result = tracker.record_result("wb.twbx", fidelity=95.0, validation_passed=True)
         assert not result.time_compliant
+        assert result.migration_seconds == pytest.approx(0.5)
+        assert any("Migration took" in b for b in result.breaches)
 
     def test_report_generation(self):
         tracker = SLATracker()

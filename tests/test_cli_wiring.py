@@ -67,7 +67,8 @@ class TestMigrationProgress(unittest.TestCase):
         from powerbi_import.progress import MigrationProgress
         p = MigrationProgress(total_steps=1, show_bar=False)
         p.start("Step")
-        time.sleep(0.01)
+        # Longer than the ~15.6 ms Windows clock tick used by time.time() before Python 3.13.
+        time.sleep(0.05)
         p.complete()
         summary = p.summary()
         self.assertGreater(summary['total_elapsed'], 0)
