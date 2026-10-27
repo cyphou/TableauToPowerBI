@@ -270,12 +270,23 @@ def _write_csv(path, rows):
         csv.writer(stream).writerows(rows)
 
 
+def _is_same_file(source, target):
+    """True when both names reach one file: case-only renames, hard links."""
+    if os.path.normcase(str(source.resolve())) == os.path.normcase(
+            str(target.resolve())):
+        return True
+    # macOS file systems are case-insensitive while posixpath.normcase is not.
+    try:
+        return os.path.samefile(source, target)
+    except OSError:
+        return False
+
+
 def _copy_canonical_csv(source, target):
     source = Path(source)
     if source.resolve() == target.resolve() and source.name == target.name:
         return
-    if os.path.normcase(str(source.resolve())) == os.path.normcase(
-            str(target.resolve())):
+    if _is_same_file(source, target):
         temporary = target.with_name(f'.{target.name}.staging')
         shutil.copyfile(source, temporary)
         os.replace(temporary, target)

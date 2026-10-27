@@ -1,9 +1,13 @@
 """Tests for deterministic local file staging into Fabric Lakehouse Files."""
 
 import csv
+import os
 import zipfile
 
+import pytest
+
 from powerbi_import.fabric_file_staging import (
+    _copy_canonical_csv,
     read_xlsx_sheets,
     stage_fabric_file_sources,
 )
@@ -103,3 +107,35 @@ def test_uses_schema_matched_hyper_csv_for_table_aliases(tmp_path):
     assert (data / 'orders.csv').read_text(encoding='utf-8') == (
         'Order ID,Sales\n1,10.5\n')
     assert (data / 'extract.csv').is_file()
+
+
+def test_canonical_copy_accepts_another_name_of_the_same_file(tmp_path):
+    # On macOS Extract.csv and extract.csv are one inode while posixpath keeps
+    # their case apart; a hard link reproduces that identity on every platform.
+    content = 'Order ID,Sales\n1,10.5\n'
+    source = tmp_path / 'Extract.csv'
+    source.write_text(content, encoding='utf-8')
+    target = tmp_path / 'orders.csv'
+    try:
+        os.link(source, target)
+    except (AttributeError, NotImplementedError, OSError) as error:
+        pytest.skip(f'hard links are unavailable: {error}')
+
+    _copy_canonical_csv(source, target)
+
+    assert source.read_text(encoding='utf-8') == content
+    assert target.read_text(encoding='utf-8') == content
+    assert not os.path.samefile(source, target)
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        'Extract.csv', 'orders.csv']
+
+
+def test_canonical_copy_leaves_the_file_alone_when_the_name_matches(tmp_path):
+    source = tmp_path / 'orders.csv'
+    source.write_text('a,b\n1,2\n', encoding='utf-8')
+    before = source.stat().st_mtime_ns
+
+    _copy_canonical_csv(source, source)
+
+    assert source.stat().st_mtime_ns == before
+    assert [path.name for path in tmp_path.iterdir()] == ['orders.csv']
