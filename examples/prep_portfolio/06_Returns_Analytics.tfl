@@ -60,6 +60,8 @@
         {"namespace": "Default", "nextNodeId": "a6000001-0001-0001-0001-000000000004", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "a6000001-0001-0001-0001-000000000001",
+      "rightNodeId": "a6000001-0001-0001-0001-000000000002",
       "joinConditions": [
         {"leftColumn": "OrderID", "rightColumn": "OrderID", "operator": "="}
       ]
@@ -114,8 +116,7 @@
         {"name": "RefundAmount", "type": "real"},
         {"name": "NetRefund", "type": "real"},
         {"name": "ReturnRate", "type": "real"},
-        {"name": "DaysToReturn", "type": "integer"},
-        {"name": "anomaly_score", "type": "integer"}
+        {"name": "DaysToReturn", "type": "integer"}
       ]
     }
   },

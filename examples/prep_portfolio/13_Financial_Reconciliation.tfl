@@ -88,13 +88,17 @@
       ],
       "beforeActionGroup": {
         "actions": [
-          {"actionType": ".v1.SplitColumn", "columnName": "AccountCode", "separator": "-", "splitType": "fixed", "numParts": 3, "newColumnNames": ["AcctSegment1", "AcctSegment2", "AcctSegment3"]},
+          {"actionType": ".v1.DuplicateColumn", "columnName": "AccountCode", "newColumnName": "AccountCodeParts"},
+          {"actionType": ".v1.SplitColumn", "columnName": "AccountCodeParts", "delimiter": "-", "numParts": 3},
+          {"actionType": ".v1.RenameColumn", "columnName": "AccountCodeParts.1", "newColumnName": "AcctSegment1"},
+          {"actionType": ".v1.RenameColumn", "columnName": "AccountCodeParts.2", "newColumnName": "AcctSegment2"},
+          {"actionType": ".v1.RenameColumn", "columnName": "AccountCodeParts.3", "newColumnName": "AcctSegment3"},
           {"actionType": ".v1.AddColumn", "columnName": "NetAmount", "expression": "[DebitAmount] - [CreditAmount]", "columnType": "real"},
           {"actionType": ".v1.AddColumn", "columnName": "TransDirection", "expression": "IF [NetAmount] > 0 THEN 'Debit' ELSEIF [NetAmount] < 0 THEN 'Credit' ELSE 'Zero' END", "columnType": "string"},
-          {"actionType": ".v1.ReplaceValue", "columnName": "Description", "oldValue": "  ", "newValue": " ", "matchType": "substring"},
+          {"actionType": ".v1.ReplaceValues", "columnName": "Description", "oldValue": "  ", "newValue": " "},
           {"actionType": ".v1.CleanOperation", "columnName": "Description", "operation": "trim"},
           {"actionType": ".v1.CleanOperation", "columnName": "CostCenter", "operation": "upper"},
-          {"actionType": ".v1.ChangeType", "columnName": "AcctSegment1", "newType": "integer"},
+          {"actionType": ".v1.ChangeColumnType", "columnName": "AcctSegment1", "newType": "integer"},
           {"actionType": ".v1.AddColumn", "columnName": "PostingMonth", "expression": "STR(YEAR([PostingDate])) + '-' + RIGHT('0' + STR(MONTH([PostingDate])), 2)", "columnType": "string"},
           {"actionType": ".v1.AddColumn", "columnName": "FiscalQuarter", "expression": "IF MONTH([PostingDate]) <= 3 THEN 'Q1' ELSEIF MONTH([PostingDate]) <= 6 THEN 'Q2' ELSEIF MONTH([PostingDate]) <= 9 THEN 'Q3' ELSE 'Q4' END", "columnType": "string"}
         ]
@@ -110,13 +114,18 @@
       ],
       "beforeActionGroup": {
         "actions": [
-          {"actionType": ".v1.SplitColumn", "columnName": "Reference", "separator": "/", "splitType": "first", "numParts": 2, "newColumnNames": ["RefPrefix", "RefNumber"]},
-          {"actionType": ".v1.ReplaceValue", "columnName": "PayeePayer", "oldValue": "PAYMENT - ", "newValue": "", "matchType": "prefix"},
-          {"actionType": ".v1.ReplaceValue", "columnName": "PayeePayer", "oldValue": "DEPOSIT - ", "newValue": "", "matchType": "prefix"},
+          {"actionType": ".v1.DuplicateColumn", "columnName": "TransactionDate", "newColumnName": "BankTransactionDate"},
+          {"actionType": ".v1.DuplicateColumn", "columnName": "Amount", "newColumnName": "BankAmount"},
+          {"actionType": ".v1.DuplicateColumn", "columnName": "Reference", "newColumnName": "ReferenceParts"},
+          {"actionType": ".v1.SplitColumn", "columnName": "ReferenceParts", "delimiter": "/", "numParts": 2},
+          {"actionType": ".v1.RenameColumn", "columnName": "ReferenceParts.1", "newColumnName": "RefPrefix"},
+          {"actionType": ".v1.RenameColumn", "columnName": "ReferenceParts.2", "newColumnName": "RefNumber"},
+          {"actionType": ".v1.ReplaceValues", "columnName": "PayeePayer", "oldValue": "PAYMENT - ", "newValue": ""},
+          {"actionType": ".v1.ReplaceValues", "columnName": "PayeePayer", "oldValue": "DEPOSIT - ", "newValue": ""},
           {"actionType": ".v1.CleanOperation", "columnName": "PayeePayer", "operation": "trim"},
           {"actionType": ".v1.ReplaceNulls", "columnName": "CheckNumber", "replacement": "N/A"},
-          {"actionType": ".v1.AddColumn", "columnName": "AbsAmount", "expression": "ABS([Amount])", "columnType": "real"},
-          {"actionType": ".v1.AddColumn", "columnName": "BankDirection", "expression": "IF [Amount] > 0 THEN 'Inflow' ELSE 'Outflow' END", "columnType": "string"}
+          {"actionType": ".v1.AddColumn", "columnName": "AbsAmount", "expression": "ABS([Amount])", "newType": "real"},
+          {"actionType": ".v1.AddColumn", "columnName": "BankDirection", "expression": "IF [Amount] > 0 THEN 'Inflow' ELSE 'Outflow' END", "newType": "string"}
         ]
       }
     },
@@ -129,6 +138,8 @@
         {"namespace": "Default", "nextNodeId": "ad000001-0001-0001-0001-000000000007", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "ad000001-0001-0001-0001-000000000004",
+      "rightNodeId": "ad000001-0001-0001-0001-000000000003",
       "joinConditions": [
         {"leftColumn": "AccountCode", "rightColumn": "AccountCode", "operator": "="}
       ]
@@ -142,6 +153,8 @@
         {"namespace": "Default", "nextNodeId": "ad000001-0001-0001-0001-000000000008", "nextNamespace": "Default"}
       ],
       "joinType": "full",
+      "leftNodeId": "ad000001-0001-0001-0001-000000000006",
+      "rightNodeId": "ad000001-0001-0001-0001-000000000005",
       "joinConditions": [
         {"leftColumn": "PostingDate", "rightColumn": "TransactionDate", "operator": "="},
         {"leftColumn": "NetAmount", "rightColumn": "Amount", "operator": "="}
@@ -159,7 +172,7 @@
       "beforeActionGroup": {
         "actions": [
           {"actionType": ".v1.AddColumn", "columnName": "MatchStatus", "expression": "IF NOT ISNULL([JournalID]) AND NOT ISNULL([StatementID]) THEN 'Matched' ELSEIF NOT ISNULL([JournalID]) THEN 'GL Only' ELSE 'Bank Only' END", "columnType": "string"},
-          {"actionType": ".v1.AddColumn", "columnName": "Variance", "expression": "IF NOT ISNULL([NetAmount]) AND NOT ISNULL([Amount]) THEN ABS([NetAmount] - [Amount]) ELSE 0 END", "columnType": "real"},
+          {"actionType": ".v1.AddColumn", "columnName": "Variance", "expression": "IF NOT ISNULL([NetAmount]) AND NOT ISNULL([BankAmount]) THEN ABS([NetAmount] - [BankAmount]) ELSE 0 END", "newType": "real"},
           {"actionType": ".v1.AddColumn", "columnName": "NeedsReview", "expression": "IF [MatchStatus] != 'Matched' OR [Variance] > 0.01 THEN 'Yes' ELSE 'No' END", "columnType": "string"}
         ]
       }
@@ -178,14 +191,14 @@
         {"name": "JournalID", "type": "string"},
         {"name": "StatementID", "type": "string"},
         {"name": "PostingDate", "type": "date"},
-        {"name": "TransactionDate", "type": "date"},
+        {"name": "BankTransactionDate", "type": "date"},
         {"name": "AccountCode", "type": "string"},
         {"name": "AccountName", "type": "string"},
         {"name": "AccountType", "type": "string"},
         {"name": "Description", "type": "string"},
         {"name": "PayeePayer", "type": "string"},
         {"name": "NetAmount", "type": "real"},
-        {"name": "Amount", "type": "real"},
+        {"name": "BankAmount", "type": "real"},
         {"name": "CostCenter", "type": "string"},
         {"name": "FiscalQuarter", "type": "string"},
         {"name": "MatchStatus", "type": "string"},
@@ -205,7 +218,7 @@
       "aggregateFields": [
         {"name": "JournalID", "aggregation": "COUNT", "newColumnName": "TransactionCount"},
         {"name": "NetAmount", "aggregation": "SUM", "newColumnName": "TotalGLAmount"},
-        {"name": "Amount", "aggregation": "SUM", "newColumnName": "TotalBankAmount"},
+        {"name": "BankAmount", "aggregation": "SUM", "newColumnName": "TotalBankAmount"},
         {"name": "Variance", "aggregation": "SUM", "newColumnName": "TotalVariance"}
       ]
     },

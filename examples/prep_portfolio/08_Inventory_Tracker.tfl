@@ -62,8 +62,10 @@
         {"namespace": "Default", "nextNodeId": "a8000001-0001-0001-0001-000000000004", "nextNamespace": "Default"}
       ],
       "joinType": "full",
+      "leftNodeId": "a8000001-0001-0001-0001-000000000002",
+      "rightNodeId": "a8000001-0001-0001-0001-000000000001",
       "joinConditions": [
-        {"leftColumn": "customer_id", "rightColumn": "WAREHOUSE_ID", "operator": "="}
+        {"leftColumn": "WAREHOUSE_ID", "rightColumn": "customer_id", "operator": "="}
       ]
     },
     "a8000001-0001-0001-0001-000000000004": {

@@ -63,6 +63,8 @@
         {"namespace": "Default", "nextNodeId": "a4000001-0001-0001-0001-000000000004", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "a4000001-0001-0001-0001-000000000001",
+      "rightNodeId": "a4000001-0001-0001-0001-000000000002",
       "joinConditions": [
         {"leftColumn": "customer_id", "rightColumn": "customer_id", "operator": "="}
       ]
@@ -78,7 +80,7 @@
       "beforeActionGroup": {
         "actions": [
           {"actionType": ".v1.RenameColumn", "columnName": "customer_id", "newColumnName": "CustomerID"},
-          {"actionType": ".v1.MergeColumns", "columnNames": ["first_name", "last_name"], "separator": " ", "newColumnName": "CustomerName"},
+          {"actionType": ".v1.MergeColumns", "columns": ["first_name", "last_name"], "separator": " ", "newColumnName": "CustomerName"},
           {"actionType": ".v1.CleanOperation", "columnName": "email", "operation": "lower"},
           {"actionType": ".v1.ReplaceNulls", "columnName": "loyalty_tier", "replacement": "Bronze"},
           {"actionType": ".v1.AddColumn", "columnName": "FullAddress", "expression": "[city] + \", \" + [state] + \" \" + [postal_code]", "columnType": "string"}

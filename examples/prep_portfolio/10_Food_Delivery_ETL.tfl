@@ -98,7 +98,7 @@
       "beforeActionGroup": {
         "actions": [
           {"actionType": ".v1.FilterOperation", "filterExpression": "[status] = \"Delivered\" OR [status] = \"Completed\"", "filterType": "keep"},
-          {"actionType": ".v1.AddColumn", "columnName": "DeliveryMinutes", "expression": "DATEDIFF('minute', [order_timestamp], [delivery_timestamp])", "columnType": "integer"},
+          {"actionType": ".v1.AddColumn", "columnName": "DeliveryMinutes", "expression": "DATEDIFF('minute', [order_timestamp], [delivery_timestamp])", "newType": "integer"},
           {"actionType": ".v1.AddColumn", "columnName": "NetRevenue", "expression": "[order_total] - [discount_amount] + [delivery_fee]", "columnType": "real"},
           {"actionType": ".v1.AddColumn", "columnName": "HasPromo", "expression": "IF ISNULL([promo_code]) THEN 'No' ELSE 'Yes' END", "columnType": "string"},
           {"actionType": ".v1.RenameColumn", "columnName": "order_id", "newColumnName": "OrderID"},
@@ -120,7 +120,7 @@
     },
     "aa000001-0001-0001-0001-000000000006": {
       "nodeType": ".v2018_3_3.SuperTransform",
-      "name": "Deduplicate Restaurants",
+      "name": "Clean Restaurants",
       "id": "aa000001-0001-0001-0001-000000000006",
       "baseType": "transform",
       "nextNodes": [
@@ -132,8 +132,7 @@
           {"actionType": ".v1.RenameColumn", "columnName": "restaurant_id", "newColumnName": "RestaurantID"},
           {"actionType": ".v1.RenameColumn", "columnName": "restaurant_name", "newColumnName": "RestaurantName"},
           {"actionType": ".v1.CleanOperation", "columnName": "RestaurantName", "operation": "trim"},
-          {"actionType": ".v1.CleanOperation", "columnName": "cuisine_type", "operation": "proper"},
-          {"actionType": ".v1.RemoveDuplicates", "columns": ["RestaurantID"]}
+          {"actionType": ".v1.CleanOperation", "columnName": "cuisine_type", "operation": "proper"}
         ]
       }
     },
@@ -146,6 +145,8 @@
         {"namespace": "Default", "nextNodeId": "aa000001-0001-0001-0001-000000000008", "nextNamespace": "Default"}
       ],
       "joinType": "inner",
+      "leftNodeId": "aa000001-0001-0001-0001-000000000004",
+      "rightNodeId": "aa000001-0001-0001-0001-000000000006",
       "joinConditions": [
         {"leftColumn": "RestaurantID", "rightColumn": "RestaurantID", "operator": "="}
       ]

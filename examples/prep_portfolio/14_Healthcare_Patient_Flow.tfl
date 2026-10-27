@@ -90,7 +90,7 @@
       "id": "ae000001-0001-0001-0001-000000000004",
       "baseType": "input",
       "nextNodes": [
-        {"namespace": "Default", "nextNodeId": "ae000001-0001-0001-0001-000000000009", "nextNamespace": "Default"}
+        {"namespace": "Default", "nextNodeId": "ae000001-0001-0001-0001-000000000014", "nextNamespace": "Default"}
       ],
       "connectionId": "conn-staff",
       "connectionAttributes": {
@@ -117,6 +117,8 @@
         {"namespace": "Default", "nextNodeId": "ae000001-0001-0001-0001-000000000006", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "ae000001-0001-0001-0001-000000000001",
+      "rightNodeId": "ae000001-0001-0001-0001-000000000002",
       "joinConditions": [
         {"leftColumn": "admission_id", "rightColumn": "admission_id", "operator": "="}
       ]
@@ -130,6 +132,8 @@
         {"namespace": "Default", "nextNodeId": "ae000001-0001-0001-0001-000000000007", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "ae000001-0001-0001-0001-000000000005",
+      "rightNodeId": "ae000001-0001-0001-0001-000000000003",
       "joinConditions": [
         {"leftColumn": "primary_diagnosis_code", "rightColumn": "diagnosis_code", "operator": "="}
       ]
@@ -146,14 +150,14 @@
       ],
       "beforeActionGroup": {
         "actions": [
-          {"actionType": ".v1.AddColumn", "columnName": "LOS_Days", "expression": "DATEDIFF('day', [admit_date], [discharge_date])", "columnType": "real"},
+          {"actionType": ".v1.AddColumn", "columnName": "LOS_Days", "expression": "DATEDIFF('day', [admit_date], [discharge_date])", "newType": "real"},
           {"actionType": ".v1.AddColumn", "columnName": "LOS_Variance", "expression": "[LOS_Days] - [expected_los_days]", "columnType": "real"},
           {"actionType": ".v1.AddColumn", "columnName": "LOS_Status", "expression": "IF [LOS_Variance] <= -1 THEN 'Below Expected' ELSEIF [LOS_Variance] <= 1 THEN 'On Track' ELSE 'Extended' END", "columnType": "string"},
           {"actionType": ".v1.AddColumn", "columnName": "TotalCost", "expression": "[cost] + ([LOS_Days] * 2500)", "columnType": "real"},
           {"actionType": ".v1.AddColumn", "columnName": "CostVariance", "expression": "[TotalCost] - [cms_reimbursement]", "columnType": "real"},
           {"actionType": ".v1.AddColumn", "columnName": "Profitable", "expression": "IF [CostVariance] <= 0 THEN 'Yes' ELSE 'No' END", "columnType": "string"},
           {"actionType": ".v1.AddColumn", "columnName": "CaseMixIndex", "expression": "[drg_weight]", "columnType": "real"},
-          {"actionType": ".v1.AddColumn", "columnName": "Readmission30", "expression": "IF [discharge_disposition] = 'Readmitted' AND [LOS_Days] < 30 THEN 1 ELSE 0 END", "columnType": "integer"},
+          {"actionType": ".v1.AddColumn", "columnName": "Readmission30", "expression": "IF [discharge_disposition] = 'Readmitted' AND [LOS_Days] < 30 THEN 1 ELSE 0 END", "newType": "integer"},
           {"actionType": ".v1.AddColumn", "columnName": "AdmitHour", "expression": "DATEPART('hour', [admit_date])", "columnType": "integer"},
           {"actionType": ".v1.AddColumn", "columnName": "AdmitDayOfWeek", "expression": "DATENAME('weekday', [admit_date])", "columnType": "string"},
           {"actionType": ".v1.RenameColumn", "columnName": "admission_id", "newColumnName": "AdmissionID"},
@@ -215,6 +219,20 @@
         {"name": "duration_minutes", "aggregation": "SUM", "newColumnName": "TotalProcedureMinutes"}
       ]
     },
+    "ae000001-0001-0001-0001-000000000014": {
+      "nodeType": ".v2018_3_3.SuperTransform",
+      "name": "Prepare Staff",
+      "id": "ae000001-0001-0001-0001-000000000014",
+      "baseType": "transform",
+      "nextNodes": [
+        {"namespace": "Default", "nextNodeId": "ae000001-0001-0001-0001-000000000010", "nextNamespace": "Default"}
+      ],
+      "beforeActionGroup": {
+        "actions": [
+          {"actionType": ".v1.RenameColumn", "columnName": "department", "newColumnName": "physician_department"}
+        ]
+      }
+    },
     "ae000001-0001-0001-0001-000000000010": {
       "nodeType": ".v1.Join",
       "name": "Add Staff Info",
@@ -224,6 +242,8 @@
         {"namespace": "Default", "nextNodeId": "ae000001-0001-0001-0001-000000000012", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "ae000001-0001-0001-0001-000000000009",
+      "rightNodeId": "ae000001-0001-0001-0001-000000000014",
       "joinConditions": [
         {"leftColumn": "attending_physician", "rightColumn": "physician_name", "operator": "="}
       ]
@@ -265,9 +285,9 @@
         {"name": "TotalAdmissions", "type": "integer"},
         {"name": "AvgLOS", "type": "real"},
         {"name": "TotalCostManaged", "type": "real"},
-        {"name": "Readmissions", "type": "integer"},
+        {"name": "Readmissions", "type": "real"},
         {"name": "AvgCMI", "type": "real"},
-        {"name": "TotalProcedureMinutes", "type": "integer"}
+        {"name": "TotalProcedureMinutes", "type": "real"}
       ]
     },
     "ae000001-0001-0001-0001-000000000013": {
@@ -289,7 +309,7 @@
         {"name": "MedianLOS", "type": "real"},
         {"name": "TotalCost", "type": "real"},
         {"name": "TotalReimbursement", "type": "real"},
-        {"name": "ReadmissionCount", "type": "integer"},
+        {"name": "ReadmissionCount", "type": "real"},
         {"name": "AvgCMI", "type": "real"}
       ]
     }

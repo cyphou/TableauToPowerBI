@@ -121,6 +121,8 @@
         {"namespace": "Default", "nextNodeId": "ac000001-0001-0001-0001-000000000007", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "ac000001-0001-0001-0001-000000000001",
+      "rightNodeId": "ac000001-0001-0001-0001-000000000002",
       "joinConditions": [
         {"leftColumn": "listing_id", "rightColumn": "listing_id", "operator": "="}
       ]
@@ -134,6 +136,8 @@
         {"namespace": "Default", "nextNodeId": "ac000001-0001-0001-0001-000000000007", "nextNamespace": "Default"}
       ],
       "joinType": "inner",
+      "leftNodeId": "ac000001-0001-0001-0001-000000000003",
+      "rightNodeId": "ac000001-0001-0001-0001-000000000004",
       "joinConditions": [
         {"leftColumn": "zip_code", "rightColumn": "zip_code", "operator": "="}
       ]
@@ -147,6 +151,8 @@
         {"namespace": "Default", "nextNodeId": "ac000001-0001-0001-0001-000000000008", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "ac000001-0001-0001-0001-000000000005",
+      "rightNodeId": "ac000001-0001-0001-0001-000000000006",
       "joinConditions": [
         {"leftColumn": "zip_code", "rightColumn": "zip_code", "operator": "="}
       ]
@@ -164,7 +170,7 @@
         "actions": [
           {"actionType": ".v1.AddColumn", "columnName": "PricePerSqft", "expression": "[list_price] / [sqft]", "columnType": "real"},
           {"actionType": ".v1.AddColumn", "columnName": "SaleToListRatio", "expression": "IF NOT ISNULL([sale_price]) THEN [sale_price] / [list_price] ELSE NULL END", "columnType": "real"},
-          {"actionType": ".v1.AddColumn", "columnName": "DaysOnMarket", "expression": "IF NOT ISNULL([sale_date]) THEN DATEDIFF('day', [list_date], [sale_date]) ELSE DATEDIFF('day', [list_date], TODAY()) END", "columnType": "integer"},
+          {"actionType": ".v1.AddColumn", "columnName": "DaysOnMarket", "expression": "IF NOT ISNULL([sale_date]) THEN DATEDIFF('day', [list_date], [sale_date]) ELSE DATEDIFF('day', [list_date], TODAY()) END", "newType": "integer"},
           {"actionType": ".v1.AddColumn", "columnName": "PropertyAge", "expression": "YEAR(TODAY()) - [year_built]", "columnType": "integer"},
           {"actionType": ".v1.AddColumn", "columnName": "PriceToIncome", "expression": "[list_price] / [median_household_income]", "columnType": "real"},
           {"actionType": ".v1.AddColumn", "columnName": "ZestimateGap", "expression": "([list_price] - [zestimate_median]) / [zestimate_median]", "columnType": "real"},

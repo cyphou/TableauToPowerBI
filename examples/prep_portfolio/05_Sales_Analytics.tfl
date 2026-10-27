@@ -88,6 +88,8 @@
         {"namespace": "Default", "nextNodeId": "a5000001-0001-0001-0001-000000000005", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "a5000001-0001-0001-0001-000000000001",
+      "rightNodeId": "a5000001-0001-0001-0001-000000000002",
       "joinConditions": [
         {"leftColumn": "ProductID", "rightColumn": "ProductID", "operator": "="}
       ]
@@ -101,6 +103,8 @@
         {"namespace": "Default", "nextNodeId": "a5000001-0001-0001-0001-000000000006", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "a5000001-0001-0001-0001-000000000004",
+      "rightNodeId": "a5000001-0001-0001-0001-000000000003",
       "joinConditions": [
         {"leftColumn": "CustomerID", "rightColumn": "CustomerID", "operator": "="}
       ]
@@ -151,7 +155,7 @@
         {"name": "TotalRevenue", "type": "real"},
         {"name": "TotalProfit", "type": "real"},
         {"name": "OrderCount", "type": "integer"},
-        {"name": "TotalQuantity", "type": "integer"},
+        {"name": "TotalQuantity", "type": "real"},
         {"name": "AvgDiscount", "type": "real"}
       ]
     }

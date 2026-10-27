@@ -92,11 +92,15 @@
         {"namespace": "Default", "nextNodeId": "a9000001-0001-0001-0001-000000000006", "nextNamespace": "Default"}
       ],
       "pivotType": "columnsToRows",
-      "columnsToRows": {
-        "pivotColumns": ["Q1_Satisfaction", "Q2_WorkLifeBalance", "Q3_Environment", "Q4_Relationship", "Q5_JobInvolvement"],
-        "pivotValueName": "Score",
-        "pivotKeyName": "SurveyQuestion"
-      }
+      "pivotFields": [
+        {"name": "Q1_Satisfaction"},
+        {"name": "Q2_WorkLifeBalance"},
+        {"name": "Q3_Environment"},
+        {"name": "Q4_Relationship"},
+        {"name": "Q5_JobInvolvement"}
+      ],
+      "pivotValuesName": "Score",
+      "pivotNamesName": "SurveyQuestion"
     },
     "a9000001-0001-0001-0001-000000000005": {
       "nodeType": ".v1.Join",
@@ -107,6 +111,8 @@
         {"namespace": "Default", "nextNodeId": "a9000001-0001-0001-0001-000000000007", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "a9000001-0001-0001-0001-000000000002",
+      "rightNodeId": "a9000001-0001-0001-0001-000000000003",
       "joinConditions": [
         {"leftColumn": "EmployeeID", "rightColumn": "EmployeeID", "operator": "="}
       ]
@@ -135,6 +141,8 @@
         {"namespace": "Default", "nextNodeId": "a9000001-0001-0001-0001-000000000008", "nextNamespace": "Default"}
       ],
       "joinType": "left",
+      "leftNodeId": "a9000001-0001-0001-0001-000000000005",
+      "rightNodeId": "a9000001-0001-0001-0001-000000000006",
       "joinConditions": [
         {"leftColumn": "EmployeeID", "rightColumn": "EmployeeID", "operator": "="}
       ]
@@ -150,11 +158,11 @@
       ],
       "beforeActionGroup": {
         "actions": [
-          {"actionType": ".v1.AddColumn", "columnName": "IsTerminated", "expression": "IF ISNULL([TerminationDate]) THEN 0 ELSE 1 END", "columnType": "integer"},
+          {"actionType": ".v1.AddColumn", "columnName": "IsTerminated", "expression": "IF ISNULL([TerminationDate]) THEN 0 ELSE 1 END", "newType": "integer"},
           {"actionType": ".v1.AddColumn", "columnName": "TenureBucket", "expression": "IF [YearsAtCompany] < 2 THEN 'New' ELSEIF [YearsAtCompany] < 5 THEN 'Mid' ELSEIF [YearsAtCompany] < 10 THEN 'Senior' ELSE 'Veteran' END", "columnType": "string"},
           {"actionType": ".v1.AddColumn", "columnName": "AttritionRisk", "expression": "IF [OverTime] = 'Yes' AND [AvgSurveyScore] < 3 THEN 'High' ELSEIF [OverTime] = 'Yes' OR [AvgSurveyScore] < 3 THEN 'Medium' ELSE 'Low' END", "columnType": "string"},
           {"actionType": ".v1.AddColumn", "columnName": "IncomeBracket", "expression": "IF [MonthlyIncome] < 3000 THEN 'Low' ELSEIF [MonthlyIncome] < 7000 THEN 'Mid' ELSE 'High' END", "columnType": "string"},
-          {"actionType": ".v1.ChangeType", "columnName": "EducationLevel", "newType": "string"},
+          {"actionType": ".v1.ChangeColumnType", "columnName": "EducationLevel", "newType": "string"},
           {"actionType": ".v1.RenameColumn", "columnName": "EducationLevel", "newColumnName": "Education"}
         ]
       }
@@ -222,7 +230,7 @@
         {"name": "EmployeeCount", "type": "integer"},
         {"name": "AvgIncome", "type": "real"},
         {"name": "AvgSatisfaction", "type": "real"},
-        {"name": "Terminations", "type": "integer"}
+        {"name": "Terminations", "type": "real"}
       ]
     }
   },
