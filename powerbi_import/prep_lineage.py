@@ -21,11 +21,12 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 try:
-    from prep_flow_analyzer import FlowProfile, FlowInput, FlowOutput
+    from prep_flow_analyzer import FlowOutput, FlowProfile
 except ImportError:
-    import sys, os
+    import os
+    import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
-    from prep_flow_analyzer import FlowProfile, FlowInput, FlowOutput
+    from prep_flow_analyzer import FlowOutput, FlowProfile
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

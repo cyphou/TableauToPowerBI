@@ -24,7 +24,7 @@ import logging
 import os
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Tuple
 
 try:
     from powerbi_import.report_localization import attributes, render, text
@@ -471,15 +471,29 @@ def generate_topology_report(
     """
     try:
         from powerbi_import.html_template import (
-            html_open, html_close, stat_card, stat_grid,
-            section_open, section_close, badge, data_table,
-            donut_chart, esc,
+            badge,
+            data_table,
+            donut_chart,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
     except ImportError:
         from html_template import (
-            html_open, html_close, stat_card, stat_grid,
-            section_open, section_close, badge, data_table,
-            donut_chart, esc,
+            badge,
+            data_table,
+            donut_chart,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
 
     parts = [html_open(text("Tableau Server — Site Topology Report",

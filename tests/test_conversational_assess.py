@@ -7,7 +7,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.conversational import (  # noqa: E402
-    MigrationQA, Answer, answer_question, build_plan_summary,
+    Answer,
+    MigrationQA,
+    answer_question,
+    build_plan_summary,
 )
 
 

@@ -1,7 +1,5 @@
 """Tests for Sprint 62 — RLS Consolidation & Security Hardening."""
 
-import copy
-import json
 import os
 import tempfile
 import unittest
@@ -287,7 +285,7 @@ class TestMergeConfigRLS(unittest.TestCase):
         return a
 
     def test_save_with_rls(self):
-        from powerbi_import.merge_config import save_merge_config, load_merge_config
+        from powerbi_import.merge_config import load_merge_config, save_merge_config
         cons = [RLSConsolidation(
             role_name='Region',
             source_workbooks=['WB1', 'WB2'],
@@ -307,7 +305,7 @@ class TestMergeConfigRLS(unittest.TestCase):
             self.assertEqual(config['rls_rules'][0]['action'], 'merge')
 
     def test_save_without_rls(self):
-        from powerbi_import.merge_config import save_merge_config, load_merge_config
+        from powerbi_import.merge_config import load_merge_config, save_merge_config
         assessment = self._make_assessment()
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'config.json')

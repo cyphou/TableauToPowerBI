@@ -12,7 +12,6 @@ import logging
 import re
 from decimal import Decimal, InvalidOperation
 
-
 logger = logging.getLogger(__name__)
 
 _BIN_NUMBER_RE = re.compile(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?')

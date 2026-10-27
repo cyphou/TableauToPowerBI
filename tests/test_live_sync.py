@@ -5,20 +5,16 @@ Validates source change detection, incremental diff generation,
 sync deployment, and change notification.
 """
 
-import json
 import os
 import shutil
 import tempfile
 import unittest
 
 from powerbi_import.incremental import (
-    DiffEntry,
-    IncrementalMerger,
-    SourceChangeDetector,
     IncrementalDiffGenerator,
+    SourceChangeDetector,
 )
 from powerbi_import.telemetry import ChangeNotifier
-
 
 # ═══════════════════════════════════════════════════════════════════
 # 1. Source change detection (89.1)
@@ -165,6 +161,7 @@ class TestSyncDeployment(unittest.TestCase):
     def test_deploy_sync_signature(self):
         """PBIWorkspaceDeployer should have deploy_sync method."""
         import inspect
+
         from powerbi_import.deploy.pbi_deployer import PBIWorkspaceDeployer
         self.assertTrue(hasattr(PBIWorkspaceDeployer, 'deploy_sync'))
         sig = inspect.signature(PBIWorkspaceDeployer.deploy_sync)

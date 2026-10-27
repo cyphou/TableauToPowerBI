@@ -2,27 +2,33 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import hashlib
 import html
 import json
 import math
-from pathlib import Path
 import re
-from urllib.parse import quote
 import uuid
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
 from powerbi_import import desktop_probe, desktop_window, tableau_desktop_probe
 from powerbi_import.desktop_navigation import capture_document_tab
-from powerbi_import.html_template import html_open, html_close, data_table, badge
-from powerbi_import.report_localization import LocalizedText, text, render, attributes as i18n_attrs
+from powerbi_import.html_template import badge, data_table, html_close, html_open
 from powerbi_import.local_pixel_comparison import (
-    PIXEL_LIMITATION, compare_png_files, unavailable_pixels,
+    PIXEL_LIMITATION,
+    compare_png_files,
+    unavailable_pixels,
 )
+from powerbi_import.report_localization import LocalizedText, render, text
+from powerbi_import.report_localization import attributes as i18n_attrs
 from powerbi_import.tableau_desktop_probe import (
-    CAPTURE_LIMITATION, document_title_matches, probe_tableau_open,
+    CAPTURE_LIMITATION,
+    document_title_matches,
+    probe_tableau_open,
 )
 
 
@@ -256,6 +262,9 @@ def _local_capture_pixels(source: dict, target: dict,
         except (OSError, ValueError, TypeError) as exc:
             return unavailable_pixels("capture_not_current",
                                       f"{side}: invalid capture path: {exc}")
+    if source_path is None or target_path is None:
+        return unavailable_pixels("capture_not_current",
+                                  "capture is not the requested current-run path")
     return compare_png_files(source_path, target_path)
 
 
@@ -495,6 +504,7 @@ def _pbi_capture(pbip: str, shot: Path, timeout: float,
         evidence = report.to_dict()
         # Never accept the probe's process-survival verdict or fallback capture.
         captured = (report.status == "opened" and report.window_loaded
+                    and report.window_title is not None
                     and document_title_matches(report.window_title, Path(pbip).stem)
                     and report.screenshot is not None
                     and Path(report.screenshot).resolve() == shot.resolve()
@@ -566,7 +576,8 @@ def _pixel_html(result: dict | None, table_id: str) -> str:
         "mean_absolute_channel_error": text("Mean absolute RGBA channel error (0–255)", "Erreur absolue moyenne des canaux RGBA (0–255)"),
         "normalized_mean_absolute_channel_error": text("Normalized mean absolute channel error (0–1)", "Erreur absolue moyenne normalisée des canaux (0–1)"),
     }
-    for key, value in (result.get("metrics") or {}).items():
+    metrics: dict[str, Any] = result.get("metrics") or {}
+    for key, value in metrics.items():
         rows.append([render(labels.get(key, key), "fr"), esc(str(value))])
     return ('<h3>' + _ui("Local pixel comparison (non-semantic)", "Comparaison locale des pixels (non sémantique)") + '</h3>'
             + data_table([text("Metric", "Mesure"), text("Value", "Valeur")], rows, table_id=table_id)

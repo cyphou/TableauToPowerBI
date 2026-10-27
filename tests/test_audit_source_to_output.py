@@ -5,22 +5,22 @@ formula. Unsupported syntax raises instead of silently returning a plausible
 answer. No Desktop engine or private workbook is required.
 """
 
-from collections import Counter
-from contextlib import redirect_stdout
 import io
 import json
 import math
-from pathlib import Path
 import re
 import tempfile
-from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 import zipfile
+from collections import Counter
+from contextlib import redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import migrate
-from powerbi_import.tmdl_generator import generate_tmdl
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
+from powerbi_import.tmdl_generator import generate_tmdl
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
 
 
@@ -385,7 +385,11 @@ class TestAuditFinalPowerQueryExport(unittest.TestCase):
         # repaired TMDL state before exercising real post-generation
         # orchestration. The final export must come from that on-disk state.
         from tests.test_csv_partition_wiring import (
-            NAME, _csv_partition, _project, _read, _write,
+            NAME,
+            _csv_partition,
+            _project,
+            _read,
+            _write,
         )
         with tempfile.TemporaryDirectory() as root:
             project = _project(root, {"Facts": _csv_partition(

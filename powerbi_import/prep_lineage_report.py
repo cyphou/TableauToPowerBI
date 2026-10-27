@@ -23,42 +23,59 @@ Usage::
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import os
-import csv
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
 try:
-    from powerbi_import.report_localization import text, render, attributes
+    from powerbi_import.report_localization import attributes, render, text
 except ImportError:
-    from report_localization import text, render, attributes
+    from report_localization import attributes, render, text
 
 try:
-    from powerbi_import.prep_lineage import (
-        PrepLineageGraph, LineageEdge, SourceEndpoint, SinkEndpoint,
-    )
+    from powerbi_import.prep_lineage import PrepLineageGraph
 except ImportError:
-    from prep_lineage import (
-        PrepLineageGraph, LineageEdge, SourceEndpoint, SinkEndpoint,
-    )
+    from prep_lineage import PrepLineageGraph
 
 try:
     from powerbi_import.html_template import (
-        html_open, html_close, stat_grid, stat_card, section_open,
-        section_close, data_table, badge, esc, card,
+        badge,
+        card,
+        data_table,
+        esc,
+        html_close,
+        html_open,
+        section_close,
+        section_open,
+        stat_card,
+        stat_grid,
     )
 except ImportError:
     try:
         from html_template import (
-            html_open, html_close, stat_grid, stat_card, section_open,
-            section_close, data_table, badge, esc, card,
+            badge,
+            card,
+            data_table,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
     except ImportError:
+        # Static analysis treats the real html_template as mandatory; the stubs
+        # below are a runtime-only fallback (TYPE_CHECKING is False at runtime).
+        if TYPE_CHECKING:
+            raise
+
         # Fallback stubs for testing
         def esc(t):
             return str(t).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -549,7 +566,7 @@ def _render_merge_recommendations(recs: List[MergeRecommendation]) -> str:
     html = data_table(headers, rows, table_id='merge-recs', sortable=True)
 
     if isolated:
-        html += f'\n<p style="margin-top:12px;color:#605e5c;">'
+        html += '\n<p style="margin-top:12px;color:#605e5c;">'
         html += render(text(f'{len(isolated)} isolated flow(s) require no merging: ',
                             f'{len(isolated)} flux isolé(s) ne nécessitent aucune fusion : '))
         html += ', '.join(esc(r.flows[0]) for r in isolated)
@@ -565,7 +582,7 @@ def _render_transform_documentation(graph: PrepLineageGraph) -> str:
         if not flow.transforms:
             continue
         # Flow header
-        html_parts.append(f'<div class="card" style="margin-bottom:16px;">')
+        html_parts.append('<div class="card" style="margin-bottom:16px;">')
         html_parts.append(f'<h3 style="margin:0 0 8px;">{esc(flow.name)}</h3>')
         html_parts.append(f'<p style="color:#605e5c;margin:0 0 12px;">'
                           f'{render(text(f"{len(flow.inputs)} input(s) → {len(flow.transforms)} transform(s) → {len(flow.outputs)} output(s) | Complexity:", f"{len(flow.inputs)} entrée(s) → {len(flow.transforms)} transformation(s) → {len(flow.outputs)} sortie(s) | Complexité :"))} '
@@ -706,7 +723,6 @@ _OPERATION_TO_PQ_MAP = {
 
 def _render_assessment(graph: PrepLineageGraph) -> str:
     """Section 8 — per-flow readiness assessment."""
-    html_parts: List[str] = []
     headers = [text('Flow', 'Flux'), text('Grade', 'Niveau'), text('Pass', 'Réussite'),
                text('Warn', 'Avertissement'), text('Fail', 'Échec'), text('Details', 'Détails')]
     rows = []
@@ -751,7 +767,7 @@ def _render_power_query_equivalence(graph: PrepLineageGraph) -> str:
         for flow in sorted(graph.flows, key=lambda x: x.name):
             if not flow.m_queries:
                 continue
-            html_parts.append(f'<div class="card" style="margin-bottom:16px;">')
+            html_parts.append('<div class="card" style="margin-bottom:16px;">')
             html_parts.append(f'<h3 style="margin:0 0 8px;">{esc(flow.name)} — '
                               f'{render(text("Generated Power Query M", "Power Query M généré"))}</h3>')
             for tbl_name, m_code in sorted(flow.m_queries.items()):

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any, Dict, Iterable, Mapping
-
+from typing import Any, Dict, Mapping
 
 DISPOSITIONS = (
     "generated",

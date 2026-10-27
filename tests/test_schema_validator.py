@@ -13,13 +13,12 @@ from powerbi_import.schema_validator import (
     KNOWN_VISUAL_TYPES,
     SchemaIssue,
     SchemaResult,
+    _schema_family,
+    _schema_version,
     detect_artifact_type,
     validate_artifact,
     validate_report_dir,
-    _schema_version,
-    _schema_family,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

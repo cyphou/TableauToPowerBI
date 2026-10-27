@@ -19,7 +19,6 @@ import logging
 import os
 import re
 import sqlite3
-import struct
 import tempfile
 import zipfile
 from collections import Counter
@@ -27,7 +26,8 @@ from collections import Counter
 try:
     from powerbi_import.errors import ConfigurationError, ExtractionError
     from powerbi_import.security_validator import (
-        get_zip_entry_limit_mb, safe_zip_copy_member,
+        get_zip_entry_limit_mb,
+        safe_zip_copy_member,
     )
 except ModuleNotFoundError:  # Legacy callers put powerbi_import on sys.path.
     from errors import ConfigurationError, ExtractionError
@@ -124,7 +124,7 @@ def _read_hyper_api(file_path, max_rows=20):
     Returns ``None`` if the package is not installed.
     """
     try:
-        from tableauhyperapi import HyperProcess, Telemetry, Connection, TableName
+        from tableauhyperapi import Connection, HyperProcess, Telemetry  # type: ignore[import-not-found]
     except ImportError:
         return None
 
@@ -1015,7 +1015,7 @@ def discover_multi_table_hyper(file_path):
 
     # Try tableauhyperapi first
     try:
-        from tableauhyperapi import HyperProcess, Connection, Telemetry
+        from tableauhyperapi import Connection, HyperProcess, Telemetry  # type: ignore[import-not-found]
         with HyperProcess(Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU) as hp:
             with Connection(hp.endpoint, file_path) as conn:
                 catalog = conn.catalog
@@ -1099,7 +1099,7 @@ def read_hyper_streaming(file_path, table_name=None, batch_size=10000):
         list[list]: Batches of row data.
     """
     try:
-        from tableauhyperapi import Connection, HyperProcess, TableName, Telemetry
+        from tableauhyperapi import Connection, HyperProcess, TableName, Telemetry  # type: ignore[import-not-found]
         with HyperProcess(Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU) as hp:
             with Connection(hp.endpoint, file_path) as conn:
                 if table_name:

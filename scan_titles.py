@@ -1,7 +1,7 @@
 """Scan all workbooks for title formatting attributes."""
-import xml.etree.ElementTree as ET
-import os
 import glob
+import os
+import xml.etree.ElementTree as ET
 import zipfile
 
 for f in sorted(glob.glob("examples/**/*.twb*", recursive=True)):
@@ -25,5 +25,5 @@ for f in sorted(glob.glob("examples/**/*.twb*", recursive=True)):
                             wsn = ws.get("name", "")
                             bn = os.path.basename(f)
                             print(f"{bn} | {wsn} | {attrs} | {repr(r.text)}")
-    except Exception as e:
+    except Exception:
         pass

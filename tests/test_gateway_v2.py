@@ -19,10 +19,9 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.gateway_config import (
-    GatewayConfigGenerator,
     OAUTH_CONNECTORS,
     SERVICE_PRINCIPAL_CAPABLE,
-    TABLEAU_AUTH_MAP,
+    GatewayConfigGenerator,
 )
 
 

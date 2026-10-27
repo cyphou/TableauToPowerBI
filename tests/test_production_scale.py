@@ -12,8 +12,8 @@ Tests cover:
 import json
 import os
 import sys
-import time
 import tempfile
+import time
 
 import pytest
 
@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(ROOT_DIR, 'tableau_export'))
 #  1. SLA Tracker
 # ═══════════════════════════════════════════════════════════════════
 
-from sla_tracker import SLATracker, SLAResult, SLAReport, DEFAULT_SLA_CONFIG
+from sla_tracker import SLAReport, SLAResult, SLATracker
 
 
 class TestSLATracker:
@@ -196,7 +196,7 @@ class TestMonitoring:
 #  3. Rolling Deployment
 # ═══════════════════════════════════════════════════════════════════
 
-from pbi_deployer import PBIWorkspaceDeployer, DeploymentResult
+from pbi_deployer import DeploymentResult
 
 
 class TestRollingDeployment:
@@ -208,6 +208,7 @@ class TestRollingDeployment:
 
     def test_deploy_rolling_signature(self):
         import inspect
+
         from powerbi_import.deploy.pbi_deployer import PBIWorkspaceDeployer
         sig = inspect.signature(PBIWorkspaceDeployer.deploy_rolling)
         params = list(sig.parameters.keys())
@@ -289,8 +290,8 @@ class TestEndorsement:
 #  5. Production Scale Stress Test
 # ═══════════════════════════════════════════════════════════════════
 
-from tmdl_generator import generate_tmdl
 from dax_converter import convert_tableau_formula_to_dax
+from tmdl_generator import generate_tmdl
 
 
 class TestProductionScale:

@@ -8,25 +8,29 @@ Tests for:
 
 import json
 import os
-import re
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from powerbi_import.visual_generator import _get_config_template, VISUAL_DATA_ROLES
-from powerbi_import.visual_generator import APPROXIMATION_MAP, get_approximation_note
-from powerbi_import.visual_generator import create_visual_container
-from powerbi_import.tmdl_generator import _write_partition
-from powerbi_import.tmdl_generator import _deactivate_ambiguous_paths
-from powerbi_import.tmdl_generator import _detect_many_to_many
-from powerbi_import.tmdl_generator import _replace_related_with_lookupvalue
-from powerbi_import.tmdl_generator import _fix_related_for_many_to_many
-from powerbi_import.tmdl_generator import _infer_cross_table_relationships
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
-from powerbi_import.visual_generator import resolve_visual_type
-
+from powerbi_import.tmdl_generator import (
+    _deactivate_ambiguous_paths,
+    _detect_many_to_many,
+    _fix_related_for_many_to_many,
+    _infer_cross_table_relationships,
+    _replace_related_with_lookupvalue,
+    _write_partition,
+)
+from powerbi_import.visual_generator import (
+    APPROXIMATION_MAP,
+    VISUAL_DATA_ROLES,
+    _get_config_template,
+    create_visual_container,
+    get_approximation_note,
+    resolve_visual_type,
+)
 
 # ═══════════════════════════════════════════════════════════════════
 # Phase D — Visual Fidelity Tests
@@ -214,7 +218,7 @@ class TestDeactivateAmbiguousPaths(unittest.TestCase):
         ]
         model = self._make_model(rels)
         self._deactivate(model)
-        deactivated = [r for r in rels if r.get("isActive") == False]
+        deactivated = [r for r in rels if r.get("isActive") is False]
         self.assertEqual(len(deactivated), 1, "One relationship should be deactivated in a 3-node cycle")
 
     def test_calendar_deactivated_first(self):
@@ -226,7 +230,7 @@ class TestDeactivateAmbiguousPaths(unittest.TestCase):
         ]
         model = self._make_model(rels)
         self._deactivate(model)
-        deactivated = [r for r in rels if r.get("isActive") == False]
+        deactivated = [r for r in rels if r.get("isActive") is False]
         self.assertEqual(len(deactivated), 1)
         self.assertTrue(deactivated[0]["name"].startswith("Calendar_"))
 
@@ -238,7 +242,7 @@ class TestDeactivateAmbiguousPaths(unittest.TestCase):
         ]
         model = self._make_model(rels)
         self._deactivate(model)
-        deactivated = [r for r in rels if r.get("isActive") == False]
+        deactivated = [r for r in rels if r.get("isActive") is False]
         self.assertEqual(len(deactivated), 1)
         self.assertTrue(deactivated[0]["name"].startswith("inferred_"))
 
@@ -253,7 +257,7 @@ class TestDeactivateAmbiguousPaths(unittest.TestCase):
         # r2 already inactive, so the cycle A-B-C-A still exists via r1,r3
         # Since r2 is skipped, the tree is A-B (via r1), then C-A (via r3) — no cycle
         # No additional deactivation should happen
-        newly_deactivated = [r for r in rels if r.get("isActive") == False and r["name"] != "r2"]
+        newly_deactivated = [r for r in rels if r.get("isActive") is False and r["name"] != "r2"]
         self.assertEqual(len(newly_deactivated), 0)
 
 

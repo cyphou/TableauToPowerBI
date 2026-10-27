@@ -14,7 +14,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from scripts.check_field_names import (
-    EXTERNAL_CONSUMER_FIELDS, find_unknown, scan_module,
+    EXTERNAL_CONSUMER_FIELDS,
+    scan_module,
 )
 
 

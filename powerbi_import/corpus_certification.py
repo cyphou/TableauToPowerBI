@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections import Counter
 import json
 import os
+from collections import Counter
 from typing import Any, Iterable, Mapping
-
 
 STATES = ("certified_static", "needs_review", "blocked")
 

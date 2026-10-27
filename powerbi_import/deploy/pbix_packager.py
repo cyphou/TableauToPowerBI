@@ -14,12 +14,11 @@ Note: The PBI REST API accepts .pbix files for import. This packager
 creates a *compatible* archive from the .pbip project structure.
 """
 
-import json
+import glob
+import io
 import logging
 import os
 import zipfile
-import io
-import glob
 
 logger = logging.getLogger(__name__)
 

@@ -17,8 +17,8 @@ Usage:
 
 import logging
 import os
-import time
 import tempfile
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -681,7 +681,7 @@ class PBIWorkspaceDeployer:
         Returns:
             dict: {deploy, gateway_bind, refresh} results.
         """
-        pipeline_result = {
+        pipeline_result: dict = {
             'deploy': None,
             'gateway_bind': None,
             'refresh': None,

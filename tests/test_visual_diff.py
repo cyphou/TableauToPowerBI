@@ -21,14 +21,14 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.visual_diff import (
-    generate_visual_diff,
-    generate_visual_diff_json,
+    _ENCODING_TYPES,
+    _MARK_TO_PBI,
     _diff_worksheet,
+    _esc,
     _extract_pbi_visual_info,
     _load_pbi_visuals,
-    _MARK_TO_PBI,
-    _ENCODING_TYPES,
-    _esc,
+    generate_visual_diff,
+    generate_visual_diff_json,
 )
 
 

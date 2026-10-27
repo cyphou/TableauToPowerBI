@@ -16,7 +16,6 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import migrate  # noqa: E402
-
 from scripts.check_cli_flags import (  # noqa: E402
     CLI_SOURCE,
     KNOWN_INERT,

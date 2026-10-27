@@ -20,16 +20,15 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from powerbi_import.dax_optimizer import (
-    optimize_dax,
     _protect_string_literals,
     _restore_string_literals,
+    _rule_constant_fold,
     _rule_isblank_to_coalesce,
     _rule_nested_if_to_switch,
     _rule_redundant_calculate,
-    _rule_constant_fold,
     _rule_simplify_sumx,
+    optimize_dax,
 )
-
 
 _TABLEAU_LEAK_PATTERNS = [
     r'\bDATETRUNC\s*\(',

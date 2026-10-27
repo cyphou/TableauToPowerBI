@@ -1,11 +1,11 @@
 """Focused regressions for bilingual, evidence-preserving HTML reports."""
 
-from html.parser import HTMLParser
 import html
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from html.parser import HTMLParser
+from pathlib import Path
 
 from powerbi_import.desktop_comparison import (
     _page_totals,

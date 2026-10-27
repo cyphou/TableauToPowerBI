@@ -15,7 +15,6 @@ Usage:
 """
 
 import base64
-import os
 import json
 import logging
 import re
@@ -858,8 +857,8 @@ class FabricDeployer:
         from pathlib import Path
 
         artifact_dir = Path(artifact_dir)
-        config = {'displayName': artifact_dir.stem.replace('.SemanticModel', '')
-                                               .replace('.Report', '')}
+        config: dict = {'displayName': artifact_dir.stem.replace('.SemanticModel', '')
+                                                        .replace('.Report', '')}
 
         # Read definition files
         definition_dir = artifact_dir / 'definition'
@@ -909,7 +908,7 @@ class FabricDeployer:
 
         try:
             endpoint = f'/workspaces/{workspace_id}/items/{item_id}'
-            result = self.client.patch(endpoint, data=payload)
+            self.client.patch(endpoint, data=payload)
             logger.info(
                 "Endorsement '%s' applied to item %s in workspace %s",
                 endorsement, item_id, workspace_id,

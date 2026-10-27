@@ -1,9 +1,9 @@
 """Tableau Desktop diagnostics with no GUI or real process launches."""
 import itertools
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from powerbi_import import desktop_window

@@ -1,6 +1,7 @@
 """Tests for Sprint 163 - subscription_migrator module."""
 
 import unittest
+
 from powerbi_import.subscription_migrator import (
     convert_schedule_to_pbi,
     convert_subscriptions,

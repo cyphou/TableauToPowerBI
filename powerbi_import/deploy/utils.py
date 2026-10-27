@@ -5,11 +5,10 @@ Provides deployment reporting and artifact metadata caching
 for Fabric workspace deployments.
 """
 
-import os
 import json
 import logging
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +80,14 @@ class DeploymentReport:
         failed = total - successful
 
         print(f'\n{"=" * 60}')
-        print(f'  Deployment Summary')
+        print('  Deployment Summary')
         print(f'{"=" * 60}')
         print(f'  Workspace: {self.workspace_id}')
         print(f'  Time:      {self.timestamp}')
         print(f'  Total:     {total} | Success: {successful} | Failed: {failed}')
 
         if failed > 0:
-            print(f'\n  Failed Artifacts:')
+            print('\n  Failed Artifacts:')
             for result in self.results:
                 if result['status'] == 'failed':
                     print(f"    [FAIL] {result['artifact_name']}: {result['error']}")

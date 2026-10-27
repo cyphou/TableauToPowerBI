@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
 import os
-
+from typing import Any, Dict
 
 _ARTIFACT_DEPENDENCIES = {
     "Lakehouse": [],

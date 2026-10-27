@@ -21,14 +21,13 @@ Usage:
 """
 
 import json
+import logging
 import os
 import re
 import time
-import logging
-import hashlib
 from datetime import datetime
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 logger = logging.getLogger('tableau_to_powerbi.llm_client')
 
@@ -166,10 +165,11 @@ class LLMClient:
         return round(input_cost + output_cost, 6)
 
     def _build_url(self):
+        endpoint = self.endpoint or ''
         if self.provider == 'azure_openai':
-            return f"{self.endpoint.rstrip('/')}/openai/deployments/{self.model}/chat/completions?api-version=2024-02-01"
+            return f"{endpoint.rstrip('/')}/openai/deployments/{self.model}/chat/completions?api-version=2024-02-01"
         if self.provider == 'local':
-            base = self.endpoint.rstrip('/')
+            base = endpoint.rstrip('/')
             if base.endswith('/chat/completions'):
                 return base
             if base.endswith('/v1'):
@@ -286,7 +286,8 @@ class LLMClient:
 
             except HTTPError as e:
                 if e.code == 429 and attempt < self.max_retries:
-                    retry_after = int(e.headers.get('Retry-After', 2 ** attempt))
+                    retry_header = e.headers.get('Retry-After')
+                    retry_after = int(retry_header) if retry_header is not None else 2 ** attempt
                     logger.warning("Rate limited (429), retrying in %ds", retry_after)
                     time.sleep(retry_after)
                     continue
@@ -345,7 +346,7 @@ def _validate_refined_dax(formula):
     """Lightweight syntax validation for LLM-refined DAX.
 
     Returns a list of issue strings (empty => valid). Delegates to
-    :func:`powerbi_import.validator.MigrationValidator.validate_dax_formula`
+    :func:`powerbi_import.validator.ArtifactValidator.validate_dax_formula`
     when available so the LLM's output is held to the same bar as the
     rest of the migration pipeline. Falls back to a minimal balanced-paren
     check if the validator can't be imported (e.g. running tests in
@@ -354,8 +355,8 @@ def _validate_refined_dax(formula):
     if not formula or not formula.strip():
         return ['empty refinement']
     try:
-        from powerbi_import.validator import MigrationValidator
-        return MigrationValidator.validate_dax_formula(formula, context='LLM refinement')
+        from powerbi_import.validator import ArtifactValidator
+        return ArtifactValidator.validate_dax_formula(formula, context='LLM refinement')
     except Exception:  # noqa: BLE001 — validator import path varies by entry point
         depth = 0
         for ch in formula:

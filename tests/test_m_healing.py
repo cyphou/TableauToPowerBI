@@ -7,11 +7,14 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
+from powerbi_import.dax_healing import HIGH  # noqa: E402
 from powerbi_import.m_healing import (  # noqa: E402
-    heal_m, heal_quote_identifiers, heal_balance_parens, heal_trailing_comma,
-    _m_spans, _paren_profile,
+    _paren_profile,
+    heal_balance_parens,
+    heal_m,
+    heal_quote_identifiers,
+    heal_trailing_comma,
 )
-from powerbi_import.dax_healing import HIGH, MEDIUM  # noqa: E402
 
 
 class TestMSpans(unittest.TestCase):

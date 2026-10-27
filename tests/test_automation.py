@@ -10,11 +10,11 @@ Covers:
     7. Governance enforcement with column renames
 """
 
+import csv
 import json
 import os
 import sys
 import tempfile
-import csv
 
 import pytest
 
@@ -641,7 +641,7 @@ class TestGovernanceEnforcement:
 
     @pytest.fixture(autouse=True)
     def _import(self):
-        from governance import GovernanceEngine, GovernanceReport, GovernanceIssue
+        from governance import GovernanceEngine, GovernanceIssue, GovernanceReport
         self.Engine = GovernanceEngine
         self.Report = GovernanceReport
         self.Issue = GovernanceIssue
@@ -707,7 +707,10 @@ class TestPermissionMapperModule:
     """Test that the permission_mapper module is importable and complete."""
 
     def test_import(self):
-        from permission_mapper import generate_rls_powershell, generate_credential_template
+        from permission_mapper import (
+            generate_credential_template,
+            generate_rls_powershell,
+        )
         assert callable(generate_rls_powershell)
         assert callable(generate_credential_template)
 

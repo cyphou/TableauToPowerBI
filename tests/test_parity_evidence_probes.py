@@ -12,8 +12,12 @@ import tempfile
 import unittest
 
 from powerbi_import.parity_registry import (
-    _DETECTORS, _EVIDENCE_PROBED, _FEATURE_BY_KEY, collect_target_evidence,
-    scan_project)
+    _DETECTORS,
+    _EVIDENCE_PROBED,
+    _FEATURE_BY_KEY,
+    collect_target_evidence,
+    scan_project,
+)
 
 
 def _write(path, text):

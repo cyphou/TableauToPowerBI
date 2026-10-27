@@ -1,21 +1,21 @@
 """CSV partitions are wired to the right file and match its real header."""
 
 import base64
+import csv
 import hashlib
 import io
+import json
 import ntpath
 import os
-import csv
-import json
 import re
 import sqlite3
 import struct
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest import mock
-from contextlib import redirect_stdout
 
 import migrate
 from powerbi_import.errors import GenerationError
@@ -1423,6 +1423,7 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
     def _model(self, datasources=None, extra=None):
         import io
         from contextlib import redirect_stdout
+
         from powerbi_import.tmdl_generator import _build_semantic_model
         with redirect_stdout(io.StringIO()):
             return _build_semantic_model(
@@ -1466,6 +1467,7 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
 
     def test_extracted_identity_survives_datasource_json_model_and_csv_staging(self):
         import xml.etree.ElementTree as ET
+
         from tableau_export.datasource_extractor import extract_datasource
         datasource = ET.Element("datasource", {"name": "source-a"})
         extract = ET.SubElement(datasource, "extract")
@@ -1629,8 +1631,10 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
 
     def test_object_graph_cleanup_never_deletes_an_independent_physical_table(self):
         import zipfile
+
         from tableau_export.datasource_extractor import (
-            _bind_object_context_extract, extract_tables_with_columns,
+            _bind_object_context_extract,
+            extract_tables_with_columns,
         )
 
         datasource = self._object_graph_datasource()
@@ -2020,8 +2024,8 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
                 )
 
     def test_renamed_final_semantic_table_roundtrips_through_authoritative_manifest(self):
-        from powerbi_import.tmdl_generator import _write_table_tmdl
         from powerbi_import.m_validator import validate_m_query
+        from powerbi_import.tmdl_generator import _write_table_tmdl
         second_identity = dict(self.identity, table="Physical second")
         sources = [
             self._datasource(),
@@ -2514,7 +2518,10 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
 
 
 def _geo_partition(filename, columns):
-    from tableau_export.m_query_builder import _gen_m_geojson, wrap_source_with_try_otherwise
+    from tableau_export.m_query_builder import (
+        _gen_m_geojson,
+        wrap_source_with_try_otherwise,
+    )
     cols = [{"name": c, "datatype": "string"} for c in columns]
     m = _gen_m_geojson({"filename": filename}, "T", cols)
     m = wrap_source_with_try_otherwise(m, columns)

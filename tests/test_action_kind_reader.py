@@ -16,8 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export
 
 from powerbi_import.pbip_generator import _is_static_url  # noqa: E402
 from powerbi_import.tmdl_generator import _inject_url_action_categories  # noqa: E402
-from tableau_export.extract_tableau_data import (  # noqa: E402
-    TableauExtractor, _read_action_kind)
+from tableau_export.extract_tableau_data import TableauExtractor, _read_action_kind  # noqa: E402
 
 
 def _action(inner='', attrs='name="[Action1]"'):

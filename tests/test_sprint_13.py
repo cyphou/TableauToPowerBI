@@ -12,27 +12,25 @@ Tests for:
 
 import os
 import sys
-import json
 import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
-from visual_generator import APPROXIMATION_MAP
-from visual_generator import resolve_visual_type
-from visual_generator import get_custom_visual_guid_for_approx
-from visual_generator import resolve_custom_visual_type
-from visual_generator import _build_dynamic_reference_line
-from tmdl_generator import resolve_table_for_column
-from tmdl_generator import resolve_table_for_formula
-from validator import ArtifactValidator
 from dax_converter import convert_tableau_formula_to_dax
-from visual_generator import APPROXIMATION_MAP, CUSTOM_VISUAL_GUIDS
-from visual_generator import CUSTOM_VISUAL_GUIDS
-from visual_generator import get_approximation_note
-from visual_generator import _build_data_bar_config
-
+from tmdl_generator import resolve_table_for_column, resolve_table_for_formula
+from validator import ArtifactValidator
+from visual_generator import (
+    APPROXIMATION_MAP,
+    CUSTOM_VISUAL_GUIDS,
+    _build_data_bar_config,
+    _build_dynamic_reference_line,
+    get_approximation_note,
+    get_custom_visual_guid_for_approx,
+    resolve_custom_visual_type,
+    resolve_visual_type,
+)
 
 # ═══════════════════════════════════════════════════════════════════
 # N.1 — Custom Visual GUID Registry

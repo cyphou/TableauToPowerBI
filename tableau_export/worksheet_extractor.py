@@ -10,9 +10,9 @@ Owned by **@extractor**.
 import re
 
 from extract_primitives import (
+    _MARK_ENCODINGS,
     _clean_field_ref,
     _clean_tableau_run_text,
-    _MARK_ENCODINGS,
     _read_filter_condition,
     _strip_brackets,
 )
@@ -356,7 +356,7 @@ def extract_formatting(element):
     """Extracts formatting information (colors, fonts, backgrounds, borders)"""
     formatting = {}
 
-    # Extract styles from <style-rule>  
+    # Extract styles from <style-rule>
     for style_rule in element.findall('.//style-rule'):
         rule_element = style_rule.get('element', '')
         format_elem = style_rule.find('.//format')
@@ -411,7 +411,7 @@ def extract_formatting(element):
         if legend_info:
             formatting['legend'] = legend_info
 
-    # Also check legend style rule 
+    # Also check legend style rule
     if 'legend-title' in formatting:
         formatting.setdefault('legend', {})['title_style'] = formatting['legend-title']
     if 'color-legend' in formatting:
@@ -453,7 +453,7 @@ def extract_tooltips(worksheet):
                         run_data['field_ref'] = field_match.group(1)
                     runs.append(run_data)
             if parts:
-                tt = {'type': 'text', 'content': ''.join(parts)}
+                tt: dict = {'type': 'text', 'content': ''.join(parts)}
                 if runs:
                     tt['runs'] = runs
                 tooltips.append(tt)

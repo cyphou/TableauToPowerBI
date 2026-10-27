@@ -5,11 +5,11 @@ Loads extracted Tableau JSON files and drives the .pbip project
 generation pipeline (BIM model + TMDL + PBIR report).
 """
 
-import os
 import json
 import logging
+import os
 import uuid
-from datetime import datetime
+
 from pbip_generator import PowerBIProjectGenerator
 from telemetry import PhaseTimingCollector
 
@@ -24,11 +24,11 @@ def _write_json_file(path, data):
 
 class PowerBIImporter:
     """Power BI object importer"""
-    
+
     def __init__(self, source_dir=None):
         self.source_dir = source_dir or os.environ.get('TTPBI_EXTRACT_DIR', 'tableau_export/')
         self.last_generation_timings = None
-    
+
     def import_all(self, generate_pbip=True, report_name=None, output_dir=None,
                    calendar_start=None, calendar_end=None, culture=None,
                    model_mode='auto', output_format='pbip', languages=None,
@@ -37,7 +37,7 @@ class PowerBIImporter:
                    parameterize=True, optimize_dax=False, time_intelligence='none'):
         """
         Import all extracted objects and generate Power BI project
-        
+
         Args:
             generate_pbip: If True, generates Power BI Projects (.pbip)
             report_name: Override report name (defaults to dashboard name or 'Report')
@@ -46,23 +46,23 @@ class PowerBIImporter:
             calendar_end: End year for Calendar table (default: 2030)
             culture: Override culture/locale for semantic model
         """
-        
+
         import_timings = PhaseTimingCollector().start()
         print("=" * 80)
         print("IMPORT POWER BI")
         print("=" * 80)
         print()
-        
+
         # Load converted objects directly from tableau_export/
         with import_timings.phase('input_loading'):
             converted_objects = self._load_converted_objects()
-        
+
         if not converted_objects.get('datasources'):
             self.last_generation_timings = import_timings.finish()
             print(f"  [ERROR] No datasources found in {os.path.join(self.source_dir, 'datasources.json')}")
             print("     Run extraction first: python migrate.py <file>")
             raise ValueError("Cannot generate a project without datasources")
-        
+
         # Determine report name
         if not report_name:
             dashboards = converted_objects.get('dashboards', [])
@@ -70,12 +70,12 @@ class PowerBIImporter:
                 report_name = dashboards[0].get('name', 'Report')
             else:
                 report_name = 'Report'
-        
+
         print(f"  Report: {report_name}")
         print(f"  Datasources: {len(converted_objects.get('datasources', []))}")
         print(f"  Worksheets: {len(converted_objects.get('worksheets', []))}")
         print(f"  Calculations: {len(converted_objects.get('calculations', []))}")
-        
+
         # Generate Power BI Project (.pbip) directly from converted objects
         if generate_pbip:
             self.generate_powerbi_project(report_name, converted_objects, output_dir=output_dir,
@@ -88,7 +88,7 @@ class PowerBIImporter:
                                           parameterize=parameterize,
                                           optimize_dax=optimize_dax,
                                           time_intelligence=time_intelligence)
-        
+
         print()
         print("=" * 80)
         print("IMPORT COMPLETE")
@@ -121,7 +121,7 @@ class PowerBIImporter:
             ),
             'phases': phases,
         }
-    
+
     def _load_converted_objects(self):
         """Load all extracted JSON files from the source directory."""
         data = {}
@@ -145,7 +145,7 @@ class PowerBIImporter:
             'user_filters': os.path.join(src, 'user_filters.json'),
             'hyper_files': os.path.join(src, 'hyper_files.json'),
         }
-        
+
         for key, filepath in files_map.items():
             try:
                 if os.path.exists(filepath):
@@ -156,9 +156,9 @@ class PowerBIImporter:
             except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
                 logger.warning("Failed to load %s (%s): %s — using empty fallback", key, filepath, exc)
                 data[key] = [] if key != 'aliases' else {}
-        
+
         return data
-    
+
     def generate_powerbi_project(self, report_name, converted_objects, output_dir=None,
                                  calendar_start=None, calendar_end=None, culture=None,
                                  model_mode='auto', output_format='pbip', paginated=False,
@@ -176,9 +176,9 @@ class PowerBIImporter:
             calendar_end: End year for Calendar table
             culture: Override culture/locale
         """
-        
-        print(f"\n  Generating Power BI Project (.pbip)...")
-        
+
+        print("\n  Generating Power BI Project (.pbip)...")
+
         try:
             # Determine absolute path to powerbi_projects
             if output_dir:
@@ -186,12 +186,12 @@ class PowerBIImporter:
             else:
                 artifacts_dir = os.path.abspath('artifacts')
                 projects_dir = os.path.join(artifacts_dir, 'powerbi_projects', 'migrated')
-            
+
             artifacts_dir = os.path.abspath('artifacts')
             generator = PowerBIProjectGenerator(
                 output_dir=projects_dir
             )
-            
+
             project_path = generator.generate_project(report_name, converted_objects,
                                                        calendar_start=calendar_start,
                                                        calendar_end=calendar_end,
@@ -209,7 +209,7 @@ class PowerBIImporter:
                                                        time_intelligence=time_intelligence)
             self.last_generation_timings = generator.last_phase_timings
             print(f"  [OK] Power BI Project created: {project_path}")
-            
+
         except Exception as e:
             print(f"  [ERROR] Error generating Power BI Project: {str(e)}")
             # A partial directory is not a generated project. In particular,
@@ -254,16 +254,21 @@ class PowerBIImporter:
         Returns:
             dict with 'assessment', 'model_path', 'report_paths', plus new fields.
         """
+        from powerbi_import.merge_assessment import print_merge_summary
         from powerbi_import.shared_model import (
-            assess_merge, merge_semantic_models, build_field_mapping,
-            validate_thin_report_fields, build_column_lineage,
-            generate_lineage_annotations, analyze_measure_risk,
-            consolidate_rls_roles, merge_rls_roles,
+            analyze_measure_risk,
+            assess_merge,
+            build_column_lineage,
             build_cross_report_navigation,
-            generate_merge_validation_report,
+            build_field_mapping,
             build_merge_manifest,
+            consolidate_rls_roles,
+            generate_lineage_annotations,
+            generate_merge_validation_report,
+            merge_rls_roles,
+            merge_semantic_models,
+            validate_thin_report_fields,
         )
-        from powerbi_import.merge_assessment import generate_merge_report, print_merge_summary
         from powerbi_import.thin_report_generator import ThinReportGenerator
 
         print("=" * 64)
@@ -276,7 +281,10 @@ class PowerBIImporter:
 
         # 1b. Load merge config if provided
         if merge_config_path:
-            from powerbi_import.merge_config import load_merge_config, apply_merge_config
+            from powerbi_import.merge_config import (
+                apply_merge_config,
+                load_merge_config,
+            )
             print(f"  Loading merge config: {merge_config_path}")
             config = load_merge_config(merge_config_path)
             assessment = apply_merge_config(assessment, config)
@@ -376,11 +384,14 @@ class PowerBIImporter:
         os.makedirs(project_dir, exist_ok=True)
 
         # 4. Generate the shared semantic model (or full Fabric project)
+        fabric_results: dict = {}
         if output_format == 'fabric':
             print(f"\n  Step 3: Generating Fabric project '{model_name}' "
                   f"(Lakehouse + Dataflow + Notebook + SemanticModel + Pipeline)...")
             try:
-                from powerbi_import.fabric_project_generator import FabricProjectGenerator
+                from powerbi_import.fabric_project_generator import (
+                    FabricProjectGenerator,
+                )
             except ImportError:
                 from fabric_project_generator import FabricProjectGenerator
 
@@ -507,7 +518,7 @@ class PowerBIImporter:
         manifest_path = manifest.save(project_dir)
         print(f"  [OK] Merge manifest: {manifest_path}")
 
-        print(f"\n  Shared Semantic Model migration complete!")
+        print("\n  Shared Semantic Model migration complete!")
         print(f"  Output: {project_dir}")
 
         return {
@@ -640,12 +651,12 @@ class PowerBIImporter:
 
 def main():
     """Main entry point"""
-    
+
     import sys
-    
+
     # Option to disable .pbip generation
     generate_pbip = '--no-pbip' not in sys.argv
-    
+
     importer = PowerBIImporter()
     importer.import_all(generate_pbip=generate_pbip)
 

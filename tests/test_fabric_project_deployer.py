@@ -9,7 +9,6 @@ import uuid
 
 from powerbi_import.deploy.deployer import FabricDeployer
 
-
 ARTIFACTS = (
     ('Lakehouse', 'Lakehouse'),
     ('Dataflow', 'Dataflow'),

@@ -8,12 +8,15 @@ import os
 import re
 import subprocess
 import tempfile
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from powerbi_import.desktop_probe import (
-    probe_desktop_open, probe_desktop_reopen, find_pbi_desktop, DesktopProbeReport,
+    DesktopProbeReport,
+    find_pbi_desktop,
+    probe_desktop_open,
+    probe_desktop_reopen,
 )
 
 

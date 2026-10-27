@@ -806,7 +806,6 @@ def _write_expressions_tmdl(def_dir, tables, datasources=None, incremental_param
     These M parameters allow easy switching between dev/staging/prod environments.
     """
     file_dirs = []          # directory paths for DataFolder
-    has_file_source = False  # whether any file-based DataFolder ref exists
     server_names = set()
     database_names = set()
 
@@ -819,12 +818,6 @@ def _write_expressions_tmdl(def_dir, tables, datasources=None, incremental_param
                 expr = source
             else:
                 continue
-
-            # Detect file-based sources (DataFolder references)
-            if re.search(r'DataFolder\s*&\s*"\\', expr):
-                has_file_source = True
-            if re.search(r'File\.Contents\(', expr):
-                has_file_source = True
 
             # Detect server/database references from M queries
             for m in re.finditer(r'(?:Sql\.Database|PostgreSQL\.Database|Oracle\.Database|Mysql\.Database)\s*\(\s*"([^"]+)"\s*,\s*"([^"]+)"', expr):
@@ -856,10 +849,8 @@ def _write_expressions_tmdl(def_dir, tables, datasources=None, incremental_param
                     parent = norm.rsplit('/', 1)[0] if '/' in norm else ''
                     if parent:
                         file_dirs.append(parent)
-                        has_file_source = True
                 if dr:
                     file_dirs.append(dr.replace('\\', '/'))
-                    has_file_source = True
 
     default_folder = _data_folder_from(file_dirs) or "C:\\Data"
 
@@ -999,7 +990,7 @@ def _write_relationships_tmdl(def_dir, relationships):
         cfb = rel.get('crossFilteringBehavior', 'oneDirection')
         lines.append(f"\tcrossFilteringBehavior: {cfb}")
 
-        if rel.get('isActive') == False:
+        if rel.get('isActive') is False:
             lines.append("\tisActive: false")
 
         lines.append("")
@@ -1021,7 +1012,6 @@ def _generate_table_description(table):
     if existing:
         return existing
 
-    table_name = table.get('name', 'Table')
     columns = table.get('columns', [])
     measures = table.get('measures', [])
 
@@ -1050,7 +1040,6 @@ def _generate_column_description(column):
     if existing:
         return existing
 
-    col_name = column.get('name', 'Column')
     data_type = column.get('dataType', 'string')
     data_category = column.get('dataCategory', '')
     is_calculated = column.get('isCalculated', False)
@@ -1115,7 +1104,6 @@ def _write_table_tmdl(tables_dir, table):
 
     # Table description — TMDL does not support 'description:' at the table level.
     # The description is preserved as a Copilot_TableDescription annotation instead.
-    table_desc = _generate_table_description(table)
 
     lines.append("")
 
@@ -1130,7 +1118,7 @@ def _write_table_tmdl(tables_dir, table):
             lines.append(f"\t\tcalculationItem {item_name}")
             expr = item.get('expression', 'CALCULATE(SELECTEDMEASURE())')
             if '\n' in expr:
-                lines.append(f"\t\t\texpression = ```")
+                lines.append("\t\t\texpression = ```")
                 for el in expr.split('\n'):
                     lines.append(f"\t\t\t\t{el}")
                 lines.append("\t\t\t\t```")
@@ -1395,14 +1383,14 @@ def _write_refresh_policy(lines, policy):
     # Polling expression (the date column to filter on)
     polling = policy.get('pollingExpression', '')
     if polling:
-        lines.append(f"\t\tpollingExpression =")
+        lines.append("\t\tpollingExpression =")
         for pl in polling.split('\n'):
             lines.append(f"\t\t\t\t{pl}")
 
     # Source expression (the M query with RangeStart/RangeEnd parameters)
     source_expr = policy.get('sourceExpression', '')
     if source_expr:
-        lines.append(f"\t\tsourceExpression =")
+        lines.append("\t\tsourceExpression =")
         for sl in source_expr.split('\n'):
             lines.append(f"\t\t\t\t{sl}")
 
@@ -1474,11 +1462,11 @@ def _write_partition(lines, table_name, partition):
                 expression = _strip_m_inline_comments(expression)
             # Validate M if/else balance before writing
             expression = _fix_m_if_else_balance(expression)
-            lines.append(f"\t\tsource =")
+            lines.append("\t\tsource =")
             for expr_line in expression.split('\n'):
                 lines.append(f"\t\t\t\t{expr_line}")
     else:
-        lines.append(f"\t\tsource =")
+        lines.append("\t\tsource =")
         lines.append("\t\t\t\tlet")
         lines.append("\t\t\t\t\tSource = #table(type table [], {})")
         lines.append("\t\t\t\t\t// TODO: Configure data source — replace with actual connection")

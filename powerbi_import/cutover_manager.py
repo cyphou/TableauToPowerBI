@@ -509,13 +509,27 @@ def generate_cutover_dashboard(
     """
     try:
         from powerbi_import.html_template import (
-            html_open, html_close, stat_card, stat_grid,
-            section_open, section_close, badge, data_table, esc,
+            badge,
+            data_table,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
     except ImportError:
         from html_template import (
-            html_open, html_close, stat_card, stat_grid,
-            section_open, section_close, badge, data_table, esc,
+            badge,
+            data_table,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
 
     status = 'planned'

@@ -51,7 +51,6 @@ from powerbi_import.artifact_diff import (
     save_baseline,
 )
 
-
 # ═══════════════════════════════════════════════════════════════════════
 #  Fixtures — build minimal .pbip projects on disk
 # ═══════════════════════════════════════════════════════════════════════
@@ -338,8 +337,8 @@ class TestTMDLParsing:
         _write(path, textwrap.dedent("""\
             table 'Orders'
 
-            	measure 'Date Range Start' = DATE(2024, 1, 1)
-            	measure 'Total Sales' = SUM('Orders'[Amount])
+            \tmeasure 'Date Range Start' = DATE(2024, 1, 1)
+            \tmeasure 'Total Sales' = SUM('Orders'[Amount])
         """))
         result = _parse_tmdl_table(path)
         names = {m['name'] for m in result['measures']}
@@ -372,7 +371,7 @@ class TestTMDLParsing:
         _write(path, textwrap.dedent("""\
             table 'Orders'
 
-            	measure 'Owner''s Total' = SUM('Orders'[Amount])
+            \tmeasure 'Owner''s Total' = SUM('Orders'[Amount])
         """))
         result = _parse_tmdl_table(path)
         assert result['measures'][0]['name'] == "Owner's Total"
@@ -382,7 +381,7 @@ class TestTMDLParsing:
         _write(path, textwrap.dedent("""\
             table 'Orders'
 
-            	measure TotalSales = SUM('Orders'[Amount])
+            \tmeasure TotalSales = SUM('Orders'[Amount])
         """))
         result = _parse_tmdl_table(path)
         assert result['measures'][0]['name'] == 'TotalSales'

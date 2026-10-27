@@ -9,19 +9,17 @@ Targets uncovered lines: 350-367, 378-394, 421-444, 465-484, 560-561,
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 from powerbi_import.pbip_generator import (
-    PowerBIProjectGenerator,
     _L,
-    _pbi_literal,
-    _write_json,
+    PowerBIProjectGenerator,
 )
 
 _TEMP_DIRS = []

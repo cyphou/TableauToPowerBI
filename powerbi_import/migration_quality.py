@@ -8,21 +8,23 @@ based on verified findings rather than replacing validation logic.
 
 from __future__ import annotations
 
-import json
-import os
-import re
 import csv
 import hashlib
+import json
 import ntpath
+import os
+import re
 import stat
-from pathlib import Path
-from urllib.parse import quote
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 from powerbi_import.assessment import run_assessment
-from powerbi_import.report_localization import text, render as ui
 from powerbi_import.assessment_evidence import build_assessment_evidence
+from powerbi_import.cross_validator import scan_visual_role_contract
+from powerbi_import.evidence_manifest import build_evidence_manifest
+from powerbi_import.fabric_evidence import build_fabric_evidence
 from powerbi_import.html_template import (
     badge,
     data_table,
@@ -34,34 +36,36 @@ from powerbi_import.html_template import (
     stat_card,
     stat_grid,
 )
+from powerbi_import.interaction_graph import build_interaction_graph
 from powerbi_import.interface_diff import compare_report_interface
+from powerbi_import.m_emitter_matrix import (
+    build_m_emitter_matrix,
+    summarize_m_emitter_matrix,
+)
+from powerbi_import.migration_ledger import build_migration_ledger
 from powerbi_import.openability import check_openability, extract_m_partitions
+from powerbi_import.page_composition import build_page_composition_contract
 from powerbi_import.parity_registry import scan_project
+from powerbi_import.pbir_visual_recovery import scan_pbir_visual_recovery
 from powerbi_import.powerquery_diff import compare_report_tables
 from powerbi_import.quality_grades import color as grade_color
+from powerbi_import.recovery_registry import build_recovery_registry
+from powerbi_import.report_localization import render as ui
+from powerbi_import.report_localization import text
+from powerbi_import.roundtrip_validation import build_roundtrip_validation
 from powerbi_import.security_validator import canonical_path_key, lexical_path_key
 from powerbi_import.semantic_execution_validator import SemanticExecutionValidator
-from powerbi_import.semantic_runtime import validate_semantic_execution
 from powerbi_import.semantic_fixtures import load_semantic_fixture
-from powerbi_import.m_emitter_matrix import build_m_emitter_matrix, summarize_m_emitter_matrix
-from powerbi_import.evidence_manifest import build_evidence_manifest
-from powerbi_import.strategy_advisor import recommend_strategy
-from powerbi_import.fabric_evidence import build_fabric_evidence
+from powerbi_import.semantic_runtime import validate_semantic_execution
 from powerbi_import.source_inventory import build_source_inventory
-from powerbi_import.recovery_registry import build_recovery_registry
-from powerbi_import.migration_ledger import build_migration_ledger
+from powerbi_import.strategy_advisor import recommend_strategy
 from powerbi_import.validation_contract import build_validation_contract
-from powerbi_import.pbir_visual_recovery import scan_pbir_visual_recovery
-from powerbi_import.visual_parity_contract import build_visual_parity_contract
-from powerbi_import.page_composition import build_page_composition_contract
-from powerbi_import.cross_validator import scan_visual_role_contract
-from powerbi_import.interaction_graph import build_interaction_graph
-from powerbi_import.roundtrip_validation import build_roundtrip_validation
 from powerbi_import.visual_mapping_matrix import (
     build_visual_mapping_matrix,
     find_visual_approximations_in_use,
     summarize_visual_mapping_matrix,
 )
+from powerbi_import.visual_parity_contract import build_visual_parity_contract
 
 
 @dataclass
@@ -417,9 +421,9 @@ def _desktop_comparison_links(html_path: str) -> str:
         try:
             if manifest_path.resolve().is_relative_to(comparison_root.resolve()):
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                recorded = manifest.get("status") if isinstance(manifest, dict) else None
+                recorded = manifest.get("status") if isinstance(manifest, dict) else ""
                 if not isinstance(recorded, str):
-                    recorded = None
+                    recorded = ""
                 status = {
                     "captured": text("Captures recorded — manual review required", "Captures enregistrées — revue manuelle nécessaire"),
                     "failed": text("Capture failure / incomplete — not parity success", "Captures en échec / incomplètes — parité non validée"),
@@ -489,7 +493,7 @@ def build_consolidated_quality_html(quality_json_paths: list,
 
     Each workbook becomes a tab; an overview tab summarizes all workbooks.
     """
-    from powerbi_import.html_template import tab_bar, tab_content, badge, data_table
+    from powerbi_import.html_template import badge, data_table, tab_bar, tab_content
 
     reports: list[MigrationQualityReport] = []
     for path in quality_json_paths:
@@ -4042,7 +4046,8 @@ def resolve_quality_report_name(project_dir: str) -> str:
         # Reuse the report-directory discovery helper only after ruling out
         # its first-match behaviour for ambiguous projects.
         report_dir = _find_report_dir(project_dir)
-        identities.add(os.path.basename(report_dir)[:-len('.Report')])
+        if report_dir:
+            identities.add(os.path.basename(report_dir)[:-len('.Report')])
 
     metadata_path = os.path.join(project_dir, 'migration_metadata.json')
     if os.path.isfile(metadata_path):

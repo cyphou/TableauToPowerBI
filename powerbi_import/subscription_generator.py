@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 try:
@@ -57,7 +56,7 @@ _DAY_MAP = {
 #  Site-Wide Subscription Extraction (Sprint 142.1)
 # ═══════════════════════════════════════════════════════════════════════
 
-def extract_all_subscriptions(client, topology: Dict[str, Any] = None) -> List[Dict]:
+def extract_all_subscriptions(client, topology: Optional[Dict[str, Any]] = None) -> List[Dict]:
     """Extract all subscriptions from a Tableau Server site.
 
     Args:
@@ -473,13 +472,27 @@ def generate_subscription_report(
     """
     try:
         from powerbi_import.html_template import (
-            html_open, html_close, stat_card, stat_grid,
-            section_open, section_close, badge, data_table, esc,
+            badge,
+            data_table,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
     except ImportError:
         from html_template import (
-            html_open, html_close, stat_card, stat_grid,
-            section_open, section_close, badge, data_table, esc,
+            badge,
+            data_table,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
 
     parts = [html_open(text("Subscription & Alert Migration Report",

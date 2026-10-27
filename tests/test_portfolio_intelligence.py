@@ -10,18 +10,15 @@ import shutil
 import tempfile
 import unittest
 from dataclasses import dataclass, field
-from typing import List
 
 from powerbi_import.global_assessment import (
     GlobalAssessment,
     MergeCluster,
-    WorkbookProfile,
     build_data_lineage,
-    recommend_consolidation,
-    plan_resource_allocation,
     generate_governance_report,
+    plan_resource_allocation,
+    recommend_consolidation,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Helpers
@@ -33,7 +30,7 @@ def _sample_extracted(name='WB1', n_tables=2, n_calcs=1, n_worksheets=1):
               for i in range(n_tables)]
     calcs = [{'name': f'Calc{i}', 'formula': 'SUM([Col1])'}
              for i in range(n_calcs)]
-    worksheets = [{'name': f'Sheet{i}', 'fields': ['Col1', f'Calc0']}
+    worksheets = [{'name': f'Sheet{i}', 'fields': ['Col1', 'Calc0']}
                   for i in range(n_worksheets)]
     return {
         'datasources': [{

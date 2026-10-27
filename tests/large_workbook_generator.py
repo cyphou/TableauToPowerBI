@@ -27,7 +27,6 @@ import random
 import string
 import xml.etree.ElementTree as ET
 
-
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def _rand_name(prefix, idx, rng):
@@ -141,7 +140,7 @@ def _build_worksheet(ws_name, ds_name, col_names, rng):
     # Pane with mark encoding
     panes = ET.SubElement(view, 'panes')
     pane = ET.SubElement(panes, 'pane')
-    mark = ET.SubElement(pane, 'mark', {'class': rng.choice([
+    ET.SubElement(pane, 'mark', {'class': rng.choice([
         'Automatic', 'Bar', 'Line', 'Area', 'Circle', 'Square',
         'Text', 'Map', 'Pie',
     ])})
@@ -158,7 +157,7 @@ def _build_worksheet(ws_name, ds_name, col_names, rng):
 def _build_dashboard(db_name, ws_names, rng):
     """Build a <dashboard> XML element."""
     db = ET.Element('dashboard', {'name': db_name})
-    size = ET.SubElement(db, 'size', {
+    ET.SubElement(db, 'size', {
         'maxheight': '1200',
         'maxwidth': '1600',
         'minheight': '800',
@@ -167,7 +166,7 @@ def _build_dashboard(db_name, ws_names, rng):
     zones = ET.SubElement(db, 'zones')
     y = 0
     for ws in ws_names[:12]:  # max 12 worksheets per dashboard
-        zone = ET.SubElement(zones, 'zone', {
+        ET.SubElement(zones, 'zone', {
             'h': '300',
             'w': '600',
             'x': str(rng.randint(0, 800)),
@@ -246,7 +245,7 @@ def generate_large_twb(
 
     # Datasources
     datasources_el = ET.SubElement(root, 'datasources')
-    all_col_names = _rand_columns(columns_per_table * 3, rng)
+    _rand_columns(columns_per_table * 3, rng)
     ds_infos = []  # (ds_name, [col_names])
     for i in range(num_datasources):
         ds_name = f'DataSource_{i}'
@@ -272,7 +271,7 @@ def generate_large_twb(
                 'role': 'measure',
                 'type': 'quantitative',
             })
-            calc_el = ET.SubElement(col_el, 'calculation', {
+            ET.SubElement(col_el, 'calculation', {
                 'class': 'tableau',
                 'formula': formula,
             })
@@ -299,7 +298,7 @@ def generate_large_twb(
                 'value': str(rng.randint(1, 100)) if ptype != 'string' else '"Default"',
             })
             if ptype != 'string':
-                rng_el = ET.SubElement(col, 'range', {
+                ET.SubElement(col, 'range', {
                     'granularity': '1',
                     'max': '1000',
                     'min': '0',
@@ -346,7 +345,7 @@ def generate_large_twb(
             'user:auto-column': 'num_bin',
         })
         for gm in range(rng.randint(2, 5)):
-            member = ET.SubElement(group_el, 'groupfilter', {
+            ET.SubElement(group_el, 'groupfilter', {
                 'function': 'member',
                 'level': f'[{rng.choice(ds_cols)}]',
                 'member': f'Value_{gm}',
@@ -363,7 +362,7 @@ def generate_large_twb(
             'type': 'ordinal',
             'user:auto-column': 'num_bin',
         })
-        bin_calc = ET.SubElement(bin_el, 'calculation', {
+        ET.SubElement(bin_el, 'calculation', {
             'class': 'bin',
             'formula': '',
             'peg': '0',

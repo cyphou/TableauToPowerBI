@@ -25,7 +25,7 @@ import logging
 import os
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -158,8 +158,8 @@ class AzureKeyVaultBackend(CredentialBackend):
     def _get_client(self):
         if self._client is None:
             try:
-                from azure.identity import DefaultAzureCredential
-                from azure.keyvault.secrets import SecretClient
+                from azure.identity import DefaultAzureCredential  # type: ignore[import-not-found]
+                from azure.keyvault.secrets import SecretClient  # type: ignore[import-not-found]
             except ImportError:
                 raise ImportError(
                     "Azure Key Vault backend requires 'azure-identity' and "

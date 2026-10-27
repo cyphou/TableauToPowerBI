@@ -9,11 +9,12 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.strategy_advisor import (
-    StrategySignal, StrategyRecommendation,
-    recommend_strategy, print_recommendation,
+    StrategyRecommendation,
+    StrategySignal,
     _classify_calculations,
+    print_recommendation,
+    recommend_strategy,
 )
-
 
 # ── Helper ──────────────────────────────────────────────────────────
 

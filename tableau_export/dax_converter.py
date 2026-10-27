@@ -7,12 +7,11 @@ Converts Tableau calculation formulas to valid DAX expressions.
 
 import re
 
-
 # ── Shared utility ────────────────────────────────────────────────────────────
 
 def _reverse_tableau_bracket_escape(name):
     """Reverses the Tableau ] → ) substitution in column names.
-    
+
     Tableau replaces ] with ) in physical column names because
     ] conflicts with its [field] syntax. To generate Power Query M that
     references the real column names in the source, we reverse this
@@ -284,7 +283,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
                                     fallback_on_invalid=False):
     """
     Converts a Tableau formula to DAX with context resolution.
-    
+
     Args:
         formula: Raw Tableau formula
         column_name: Name of the calculated field (for debug)
@@ -301,13 +300,13 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         compute_using: list of dimension names for table calc addressing/partitioning
         validate_output: If True, run Phase 3 DAX validation on output
         fallback_on_invalid: If True and validation fails, return TODO/BLANK fallback
-    
+
     Returns:
         str: Valid DAX formula
     """
     if not formula or not formula.strip():
         return formula
-    
+
     calc_map = calc_map or {}
     param_map = param_map or {}
     column_table_map = column_table_map or {}
@@ -316,7 +315,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # Support both old partition_fields and new compute_using parameter
     if compute_using is None and partition_fields is not None:
         compute_using = partition_fields
-    
+
     dax = formula.strip()
     # Tableau comments may contain apostrophes and Tableau function names.
     # Remove them before quote conversion and validation.
@@ -325,7 +324,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # Normalize before resolving references so captions/parameter values
     # introduced later cannot be mistaken for source-language literals.
     dax = _convert_null_literals(dax)
-    
+
     # === Phase 0: Strip secondary-datasource prefixes ===
     # Tableau data blends use [federated.xxxID].[Column] references.
     # Published (sqlproxy) datasource cross-refs use [sqlproxy.xxxID].[Calculation_yyy].
@@ -342,19 +341,19 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
 
     # === Phase 1: Resolve Tableau references ===
     dax = _resolve_references(dax, calc_map, param_map, is_calc_column, param_values)
-    
+
     # === Phase 2: Convert CASE/WHEN → SWITCH(), IF/THEN → IF() ===
     dax = _convert_case_structure(dax)
     dax = _convert_if_structure(dax)
-    
+
     # === Phase 3: Convert Tableau functions → DAX ===
-    
+
     # 3a. ISMEMBEROF (special — captures group name)
     dax = _RE_ISMEMBEROF.sub(
         r'TRUE()  /* ISMEMBEROF("\1"): implement via RLS role */',
         dax
     )
-    
+
     # 3b-pre. Dedicated converters (functions needing special arg handling)
     dax = _convert_previous_value(dax, table_name, compute_using=compute_using,
                                    column_table_map=column_table_map)
@@ -401,31 +400,31 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_datediff(dax)
     dax = _convert_zn(dax)
     dax = _convert_ifnull(dax)
-    
+
     # 3d. LOD Expressions → CALCULATE
     dax = _convert_lod_expressions(dax, table_name, column_table_map)
-    
+
     # 3e. WINDOW_xxx table calculations
     dax = _convert_window_functions(dax, table_name, compute_using=compute_using,
                                      column_table_map=column_table_map,
                                      partition_fields=partition_fields)
-    
+
     # 3f. RANK / RANK_UNIQUE / RANK_DENSE → RANKX
     dax = _convert_rank_functions(dax, table_name, compute_using=compute_using,
                                    column_table_map=column_table_map)
-    
+
     # 3g. RUNNING_SUM/AVG/COUNT/MAX/MIN → table calculations
     dax = _convert_running_functions(dax, table_name)
-    
+
     # 3h. Percent of Total (TOTAL function or pcto: prefix)
     dax = _convert_total_function(dax, table_name)
-    
+
     # === Phase 4: Convert operators ===
     dax = dax.replace('!=', '<>')   # != before == to avoid partial match
     dax = dax.replace('==', '=')
     dax = _RE_OR.sub('||', dax)
     dax = _RE_AND.sub('&&', dax)
-    
+
     # === Phase 5: Resolve remaining columns [col] → 'Table'[col] ===
     dax = _resolve_columns(dax, table_name, column_table_map, measure_names,
                            is_calc_column, param_values, table_columns=table_columns)
@@ -436,7 +435,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
 
     # === Phase 5b: Convert AGG(IF(...)) → AGGX('table', IF(...)) ===
     dax = _convert_agg_if_to_aggx(dax, table_name)
-    
+
     # === Phase 5c: Convert AGG(multi-col expr) → AGGX('table', expr) ===
     # DAX SUM/AVERAGE/MIN/MAX/COUNT only accept a single column.
     # Expressions like SUM('T'[a] * 'T'[b]) must use SUMX('T', 'T'[a] * 'T'[b]).
@@ -610,7 +609,8 @@ def _convert_safe_division(dax):
         pass
 
     def peek():
-        return tokens[position][0] if position < len(tokens) else None
+        # '' marks the end of input; real tokens are never empty.
+        return tokens[position][0] if position < len(tokens) else ''
 
     def take(value=None):
         nonlocal position
@@ -728,7 +728,7 @@ def _strip_tableau_comments(text):
 
 def _resolve_references(dax, calc_map, param_map, is_calc_column, param_values):
     """Resolve [Parameters].[X] and [Calculation_xxx] references."""
-    
+
     # [Parameters].[Parameter X] → [caption] or inline value
     def resolve_param(m):
         param_id = m.group(1)
@@ -744,7 +744,7 @@ def _resolve_references(dax, calc_map, param_map, is_calc_column, param_values):
             return param_values[caption]
         return f'[{sanitize_param_brackets(caption)}]'
     dax = _RE_PARAM_REF.sub(resolve_param, dax)
-    
+
     # [Calculation_xxx] → [caption]
     def resolve_calc(m):
         ref = m.group(1)
@@ -789,7 +789,7 @@ def _resolve_references(dax, calc_map, param_map, is_calc_column, param_values):
 def _convert_case_structure(text):
     """
     Converts Tableau CASE/WHEN/THEN/ELSE/END structures to DAX SWITCH().
-    
+
     Tableau: CASE [field] WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 0 END
     DAX:     SWITCH([field], "A", 1, "B", 2, 0)
     """
@@ -803,20 +803,20 @@ def _convert_case_structure(text):
         )
         if not m:
             break
-        
+
         expr = m.group(1).strip()
         when_block = m.group(2).strip()
-        
+
         # Parse WHEN value THEN result pairs
         parts = re.split(r'\bWHEN\b', when_block, flags=re.IGNORECASE)
         switch_args = [expr]
         else_val = None
-        
+
         for part in parts:
             part = part.strip()
             if not part:
                 continue
-            
+
             # Check for ELSE clause
             else_match = re.search(r'\bELSE\s+(.*)', part, re.IGNORECASE | re.DOTALL)
             if else_match:
@@ -824,7 +824,7 @@ def _convert_case_structure(text):
                 before_else = part[:else_match.start()].strip()
                 else_val = else_match.group(1).strip()
                 part = before_else
-            
+
             # Parse THEN
             then_match = re.search(r'\bTHEN\b', part, re.IGNORECASE)
             if then_match:
@@ -832,20 +832,20 @@ def _convert_case_structure(text):
                 then_val = part[then_match.end():].strip()
                 switch_args.append(when_val)
                 switch_args.append(then_val)
-        
+
         if else_val:
             switch_args.append(else_val)
-        
+
         replacement = f'SWITCH({", ".join(switch_args)})'
         text = text[:m.start()] + replacement + text[m.end():]
-    
+
     return text
 
 
 def _convert_if_structure(text):
     """
     Converts Tableau IF/THEN/ELSEIF/ELSE/END structures to DAX IF().
-    
+
     Handles nested structures (processed from innermost to outermost).
     """
     # Pre-processing: ELSEIF → ELSE IF + add corresponding ENDs
@@ -853,7 +853,7 @@ def _convert_if_structure(text):
     if elseif_count > 0:
         text = _RE_ELSEIF.sub('ELSE IF', text)
         text = text.rstrip() + ' END' * elseif_count
-    
+
     # Each iteration consumes exactly one IF...END, so budget by content:
     # a fixed cap silently leaves raw Tableau syntax in long chains.
     max_iter = len(re.findall(r'\bEND\b', text, re.IGNORECASE)) + 30
@@ -871,7 +871,7 @@ def _convert_if_structure(text):
             cond, val1, val2 = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
             text = text[:m.start()] + f'IF({cond}, {val1}, {val2})' + text[m.end():]
             continue
-        
+
         # IF cond THEN val END (no ELSE)
         m = re.search(
             r'\bIF\b\s*((?:(?!\bIF\s|\bEND\b).)*?)\s+THEN\s+((?:(?!\bIF\s|\bEND\b).)*?)\s*END\b',
@@ -881,9 +881,9 @@ def _convert_if_structure(text):
             cond, val1 = m.group(1).strip(), m.group(2).strip()
             text = text[:m.start()] + f'IF({cond}, {val1}, BLANK())' + text[m.end():]
             continue
-        
+
         break
-    
+
     return text
 
 
@@ -1360,8 +1360,10 @@ def _transform_func_call(dax, func_name, transformer_fn):
         start_pos = match.end()
         depth, i = 1, start_pos
         while i < len(dax) and depth > 0:
-            if dax[i] == '(':  depth += 1
-            elif dax[i] == ')': depth -= 1
+            if dax[i] == '(':
+                depth += 1
+            elif dax[i] == ')':
+                depth -= 1
             i += 1
         if depth != 0:
             break
@@ -1399,7 +1401,7 @@ def _convert_proper(dax):
     Tableau PROPER("hello world") → "Hello World" (capitalizes first letter
     of every word).  DAX has no built-in PROPER function.  The approximation
     UPPER(LEFT()) & LOWER(MID()) only capitalizes position 1.
-    
+
     The pattern below splits on spaces, capitalizes each token, and
     reassembles with space delimiters.  It works for single-space-separated
     words (the overwhelmingly common case).
@@ -1647,7 +1649,7 @@ def _convert_isdate(dax):
 
 def _convert_attr(dax, measure_names=None):
     """Convert ATTR(x) → SELECTEDVALUE(x) for columns, or just x for measures.
-    
+
     Tableau ATTR() returns a single value when the context has exactly one distinct
     value.  For columns, DAX SELECTEDVALUE() is the equivalent.  But when the argument
     is a measure (already scalar), wrapping it in SELECTEDVALUE is invalid — simply
@@ -1854,7 +1856,7 @@ def _convert_regexp_extract(dax):
     """
     def _xf(args, inner):
         if len(args) < 2:
-            return f'/* REGEXP_EXTRACT: no DAX regex — manual conversion needed */ BLANK()'
+            return '/* REGEXP_EXTRACT: no DAX regex — manual conversion needed */ BLANK()'
         field = args[0].strip()
         raw_pat = args[1].strip()
         # Strip surrounding quotes
@@ -1986,7 +1988,7 @@ def _convert_regexp_extract_nth(dax):
             alternatives = alt_match.group(1).split('|')
             if len(alternatives) >= 2:
                 # Build an IF chain that returns the first match
-                result = f'BLANK()'
+                result = 'BLANK()'
                 for alt in reversed(alternatives):
                     result = f'IF(CONTAINSSTRING({field}, "{alt}"), "{alt}", {result})'
                 return f'/* REGEXP_EXTRACT_NTH: alternation match */ {result}'
@@ -2559,7 +2561,7 @@ def _convert_lod_expressions(dax, table_name, column_table_map):
         return ''.join(result_parts)
 
     dax = _parse_lod_recursive(dax)
-    
+
     # LOD without dimension — use balanced brace matching (not global replace)
     match = _RE_LOD_NO_DIM.search(dax)
     while match:
@@ -2698,7 +2700,7 @@ def _build_window_clauses(compute_using, table_name, ctm, partition_fields=None)
 def _convert_window_functions(dax, table_name, compute_using=None, column_table_map=None,
                               partition_fields=None):
     """Convert WINDOW_SUM/AVG/MAX/MIN/COUNT → CALCULATE(..., ALL/ALLEXCEPT).
-    
+
     When compute_using dimensions are provided (from table calc addressing),
     uses ALLEXCEPT to partition by those dimensions instead of blanket ALL.
 
@@ -2840,7 +2842,7 @@ def _convert_window_functions(dax, table_name, compute_using=None, column_table_
 def _convert_rank_functions(dax, table_name, compute_using=None, column_table_map=None):
     """Convert RANK(expr), RANK_UNIQUE(expr), RANK_DENSE(expr), RANK_MODIFIED(expr),
     RANK_PERCENTILE(expr) → RANKX(ALL/ALLEXCEPT('table'), expr) variants.
-    
+
     When compute_using dimensions are provided (from table calc addressing),
     uses ALLEXCEPT to partition by those dimensions.
     """
@@ -2886,7 +2888,7 @@ def _convert_rank_functions(dax, table_name, compute_using=None, column_table_ma
 
 def _convert_running_functions(dax, table_name):
     """Convert RUNNING_SUM/AVG/COUNT/MAX/MIN → CALCULATE with window spec.
-    
+
     These Tableau table calculations produce running aggregates.
     In DAX, they map to cumulative patterns using CALCULATE + FILTER + ALLSELECTED.
     """
@@ -2924,7 +2926,7 @@ def _convert_running_functions(dax, table_name):
 
 def _convert_total_function(dax, table_name):
     """Convert TOTAL(expr) → CALCULATE(expr, ALL('table')).
-    
+
     TOTAL() in Tableau returns the grand total of an expression,
     ignoring the current partition. This maps to CALCULATE + ALL.
     """
@@ -2963,7 +2965,7 @@ def _resolve_columns(dax, table_name, column_table_map, measure_names,
 
     def _dax_escape_col(col_name):
         return col_name.replace(']', ']]')
-    
+
     def _resolve_col_name(col):
         reversed_name = _reverse_tableau_bracket_escape(col)
         if reversed_name != col and reversed_name in column_table_map:
@@ -2983,7 +2985,7 @@ def _resolve_columns(dax, table_name, column_table_map, measure_names,
                 if base == no_space:
                     return candidate
         return col
-    
+
     def resolve_column(m):
         raw_col = m.group(1)
         col = _resolve_col_name(raw_col)
@@ -3003,7 +3005,7 @@ def _resolve_columns(dax, table_name, column_table_map, measure_names,
                 return f"RELATED('{col_table}'[{_dax_escape_col(col)}])"
             return f"'{col_table}'[{_dax_escape_col(col)}]"
         return f"'{table_name}'[{_dax_escape_col(col)}]"
-    
+
     # Apply column resolution ONLY outside of string literals ("..." in DAX)
     # to avoid mangling regex patterns or other bracketed content inside strings.
     parts = re.split(r'("(?:[^"\\]|\\.)*")', dax)
@@ -3452,12 +3454,12 @@ def _split_args(inner):
 
 def generate_combined_field_dax(source_fields, table_name, separator=' '):
     """Generate DAX expression for a combined field (CONCATENATE of multiple columns).
-    
+
     Args:
         source_fields: List of source column names
         table_name: Table containing the columns
         separator: Separator between values (default: space)
-    
+
     Returns:
         str: DAX calculated column expression
     """

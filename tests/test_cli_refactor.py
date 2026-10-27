@@ -10,9 +10,9 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import timedelta
 from io import StringIO
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
@@ -662,8 +662,9 @@ class TestSharedModelHelpers(unittest.TestCase):
     """Tests for helpers extracted from import_shared_model."""
 
     def test_create_model_explorer_report_creates_files(self):
-        import tempfile
         import json
+        import tempfile
+
         from import_to_powerbi import PowerBIImporter
 
         gen = PowerBIImporter.__new__(PowerBIImporter)
@@ -703,7 +704,7 @@ class TestSharedModelHelpers(unittest.TestCase):
 
     def test_save_shared_model_artifacts(self):
         import tempfile
-        import json
+
         from import_to_powerbi import PowerBIImporter
 
         gen = PowerBIImporter.__new__(PowerBIImporter)
@@ -752,6 +753,7 @@ class TestRunSingleMigrationExists(unittest.TestCase):
 
     def test_function_signature(self):
         import inspect
+
         import migrate
         sig = inspect.signature(migrate._run_single_migration)
         self.assertIn('args', sig.parameters)

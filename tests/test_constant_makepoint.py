@@ -13,7 +13,12 @@ cannot hold, and that must stay blocking.
 import unittest
 
 from powerbi_import.assessment import (
-    FAIL, PASS, WARN, _check_calculations, _is_constant_point_only)
+    FAIL,
+    PASS,
+    WARN,
+    _check_calculations,
+    _is_constant_point_only,
+)
 
 
 def _checks(*formulas):

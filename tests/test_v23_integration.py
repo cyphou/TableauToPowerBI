@@ -6,9 +6,7 @@ Validates that Sprint 84 (Conversion Accuracy), gap optimization
 together end-to-end.
 """
 
-import json
 import os
-import shutil
 import tempfile
 import unittest
 

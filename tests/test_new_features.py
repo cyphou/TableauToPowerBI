@@ -10,27 +10,23 @@ Tests for newly ported features:
 """
 
 import copy
-import json
 import os
-import shutil
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+# Import the internal functions directly
+import powerbi_import.tmdl_generator as tmdl_mod
 from powerbi_import.tmdl_generator import (
-    _create_parameter_tables,
     _auto_date_hierarchies,
 )
 
-# Import the internal functions directly
-import powerbi_import.tmdl_generator as tmdl_mod
 _create_calculation_groups = tmdl_mod._create_calculation_groups
 _create_field_parameters = tmdl_mod._create_field_parameters
 
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
-
 
 # ── Helpers ─────────────────────────────────────────────────────────
 

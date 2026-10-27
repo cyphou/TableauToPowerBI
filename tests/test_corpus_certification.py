@@ -1,9 +1,9 @@
 """Tests for corpus certification and release boundaries."""
 
-import unittest
 import json
 import os
 import tempfile
+import unittest
 
 from powerbi_import.corpus_certification import certify_corpus, certify_quality_files
 

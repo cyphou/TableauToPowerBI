@@ -17,12 +17,24 @@ Usage::
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 from powerbi_import.quality_grades import color as _grade_color
 from powerbi_import.report_localization import (
-    LocalizedText, text, render as ui, attributes as i18n_attrs,
-    selector as language_selector, script as localization_script,
+    LocalizedText,
+    text,
+)
+from powerbi_import.report_localization import (
+    attributes as i18n_attrs,
+)
+from powerbi_import.report_localization import (
+    render as ui,
+)
+from powerbi_import.report_localization import (
+    script as localization_script,
+)
+from powerbi_import.report_localization import (
+    selector as language_selector,
 )
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -955,7 +967,7 @@ def stat_card(
     value: Any,
     label: str,
     color: str = "",
-    accent: str = "",
+    accent: Optional[str] = "",
 ) -> str:
     """Return HTML for a single stat card.
 
@@ -1073,7 +1085,7 @@ def donut_chart(
 
 
 def bar_chart(
-    items: List[Tuple[str, float, str]],
+    items: Sequence[Tuple[str, float, str]],
     max_value: float = 0,
 ) -> str:
     """Return a horizontal bar chart.
@@ -1098,7 +1110,7 @@ def bar_chart(
 
 
 def data_table(
-    headers: List[str],
+    headers: Sequence[str],
     rows: List[List[str]],
     table_id: str = "",
     sortable: bool = False,

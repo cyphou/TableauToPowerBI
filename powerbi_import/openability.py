@@ -23,7 +23,7 @@ import glob
 import json
 import os
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Tuple
 
 # In-package, stdlib-only validators. A failed import is a broken install, not a
@@ -127,9 +127,9 @@ def extract_m_partitions(tmdl_text: str) -> List[Tuple[str, str]]:
             i += 1
             block = []
             while i < n:
-                l = lines[i]
-                if l.startswith("\t\t\t\t"):
-                    block.append(l[4:])
+                block_line = lines[i]
+                if block_line.startswith("\t\t\t\t"):
+                    block.append(block_line[4:])
                     i += 1
                 else:
                     break
@@ -341,7 +341,7 @@ def _check_report_content(project_dir) -> CheckResult:
             visual_type = visual.get("visualType") if isinstance(visual, dict) else None
             if not isinstance(visual_json, dict) or not visual_json or not isinstance(visual, dict):
                 issues.append(f"{os.path.relpath(visual_path, project_dir)}: empty visual definition")
-            elif not visual_type and not (visual_json.get("type") in helper_types):
+            elif not visual_type and visual_json.get("type") not in helper_types:
                 # Missing visualType remains a warning when the visual has a
                 # meaningful definition; only a truly empty visual is blocking.
                 if not visual:
@@ -483,7 +483,10 @@ def _check_visual_bindings(project_dir) -> CheckResult:
     """Block PBIR visuals that reference missing model fields."""
     try:
         from powerbi_import.artifact_diff import _parse_tmdl_table
-        from powerbi_import.cross_validator import _check_visual_refs, _build_model_index
+        from powerbi_import.cross_validator import (
+            _build_model_index,
+            _check_visual_refs,
+        )
         from powerbi_import.self_healing_report import load_report
     except Exception as exc:  # noqa: BLE001 - preflight must return a check result
         return CheckResult("visual_bindings", False, "error", [str(exc)])
@@ -554,7 +557,8 @@ def _literal_final_projection(expression):
     aliases, computed names and other output shapes remain unknown.
     """
     from powerbi_import.m_validator import (
-        _strip_comments_only, _strip_strings_and_comments,
+        _strip_comments_only,
+        _strip_strings_and_comments,
     )
     if validate_m_query(expression):
         return None
@@ -825,7 +829,6 @@ def _check_tmdl_partitions(project_dir) -> CheckResult:
         saw_m_body = False
 
         for raw in lines:
-            line = raw.strip()
             if raw.startswith("table "):
                 if current_partition and current_partition_type == "m" and (not saw_source or not saw_m_body):
                     issues.append(

@@ -8,15 +8,13 @@ visual config, auto-generated measures, and migration notes.
 import unittest
 
 from powerbi_import.visual_generator import (
-    resolve_visual_type,
-    get_approximation_note,
-    create_visual_container,
-    _apply_visual_decorations,
-    _build_visual_query_state,
     _AUTO_GENERATED_MEASURES,
     APPROXIMATION_MAP,
-    VISUAL_TYPE_MAP,
     VISUAL_FALLBACK_CASCADE,
+    VISUAL_TYPE_MAP,
+    create_visual_container,
+    get_approximation_note,
+    resolve_visual_type,
 )
 
 
@@ -81,7 +79,6 @@ class TestLollipopApproximation(unittest.TestCase):
             x=0, y=0, width=400, height=300, z_index=0,
             col_table_map={"Category": "T", "Value": "T"},
         )
-        visual = container["visual"]
         # PBIR v4.0: annotations live at the container root, not in visual.
         self.assertIn("annotations", container)
         notes = [a["value"] for a in container["annotations"] if a["name"] == "MigrationNote"]
@@ -181,7 +178,7 @@ class TestButterflyApproximation(unittest.TestCase):
             "dimensions": [{"field": "Category"}],
             "measures": [{"name": "Value", "expression": "SUM(Value)"}],
         }
-        container = create_visual_container(
+        create_visual_container(
             worksheet=ws, visual_id="bfly-4",
             x=0, y=0, width=400, height=300, z_index=0,
             col_table_map={"Category": "T", "Value": "T"},
@@ -283,7 +280,6 @@ class TestCalendarHeatMapApproximation(unittest.TestCase):
             x=0, y=0, width=400, height=300, z_index=0,
             col_table_map={"Date": "T", "Value": "T"},
         )
-        visual = container["visual"]
         # PBIR v4.0: annotations live at the container root, not in visual.
         notes = [a["value"] for a in container.get("annotations", []) if a["name"] == "MigrationNote"]
         self.assertTrue(any("DayOfWeek" in n for n in notes))

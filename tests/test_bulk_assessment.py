@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -86,7 +86,7 @@ class TestBulkAssessmentMode(unittest.TestCase):
 
     def test_nonexistent_directory(self):
         """--bulk-assess with nonexistent directory returns error."""
-        from migrate import run_bulk_assessment_mode, ExitCode
+        from migrate import ExitCode, run_bulk_assessment_mode
 
         args = MagicMock()
         args.bulk_assess = '/nonexistent/path/xyz'
@@ -103,7 +103,7 @@ class TestBulkAssessmentMode(unittest.TestCase):
 
     def test_empty_directory(self):
         """--bulk-assess with empty directory returns error."""
-        from migrate import run_bulk_assessment_mode, ExitCode
+        from migrate import ExitCode, run_bulk_assessment_mode
 
         with tempfile.TemporaryDirectory() as td:
             args = MagicMock()
@@ -121,7 +121,7 @@ class TestBulkAssessmentMode(unittest.TestCase):
 
     def test_portfolio_assessment_with_workbooks(self):
         """--bulk-assess with 2+ workbooks runs portfolio + merge analysis."""
-        from migrate import run_bulk_assessment_mode, ExitCode
+        from migrate import ExitCode, run_bulk_assessment_mode
 
         with tempfile.TemporaryDirectory() as td:
             # Create two stub workbooks
@@ -156,7 +156,7 @@ class TestBulkAssessmentMode(unittest.TestCase):
 
     def test_single_workbook_no_merge(self):
         """--bulk-assess with 1 workbook produces portfolio but no merge report."""
-        from migrate import run_bulk_assessment_mode, ExitCode
+        from migrate import ExitCode, run_bulk_assessment_mode
 
         with tempfile.TemporaryDirectory() as td:
             _make_twbx_stub(td, 'OnlyOne')
@@ -185,7 +185,7 @@ class TestBulkAssessmentMode(unittest.TestCase):
 
     def test_default_output_dir(self):
         """--bulk-assess with no --output-dir uses default artifacts path."""
-        from migrate import run_bulk_assessment_mode, ExitCode
+        from migrate import ExitCode, run_bulk_assessment_mode
 
         with tempfile.TemporaryDirectory() as td:
             _make_twbx_stub(td, 'WB1')
@@ -208,7 +208,7 @@ class TestBulkAssessmentMode(unittest.TestCase):
 
     def test_recursive_discovery(self):
         """--bulk-assess discovers workbooks in subdirectories."""
-        from migrate import run_bulk_assessment_mode, ExitCode
+        from migrate import ExitCode, run_bulk_assessment_mode
 
         with tempfile.TemporaryDirectory() as td:
             sub = os.path.join(td, 'dept', 'sales')

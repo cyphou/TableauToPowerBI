@@ -43,10 +43,10 @@ Example configuration file (migration_config.json):
 }
 """
 
-import json
-import os
 import copy
+import json
 import logging
+import os
 
 logger = logging.getLogger('tableau_to_powerbi.config')
 

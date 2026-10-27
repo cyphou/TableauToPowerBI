@@ -7,19 +7,17 @@ Basic, Date, Search), cardinality-based mode selection, context filter
 promotion, and slicer visual JSON structure.
 """
 
-import json
 import os
 import sys
 import unittest
-import uuid
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from tableau_export.extract_tableau_data import TableauExtractor
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
+from tableau_export.extract_tableau_data import TableauExtractor
 
 
 def _make_extractor():

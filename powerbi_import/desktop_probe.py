@@ -35,7 +35,7 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import List, Optional
 
 from powerbi_import import desktop_window
@@ -319,7 +319,7 @@ def _report_definition_launch_path(pbip_path: str) -> str:
     return definition
 
 
-def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: int = 90,
+def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: float = 90,
                        close_after: bool = True,
                        screenshot_path: Optional[str] = None,
                        wait_for_window: bool = True,
@@ -562,8 +562,10 @@ def _watch_window(report, proc, pbip_path, start, timeout,
     if verify_data:
         report.data_load = _data_load_result("unavailable")
     expected = os.path.splitext(os.path.basename(pbip_path))[0]
-    launched_pids = lambda: [pid for pid in desktop_pids()
-                             if pid not in pre_existing]
+
+    def launched_pids():
+        return [pid for pid in desktop_pids() if pid not in pre_existing]
+
     window, signals = desktop_window.wait_for_window(
         launched_pids, expected, timeout=timeout)
 

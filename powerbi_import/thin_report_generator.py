@@ -21,7 +21,7 @@ import copy
 import json
 import logging
 import os
-import re
+from typing import Optional
 
 from .fabric_item import logical_id, write_platform
 
@@ -32,7 +32,7 @@ class ThinReportGenerator:
     """Generates a thin report (.Report/) referencing an external semantic model."""
 
     def __init__(self, semantic_model_name: str, output_dir: str,
-                 live_connection: str = None, item_id: str = None):
+                 live_connection: Optional[str] = None, item_id: Optional[str] = None):
         """
         Args:
             semantic_model_name: Name of the shared semantic model directory.
@@ -48,7 +48,7 @@ class ThinReportGenerator:
 
     def generate_thin_report(self, report_name: str,
                              converted_objects: dict,
-                             field_mapping: dict = None) -> str:
+                             field_mapping: Optional[dict] = None) -> str:
         """Generate a thin report referencing the shared semantic model.
 
         Args:
@@ -99,7 +99,7 @@ class ThinReportGenerator:
 
     def _write_definition_pbir(self, report_dir: str):
         """Write definition.pbir with byPath or byConnection reference."""
-        report_definition = {
+        report_definition: dict = {
             "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json",
             "version": "4.0",
         }
@@ -377,7 +377,7 @@ def validate_field_references(report_visuals: list, merged_model: dict) -> list:
     return results
 
 
-def validate_drillthrough_targets(report_pages: list, bundle_reports: list = None) -> list:
+def validate_drillthrough_targets(report_pages: list, bundle_reports: Optional[list] = None) -> list:
     """Validate drill-through page targets exist.
 
     Args:
@@ -517,8 +517,8 @@ def validate_cross_report_navigation(actions: list, bundle_report_names: list) -
 
 def generate_thin_report_validation(report_data: dict,
                                      merged_model: dict,
-                                     bundle_reports: list = None,
-                                     bundle_report_names: list = None) -> dict:
+                                     bundle_reports: Optional[list] = None,
+                                     bundle_report_names: Optional[list] = None) -> dict:
     """Generate a full validation summary for a thin report.
 
     Args:

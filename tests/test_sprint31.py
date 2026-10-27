@@ -12,7 +12,7 @@ Covers:
 import os
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Ensure repo root is on sys.path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -65,7 +65,10 @@ class TestCustomVisualMapperPlugin(unittest.TestCase):
         self.assertEqual(plugin.custom_visual_mapping("bar"), "myBar")
 
     def test_plugin_alias(self):
-        from examples.plugins.custom_visual_mapper import Plugin, CustomVisualMapperPlugin
+        from examples.plugins.custom_visual_mapper import (
+            CustomVisualMapperPlugin,
+            Plugin,
+        )
         self.assertIs(Plugin, CustomVisualMapperPlugin)
 
     def test_plugin_name(self):
@@ -113,7 +116,7 @@ class TestDaxPostProcessorPlugin(unittest.TestCase):
         self.assertEqual(plugin.transform_dax("ALPHA()"), "BETA()")
 
     def test_plugin_alias(self):
-        from examples.plugins.dax_post_processor import Plugin, DaxPostProcessorPlugin
+        from examples.plugins.dax_post_processor import DaxPostProcessorPlugin, Plugin
         self.assertIs(Plugin, DaxPostProcessorPlugin)
 
     def test_plugin_name(self):
@@ -177,7 +180,7 @@ class TestNamingConventionPlugin(unittest.TestCase):
         self.assertIsNone(plugin.post_extraction({}))
 
     def test_plugin_alias(self):
-        from examples.plugins.naming_convention import Plugin, NamingConventionPlugin
+        from examples.plugins.naming_convention import NamingConventionPlugin, Plugin
         self.assertIs(Plugin, NamingConventionPlugin)
 
 
@@ -185,8 +188,8 @@ class TestPluginRegistration(unittest.TestCase):
     """Test plugins work with the PluginManager."""
 
     def test_register_custom_visual_mapper(self):
-        from powerbi_import.plugins import PluginManager
         from examples.plugins.custom_visual_mapper import CustomVisualMapperPlugin
+        from powerbi_import.plugins import PluginManager
 
         pm = PluginManager()
         pm.register(CustomVisualMapperPlugin())
@@ -196,8 +199,8 @@ class TestPluginRegistration(unittest.TestCase):
         self.assertEqual(result, 'clusteredBarChart')
 
     def test_dax_transform_chain(self):
-        from powerbi_import.plugins import PluginManager
         from examples.plugins.dax_post_processor import DaxPostProcessorPlugin
+        from powerbi_import.plugins import PluginManager
 
         pm = PluginManager()
         pm.register(DaxPostProcessorPlugin(wrap_iferror=True))
@@ -321,18 +324,19 @@ class TestFractionalTimeouts(unittest.TestCase):
     def test_pydantic_model_accepts_float_timeout(self):
         """When pydantic is available, FabricSettings should accept float."""
         try:
-            from pydantic_settings import BaseSettings
+            from pydantic_settings import BaseSettings  # noqa: F401
         except ImportError:
             self.skipTest("pydantic-settings not installed")
 
-        from powerbi_import.deploy.config.settings import get_settings as _gs
+        from powerbi_import.deploy.config.settings import get_settings as _gs  # noqa: F401
         # Just verify the field type declaration changed (via get_settings)
         # The actual test is that float Field is compilable — already validated
         # by importing the module without error.
 
     def test_environment_configs_valid_numbers(self):
         from powerbi_import.deploy.config.environments import (
-            EnvironmentConfig, EnvironmentType,
+            EnvironmentConfig,
+            EnvironmentType,
         )
         for env_type in EnvironmentType:
             cfg = EnvironmentConfig.get_config(env_type)

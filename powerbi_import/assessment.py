@@ -29,13 +29,13 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
 # Import security utilities for credential redaction
 try:
-    from security_validator import redact_credentials, scan_for_credentials
+    from security_validator import redact_credentials, scan_for_credentials  # noqa: F401
     _HAS_SECURITY = True
 except ImportError:
     _HAS_SECURITY = False
@@ -381,7 +381,7 @@ def _check_datasources(extracted: Dict) -> CategoryResult:
             ))
 
     # Data blending — build a structured blend graph and grade its complexity
-    from tableau_export.blend_graph import build_blend_graph, assess_blend_graph
+    from tableau_export.blend_graph import assess_blend_graph, build_blend_graph
     blend_graph = build_blend_graph(
         extracted.get("data_blending", []),
         extracted.get("datasources", []),
@@ -1284,7 +1284,6 @@ def _check_performance(extracted: Dict) -> CategoryResult:
 
     calcs = extracted.get("calculations", [])
     filters_list = extracted.get("filters", [])
-    worksheets = extracted.get("worksheets", [])
 
     # Count LOD expressions
     lod_count = 0
@@ -1416,7 +1415,6 @@ def _check_licensing(extracted: Dict) -> CategoryResult:
     cat = CategoryResult(name="Licensing")
 
     datasources = extracted.get("datasources", [])
-    calcs = extracted.get("calculations", [])
     worksheets = extracted.get("worksheets", [])
 
     # Estimate model complexity (proxy for size)
@@ -1425,7 +1423,6 @@ def _check_licensing(extracted: Dict) -> CategoryResult:
         for ds in datasources
         for tbl in ds.get("tables", [])
     )
-    total_measures = len(calcs)
 
     needs_premium = []
     if total_columns > 500:

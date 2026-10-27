@@ -2,25 +2,23 @@
 Tests for Subscription & Alert Migration (powerbi_import.subscription_generator).
 """
 
-import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.subscription_generator import (
+    detect_schedule_conflicts,
     extract_all_subscriptions,
     extract_data_alerts,
     generate_pbi_subscriptions,
     generate_power_automate_flows,
-    detect_schedule_conflicts,
     generate_subscription_report,
     save_subscriptions,
 )
-
 
 # ── Mock client ─────────────────────────────────────────────────────
 

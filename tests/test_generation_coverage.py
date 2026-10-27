@@ -11,10 +11,10 @@ Targets under-covered paths in generation modules identified in gap analysis:
 - PowerBIProjectGenerator scaffold creation
 """
 
-import os
-import sys
 import json
+import os
 import shutil
+import sys
 import tempfile
 import unittest
 
@@ -22,35 +22,39 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
-from powerbi_import.visual_generator import (
-    resolve_visual_type,
-    resolve_custom_visual_type,
-    VISUAL_TYPE_MAP,
-    VISUAL_DATA_ROLES,
-    CUSTOM_VISUAL_GUIDS,
-    APPROXIMATION_MAP,
-    generate_visual_containers,
-    create_visual_container,
-    build_query_state,
-    _get_config_template,
-)
-from powerbi_import.validator import ArtifactValidator
 from powerbi_import.migration_report import MigrationReport
 from powerbi_import.tmdl_generator import (
+    _add_date_table,
+    _build_semantic_model,
     _dax_to_m_expression,
-    _split_dax_args,
     _extract_function_body,
     _fix_m_if_else_balance,
-    _add_date_table,
+    _split_dax_args,
     generate_tmdl,
-    _build_semantic_model,
+)
+from powerbi_import.validator import ArtifactValidator
+from powerbi_import.visual_generator import (
+    APPROXIMATION_MAP,
+    CUSTOM_VISUAL_GUIDS,
+    VISUAL_DATA_ROLES,
+    VISUAL_TYPE_MAP,
+    _get_config_template,
+    build_query_state,
+    create_visual_container,
+    generate_visual_containers,
+    resolve_custom_visual_type,
+    resolve_visual_type,
 )
 from tests.factories import (
-    DatasourceFactory, WorksheetFactory, ModelFactory,
-    DashboardFactory, ParameterFactory,
-    make_simple_model, make_multi_table_model, make_complex_model,
+    DashboardFactory,
+    DatasourceFactory,
+    ModelFactory,
+    ParameterFactory,
+    WorksheetFactory,
+    make_complex_model,
+    make_multi_table_model,
+    make_simple_model,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # DAX → M Expression Converter (deeper coverage)

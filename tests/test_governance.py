@@ -14,10 +14,8 @@ Tests cover:
 10. Edge cases
 """
 
-import json
 import os
 import sys
-import tempfile
 
 import pytest
 
@@ -28,20 +26,18 @@ sys.path.insert(0, os.path.join(ROOT_DIR, 'powerbi_import'))
 sys.path.insert(0, os.path.join(ROOT_DIR, 'tableau_export'))
 
 from governance import (
-    GovernanceEngine,
-    GovernanceReport,
-    GovernanceIssue,
     AuditTrail,
-    run_governance,
-    DEFAULT_GOVERNANCE_CONFIG,
-    _is_snake_case,
+    GovernanceEngine,
+    GovernanceIssue,
+    GovernanceReport,
     _is_camel_case,
     _is_pascal_case,
-    _to_snake_case,
+    _is_snake_case,
     _to_camel_case,
     _to_pascal_case,
+    _to_snake_case,
+    run_governance,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  Helper fixtures
@@ -453,7 +449,7 @@ class TestRunGovernance:
         assert report.sensitivity_label == "Confidential"
 
     def test_run_governance_applies_classifications(self, sample_tables):
-        report = run_governance(sample_tables, config={"pii_detection": True})
+        run_governance(sample_tables, config={"pii_detection": True})
         # Classifications should be applied in warn mode too
         email_col = next(c for c in sample_tables[0]["columns"] if c["name"] == "customer_email")
         assert any(

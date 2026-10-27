@@ -17,8 +17,8 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.pbip_generator import (
-    PowerBIProjectGenerator,
     _L,
+    PowerBIProjectGenerator,
     _pbi_literal,
     _write_json,
 )
@@ -1675,7 +1675,7 @@ class TestBuildVisualQuery(unittest.TestCase):
         self.gen._bim_measure_names.add('Quantity')
         fields = [{'name': 'Revenue'}, {'name': 'Profit'}, {'name': 'Quantity'}]
         ws = {'chart_type': 'clusteredBarChart', 'fields': fields}
-        result = self.gen._build_visual_query(ws)
+        self.gen._build_visual_query(ws)
         self.assertEqual(ws.get('_override_visual_type'), 'tableEx')
 
     def test_multiple_measures_in_y_role(self):

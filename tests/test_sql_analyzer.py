@@ -5,17 +5,14 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-import pytest
 
 from sql_analyzer import (
+    SqlColumn,
     analyze_sql,
     detect_dialect,
     extract_parameters,
     to_native_query_m,
-    SqlColumn,
-    SqlAnalysis,
 )
-
 
 # ── Dialect detection ────────────────────────────────────────────────────────
 

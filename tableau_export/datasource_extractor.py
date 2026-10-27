@@ -6,44 +6,46 @@ tables, columns, calculations, and relationships.
 Re-exports DAX converter and M query builder functions for backward compatibility.
 """
 
+import copy
+import csv
+import logging
+import os
+import re
 import xml.etree.ElementTree as ET
 import zipfile
-import os
-import csv
-import re
-import logging
-import copy
 from typing import NoReturn
+
 from dax_converter import _reverse_tableau_bracket_escape
+
 try:
     from powerbi_import.errors import ExtractionError
 except ModuleNotFoundError:  # Legacy callers put powerbi_import on sys.path.
     from errors import ExtractionError
 try:
-    from .safe_xml import safe_findall, safe_findtext, safe_get_attr
     from .extract_primitives import _extract_calculation_formula
+    from .safe_xml import safe_findall, safe_findtext, safe_get_attr
 except ImportError:
-    from safe_xml import safe_findall, safe_findtext, safe_get_attr
     from extract_primitives import _extract_calculation_formula
+    from safe_xml import safe_findall, safe_findtext, safe_get_attr
 
 logger = logging.getLogger(__name__)
 
 def _detect_csv_delimiter(header_line):
     """Detects the CSV delimiter from the first line (header).
-    
+
     Uses csv.Sniffer if possible, otherwise heuristic by counting.
     Returns the detected delimiter (',' or ';' or '\t' etc.)
     """
     if not header_line:
         return ','
-    
+
     # Try csv.Sniffer first
     try:
         dialect = csv.Sniffer().sniff(header_line, delimiters=',;\t|')
         return dialect.delimiter
     except csv.Error:
         pass
-    
+
     # Heuristic: count occurrences of common delimiters
     candidates = [(',', header_line.count(',')),
                   (';', header_line.count(';')),
@@ -58,7 +60,7 @@ def _detect_csv_delimiter(header_line):
 
 def _read_csv_header_from_twbx(twbx_path, directory, filename):
     """Reads the first line of a CSV file embedded in a .twbx.
-    
+
     Returns the first line (header) or None if not found.
     """
     if not twbx_path or not os.path.exists(twbx_path):
@@ -66,13 +68,13 @@ def _read_csv_header_from_twbx(twbx_path, directory, filename):
     ext = os.path.splitext(twbx_path)[1].lower()
     if ext not in ('.twbx', '.tdsx'):
         return None
-    
+
     # Build the expected path inside the archive
     if directory:
         csv_path = directory.rstrip('/') + '/' + filename
     else:
         csv_path = filename
-    
+
     try:
         with zipfile.ZipFile(twbx_path, 'r') as z:
             # Search for the file (exact or partial match)
@@ -137,12 +139,12 @@ def _extract_col_type_map(datasource_elem):
 def extract_datasource(datasource_elem, twbx_path=None):
     """
     Extracts the full details of a Tableau datasource
-    
+
     Args:
         datasource_elem: XML element of the datasource
         twbx_path: Original workbook/datasource path (archive delimiter detection
             or loose native-file source provenance)
-    
+
     Returns:
         dict with connection, tables, columns, calculations, relationships
     """
@@ -166,10 +168,10 @@ def extract_datasource(datasource_elem, twbx_path=None):
     datasource_elem, inactive_context = _native_datasource_context(datasource_elem)
     ds_name = safe_get_attr(datasource_elem, 'name', 'Unknown')
     ds_caption = safe_get_attr(datasource_elem, 'caption', ds_name)
-    
+
     # Build the connection_name -> connection_details mapping
     connection_map = _build_connection_map(datasource_elem, twbx_path=twbx_path)
-    
+
     calcs = extract_calculations(datasource_elem)
     for c in calcs:
         c['datasource_name'] = ds_name
@@ -261,7 +263,7 @@ def extract_datasource(datasource_elem, twbx_path=None):
     # that appear in <metadata-record> elements and <cols><map> but have no
     # <column> element, so they are not extracted by Phase 2.
     _ensure_calc_referenced_columns(datasource)
-    
+
     return datasource
 
 
@@ -1832,7 +1834,6 @@ def resolve_published_datasource(datasource, server_client=None):
         # Download and extract the remote datasource
         ds_id = match.get('id', '')
         if ds_id and hasattr(server_client, 'download_datasource'):
-            import tempfile
             tmp_path = server_client.download_datasource(ds_id)
             if tmp_path and os.path.exists(tmp_path):
                 try:
@@ -1904,8 +1905,8 @@ def _parse_published_datasource_file(file_path):
 #  Sprint 167 — Published Datasource Caching & Bulk Resolution
 # ═══════════════════════════════════════════════════════════════════════
 
-import json as _json
 import hashlib as _hashlib
+import json as _json
 
 
 def _ds_cache_key(ds_name):
@@ -2135,16 +2136,16 @@ def _with_native_source_context(connection, inner_conn, source_path):
 
 def _parse_connection_class(inner_conn, named_conn=None, twbx_path=None):
     """Parses a single Tableau <connection> element into {type, details}.
-    
+
     This is the single source of truth for mapping Tableau connection XML
     attributes to the normalized {type, details} dicts used downstream.
-    
+
     Args:
         inner_conn: XML <connection> element
         named_conn: Optional XML <named-connection> parent (for caption/name)
         twbx_path: Optional original source path (archive delimiter detection
             or loose native-file source provenance)
-    
+
     Returns:
         dict: {type: str, details: dict}
     """
@@ -2331,26 +2332,26 @@ def _build_from_dispatch(inner_conn, spec):
 
 def _build_connection_map(datasource_elem, twbx_path=None):
     """Builds a connection_name -> {type, details} mapping from named-connections.
-    
+
     Each physical table in Tableau references a named-connection via its
     'connection' attribute. This function extracts the details of each named-connection
     to generate the correct M queries per table.
     """
     conn_map = {}
-    
+
     connection_elem = datasource_elem.find('.//connection[@class="federated"]')
     if connection_elem is None:
         connection_elem = datasource_elem.find('.//connection')
     if connection_elem is None:
         return conn_map
-    
+
     for named_conn in connection_elem.findall('.//named-connection'):
         nc_name = named_conn.get('name', '')
         inner_conn = named_conn.find('.//connection')
         if inner_conn is None or not nc_name:
             continue
         conn_map[nc_name] = _parse_connection_class(inner_conn, named_conn, twbx_path)
-    
+
     return conn_map
 
 
@@ -2361,7 +2362,7 @@ def extract_connection_details(datasource_elem, twbx_path=None):
         connection_elem = datasource_elem.find('.//connection')
     if connection_elem is None:
         return {'type': 'Unknown', 'details': {}}
-    
+
     named_conn = connection_elem.find('.//named-connection')
     if named_conn is not None:
         inner_conn = named_conn.find('.//connection')
@@ -2371,7 +2372,7 @@ def extract_connection_details(datasource_elem, twbx_path=None):
             return _with_native_source_context(
                 _parse_connection_class(inner_conn, named_conn),
                 inner_conn, twbx_path)
-    
+
     # Direct connection (no named-connection wrapper) — e.g. sqlproxy
     conn_class = connection_elem.get('class', '')
     if conn_class and conn_class != 'federated':
@@ -2383,13 +2384,13 @@ def extract_connection_details(datasource_elem, twbx_path=None):
 
 def extract_tables_with_columns(datasource_elem, connection_map=None):
     """Extracts only physical tables (type='table') with their columns.
-    
+
     IMPORTANT: Do NOT extract 'join' nodes which created fictitious tables
     with duplicated columns from all joined tables ('Unknown' table bug).
-    
+
     Deduplicates by table name (keeps the version with the most columns)
     and stores per-table connection details.
-    
+
     For SQL Server and similar connections where <relation> elements are
     self-closing (no nested <columns>), falls back to the datasource-level
     <cols> mapping and <column> definitions to populate table columns.
@@ -2397,22 +2398,22 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
     if connection_map is None:
         connection_map = {}
     datasource_elem, _ = _native_datasource_context(datasource_elem)
-    
+
     # Phase 1: Collect all physical tables
     raw_tables = {}  # name -> best table dict
-    
+
     for relation in datasource_elem.findall('.//relation'):
         # ONLY physical tables, NOT joins
         table_type = relation.get('type', '')
         if table_type != 'table':
             continue
-        
+
         table_name = relation.get('name', '')
         if not table_name:
             continue
-        
+
         conn_ref = relation.get('connection', '')
-        
+
         columns = []
         for col_elem in relation.findall('./columns/column'):
             raw_name = col_elem.get('name', '')
@@ -2427,12 +2428,12 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
                 'default_format': col_elem.get('default-format', ''),
             }
             columns.append(column)
-        
+
         # Deduplicate: keep the version with the most columns
         if table_name not in raw_tables or len(columns) > len(raw_tables[table_name].get('columns', [])):
             # Resolve connection details for this table
             table_connection = connection_map.get(conn_ref, {})
-            
+
             raw_tables[table_name] = {
                 'name': table_name,
                 'type': 'table',
@@ -2442,7 +2443,7 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
                 'caption': relation.get('caption', ''),
                 'source_table': relation.get('table', '').strip('[]'),
             }
-    
+
     # Phase 2: For tables with no nested columns (SQL Server, etc.),
     # populate from datasource-level <cols> mapping + <column> elements.
     tables_needing_columns = [t for t in raw_tables.values() if not t['columns']]
@@ -2461,7 +2462,7 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
                     remote = parts[1].strip('[]')
                     if tbl in raw_tables:
                         table_col_names.setdefault(tbl, []).append((key, remote))
-        
+
         # Build mapping: column_name -> column attributes from datasource-level <column> elements
         ds_columns = {}  # "[ColName]" -> {datatype, role, type, ...}
         for col_elem in datasource_elem.findall('./column'):
@@ -2491,7 +2492,7 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
                 'nullable': True,
                 'default_format': col_elem.get('default-format', ''),
             }
-        
+
         # Build metadata-record type lookup for columns missing from
         # datasource-level <column> elements (e.g. Salesforce Probability).
         metadata_type_map = {}  # "[ColName]" -> local-type
@@ -2529,7 +2530,7 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
                     }
                     ordinal += 1
                     table['columns'].append(col)
-    
+
     # Phase 2.5: Override column roles from datasource-level <column> elements.
     # Users may override Tableau's default role (e.g. set an integer column
     # like "Row ID" to dimension). These overrides are stored at the
@@ -2549,6 +2550,7 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
 
     # Phase 3: Merge missing metadata-record columns into physical tables.
     # Unmatched parent aliases are safe only when the datasource has one table.
+    column_declarations = {}
     if raw_tables:
         column_declarations = {
             _reverse_tableau_bracket_escape(col_elem.get('name', '').strip('[]')): col_elem
@@ -2712,7 +2714,7 @@ def extract_table_extensions(datasource_elem):
 def extract_column_metadata(datasource_elem):
     """Extracts complete column metadata"""
     columns = []
-    
+
     for col_elem in datasource_elem.findall('.//column'):
         column = {
             'name': col_elem.get('name', ''),
@@ -2727,7 +2729,7 @@ def extract_column_metadata(datasource_elem):
             'description': col_elem.get('desc', ''),
             'calculation': None
         }
-        
+
         # Check if it is a calculation
         calc_elem = col_elem.find('.//calculation')
         if calc_elem is not None:
@@ -2736,20 +2738,20 @@ def extract_column_metadata(datasource_elem):
                 'formula': _extract_calculation_formula(
                     calc_elem, col_elem.get('name', ''))
             }
-        
+
         columns.append(column)
-    
+
     return columns
 
 
 def extract_calculations(datasource_elem):
     """Extracts Tableau calculations with formulas.
-    
+
     Also extracts <table-calc> elements for COMPUTE USING (addressing)
     so that DAX generation can use proper filter context.
     """
     calculations = []
-    
+
     for col_elem in datasource_elem.findall('.//column'):
         calc_elem = col_elem.find('.//calculation')
         if calc_elem is not None:
@@ -2773,7 +2775,7 @@ def extract_calculations(datasource_elem):
                 'type': col_elem.get('type', 'quantitative'),
                 'description': col_elem.get('desc', '')
             }
-            
+
             # Extract table-calc addressing (COMPUTE USING dimensions)
             table_calc = calc_elem.find('.//table-calc')
             if table_calc is not None:
@@ -2784,22 +2786,22 @@ def extract_calculations(datasource_elem):
                         # Clean [datasource].[field] format
                         match = re.search(r'\[([^\]]+)\]$', field_name)
                         addressing_fields.append(match.group(1) if match else field_name)
-                
+
                 partition_fields = []
                 for part in table_calc.findall('.//partitioning-field'):
                     field_name = part.get('name', part.text or '')
                     if field_name:
                         match = re.search(r'\[([^\]]+)\]$', field_name)
                         partition_fields.append(match.group(1) if match else field_name)
-                
+
                 if addressing_fields or partition_fields:
                     calculation['table_calc_addressing'] = addressing_fields
                     calculation['table_calc_partitioning'] = partition_fields
                     calculation['table_calc_type'] = table_calc.get('type', '')
                     calculation['table_calc_ordering'] = table_calc.get('ordering-type', '')
-            
+
             calculations.append(calculation)
-    
+
     return calculations
 
 
@@ -2859,7 +2861,8 @@ def extract_relation_metadata(datasource_elem):
     # endpoints, not the alternative materialized extract context. Object ids
     # remain endpoint identities, never additional physical table aliases.
     datasource_elem, extract_context = _native_datasource_context(datasource_elem, force=True)
-    if extract_context['extract_xml'] or extract_context['object_extract_contexts_xml']:
+    if extract_context is not None and (
+            extract_context['extract_xml'] or extract_context['object_extract_contexts_xml']):
         result['extract_context_provenance'] = extract_context
 
     # Local aliases and connector column names are separate identities.
@@ -3086,28 +3089,27 @@ def extract_relationships(datasource_elem, relation_metadata=None):
 # These functions were extracted for maintainability but are re-exported here
 # so that ALL existing imports remain valid (backward compatibility).
 
-from dax_converter import (              # noqa: E402
+from dax_converter import (  # noqa: E402,F401
     convert_tableau_formula_to_dax,
     map_tableau_to_powerbi_type,
     sanitize_param_brackets,
 )
-
-from m_query_builder import (            # noqa: E402
+from m_query_builder import (  # noqa: E402,F401
     generate_power_query_m,
-    map_tableau_to_m_type,
     inject_m_steps,
-    m_transform_rename,
-    m_transform_remove_columns,
-    m_transform_select_columns,
-    m_transform_filter_values,
-    m_transform_filter_nulls,
+    m_transform_add_column,
     m_transform_aggregate,
+    m_transform_conditional_column,
+    m_transform_filter_nulls,
+    m_transform_filter_values,
+    m_transform_join,
+    m_transform_pivot,
+    m_transform_remove_columns,
+    m_transform_rename,
+    m_transform_select_columns,
+    m_transform_sort,
+    m_transform_union,
     m_transform_unpivot,
     m_transform_unpivot_other,
-    m_transform_pivot,
-    m_transform_join,
-    m_transform_union,
-    m_transform_sort,
-    m_transform_add_column,
-    m_transform_conditional_column,
+    map_tableau_to_m_type,
 )

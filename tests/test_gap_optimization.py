@@ -10,8 +10,10 @@ Covers:
 - Nested LOD regression guard
 """
 
+import os
+import sys
 import unittest
-import sys, os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from tableau_export.dax_converter import convert_tableau_formula_to_dax

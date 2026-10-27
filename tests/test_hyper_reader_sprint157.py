@@ -1,14 +1,15 @@
 """Tests for Sprint 157 — Hyper reader extensions."""
 
 import os
-import unittest
 import tempfile
-from unittest.mock import patch, MagicMock
+import unittest
+from unittest.mock import MagicMock, patch
+
 from tableau_export.hyper_reader import (
     detect_tde_format,
     discover_multi_table_hyper,
-    read_hyper_streaming,
     extract_hyper_filters,
+    read_hyper_streaming,
 )
 
 

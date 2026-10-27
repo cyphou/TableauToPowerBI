@@ -726,7 +726,6 @@ def _gen_m_salesforce(details, table_name, columns):
     safe = '#"' + table_name + ' Table"'
     soql = details.get('soql', '')
     api_version = details.get('api_version', '')
-    include_relationships = details.get('include_relationships', False)
 
     m_query = 'let\n'
     m_query += '    // Source Salesforce\n'
@@ -826,7 +825,7 @@ def _gen_m_google_analytics(details, table_name, columns):
     m_query = 'let\n'
     m_query += f'    // Source Google Analytics: View {view_id}\n'
     m_query += '    // Note: Requires Google Analytics connector in Power BI Desktop\n'
-    m_query += f'    Source = GoogleAnalytics.Accounts(),\n'
+    m_query += '    Source = GoogleAnalytics.Accounts(),\n'
     m_query += f'    ViewData = Source{{[Name="{view_id}"]}}[Data],\n'
     m_query += '    #"Promoted Headers" = ViewData,\n'
     return _append_type_step(m_query, columns)
@@ -912,7 +911,7 @@ def _gen_m_fabric_lakehouse(details, table_name, columns):
     safe = '#"' + table_name + ' Table"'
 
     m_query = 'let\n'
-    m_query += f'    // Source Microsoft Fabric Lakehouse\n'
+    m_query += '    // Source Microsoft Fabric Lakehouse\n'
     m_query += f'    Source = Lakehouse.Contents(null, "{workspace_id}", "{lakehouse_id}"),\n'
     m_query += f'    {safe} = Source{{[Id="{table_name}"]}}[Data],\n'
     m_query += f'    Result = {safe}\nin\n    Result'
@@ -942,7 +941,8 @@ def _gen_m_hyper(details, table_name, columns):
     """
     try:
         import os as _os
-        from hyper_reader import read_hyper, generate_m_for_hyper_table
+
+        from hyper_reader import generate_m_for_hyper_table, read_hyper
         filename = details.get('filename') or details.get('dbname', '')
         hyper_rows = details.get('hyper_max_rows', 20)
         if filename and _os.path.isfile(filename):
@@ -1052,7 +1052,6 @@ def _gen_m_cosmosdb(details, table_name, columns):
 def _gen_m_athena(details, table_name, columns):
     """Amazon Athena via ODBC."""
     region = _odbc_escape(details.get('region', details.get('server', 'us-east-1')))
-    s3_output = details.get('s3_output', 's3://my-bucket/athena-output/')
     catalog = _m_escape_string(details.get('catalog', details.get('database', 'AwsDataCatalog')))
     custom_sql = details.get('custom_sql', '')
     safe_table = _m_escape_string(table_name)
@@ -1093,7 +1092,7 @@ def _gen_m_servicenow(details, table_name, columns):
     m_query += f'    // Source ServiceNow OData: {instance}\n'
     m_query += f'    Source = OData.Feed("{instance}/api/now/table/{table}", null, '
     m_query += '[Implementation="2.0"]),\n'
-    m_query += f'    Result = Source\nin\n    Result'
+    m_query += '    Result = Source\nin\n    Result'
     return m_query
 
 
@@ -1121,7 +1120,7 @@ def _gen_m_denodo(details, table_name, columns):
     safe_table = _m_escape_string(table_name)
     m_query = 'let\n'
     m_query += f'    // Source Denodo: {server}:{port}\n'
-    m_query += f'    Source = Odbc.DataSource("DRIVER={{DenodoODBC Unicode(x64)}};'
+    m_query += '    Source = Odbc.DataSource("DRIVER={DenodoODBC Unicode(x64)};'
     m_query += f'SERVER={server};PORT={port};DATABASE={database}"),\n'
     m_query += f'    #"{safe_table} Table" = Source{{[Name="{safe_table}"]}}[Data],\n'
     m_query += f'    Result = #"{safe_table} Table"\nin\n    Result'
@@ -1135,7 +1134,7 @@ def _gen_m_essbase(details, table_name, columns):
     cube = _m_escape_string(details.get('cube', table_name))
     m_query = 'let\n'
     m_query += f'    // Source Oracle Essbase: {server} (requires XMLA provider + gateway)\n'
-    m_query += f'    // NOTE: Essbase requires On-Premises Data Gateway with XMLA/ODBC provider\n'
+    m_query += '    // NOTE: Essbase requires On-Premises Data Gateway with XMLA/ODBC provider\n'
     m_query += f'    Source = Odbc.DataSource("DRIVER={{Essbase}};SERVER={server};'
     m_query += f'APPLICATION={application}"),\n'
     m_query += f'    #"{cube} Cube" = Source{{[Name="{cube}"]}}[Data],\n'
@@ -1147,17 +1146,17 @@ def _gen_m_splunk(details, table_name, columns):
     """Splunk via REST API (Web.Contents)."""
     server = _m_escape_string(details.get('server', 'localhost'))
     port = details.get('port', '8089')
-    search_query = _m_escape_string(details.get('custom_sql', f'search index=main | table *'))
+    search_query = _m_escape_string(details.get('custom_sql', 'search index=main | table *'))
     m_query = 'let\n'
     m_query += f'    // Source Splunk: {server}:{port}\n'
-    m_query += f'    // NOTE: Requires Splunk credentials in data source settings\n'
+    m_query += '    // NOTE: Requires Splunk credentials in data source settings\n'
     m_query += f'    Source = Json.Document(Web.Contents("https://{server}:{port}'
-    m_query += f'/services/search/jobs/export", [\n'
+    m_query += '/services/search/jobs/export", [\n'
     m_query += f'        Content=Text.ToBinary("search={search_query}&output_mode=json"),\n'
-    m_query += f'        Headers=[#"Content-Type"="application/x-www-form-urlencoded"]\n'
-    m_query += f'    ])),\n'
-    m_query += f'    #"Converted" = Table.FromRecords(Source[results]),\n'
-    m_query += f'    Result = #"Converted"\nin\n    Result'
+    m_query += '        Headers=[#"Content-Type"="application/x-www-form-urlencoded"]\n'
+    m_query += '    ])),\n'
+    m_query += '    #"Converted" = Table.FromRecords(Source[results]),\n'
+    m_query += '    Result = #"Converted"\nin\n    Result'
     return m_query
 
 
@@ -1173,16 +1172,16 @@ def _gen_m_sap_hana_depth(details, table_name, columns):
         m_query = 'let\n'
         m_query += f'    // Source SAP HANA (Custom SQL): {server}:{port}\n'
         m_query += f'    Source = SapHana.Database("{server}:{port}", '
-        m_query += f'[Implementation="2.0"]),\n'
-        m_query += f'    #"Query" = Value.NativeQuery(Source, '
+        m_query += '[Implementation="2.0"]),\n'
+        m_query += '    #"Query" = Value.NativeQuery(Source, '
         m_query += f'"{_m_escape_string(custom_sql)}", null, '
-        m_query += f'[EnableFolding=true]),\n'
-        m_query += f'    Result = #"Query"\nin\n    Result'
+        m_query += '[EnableFolding=true]),\n'
+        m_query += '    Result = #"Query"\nin\n    Result'
     else:
         m_query = 'let\n'
         m_query += f'    // Source SAP HANA: {server}:{port}/{schema}\n'
         m_query += f'    Source = SapHana.Database("{server}:{port}", '
-        m_query += f'[Implementation="2.0"]),\n'
+        m_query += '[Implementation="2.0"]),\n'
         m_query += f'    #"{schema}" = Source{{[Schema="{schema}"]}}[Data],\n'
         m_query += f'    #"{safe_table} Table" = #"{schema}"{{[Name="{safe_table}"]}}[Data],\n'
         m_query += f'    Result = #"{safe_table} Table"\nin\n    Result'
@@ -1217,14 +1216,14 @@ def _gen_m_dremio(details, table_name, columns):
     if custom_sql:
         m_query = 'let\n'
         m_query += f'    // Source Dremio (Custom SQL): {server}:{port}\n'
-        m_query += f'    Source = Odbc.Query("DRIVER={{Dremio Connector}};'
+        m_query += '    Source = Odbc.Query("DRIVER={Dremio Connector};'
         m_query += f'HOST={server};PORT={port}",\n'
         m_query += f'        "{_m_escape_string(custom_sql)}")\n'
         m_query += 'in\n    Source'
     else:
         m_query = 'let\n'
         m_query += f'    // Source Dremio: {server}:{port}/{schema}\n'
-        m_query += f'    Source = Odbc.DataSource("DRIVER={{Dremio Connector}};'
+        m_query += '    Source = Odbc.DataSource("DRIVER={Dremio Connector};'
         m_query += f'HOST={server};PORT={port}"),\n'
         m_query += f'    #"{schema}" = Source{{[Name="{schema}"]}}[Data],\n'
         m_query += f'    #"{safe_table} Table" = #"{schema}"{{[Name="{safe_table}"]}}[Data],\n'
@@ -1242,14 +1241,14 @@ def _gen_m_clickhouse(details, table_name, columns):
     if custom_sql:
         m_query = 'let\n'
         m_query += f'    // Source ClickHouse (Custom SQL): {server}:{port}\n'
-        m_query += f'    Source = Odbc.Query("DRIVER={{ClickHouse ODBC Driver (Unicode)}};'
+        m_query += '    Source = Odbc.Query("DRIVER={ClickHouse ODBC Driver (Unicode)};'
         m_query += f'SERVER={server};PORT={port};DATABASE={database}",\n'
         m_query += f'        "{_m_escape_string(custom_sql)}")\n'
         m_query += 'in\n    Source'
     else:
         m_query = 'let\n'
         m_query += f'    // Source ClickHouse: {server}:{port}/{database}\n'
-        m_query += f'    Source = Odbc.DataSource("DRIVER={{ClickHouse ODBC Driver (Unicode)}};'
+        m_query += '    Source = Odbc.DataSource("DRIVER={ClickHouse ODBC Driver (Unicode)};'
         m_query += f'SERVER={server};PORT={port};DATABASE={database}"),\n'
         m_query += f'    #"{safe_table} Table" = Source{{[Name="{safe_table}"]}}[Data],\n'
         m_query += f'    Result = #"{safe_table} Table"\nin\n    Result'
@@ -1275,14 +1274,14 @@ def _gen_m_firebolt(details, table_name, columns):
     if custom_sql:
         m_query = 'let\n'
         m_query += f'    // Source Firebolt (Custom SQL): {engine}\n'
-        m_query += f'    Source = Odbc.Query("DRIVER={{Firebolt ODBC}};'
+        m_query += '    Source = Odbc.Query("DRIVER={Firebolt ODBC};'
         m_query += f'ENGINE={engine};DATABASE={database}",\n'
         m_query += f'        "{_m_escape_string(custom_sql)}")\n'
         m_query += 'in\n    Source'
     else:
         m_query = 'let\n'
         m_query += f'    // Source Firebolt: {engine}/{database}\n'
-        m_query += f'    Source = Odbc.DataSource("DRIVER={{Firebolt ODBC}};'
+        m_query += '    Source = Odbc.DataSource("DRIVER={Firebolt ODBC};'
         m_query += f'ENGINE={engine};DATABASE={database}"),\n'
         m_query += f'    #"{safe_table} Table" = Source{{[Name="{safe_table}"]}}[Data],\n'
         m_query += f'    Result = #"{safe_table} Table"\nin\n    Result'
@@ -1300,14 +1299,14 @@ def _gen_m_starburst(details, table_name, columns):
     if custom_sql:
         m_query = 'let\n'
         m_query += f'    // Source Starburst (Custom SQL): {server}:{port}\n'
-        m_query += f'    Source = Odbc.Query("DRIVER={{Starburst ODBC Driver}};'
+        m_query += '    Source = Odbc.Query("DRIVER={Starburst ODBC Driver};'
         m_query += f'HOST={server};PORT={port};SSL=1",\n'
         m_query += f'        "{_m_escape_string(custom_sql)}")\n'
         m_query += 'in\n    Source'
     else:
         m_query = 'let\n'
         m_query += f'    // Source Starburst: {server}:{port}/{catalog}/{schema}\n'
-        m_query += f'    Source = Odbc.DataSource("DRIVER={{Starburst ODBC Driver}};'
+        m_query += '    Source = Odbc.DataSource("DRIVER={Starburst ODBC Driver};'
         m_query += f'HOST={server};PORT={port};SSL=1"),\n'
         m_query += f'    #"{catalog}" = Source{{[Name="{catalog}"]}}[Data],\n'
         m_query += f'    #"{schema}" = #"{catalog}"{{[Name="{schema}"]}}[Data],\n'
@@ -1329,7 +1328,7 @@ def _gen_m_db2_depth(details, table_name, columns):
         m_query += f'    // Source IBM Db2 (Custom SQL): {server}:{port}/{database}\n'
         m_query += f'    Source = DB2.Database("{server}:{port}", "{database}", '
         m_query += f'[Query="{_m_escape_string(custom_sql)}"]),\n'
-        m_query += f'    Result = Source\nin\n    Result'
+        m_query += '    Result = Source\nin\n    Result'
     else:
         m_query = 'let\n'
         m_query += f'    // Source IBM Db2: {server}:{port}/{database}/{schema}\n'
@@ -1351,7 +1350,7 @@ def _gen_m_teradata_depth(details, table_name, columns):
         m_query += f'    // Source Teradata (Custom SQL): {server}\n'
         m_query += f'    Source = Teradata.Database("{server}", '
         m_query += f'[Query="{_m_escape_string(custom_sql)}"]),\n'
-        m_query += f'    Result = Source\nin\n    Result'
+        m_query += '    Result = Source\nin\n    Result'
     else:
         m_query = 'let\n'
         m_query += f'    // Source Teradata: {server}/{database}\n'
@@ -1374,7 +1373,7 @@ def _gen_m_synapse_depth(details, table_name, columns):
         m_query += f'    // Source Azure Synapse (Custom SQL): {server}/{database}\n'
         m_query += f'    Source = Sql.Database("{server}", "{database}", '
         m_query += f'[Query="{_m_escape_string(custom_sql)}"]),\n'
-        m_query += f'    Result = Source\nin\n    Result'
+        m_query += '    Result = Source\nin\n    Result'
     else:
         m_query = 'let\n'
         m_query += f'    // Source Azure Synapse: {server}/{database}/{schema}\n'
@@ -1544,6 +1543,7 @@ def generate_power_query_m(connection, table, *, use_original_file_paths=False):
 # ── Connection String Templating ─────────────────────────────────────────────
 
 import re as _re
+
 
 def apply_connection_template(m_query, env_vars=None):
     """Replace ${ENV.NAME} placeholders in M queries with environment variable values.
@@ -2489,13 +2489,13 @@ def generate_blend_merge_query(primary_query_name, secondary_query_name,
             f'in\n'
             f'    Combined'
         )
-    
+
     primary_keys = [lc.get('primary', lc.get('column', '')) for lc in link_columns]
     secondary_keys = [lc.get('secondary', lc.get('column', '')) for lc in link_columns]
-    
+
     pk_list = ', '.join(f'"{k}"' for k in primary_keys)
     sk_list = ', '.join(f'"{k}"' for k in secondary_keys)
-    
+
     kind_map = {
         'left': 'JoinKind.LeftOuter',
         'inner': 'JoinKind.Inner',
@@ -2504,7 +2504,7 @@ def generate_blend_merge_query(primary_query_name, secondary_query_name,
         'leftanti': 'JoinKind.LeftAnti',
     }
     m_join_kind = kind_map.get(join_kind, 'JoinKind.LeftOuter')
-    
+
     return (
         f'let\n'
         f'    Primary = {primary_query_name},\n'

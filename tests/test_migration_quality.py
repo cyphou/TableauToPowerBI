@@ -1,14 +1,14 @@
 """Tests for the unified deterministic migration quality report."""
 
-import json
 import html
+import json
 import os
-from pathlib import Path
 import shutil
 import sys
 import tempfile
 import unittest
 from html.parser import HTMLParser
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote, unquote, urlsplit
 

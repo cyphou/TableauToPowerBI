@@ -8,8 +8,11 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from scripts.validate_skills import (  # noqa: E402
-    validate_skills, validate_skill, _split_frontmatter,
-    _frontmatter_field, _known_cli_flags,
+    _frontmatter_field,
+    _known_cli_flags,
+    _split_frontmatter,
+    validate_skill,
+    validate_skills,
 )
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

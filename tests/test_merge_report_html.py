@@ -1,6 +1,5 @@
 """Tests for powerbi_import/merge_report_html.py — HTML merge report generator."""
 
-import json
 import os
 import sys
 import tempfile
@@ -9,11 +8,11 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from powerbi_import.shared_model import (
-    MergeAssessment, MergeCandidate, MeasureConflict, TableFingerprint,
-    assess_merge, merge_semantic_models,
-)
 from powerbi_import.merge_report_html import generate_merge_html_report
+from powerbi_import.shared_model import (
+    assess_merge,
+    merge_semantic_models,
+)
 
 
 def _make_datasource(name, conn_type, server, database, tables, calcs=None, rels=None):

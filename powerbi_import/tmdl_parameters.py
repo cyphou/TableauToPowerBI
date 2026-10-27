@@ -71,8 +71,6 @@ def _create_parameter_tables(model, parameters, main_table_name):
             # Dynamic parameter — database-query-driven (Tableau 2024.3+)
             # Generate M table using Value.NativeQuery() for database refresh
             query_sql = param.get('query', '')
-            conn_class = param.get('query_connection', '')
-            dbname = param.get('query_dbname', '')
 
             # Build M expression referencing native query
             if query_sql:

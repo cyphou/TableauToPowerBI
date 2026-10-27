@@ -11,14 +11,12 @@ Tests cover:
 - pbip_generator: _detect_script_visual()
 - prep_flow_parser: hyper input node processing
 """
-import json
 import os
 import sqlite3
-import struct
+import sys
 import tempfile
 import unittest
 import zipfile
-import sys
 
 # Add module paths
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
@@ -195,7 +193,7 @@ class TestGenerateMForHyperTable(unittest.TestCase):
     """Test generate_m_for_hyper_table() auto-dispatch logic."""
 
     def setUp(self):
-        from hyper_reader import generate_m_for_hyper_table, INLINE_ROW_THRESHOLD
+        from hyper_reader import INLINE_ROW_THRESHOLD, generate_m_for_hyper_table
         self._gen = generate_m_for_hyper_table
         self._threshold = INLINE_ROW_THRESHOLD
 
@@ -663,7 +661,7 @@ class TestAssessmentScriptSeverity(unittest.TestCase):
     """Test that SCRIPT_* functions produce WARN, not FAIL."""
 
     def test_script_only_is_warn(self):
-        from assessment import _check_calculations, WARN, PASS
+        from assessment import PASS, WARN, _check_calculations  # noqa: F401
         ext = {'calculations': [
             {'name': 'Py', 'caption': 'Py', 'formula': 'SCRIPT_REAL("return 1", [X])'},
         ]}
@@ -682,7 +680,7 @@ class TestAssessmentScriptSeverity(unittest.TestCase):
         self.assertIn('runtime', script_checks[0].recommendation.lower())
 
     def test_collect_still_fail(self):
-        from assessment import _check_calculations, FAIL
+        from assessment import FAIL, _check_calculations
         ext = {'calculations': [
             {'name': 'Geo', 'caption': 'Geo', 'formula': 'COLLECT([Geom])'},
         ]}
@@ -690,7 +688,7 @@ class TestAssessmentScriptSeverity(unittest.TestCase):
         self.assertEqual(cat.worst_severity, FAIL)
 
     def test_no_script_is_pass(self):
-        from assessment import _check_calculations, PASS
+        from assessment import PASS, _check_calculations
         ext = {'calculations': [
             {'name': 'Sum', 'caption': 'Sum', 'formula': 'SUM([Sales])'},
         ]}
@@ -699,7 +697,7 @@ class TestAssessmentScriptSeverity(unittest.TestCase):
         self.assertTrue(all(c.severity == PASS for c in script_checks))
 
     def test_all_four_script_types(self):
-        from assessment import _check_calculations, WARN
+        from assessment import WARN, _check_calculations
         ext = {'calculations': [
             {'name': 'B', 'caption': 'B', 'formula': 'SCRIPT_BOOL("1", [X])'},
             {'name': 'I', 'caption': 'I', 'formula': 'SCRIPT_INT("1", [X])'},

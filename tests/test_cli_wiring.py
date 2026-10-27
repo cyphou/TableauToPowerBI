@@ -62,8 +62,9 @@ class TestMigrationProgress(unittest.TestCase):
         self.assertEqual(calls[1][2], 'complete')
 
     def test_elapsed_tracked(self):
-        from powerbi_import.progress import MigrationProgress
         import time
+
+        from powerbi_import.progress import MigrationProgress
         p = MigrationProgress(total_steps=1, show_bar=False)
         p.start("Step")
         time.sleep(0.01)

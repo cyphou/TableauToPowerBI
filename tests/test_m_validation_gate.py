@@ -8,8 +8,8 @@ non-blocking (always returns; never raises; never aborts generation).
 import unittest
 from unittest.mock import MagicMock
 
-from powerbi_import.tmdl_generator import _validate_m_partitions
 from powerbi_import.recovery_report import RecoveryReport
+from powerbi_import.tmdl_generator import _validate_m_partitions
 
 
 def _model(*partitions):
@@ -76,9 +76,6 @@ class TestMValidationGate(unittest.TestCase):
 
     def test_validator_exception_logged_not_raised(self):
         # Patch the validator to raise — gate must still return
-        import powerbi_import.tmdl_generator as tg
-
-        original = tg._validate_m_partitions
         # Build a fake model and inject a broken validator path by
         # monkey-patching the import inside the function via sys.modules.
         import sys

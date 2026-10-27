@@ -24,7 +24,6 @@ Usage::
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import os
 from typing import Dict, List, Optional
@@ -38,16 +37,32 @@ except ImportError:
 
 try:
     from powerbi_import.html_template import (
-        get_report_css, get_report_js, esc as _esc,
-        PBI_BLUE, PBI_DARK, PBI_GRAY, PBI_LIGHT_GRAY, PBI_BG,
-        SUCCESS, FAIL, badge as _shared_badge, fidelity_bar,
+        FAIL,
+        PBI_BLUE,
+        SUCCESS,
+        get_report_css,
+        get_report_js,
+    )
+    from powerbi_import.html_template import (
+        badge as _shared_badge,
+    )
+    from powerbi_import.html_template import (
+        esc as _esc,
     )
     WARN = "#797600"
 except ImportError:
     from html_template import (
-        get_report_css, get_report_js, esc as _esc,
-        PBI_BLUE, PBI_DARK, PBI_GRAY, PBI_LIGHT_GRAY, PBI_BG,
-        SUCCESS, FAIL, badge as _shared_badge, fidelity_bar,
+        FAIL,
+        PBI_BLUE,
+        SUCCESS,
+        get_report_css,
+        get_report_js,
+    )
+    from html_template import (
+        badge as _shared_badge,
+    )
+    from html_template import (
+        esc as _esc,
     )
     WARN = "#797600"
 
@@ -295,7 +310,7 @@ def _build_lineage_section(merged: dict, workbook_names: List[str]) -> str:
     html += '<div style="display:flex;flex-direction:column;gap:8px;">'
     for wb_name in workbook_names:
         count = wb_artifact_count.get(wb_name, 0)
-        html += f'<div class="flow-box" style="background:#e8f0fe;color:#1a73e8;min-width:160px;">'
+        html += '<div class="flow-box" style="background:#e8f0fe;color:#1a73e8;min-width:160px;">'
         html += f'{_esc(wb_name)}<br/><small>{count} artifacts</small></div>'
     html += '</div>'
 
@@ -320,7 +335,7 @@ def _build_lineage_section(merged: dict, workbook_names: List[str]) -> str:
     html += '<div style="display:flex;flex-direction:column;gap:8px;">'
     for rtype, actions in sorted(type_counts.items()):
         total = sum(actions.values())
-        html += f'<div class="flow-box" style="background:#d4edda;color:#155724;min-width:140px;">'
+        html += '<div class="flow-box" style="background:#d4edda;color:#155724;min-width:140px;">'
         html += f'{_esc(rtype)}<br/><small>{total} items</small></div>'
     html += '</div>'
 
@@ -491,7 +506,7 @@ def generate_merge_html_report(
     # ══════════════════════════════════════════════════════════════
     # 2. TABLEAU SOURCE INVENTORY
     # ══════════════════════════════════════════════════════════════
-    html += f"""
+    html += """
 <div class="section-header" onclick="toggleSection(this)">
 <span class="section-icon">&#128214;</span> Tableau Source Inventory <span class="toggle-arrow">&#9660;</span></div>
 <div class="section-body">
@@ -579,7 +594,7 @@ def generate_merge_html_report(
     # ══════════════════════════════════════════════════════════════
     # 4. MERGE DETAILS — TABLE MATCHING
     # ══════════════════════════════════════════════════════════════
-    html += f"""
+    html += """
 <div class="section-header" onclick="toggleSection(this)">
 <span class="section-icon">&#128269;</span> Merge Details — Table Matching <span class="toggle-arrow">&#9660;</span></div>
 <div class="section-body">
@@ -633,7 +648,7 @@ def generate_merge_html_report(
     # ══════════════════════════════════════════════════════════════
     # 5. MEASURE MAPPING
     # ══════════════════════════════════════════════════════════════
-    html += f"""
+    html += """
 <div class="section-header" onclick="toggleSection(this)">
 <span class="section-icon">&#128202;</span> Measure Mapping — Tableau to Power BI <span class="toggle-arrow">&#9660;</span></div>
 <div class="section-body">
@@ -681,7 +696,7 @@ def generate_merge_html_report(
         safe = _safe_id(wb_name)
         measures = all_source_measures.get(wb_name, [])
         html += f'<div class="tab-content" id="meas-{safe}"><div class="card">'
-        html += f'<table class="detail-table"><tr><th>Tableau Measure</th><th>Tableau Formula</th><th>&#10132; Power BI</th></tr>'
+        html += '<table class="detail-table"><tr><th>Tableau Measure</th><th>Tableau Formula</th><th>&#10132; Power BI</th></tr>'
         for caption, formula in measures:
             # Find what it became in merged model
             pbi_name = caption
@@ -726,7 +741,7 @@ def generate_merge_html_report(
     # ══════════════════════════════════════════════════════════════
     # 6. RELATIONSHIP MAPPING
     # ══════════════════════════════════════════════════════════════
-    html += f"""
+    html += """
 <div class="section-header" onclick="toggleSection(this)">
 <span class="section-icon">&#128279;</span> Relationship Mapping <span class="toggle-arrow">&#9660;</span></div>
 <div class="section-body">
@@ -810,8 +825,8 @@ Conflicts: <strong>{len(assessment.parameter_conflicts)}</strong></p>
         # Import validation helpers
         try:
             from powerbi_import.shared_model import (
-                validate_rls_propagation,
                 validate_rls_principals,
+                validate_rls_propagation,
             )
             propagation = {r['role']: r for r in validate_rls_propagation(merged)}
             principals = {r['role']: r for r in validate_rls_principals(merged)}

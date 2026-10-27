@@ -10,8 +10,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 from powerbi_import.autoheal import (  # noqa: E402
-    AutoHealer, StaticValidatorSource, LogFileSource, PbiDesktopSource,
-    ErrorRecord, AutoHealReport, heal_dax_expression, _measure_name, _strip_fences,
+    AutoHealer,
+    LogFileSource,
+    PbiDesktopSource,
+    StaticValidatorSource,
+    _measure_name,
+    _strip_fences,
+    heal_dax_expression,
 )
 
 

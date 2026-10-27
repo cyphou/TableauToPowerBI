@@ -18,7 +18,6 @@ from powerbi_import.tmdl_m_conversion import (
     _inject_m_steps_into_partition,
 )
 
-
 # ════════════════════════════════════════════════════════════════════
 #  TABLEAU DERIVATION PREFIX CLEANING
 #  Secondary defense against Tableau internal field names leaking

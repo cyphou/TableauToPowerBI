@@ -6,10 +6,10 @@ import tempfile
 import unittest
 
 from powerbi_import.openability import (
+    CheckResult,
+    OpenabilityReport,
     check_openability,
     extract_m_partitions,
-    OpenabilityReport,
-    CheckResult,
 )
 from powerbi_import.schema_validator import EXPECTED_SCHEMAS
 
@@ -20,8 +20,8 @@ def _tmdl_with_m(m_lines):
     body.append("\tpartition 'Sales-guid' = m")
     body.append("\t\tmode: import")
     body.append("\t\tsource =")
-    for l in m_lines:
-        body.append(f"\t\t\t\t{l}")
+    for m_line in m_lines:
+        body.append(f"\t\t\t\t{m_line}")
     body.append("")
     return "\n".join(body)
 

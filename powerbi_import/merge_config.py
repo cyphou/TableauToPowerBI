@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ _CONFIG_VERSION = "1.0"
 
 def save_merge_config(assessment, workbook_names: List[str],
                       output_path: str,
-                      merged: dict = None) -> str:
+                      merged: Optional[dict] = None) -> str:
     """Export merge decisions to a JSON config file.
 
     Args:
@@ -102,9 +102,7 @@ def save_merge_config(assessment, workbook_names: List[str],
     # RLS role decisions
     config["rls_rules"] = []
     if merged:
-        from powerbi_import.shared_model import consolidate_rls_roles
         try:
-            all_ext = [merged]  # placeholder — caller may supply real list
             # If assessment carries rls_consolidations, use those
             rls_cons = getattr(assessment, 'rls_consolidations', None)
             if rls_cons is None:

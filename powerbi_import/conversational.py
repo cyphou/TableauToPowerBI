@@ -15,8 +15,8 @@ Public API:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Dict, List
 
 _FAIL = {"fail", "error"}
 _WARN = {"warn", "warning"}

@@ -25,9 +25,10 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
+import warnings
+
 from extract_tableau_data import TableauExtractor
 from import_to_powerbi import PowerBIImporter
-import warnings
 
 SAMPLES_DIR = os.path.join(ROOT, 'examples', 'tableau_samples')
 
@@ -161,10 +162,6 @@ def _assert_tmdl_syntax(test_case, project_dir, report_name):
                 content.strip().startswith('table'),
                 f"{rel} doesn't start with 'table'"
             )
-
-        # No unclosed quotes or brackets (simple check)
-        single_quotes = content.count("'")
-        # Escaped quotes '' count as 2 each, which is fine
 
 
 def _assert_no_tableau_leakage(test_case, project_dir, report_name):

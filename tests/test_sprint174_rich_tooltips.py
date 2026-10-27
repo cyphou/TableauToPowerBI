@@ -11,14 +11,14 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.visual_generator import (
+    TOOLTIP_MAX_HEIGHT,
+    TOOLTIP_MIN_HEIGHT,
+    TOOLTIP_PAGE_HEIGHT,
+    TOOLTIP_PAGE_WIDTH,
     build_rich_tooltip_config,
     build_tooltip_data_roles,
     build_tooltip_formatting,
     estimate_tooltip_size,
-    TOOLTIP_PAGE_WIDTH,
-    TOOLTIP_PAGE_HEIGHT,
-    TOOLTIP_MIN_HEIGHT,
-    TOOLTIP_MAX_HEIGHT,
 )
 
 

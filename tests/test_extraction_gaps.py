@@ -13,8 +13,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from tableau_export.m_query_builder import _M_AGG_MAP
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
+from tableau_export.m_query_builder import _M_AGG_MAP
 
 
 class TestMQueryAggMapVarVarp(unittest.TestCase):

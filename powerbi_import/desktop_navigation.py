@@ -16,7 +16,6 @@ from pathlib import Path
 
 from powerbi_import import desktop_window
 
-
 _CAPTURE_SCRIPT = """
 import json, sys
 from powerbi_import import desktop_window as w

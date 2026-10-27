@@ -2,24 +2,21 @@
 Tests for Permission Mapping (powerbi_import.permission_mapper) — Sprint 167 extensions.
 """
 
-import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.permission_mapper import (
-    generate_rls_powershell,
-    generate_credential_template,
-    map_site_roles,
-    reconcile_rls_principals,
     generate_azure_ad_scripts,
     generate_permission_report,
+    generate_rls_powershell,
+    map_site_roles,
+    reconcile_rls_principals,
 )
-
 
 # ── Existing function tests ─────────────────────────────────────────
 

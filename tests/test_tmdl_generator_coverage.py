@@ -10,9 +10,7 @@ TMDL file writers (expressions, roles, tables, columns, partitions, refresh poli
 culture/perspective writing, and parameter handling.
 """
 
-import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -22,43 +20,31 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.tmdl_generator import (
-    _clean_tableau_field_ref,
-    _dax_to_m_expression,
-    _inject_m_steps_into_partition,
-    _quote_m_identifiers,
-    _quote_name,
-    _split_dax_args,
-    _build_semantic_model,
+    _apply_hierarchies,
     _apply_semantic_enrichments,
-    _add_date_table,
-    _write_tmdl_files,
-    _write_table_tmdl,
-    _write_roles_tmdl,
-    _write_relationships_tmdl,
-    _write_perspectives_tmdl,
+    _auto_date_hierarchies,
+    _build_semantic_model,
+    _build_table,
+    _clean_tableau_field_ref,
+    _create_quick_table_calc_measures,
+    _dax_to_m_expression,
+    _fix_relationship_type_mismatches,
+    _inject_m_steps_into_partition,
+    _process_sets_groups_bins,
+    _quote_m_identifiers,
+    _split_dax_args,
+    _wrap_date_subtraction_in_duration_days,
     _write_culture_tmdl,
+    _write_expressions_tmdl,
+    _write_perspectives_tmdl,
+    _write_relationships_tmdl,
+    _write_roles_tmdl,
+    _write_table_tmdl,
+    detect_refresh_policy,
     generate_tmdl,
     resolve_table_for_column,
     resolve_table_for_formula,
-    _process_sets_groups_bins,
-    _apply_hierarchies,
-    _fix_relationship_type_mismatches,
-    _create_quick_table_calc_measures,
-    _build_table,
-    _write_column,
-    _write_column_properties,
-    _write_column_flags,
-    _write_measure,
-    _write_hierarchy,
-    _write_partition,
-    _write_refresh_policy,
-    _wrap_date_subtraction_in_duration_days,
-    _write_expressions_tmdl,
-    detect_refresh_policy,
-    _auto_date_hierarchies,
-    map_tableau_to_powerbi_type,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # _clean_tableau_field_ref  (L69-70)
@@ -1742,10 +1728,6 @@ class TestCrossTableRelInference(unittest.TestCase):
         model = _build_semantic_model(datasources, {})
         rels = model["model"]["relationships"]
         # Cross-table inference should detect RELATED reference and create rel
-        has_product_rel = any(
-            r.get("fromColumn") == "ProductID" or r.get("toColumn") == "ProductID"
-            for r in rels
-        )
         # The inference tries to match column names between tables;
         # if no DAX 'Table'[Col] pattern exists, no inference happens.
         # The calc will reference Products via RELATED → the converter

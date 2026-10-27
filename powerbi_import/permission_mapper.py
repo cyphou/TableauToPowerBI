@@ -89,14 +89,14 @@ def generate_rls_powershell(roles, output_path, dataset_name="MyDataset"):
                 email = member if '@' in member else f"{member}@yourdomain.com"
                 lines.append(f'    "{email}"')
         else:
-            lines.append(f'    "user@yourdomain.com"     # TODO: Add Azure AD members')
+            lines.append('    "user@yourdomain.com"     # TODO: Add Azure AD members')
         lines.append(")")
         lines.append("")
         lines.append(f'foreach ($member in $Role_{safe_name}_Members) {{')
         lines.append("    try {")
-        lines.append(f'        $body = @{{ emailAddress = $member }} | ConvertTo-Json')
-        lines.append(f'        $url = "groups/$WorkspaceId/datasets/$DatasetId/users"')
-        lines.append(f'        Invoke-PowerBIRestMethod -Url $url -Method Post -Body $body')
+        lines.append('        $body = @{ emailAddress = $member } | ConvertTo-Json')
+        lines.append('        $url = "groups/$WorkspaceId/datasets/$DatasetId/users"')
+        lines.append('        Invoke-PowerBIRestMethod -Url $url -Method Post -Body $body')
         lines.append(f'        Write-Host "  Added $member to role {role_name}" -ForegroundColor Green')
         lines.append("    } catch {")
         lines.append(f'        Write-Host "  Failed to add $member to role {role_name}: $_" -ForegroundColor Red')
@@ -385,7 +385,7 @@ def generate_azure_ad_scripts(groups, output_path):
         for member in members:
             mname = member.get('name', '') if isinstance(member, dict) else str(member)
             email = mname if '@' in mname else f"{mname}@yourdomain.com"
-            lines.append(f'try {{')
+            lines.append('try {')
             lines.append(f'    $user = Get-AzureADUser -Filter "userPrincipalName eq \'{email}\'"')
             lines.append(f'    if ($user) {{ Add-AzureADGroupMember -ObjectId $group_{safe}.ObjectId '
                          f'-RefObjectId $user.ObjectId }}')
@@ -423,13 +423,27 @@ def generate_permission_report(
     """
     try:
         from powerbi_import.html_template import (
-            html_open, html_close, stat_card, stat_grid,
-            section_open, section_close, badge, data_table, esc,
+            badge,
+            data_table,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
     except ImportError:
         from html_template import (
-            html_open, html_close, stat_card, stat_grid,
-            section_open, section_close, badge, data_table, esc,
+            badge,
+            data_table,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
 
     parts = [html_open(text("Permission Migration Report", "Rapport de migration des autorisations"))]

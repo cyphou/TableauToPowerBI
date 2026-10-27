@@ -12,7 +12,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.mcp_server import (  # noqa: E402
-    _tool_catalogue, _resource_catalogue, PROTOCOL_VERSION, SERVER_NAME,
+    PROTOCOL_VERSION,
+    SERVER_NAME,
+    _resource_catalogue,
+    _tool_catalogue,
 )
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

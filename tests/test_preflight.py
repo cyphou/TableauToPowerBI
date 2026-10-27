@@ -1,8 +1,6 @@
 """Phase 1 — Pre-flight rejection (Sprint 141 / v31.4.0)."""
 
-import io
 import os
-import shutil
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -12,15 +10,12 @@ from powerbi_import.preflight import (
     ADVISORY,
     BLOCKER,
     LARGE_VISUAL_COUNT,
-    LARGE_WORKBOOK_BYTES,
-    PreflightIssue,
-    PreflightResult,
     SUPPORTED_EXTENSIONS,
     UNSUPPORTED_CONNECTORS,
     WARNING,
+    PreflightResult,
     run_preflight,
 )
-
 
 # ────────────────────────────────────────────────────────────────────
 #  Fixture helpers

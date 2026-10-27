@@ -86,6 +86,7 @@ class TestTmdlCascadeGuard(unittest.TestCase):
 
     def test_failed_table_pruned_from_model_and_relationships(self):
         import powerbi_import.tmdl_generator as tg
+
         # The writer and its caller both live in tmdl_writers, so patching the
         # name re-exported by tmdl_generator would not intercept the call.
         import powerbi_import.tmdl_writers as tw

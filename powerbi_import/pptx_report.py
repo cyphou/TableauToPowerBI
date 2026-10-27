@@ -24,11 +24,9 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
 import zipfile
 from datetime import datetime, timezone
 from io import BytesIO
-from xml.etree.ElementTree import Element, SubElement, tostring
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +198,6 @@ def _slide_title(data: dict) -> str:
 def _slide_scope(data: dict) -> str:
     """Slide 2: Scope overview."""
     totals = data.get('totals', {})
-    summary = data.get('summary', {})
     categories = data.get('categories', [])
 
     shapes = []
@@ -451,10 +448,6 @@ def _text_box(
     bold_attr = ' b="1"' if bold else ''
     algn_map = {'l': 'l', 'ctr': 'ctr', 'r': 'r', 'c': 'ctr'}
     algn = algn_map.get(align, 'l')
-
-    fill_xml = ""
-    if fill:
-        fill_xml = f'<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill>'
 
     sp_fill = ""
     if fill:

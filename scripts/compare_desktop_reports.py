@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import argparse
 import math
-from pathlib import Path
 import sys
+from pathlib import Path
 
 # Support direct execution from any working directory, without installation.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

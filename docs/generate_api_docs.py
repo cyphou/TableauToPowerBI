@@ -13,12 +13,11 @@ Usage:
 """
 
 import argparse
+import html as html_module
 import importlib
+import inspect
 import os
 import sys
-import pydoc
-import inspect
-import html as html_module
 
 # Modules to document
 MODULES = [
@@ -149,7 +148,7 @@ def _module_to_html(mod, mod_name):
         'nav a { margin-right: 12px; }',
         '</style>',
         '</head><body>',
-        f'<nav><a href="index.html">← Index</a></nav>',
+        '<nav><a href="index.html">← Index</a></nav>',
         f'<h1>{html_module.escape(mod_name)}</h1>',
     ]
 
@@ -262,7 +261,7 @@ def main():
     else:
         # Auto: try pdoc first, fallback to builtin
         try:
-            import pdoc
+            import pdoc  # noqa: F401
             success = generate_with_pdoc(args.output)
         except ImportError:
             success = generate_with_builtin(args.output)

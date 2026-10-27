@@ -18,11 +18,22 @@ import struct
 import sys
 import time
 import zlib
-from typing import List, NamedTuple, Optional, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Iterable,
+    List,
+    NamedTuple,
+    Optional,
+    Tuple,
+    Union,
+)
 
 IS_WINDOWS = sys.platform == "win32"
 
-if IS_WINDOWS:                                    # pragma: no cover - platform
+# TYPE_CHECKING keeps these names bound for static analysis on every platform;
+# at runtime the block still runs on Windows only.
+if TYPE_CHECKING or IS_WINDOWS:                   # pragma: no cover - platform
     import ctypes
     from ctypes import wintypes
 
@@ -273,9 +284,11 @@ def dialog_windows(pid: int) -> List[WindowInfo]:
     return [w for w in windows_for_pid(pid) if w.owned and w.title]
 
 
-def wait_for_window(pids, title_fragment: str = "", *, timeout: float = 120,
-                    stable_for: float = 3.0,
-                    poll: float = 1.0) -> Tuple[Optional[WindowInfo], List[str]]:
+def wait_for_window(
+        pids: Union[int, Iterable[int], Callable[[], Iterable[int]]],
+        title_fragment: str = "", *, timeout: float = 120,
+        stable_for: float = 3.0,
+        poll: float = 1.0) -> Tuple[Optional[WindowInfo], List[str]]:
     """Wait until one of *pids* shows a responsive report window.
 
     Returns ``(window, signals)``. An error dialog ends the wait immediately:

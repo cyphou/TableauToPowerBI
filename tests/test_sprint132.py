@@ -139,6 +139,7 @@ class TestLargeWorkbookGenerator(unittest.TestCase):
     def test_generates_valid_xml(self):
         """Generated TWB must be valid XML."""
         import xml.etree.ElementTree as ET
+
         from tests.large_workbook_generator import generate_large_twb
 
         path = generate_large_twb(
@@ -193,6 +194,7 @@ class TestLargeWorkbookGenerator(unittest.TestCase):
     def test_parameters_generated(self):
         """Parameters must appear in generated TWB."""
         import xml.etree.ElementTree as ET
+
         from tests.large_workbook_generator import generate_large_twb
 
         path = generate_large_twb(

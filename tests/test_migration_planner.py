@@ -1,13 +1,14 @@
 """Tests for Sprint 167 - migration_planner module."""
 
 import unittest
+
 from powerbi_import.migration_planner import (
-    estimate_effort,
     assign_waves,
-    generate_workspace_mapping,
-    generate_permission_mapping,
+    estimate_effort,
     generate_migration_plan,
+    generate_permission_mapping,
     generate_plan_html,
+    generate_workspace_mapping,
 )
 
 
@@ -184,7 +185,9 @@ class TestGenerateTimeline(unittest.TestCase):
 class TestGenerateMigrationPlanFromTopology(unittest.TestCase):
 
     def test_from_topology(self):
-        from powerbi_import.migration_planner import generate_migration_plan_from_topology
+        from powerbi_import.migration_planner import (
+            generate_migration_plan_from_topology,
+        )
         topology = {
             'workbooks': [
                 {'id': 'wb1', 'name': 'WB1', 'project': {'name': 'Sales'},
@@ -199,7 +202,9 @@ class TestGenerateMigrationPlanFromTopology(unittest.TestCase):
         self.assertIn('summary', plan)
 
     def test_with_string_project(self):
-        from powerbi_import.migration_planner import generate_migration_plan_from_topology
+        from powerbi_import.migration_planner import (
+            generate_migration_plan_from_topology,
+        )
         topology = {
             'workbooks': [
                 {'id': 'wb1', 'name': 'WB1', 'project': 'Sales',

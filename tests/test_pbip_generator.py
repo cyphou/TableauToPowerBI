@@ -15,13 +15,11 @@ import shutil
 import sys
 import tempfile
 import unittest
-import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from pbip_generator import PowerBIProjectGenerator
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # Helpers — create an instance without writing to disk
@@ -1711,6 +1709,7 @@ class TestPublicSuperstoreAfterAutoheal(TestPublicSuperstorePipeline):
     def setUpClass(cls):
         from contextlib import redirect_stdout
         from pathlib import Path
+
         from powerbi_import.healing import AutoHealer
         super().setUpClass()
         project_dir = cls.model_dir.parent.parent

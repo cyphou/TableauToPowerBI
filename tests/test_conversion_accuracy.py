@@ -15,8 +15,7 @@ import unittest
 # ═══════════════════════════════════════════════════════════════════
 # 84.1  Prep VAR / VARP
 # ═══════════════════════════════════════════════════════════════════
-
-from tableau_export.m_query_builder import m_transform_aggregate, _M_AGG_MAP
+from tableau_export.m_query_builder import _M_AGG_MAP, m_transform_aggregate
 
 
 class TestPrepVariance(unittest.TestCase):
@@ -117,9 +116,9 @@ class TestPrepNotInner(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════
 
 from powerbi_import.visual_generator import (
+    clear_auto_generated_measures,
     create_visual_container,
     get_auto_generated_measures,
-    clear_auto_generated_measures,
 )
 
 
@@ -316,10 +315,10 @@ class TestSalesforceConnectorDepth(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════
 
 from tableau_export.m_query_builder import (
-    m_regex_match,
-    m_regex_extract,
-    m_regex_replace,
     convert_tableau_regex_to_m,
+    m_regex_extract,
+    m_regex_match,
+    m_regex_replace,
 )
 
 

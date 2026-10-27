@@ -1,9 +1,9 @@
 """Tests for Sprint 168 — Incremental & Live Sync depth."""
 
 import os
-import json
-import unittest
 import tempfile
+import unittest
+
 from powerbi_import.incremental import FileWatcher, LiveSyncEngine
 
 

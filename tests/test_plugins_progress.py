@@ -4,7 +4,7 @@ import io
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from powerbi_import.plugins import (
     PluginBase,
@@ -13,7 +13,6 @@ from powerbi_import.plugins import (
     reset_plugin_manager,
 )
 from powerbi_import.progress import MigrationProgress, NullProgress
-
 
 # ── PluginBase hook return values ──────────────────────────────────
 
@@ -345,7 +344,10 @@ class TestMigrationProgress(unittest.TestCase):
 
     def test_on_step_callback_start(self):
         calls = []
-        cb = lambda idx, name, status, msg: calls.append((idx, name, status, msg))
+
+        def cb(idx, name, status, msg):
+            calls.append((idx, name, status, msg))
+
         p = MigrationProgress(total_steps=2, on_step=cb, show_bar=False)
         p.start("Step A")
         self.assertEqual(len(calls), 1)
@@ -353,7 +355,10 @@ class TestMigrationProgress(unittest.TestCase):
 
     def test_on_step_callback_complete(self):
         calls = []
-        cb = lambda idx, name, status, msg: calls.append((idx, name, status, msg))
+
+        def cb(idx, name, status, msg):
+            calls.append((idx, name, status, msg))
+
         p = MigrationProgress(total_steps=2, on_step=cb, show_bar=False)
         p.start("S1")
         p.complete("done")
@@ -363,7 +368,10 @@ class TestMigrationProgress(unittest.TestCase):
 
     def test_on_step_callback_fail(self):
         calls = []
-        cb = lambda idx, name, status, msg: calls.append((idx, name, status, msg))
+
+        def cb(idx, name, status, msg):
+            calls.append((idx, name, status, msg))
+
         p = MigrationProgress(total_steps=2, on_step=cb, show_bar=False)
         p.start("S1")
         p.fail("oops")
@@ -372,7 +380,10 @@ class TestMigrationProgress(unittest.TestCase):
 
     def test_on_step_callback_skip(self):
         calls = []
-        cb = lambda idx, name, status, msg: calls.append((idx, name, status, msg))
+
+        def cb(idx, name, status, msg):
+            calls.append((idx, name, status, msg))
+
         p = MigrationProgress(total_steps=2, on_step=cb, show_bar=False)
         p.skip("Skipped", "reason")
         self.assertEqual(calls[-1][2], "skipped")

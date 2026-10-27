@@ -21,31 +21,52 @@ Example::
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 # ── Contract (canonical) ────────────────────────────────────────────
 from powerbi_import.healing_core import (
-    HealAction, HealReport, HIGH, MEDIUM, LOW,
-    CONFIDENCE_LEVELS, CONFIDENCE_RANK,
+    CONFIDENCE_LEVELS,
+    CONFIDENCE_RANK,
+    HIGH,
+    LOW,
+    MEDIUM,
+    HealAction,
+    HealReport,
 )
+
+# isort: split
 
 # ── Deterministic healers ───────────────────────────────────────────
 from powerbi_import.dax_healing import heal_dax, heal_measures
 from powerbi_import.m_healing import heal_m
-from powerbi_import.visual_healing import heal_visual, heal_visuals, VisualHealReport
+from powerbi_import.visual_healing import VisualHealReport, heal_visual, heal_visuals
+
+# isort: split
 
 # ── Detection / preflight ───────────────────────────────────────────
-from powerbi_import.openability import (
-    check_openability, extract_m_partitions, OpenabilityReport,
-)
 from powerbi_import.desktop_probe import (
-    probe_desktop_open, find_pbi_desktop, DesktopProbeReport,
+    DesktopProbeReport,
+    find_pbi_desktop,
+    probe_desktop_open,
 )
+from powerbi_import.openability import (
+    OpenabilityReport,
+    check_openability,
+    extract_m_partitions,
+)
+
+# isort: split
 
 # ── Closed-loop orchestration ───────────────────────────────────────
 from powerbi_import.autoheal import (
-    AutoHealer, heal_dax_expression, ErrorRecord, AutoHealReport, RepairAttempt,
-    ErrorSource, StaticValidatorSource, LogFileSource, PbiDesktopSource,
+    AutoHealer,
+    AutoHealReport,
+    ErrorRecord,
+    ErrorSource,
+    LogFileSource,
+    PbiDesktopSource,
+    RepairAttempt,
+    StaticValidatorSource,
+    heal_dax_expression,
 )
 
 __all__ = [

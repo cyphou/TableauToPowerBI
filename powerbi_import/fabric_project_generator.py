@@ -18,11 +18,11 @@ import os
 from datetime import datetime
 
 from .dataflow_generator import DataflowGenerator
+from .evidence_manifest import build_evidence_manifest
+from .fabric_evidence import build_fabric_evidence
 from .fabric_item import build_item_registry, logical_id
 from .fabric_semantic_model_generator import FabricSemanticModelGenerator
 from .fabric_validator import FabricProjectValidator
-from .fabric_evidence import build_fabric_evidence
-from .evidence_manifest import build_evidence_manifest
 from .lakehouse_generator import LakehouseGenerator
 from .notebook_generator import NotebookGenerator
 from .pipeline_generator import PipelineGenerator

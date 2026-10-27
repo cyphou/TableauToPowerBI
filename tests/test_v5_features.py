@@ -14,24 +14,29 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from tableau_export.dax_converter import convert_tableau_formula_to_dax
-from powerbi_import.visual_generator import _build_sparkline_config
-from powerbi_import.visual_generator import CUSTOM_VISUAL_GUIDS
-from powerbi_import.visual_generator import resolve_custom_visual_type
-from tableau_export.extract_tableau_data import _split_sql_values
-from tableau_export.extract_tableau_data import _scan_delimited_sample
-from tableau_export.extract_tableau_data import TableauExtractor
-from powerbi_import.gateway_config import GatewayConfigGenerator
-from powerbi_import.gateway_config import OAUTH_CONNECTORS
-from powerbi_import.gateway_config import GATEWAY_CONNECTORS
-from powerbi_import.comparison_report import generate_comparison_report
-from powerbi_import.progress import MigrationProgress
-from powerbi_import.progress import NullProgress
-from powerbi_import.telemetry_dashboard import generate_dashboard
-from powerbi_import.wizard import wizard_to_args
 import argparse
-from powerbi_import.tmdl_generator import detect_refresh_policy
 
+from powerbi_import.comparison_report import generate_comparison_report
+from powerbi_import.gateway_config import (
+    GATEWAY_CONNECTORS,
+    OAUTH_CONNECTORS,
+    GatewayConfigGenerator,
+)
+from powerbi_import.progress import MigrationProgress, NullProgress
+from powerbi_import.telemetry_dashboard import generate_dashboard
+from powerbi_import.tmdl_generator import detect_refresh_policy
+from powerbi_import.visual_generator import (
+    CUSTOM_VISUAL_GUIDS,
+    _build_sparkline_config,
+    resolve_custom_visual_type,
+)
+from powerbi_import.wizard import wizard_to_args
+from tableau_export.dax_converter import convert_tableau_formula_to_dax
+from tableau_export.extract_tableau_data import (
+    TableauExtractor,
+    _scan_delimited_sample,
+    _split_sql_values,
+)
 
 # ════════════════════════════════════════════════════════════
 # Sprint 6 — Conversion Accuracy
@@ -411,9 +416,12 @@ class TestProgressTracker(unittest.TestCase):
 
     def test_multiple_steps(self):
         p = MigrationProgress(total_steps=4, show_bar=False)
-        p.start("Step 1"); p.complete()
-        p.start("Step 2"); p.complete()
-        p.start("Step 3"); p.fail("error")
+        p.start("Step 1")
+        p.complete()
+        p.start("Step 2")
+        p.complete()
+        p.start("Step 3")
+        p.fail("error")
         p.skip("Step 4")
         s = p.summary()
         self.assertEqual(s['completed'], 2)
@@ -542,7 +550,7 @@ class TestBuildDocsScript(unittest.TestCase):
     def test_build_docs(self):
         root = os.path.join(os.path.dirname(__file__), '..')
         sys.path.insert(0, os.path.join(root, '.github', 'scripts'))
-        from build_docs import _md_to_html, _inline
+        from build_docs import _inline, _md_to_html  # noqa: F401
         html = _md_to_html('# Hello\n\nParagraph **bold** text.')
         self.assertIn('<h1', html)
         self.assertIn('<strong>bold</strong>', html)

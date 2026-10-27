@@ -43,6 +43,7 @@ import stat
 import sys
 import tempfile
 import traceback
+from typing import Any
 
 # Allow ``from tableau_export...`` / ``from powerbi_import...`` when run directly.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -433,6 +434,7 @@ def _validate_desktop_log(path, project_dir):
 def _extract_to_dir(file_path, extract_dir):
     """Extract a Tableau workbook into ``extract_dir``. Returns converted objects."""
     from extract_tableau_data import TableauExtractor  # type: ignore
+
     from powerbi_import.import_to_powerbi import PowerBIImporter
 
     extractor = TableauExtractor(file_path, output_dir=extract_dir)
@@ -622,7 +624,9 @@ class MigrationTools:
         if not project_dir or not os.path.isdir(project_dir):
             return {"ok": False, "error": f"project_dir not found: {project_dir}"}
         from powerbi_import.migration_quality import (
-            build_quality_report, resolve_quality_report_name)
+            build_quality_report,
+            resolve_quality_report_name,
+        )
         try:
             name = resolve_quality_report_name(project_dir)
         except (OSError, ValueError) as exc:
@@ -656,15 +660,16 @@ class MigrationTools:
             return {"ok": False, "error": "not ready: run quality_report in this MCP session first"}
 
         context = self._quality_context
-        context_is_current = isinstance(context, dict) and context.get("report") is report
+        if not (isinstance(context, dict) and context.get("report") is report):
+            context = None
         report_name = report.get("report_name")
-        if context_is_current:
+        if context is not None:
             report_name = report_name or context.get("report_name")
         baseline_fingerprint = None
         project_identity = None
         project_dir = None
         issue_revision = self._quality_revision
-        if context_is_current:
+        if context is not None:
             project_dir = context.get("project_dir")
             project_identity = project_dir
             issue_revision = context.get("revision", self._quality_revision)
@@ -780,7 +785,7 @@ class MigrationTools:
                 return {"ok": False, "persisted": False,
                         "error": "fresh quality_report must target the same report and project"}
 
-            priorities = latest_report.get("priorities")
+            priorities = latest_report.get("priorities") if isinstance(latest_report, dict) else None
             if not isinstance(priorities, list):
                 return {"ok": False, "persisted": False,
                         "error": "latest quality_report priorities are missing or unreadable"}
@@ -1036,7 +1041,7 @@ class MCPServer:
 
     def _resources_read(self, params):
         uri = (params or {}).get("uri", "")
-        kind = uri.rsplit("/", 1)[-1] if uri.startswith("ttpbi://reports/") else None
+        kind = uri.rsplit("/", 1)[-1] if uri.startswith("ttpbi://reports/") else ""
         store_key = {"assessment": "assessment", "qa": "qa", "quality": "quality",
                  "parity": "parity"}.get(kind)
         if not store_key or store_key not in self.tools.report_store:
@@ -1059,7 +1064,7 @@ class MCPServer:
         if not isinstance(request, dict) or request.get("jsonrpc") != "2.0":
             return _error_response(None, INVALID_REQUEST, "invalid JSON-RPC 2.0 request")
         req_id = request.get("id")
-        method = request.get("method")
+        method: Any = request.get("method")
         params = request.get("params") or {}
         handler = self._handlers.get(method)
         if handler is None:

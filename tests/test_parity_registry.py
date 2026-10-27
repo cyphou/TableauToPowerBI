@@ -11,9 +11,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export
 
 from powerbi_import import parity_registry as pr  # noqa: E402
 from powerbi_import.parity_registry import (  # noqa: E402
-    scan_workbook, features_by_category, ParityScan,
-    EXACT, HEALED, APPROXIMATED, UNSUPPORTED, _FEATURES, _DETECTORS,
-    collect_target_evidence, scan_project,
+    _DETECTORS,
+    _FEATURES,
+    APPROXIMATED,
+    EXACT,
+    HEALED,
+    UNSUPPORTED,
+    collect_target_evidence,
+    features_by_category,
+    scan_project,
+    scan_workbook,
 )
 
 

@@ -18,7 +18,6 @@ Covers:
 
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -29,22 +28,20 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
-from dax_converter import convert_tableau_formula_to_dax
-import xml.etree.ElementTree as ET
-from extract_tableau_data import TableauExtractor
-from validator import ArtifactValidator
-from pbip_generator import PowerBIProjectGenerator as PBIPGenerator
-from tmdl_generator import _convert_tableau_format_to_pbi
 import importlib
-from powerbi_import.deploy.config import settings as smod
-from tmdl_generator import _build_semantic_model, _add_date_table
-from tmdl_generator import _add_date_table
-import migrate
-from powerbi_import.deploy.utils import DeploymentReport
-from powerbi_import.deploy.utils import ArtifactCache
-from powerbi_import.deploy.client import FabricClient
-from powerbi_import.deploy.deployer import FabricDeployer
+import xml.etree.ElementTree as ET
 
+from dax_converter import convert_tableau_formula_to_dax
+from extract_tableau_data import TableauExtractor
+from pbip_generator import PowerBIProjectGenerator as PBIPGenerator
+from tmdl_generator import _add_date_table, _convert_tableau_format_to_pbi
+from validator import ArtifactValidator
+
+import migrate
+from powerbi_import.deploy.client import FabricClient
+from powerbi_import.deploy.config import settings as smod
+from powerbi_import.deploy.deployer import FabricDeployer
+from powerbi_import.deploy.utils import ArtifactCache, DeploymentReport
 
 # ═══════════════════════════════════════════════════════════════════
 # DAX Conversion Tests — New Patterns

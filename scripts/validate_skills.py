@@ -21,7 +21,6 @@ import glob
 import json
 import os
 import re
-import sys
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SKILLS_GLOB = os.path.join(_ROOT, ".github", "skills", "**", "SKILL.md")

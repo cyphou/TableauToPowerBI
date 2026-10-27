@@ -11,25 +11,21 @@ Workflow:
      set UPDATE_SNAPSHOTS=1 environment variable
 """
 
-import unittest
-import sys
-import os
-import json
 import copy
+import os
 import re
-import tempfile
-import shutil
+import sys
+import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from tests.conftest import SAMPLE_DATASOURCE, SAMPLE_EXTRACTED, make_temp_dir, cleanup_dir
-
-from m_query_builder import generate_power_query_m
 from dax_converter import convert_tableau_formula_to_dax
+from m_query_builder import generate_power_query_m
 from tmdl_generator import generate_tmdl
 
+from tests.conftest import SAMPLE_DATASOURCE, cleanup_dir, make_temp_dir
 
 SNAPSHOTS_DIR = os.path.join(os.path.dirname(__file__), 'snapshots')
 UPDATE_SNAPSHOTS = os.environ.get('UPDATE_SNAPSHOTS', '').lower() in ('1', 'true', 'yes')

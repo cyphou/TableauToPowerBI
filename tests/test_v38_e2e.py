@@ -21,8 +21,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import migrate
-from powerbi_import import api_server
-from powerbi_import import report_packager
+from powerbi_import import api_server, report_packager
 from powerbi_import.artifact_diff import BASELINE_MANIFEST
 
 

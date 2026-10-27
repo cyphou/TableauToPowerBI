@@ -10,9 +10,9 @@ Entry point: ``cross_validate(model, report_state)`` returns a
 
 from __future__ import annotations
 
-import logging
 import glob
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple

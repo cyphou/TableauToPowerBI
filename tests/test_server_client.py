@@ -11,20 +11,20 @@ Covers:
   - CLI --server/--workbook/--site/--token flags
 """
 
-import os
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch, call
 import urllib.error
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from tableau_export.server_client import TableauServerClient
-
 import argparse
+
+from tableau_export.server_client import TableauServerClient
 
 
 class TestTableauServerClientInit(unittest.TestCase):
@@ -379,7 +379,7 @@ class TestRequestMethodRequests(unittest.TestCase):
         c = self._make_client()
         # Just test that auth token is included in headers
         original_request = c._request
-        with patch.object(c, '_request', wraps=original_request) as mock_req:
+        with patch.object(c, '_request', wraps=original_request):
             # This will fail because no real server, but we can verify auth header setup
             pass  # Covered via integration in sign_in/list tests
 
@@ -402,8 +402,8 @@ class TestRequestMethodRequests(unittest.TestCase):
                     raise ImportError('no requests')
                 return original_import(name, *args, **kwargs)
             with patch('builtins.__import__', side_effect=mock_import):
-                result = c._request('GET', 'https://tab.co/api/test')
-            
+                c._request('GET', 'https://tab.co/api/test')
+
             # Verify the Request object was created with auth header
             req_obj = mock_open.call_args[0][0]
             self.assertEqual(req_obj.get_header('X-tableau-auth'), 'auth-tok')

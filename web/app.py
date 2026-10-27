@@ -16,17 +16,18 @@ If streamlit is not installed, a fallback mode launches the stdlib
 http.server-based wizard (no external deps).
 """
 
-import os
-import sys
 import json
-import shutil
-import subprocess
-import tempfile
 import logging
-import zipfile
-from datetime import datetime
+import os
+import shutil
+import sys
+import tempfile
+
 from powerbi_import.api_server import (
-    _confined_path, _uploaded_filename, _run_upload_worker, _write_output_archive,
+    _confined_path,
+    _run_upload_worker,
+    _uploaded_filename,
+    _write_output_archive,
 )
 
 logger = logging.getLogger('tableau_to_powerbi.web')
@@ -454,7 +455,6 @@ def run_streamlit_app():
 
         if st.button("Start Over"):
             # Cleanup
-            tmp = st.session_state.tmp_dir
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.session_state.step = 1
@@ -498,9 +498,9 @@ def _generate_upload_html():
 
 def run_fallback_server(port=8501):
     """Run a minimal stdlib-based web UI (no Streamlit dependency)."""
-    from http.server import HTTPServer, BaseHTTPRequestHandler
     from email import policy
     from email.parser import BytesParser
+    from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):

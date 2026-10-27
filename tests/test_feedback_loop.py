@@ -6,8 +6,8 @@ import shutil
 import tempfile
 import unittest
 import zipfile
-from migrate import _quality_zero_touch_result
 
+from migrate import _quality_zero_touch_result
 from powerbi_import.feedback_loop import (
     IssueCollector,
     RegressionFixtureGenerator,

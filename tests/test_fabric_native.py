@@ -15,9 +15,10 @@ Tests cover:
 
 import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
+
 import pytest
 
 # Ensure powerbi_import is importable
@@ -945,20 +946,26 @@ class TestFabricSemanticModelGenerator:
     """Tests for FabricSemanticModelGenerator."""
 
     def test_generate_creates_sm_dir(self, temp_dir, sample_extracted_data):
-        from powerbi_import.fabric_semantic_model_generator import FabricSemanticModelGenerator
+        from powerbi_import.fabric_semantic_model_generator import (
+            FabricSemanticModelGenerator,
+        )
         gen = FabricSemanticModelGenerator(temp_dir, 'TestModel')
         gen.generate(sample_extracted_data)
         assert os.path.isdir(os.path.join(temp_dir, 'TestModel.SemanticModel'))
 
     def test_generate_creates_definition_dir(self, temp_dir, sample_extracted_data):
-        from powerbi_import.fabric_semantic_model_generator import FabricSemanticModelGenerator
+        from powerbi_import.fabric_semantic_model_generator import (
+            FabricSemanticModelGenerator,
+        )
         gen = FabricSemanticModelGenerator(temp_dir, 'TestModel')
         gen.generate(sample_extracted_data)
         def_dir = os.path.join(temp_dir, 'TestModel.SemanticModel', 'definition')
         assert os.path.isdir(def_dir)
 
     def test_generate_creates_platform_file(self, temp_dir, sample_extracted_data):
-        from powerbi_import.fabric_semantic_model_generator import FabricSemanticModelGenerator
+        from powerbi_import.fabric_semantic_model_generator import (
+            FabricSemanticModelGenerator,
+        )
         gen = FabricSemanticModelGenerator(temp_dir, 'TestModel')
         gen.generate(sample_extracted_data)
         platform = os.path.join(temp_dir, 'TestModel.SemanticModel', '.platform')
@@ -968,7 +975,9 @@ class TestFabricSemanticModelGenerator:
         assert data['metadata']['type'] == 'SemanticModel'
 
     def test_generate_creates_metadata_with_directlake(self, temp_dir, sample_extracted_data):
-        from powerbi_import.fabric_semantic_model_generator import FabricSemanticModelGenerator
+        from powerbi_import.fabric_semantic_model_generator import (
+            FabricSemanticModelGenerator,
+        )
         gen = FabricSemanticModelGenerator(temp_dir, 'TestModel')
         gen.generate(sample_extracted_data)
         meta = os.path.join(temp_dir, 'TestModel.SemanticModel', 'semantic_model_metadata.json')
@@ -978,14 +987,18 @@ class TestFabricSemanticModelGenerator:
         assert data['mode'] == 'DirectLake'
 
     def test_generate_returns_stats(self, temp_dir, sample_extracted_data):
-        from powerbi_import.fabric_semantic_model_generator import FabricSemanticModelGenerator
+        from powerbi_import.fabric_semantic_model_generator import (
+            FabricSemanticModelGenerator,
+        )
         gen = FabricSemanticModelGenerator(temp_dir, 'TestModel')
         stats = gen.generate(sample_extracted_data)
         assert isinstance(stats, dict)
         assert 'tables' in stats
 
     def test_custom_lakehouse_name(self, temp_dir, sample_extracted_data):
-        from powerbi_import.fabric_semantic_model_generator import FabricSemanticModelGenerator
+        from powerbi_import.fabric_semantic_model_generator import (
+            FabricSemanticModelGenerator,
+        )
         gen = FabricSemanticModelGenerator(temp_dir, 'TestModel', lakehouse_name='MyLakehouse')
         gen.generate(sample_extracted_data)
         meta = os.path.join(temp_dir, 'TestModel.SemanticModel', 'semantic_model_metadata.json')

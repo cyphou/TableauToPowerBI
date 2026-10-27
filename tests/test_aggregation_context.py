@@ -18,7 +18,6 @@ import unittest
 
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
 
-
 # Reproducible
 RNG = random.Random(2026)
 

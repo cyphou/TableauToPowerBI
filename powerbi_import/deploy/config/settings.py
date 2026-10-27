@@ -18,8 +18,8 @@ Environment Variables:
     RETRY_DELAY:           Delay between retries in seconds (default: 5)
 """
 
-import os
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ _settings_instance = None
 def _load_dotenv():
     """Best-effort .env loading (no-op if python-dotenv is not installed)."""
     try:
-        from dotenv import load_dotenv
+        from dotenv import load_dotenv  # type: ignore[import-not-found]
         load_dotenv()
     except ImportError:
         pass
@@ -113,8 +113,8 @@ def _make_pydantic_settings():
     Returns a Pydantic model if pydantic-settings is installed,
     otherwise raises ImportError.
     """
-    from pydantic import Field
-    from pydantic_settings import BaseSettings
+    from pydantic import Field  # type: ignore[import-not-found]
+    from pydantic_settings import BaseSettings  # type: ignore[import-not-found]
 
     class FabricSettings(BaseSettings):
         """Microsoft Fabric API configuration settings."""

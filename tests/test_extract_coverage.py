@@ -35,16 +35,14 @@ Covers:
 """
 
 import io
-import json
 import os
-import re
 import shutil
 import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 import zipfile
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -475,7 +473,6 @@ class TestInferAutoChartType(unittest.TestCase):
         ws = ET.fromstring(xml)
         fields = ext.extract_worksheet_fields(ws)
         names = [f['name'] for f in fields]
-        shelves = [f['shelf'] for f in fields]
         # Should have :Measure Names, Zone, plus expanded Ventes and Profit
         self.assertIn('Ventes', names)
         self.assertIn('Profit', names)

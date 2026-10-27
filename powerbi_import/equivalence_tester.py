@@ -10,7 +10,6 @@ Features:
 """
 
 import json
-import math
 import os
 import struct
 import zlib

@@ -8,7 +8,6 @@ configuration scripts.
 
 import json
 import logging
-import re
 import os
 
 logger = logging.getLogger(__name__)
@@ -325,18 +324,18 @@ def generate_gateway_powershell(connections, gateway_cluster_id='<GATEWAY_CLUSTE
         ds_name = f"{conn.connector_type}_{conn.database or conn.server}_{i}"
         lines.append(f'# --- Datasource {i + 1}: {conn.connector_type} ---')
         lines.append(f'$dsParams{i} = @{{')
-        lines.append(f'    "connectionDetails" = @{{')
+        lines.append('    "connectionDetails" = @{')
         lines.append(f'        "server" = "{conn.server}"')
         if conn.database:
             lines.append(f'        "database" = "{conn.database}"')
-        lines.append(f'    }}')
-        lines.append(f'    "credentialDetails" = @{{')
-        lines.append(f'        "credentialType" = "Basic"')
-        lines.append(f'        "credentials" = \'{{\"credentialData\":[')
+        lines.append('    }')
+        lines.append('    "credentialDetails" = @{')
+        lines.append('        "credentialType" = "Basic"')
+        lines.append('        "credentials" = \'{\"credentialData\":[')
         lines.append(f'            {{\"name\":\"username\",\"value\":\"{conn.username or "<USER>"}\"}},'
                      f'{{\"name\":\"password\",\"value\":\"<PASSWORD>\"}}]}}\'')
-        lines.append(f'    }}')
-        lines.append(f'}}')
+        lines.append('    }')
+        lines.append('}')
         lines.append(
             f'Add-PowerBIDataGatewayClusterDatasource '
             f'-GatewayClusterId $gatewayClusterId '

@@ -16,7 +16,6 @@ import os
 import re
 from datetime import datetime
 
-
 # ── Patterns that indicate approximate / placeholder / unsupported conversions ──
 
 # DAX comments left by dax_converter for unsupported functions
@@ -236,7 +235,6 @@ class MigrationReport:
             name = uf.get('name') or uf.get('field', 'Unknown')
             uf_type = uf.get('type', 'user_filter')
             ismemberof_groups = uf.get('ismemberof_groups', [])
-            functions_used = [f.upper() for f in uf.get('functions_used', [])]
 
             if uf_type == 'calculated_security' and ismemberof_groups:
                 groups = ', '.join(ismemberof_groups)

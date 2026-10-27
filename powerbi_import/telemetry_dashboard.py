@@ -10,12 +10,12 @@ Usage::
     python -m powerbi_import.telemetry_dashboard [artifacts_dir] [-o dashboard.html]
 """
 
-import json
-import os
-import glob
-import logging
 import argparse
+import glob
 import html as html_mod
+import json
+import logging
+import os
 from datetime import datetime
 
 logger = logging.getLogger(__name__)

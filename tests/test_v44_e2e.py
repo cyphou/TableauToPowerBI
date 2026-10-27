@@ -13,10 +13,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
-from scripts.validate_skills import validate_skills  # noqa: E402
+from powerbi_import.conversational import answer_question, build_plan_summary  # noqa: E402
 from powerbi_import.mcp_server import MCPServer, _tool_catalogue  # noqa: E402
 from powerbi_import.remediation import remediate_assessment  # noqa: E402
-from powerbi_import.conversational import answer_question, build_plan_summary  # noqa: E402
+from scripts.validate_skills import validate_skills  # noqa: E402
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SAMPLE = os.path.join(_ROOT, "examples", "tableau_samples", "Superstore_Sales.twb")

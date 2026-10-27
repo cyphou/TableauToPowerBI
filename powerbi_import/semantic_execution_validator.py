@@ -6,8 +6,7 @@ available.
 """
 
 import re
-from typing import Dict, List, Mapping, Sequence, Tuple
-
+from typing import Any, List, Mapping, Sequence, Tuple
 
 _LOD_RE = re.compile(
     r"\{\s*(FIXED|INCLUDE|EXCLUDE)\s+(.*?)\s*:\s*",
@@ -24,7 +23,7 @@ class SemanticExecutionValidator:
 
     @staticmethod
     def validate_table_calc_partition(
-        calculation: Mapping[str, object],
+        calculation: Mapping[str, Any],
         column_table_map: Mapping[str, str],
     ) -> List[str]:
         """Check extracted table-calculation partition fields exist in the model."""

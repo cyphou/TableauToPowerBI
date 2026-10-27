@@ -5,28 +5,22 @@ Measures execution time and throughput for key operations
 to detect performance regressions.
 """
 
-import unittest
-import sys
 import os
+import sys
 import time
-import copy
-import tempfile
-import shutil
+import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from tests.conftest import SAMPLE_DATASOURCE, SAMPLE_EXTRACTED, make_temp_dir, cleanup_dir
-
 from dax_converter import convert_tableau_formula_to_dax
-from m_query_builder import generate_power_query_m
-from m_query_builder import generate_power_query_m, inject_m_steps
-from m_query_builder import m_transform_rename, m_transform_filter_values
+from import_to_powerbi import PowerBIImporter
+from m_query_builder import generate_power_query_m, inject_m_steps, m_transform_rename
 from tmdl_generator import generate_tmdl
 from visual_generator import generate_visual_containers
-from import_to_powerbi import PowerBIImporter
 
+from tests.conftest import cleanup_dir, make_temp_dir
 
 # ── Performance thresholds (seconds) ─────────────────────────────────
 # These are generous limits — real execution should be much faster.

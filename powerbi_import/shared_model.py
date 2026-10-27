@@ -33,7 +33,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -551,12 +551,11 @@ def _detect_measure_conflicts(
     all_extracted: List[dict], workbook_names: List[str]
 ) -> Tuple[List[MeasureConflict], int]:
     """Detect measure conflicts and count deduplicatable measures."""
-    # measure_key (name, datasource) → {wb_name: formula}
-    measure_map: Dict[Tuple[str, str], Dict[str, str]] = {}
+    # measure caption → {wb_name: formula}
+    measure_map: Dict[str, Dict[str, str]] = {}
 
     for wb_name, extracted in zip(workbook_names, all_extracted):
         for ds in extracted.get('datasources', []):
-            ds_name = ds.get('name', '')
             for calc in ds.get('calculations', []):
                 role = calc.get('role', 'measure')
                 if role != 'measure':
@@ -1841,7 +1840,7 @@ def _merge_parameters(all_extracted: List[dict],
     return result
 
 
-def _merge_list_by_name(all_extracted: List[dict], key: str, workbook_names: List[str] = None) -> list:
+def _merge_list_by_name(all_extracted: List[dict], key: str, workbook_names: Optional[List[str]] = None) -> list:
     """Merge a list-type object by deduplicating on 'name' field."""
     seen_names: Dict[str, dict] = {}  # name → item (for lineage tracking)
     result = []
@@ -1935,7 +1934,7 @@ def _merge_hierarchies(all_extracted: List[dict],
     return result
 
 
-def _calc_group_signature(cg: dict) -> Tuple[str, ...]:
+def _calc_group_signature(cg: dict) -> Tuple[Tuple[str, str], ...]:
     """Build a signature tuple for a calculation group's items."""
     items = cg.get('calculationItems', cg.get('calculation_items', []))
     return tuple(sorted(
@@ -2284,7 +2283,7 @@ def build_field_mapping(assessment: MergeAssessment,
 
 def validate_thin_report_fields(converted_objects: dict,
                                  merged: dict,
-                                 field_mapping: dict = None) -> List[dict]:
+                                 field_mapping: Optional[dict] = None) -> List[dict]:
     """Validate that all fields referenced by a thin report exist in the merged model.
 
     Checks worksheet columns, filters, mark encoding fields against the merged
@@ -2362,7 +2361,7 @@ def validate_thin_report_fields(converted_objects: dict,
 
 def build_column_lineage(all_extracted: List[dict],
                          workbook_names: List[str],
-                         assessment: MergeAssessment) -> Dict[str, Dict[str, list]]:
+                         assessment: MergeAssessment) -> Dict[str, Dict[str, Any]]:
     """Build lineage metadata showing which workbooks contributed each table/column.
 
     Returns:
@@ -2406,7 +2405,7 @@ def build_column_lineage(all_extracted: List[dict],
     return lineage
 
 
-def generate_lineage_annotations(lineage: Dict[str, Dict[str, list]]) -> Dict[str, str]:
+def generate_lineage_annotations(lineage: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
     """Generate TMDL annotation strings for column lineage.
 
     Returns:

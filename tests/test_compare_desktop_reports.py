@@ -1,9 +1,9 @@
 """CLI validation and exit status; never launches either Desktop app."""
-from contextlib import redirect_stderr, redirect_stdout
 import io
-from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 from scripts import compare_desktop_reports as cli

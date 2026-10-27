@@ -18,6 +18,7 @@ class TestHyperFilesLoadedInPipeline(unittest.TestCase):
 
     def test_hyper_files_key_present(self):
         import tempfile
+
         from import_to_powerbi import PowerBIImporter
         with tempfile.TemporaryDirectory() as tmpdir:
             imp = PowerBIImporter(tmpdir)
@@ -27,6 +28,7 @@ class TestHyperFilesLoadedInPipeline(unittest.TestCase):
 
     def test_hyper_files_loaded_from_json(self):
         import tempfile
+
         from import_to_powerbi import PowerBIImporter
         sample = [{'path': 'Data/Extract.hyper', 'filename': 'Extract.hyper',
                     'tables': [{'table': 'Extract', 'columns': []}]}]
@@ -89,8 +91,9 @@ class TestHyperInliningInTMDL(unittest.TestCase):
         return content
 
     def test_hyper_data_inlined_into_partition(self):
-        from tmdl_generator import generate_tmdl
         import tempfile
+
+        from tmdl_generator import generate_tmdl
 
         ds = self._make_datasource()
         extra = {
@@ -113,8 +116,9 @@ class TestHyperInliningInTMDL(unittest.TestCase):
             self.assertIn('Bob', content, "Hyper inline data should contain 'Bob'")
 
     def test_no_hyper_files_uses_fallback(self):
-        from tmdl_generator import generate_tmdl
         import tempfile
+
+        from tmdl_generator import generate_tmdl
 
         ds = self._make_datasource()
         extra = {
@@ -140,8 +144,9 @@ class TestHyperInliningInTMDL(unittest.TestCase):
             self.assertNotIn('Bob', content)
 
     def test_hyper_inlining_skipped_when_prep_override_exists(self):
-        from tmdl_generator import generate_tmdl
         import tempfile
+
+        from tmdl_generator import generate_tmdl
 
         ds = self._make_datasource()
         ds['m_query_overrides'] = {
@@ -155,7 +160,7 @@ class TestHyperInliningInTMDL(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            stats = generate_tmdl(
+            generate_tmdl(
                 datasources=[ds],
                 report_name='TestReport',
                 extra_objects=extra,
@@ -166,8 +171,9 @@ class TestHyperInliningInTMDL(unittest.TestCase):
             self.assertNotIn('Alice', content)
 
     def test_hyper_inlining_with_extract_connection_type(self):
-        from tmdl_generator import generate_tmdl
         import tempfile
+
+        from tmdl_generator import generate_tmdl
 
         ds = self._make_datasource(conn_type='extract')
         extra = {
@@ -178,7 +184,7 @@ class TestHyperInliningInTMDL(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            stats = generate_tmdl(
+            generate_tmdl(
                 datasources=[ds],
                 report_name='TestReport',
                 extra_objects=extra,
@@ -188,8 +194,9 @@ class TestHyperInliningInTMDL(unittest.TestCase):
             self.assertIn('Alice', content)
 
     def test_hyper_inlining_with_dataengine_type(self):
-        from tmdl_generator import generate_tmdl
         import tempfile
+
+        from tmdl_generator import generate_tmdl
 
         ds = self._make_datasource(conn_type='dataengine')
         extra = {
@@ -200,7 +207,7 @@ class TestHyperInliningInTMDL(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            stats = generate_tmdl(
+            generate_tmdl(
                 datasources=[ds],
                 report_name='TestReport',
                 extra_objects=extra,
@@ -210,8 +217,9 @@ class TestHyperInliningInTMDL(unittest.TestCase):
             self.assertIn('Alice', content)
 
     def test_non_hyper_connection_untouched(self):
-        from tmdl_generator import generate_tmdl
         import tempfile
+
+        from tmdl_generator import generate_tmdl
 
         ds = self._make_datasource(conn_type='sqlserver')
         ds['connection'] = {
@@ -226,7 +234,7 @@ class TestHyperInliningInTMDL(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            stats = generate_tmdl(
+            generate_tmdl(
                 datasources=[ds],
                 report_name='TestReport',
                 extra_objects=extra,
@@ -237,8 +245,9 @@ class TestHyperInliningInTMDL(unittest.TestCase):
             self.assertNotIn('Alice', content)
 
     def test_case_insensitive_table_matching(self):
-        from tmdl_generator import generate_tmdl
         import tempfile
+
+        from tmdl_generator import generate_tmdl
 
         ds = self._make_datasource(table_name='extract')  # lowercase
         hyper_files = self._make_hyper_files(table_name='Extract')  # PascalCase
@@ -250,7 +259,7 @@ class TestHyperInliningInTMDL(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            stats = generate_tmdl(
+            generate_tmdl(
                 datasources=[ds],
                 report_name='TestReport',
                 extra_objects=extra,
@@ -261,8 +270,9 @@ class TestHyperInliningInTMDL(unittest.TestCase):
 
     def test_multiple_tables_matched(self):
         """Multiple tables in one hyper file should all be inlined."""
-        from tmdl_generator import generate_tmdl
         import tempfile
+
+        from tmdl_generator import generate_tmdl
 
         ds = {
             'name': 'MultiDS',

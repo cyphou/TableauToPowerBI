@@ -10,9 +10,8 @@ an unhandled exception, always returns a string, and preserves basic
 structural invariants regardless of the input.
 """
 
-import re
-import string
 import random
+import string
 import unittest
 
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
@@ -20,7 +19,7 @@ from tableau_export.dax_converter import convert_tableau_formula_to_dax
 # ── Try importing hypothesis; fall back gracefully ────────────────
 
 try:
-    from hypothesis import given, settings, HealthCheck
+    from hypothesis import HealthCheck, given, settings
     from hypothesis import strategies as st
     HAS_HYPOTHESIS = True
 except ImportError:

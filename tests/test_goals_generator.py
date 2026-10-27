@@ -5,18 +5,18 @@ Covers generate_goals_json(), _build_goal(), and write_goals_artifact().
 
 import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 from goals_generator import (
-    generate_goals_json,
-    _build_goal,
-    write_goals_artifact,
     _CADENCE_REFRESH,
+    _build_goal,
+    generate_goals_json,
+    write_goals_artifact,
 )
 
 

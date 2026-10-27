@@ -29,7 +29,6 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Set, Tuple
 
-
 __all__ = ['run_v3_healers']
 
 
@@ -1775,7 +1774,7 @@ def _heal_dax_unknown_function(model, recovery=None) -> int:
                         'tmdl', 'dax_unknown_function',
                         item_name=f'{tname}.{item.get("name", "?")}',
                         description=f'Unsupported function {fn}()',
-                        action=f'Replaced with BLANK() (no DAX equivalent)',
+                        action='Replaced with BLANK() (no DAX equivalent)',
                         severity='warning',
                         follow_up=f'Implement {fn} logic manually',
                     )
@@ -1957,7 +1956,7 @@ def _heal_partition_empty_m(model, recovery=None) -> int:
                 if not expr or expr in ('null', 'None', '""'):
                     src['expression'] = (
                         'let\n'
-                        f'    Source = #table({{"Column1"}}, {{}})\n'
+                        '    Source = #table({"Column1"}, {})\n'
                         'in\n'
                         '    Source'
                     )

@@ -1,7 +1,8 @@
 """Tests for Sprint 161-162 — server_client enhancements."""
 
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
+
 from tableau_export.server_client import TableauServerClient
 
 

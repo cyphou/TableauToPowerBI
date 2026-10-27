@@ -11,11 +11,11 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.powerquery_diff import (
-    compare_caption_metadata,
-        compare_calculation_metadata,
-    compare_report_counts,
     _find_generated_match,
     _normalize_table_name,
+    compare_calculation_metadata,
+    compare_caption_metadata,
+    compare_report_counts,
     compare_report_metadata,
     compare_report_tables,
     compare_semantic_metadata,

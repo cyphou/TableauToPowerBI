@@ -20,17 +20,16 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.shared_model import (
-    _merge_hierarchies,
-    _merge_calculation_groups,
     _calc_group_signature,
-    _merge_field_parameters,
-    _merge_perspectives,
+    _merge_calculation_groups,
     _merge_cultures,
+    _merge_field_parameters,
     _merge_goals,
+    _merge_hierarchies,
+    _merge_perspectives,
     assess_merge,
     merge_semantic_models,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  Test helpers

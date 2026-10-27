@@ -44,10 +44,10 @@ Usage (programmatic)::
 
 from __future__ import annotations
 
-import re
 import logging
+import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 

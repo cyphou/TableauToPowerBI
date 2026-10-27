@@ -1,12 +1,14 @@
 """Synthetic regressions for explicit logical-relationship SUM compilation."""
 
 import copy
-from datetime import datetime, timedelta
 import unittest
+from datetime import datetime, timedelta
 
 from powerbi_import.tmdl_dax_postprocess import compile_logical_relationship_sum
 from tests.logical_relationship_fixtures import (
-    EmittedDax, bag_rows, compiler_arguments,
+    EmittedDax,
+    bag_rows,
+    compiler_arguments,
 )
 
 

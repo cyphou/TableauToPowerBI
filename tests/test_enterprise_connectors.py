@@ -7,25 +7,26 @@ in the dispatch table, and are auto-detected from Tableau connection
 classes.
 """
 
-import pytest
-
 import os
 import sys
+
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
+from tableau_export.datasource_extractor import _build_from_dispatch
 from tableau_export.m_query_builder import (
     _M_GENERATORS,
-    generate_power_query_m,
-    _gen_m_dremio,
     _gen_m_clickhouse,
-    _gen_m_singlestore,
-    _gen_m_firebolt,
-    _gen_m_starburst,
     _gen_m_db2_depth,
-    _gen_m_teradata_depth,
+    _gen_m_dremio,
+    _gen_m_firebolt,
+    _gen_m_singlestore,
+    _gen_m_starburst,
     _gen_m_synapse_depth,
+    _gen_m_teradata_depth,
+    generate_power_query_m,
 )
-from tableau_export.datasource_extractor import _build_from_dispatch
 
 
 def _m(conn_type, details, table='MyTable', columns=None):

@@ -9,23 +9,22 @@ Covers:
 - _migrate_single_workbook helper function
 """
 
+import json
 import os
 import sys
-import json
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch, MagicMock
-from datetime import datetime
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import migrate
 from migrate import (
+    ExitCode,
     _build_argument_parser,
     _migrate_single_workbook,
     run_batch_migration,
-    ExitCode,
 )
 
 
@@ -98,7 +97,7 @@ class TestResumeLogic(unittest.TestCase):
                     'metadata_path': os.path.join(out, 'pending', 'migration_metadata.json'),
                 }
                 with patch('migrate.run_batch_html_dashboard'):
-                    result = run_batch_migration(
+                    run_batch_migration(
                         batch_dir=src, output_dir=out, resume=True
                     )
 

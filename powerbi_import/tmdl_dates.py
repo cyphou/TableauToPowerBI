@@ -9,7 +9,6 @@ Extracted from ``tmdl_generator``, which re-exports these names.
 import re
 from datetime import date, datetime
 
-
 # Well-known date table names (any language)
 _DATE_TABLE_NAMES = {
     # English

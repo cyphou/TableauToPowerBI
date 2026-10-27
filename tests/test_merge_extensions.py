@@ -19,22 +19,19 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from powerbi_import.shared_model import (
-    _normalize_sql,
-    _hash_sql,
-    build_custom_sql_fingerprints,
-    _normalize_table_name_fuzzy,
-    fuzzy_table_match,
-    detect_rls_conflicts,
-    suggest_cross_workbook_relationships,
-    merge_preview,
-    assess_merge,
-    merge_semantic_models,
-)
 from powerbi_import.merge_assessment import (
     generate_merge_html_report,
-    generate_merge_report,
-    print_merge_summary,
+)
+from powerbi_import.shared_model import (
+    _hash_sql,
+    _normalize_sql,
+    _normalize_table_name_fuzzy,
+    assess_merge,
+    build_custom_sql_fingerprints,
+    detect_rls_conflicts,
+    fuzzy_table_match,
+    merge_preview,
+    suggest_cross_workbook_relationships,
 )
 
 

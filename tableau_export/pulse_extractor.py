@@ -9,8 +9,8 @@ Usage:
     # Returns list of metric dicts ready for goals_generator
 """
 
-import xml.etree.ElementTree as ET
 import logging
+
 try:
     from .safe_xml import safe_find, safe_findall, safe_findtext, safe_get_attr
 except ImportError:

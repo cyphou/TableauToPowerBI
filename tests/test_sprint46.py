@@ -13,21 +13,20 @@ from powerbi_import.alerts_generator import (
     generate_alert_rules,
     save_alert_rules,
 )
+from powerbi_import.assessment import (
+    FAIL,
+    PASS,
+    _check_connection_strings,
+    run_assessment,
+)
+from powerbi_import.migration_report import MigrationReport
+from powerbi_import.validator import ArtifactValidator
 from powerbi_import.visual_diff import (
-    generate_visual_diff,
-    generate_visual_diff_json,
     _diff_worksheet,
     _extract_pbi_visual_info,
+    generate_visual_diff,
+    generate_visual_diff_json,
 )
-from powerbi_import.validator import ArtifactValidator
-from powerbi_import.migration_report import MigrationReport
-from powerbi_import.assessment import (
-    run_assessment,
-    _check_connection_strings,
-    PASS,
-    FAIL,
-)
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  46.1 — Data-driven Alerts

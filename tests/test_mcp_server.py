@@ -13,9 +13,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
 from powerbi_import.mcp_server import (  # noqa: E402
-    MCPServer, MigrationTools, _tool_catalogue, _resource_catalogue,
-    _validate_input_file, METHOD_NOT_FOUND, INVALID_REQUEST, PARSE_ERROR,
-    INVALID_PARAMS, SERVER_NAME, SERVER_VERSION,
+    INVALID_PARAMS,
+    INVALID_REQUEST,
+    METHOD_NOT_FOUND,
+    PARSE_ERROR,
+    SERVER_NAME,
+    SERVER_VERSION,
+    MCPServer,
+    MigrationTools,
+    _resource_catalogue,
+    _tool_catalogue,
+    _validate_input_file,
 )
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

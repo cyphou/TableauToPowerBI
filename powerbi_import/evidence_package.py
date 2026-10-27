@@ -8,8 +8,8 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from powerbi_import.evidence_summary import build_evidence_summary
 from powerbi_import.corpus_certification import certify_corpus
+from powerbi_import.evidence_summary import build_evidence_summary
 from powerbi_import.release_readiness import build_release_readiness
 
 

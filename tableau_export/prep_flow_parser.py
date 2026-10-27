@@ -21,61 +21,52 @@ Supported step types:
 - Output: PublishExtract, SaveToFile, SaveToDatabase
 """
 
+import json
 import logging
 import os
-import json
 
 logger = logging.getLogger(__name__)
-import zipfile
 import re
-from copy import deepcopy
+import sys
+import zipfile
 from collections import OrderedDict
+from copy import deepcopy
 from urllib.parse import quote
 
 # Import M query generators
-import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from m_query_builder import (
     _M_GENERATORS,
     _m_literal,
-    generate_power_query_m,
     generate_m_from_hyper,
+    generate_power_query_m,
     inject_m_steps,
-    m_transform_rename,
-    m_transform_remove_columns,
-    m_transform_select_columns,
-    m_transform_duplicate_column,
-    m_transform_split_by_delimiter,
-    m_transform_merge_columns,
-    m_transform_replace_value,
-    m_transform_replace_nulls,
-    m_transform_trim,
+    m_transform_add_column,
+    m_transform_aggregate,
     m_transform_clean,
-    m_transform_upper,
-    m_transform_lower,
-    m_transform_proper_case,
+    m_transform_conditional_column,
+    m_transform_duplicate_column,
+    m_transform_exclude_values,
     m_transform_fill_down,
     m_transform_fill_up,
-    m_transform_filter_values,
-    m_transform_exclude_values,
     m_transform_filter_range,
-    m_transform_filter_nulls,
-    m_transform_filter_contains,
-    m_transform_distinct,
-    m_transform_top_n,
-    m_transform_aggregate,
-    m_transform_unpivot,
-    m_transform_unpivot_other,
-    m_transform_pivot,
+    m_transform_filter_values,
     m_transform_join,
+    m_transform_lower,
+    m_transform_merge_columns,
+    m_transform_pivot,
+    m_transform_proper_case,
+    m_transform_remove_columns,
+    m_transform_rename,
+    m_transform_replace_nulls,
+    m_transform_replace_value,
+    m_transform_select_columns,
+    m_transform_split_by_delimiter,
+    m_transform_trim,
     m_transform_union,
-    m_transform_sort,
-    m_transform_add_column,
-    m_transform_conditional_column,
-    m_transform_add_index,
-    m_transform_promote_headers,
+    m_transform_unpivot,
+    m_transform_upper,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TABLEAU PREP TYPE MAPPINGS
@@ -1098,10 +1089,8 @@ def _convert_action_to_m_step(action_type, action, counter):
     elif action_type == 'ExtractValues':
         # Regex or pattern extraction → Table.TransformColumns with Text.Select / regex
         col = action.get('columnName', '')
-        pattern = action.get('pattern', '')
         new_col = action.get('newColumnName', f'{col}_extracted')
         if col:
-            m_pattern = pattern.replace('\\', '\\\\') if pattern else '.*'
             n = counter.get('extract', 0)
             counter['extract'] = n + 1
             step_name = f'#"Extracted {n}"' if n > 0 else '#"Extracted Values"'
@@ -1792,9 +1781,9 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
             upstream = node_results[upstream_ids[0]]
             comment_step = (
                 '#"Prediction Warning"',
-                f'Table.AddColumn({{prev}}, "__prediction_warning", '
-                f'each "/* ML/prediction step not auto-converted — '
-                f'use Power BI AutoML or Python visual */", type text)'
+                'Table.AddColumn({prev}, "__prediction_warning", '
+                'each "/* ML/prediction step not auto-converted — '
+                'use Power BI AutoML or Python visual */", type text)'
             )
             m_query = inject_m_steps(upstream['m_query'], [comment_step])
             node_results[nid] = {

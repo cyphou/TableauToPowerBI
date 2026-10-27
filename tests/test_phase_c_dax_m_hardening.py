@@ -18,13 +18,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from dax_converter import convert_tableau_formula_to_dax
 from m_query_builder import (
+    inject_m_steps,
     m_transform_remove_errors,
     m_transform_replace_errors,
     m_transform_try_otherwise,
     wrap_source_with_try_otherwise,
-    inject_m_steps,
 )
-
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # WINDOW_CORR / WINDOW_COVAR / WINDOW_COVARP

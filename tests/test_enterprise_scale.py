@@ -13,7 +13,6 @@ import unittest
 
 from powerbi_import import tmdl_generator
 
-
 # ═══════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════
@@ -112,6 +111,7 @@ class TestParallelBatch(unittest.TestCase):
         """--workers N should be accepted as alias for --parallel."""
         import argparse
         import importlib
+
         import migrate
         importlib.reload(migrate)
         parser = argparse.ArgumentParser()
@@ -123,6 +123,7 @@ class TestParallelBatch(unittest.TestCase):
         """--parallel N should work."""
         import argparse
         import importlib
+
         import migrate
         importlib.reload(migrate)
         parser = argparse.ArgumentParser()
@@ -139,6 +140,7 @@ class TestParallelBatch(unittest.TestCase):
         """--sync flag should be accepted."""
         import argparse
         import importlib
+
         import migrate
         importlib.reload(migrate)
         parser = argparse.ArgumentParser()

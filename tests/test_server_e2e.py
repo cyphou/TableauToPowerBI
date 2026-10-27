@@ -3,42 +3,35 @@ Integration tests for Tableau Server Enterprise Migration pipeline.
 Tests the end-to-end flow: discover → plan → permissions → subscriptions → cutover.
 """
 
-import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+from powerbi_import.cutover_manager import (
+    execute_cutover,
+    generate_cutover_plan,
+    parallel_run_check,
+)
 from powerbi_import.dependency_graph import (
-    build_site_topology,
     build_dependency_graph,
-    classify_usage,
-    save_topology,
     load_topology,
+    save_topology,
 )
 from powerbi_import.migration_planner import (
-    generate_migration_plan,
     generate_migration_plan_from_topology,
-    generate_timeline,
 )
 from powerbi_import.permission_mapper import (
     map_site_roles,
     reconcile_rls_principals,
 )
 from powerbi_import.subscription_generator import (
-    generate_pbi_subscriptions,
-    generate_power_automate_flows,
     detect_schedule_conflicts,
+    generate_pbi_subscriptions,
 )
-from powerbi_import.cutover_manager import (
-    generate_cutover_plan,
-    execute_cutover,
-    parallel_run_check,
-)
-
 
 # ── Mock Client ─────────────────────────────────────────────────────
 

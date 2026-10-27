@@ -15,7 +15,6 @@ Tests cover:
 import json
 import os
 import sys
-import tempfile
 import zipfile
 
 import pytest
@@ -27,22 +26,18 @@ sys.path.insert(0, os.path.join(ROOT_DIR, 'powerbi_import'))
 sys.path.insert(0, os.path.join(ROOT_DIR, 'tableau_export'))
 
 from security_validator import (
-    validate_path,
-    validate_output_dir,
-    safe_zip_extract_member,
-    validate_zip_archive,
-    safe_parse_xml,
+    SecurityError,
     redact_credentials,
     redact_m_credentials,
-    scan_for_credentials,
+    safe_parse_xml,
+    safe_zip_extract_member,
     sanitize_template_value,
+    scan_for_credentials,
     validate_migration_artifacts,
-    SecurityError,
-    MAX_FILE_SIZE_MB,
-    MAX_ZIP_ENTRY_SIZE_MB,
-    MAX_XML_SIZE_MB,
+    validate_output_dir,
+    validate_path,
+    validate_zip_archive,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  1. Path validation tests
@@ -479,7 +474,7 @@ class TestMultiTenantSecurity:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  7. Wizard input validation tests  
+#  7. Wizard input validation tests
 # ═══════════════════════════════════════════════════════════════════
 
 class TestWizardValidation:
@@ -607,7 +602,9 @@ class TestExtractZipSlipIntegration:
             zf.writestr("../escape.txt", "escaped")
 
         import migrate
-        from powerbi_import.security_validator import SecurityError as MigrationSecurityError
+        from powerbi_import.security_validator import (
+            SecurityError as MigrationSecurityError,
+        )
         with pytest.raises(
                 RuntimeError, match="Could not extract TWBX data files") as exc:
             migrate._process_twbx_post_generation(

@@ -21,14 +21,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from powerbi_import.llm_client import (
     LLMClient,
-    estimate_tokens,
-    refine_approximated_measures,
-    generate_llm_report,
     _build_schema_context,
     _extract_migration_note,
     _validate_refined_dax,
+    estimate_tokens,
+    generate_llm_report,
+    refine_approximated_measures,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -245,6 +244,15 @@ class TestValidateRefinedDax(unittest.TestCase):
         issues = _validate_refined_dax('SUM([Sales]))')
         self.assertTrue(any('clos' in i.lower() or 'unmatched' in i.lower()
                             for i in issues))
+
+    def test_delegates_to_artifact_validator(self):
+        # A failed validator import used to be swallowed, leaving only the
+        # parenthesis fallback. These formulas are balanced but still invalid.
+        leak = _validate_refined_dax('SUM([Sales]) + [Parameters].[Tax Rate]')
+        self.assertTrue(any('[Parameters]' in i for i in leak))
+        comment = _validate_refined_dax('SUM([Sales]) // total')
+        self.assertTrue(any('//' in i for i in comment))
+        self.assertTrue(all('LLM refinement' in i for i in leak + comment))
 
 
 # ── Schema context & MigrationNote extraction ────────────────────────

@@ -25,15 +25,15 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
-from tableau_export.extract_tableau_data import TableauExtractor
-from powerbi_import.import_to_powerbi import PowerBIImporter
-from powerbi_import.validator import ArtifactValidator
 from powerbi_import.cross_validator import cross_validate
-from powerbi_import.schema_validator import validate_report_dir
+from powerbi_import.import_to_powerbi import PowerBIImporter
 from powerbi_import.regression_suite import (
-    generate_regression_snapshot,
     compare_snapshots,
+    generate_regression_snapshot,
 )
+from powerbi_import.schema_validator import validate_report_dir
+from powerbi_import.validator import ArtifactValidator
+from tableau_export.extract_tableau_data import TableauExtractor
 
 # Snapshots are keyed by a derived id: workbook names are only legal under
 # examples/, so they must not appear as tracked filenames under tests/.
@@ -238,7 +238,7 @@ def _make_equivalence_class(wb_path):
                     if not iss.repaired:
                         errors.append(f'{r.file_path}: {iss}')
             self.assertEqual(len(errors), 0,
-                             f'Schema errors:\n' + '\n'.join(errors[:10]))
+                             'Schema errors:\n' + '\n'.join(errors[:10]))
 
         def test_04_cross_validator_no_errors(self):
             """Cross-artifact validator finds no errors."""
@@ -249,7 +249,7 @@ def _make_equivalence_class(wb_path):
             result = cross_validate(model, rs)
             error_msgs = [f'{i.category}: {i.message}' for i in result.errors]
             self.assertEqual(len(error_msgs), 0,
-                             f'Cross-validation errors:\n' + '\n'.join(error_msgs[:10]))
+                             'Cross-validation errors:\n' + '\n'.join(error_msgs[:10]))
 
         def test_05_regression_snapshot_stable(self):
             """Regression snapshot matches baseline (or generates new baseline)."""
@@ -271,7 +271,7 @@ def _make_equivalence_class(wb_path):
                     f"{d.get('type', '?')}: {d.get('detail', d)}"
                     for d in drifts[:10]
                 ]
-                self.fail(f'Regression drift detected:\n' + '\n'.join(drift_msgs))
+                self.fail('Regression drift detected:\n' + '\n'.join(drift_msgs))
 
     _EquivalenceTest.__name__ = f'TestEquivalence_{basename}'
     _EquivalenceTest.__qualname__ = f'TestEquivalence_{basename}'

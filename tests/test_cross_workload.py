@@ -24,27 +24,29 @@ Each test class covers one cross-check (A–L) from the audit matrix:
 
 import copy
 import glob
-import json
 import os
 import re
 import sys
-import tempfile
-import shutil
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from tests.factories import (
-    DatasourceFactory, WorksheetFactory, DashboardFactory,
-    ModelFactory, ParameterFactory, make_multi_table_model,
-    make_complex_model, make_simple_model,
-)
-from tests.conftest import make_temp_dir, cleanup_dir
-from tmdl_generator import generate_tmdl, _build_semantic_model
 from pbip_generator import PowerBIProjectGenerator
+from tmdl_generator import _build_semantic_model
 
+from tests.conftest import cleanup_dir, make_temp_dir
+from tests.factories import (
+    DashboardFactory,
+    DatasourceFactory,
+    ModelFactory,
+    ParameterFactory,
+    WorksheetFactory,
+    make_complex_model,
+    make_multi_table_model,
+    make_simple_model,
+)
 
 # ════════════════════════════════════════════════════════════════════
 #  Helpers
@@ -64,9 +66,6 @@ def _generate_full_pipeline(datasources, converted_objects, temp_dir,
         report_name, copy.deepcopy(converted_objects)
     )
 
-    # Also get TMDL stats
-    sm_dir = os.path.join(project_path, f'{report_name}.SemanticModel')
-    tmdl_dir = os.path.join(sm_dir, 'definition')
     # Re-generate TMDL stats from the BIM model
     tables = bim_model.get('model', {}).get('tables', [])
     rels = bim_model.get('model', {}).get('relationships', [])
@@ -348,7 +347,7 @@ class TestMQueryTmdlConsistency(unittest.TestCase):
 
     def test_source_columns_match_m_partition(self):
         """Every sourceColumn value must appear in the M partition expression.
-        
+
         For whole-table queries (SQL/CSV/Excel), the column names come from
         the schema at refresh time, so they won't appear literally in the M
         expression — those are skipped.  For M expressions that add computed
@@ -1217,7 +1216,7 @@ class TestParameterTmdlConsistency(unittest.TestCase):
             )
             self.assertTrue(
                 any('SELECTEDVALUE' in expr for expr in measure_exprs),
-                f"List param table missing SELECTEDVALUE measure"
+                "List param table missing SELECTEDVALUE measure"
             )
 
 

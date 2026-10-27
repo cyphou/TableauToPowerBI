@@ -17,11 +17,11 @@ Features:
 - Conditional formatting rules
 """
 
-import uuid
-import json
 import hashlib
+import json
 import logging
 import re
+import uuid
 
 from powerbi_import.pbip_generator import _L
 
@@ -286,15 +286,10 @@ VISUAL_TYPE_MAP = {
     "calendarheatmap": "matrix",
 
     # ── PBI pass-through (already correct) ─────────────────
+    # The other lowercase PBI names (stackedbarchart, piechart, ...) are
+    # already mapped in the sections above.
     "clusteredbarchart": "clusteredBarChart",
-    "stackedbarchart": "barChart",
     "clusteredcolumnchart": "clusteredColumnChart",
-    "stackedcolumnchart": "columnChart",
-    "piechart": "pieChart",
-    "areachart": "areaChart",
-    "stackedareachart": "stackedAreaChart",
-    "donutchart": "donutChart",
-    "waterfallchart": "waterfallChart",
     "lineStackedColumnComboChart": "lineStackedColumnComboChart",
 }
 
@@ -1469,7 +1464,7 @@ def _build_table_formatting(column_widths=None, banding=True, totals='bottom',
     Returns:
         dict: PBIR table/matrix visual configuration objects.
     """
-    config = {
+    config: dict = {
         "objects": {
             "grid": [{"properties": {
                 "gridVertical": _L("true"),
@@ -1577,7 +1572,7 @@ def _build_matrix_config(row_subtotals=True, column_subtotals=True,
 
 
 
-VISUAL_DATA_ROLES = {
+VISUAL_DATA_ROLES: dict[str, tuple[list[str], list[str]]] = {
     # (dimension_roles, measure_roles)
     "card":                              ([], ["Values"]),
     "multiRowCard":                      ([], ["Values"]),
@@ -1898,7 +1893,7 @@ APPROXIMATION_MAP = {
 }
 
 
-def _canonical_stacked_type(visual_type):
+def _canonical_stacked_type(visual_type: str) -> str:
     """Accept historical aliases, but never emit them as native PBIR IDs."""
     return {'stackedBarChart': 'barChart',
             'stackedColumnChart': 'columnChart',
@@ -3176,7 +3171,7 @@ def _apply_tableau_background_border(worksheet, visual_obj):
     if has_border:
         visual_obj.setdefault("objects", {})
         if "border" not in visual_obj["objects"]:
-            border_props = {"show": _L("true")}
+            border_props: dict = {"show": _L("true")}
             if border_color and border_color.startswith('#'):
                 border_props["color"] = {
                     "solid": {"color": _L(f"'{border_color}'")}
@@ -3534,7 +3529,7 @@ def generate_script_visual(visual_name, script_info, fields=None,
         )
         if adapted_code != original_code:
             # Successfully mapped args — include adapted code
-            script_content += f"# Adapted script (original _argN mapped to dataset columns):\n"
+            script_content += "# Adapted script (original _argN mapped to dataset columns):\n"
             for line in adapted_code.split('\n'):
                 script_content += f"{line}\n"
             script_content += "\nplt.show()\n"
@@ -3557,7 +3552,7 @@ def generate_script_visual(visual_name, script_info, fields=None,
             f"# Power BI provides a 'dataset' data.frame with your selected fields.\n\n"
         )
         if adapted_code != original_code:
-            script_content += f"# Adapted script (original _argN mapped to dataset columns):\n"
+            script_content += "# Adapted script (original _argN mapped to dataset columns):\n"
             for line in adapted_code.split('\n'):
                 script_content += f"{line}\n"
         else:

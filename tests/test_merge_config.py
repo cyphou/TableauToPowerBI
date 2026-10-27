@@ -20,10 +20,10 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.merge_config import (
-    save_merge_config,
-    load_merge_config,
-    apply_merge_config,
     _CONFIG_VERSION,
+    apply_merge_config,
+    load_merge_config,
+    save_merge_config,
 )
 
 

@@ -8,8 +8,8 @@ Covers:
 """
 import json
 import os
-import sys
 import struct
+import sys
 import tempfile
 import unittest
 import zlib
@@ -180,7 +180,7 @@ class TestValidationReport(unittest.TestCase):
         measure_results = {'passed': 1, 'failed': 0, 'missing': [], 'total': 1, 'details': []}
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'validation.json')
-            report = generate_validation_report(measure_results, output_path=path)
+            generate_validation_report(measure_results, output_path=path)
             self.assertTrue(os.path.exists(path))
             with open(path) as f:
                 data = json.load(f)

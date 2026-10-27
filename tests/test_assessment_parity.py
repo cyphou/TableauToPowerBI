@@ -8,7 +8,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
 from powerbi_import.assessment import (  # noqa: E402
-    run_assessment, _check_functionality_parity, PASS, INFO, WARN, FAIL,
+    INFO,
+    PASS,
+    _check_functionality_parity,
+    run_assessment,
 )
 
 

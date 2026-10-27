@@ -22,7 +22,10 @@ from io import StringIO
 from types import SimpleNamespace
 
 from powerbi_import.tmdl_writers import (
-    _common_ancestor, _data_folder_from, _write_expressions_tmdl)
+    _common_ancestor,
+    _data_folder_from,
+    _write_expressions_tmdl,
+)
 
 _FOLDER = re.compile(r'expression DataFolder = "((?:[^"\\]|\\.)*)"')
 

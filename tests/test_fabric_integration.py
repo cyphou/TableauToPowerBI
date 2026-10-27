@@ -14,20 +14,17 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from powerbi_import.deploy.client import FabricClient
-from powerbi_import.deploy.deployer import FabricDeployer
-from powerbi_import.deploy.utils import DeploymentReport, ArtifactCache
-from powerbi_import.deploy.config.settings import _FallbackSettings
-from powerbi_import.deploy.config.environments import EnvironmentConfig, EnvironmentType
-
-from powerbi_import.gateway_config import GatewayConfigGenerator
-from powerbi_import.gateway_config import OAUTH_CONNECTORS
 from powerbi_import.comparison_report import generate_comparison_report
-
+from powerbi_import.deploy.client import FabricClient
+from powerbi_import.deploy.config.environments import EnvironmentConfig, EnvironmentType
+from powerbi_import.deploy.config.settings import _FallbackSettings
+from powerbi_import.deploy.deployer import FabricDeployer
+from powerbi_import.deploy.utils import ArtifactCache, DeploymentReport
+from powerbi_import.gateway_config import OAUTH_CONNECTORS, GatewayConfigGenerator
 
 # ────────────────────────────────────────────────────────
 # Auth stub

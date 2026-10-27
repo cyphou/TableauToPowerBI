@@ -68,6 +68,10 @@ class TestVisualGeneratorSurface(unittest.TestCase):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         defined.add(target.id)
+            elif isinstance(node, ast.AnnAssign) and isinstance(
+                    node.target, ast.Name):
+                # ``NAME: T = value`` defines NAME like ``NAME = value`` does.
+                defined.add(node.target.id)
         self.assertEqual(set(), EXPECTED_SURFACE - defined)
 
     def test_the_surface_is_not_empty(self):

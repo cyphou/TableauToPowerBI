@@ -30,12 +30,14 @@ from pathlib import Path
 # Balance checking is span-aware there: parens inside "strings", 'table quotes'
 # and [bracketed identifiers] are literal, not grouping.
 from powerbi_import.dax_validator import TABLEAU_LEAK_FUNCTIONS, _check_balanced
+
 # Canonical "is this entry actually restrictive?" test, so this review agrees
 # with the interface diff about which shelf entries need a PBI filter object.
 from powerbi_import.interface_diff import (
     _dashboard_worksheet_names,
     _is_non_restrictive,
 )
+
 # Canonical date-dimension vocabulary, so this review agrees with the generator
 # about what counts as a date table instead of forking a second definition.
 from powerbi_import.tmdl_generator import _DATE_TABLE_NAMES
@@ -445,10 +447,6 @@ def _review_completeness(pbip_path, extraction_data):
     src_calculations = len(extraction_data.get('calculations', []))
     src_datasources = len(extraction_data.get('datasources', []))
     src_parameters = len(extraction_data.get('parameters', []))
-    src_hierarchies = len(extraction_data.get('hierarchies', []))
-    src_sets = len(extraction_data.get('sets', []))
-    src_groups = len(extraction_data.get('groups', []))
-    src_bins = len(extraction_data.get('bins', []))
 
     # Output counts from generated TMDL
     sm_dir = pbip / f'{report_name}.SemanticModel'
@@ -465,7 +463,6 @@ def _review_completeness(pbip_path, extraction_data):
                     out_visuals += len(list(visuals_dir.glob('*/visual.json')))
 
     # Scoring
-    total_src = src_worksheets + src_calculations + src_parameters + src_hierarchies
     penalties = 0
 
     # Check worksheets → visuals
@@ -493,7 +490,7 @@ def _review_completeness(pbip_path, extraction_data):
 
     # Check parameters
     if src_parameters > 0 and out_measures_cols < src_parameters:
-        issues.append(f"Some parameters may not have been converted")
+        issues.append("Some parameters may not have been converted")
         penalties += 1
 
     score = max(1, 5 - penalties)
@@ -609,7 +606,6 @@ def _review_m_query_validity(pbip_path, extraction_data):
 
                 # Check if/then/else balance
                 ifs = len(_M_IF_RE.findall(block))
-                thens = len(_M_THEN_RE.findall(block))
                 elses = len(_M_ELSE_RE.findall(block))
 
                 if ifs > 0 and ifs != elses:
@@ -1007,7 +1003,6 @@ def _review_visual_equivalence(pbip_path, extraction_data, screenshots_dir=None)
     else:
         avg_ssim = sum(ssim_scores) / len(ssim_scores) if ssim_scores else 0.0
         pass_rate = passed_pairs / total_pairs if total_pairs > 0 else 0.0
-        missing_penalty = len([f for f in failed_pairs if f not in [s.lower() for s in source_files]])
 
         if avg_ssim >= 0.95 and pass_rate == 1.0:
             score = 5

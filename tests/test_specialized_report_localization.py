@@ -5,21 +5,28 @@ not require Tableau Server, Power BI, a browser, or customer workbooks.
 """
 
 import html
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from powerbi_import import (
-    artifact_diff, cutover_manager, dependency_graph, global_assessment,
-    merge_assessment, permission_mapper, prep_lineage_report, qa_suite,
-    recovery_report, server_assessment, subscription_generator,
+    artifact_diff,
+    cutover_manager,
+    dependency_graph,
+    global_assessment,
+    merge_assessment,
+    permission_mapper,
+    prep_lineage_report,
+    qa_suite,
+    recovery_report,
+    server_assessment,
+    subscription_generator,
 )
 from powerbi_import.html_template import get_report_js, html_close, html_open
 from powerbi_import.prep_lineage import FlowProfile, PrepLineageGraph
 from powerbi_import.report_localization import text
 from powerbi_import.shared_model import MeasureConflict, MergeAssessment
 from tests.test_report_localization import _Document
-
 
 NAME = 'Sales <North> & "café"'
 RAW = 'raw <script>alert("evidence")</script> & diagnostic'

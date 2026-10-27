@@ -16,7 +16,6 @@ import os
 import sys
 import tempfile
 import unittest
-from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -210,7 +209,7 @@ class TestMerge(unittest.TestCase):
                 'visualType': 'lineChart',
                 'data': 'new',
             })
-            stats = IncrementalMerger.merge(d1, d2, out)
+            IncrementalMerger.merge(d1, d2, out)
             with open(os.path.join(out, 'visual.json'), 'r') as f:
                 result = json.load(f)
             self.assertEqual(result['title'], 'My Custom Title')

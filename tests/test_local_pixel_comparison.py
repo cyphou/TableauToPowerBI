@@ -1,15 +1,19 @@
 """Permanent strict PNG regressions with exact, independently known metrics."""
 
 import hashlib
-from pathlib import Path
 import tempfile
 import unittest
-from unittest import mock
 import zlib
+from pathlib import Path
+from unittest import mock
 
 from powerbi_import import local_pixel_comparison as pixels
 from tests.pixel_comparison_fixtures import (
-    PNG_SIGNATURE, forbid_network, png_chunk, png_header, tiny_png,
+    PNG_SIGNATURE,
+    forbid_network,
+    png_chunk,
+    png_header,
+    tiny_png,
 )
 
 

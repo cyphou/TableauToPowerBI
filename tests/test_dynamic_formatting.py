@@ -8,7 +8,6 @@ Tests:
 - DAX query export to .dax files
 """
 
-import json
 import os
 import sys
 import tempfile
@@ -425,7 +424,7 @@ class TestDAXQueryExport(unittest.TestCase):
     """Test DAX query export to .dax files."""
 
     def test_export_creates_files(self):
-        from dax_query_generator import generate_dax_queries, export_dax_queries
+        from dax_query_generator import export_dax_queries, generate_dax_queries
         tables = [{
             'name': 'Sales',
             'columns': [{'name': 'Region', 'dataType': 'String'}],
@@ -506,7 +505,7 @@ class TestSaveValidationQueriesAlias(unittest.TestCase):
     """Test that save_validation_queries is an alias for export_dax_queries."""
 
     def test_alias(self):
-        from dax_query_generator import save_validation_queries, export_dax_queries
+        from dax_query_generator import export_dax_queries, save_validation_queries
         self.assertIs(save_validation_queries, export_dax_queries)
 
 
@@ -533,6 +532,7 @@ class TestExportSensitivityCSV(unittest.TestCase):
 
     def test_csv_content(self):
         import csv as csv_mod
+
         from governance import export_sensitivity_csv
         labels = [
             {'table': 'Users', 'column': 'email', 'label': 'Confidential',

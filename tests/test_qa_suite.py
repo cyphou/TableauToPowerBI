@@ -7,25 +7,32 @@ checks plus aggregate-report and HTML-rendering coverage.
 
 import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 
 # Ensure parent dir on path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.qa_suite import (
-    QACheck, QAReport,
-    run_qa_suite, generate_qa_html,
-    STRAY_SENTINELS, SENTINEL_NAMES,
-    _check_no_stray_sentinels, _check_no_empty_visuals,
-        _check_visual_role_contract,
-    _check_format_coverage, _check_zones_matched, _check_no_orphan_filters,
-    _iter_visual_files, _find_report_dir, _encoded_field_count,
-    _has_static_content, _text_run_values, _filter_has_field,
+    SENTINEL_NAMES,
+    STRAY_SENTINELS,
+    QACheck,
+    _check_format_coverage,
+    _check_no_empty_visuals,
+    _check_no_orphan_filters,
+    _check_no_stray_sentinels,
+    _check_visual_role_contract,
+    _check_zones_matched,
+    _encoded_field_count,
+    _filter_has_field,
+    _has_static_content,
+    _iter_visual_files,
+    _text_run_values,
+    generate_qa_html,
+    run_qa_suite,
 )
-
 
 # ── Fixture builders ────────────────────────────────────────────────
 

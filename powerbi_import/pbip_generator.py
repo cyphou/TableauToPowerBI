@@ -5,16 +5,16 @@ This module automatically creates the complete structure of a Power BI Project,
 including all the files needed to open the project in Power BI Desktop.
 """
 
-import os
 import json
 import logging
 import math
-import shutil
-import time
-from datetime import datetime
-import uuid
+import os
 import re
+import shutil
 import sys
+import time
+import uuid
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -406,7 +406,7 @@ def _filter_literal(v, date_part_prefix='', boundary='min'):
 
 class PowerBIProjectGenerator:
     """Generates Power BI Project (.pbip) files"""
-    
+
     def __init__(self, output_dir='artifacts/powerbi_projects/'):
         from powerbi_import.desktop_paths import validate_desktop_root
         # Content-only callers (thin reports) do not create the nested project
@@ -416,7 +416,7 @@ class PowerBIProjectGenerator:
         self._fidelity_preprocess_summary = {}
         self._equivalence_report = None
         self.last_phase_timings = None
-        
+
     def generate_project(self, report_name, converted_objects, calendar_start=None,
                          calendar_end=None, culture=None, model_mode='auto',
                          output_format='pbip', paginated=False, languages=None,
@@ -425,7 +425,7 @@ class PowerBIProjectGenerator:
                          parameterize=True, optimize_dax=False, time_intelligence='none'):
         """
         Generates a complete Power BI Project
-        
+
         Args:
             report_name: Report name
             converted_objects: Dict containing all converted objects
@@ -433,11 +433,11 @@ class PowerBIProjectGenerator:
             calendar_end: End year for Calendar table (default: 2030)
             culture: Override culture/locale for semantic model
             paginated: If True, generate a paginated report layout alongside interactive report
-        
+
         Returns:
             str: Path to the generated project
         """
-        
+
         from powerbi_import.telemetry import PhaseTimingCollector
 
         phase_timings = PhaseTimingCollector().start()
@@ -446,7 +446,7 @@ class PowerBIProjectGenerator:
         # short identity up front; silently renaming here breaks its helpers.
         validate_desktop_project(self.output_dir, report_name)
         print(f"\nðŸ”¨ Generating Power BI Project: {report_name}")
-        
+
         # Store options for downstream use
         self._calendar_start = calendar_start
         self._calendar_end = calendar_end
@@ -468,12 +468,12 @@ class PowerBIProjectGenerator:
             converted_objects = self._preprocess_for_fidelity(
                 report_name, converted_objects,
             )
-        
+
         # Detect datasource-only mode (.tds â€” no worksheets/dashboards)
         self._datasource_only = not bool(
             converted_objects.get('worksheets') or converted_objects.get('dashboards')
         )
-        
+
         # Create project structure
         project_dir = os.path.join(self.output_dir, report_name)
         os.makedirs(project_dir, exist_ok=True)
@@ -482,7 +482,7 @@ class PowerBIProjectGenerator:
         pbip_file = os.path.join(project_dir, f"{report_name}.pbip")
         if os.path.isfile(pbip_file):
             os.remove(pbip_file)
-        
+
         # 2. Create the SemanticModel structure
         if self._output_format in ('pbip', 'tmdl'):
             with phase_timings.phase('semantic_model'):
@@ -490,7 +490,7 @@ class PowerBIProjectGenerator:
                     project_dir, report_name, converted_objects,
                 )
             print(f"  âœ“ SemanticModel created: {sm_dir}")
-        
+
         # 3. Create the Report structure only when the source has visuals.
         has_visuals = bool(converted_objects.get('worksheets') or converted_objects.get('dashboards'))
         if self._output_format in ('pbip', 'pbir') and has_visuals:
@@ -500,13 +500,13 @@ class PowerBIProjectGenerator:
                 )
             print(f"  âœ“ Report created: {report_dir}")
         elif not has_visuals:
-            print(f"  â„¹ Datasource-only mode: SemanticModel generated (no Report)")
-        
+            print("  â„¹ Datasource-only mode: SemanticModel generated (no Report)")
+
         # 4. Create metadata
         with phase_timings.phase('metadata'):
             self.create_metadata(project_dir, report_name, converted_objects)
-        print(f"  âœ“ Metadata created")
-        
+        print("  âœ“ Metadata created")
+
         # 5. Create paginated report layout (if requested)
         if self._paginated:
             with phase_timings.phase('paginated_report'):
@@ -514,7 +514,7 @@ class PowerBIProjectGenerator:
                     project_dir, report_name, converted_objects,
                 )
             print(f"  âœ“ Paginated report layout created: {pag_dir}")
-        
+
         # 6. Generate post-migration automation artifacts
         with phase_timings.phase('automation_artifacts'):
             self._generate_automation_artifacts(
@@ -532,10 +532,10 @@ class PowerBIProjectGenerator:
             pbip_file = self.create_pbip_file(project_dir, report_name)
         print(f"  âœ“ .pbip file created: {pbip_file}")
         self.last_phase_timings = phase_timings.finish()
-        
+
         print(f"\nâœ… Power BI Project generated: {project_dir}")
         print(f"   ðŸ“‚ Open in Power BI Desktop: {pbip_file}")
-        
+
         return project_dir
 
     def _preprocess_for_fidelity(self, report_name, converted_objects):
@@ -560,7 +560,9 @@ class PowerBIProjectGenerator:
             ReferenceLineBuilder = None
 
         try:
-            from powerbi_import.relationship_inference_v2 import RelationshipInferenceEngine
+            from powerbi_import.relationship_inference_v2 import (
+                RelationshipInferenceEngine,
+            )
         except Exception:
             RelationshipInferenceEngine = None
 
@@ -698,10 +700,10 @@ class PowerBIProjectGenerator:
             )
         except Exception as exc:
             logger.debug("Equivalence v2 skipped: %s", exc)
-    
+
     def create_pbip_file(self, project_dir, report_name):
         """Creates the main .pbip file â€” format identical to PBI Hero reference"""
-        
+
         pbip_content = {
             "$schema": "https://developer.microsoft.com/json-schemas/fabric/pbip/pbipProperties/1.0.0/schema.json",
             "version": "1.0",
@@ -716,7 +718,7 @@ class PowerBIProjectGenerator:
                 "enableAutoRecovery": True
             }
         }
-        
+
         # Datasource-only migrations contain a semantic model but no report.
         if hasattr(self, '_datasource_only') and self._datasource_only:
             pbip_content["artifacts"] = [
@@ -726,24 +728,24 @@ class PowerBIProjectGenerator:
                     }
                 }
             ]
-        
+
         pbip_file = os.path.join(project_dir, f"{report_name}.pbip")
-        
+
         _write_json(pbip_file, pbip_content)
-        
+
         # Also create the .gitignore
         gitignore = os.path.join(project_dir, '.gitignore')
         with open(gitignore, 'w', encoding='utf-8') as f:
             f.write(".pbi/\n")
-        
+
         return pbip_file
-    
+
     def create_semantic_model_structure(self, project_dir, report_name, converted_objects):
         """Creates the SemanticModel structure (format identical to PBI Hero reference)"""
-        
+
         sm_dir = os.path.join(project_dir, f"{report_name}.SemanticModel")
         os.makedirs(sm_dir, exist_ok=True)
-        
+
         # 1. Create .platform
         platform = {
             "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
@@ -757,7 +759,7 @@ class PowerBIProjectGenerator:
             }
         }
         _write_json(os.path.join(sm_dir, '.platform'), platform)
-        
+
         # 2. Create definition.pbism
         pbism_definition = {
             "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/semanticModel/definitionProperties/1.0.0/schema.json",
@@ -768,20 +770,20 @@ class PowerBIProjectGenerator:
         }
         pbism_file = os.path.join(sm_dir, 'definition.pbism')
         _write_json(pbism_file, pbism_definition)
-        
+
         # 3. Create SemanticModel in TMDL (format identical to PBI Hero reference)
         self.create_tmdl_model(sm_dir, report_name, converted_objects)
-        
+
         return sm_dir
-    
+
     def create_tmdl_model(self, sm_dir, report_name, converted_objects):
         """Creates the semantic model in TMDL format (Tabular Model Definition Language)
-        
+
         Directly converts extracted Tableau data to TMDL files.
         """
-        
+
         datasources = converted_objects.get('datasources', [])
-        
+
         # Collect additional objects
         extra_objects = {
             'hierarchies': converted_objects.get('hierarchies', []),
@@ -798,7 +800,7 @@ class PowerBIProjectGenerator:
             'calculations': converted_objects.get('calculations', []),
             'hyper_files': converted_objects.get('hyper_files', []),
         }
-        
+
         try:
             # Direct Tableau -> TMDL generation (no intermediate BIM layer)
             stats = tmdl_generator.generate_tmdl(
@@ -819,8 +821,8 @@ class PowerBIProjectGenerator:
                 optimize_dax=getattr(self, '_optimize_dax', False),
                 time_intelligence=getattr(self, '_time_intelligence', 'none'),
             )
-            
-            print(f"  \u2713 TMDL model created with:")
+
+            print("  \u2713 TMDL model created with:")
             print(f"    - {stats['tables']} tables")
             print(f"    - {stats['columns']} columns")
             print(f"    - {stats['measures']} DAX measures")
@@ -860,13 +862,13 @@ class PowerBIProjectGenerator:
             if lineage:
                 lineage_path = os.path.join(os.path.dirname(sm_dir), 'lineage_map.json')
                 _write_json(lineage_path, lineage)
-            
+
         except Exception as e:
             print(f"  \u26a0 Error during TMDL generation: {e}")
             import traceback
             traceback.print_exc()
             raise
-    
+
     def _read_related_month_bindings(self, sm_dir):
         """Find verified month columns behind active, exact date relationships.
 
@@ -964,12 +966,12 @@ class PowerBIProjectGenerator:
 
     def _create_basic_model_bim(self, report_name, datasources):
         """Basic BIM generation in case of error (fallback)"""
-        
+
         tables = []
-        
+
         # Create a simple sample table
         m_expression = m_query_generator.generate_sample_data_query('SampleData', None)
-        
+
         tables.append({
             "name": "SampleData",
             "columns": [
@@ -986,7 +988,7 @@ class PowerBIProjectGenerator:
                 }
             }]
         })
-        
+
         return {
             "name": report_name,
             "compatibilityLevel": 1567,
@@ -996,7 +998,7 @@ class PowerBIProjectGenerator:
                 "tables": tables
             }
         }
-    
+
     # â”€â”€ Visual creation helpers (extracted from create_report_structure) â”€â”€â”€â”€â”€
 
     # Layout constants
@@ -1443,7 +1445,7 @@ class PowerBIProjectGenerator:
                         if hasattr(self, '_field_map') and sort_field in self._field_map:
                             sort_entity, sort_prop = self._field_map[sort_field]
 
-                        sort_entry = {
+                        sort_entry: dict = {
                             "direction": "Descending" if sort_dir.upper() == 'DESC' else "Ascending"
                         }
                         if sort_by:
@@ -1481,7 +1483,7 @@ class PowerBIProjectGenerator:
         display_title = self._resolve_parameter_title(display_title, converted_objects)
         # Escape single quotes for PBI literal
         display_title = display_title.replace("'", "''")
-        title_props = {
+        title_props: dict = {
             "show": _L("true"),
             "text": _L(f"'{display_title}'")
         }
@@ -1593,7 +1595,7 @@ class PowerBIProjectGenerator:
                 visual_json["visual"]["visualContainerObjects"]["padding"] = [{"properties": pad_props}]
             # Apply border if extracted
             if obj_padding.get('border_style') and obj_padding['border_style'] != 'none':
-                border_props = {
+                border_props: dict = {
                     "show": _L("true")
                 }
                 if obj_padding.get('border_color'):
@@ -2052,11 +2054,11 @@ class PowerBIProjectGenerator:
     def _create_action_visuals(self, visuals_dir, actions, scale_x, scale_y,
                                 visual_count, page_display_name):
         """Create action button visuals from Tableau actions.
-        
+
         Generates:
         - URL actions â†’ actionButton visuals with WebUrl type
         - sheet-navigate actions â†’ actionButton visuals with PageNavigation type
-        
+
         Returns the number of visuals created.
         """
         created = 0
@@ -2073,7 +2075,7 @@ class PowerBIProjectGenerator:
                 visual_dir = os.path.join(visuals_dir, visual_id)
 
                 action_name = action.get('name', 'URL Action')
-                
+
                 btn_json = {
                     "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
                     "name": visual_id,
@@ -2102,14 +2104,14 @@ class PowerBIProjectGenerator:
                 self._normalize_action_visual(btn_json)
                 _write_json(os.path.join(visual_dir, 'visual.json'), btn_json, ensure_ascii=False)
                 created += 1
-            
+
             elif action_type == 'sheet-navigate':
                 visual_id = uuid.uuid4().hex[:8]
                 visual_dir = os.path.join(visuals_dir, visual_id)
-                
+
                 target_ws = action.get('target_worksheet', '')
                 action_name = action.get('name', target_ws or 'Navigate')
-                
+
                 btn_json = {
                     "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
                     "name": visual_id,
@@ -2137,7 +2139,7 @@ class PowerBIProjectGenerator:
                 self._normalize_action_visual(btn_json)
                 _write_json(os.path.join(visual_dir, 'visual.json'), btn_json, ensure_ascii=False)
                 created += 1
-        
+
         return created
 
     # ── Sprint 122: Set Actions & Interactive Parity ────────────────
@@ -2423,7 +2425,7 @@ class PowerBIProjectGenerator:
 
     def create_report_structure(self, project_dir, report_name, converted_objects):
         """Creates the Report structure in PBIR v4.0 format (identical to PBI Hero reference)
-        
+
         Structure:
           Report/
             .platform
@@ -2441,7 +2443,7 @@ class PowerBIProjectGenerator:
         """
         import shutil
         import time
-        
+
         # Clear auto-generated measures from previous run (batch mode safety)
         from powerbi_import.visual_generator import clear_auto_generated_measures
         clear_auto_generated_measures()
@@ -2455,7 +2457,7 @@ class PowerBIProjectGenerator:
         self._set_action_bookmarks = []
 
         report_dir = os.path.join(project_dir, f"{report_name}.Report")
-        
+
         # Clean previous content (with retries for OneDrive sync locks)
         if os.path.exists(report_dir):
             for attempt in range(5):
@@ -2479,7 +2481,7 @@ class PowerBIProjectGenerator:
                                 except (PermissionError, OSError) as exc:
                                     logger.debug("Could not remove directory %s: %s", os.path.join(root, name), exc)
         os.makedirs(report_dir, exist_ok=True)
-        
+
         # 1. .platform
         platform = {
             "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
@@ -2493,7 +2495,7 @@ class PowerBIProjectGenerator:
             }
         }
         _write_json(os.path.join(report_dir, '.platform'), platform)
-        
+
         # 2. definition.pbir (PBIR v4.0, schema 2.0.0, points to SemanticModel)
         report_definition = {
             "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json",
@@ -2505,18 +2507,18 @@ class PowerBIProjectGenerator:
             }
         }
         _write_json(os.path.join(report_dir, 'definition.pbir'), report_definition)
-        
+
         # 3. definition/ folder
         def_dir = os.path.join(report_dir, 'definition')
         os.makedirs(def_dir, exist_ok=True)
-        
+
         # 3a. version.json
         version_json = {
             "$schema": SCHEMA_VERSION,
             "version": "2.0.0"
         }
         _write_json(os.path.join(def_dir, 'version.json'), version_json)
-        
+
         # 3b. report.json â€” generate custom theme from extracted Tableau dashboard colors
         theme_data = None
         dashboards = converted_objects.get('dashboards', [])
@@ -2578,19 +2580,19 @@ class PowerBIProjectGenerator:
                 "reportVersionAtImport": PBI_REPORT_VERSION_AT_IMPORT,
                 "type": "RegisteredResources"
             }
-        
+
         # Promote global filters and datasource-level filters to report level
         all_report_filters = converted_objects.get('filters', []) + converted_objects.get('datasource_filters', [])
         if all_report_filters:
             report_level_filters = self._create_visual_filters(all_report_filters)
             if report_level_filters:
                 report_json["filterConfig"] = {"filters": report_level_filters}
-        
+
         # Defer writing report.json until after pages â€” custom visual
         # GUIDs are discovered during visual creation and must be added
         # to report.json before it is persisted.
         self._used_custom_guids = {}  # key â†’ guid_info dict
-        
+
         # Write custom theme file if theme data was found
         if theme_data:
             res_dir = os.path.join(def_dir, 'RegisteredResources')
@@ -2598,23 +2600,23 @@ class PowerBIProjectGenerator:
 
         # Copy custom shapes from extraction output to RegisteredResources
         self._copy_custom_shapes(def_dir, converted_objects)
-        
+
         # 4. Create pages with visuals
         pages_dir = os.path.join(def_dir, 'pages')
         os.makedirs(pages_dir, exist_ok=True)
-        
+
         worksheets = converted_objects.get('worksheets', [])
-        
+
         page_names = []
-        
+
         # Pre-build tooltip page mapping for viz-in-tooltip binding
         # tooltip_page_map: worksheet_name â†’ tooltip_page_name
         tooltip_page_map = {}
-        
+
         if dashboards:
             page_names = self._create_dashboard_pages(
                 pages_dir, dashboards, worksheets, converted_objects, tooltip_page_map)
-        
+
         # Collect bookmarks: from stories + from dynamic zone visibility (sheet-swap)
         all_bookmarks = []
         stories = converted_objects.get('stories', [])
@@ -2639,7 +2641,7 @@ class PowerBIProjectGenerator:
         # Fallback: default page
         if not page_names or (dashboards and all(len(d.get('objects', [])) == 0 for d in dashboards)):
             page_names = self._create_fallback_page(pages_dir, worksheets, converted_objects)
-        
+
         # 5b. Tooltip pages
         self._create_tooltip_pages(pages_dir, page_names, worksheets, converted_objects)
 
@@ -2656,7 +2658,7 @@ class PowerBIProjectGenerator:
             "activePageName": page_names[0] if page_names else ""
         }
         _write_json(os.path.join(pages_dir, 'pages.json'), pages_metadata)
-        
+
         # Post-generation cleanup: remove stale page and visual directories
         # (from previous migration runs or OneDrive lock leftovers)
         valid_page_set = set(page_names)
@@ -2692,7 +2694,7 @@ class PowerBIProjectGenerator:
         if self._used_custom_guids:
             cv_classes = sorted({info.get('class', k) for k, info in self._used_custom_guids.items()})
             report_json["publicCustomVisuals"] = cv_classes
-        
+
         _write_json(os.path.join(def_dir, 'report.json'), report_json)
 
         # Sprint 140 — Self-Healing v3.4: scan the freshly written .Report
@@ -2709,7 +2711,7 @@ class PowerBIProjectGenerator:
             pass
 
         return report_dir
-    
+
     def _generate_report_definition_content(self, report_dir, report_name,
                                               converted_objects):
         """Generate report definition content (pages, visuals, theme) inside an
@@ -3092,7 +3094,7 @@ class PowerBIProjectGenerator:
             }
             _write_json(os.path.join(page_dir, 'page.json'), page_json)
             os.makedirs(os.path.join(page_dir, 'visuals'), exist_ok=True)
-            print(f"  ðŸ“Š Default page: 0 visuals created")
+            print("  ðŸ“Š Default page: 0 visuals created")
             return page_names
 
         for idx, ws in enumerate(worksheets):
@@ -3351,22 +3353,22 @@ class PowerBIProjectGenerator:
 
     def _build_field_mapping(self, converted_objects):
         """Builds the mapping from Tableau fields to the Power BI model.
-        
+
         Solves 2 problems:
         1. Visuals reference the Tableau internal ID (e.g. federated.xxx) instead
            of the Power BI table name (e.g. CORN, cities.csv)
         2. Visuals reference Tableau calculation IDs (e.g. Calculation_114...)
            instead of the Power BI measure name (e.g. Filiere, Lat_upgrade)
-        
+
         Tables are now all real physical tables.
         Measures are on the main table (the one with the most columns).
-        
+
         Creates self._field_map: {raw_field_name: (table_name, property_name)}
         """
         self._field_map = {}
-        
+
         datasources = converted_objects.get('datasources', [])
-        
+
         # Phase 1: Collect deduplicated physical tables
         # Use table_rename_map from the TMDL generator so table names in the
         # report (Entity references) match the semantic model exactly.
@@ -3436,7 +3438,7 @@ class PowerBIProjectGenerator:
                 main_table = tname
         self._main_table = main_table or 'Table'
         self._datasources_ref = datasources
-        
+
         # Phase 3: Map columns of each physical table
         #   Also track physical measure columns (role='measure' from Tableau)
         #   When a column name exists in multiple tables, prefer the main table
@@ -3460,7 +3462,7 @@ class PowerBIProjectGenerator:
                     if stripped_caption and (
                             stripped_caption not in self._field_map or tname == main_table):
                         self._field_map[stripped_caption] = (tname, prop)
-        
+
         # Phase 4: Map Tableau calculations (rawID -> caption/friendly name)
         # Measures are on the main table
         measures_table = main_table or 'Table'
@@ -3535,7 +3537,7 @@ class PowerBIProjectGenerator:
                 ) if target else prop.strip()
                 if target and (target, canonical_prop) in _bim_sym:
                     self._field_map[key] = (target, canonical_prop)
-        
+
         # Also gather measure names from top-level calculations
         for calc in converted_objects.get('calculations', []):
             if calc.get('role', '') == 'measure':
@@ -3552,7 +3554,7 @@ class PowerBIProjectGenerator:
                 if caption:
                     self._measure_names.add(caption)
                     self._measure_names.add(canonical_caption)
-        
+
         # Phase 5: Map extracted groups (BIM-generated calculated columns)
         groups = converted_objects.get('groups', [])
         for g in groups:
@@ -3606,7 +3608,7 @@ class PowerBIProjectGenerator:
 
         # Save the main table for fallback
         self._main_table = measures_table
-    
+
     def _is_measure_field(self, field_name):
         """Check if a field is a measure (aggregate) vs a dimension.
 
@@ -3631,7 +3633,7 @@ class PowerBIProjectGenerator:
             if hasattr(self, '_bim_measure_names') and prop in self._bim_measure_names:
                 return True
         return False
-    
+
     def _clean_field_name(self, name):
         """Strip all known Tableau derivation prefixes from a field name"""
         clean = _RE_DERIVATION_PREFIX.sub('', name)
@@ -4638,7 +4640,7 @@ class PowerBIProjectGenerator:
             note(f'{visual_type} needs {", ".join(missing)}; '
                  'source fields could not fill that role, shown as a table instead')
         return query_state
-    
+
     def _make_projection(self, field):
         """Creates a simple projection for a field"""
         return {
@@ -4692,7 +4694,7 @@ class PowerBIProjectGenerator:
             'field': {'Aggregation': {
                 'Expression': {'Column': column}, 'Function': agg_func}},
         }
-    
+
     def _make_projection_entry(self, field, force_column=False):
         """Creates a projection entry for a field, resolved to the Power BI model.
 
@@ -4848,7 +4850,7 @@ class PowerBIProjectGenerator:
             "nativeQueryRef": prop,
             "active": True
         }
-    
+
     def _create_bookmarks(self, stories, page_names=None):
         """Converts Tableau stories to Power BI bookmarks (PBIR format)."""
         bookmarks = []
@@ -5045,7 +5047,7 @@ class PowerBIProjectGenerator:
     def _create_report_filters(self, converted_objects):
         """Creates report-level filters from parameters"""
         report_filters = []
-        
+
         params = converted_objects.get('parameters', [])
         for param in params:
             # Support both extracted (caption/value) and converted (displayName/currentValue) format
@@ -5053,15 +5055,15 @@ class PowerBIProjectGenerator:
             if not param_name:
                 continue
             param_name = param_name.replace('[', '').replace(']', '')
-            
+
             current_value = param.get('currentValue', param.get('value', ''))
             if not current_value:
                 continue
-            
+
             # Clean quotes
             if isinstance(current_value, str):
                 current_value = current_value.strip('"')
-            
+
             # Resolve Entity via _field_map (parameters = measures on main table)
             entity, prop = self._resolve_field_entity(param_name)
 
@@ -5098,9 +5100,9 @@ class PowerBIProjectGenerator:
                 }
             }
             report_filters.append(filter_obj)
-        
+
         return report_filters
-    
+
     def _resolve_field_entity(self, field_name, datasource='', source_table=None,
                               source_column=None):
         """Resolves a field name to (entity_table, property_name) via _field_map.
@@ -5231,16 +5233,16 @@ class PowerBIProjectGenerator:
     def _create_visual_filters(self, filters):
         """Creates visual-level filters from worksheet filters"""
         visual_filters = []
-        
+
         # Tableau virtual fields that have no PBI equivalent
         skip_fields = {'Measure Names', 'Measure Values', 'Multiple Values',
                        ':Measure Names', ':Measure Values'}
-        
+
         for f in filters:
             field = f.get('field', '')
             if not field:
                 continue
-            
+
             # Parse [datasource].[derivation:field:suffix] pattern from global filters
             # (worksheet-level filters are already cleaned by the extractor)
             ds_ref = f.get('datasource', '')
@@ -5264,7 +5266,7 @@ class PowerBIProjectGenerator:
                 # Clean field name (remove Tableau brackets)
                 clean_field = field.replace('[', '').replace(']', '')
                 _date_part_prefix = ''
-            
+
             # Skip Tableau virtual fields (no PBI column exists)
             if clean_field in skip_fields or field.replace('[', '').replace(']', '') in skip_fields:
                 continue
@@ -5279,7 +5281,7 @@ class PowerBIProjectGenerator:
                 continue
             if clean_field.startswith('Action '):
                 continue
-            
+
             # Resolve Entity (table) and Property (column) via mapping
             ds_ref = f.get('datasource', '')
             entity, prop = self._resolve_field_entity(clean_field, datasource=ds_ref)
@@ -5328,7 +5330,7 @@ class PowerBIProjectGenerator:
                 _bim_meas_types = getattr(self, '_actual_bim_measure_types', {}) or {}
                 _col_type = (_bim_meas_types.get((entity, prop))
                              or _bim_meas_types.get((entity, prop.strip())))
-            
+
             filter_type = f.get('type', 'categorical')
             filter_mode = f.get('filter_mode', '')
 
@@ -5556,7 +5558,7 @@ class PowerBIProjectGenerator:
                         "Where": []
                     }
                 }
-                
+
                 condition = {
                     "In": {
                         "Expressions": [{_field_kind: {"Expression": {"SourceRef": {"Source": "t"}}, "Property": prop}}],
@@ -5566,7 +5568,7 @@ class PowerBIProjectGenerator:
                 if is_exclude:
                     condition = {"Not": {"Expression": condition}}
                 pbi_filter["filter"]["Where"].append({"Condition": condition})
-                
+
                 visual_filters.append(pbi_filter)
 
         # Deduplicate by (Entity, Property) — PBI only allows one filter per
@@ -5591,7 +5593,7 @@ class PowerBIProjectGenerator:
             deduped.append(flt)
 
         return deduped
-    
+
     def _build_visual_objects(self, ws_name, ws_data, visual_type, query_state=None):
         """Builds visual objects (title, colors, labels, legend, axes).
 
@@ -5670,7 +5672,7 @@ class PowerBIProjectGenerator:
             show_labels = True
 
         if show_labels:
-            label_props = {
+            label_props: dict = {
                 "show": _L("true")
             }
             # Apply label font size
@@ -5882,6 +5884,7 @@ class PowerBIProjectGenerator:
                     cat_props["reverseOrder"] = _L("true")
                 objects["categoryAxis"] = [{"properties": cat_props}]
 
+            val_props: dict = {}
             y_axis = axes_data.get('y', {})
             if y_axis:
                 val_props = {
@@ -6014,7 +6017,7 @@ class PowerBIProjectGenerator:
 
             # Grid/border
             if isinstance(header_style, dict) and header_style.get('border-style', 'none') != 'none':
-                grid_props = {"show": _L("true")}
+                grid_props: dict = {"show": _L("true")}
                 if header_style.get('border-color'):
                     grid_props["color"] = {
                         "solid": {"color": _L(f"'{header_style['border-color']}'")}
@@ -6173,7 +6176,7 @@ class PowerBIProjectGenerator:
                 cf_rules = []
                 for idx, thresh in enumerate(all_thresh):
                     color = thresh.get('color', '#cccccc')
-                    rule = {
+                    rule: dict = {
                         "properties": {
                             "fill": {"solid": {"color": _L(f"'{color}'")}}
                         }
@@ -6448,7 +6451,7 @@ class PowerBIProjectGenerator:
                 "layoutMode": _L("'Flow'"),
                 "showChartTitle": _L("true"),
             }}]
-    
+
     def _create_slicer_visual(self, visual_id, x, y, w, h, field_name, table_name, z_order,
                                slicer_mode='Dropdown', title=None):
         """Creates a slicer visual for a filter/parameter control with field binding.
@@ -6461,7 +6464,7 @@ class PowerBIProjectGenerator:
         """
         clean_field = field_name.replace('[', '').replace(']', '')
         clean_table = table_name if table_name else getattr(self, '_main_table', 'Table')
-        
+
         # Map extended modes to PBI mode strings
         pbi_mode = slicer_mode
         if slicer_mode == 'Search':
@@ -6511,7 +6514,7 @@ class PowerBIProjectGenerator:
                 "drillFilterOtherVisuals": True
             }
         }
-        
+
         # Add query binding (PBIR queryState format with RoleProjection)
         # Only emit if the (entity, prop) pair exists in the semantic model.
         _bim_sym = getattr(self, '_actual_bim_symbols', None) or set()
@@ -6540,9 +6543,9 @@ class PowerBIProjectGenerator:
                         }
                     }
                 }
-        
+
         return slicer
-    
+
     def _detect_slicer_mode(self, obj, column_name, converted_objects):
         """Detect the best PBI slicer mode for a Tableau filter control.
 
@@ -6809,7 +6812,7 @@ class PowerBIProjectGenerator:
                             t0 = tables[0].get('name', '')
                             return rename_map.get((ds_name, t0), t0)
         return ''
-    
+
     def _detect_script_visual(self, ws_data, converted_objects):
         """Check if a worksheet uses SCRIPT_* analytics extensions.
 
@@ -6865,12 +6868,13 @@ class PowerBIProjectGenerator:
             if ws.get('name') == name:
                 return ws
         return None
-    
+
     def _generate_automation_artifacts(self, project_dir, report_name, converted_objects):
         """Generate post-migration automation artifacts (RLS script, credential template)."""
         try:
             from powerbi_import.permission_mapper import (
-                generate_rls_powershell, generate_credential_template,
+                generate_credential_template,
+                generate_rls_powershell,
             )
         except ImportError:
             return

@@ -252,7 +252,10 @@ class EmittedDax:
                 return {">": lambda: a > b, "<": lambda: a < b,
                         ">=": lambda: a >= b, "<=": lambda: a <= b}[op]()
             name, args = node[1:]
-            ev = lambda n: run(n, variables, row, context)
+
+            def ev(n):
+                return run(n, variables, row, context)
+
             if name == "IF":
                 return ev(args[1]) if ev(args[0]) else ev(args[2])
             if name == "ALL":

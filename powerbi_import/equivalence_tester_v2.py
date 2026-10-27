@@ -11,15 +11,14 @@ validation strategies:
 Produces detailed equivalence reports with pass/fail/warn status.
 """
 
-import json
 import hashlib
-import re
-from typing import List, Dict, Tuple, Any, Optional
+import json
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class EquivalenceTester:
     """Main equivalence testing orchestrator."""
-    
+
     def __init__(self, tolerance=0.01, verbose=False):
         """
         Args:
@@ -29,33 +28,33 @@ class EquivalenceTester:
         self.tolerance = tolerance
         self.verbose = verbose
         self.results = []
-    
-    def test_measure_values(self, tableau_val: float, pbi_val: float, 
+
+    def test_measure_values(self, tableau_val: float, pbi_val: float,
                            measure_name: str, context: str = "") -> Tuple[bool, float]:
         """Compare measure values with tolerance.
-        
+
         Returns:
             (passed, percent_diff)
         """
         if tableau_val is None or pbi_val is None:
             return tableau_val == pbi_val, 0.0
-        
+
         if tableau_val == 0 and pbi_val == 0:
             return True, 0.0
-        
+
         if tableau_val == 0:
             pct_diff = abs(pbi_val) * 100
         else:
             pct_diff = abs(pbi_val - tableau_val) / abs(tableau_val) * 100
-        
+
         passed = pct_diff <= self.tolerance * 100
-        
+
         if self.verbose:
             status = "✓" if passed else "✗"
             print(f"  {status} {measure_name} {context}: T={tableau_val} vs P={pbi_val} (diff={pct_diff:.2f}%)")
-        
+
         return passed, pct_diff
-    
+
     def test_row_count(self, tableau_rows: int, pbi_rows: int,
                       table_name: str) -> bool:
         """Validate table row counts match."""
@@ -64,7 +63,7 @@ class EquivalenceTester:
         if self.verbose:
             print(f"  {status} {table_name} rows: T={tableau_rows} vs P={pbi_rows}")
         return passed
-    
+
     def test_distinctcount(self, tableau_distinct: int, pbi_distinct: int,
                           column_name: str) -> bool:
         """Validate distinct value counts."""
@@ -75,12 +74,12 @@ class EquivalenceTester:
         if self.verbose:
             print(f"  {status} {column_name} distinct: T={tableau_distinct} vs P={pbi_distinct}")
         return passed
-    
+
     def test_relationship_fk(self, parent_table: str, parent_key: str,
                             child_table: str, child_key: str,
                             parent_vals: set, child_vals: set) -> Tuple[bool, List[str]]:
         """Validate foreign key constraint (all child values in parent).
-        
+
         Returns:
             (passed, orphaned_keys)
         """
@@ -90,10 +89,10 @@ class EquivalenceTester:
         if self.verbose:
             print(f"  {status} FK {child_table}[{child_key}] → {parent_table}[{parent_key}]: {len(orphaned)} orphans")
         return passed, list(orphaned)[:5]  # Return first 5 orphans
-    
+
     def test_dax_formula(self, formula: str, expected_result: Any) -> Tuple[bool, Any]:
         """Test DAX formula execution (requires PBI Desktop or SSAS endpoint).
-        
+
         This is a placeholder - actual execution requires Power BI/SSAS connection.
         """
         # Placeholder: In production, this would execute against SSAS
@@ -101,17 +100,17 @@ class EquivalenceTester:
         if not formula or not formula.strip().startswith(('=', 'CALCULATE', 'SUM', 'AVERAGE')):
             return False, "Invalid DAX formula"
         return True, None  # Syntax valid
-    
+
     def test_visual_field_coverage(self, tableau_fields: set, pbi_fields: set,
                                   visual_name: str) -> Tuple[bool, float]:
         """Compare visual field coverage.
-        
+
         Returns:
             (passed, coverage_percent)
         """
         if not tableau_fields:
             return True, 100.0
-        
+
         common = tableau_fields & pbi_fields
         coverage = len(common) / len(tableau_fields) * 100 if tableau_fields else 100.0
         passed = coverage >= 90.0  # At least 90% field coverage
@@ -119,7 +118,7 @@ class EquivalenceTester:
         if self.verbose:
             print(f"  {status} {visual_name} field coverage: {coverage:.1f}% ({len(common)}/{len(tableau_fields)})")
         return passed, coverage
-    
+
     def test_filter_expression(self, expr: str, valid_dax: bool) -> bool:
         """Validate filter expression conversion."""
         if not expr:
@@ -130,12 +129,12 @@ class EquivalenceTester:
             issues.append("Mismatched parentheses")
         if "TABLEAU_" in expr.upper():
             issues.append("Unresolved Tableau function")
-        
+
         passed = len(issues) == 0 and valid_dax
         if self.verbose and issues:
             print(f"  ✗ Filter expression issues: {', '.join(issues)}")
         return passed
-    
+
     def generate_report(self, test_results: List[Dict]) -> Dict:
         """Generate summary equivalence report.
 
@@ -201,17 +200,17 @@ class VisualStructureComparator:
     @staticmethod
     def compute_structural_hash(visual_config: Dict) -> str:
         """Compute hash of visual structure (field roles, aggregations, sorting).
-        
+
         Ignores styling to focus on data/structure equivalence.
         """
         structural = VisualStructureComparator._structural_signature(visual_config)
         content = json.dumps(structural, sort_keys=True)
         return hashlib.sha256(content.encode()).hexdigest()[:16]
-    
+
     @staticmethod
     def compare_visual_configs(tableau_config: Dict, pbi_config: Dict) -> Dict:
         """Compare Tableau and Power BI visual configurations.
-        
+
         Returns:
             Dict with similarity score (0.0-1.0) and structural matches/mismatches
         """
@@ -244,12 +243,12 @@ class VisualStructureComparator:
 
 class DataQualityValidator:
     """Validate data quality across migrated model."""
-    
+
     @staticmethod
-    def check_null_ratio(column_data: List, column_name: str, 
+    def check_null_ratio(column_data: List, column_name: str,
                         max_null_pct: float = 50.0) -> Tuple[bool, float]:
         """Check NULL percentage in a column.
-        
+
         Returns:
             (passed, null_percent)
         """
@@ -259,15 +258,15 @@ class DataQualityValidator:
         null_pct = nulls / len(column_data) * 100
         passed = null_pct <= max_null_pct
         return passed, null_pct
-    
+
     @staticmethod
-    def check_cardinality_ratio(dimension_cardinality: int, 
+    def check_cardinality_ratio(dimension_cardinality: int,
                                fact_row_count: int,
                                dimension_name: str) -> Tuple[bool, float]:
         """Check dimension cardinality relative to fact table.
-        
+
         Flags suspicious cardinality (e.g., cardinality > fact rows).
-        
+
         Returns:
             (passed, ratio)
         """
@@ -275,12 +274,12 @@ class DataQualityValidator:
         # Warn if cardinality > 50% of fact table (unusual but not invalid)
         passed = ratio <= 1.0  # Can't have more distinct values than rows
         return passed, ratio
-    
+
     @staticmethod
-    def check_measure_aggregation_default(measure_name: str, 
+    def check_measure_aggregation_default(measure_name: str,
                                          default_agg: str) -> bool:
         """Validate measure has appropriate default aggregation.
-        
+
         Checks that measures don't default to 'Don't Summarize' or
         other non-numeric aggregations for numeric measures.
         """

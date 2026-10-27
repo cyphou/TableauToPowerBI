@@ -37,9 +37,15 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 try:
-    from powerbi_import.report_localization import text, render, attributes, selector, script
+    from powerbi_import.report_localization import (
+        attributes,
+        render,
+        script,
+        selector,
+        text,
+    )
 except ImportError:
-    from report_localization import text, render, attributes, selector, script
+    from report_localization import attributes, render, script, selector, text
 
 try:
     from powerbi_import.shared_model import (
@@ -473,11 +479,13 @@ def generate_global_html_report(
 
     try:
         from powerbi_import.html_template import (
-            get_report_css, get_report_js, esc as _template_esc,
+            get_report_css,
+            get_report_js,
         )
     except ImportError:
         from html_template import (
-            get_report_css, get_report_js, esc as _template_esc,
+            get_report_css,
+            get_report_js,
         )
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1098,13 +1106,27 @@ def generate_governance_report(
     """
     try:
         from powerbi_import.html_template import (
-            html_open, html_close, stat_grid, stat_card, section_open,
-            section_close, data_table, badge, esc,
+            badge,
+            data_table,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
     except ImportError:
         from html_template import (
-            html_open, html_close, stat_grid, stat_card, section_open,
-            section_close, data_table, badge, esc,
+            badge,
+            data_table,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
 
     total = global_result.total_workbooks

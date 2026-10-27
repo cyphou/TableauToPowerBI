@@ -14,7 +14,7 @@ Covers:
 import os
 import sys
 import unittest
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -42,7 +42,7 @@ class TestFabricAuthenticatorServicePrincipal(unittest.TestCase):
                            mock_settings if name == 'config.settings' else
                            importlib.__import__(name, *args, **kwargs)):
                     try:
-                        authenticator = auth_module.FabricAuthenticator(use_managed_identity=False)
+                        auth_module.FabricAuthenticator(use_managed_identity=False)
                     except Exception:
                         pass  # Settings import may fail in test env
 

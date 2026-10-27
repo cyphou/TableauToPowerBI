@@ -2,7 +2,10 @@
 
 import unittest
 
-from powerbi_import.semantic_runtime import describe_executor, validate_semantic_execution
+from powerbi_import.semantic_runtime import (
+    describe_executor,
+    validate_semantic_execution,
+)
 
 
 class _Executor:

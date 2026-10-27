@@ -22,9 +22,11 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), 'tableau_export'))
 
-from powerbi_import.pbip_generator import (PowerBIProjectGenerator,
-                                           _is_latitude_field,
-                                           _is_longitude_field)
+from powerbi_import.pbip_generator import (
+    PowerBIProjectGenerator,
+    _is_latitude_field,
+    _is_longitude_field,
+)
 from powerbi_import.tmdl_generator import generate_tmdl
 from powerbi_import.visual_generator import resolve_visual_type
 

@@ -3,9 +3,8 @@ Shared test fixtures and sample data for TableauToPowerBI tests.
 """
 
 import os
-import json
-import tempfile
 import shutil
+import tempfile
 
 # ── Sample extracted data (mimics tableau_export JSON output) ───────
 

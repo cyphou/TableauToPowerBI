@@ -21,6 +21,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +33,14 @@ class BundleDeploymentResult:
         self.project_dir = str(project_dir)
         self.workspace_id = workspace_id
         self.start_time = datetime.now()
-        self.end_time = None
-        self.model_name = None
-        self.model_id = None
+        self.end_time: Optional[datetime] = None
+        self.model_name: Optional[str] = None
+        self.model_id: Optional[str] = None
         self.model_status = 'pending'  # pending | deployed | failed
-        self.model_error = None
+        self.model_error: Optional[str] = None
         self.reports = []  # list of ReportDeploymentResult dicts
-        self.refresh_status = None  # None | triggered | failed | skipped
-        self.refresh_error = None
+        self.refresh_status: Optional[str] = None  # None | triggered | failed | skipped
+        self.refresh_error: Optional[str] = None
         self.rollback_actions = []  # list of {action, artifact, status}
         self.validation = []  # list of {check, status, detail}
         self.conflicts = []  # list of {name, type, existing_id}

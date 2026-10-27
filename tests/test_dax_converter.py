@@ -15,13 +15,12 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
 from dax_converter import (
+    _convert_measure_ref_ratio,
+    _convert_nullif,
+    _reverse_tableau_bracket_escape,
     convert_tableau_formula_to_dax,
     map_tableau_to_powerbi_type,
-    _reverse_tableau_bracket_escape,
-    _convert_nullif,
-    _convert_measure_ref_ratio,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # Type Mapping

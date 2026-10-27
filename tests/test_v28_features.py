@@ -6,12 +6,10 @@ Sprint 108–111 test coverage targeting 200+ new tests.
 
 import json
 import os
-import sys
-import unittest
-import tempfile
 import shutil
-from unittest.mock import patch, MagicMock
-from datetime import datetime
+import sys
+import tempfile
+import unittest
 
 # Ensure project root is on path
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -148,7 +146,7 @@ class TestLLMClient(unittest.TestCase):
         client = LLMClient(provider='openai', api_key='test', dry_run=True)
         results = []
         with tempfile.TemporaryDirectory() as tmp:
-            report = generate_llm_report(client, results, output_dir=tmp)
+            generate_llm_report(client, results, output_dir=tmp)
             self.assertTrue(os.path.exists(os.path.join(tmp, 'llm_refinement_report.json')))
 
     def test_build_url_openai(self):
@@ -575,12 +573,13 @@ class TestWebUI(unittest.TestCase):
     """Tests for web/app.py."""
 
     def test_import(self):
-        from web.app import launch_web_ui, _zip_directory, _run_migration_pipeline
+        from web.app import _run_migration_pipeline, _zip_directory, launch_web_ui  # noqa: F401
         self.assertIsNotNone(launch_web_ui)
 
     def test_zip_directory(self):
-        from web.app import _zip_directory
         import zipfile
+
+        from web.app import _zip_directory
         with tempfile.TemporaryDirectory() as job:
             src = os.path.join(job, 'output')
             os.mkdir(src)
@@ -757,8 +756,8 @@ class TestV28Integration(unittest.TestCase):
 
     def test_llm_client_with_optimizer(self):
         """LLM client and DAX optimizer should work together."""
-        from powerbi_import.llm_client import LLMClient, refine_approximated_measures
         from powerbi_import.dax_optimizer import optimize_dax
+        from powerbi_import.llm_client import LLMClient, refine_approximated_measures
 
         # Optimize first, then refine
         formula = 'IF(ISBLANK([Sales]), 0, [Sales])'

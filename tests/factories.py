@@ -14,8 +14,6 @@ Usage:
 """
 
 import copy
-import uuid
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # Column Builder
@@ -23,7 +21,7 @@ import uuid
 
 def _parse_column_spec(spec):
     """Parse 'name:type' or 'name' column spec into a dict.
-    
+
     Examples:
         'Amount:real' → {'name': 'Amount', 'datatype': 'real'}
         'Status' → {'name': 'Status', 'datatype': 'string'}
@@ -450,12 +448,12 @@ class ModelFactory:
 
 def make_simple_model(table_name='Orders', columns=None, measures=None):
     """Create a minimal model with one table and optional measures.
-    
+
     Args:
         table_name: Name of the table
         columns: List of 'name:type' specs (default: ['ID:integer', 'Amount:real', 'Date:datetime'])
         measures: List of (caption, formula) tuples
-    
+
     Returns:
         tuple: (datasources_list, converted_objects_dict)
     """

@@ -937,13 +937,27 @@ def generate_diff_report(report, output_path=None):
     """
     try:
         from powerbi_import.html_template import (
-            html_open, html_close, stat_card, stat_grid, section_open,
-            section_close, data_table, badge, esc, donut_chart,
+            data_table,
+            donut_chart,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
     except ImportError:
         from html_template import (
-            html_open, html_close, stat_card, stat_grid, section_open,
-            section_close, data_table, badge, esc, donut_chart,
+            data_table,
+            donut_chart,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
 
     ts = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -982,14 +996,14 @@ def generate_diff_report(report, output_path=None):
     ])
 
     # ── Donut chart ────────────────────────────────────────
+    category_labels_fr = {
+        'table': 'Table', 'column': 'Colonne', 'measure': 'Mesure',
+        'relationship': 'Relation', 'page': 'Page', 'visual': 'Visuel',
+        'filter': 'Filtre', 'partition': 'Partition', 'role': 'Rôle',
+    }
     if report.has_changes:
         _COLORS = ['#0078d4', '#107c10', '#d13438', '#ca5010',
                     '#881798', '#008272', '#005b70', '#7719aa', '#004e8c']
-        category_labels_fr = {
-            'table': 'Table', 'column': 'Colonne', 'measure': 'Mesure',
-            'relationship': 'Relation', 'page': 'Page', 'visual': 'Visuel',
-            'filter': 'Filtre', 'partition': 'Partition', 'role': 'Rôle',
-        }
         categories = []
         for cat in ('table', 'column', 'measure', 'relationship',
                     'page', 'visual', 'filter', 'partition', 'role'):

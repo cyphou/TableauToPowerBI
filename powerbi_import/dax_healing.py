@@ -31,9 +31,12 @@ from powerbi_import.dax_validator import TABLEAU_LEAK_REPLACEMENTS
 # Shared healing contract (canonical home is healing_core). Re-exported here for
 # backward compatibility — existing code imports these from dax_healing.
 from powerbi_import.healing_core import (  # noqa: F401
-    HealAction, HealReport, HIGH, MEDIUM, LOW,
+    HIGH,
+    LOW,
+    MEDIUM,
+    HealAction,
+    HealReport,
 )
-
 
 #: Only unambiguous, semantics-preserving rewrites are auto-applied here.
 #: MEDIUM/LOW rules stay with the validator's explicit auto-fix, which the user

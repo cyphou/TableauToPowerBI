@@ -17,7 +17,6 @@ import http.server
 import json
 import os
 import re
-import threading
 import uuid
 from pathlib import Path
 
@@ -120,7 +119,7 @@ class MockTableauHandler(http.server.BaseHTTPRequestHandler):
         path = self.path
         # Sign-in
         if re.match(rf'/api/{API_VERSION}/auth/signin', path):
-            body = self._read_body()
+            self._read_body()
             token = str(uuid.uuid4())
             self.auth_tokens[token] = True
             self._send_json({
@@ -290,7 +289,6 @@ def serve(port=DEFAULT_PORT, content_dir='.'):
     content_dir = os.path.abspath(content_dir)
     MockTableauHandler.content_dir = content_dir
 
-    workbooks = MockTableauHandler(None, None, None)._get_workbooks() if False else []
     # Count content
     wb_count = len(glob.glob(os.path.join(content_dir, '**', '*.twb'), recursive=True)) + \
                len(glob.glob(os.path.join(content_dir, '**', '*.twbx'), recursive=True))

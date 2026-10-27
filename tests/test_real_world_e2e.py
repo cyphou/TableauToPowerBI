@@ -4,13 +4,12 @@ Sprint 80.1 — Real-world end-to-end test suite.
 For each real-world and sample workbook: extract → generate → validate.
 Asserts: no JSON errors, no TMDL errors, page/visual counts, structure.
 """
-import copy
 import glob
 import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 
 # Ensure project modules are importable
@@ -19,9 +18,9 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
-from tableau_export.extract_tableau_data import TableauExtractor
 from powerbi_import.import_to_powerbi import PowerBIImporter
 from powerbi_import.validator import ArtifactValidator
+from tableau_export.extract_tableau_data import TableauExtractor
 
 # ── Workbook catalogs ──────────────────────────────────────────────────
 
@@ -179,7 +178,7 @@ class _BaseE2ETest(unittest.TestCase):
 
     def test_pbip_file_exists(self):
         pbip = os.path.join(self.project_dir, f'{self.report_name}.pbip')
-        self.assertTrue(os.path.isfile(pbip), f'Missing .pbip file')
+        self.assertTrue(os.path.isfile(pbip), 'Missing .pbip file')
 
     def test_semantic_model_dir(self):
         sm = os.path.join(self.project_dir, f'{self.report_name}.SemanticModel')
@@ -234,11 +233,11 @@ class _BaseE2ETest(unittest.TestCase):
 
     def test_all_json_valid(self):
         errors = _validate_json_files(self.project_dir)
-        self.assertEqual(errors, [], f'JSON errors:\n' + '\n'.join(errors))
+        self.assertEqual(errors, [], 'JSON errors:\n' + '\n'.join(errors))
 
     def test_no_empty_dax_measures(self):
         errors = _validate_tmdl_files(self.project_dir)
-        self.assertEqual(errors, [], f'TMDL issues:\n' + '\n'.join(errors))
+        self.assertEqual(errors, [], 'TMDL issues:\n' + '\n'.join(errors))
 
     def test_validator_project(self):
         result = ArtifactValidator.validate_project(self.project_dir)
@@ -248,7 +247,7 @@ class _BaseE2ETest(unittest.TestCase):
         if self.report_name in DATASOURCE_ONLY_WORKBOOKS:
             critical = [e for e in critical if 'Report' not in e]
         self.assertEqual(critical, [],
-                         f'Validator errors:\n' + '\n'.join(critical))
+                         'Validator errors:\n' + '\n'.join(critical))
 
     def test_visual_references_valid(self):
         if self.report_name in DATASOURCE_ONLY_WORKBOOKS:
@@ -258,7 +257,7 @@ class _BaseE2ETest(unittest.TestCase):
         real_errors = [e for e in errors
                        if not any(prefix in e for prefix in KNOWN_VISUAL_REF_PREFIXES)]
         self.assertEqual(real_errors, [],
-                         f'Visual reference errors:\n' + '\n'.join(real_errors))
+                         'Visual reference errors:\n' + '\n'.join(real_errors))
 
     def test_pages_json_has_page_order(self):
         if self.report_name in DATASOURCE_ONLY_WORKBOOKS:

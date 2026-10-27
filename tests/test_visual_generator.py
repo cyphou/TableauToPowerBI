@@ -27,18 +27,17 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
 from powerbi_import.visual_generator import (
-    resolve_visual_type,
-    generate_visual_containers,
-    create_visual_container,
-    create_projections,
-    create_prototype_query,
+    VISUAL_DATA_ROLES,
+    _build_visual_filters,
+    _get_config_template,
+    build_query_state,
     create_filters_config,
     create_page_layout,
-    build_query_state,
-    VISUAL_TYPE_MAP,
-    VISUAL_DATA_ROLES,
-    _get_config_template,
-    _build_visual_filters,
+    create_projections,
+    create_prototype_query,
+    create_visual_container,
+    generate_visual_containers,
+    resolve_visual_type,
 )
 
 

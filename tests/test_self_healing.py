@@ -95,8 +95,8 @@ class TestRecoveryReport(unittest.TestCase):
             self.assertEqual(len(data['repairs']), 1)
 
     def test_merge_into_migration_report(self):
-        from powerbi_import.recovery_report import RecoveryReport
         from powerbi_import.migration_report import MigrationReport
+        from powerbi_import.recovery_report import RecoveryReport
         recovery = RecoveryReport("Test")
         recovery.record('tmdl', 'dup', action="renamed", severity='warning')
         recovery.record('visual', 'fb', action="degraded", severity='info')
@@ -156,7 +156,7 @@ class TestTMDLSelfHealDuplicateTables(unittest.TestCase):
             {'name': 'T', 'columns': [{'name': 'id', 'dataType': 'Int64'}], 'measures': []},
             {'name': 'T', 'columns': [{'name': 'id', 'dataType': 'Int64'}], 'measures': []},
         ])
-        repairs = _self_heal_model(model)
+        _self_heal_model(model)
         names = [t['name'] for t in model['model']['tables']]
         self.assertEqual(len(names), len(set(names)))
         self.assertIn('T_2', names)
@@ -234,7 +234,7 @@ class TestTMDLSelfHealBrokenRefs(unittest.TestCase):
                 'expression': 'SUM([Amount])',
             }],
         }])
-        repairs = _self_heal_model(model)
+        _self_heal_model(model)
         measure = model['model']['tables'][0]['measures'][0]
         self.assertFalse(measure.get('isHidden', False))
 
@@ -292,7 +292,7 @@ class TestTMDLSelfHealBrokenRefs(unittest.TestCase):
                 {'name': 'Double', 'expression': '[Total] * 2'},
             ],
         }])
-        repairs = _self_heal_model(model)
+        _self_heal_model(model)
         double = model['model']['tables'][0]['measures'][1]
         self.assertFalse(double.get('isHidden', False))
 
@@ -317,7 +317,7 @@ class TestTMDLSelfHealBrokenRefs(unittest.TestCase):
             'columns': [],
             'measures': [{'name': 'M', 'expression': 'FORMAT([DATE], "yyyy")'}],
         }])
-        repairs = _self_heal_model(model)
+        _self_heal_model(model)
         measure = model['model']['tables'][0]['measures'][0]
         self.assertFalse(measure.get('isHidden', False))
 
@@ -365,8 +365,8 @@ class TestTMDLSelfHealRecoveryReport(unittest.TestCase):
     """Test that self-heal records repairs to RecoveryReport."""
 
     def test_recovery_report_populated(self):
-        from powerbi_import.tmdl_generator import _self_heal_model
         from powerbi_import.recovery_report import RecoveryReport
+        from powerbi_import.tmdl_generator import _self_heal_model
         model = {'model': {
             'tables': [
                 {'name': 'T', 'columns': [{'name': 'id', 'dataType': 'Int64'}], 'measures': []},
@@ -380,8 +380,8 @@ class TestTMDLSelfHealRecoveryReport(unittest.TestCase):
         self.assertEqual(recovery.repairs[0]['repair_type'], 'duplicate_table')
 
     def test_no_repairs_no_recovery(self):
-        from powerbi_import.tmdl_generator import _self_heal_model
         from powerbi_import.recovery_report import RecoveryReport
+        from powerbi_import.tmdl_generator import _self_heal_model
         model = {'model': {
             'tables': [{'name': 'T', 'columns': [{'name': 'id', 'dataType': 'Int64', 'lineageTag': 't-id'}], 'measures': []}],
             'relationships': [],
@@ -564,7 +564,7 @@ class TestMQuerySelfRepair(unittest.TestCase):
         from powerbi_import.tmdl_generator import _self_heal_model
         m = 'let\n    Source = try\n        Sql.Database("s","d")\n    otherwise\n        #table({}, {})\nin\n    Source'
         model = self._make_model_with_m_partition(m)
-        repairs = _self_heal_model(model)
+        _self_heal_model(model)
         expr = model['model']['tables'][0]['partitions'][0]['source']['expression']
         self.assertEqual(expr, m)
 
@@ -582,13 +582,13 @@ class TestMQuerySelfRepair(unittest.TestCase):
         from powerbi_import.tmdl_generator import _self_heal_model
         m = '#table({"A", "B"}, {{"x", 1}})'
         model = self._make_model_with_m_partition(m)
-        repairs = _self_heal_model(model)
+        _self_heal_model(model)
         expr = model['model']['tables'][0]['partitions'][0]['source']['expression']
         self.assertNotIn('try', expr)
 
     def test_recovery_report_does_not_claim_source_wrapping(self):
-        from powerbi_import.tmdl_generator import _self_heal_model
         from powerbi_import.recovery_report import RecoveryReport
+        from powerbi_import.tmdl_generator import _self_heal_model
         m = 'let\n    Source = Sql.Database("s", "d")\nin\n    Source'
         model = self._make_model_with_m_partition(m)
         recovery = RecoveryReport("Test")
@@ -607,8 +607,8 @@ class TestSelfHealIntegration(unittest.TestCase):
     """Combined self-heal scenarios — multiple issues at once."""
 
     def test_multiple_issues_all_repaired(self):
-        from powerbi_import.tmdl_generator import _self_heal_model
         from powerbi_import.recovery_report import RecoveryReport
+        from powerbi_import.tmdl_generator import _self_heal_model
         model = {'model': {
             'tables': [
                 {
@@ -648,8 +648,8 @@ class TestSelfHealIntegration(unittest.TestCase):
         self.assertIn('empty_table_name', types)
 
     def test_clean_model_no_repairs(self):
-        from powerbi_import.tmdl_generator import _self_heal_model
         from powerbi_import.recovery_report import RecoveryReport
+        from powerbi_import.tmdl_generator import _self_heal_model
         model = {'model': {
             'tables': [{
                 'name': 'T',
@@ -673,7 +673,10 @@ class TestVisualFallbackCascadeConstants(unittest.TestCase):
     """Test VISUAL_FALLBACK_CASCADE dictionary is consistent."""
 
     def test_all_targets_are_known_types(self):
-        from powerbi_import.visual_generator import VISUAL_FALLBACK_CASCADE, VISUAL_DATA_ROLES
+        from powerbi_import.visual_generator import (
+            VISUAL_DATA_ROLES,
+            VISUAL_FALLBACK_CASCADE,
+        )
         known = set(VISUAL_DATA_ROLES.keys()) | {'card', 'tableEx'}
         for source, target in VISUAL_FALLBACK_CASCADE.items():
             self.assertIn(target, known,
@@ -996,7 +999,7 @@ class TestSelfHealDataTypeFormatMismatch(unittest.TestCase):
             {'name': 'Name', 'dataType': 'String', 'sourceColumn': 'Name',
              'summarizeBy': 'none'},
         ])
-        repairs = _self_heal_model(model)
+        _self_heal_model(model)
         col = model['model']['tables'][0]['columns'][0]
         self.assertEqual(col['dataType'], 'String')
 
@@ -1006,13 +1009,13 @@ class TestSelfHealDataTypeFormatMismatch(unittest.TestCase):
             {'name': 'Amount', 'dataType': 'Double', 'formatString': '#,0.00',
              'sourceColumn': 'Amount', 'summarizeBy': 'sum'},
         ])
-        repairs = _self_heal_model(model)
+        _self_heal_model(model)
         col = model['model']['tables'][0]['columns'][0]
         self.assertEqual(col['dataType'], 'Double')
 
     def test_recovery_report_logged(self):
-        from powerbi_import.tmdl_generator import _self_heal_model
         from powerbi_import.recovery_report import RecoveryReport
+        from powerbi_import.tmdl_generator import _self_heal_model
         model = self._make_model([
             {'name': 'Rank', 'dataType': 'String', 'formatString': '0',
              'sourceColumn': 'Rank', 'summarizeBy': 'none'},
@@ -1054,7 +1057,7 @@ class TestSelfHealDuplicateColumns(unittest.TestCase):
             {'name': 'A', 'dataType': 'String', 'sourceColumn': 'A'},
             {'name': 'B', 'dataType': 'Int64', 'sourceColumn': 'B'},
         ])
-        repairs = _self_heal_model(model)
+        _self_heal_model(model)
         names = [c['name'] for c in model['model']['tables'][0]['columns']]
         self.assertEqual(names, ['A', 'B'])
 
@@ -1172,7 +1175,7 @@ class TestSelfHealMissingRelationshipEndpoints(unittest.TestCase):
                 ],
             }
         }
-        repairs = _self_heal_model(model)
+        _self_heal_model(model)
         self.assertEqual(len(model['model']['relationships']), 1)
 
 

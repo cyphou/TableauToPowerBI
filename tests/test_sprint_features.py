@@ -4,7 +4,7 @@ Tests for Sprint 2/3/4 features — DAX, Visual, TMDL, PBIP, M Query enhancement
 Covers:
 - REGEX conversions (_convert_regexp_match, _convert_regexp_extract)
 - Nested LOD (_find_lod_braces)
-- String+ improvements  
+- String+ improvements
 - Small Multiples visual config
 - Proportional visual positioning
 - Dynamic reference lines
@@ -19,39 +19,37 @@ Covers:
 - CLI flags (--mode, --rollback, --output-format, --config)
 """
 
-import unittest
-import sys
-import os
-import json
-import tempfile
-import shutil
 import copy
+import json
+import os
+import sys
+import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from tests.conftest import SAMPLE_DATASOURCE, SAMPLE_EXTRACTED, make_temp_dir, cleanup_dir
-
-from dax_converter import convert_tableau_formula_to_dax
-from visual_generator import _build_small_multiples_config
-from visual_generator import SMALL_MULTIPLES_TYPES
-from visual_generator import _calculate_proportional_layout
-from visual_generator import _build_dynamic_reference_line
-from visual_generator import _build_data_bar_config
-from pbip_generator import PowerBIProjectGenerator
-from tmdl_generator import generate_tmdl
-from m_query_builder import generate_power_query_m
-from m_query_builder import apply_connection_template
-from m_query_builder import templatize_m_query
-from powerbi_import.config.migration_config import MigrationConfig
-from powerbi_import.config.migration_config import load_config
-from plugins import PluginManager, PluginBase
-from plugins import PluginManager
-from plugins import get_plugin_manager, reset_plugin_manager
-from plugins import PluginBase
 import argparse
 
+from dax_converter import convert_tableau_formula_to_dax
+from m_query_builder import (
+    apply_connection_template,
+    generate_power_query_m,
+    templatize_m_query,
+)
+from pbip_generator import PowerBIProjectGenerator
+from plugins import PluginBase, PluginManager, get_plugin_manager, reset_plugin_manager
+from tmdl_generator import generate_tmdl
+from visual_generator import (
+    SMALL_MULTIPLES_TYPES,
+    _build_data_bar_config,
+    _build_dynamic_reference_line,
+    _build_small_multiples_config,
+    _calculate_proportional_layout,
+)
+
+from powerbi_import.config.migration_config import MigrationConfig, load_config
+from tests.conftest import SAMPLE_DATASOURCE, cleanup_dir, make_temp_dir
 
 # ═══════════════════════════════════════════════════════════════════════
 #  DAX CONVERTER — Sprint 2/3/4 features

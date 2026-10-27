@@ -10,16 +10,14 @@ Output:
 - mashup.pq: Combined Power Query M document
 """
 
-import os
 import json
+import os
 import re
 import sys
 from datetime import datetime
 
 from .calc_column_utils import (
-    classify_calculations,
     make_m_add_column_step,
-    sanitize_calc_col_name,
 )
 from .fabric_item import logical_id, write_platform
 from .fabric_naming import sanitize_query_name as _sanitize_query_name
@@ -75,7 +73,6 @@ class DataflowGenerator:
         """
         datasources = extracted_data.get('datasources', [])
         custom_sql = extracted_data.get('custom_sql', [])
-        calculations = extracted_data.get('calculations', [])
 
         generate_power_query_m = _get_m_query_builder()
 
@@ -349,7 +346,6 @@ class DataflowGenerator:
             dict: {queries: int, prep_steps: int}
         """
         prep_datasources = prep_flow_data.get('datasources', [])
-        flow_name = prep_flow_data.get('flow_name', self.project_name)
 
         queries = []
         seen = set()

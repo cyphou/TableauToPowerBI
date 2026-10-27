@@ -6,28 +6,29 @@ Uses synthetic Tableau XML to exercise the full pipeline without
 requiring actual .twb/.twbx files.
 """
 
-import unittest
-import sys
-import os
-import json
 import copy
 import glob
-import tempfile
-import shutil
+import json
+import os
+import sys
+import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from tests.conftest import (
-    SAMPLE_DATASOURCE, SAMPLE_EXTRACTED, SAMPLE_EXTRACTED_WITH_MEASURES,
-    make_temp_dir, cleanup_dir,
-)
-
+from migration_report import MigrationReport
 from pbip_generator import PowerBIProjectGenerator
 from tmdl_generator import generate_tmdl
 from validator import ArtifactValidator
-from migration_report import MigrationReport
+
+from tests.conftest import (
+    SAMPLE_DATASOURCE,
+    SAMPLE_EXTRACTED,
+    SAMPLE_EXTRACTED_WITH_MEASURES,
+    cleanup_dir,
+    make_temp_dir,
+)
 
 
 class TestPipelineIntegration(unittest.TestCase):
@@ -242,7 +243,7 @@ class TestVisualTmdlCrossValidation(unittest.TestCase):
 
         errors = ArtifactValidator.validate_visual_references(project_path)
         self.assertEqual(errors, [],
-                         f"Visual field references not found in TMDL model:\n"
+                         "Visual field references not found in TMDL model:\n"
                          + "\n".join(errors))
 
     def test_tmdl_stats_contain_symbols(self):
@@ -334,7 +335,7 @@ class TestVisualTmdlCrossValidation(unittest.TestCase):
         visual_ref_warnings = [w for w in result.get('warnings', [])
                                if 'unknown Entity' in w or 'unknown Property' in w]
         self.assertEqual(visual_ref_warnings, [],
-                         f"Visual reference warnings:\n" + "\n".join(visual_ref_warnings))
+                         "Visual reference warnings:\n" + "\n".join(visual_ref_warnings))
 
 
 if __name__ == '__main__':

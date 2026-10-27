@@ -369,7 +369,7 @@ class TestOptimizationReport(unittest.TestCase):
         measures = [{'name': 'M1', 'expression': '10 + 5'}]
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'report.json')
-            report = generate_optimization_report(measures, output_path=path)
+            generate_optimization_report(measures, output_path=path)
             self.assertTrue(os.path.exists(path))
             with open(path) as f:
                 data = json.load(f)

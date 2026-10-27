@@ -7,9 +7,9 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from powerbi_import.m_validator import (
-    validate_m_query,
     MQueryValidator,
     _strip_strings_and_comments,
+    validate_m_query,
 )
 
 

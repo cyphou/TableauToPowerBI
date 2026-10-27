@@ -5,17 +5,17 @@ Covers _load_reports(), _esc(), generate_dashboard(), and main() CLI.
 
 import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 from telemetry_dashboard import (
-    _load_reports,
     _esc,
+    _load_reports,
     generate_dashboard,
     main,
 )

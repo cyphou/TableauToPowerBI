@@ -21,13 +21,14 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "powerbi_import"))
 sys.path.insert(0, os.path.join(ROOT, "tableau_export"))
 
-from extract_primitives import _extract_calculation_formula
 from datasource_extractor import (
     extract_calculations,
     extract_column_metadata,
     extract_datasource,
 )
+from extract_primitives import _extract_calculation_formula
 from extract_tableau_data import TableauExtractor
+
 from powerbi_import.tmdl_generator import _build_semantic_model
 
 

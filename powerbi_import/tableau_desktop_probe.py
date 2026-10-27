@@ -8,14 +8,14 @@ the PID-owned cleanup helper after any additional capture work.
 
 from __future__ import annotations
 
-import os
 import math
-from pathlib import Path
+import os
 import re
 import shutil
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from powerbi_import import desktop_window
@@ -206,7 +206,7 @@ def probe_tableau_open(workbook_path: str, *, screenshot_path: str,
                 return report
             win = matches[0] if matches else None
             if win and desktop_window.is_responsive(win.hwnd):
-                if previous_hwnd != win.hwnd:
+                if matched_since is None or previous_hwnd != win.hwnd:
                     matched_since = time.monotonic()
                     previous_hwnd = win.hwnd
                 if time.monotonic() - matched_since >= stable_for:

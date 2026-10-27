@@ -14,15 +14,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export
 
 from powerbi_import.notebook_api import (
     MigrationSession,
-    _NotebookDisplay,
-    _DaxExplorer,
     _category_scores,
-    _render_radar_svg,
     _collect_relationships,
-    _render_mermaid_er,
-    _render_mermaid_html,
+    _DaxExplorer,
     _html_escape,
     _mermaid_id,
+    _NotebookDisplay,
+    _render_mermaid_er,
+    _render_mermaid_html,
+    _render_radar_svg,
 )
 
 

@@ -9,8 +9,7 @@ Detects candidate relationships using multiple signals:
 """
 
 from collections import defaultdict
-import re
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 class RelationshipInferenceEngine:
@@ -160,8 +159,8 @@ class RelationshipInferenceEngine:
         to_col: str,
         from_meta: Dict,
         to_meta: Dict,
-        from_col_lower: str = None,
-        to_col_lower: str = None,
+        from_col_lower: Optional[str] = None,
+        to_col_lower: Optional[str] = None,
     ) -> float:
         score = 0.0
 

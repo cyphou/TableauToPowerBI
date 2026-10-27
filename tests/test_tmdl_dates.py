@@ -1,14 +1,15 @@
 """Synthetic source-to-serialized-output Calendar lexical-scope regressions."""
 
-from contextlib import redirect_stdout
 import io
-from pathlib import Path
 import re
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 
 from powerbi_import.tmdl_dates import (
-    _add_date_table, _refresh_calendar_source_expressions,
+    _add_date_table,
+    _refresh_calendar_source_expressions,
 )
 from powerbi_import.tmdl_writers import _write_tmdl_files
 

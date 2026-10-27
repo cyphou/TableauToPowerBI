@@ -13,8 +13,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), 'tableau_export'))
 
-from powerbi_import.pbip_generator import (PowerBIProjectGenerator,
-                                           _TOOLTIP_CAPABLE_VISUALS)
+from powerbi_import.pbip_generator import (
+    _TOOLTIP_CAPABLE_VISUALS,
+    PowerBIProjectGenerator,
+)
 
 
 def _generator():

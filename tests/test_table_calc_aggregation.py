@@ -12,8 +12,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), 'tableau_export'))
 
-from powerbi_import.tmdl_generator import (_agg_for_column,
-                                           _create_quick_table_calc_measures)
+from powerbi_import.tmdl_generator import (
+    _agg_for_column,
+    _create_quick_table_calc_measures,
+)
 
 
 def _model(data_type):

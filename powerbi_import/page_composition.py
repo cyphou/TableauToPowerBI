@@ -8,7 +8,6 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-
 _CONTENT_TYPES = {"worksheetReference", "text", "image", "filter_control", "parameter_control"}
 
 

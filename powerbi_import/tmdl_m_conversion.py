@@ -95,10 +95,14 @@ def _extract_function_body(expr, func_name):
 # powerbi_import.calc_column_utils._quote_m_ids; re-exported here under
 # the historical name for backward compatibility (Sprint 129.3 dedup).
 from powerbi_import.calc_column_utils import (
-    _M_SPECIAL as _M_SPECIAL_CHARS,
+    _M_SPECIAL as _M_SPECIAL_CHARS,  # noqa: F401
+)
+from powerbi_import.calc_column_utils import (
     _quote_m_ids as _quote_m_identifiers,
-    normalize_m_numeric_literals,
+)
+from powerbi_import.calc_column_utils import (
     normalize_m_boolean_literals,
+    normalize_m_numeric_literals,
 )
 
 

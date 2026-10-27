@@ -7,17 +7,15 @@ TMDL semantic model and the PBIR report.
 import unittest
 
 from powerbi_import.cross_validator import (
-    CrossValidationResult,
-    cross_validate,
     _build_model_index,
+    _check_orphans,
     _check_relationships,
     _check_rls,
     _check_visual_refs,
-    _check_orphans,
     _extract_visual_refs,
+    cross_validate,
     validate_visual_data_roles,
 )
-
 
 # ────────────────────────────────────────────────────────────────────
 #  Helpers

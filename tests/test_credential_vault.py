@@ -20,27 +20,25 @@ sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import', 'deploy'))
 
 from powerbi_import.deploy.credential_vault import (
+    AzureKeyVaultBackend,
     CredentialVault,
     EnvVarBackend,
     JsonFileBackend,
-    AzureKeyVaultBackend,
-    _validate_tenant_name,
     _validate_key,
+    _validate_tenant_name,
     _validate_value,
 )
 from powerbi_import.deploy.multi_tenant import (
-    TenantConfig,
     MultiTenantConfig,
+    TenantConfig,
+    _apply_connection_overrides,
     _pre_deploy_validate,
     deploy_multi_tenant,
-    _apply_connection_overrides,
 )
 from powerbi_import.schema_drift import (
-    detect_connection_drift,
     _extract_connections,
-    SchemaDriftEntry,
+    detect_connection_drift,
 )
-
 
 # ── Validation Functions ─────────────────────────────────────────────────────
 

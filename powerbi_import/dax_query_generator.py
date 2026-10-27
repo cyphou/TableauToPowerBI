@@ -11,7 +11,6 @@ Usage::
     export_dax_queries(queries, output_dir)
 """
 
-import json
 import logging
 import os
 import re

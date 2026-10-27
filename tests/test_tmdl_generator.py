@@ -16,33 +16,34 @@ import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
+
 from tests.native_import_test_helpers import forbid_native_payload_io
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.tmdl_generator import (
+    _add_date_table,
+    _audit_local_partition_sources,
+    _build_semantic_model,
+    _fail_unavailable_local_sources,
+    _get_display_folder,
+    _get_format_string,
+    _is_date_table,
+    _map_semantic_role_to_category,
     _quote_name,
+    _rewrite_bare_measure_references,
+    _safe_filename,
     _tmdl_datatype,
     _tmdl_summarize,
-    _safe_filename,
-    _get_format_string,
-    _get_display_folder,
-    _map_semantic_role_to_category,
-    generate_theme_json,
-    _build_semantic_model,
-    _add_date_table,
-    _is_date_table,
-    _write_tmdl_files,
-    _write_perspectives_tmdl,
     _write_culture_tmdl,
     _write_database_tmdl,
     _write_model_tmdl,
+    _write_perspectives_tmdl,
     _write_relationships_tmdl,
     _write_table_tmdl,
-    _rewrite_bare_measure_references,
+    _write_tmdl_files,
+    generate_theme_json,
     generate_tmdl,
-    _audit_local_partition_sources,
-    _fail_unavailable_local_sources,
 )
 
 
@@ -77,8 +78,8 @@ class TestCombinedGroupSourceRelationshipContract(unittest.TestCase):
             self.edge(target='Bridge'), self.edge(home='Bridge')]))
 
     def test_explicit_to_one_combined_group_processing_retargets_and_validates(self):
-        from powerbi_import.tmdl_sets import _process_sets_groups_bins
         from powerbi_import.tmdl_dax_postprocess import retarget_dax_column_refs
+        from powerbi_import.tmdl_sets import _process_sets_groups_bins
 
         model = self.model([self.edge()])
         model['model']['tables'][0]['columns'] = [{'name': 'Event ID'}]
@@ -142,6 +143,7 @@ class TestCombinedGroupSourceRelationshipContract(unittest.TestCase):
 
     def test_table_scoped_group_retarget_is_canonical_and_idempotent(self):
         from copy import deepcopy
+
         from powerbi_import.tmdl_dax_postprocess import retarget_dax_column_refs
 
         model = self.model([self.edge()])
@@ -165,8 +167,9 @@ class TestCombinedGroupSourceRelationshipContract(unittest.TestCase):
 
     def test_single_table_combined_key_uses_partition_caption_bindings(self):
         from copy import deepcopy
-        from powerbi_import.tmdl_sets import _process_sets_groups_bins
+
         from powerbi_import.tmdl_dax_postprocess import retarget_dax_column_refs
+        from powerbi_import.tmdl_sets import _process_sets_groups_bins
 
         bindings = {
             '1006description_modification': 'Description Modification',
@@ -231,9 +234,9 @@ class TestCalculationIdentitySemanticContext(unittest.TestCase):
         self.assertNotIn('[Number of Records]', dax['measure_names'])
 
     def test_fallback_constant_reference_compiles_through_valid_dax_to_m(self):
-        from tableau_export.dax_converter import convert_tableau_formula_to_dax
         from powerbi_import.dax_validator import validate_dax_expression
         from powerbi_import.tmdl_m_conversion import _dax_to_m_expression
+        from tableau_export.dax_converter import convert_tableau_formula_to_dax
 
         context = self.context([{
             'name': '[Number of Records]',
@@ -298,7 +301,10 @@ class TestLogicalRelationshipIntegration(unittest.TestCase):
     """Pair compilation must reach actual model measures before generic repair."""
 
     def setUp(self):
-        from tests.logical_relationship_fixtures import synthetic_datasource, safe_policy
+        from tests.logical_relationship_fixtures import (
+            safe_policy,
+            synthetic_datasource,
+        )
         self.ds = synthetic_datasource()
         self.policy = safe_policy()
         self.environment = patch.dict(os.environ, {
@@ -2182,8 +2188,9 @@ class TestColumnDeduplication(unittest.TestCase):
 
     def test_tmdl_writer_dedup_columns(self):
         """_write_table_tmdl deduplicates columns by name (defense in depth)."""
-        from powerbi_import.tmdl_generator import _write_table_tmdl
         import tempfile
+
+        from powerbi_import.tmdl_generator import _write_table_tmdl
 
         table = {
             'name': 'sqlproxy',

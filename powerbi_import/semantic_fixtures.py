@@ -11,7 +11,6 @@ import json
 import re
 from typing import Any, Dict, List
 
-
 FIXTURE_VERSION = 1
 _SECRET_RE = re.compile(
     r"(?i)(password|passwd|secret|api[_-]?key|access[_-]?token|bearer\s+)"

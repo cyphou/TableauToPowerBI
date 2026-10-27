@@ -20,42 +20,39 @@ Covers:
 import copy
 import json
 import os
+import sys
 import tempfile
-import shutil
 import unittest
 
-import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from powerbi_import.shared_model import (
-    TableFingerprint,
-    MergeCandidate,
-    MeasureConflict,
-    MergeAssessment,
-    build_table_fingerprints,
-    compute_column_overlap,
-    assess_merge,
-    merge_semantic_models,
-    calculate_merge_score,
-    build_field_mapping,
-    _parse_table_name,
-    _type_width,
-    _merge_columns_into,
-    _merge_calculations,
-    _merge_parameters,
-    _merge_list_by_name,
-    _relationship_key,
-    _detect_measure_conflicts,
-    _count_relationship_duplicates,
-    _detect_parameter_conflicts,
-    _detect_column_conflicts,
-)
 from powerbi_import.merge_assessment import (
     generate_merge_report,
     print_merge_summary,
 )
-
+from powerbi_import.shared_model import (
+    MeasureConflict,
+    MergeAssessment,
+    MergeCandidate,
+    TableFingerprint,
+    _count_relationship_duplicates,
+    _detect_column_conflicts,
+    _detect_measure_conflicts,
+    _detect_parameter_conflicts,
+    _merge_columns_into,
+    _merge_list_by_name,
+    _merge_parameters,
+    _parse_table_name,
+    _relationship_key,
+    _type_width,
+    assess_merge,
+    build_field_mapping,
+    build_table_fingerprints,
+    calculate_merge_score,
+    compute_column_overlap,
+    merge_semantic_models,
+)
 
 # ═══════════════════════════════════════════════════════════════════
 #  Test helpers — factory functions
@@ -932,6 +929,7 @@ class TestCLIArguments(unittest.TestCase):
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
         # Import the parser builder
         import importlib
+
         import migrate
         importlib.reload(migrate)
         parser = migrate._build_argument_parser()

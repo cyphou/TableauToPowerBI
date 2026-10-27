@@ -1,18 +1,36 @@
 #!/usr/bin/env python3
 """Generate a consolidated Migration & Assessment Report (HTML) from artifacts."""
 
-import json
-import os
-import glob
 import csv
 import datetime
+import glob
+import json
+import os
 
 from powerbi_import.html_template import (
-    html_open, html_close, stat_card, stat_grid, section_open, section_close,
-    badge, fidelity_bar, donut_chart, bar_chart, data_table, tab_bar,
-    tab_content, card, heatmap_table, flow_diagram, esc,
-    PBI_BLUE, PBI_DARK, PBI_GRAY, PBI_LIGHT_GRAY, PBI_BG,
-    SUCCESS, WARN, FAIL, PURPLE, TEAL, ORANGE,
+    FAIL,
+    ORANGE,
+    PBI_BLUE,
+    PBI_DARK,
+    PBI_GRAY,
+    PURPLE,
+    SUCCESS,
+    TEAL,
+    badge,
+    bar_chart,
+    data_table,
+    donut_chart,
+    esc,
+    fidelity_bar,
+    flow_diagram,
+    html_close,
+    html_open,
+    section_close,
+    section_open,
+    stat_card,
+    stat_grid,
+    tab_bar,
+    tab_content,
 )
 
 BASE = "artifacts/powerbi_projects"
@@ -238,9 +256,9 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
 
     # Compute aggregate stats
     total_workbooks = len(set(list(assessments.keys()) + list(reports.keys())))
-    green = sum(1 for a in assessments.values() if a.get("overall_score") == "GREEN")
-    yellow = sum(1 for a in assessments.values() if a.get("overall_score") == "YELLOW")
-    red = sum(1 for a in assessments.values() if a.get("overall_score") == "RED")
+    sum(1 for a in assessments.values() if a.get("overall_score") == "GREEN")
+    sum(1 for a in assessments.values() if a.get("overall_score") == "YELLOW")
+    sum(1 for a in assessments.values() if a.get("overall_score") == "RED")
     avg_fidelity = 0
     fidelity_scores = [r.get("summary", {}).get("fidelity_score", 0) for r in reports.values()]
     if fidelity_scores:
@@ -646,7 +664,7 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
         all_headers = ["Report", "Category", "Name", "Status", "Source Formula / Note", "DAX / Target"]
         html += tab_content(conv_group, "all",
             data_table(all_headers, _conv_rows(all_items_by_report, True),
-                       f"conv-all-tbl", searchable=True, detail=True),
+                       "conv-all-tbl", searchable=True, detail=True),
             active=True)
 
         # Per-report tabs
@@ -703,7 +721,7 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
             cat_bar_items = []
             for cat_name, vals in sorted(by_cat.items(), key=lambda x: -x[1].get("total", 0)):
                 total = vals.get("total", 0)
-                exact_cnt = vals.get("exact", 0)
+                vals.get("exact", 0)
                 color = cat_colors.get(cat_name, PBI_BLUE)
                 cat_bar_items.append((cat_name.title(), total, color))
             html += bar_chart(cat_bar_items)
@@ -858,7 +876,7 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
     if pbi_validation:
         total_errors = sum(len(v.get('errors', [])) for v in pbi_validation.values())
         total_warnings = sum(len(v.get('warnings', [])) for v in pbi_validation.values())
-        all_passed = all(v.get('passed', True) for v in pbi_validation.values())
+        all(v.get('passed', True) for v in pbi_validation.values())
 
         if total_errors > 0 or total_warnings > 0:
             html += section_open('pbi-validation', 'PBI Desktop Validation', '&#128270;')

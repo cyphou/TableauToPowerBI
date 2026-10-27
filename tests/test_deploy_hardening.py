@@ -1,18 +1,16 @@
 """Tests for Sprint 63 — Deploy Hardening & Fabric Reliability."""
 
-import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from powerbi_import.deploy.bundle_deployer import (
     BundleDeployer,
     BundleDeploymentResult,
 )
 from powerbi_import.deploy.utils import DeploymentManifest
-
 
 # ── BundleDeploymentResult tests ──
 

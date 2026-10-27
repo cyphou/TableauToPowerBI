@@ -21,10 +21,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
 from extract_tableau_data import TableauExtractor
+
 from powerbi_import.source_inventory import (
-    ORPHANABLE_TYPES,
     _NAME_KEYS,
     _PARENT_KEYS,
+    ORPHANABLE_TYPES,
     build_source_inventory,
 )
 

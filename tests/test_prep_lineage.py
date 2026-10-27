@@ -17,17 +17,23 @@ Tests cover:
 - Phase 4: CLI integration (--prep-lineage)
 """
 
+import csv
 import io
 import json
 import os
 import sys
 import tempfile
-import csv
 import unittest
 import zipfile
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 from tests.prep_flow_fixtures import (
-    clean_chain, source, output, operation, write_flow, join_flow,
+    clean_chain,
+    join_flow,
+    operation,
+    output,
+    source,
+    write_flow,
 )
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -36,25 +42,39 @@ sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
 from prep_flow_analyzer import (
-    FlowProfile, FlowInput, FlowOutput, FlowTransform,
-    analyze_flow, analyze_flows_bulk, _fingerprint,
-    _extract_inputs, _extract_outputs, _extract_transforms,
-    _build_node_graph, _compute_dag_depth, _count_calcs,
+    FlowProfile,
+    _compute_dag_depth,
+    _count_calcs,
+    _extract_inputs,
+    _extract_outputs,
+    _extract_transforms,
+    _fingerprint,
+    analyze_flow,
+    analyze_flows_bulk,
 )
 from prep_lineage import (
-    PrepLineageGraph, LineageEdge, SourceEndpoint, SinkEndpoint,
-    build_lineage_graph, _match_outputs_to_inputs,
-    _identify_external_sources, _identify_final_sinks,
-    _compute_flow_layers, _detect_chains, _find_isolated_flows,
-    _fuzzy_match_name, _normalize_name,
+    LineageEdge,
+    SinkEndpoint,
+    SourceEndpoint,
+    _compute_flow_layers,
+    _detect_chains,
+    _fuzzy_match_name,
+    _identify_external_sources,
+    _identify_final_sinks,
+    _match_outputs_to_inputs,
+    _normalize_name,
+    build_lineage_graph,
 )
 from prep_lineage_report import (
-    MergeRecommendation, compute_merge_recommendations,
-    generate_prep_lineage_report, save_lineage_json,
+    MergeRecommendation,
+    _column_overlap,
+    _source_overlap,
+    _transform_similarity,
+    compute_merge_recommendations,
+    generate_prep_lineage_report,
     print_lineage_summary,
-    _source_overlap, _transform_similarity, _column_overlap,
+    save_lineage_json,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  FLOW FIXTURE BUILDERS
@@ -1343,8 +1363,6 @@ class TestMatchOutputsToInputs(unittest.TestCase):
         })
         edges = _match_outputs_to_inputs(profiles)
         # Should find at least one edge from sales_clean → combined
-        src_flows = {e.source_flow for e in edges}
-        tgt_flows = {e.target_flow for e in edges}
         self.assertTrue(
             any(e.target_flow == 'combined' for e in edges),
             f'Expected edge to combined, got: {[(e.source_flow, e.target_flow) for e in edges]}'
@@ -1449,7 +1467,6 @@ class TestIdentifyExternalSources(unittest.TestCase):
         edges = _match_outputs_to_inputs(profiles)
         sources = _identify_external_sources(profiles, edges)
         # Sales_Clean input in combined should not be external (it's fed by sales flow)
-        source_tables = {s.table_name for s in sources}
         # The CSV source (sales_2024.csv) IS external
         # But Sales_Clean (fed by flow output) should be excluded
         for s in sources:
@@ -1764,7 +1781,7 @@ class TestRunPrepLineageMode(unittest.TestCase):
     """Test run_prep_lineage_mode end-to-end."""
 
     def test_full_pipeline(self):
-        from migrate import run_prep_lineage_mode, ExitCode
+        from migrate import ExitCode, run_prep_lineage_mode
         with tempfile.TemporaryDirectory() as td:
             _create_all_flows(td)
             out_dir = os.path.join(td, 'output')
@@ -1786,7 +1803,7 @@ class TestRunPrepLineageMode(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(out_dir, 'prep_lineage.json')))
 
     def test_empty_directory(self):
-        from migrate import run_prep_lineage_mode, ExitCode
+        from migrate import ExitCode, run_prep_lineage_mode
         with tempfile.TemporaryDirectory() as td:
             args = MagicMock()
             args.prep_lineage = [td]
@@ -1803,7 +1820,7 @@ class TestRunPrepLineageMode(unittest.TestCase):
             self.assertEqual(result, ExitCode.GENERAL_ERROR)
 
     def test_no_paths_error(self):
-        from migrate import run_prep_lineage_mode, ExitCode
+        from migrate import ExitCode, run_prep_lineage_mode
         args = MagicMock()
         args.prep_lineage = []
         args.batch = None
@@ -1818,7 +1835,7 @@ class TestRunPrepLineageMode(unittest.TestCase):
         self.assertEqual(result, ExitCode.GENERAL_ERROR)
 
     def test_specific_files(self):
-        from migrate import run_prep_lineage_mode, ExitCode
+        from migrate import ExitCode, run_prep_lineage_mode
         with tempfile.TemporaryDirectory() as td:
             p1 = _write_flow_tfl(td, 'sales', flow_01_sales_clean())
             p2 = _write_flow_tfl(td, 'products', flow_02_products_clean())

@@ -37,18 +37,20 @@ Config file format::
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
-try:
+if TYPE_CHECKING:
     from .credential_vault import CredentialVault
-except ImportError:
-    CredentialVault = None  # type: ignore[misc]
+else:
+    try:
+        from .credential_vault import CredentialVault
+    except ImportError:
+        CredentialVault = None
 
 logger = logging.getLogger(__name__)
 
@@ -397,8 +399,8 @@ def deploy_multi_tenant(
     Returns:
         Aggregate deployment result.
     """
-    import tempfile
     import shutil
+    import tempfile
 
     # Validate config first
     errors = config.validate()

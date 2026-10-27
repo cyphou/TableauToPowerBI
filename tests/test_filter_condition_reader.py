@@ -15,8 +15,7 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
-from tableau_export.extract_tableau_data import (  # noqa: E402
-    TableauExtractor, _read_filter_condition)
+from tableau_export.extract_tableau_data import TableauExtractor, _read_filter_condition  # noqa: E402
 
 
 def _filter(inner='', attrs='class="categorical" column="[ds].[Category]"'):

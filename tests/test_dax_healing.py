@@ -7,10 +7,17 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.dax_healing import (  # noqa: E402
-    heal_dax, heal_measures, HealReport, HealAction,
-    heal_balance_parens, heal_balance_brackets, heal_trailing_comma,
-    heal_double_equals, heal_sum_of_measure, _spans, _paren_profile,
-    HIGH, MEDIUM,
+    HIGH,
+    MEDIUM,
+    _paren_profile,
+    _spans,
+    heal_balance_brackets,
+    heal_balance_parens,
+    heal_dax,
+    heal_double_equals,
+    heal_measures,
+    heal_sum_of_measure,
+    heal_trailing_comma,
 )
 
 

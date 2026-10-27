@@ -21,9 +21,7 @@ import json
 import logging
 import os
 import re
-import subprocess
 import sys
-import time
 
 # Ensure project root is on path
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -193,8 +191,6 @@ def verify_dax(pbip_dir):
     calc_col_count = 0
 
     for tmdl_file in sorted(glob.glob(os.path.join(tables_dir, "*.tmdl"))):
-        tname = os.path.splitext(os.path.basename(tmdl_file))[0]
-
         # Use validator's semantic DAX check
         dax_issues = ArtifactValidator.validate_tmdl_dax(tmdl_file)
         for issue in dax_issues:
@@ -513,7 +509,7 @@ def print_autoplay(results, verbose=False):
         for nc in s2["needs_config"]:
             print(f"           - {nc}")
     if not s2.get("needs_config") and not s2.get("warnings"):
-        print(f"         All data sources configured")
+        print("         All data sources configured")
 
     # ── Step 3 ──
     s3 = results["steps"]["3_dax_verification"]

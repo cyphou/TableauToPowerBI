@@ -11,7 +11,10 @@ import os
 from copy import deepcopy
 from typing import Any, Dict, Iterable
 
-from powerbi_import.cross_validator import scan_visual_role_contract, validate_visual_data_roles
+from powerbi_import.cross_validator import (
+    scan_visual_role_contract,
+    validate_visual_data_roles,
+)
 from powerbi_import.self_healing_report import load_report, write_report
 
 

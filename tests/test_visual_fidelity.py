@@ -9,10 +9,10 @@ Covers:
 - 25.5: Custom shape extraction and migration
 """
 
-import os
-import sys
 import json
+import os
 import shutil
+import sys
 import tempfile
 import unittest
 import zipfile

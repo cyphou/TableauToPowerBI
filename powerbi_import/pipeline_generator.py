@@ -13,13 +13,11 @@ Output:
     └── .platform
 """
 
-import os
 import json
-import re
+import os
 from datetime import datetime
 
 from .fabric_item import logical_id, write_platform
-from .fabric_naming import sanitize_pipeline_name as _sanitize
 from .fabric_sources import datasource_has_connected_tables
 
 

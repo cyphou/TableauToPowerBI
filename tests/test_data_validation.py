@@ -15,7 +15,6 @@ model, and a test that cannot run is reported as `not_run` and excluded from
 the fidelity ratio rather than counted as a pass.
 """
 
-import json
 import os
 import sys
 import tempfile
@@ -24,8 +23,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from powerbi_import.equivalence_tester_v2 import (  # noqa: E402
-    EquivalenceTester,
     _PSEUDO_FIELDS,
+    EquivalenceTester,
     _read_generated_model,
     run_full_equivalence_suite,
 )

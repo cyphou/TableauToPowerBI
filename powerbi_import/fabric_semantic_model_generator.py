@@ -18,8 +18,8 @@ Output structure:
     └── .platform
 """
 
-import os
 import json
+import os
 
 # Import the existing tmdl_generator from the same package
 from . import tmdl_generator

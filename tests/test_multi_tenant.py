@@ -2,7 +2,6 @@
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 import unittest
@@ -10,10 +9,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.deploy.multi_tenant import (
-    TenantConfig,
     MultiTenantConfig,
-    TenantDeploymentResult,
     MultiTenantDeploymentResult,
+    TenantConfig,
+    TenantDeploymentResult,
     _apply_connection_overrides,
 )
 

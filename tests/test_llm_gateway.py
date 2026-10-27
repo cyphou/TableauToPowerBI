@@ -9,7 +9,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 from powerbi_import.llm_gateway import (  # noqa: E402
-    LLMGateway, LLMResult, _host_port, DEFAULT_LOCAL_URL,
+    DEFAULT_LOCAL_URL,
+    LLMGateway,
+    LLMResult,
+    _host_port,
 )
 
 
@@ -203,7 +206,7 @@ class TestStatus(unittest.TestCase):
 
 class TestRemediationWiring(unittest.TestCase):
     def test_refine_with_gateway_result(self):
-        from powerbi_import.remediation import remediate_findings, refine_with_llm
+        from powerbi_import.remediation import refine_with_llm, remediate_findings
         rep = remediate_findings([{"name": "x", "severity": "warn", "detail": "forecast"}])
         g = _gw(mode="offline")
         fake = mock.Mock()

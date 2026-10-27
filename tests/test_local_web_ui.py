@@ -4,7 +4,6 @@ import ast
 import http.client
 import io
 import json
-from pathlib import Path
 import stat
 import subprocess
 import sys
@@ -12,9 +11,10 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
-import zipfile
 
 from web import local_server as local
 

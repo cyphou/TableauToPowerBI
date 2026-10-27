@@ -4,9 +4,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime
 from unittest.mock import MagicMock, patch
-
 
 # ---------------------------------------------------------------------------
 # BundleDeploymentResult
@@ -351,7 +349,7 @@ class TestDeployBundle(unittest.TestCase):
         """Reports are rebound to model after deployment."""
         with tempfile.TemporaryDirectory() as td:
             project, deployer = self._make_project_and_deployer(td)
-            result = deployer.deploy_bundle(project)
+            deployer.deploy_bundle(project)
 
             deployer.client.post.assert_called()
             call_args = deployer.client.post.call_args_list
@@ -427,9 +425,10 @@ class TestCLIDeployBundleFlag(unittest.TestCase):
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-        # Import the parser creation
-        from migrate import main
         import argparse
+
+        # Import the parser creation
+        from migrate import main  # noqa: F401
 
         # Just verify the args can be parsed without error
         # We test by checking the attribute exists after parsing
@@ -477,7 +476,7 @@ class TestMigrateBundleDeploy(unittest.TestCase):
     def test_run_bundle_deploy_success(self):
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-        from migrate import _run_bundle_deploy, ExitCode
+        from migrate import ExitCode, _run_bundle_deploy
 
         with patch('powerbi_import.deploy.bundle_deployer.deploy_bundle_from_cli') as mock_cli:
             mock_result = MagicMock()
@@ -491,7 +490,7 @@ class TestMigrateBundleDeploy(unittest.TestCase):
     def test_run_bundle_deploy_failure(self):
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-        from migrate import _run_bundle_deploy, ExitCode
+        from migrate import ExitCode, _run_bundle_deploy
 
         with patch('powerbi_import.deploy.bundle_deployer.deploy_bundle_from_cli') as mock_cli:
             mock_result = MagicMock()
@@ -505,7 +504,7 @@ class TestMigrateBundleDeploy(unittest.TestCase):
     def test_run_bundle_deploy_exception(self):
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-        from migrate import _run_bundle_deploy, ExitCode
+        from migrate import ExitCode, _run_bundle_deploy
 
         with patch('powerbi_import.deploy.bundle_deployer.deploy_bundle_from_cli',
                    side_effect=Exception('network error')):
@@ -579,7 +578,7 @@ class TestStandaloneDeployDirValidation(unittest.TestCase):
     def test_nonexistent_dir_returns_error(self):
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-        from migrate import main, ExitCode
+        from migrate import ExitCode, main
 
         with patch('sys.argv', ['migrate.py',
                                 '--deploy-bundle', 'ws-fake',

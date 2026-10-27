@@ -11,10 +11,10 @@ Covers:
 - Generator resilience to incomplete data
 """
 
-import os
-import sys
 import json
+import os
 import shutil
+import sys
 import tempfile
 import unittest
 
@@ -22,29 +22,31 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
-from tableau_export.dax_converter import (
-    convert_tableau_formula_to_dax,
-    _split_args,
-    _normalize_spaces_outside_identifiers,
-)
+from powerbi_import.migration_report import MigrationReport
 from powerbi_import.tmdl_generator import (
-    _dax_to_m_expression,
     _build_semantic_model,
+    _dax_to_m_expression,
     generate_tmdl,
 )
-from powerbi_import.visual_generator import (
-    resolve_visual_type,
-    generate_visual_containers,
-    create_visual_container,
-    build_query_state,
-)
 from powerbi_import.validator import ArtifactValidator
-from powerbi_import.migration_report import MigrationReport
-from tests.factories import (
-    DatasourceFactory, WorksheetFactory, ModelFactory,
-    DashboardFactory, ParameterFactory,
+from powerbi_import.visual_generator import (
+    build_query_state,
+    create_visual_container,
+    generate_visual_containers,
+    resolve_visual_type,
 )
-
+from tableau_export.dax_converter import (
+    _normalize_spaces_outside_identifiers,
+    _split_args,
+    convert_tableau_formula_to_dax,
+)
+from tests.factories import (
+    DashboardFactory,
+    DatasourceFactory,
+    ModelFactory,
+    ParameterFactory,
+    WorksheetFactory,
+)
 
 # ═══════════════════════════════════════════════════════════════════════
 # DAX Converter Error Paths

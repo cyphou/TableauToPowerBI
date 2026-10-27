@@ -8,15 +8,15 @@ Tableau datasource metadata. Creates:
 - Table metadata JSON for other generators
 """
 
-import os
 import json
+import os
 from datetime import datetime
 
 from .calc_column_utils import classify_calculations, sanitize_calc_col_name
 from .fabric_constants import map_to_spark_type as _map_to_spark_type
 from .fabric_item import logical_id, write_platform
-from .fabric_naming import sanitize_table_name as _sanitize_table_name
 from .fabric_naming import sanitize_column_name as _sanitize_column_name
+from .fabric_naming import sanitize_table_name as _sanitize_table_name
 
 
 class LakehouseGenerator:

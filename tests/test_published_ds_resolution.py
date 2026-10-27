@@ -4,24 +4,22 @@ Tests for Published Datasource Resolution (datasource_extractor — Sprint 167 c
 
 import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
 from tableau_export.datasource_extractor import (
-    resolve_published_datasource,
-    cache_published_datasource,
-    load_cached_datasource,
-    clear_ds_cache,
-    resolve_published_datasource_cached,
-    resolve_all_published,
     _ds_cache_key,
+    cache_published_datasource,
+    clear_ds_cache,
+    load_cached_datasource,
+    resolve_all_published,
+    resolve_published_datasource_cached,
 )
-
 
 # ── Fixtures ────────────────────────────────────────────────────────
 

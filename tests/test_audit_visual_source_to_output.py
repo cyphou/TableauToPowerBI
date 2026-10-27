@@ -1,13 +1,13 @@
 """Synthetic Tableau XML to serialized PBIR visual audit regressions."""
 
-from contextlib import redirect_stdout
 import io
 import json
-from pathlib import Path
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 import zipfile
+from contextlib import redirect_stdout
+from pathlib import Path
 
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
 from powerbi_import.visual_generator import build_categorical_color_objects

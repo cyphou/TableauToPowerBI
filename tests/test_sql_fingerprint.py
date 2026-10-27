@@ -7,10 +7,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.shared_model import (
-    _normalize_sql,
     _hash_sql,
-    build_table_fingerprints,
+    _normalize_sql,
     build_custom_sql_fingerprints,
+    build_table_fingerprints,
 )
 
 

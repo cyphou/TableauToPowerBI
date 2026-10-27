@@ -1,8 +1,8 @@
 """Physical sourceColumn bindings match Desktop's raw string serialization."""
 
-import os
 import base64
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -85,7 +85,9 @@ class TestSourceColumnStringEscaping(unittest.TestCase):
             })
             with open(os.path.join(directory, 'model.tmdl'), 'w', encoding='utf-8') as stream:
                 stream.write('model Model\n\tculture: en-US\n\nref table Orders\n')
-            quote = lambda value: "'" + value.replace("'", "''") + "'"
+            def quote(value):
+                return "'" + value.replace("'", "''") + "'"
+
             script = "$ErrorActionPreference = 'Stop'; "
             for name in assemblies:
                 script += (

@@ -12,13 +12,13 @@ Usage:
     report = IncrementalMerger.merge(existing_dir, incoming_dir, output_dir)
 """
 
+import hashlib
 import json
+import logging
 import os
 import shutil
-import logging
-import hashlib
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +377,7 @@ class IncrementalMerger:
         diffs = cls.diff_projects(existing_dir, incoming_dir)
 
         lines = [
-            f'Migration Diff Report',
+            'Migration Diff Report',
             f'Existing: {existing_dir}',
             f'Incoming: {incoming_dir}',
             f'Generated: {datetime.now().isoformat()}',
@@ -643,7 +643,6 @@ class LiveSyncEngine:
         for fpath in changes['changed'] + changes['added']:
             try:
                 # Determine output subdir for this file
-                rel_path = os.path.relpath(fpath, self.source_dir)
                 base_name = os.path.splitext(os.path.basename(fpath))[0]
                 item_output = os.path.join(self.output_dir, base_name)
 

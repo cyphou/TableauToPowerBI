@@ -32,14 +32,14 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 try:
-    from powerbi_import.assessment import run_assessment, AssessmentReport
+    from powerbi_import.assessment import run_assessment
 except ImportError:
-    from assessment import run_assessment, AssessmentReport
+    from assessment import run_assessment
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -83,8 +83,8 @@ class WorkbookReadiness:
     visual_count: int = 0
     calc_count: int = 0
     table_count: int = 0
-    lineage: Dict[str, object] = field(default_factory=dict)
-    server_evidence: Dict[str, object] = field(default_factory=dict)
+    lineage: Dict[str, Any] = field(default_factory=dict)
+    server_evidence: Dict[str, Any] = field(default_factory=dict)
     assessment_report: Optional[object] = None
 
     def to_dict(self) -> dict:
@@ -364,7 +364,7 @@ def _compute_lineage_evidence(extracted: dict) -> Dict[str, object]:
 
 def _build_dependency_hotspots(
     workbook_results: List[WorkbookReadiness],
-) -> List[Dict[str, object]]:
+) -> List[Dict[str, Any]]:
     """Rank workbooks with the largest locally observed lineage surface."""
     hotspots = []
     for result in workbook_results:
@@ -621,20 +621,40 @@ def generate_server_html_report(
 ) -> str:
     """Generate an executive HTML dashboard report for the server assessment."""
     try:
-        from powerbi_import.report_localization import text, render
+        from powerbi_import.report_localization import render, text
     except ImportError:
-        from report_localization import text, render
+        from report_localization import render, text
     try:
         from powerbi_import.html_template import (
-            html_open, html_close, stat_card, stat_grid, section_open,
-            section_close, badge, fidelity_bar, donut_chart, bar_chart,
-            data_table, esc, SUCCESS, FAIL,
+            FAIL,
+            SUCCESS,
+            badge,
+            bar_chart,
+            data_table,
+            donut_chart,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
     except ImportError:
         from html_template import (
-            html_open, html_close, stat_card, stat_grid, section_open,
-            section_close, badge, fidelity_bar, donut_chart, bar_chart,
-            data_table, esc, SUCCESS, FAIL,
+            FAIL,
+            SUCCESS,
+            badge,
+            bar_chart,
+            data_table,
+            donut_chart,
+            esc,
+            html_close,
+            html_open,
+            section_close,
+            section_open,
+            stat_card,
+            stat_grid,
         )
 
     html = html_open(

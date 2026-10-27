@@ -1,6 +1,6 @@
 """Configuration package for Fabric deployment settings."""
 
+from .environments import EnvironmentConfig, EnvironmentType
 from .settings import get_settings
-from .environments import EnvironmentType, EnvironmentConfig
 
 __all__ = ['get_settings', 'EnvironmentType', 'EnvironmentConfig']

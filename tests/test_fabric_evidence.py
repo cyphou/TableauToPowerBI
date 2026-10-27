@@ -1,6 +1,5 @@
 """Tests for normalized local Fabric evidence."""
 
-import json
 import os
 import tempfile
 import unittest

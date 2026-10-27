@@ -5,9 +5,7 @@ Migrates Tableau Server subscriptions and email notifications
 to Power BI Service alert rules and notification configurations.
 """
 
-import json
 import logging
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +155,6 @@ def convert_subscriptions(subscriptions, user_upn_map=None):
         sub_id = sub.get('id', '')
         subject = sub.get('subject', '')
         user_name = sub.get('user', {}).get('name', '')
-        schedule = sub.get('schedule', {})
         content = sub.get('content', {})
 
         # Try to map user to Azure AD UPN

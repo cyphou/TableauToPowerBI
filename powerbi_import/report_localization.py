@@ -10,6 +10,9 @@ import html
 
 
 class LocalizedText(str):
+    en: str
+    fr: str
+
     def __new__(cls, en: str, fr: str):
         value = super().__new__(cls, en)
         value.en, value.fr = en, fr

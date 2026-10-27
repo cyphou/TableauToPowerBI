@@ -355,7 +355,7 @@ _SERVER_FREQUENCY_MAP = {
 }
 
 
-def map_server_alerts(server_alerts: list, workbook_map: dict = None) -> list:
+def map_server_alerts(server_alerts: list, workbook_map: Optional[dict] = None) -> list:
     """Convert Tableau Server data-driven alerts to PBI alert rules.
 
     Args:

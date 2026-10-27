@@ -71,10 +71,22 @@ If your change requires a new dependency, it must be behind a `try/except Import
 
 ### Style
 
-- Follow PEP 8 with `flake8` (errors only: E9, F63, F7, F82)
-- `ruff` is also configured in CI
+The CI `lint` job gates every other job. Run the same three commands locally
+before pushing (install them with `pip install flake8 ruff pyright`):
+
+```bash
+flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+ruff check --select=E,F,W,I --ignore=E501,E402 .
+pyright --warnings tableau_export/ powerbi_import/
+```
+
+- `flake8` reports errors only (E9, F63, F7, F82); `ruff` adds style, import
+  order and unused-code checks (E, F, W, I; E501 and E402 are ignored)
 - Maximum line length: 120 characters (soft limit)
-- Use type hints where practical (validated with pyrightconfig.json)
+- Use type hints where practical; `pyright` reads `pyrightconfig.json`
+  (Python 3.12, all platforms)
+- CI installs only the three linters, so an optional third-party import behind
+  `try/except ImportError` carries `# type: ignore[import-not-found]`
 
 ### Naming Conventions
 

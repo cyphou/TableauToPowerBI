@@ -13,8 +13,6 @@ Tests cover:
 import os
 import sys
 
-import pytest
-
 # ── Setup import paths ──────────────────────────────────────────────
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,16 +20,15 @@ sys.path.insert(0, os.path.join(ROOT_DIR, 'powerbi_import'))
 sys.path.insert(0, os.path.join(ROOT_DIR, 'tableau_export'))
 
 from dax_converter import (
-    convert_tableau_formula_to_dax,
-    _convert_previous_value,
     _convert_lookup,
+    _convert_previous_value,
+    convert_tableau_formula_to_dax,
 )
 from visual_generator import (
-    VISUAL_TYPE_MAP,
     VISUAL_DATA_ROLES,
     VISUAL_FALLBACK_CASCADE,
+    VISUAL_TYPE_MAP,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  1. PREVIOUS_VALUE with PARTITIONBY

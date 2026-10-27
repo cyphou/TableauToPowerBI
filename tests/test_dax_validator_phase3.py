@@ -7,7 +7,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from powerbi_import.dax_validator import validate_dax_expression, mask_literal_spans
+from powerbi_import.dax_validator import mask_literal_spans, validate_dax_expression
 from powerbi_import.validator import ArtifactValidator
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
 

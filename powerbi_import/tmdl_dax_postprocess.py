@@ -417,7 +417,9 @@ def _validate_measures_after_rewrites(result_table):
     # After all rewrites (SUM-of-measure unwrap, bare column wrapping),
     # validate every measure expression one more time.
     try:
-        from powerbi_import.dax_validator import validate_dax_expression as _validate_dax
+        from powerbi_import.dax_validator import (
+            validate_dax_expression as _validate_dax,
+        )
         for meas in result_table["measures"]:
             m_expr = meas.get("expression", "")
             if not m_expr or 'TODO: DAX conversion validation failed' in m_expr:
@@ -851,7 +853,7 @@ class _Compiler:
             raise _Unsupported("Unresolved or ambiguous calculation: %s" % name)
         return next(iter(ids))
 
-    def field(self, parts):
+    def field(self, parts) -> tuple:
         if not parts or not all(isinstance(part, str) and part for part in parts):
             raise _Unsupported("Unresolved relationship field operand")
         key = tuple(parts) if len(parts) == 2 else self.refs.get(parts[0])
@@ -872,7 +874,7 @@ class _Compiler:
         self.parsed[name] = node
         return node
 
-    def expand(self, node):
+    def expand(self, node) -> tuple:
         kind = node[0]
         if kind == "ref":
             parts = node[1]
@@ -1085,7 +1087,7 @@ class _Compiler:
             return (kind, node[1], args)
         return node
 
-    def condition(self, node):
+    def condition(self, node) -> tuple:
         """Fold in a truth-only context without changing nullable scalars."""
         node = self.simplify(node)
         if node[0] == "null":
@@ -1278,6 +1280,7 @@ class _Compiler:
         necessary = (self.necessary_left_nonzero(body)
                      if self.unmatched == "null_extend" else None)
         prune_left = necessary is not None and necessary != ("bool", "TRUE")
+        guard = ""
         if prune_left:
             left_columns = {key: _column(*self.bindings[key]) for key in fields}
             guard = self.truth(necessary, left_columns)
@@ -1358,6 +1361,7 @@ class _Compiler:
         # Variables live INSIDE the selected IF branch. Do not rely on && or
         # a variable declared before IF to defer a potentially quadratic LOD.
         matched = "\n".join(lod_lines + ["    RETURN " + pair_sum])
+        null_body, unmatched = (), ""
         if self.unmatched == "null_extend":
             null_body = self.simplify(body, True)
             unmatched = self.scalar(null_body, current, True)

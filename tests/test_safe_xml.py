@@ -11,6 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 
+from extract_tableau_data import TableauExtractor
 from safe_xml import (
     ExtractionWarning,
     ExtractionWarningCode,
@@ -19,7 +20,6 @@ from safe_xml import (
     safe_findtext,
     safe_get_attr,
 )
-from extract_tableau_data import TableauExtractor
 
 
 class TestSafeXmlHelpers(unittest.TestCase):

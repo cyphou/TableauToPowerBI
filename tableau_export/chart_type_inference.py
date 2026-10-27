@@ -9,8 +9,7 @@ Owned by **@extractor**.
 
 import re
 
-from extract_primitives import _clean_field_ref, _MARK_ENCODINGS
-
+from extract_primitives import _MARK_ENCODINGS, _clean_field_ref
 
 #: Marks that draw their value as text, so an empty Rows/Columns pair means a
 #: KPI card rather than an unrecognised chart.
@@ -187,7 +186,7 @@ def _shelfless_marks_card_type(worksheet, mark_class):
         return None
     return 'card' if text_fields == 1 else 'multiRowCard'
 
-def _detect_bar_orientation(worksheet, default):
+def _detect_bar_orientation(worksheet, default: str):
     """Detects bar chart orientation from shelf assignments.
 
     In Tableau, a Bar mark with dimension on columns and measure on
@@ -214,7 +213,6 @@ def _detect_bar_orientation(worksheet, default):
     cols_has_measure = _has_measure(cols_text)
     rows_has_measure = _has_measure(rows_text)
     cols_has_fields = bool(re.search(r'\[.*\]\.\[.*\]', cols_text))
-    rows_has_fields = bool(re.search(r'\[.*\]\.\[.*\]', rows_text))
 
     # Accept historical stacked aliases, but emit native Power BI IDs.
     default = {
@@ -256,8 +254,6 @@ def _infer_automatic_chart_type(worksheet):
                      'coût', 'cout', 'quantité', 'quantite', 'montant',
                      'prix', 'marge', 'remise', 'objectif', 'prévision',
                      'prevision', 'chiffre', 'recette', 'dépense', 'depense'}
-    geo_words = {'latitude', 'longitude', 'lat', 'lon', 'lng',
-                 'zip', 'postal', 'geo', 'geolocation'}
     # Geographic pairs that strongly indicate a map
     geo_pairs = {('latitude', 'longitude'), ('lat', 'lon'), ('lat', 'lng')}
 

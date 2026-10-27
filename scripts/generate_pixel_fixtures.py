@@ -37,7 +37,6 @@ from powerbi_import.qa_suite import (  # noqa: E402
     _has_format,
     _iter_visual_files,
     _load_json,
-    _short_path,
     _visual_type,
 )
 
@@ -52,8 +51,9 @@ from powerbi_import.qa_suite import (  # noqa: E402
 # workbook names are only legal under examples/, so nothing here names them.
 sys.path.insert(0, os.path.join(_REPO_ROOT, "tests"))
 from fixture_corpus import (  # noqa: E402
-    GOLDEN_DIR,
     golden_path as _golden_path,
+)
+from fixture_corpus import (
     golden_workbooks,
 )
 
@@ -68,8 +68,6 @@ def _page_of(path: str) -> str:
     if "pages" in parts:
         i = parts.index("pages")
         if i + 1 < len(parts):
-            # Reconstruct the OS path to the page folder and read page.json.
-            page_folder = os.sep.join(path.replace("/", os.sep).split(os.sep)[: -2])
             # page.json lives two levels up from visual.json: <pagefolder>/visuals/<vid>/visual.json
             page_dir = os.path.dirname(os.path.dirname(os.path.dirname(path)))
             page_json = _load_json(os.path.join(page_dir, "page.json"))

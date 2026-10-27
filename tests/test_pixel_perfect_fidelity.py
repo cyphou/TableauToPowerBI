@@ -22,8 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from tableau_export.extract_tableau_data import TableauExtractor
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
+from tableau_export.extract_tableau_data import TableauExtractor
 
 
 def _make_extractor():

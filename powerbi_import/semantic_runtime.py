@@ -7,10 +7,10 @@ without one, validation is explicitly reported as ``not_run``.
 
 from __future__ import annotations
 
-import time
 import re
+import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 @dataclass

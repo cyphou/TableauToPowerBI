@@ -25,10 +25,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from powerbi_import.desktop_probe import (desktop_pids, find_pbi_desktop,
-                                          probe_desktop_open, _safe_output_path)
 from powerbi_import.cross_validator import scan_visual_role_contract
 from powerbi_import.desktop_feedback_healing import heal_from_desktop_evidence
+from powerbi_import.desktop_probe import (
+    _safe_output_path,
+    desktop_pids,
+    find_pbi_desktop,
+    probe_desktop_open,
+)
 from powerbi_import.recovery_report import RecoveryReport
 
 

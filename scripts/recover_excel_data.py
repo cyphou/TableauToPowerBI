@@ -1,9 +1,9 @@
 """Recover source data files from TWBX archives in examples/real_world."""
-import zipfile
-import sqlite3
 import csv
 import os
+import sqlite3
 import sys
+import zipfile
 
 REAL_WORLD = os.path.join(os.path.dirname(__file__), '..', 'examples', 'real_world')
 
@@ -34,7 +34,8 @@ def extract_from_twbx(twbx_path, out_dir):
                     extracted.extend(csv_files)
                     # Remove raw file if CSV export succeeded
                     try:
-                        import time; time.sleep(1)
+                        import time
+                        time.sleep(1)
                         os.remove(raw_path)
                     except OSError:
                         pass
@@ -48,10 +49,10 @@ def extract_from_twbx(twbx_path, out_dir):
 def hyper_to_csv(hyper_path, out_dir, prefix):
     """Try to read a Hyper file and export tables to CSV."""
     results = []
-    
+
     # Tier 1: try tableauhyperapi
     try:
-        from tableauhyperapi import HyperProcess, Telemetry, Connection
+        from tableauhyperapi import Connection, HyperProcess, Telemetry
         hyper = HyperProcess(Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU)
         try:
             conn = Connection(hyper.endpoint, hyper_path)
@@ -75,7 +76,8 @@ def hyper_to_csv(hyper_path, out_dir, prefix):
                 conn.close()
         finally:
             hyper.close()
-            import time; time.sleep(0.5)  # let Hyper release file locks
+            import time
+            time.sleep(0.5)  # let Hyper release file locks
         return results
     except ImportError:
         pass
@@ -83,7 +85,8 @@ def hyper_to_csv(hyper_path, out_dir, prefix):
         print(f"  hyper-api failed: {e}")
         try:
             hyper.close()
-            import time; time.sleep(0.5)
+            import time
+            time.sleep(0.5)
         except Exception:
             pass
 
@@ -116,7 +119,7 @@ def hyper_to_csv(hyper_path, out_dir, prefix):
     # Tier 3: try hyper_reader from project
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-        from tableau_export.hyper_reader import read_hyper, export_hyper_to_csv
+        from tableau_export.hyper_reader import export_hyper_to_csv, read_hyper
         result = read_hyper(hyper_path, max_rows=100000)
         tbls = result.get('tables', []) if isinstance(result, dict) else []
         for tbl in tbls:
@@ -131,7 +134,7 @@ def hyper_to_csv(hyper_path, out_dir, prefix):
         print(f"  hyper_reader failed: {e}")
 
     if not results:
-        print(f"  WARNING: Could not read hyper file (install tableauhyperapi for full support)")
+        print("  WARNING: Could not read hyper file (install tableauhyperapi for full support)")
 
     return results
 

@@ -10,14 +10,10 @@ Validates:
 - Calculation description extraction from Tableau XML
 """
 
-import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
-import uuid
-
-import pytest
 
 # ── Path setup ──────────────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,15 +22,14 @@ sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 
 from powerbi_import.tmdl_generator import (
-    _generate_table_description,
     _generate_column_description,
     _generate_measure_description,
-    _write_table_tmdl,
-    _write_measure,
+    _generate_table_description,
     _write_column_flags,
+    _write_measure,
+    _write_table_tmdl,
     generate_tmdl,
 )
-
 
 # ── Helper: read TMDL file content ─────────────────────────────────
 
@@ -806,34 +801,34 @@ class TestCopilotAnnotationEdgeCases:
         """_pk suffix should trigger Copilot_Hidden."""
         lines = []
         _write_column_flags(lines, {'name': 'order_pk', 'dataType': 'int64'})
-        assert any('Copilot_Hidden' in l for l in lines)
+        assert any('Copilot_Hidden' in line for line in lines)
 
     def test_fk_suffix(self):
         """_fk suffix should trigger Copilot_Hidden."""
         lines = []
         _write_column_flags(lines, {'name': 'customer_fk', 'dataType': 'int64'})
-        assert any('Copilot_Hidden' in l for l in lines)
+        assert any('Copilot_Hidden' in line for line in lines)
 
     def test_case_sensitive_id_suffix(self):
         """Column named 'ProductID' (uppercase ID) should match."""
         lines = []
         _write_column_flags(lines, {'name': 'ProductID', 'dataType': 'int64'})
-        assert any('Copilot_Hidden' in l for l in lines)
+        assert any('Copilot_Hidden' in line for line in lines)
 
     def test_underscore_id_suffix(self):
         """Column named 'product_id' (underscore+id) should match."""
         lines = []
         _write_column_flags(lines, {'name': 'product_id', 'dataType': 'int64'})
-        assert any('Copilot_Hidden' in l for l in lines)
+        assert any('Copilot_Hidden' in line for line in lines)
 
     def test_column_named_valid_not_id(self):
         """Column named 'Valid' should NOT trigger Copilot_Hidden."""
         lines = []
         _write_column_flags(lines, {'name': 'Valid', 'dataType': 'boolean'})
-        assert not any('Copilot_Hidden' in l for l in lines)
+        assert not any('Copilot_Hidden' in line for line in lines)
 
     def test_column_containing_id_in_middle(self):
         """Column like 'VideoTitle' should NOT be marked as ID."""
         lines = []
         _write_column_flags(lines, {'name': 'VideoTitle', 'dataType': 'string'})
-        assert not any('Copilot_Hidden' in l for l in lines)
+        assert not any('Copilot_Hidden' in line for line in lines)

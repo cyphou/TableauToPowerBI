@@ -16,10 +16,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 from powerbi_import import visual_generator as vg
+from powerbi_import.assessment import _check_visuals
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
 from powerbi_import.tmdl_generator import generate_theme_json
-from powerbi_import.assessment import _check_visuals
-
 
 # ── Diverging 3-Stop Gradient ─────────────────────────────────────
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 import unittest
 
 from powerbi_import.recovery_report import RecoveryReport
+
+# isort: off
 from powerbi_import.self_healing_v3 import (
     _heal_global_measure_dupes,
     _heal_self_referencing_measures,
@@ -57,6 +59,7 @@ from powerbi_import.self_healing_v3 import (
     run_v3_healers,
     _V3_HEALERS,
 )
+# isort: on
 
 
 def _m_partition(expr, mode='import'):

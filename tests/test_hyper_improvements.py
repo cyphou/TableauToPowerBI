@@ -10,18 +10,13 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from tableau_export.hyper_reader import (
-    INLINE_ROW_THRESHOLD,
     _compute_column_stats_sqlite,
-    _m_literal,
-    _m_type_for,
     _read_hyper_api,
     _read_hyper_sqlite,
-    generate_m_csv_reference,
     generate_m_for_hyper_table,
-    generate_m_inline_table,
     get_hyper_metadata,
     read_hyper,
 )

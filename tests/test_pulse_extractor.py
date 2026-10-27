@@ -19,10 +19,10 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from tableau_export.pulse_extractor import (
-    extract_pulse_metrics,
-    _parse_metric_element,
-    has_pulse_metrics,
     _TIME_GRAIN_MAP,
+    _parse_metric_element,
+    extract_pulse_metrics,
+    has_pulse_metrics,
 )
 
 

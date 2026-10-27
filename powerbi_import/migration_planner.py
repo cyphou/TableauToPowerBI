@@ -434,11 +434,11 @@ def generate_plan_html(plan):
         wave_num = wave.get('wave', 0)
         effort = wave.get('effort_hours', 0)
         wbs = wave.get('workbooks', [])
-        html.append(f'<div class="wave-card">')
-        html.append(f'<div class="wave-header">')
+        html.append('<div class="wave-card">')
+        html.append('<div class="wave-header">')
         html.append(f'<span class="wave-title">Wave {wave_num}</span>')
         html.append(f'<span class="effort-badge">{effort}h effort | {len(wbs)} workbooks</span>')
-        html.append(f'</div>')
+        html.append('</div>')
         html.append('<table><tr><th>Workbook</th><th>Complexity</th>'
                     '<th>Score</th><th>Hours</th></tr>')
         for wb in wbs:
@@ -457,11 +457,11 @@ def generate_plan_html(plan):
     html.append('<h2>Workspace Mapping</h2>')
     html.append('<div class="workspace-list">')
     for ws_name, wb_names in workspace_mapping.items():
-        html.append(f'<div class="ws-item">')
+        html.append('<div class="ws-item">')
         html.append(f'<div class="ws-name">{ws_name}</div>')
         html.append(f'<div class="ws-wbs">{", ".join(wb_names[:10])}'
                     f'{"..." if len(wb_names) > 10 else ""}</div>')
-        html.append(f'</div>')
+        html.append('</div>')
     html.append('</div>')
 
     # Permission summary

@@ -14,10 +14,10 @@ from unittest import TestCase, mock
 
 import migrate
 from powerbi_import.desktop_paths import (
-    DesktopPathError, plan_desktop_project_name,
+    DesktopPathError,
+    plan_desktop_project_name,
 )
 from tests.test_bug_bash_resume_paths import _publish, _root_at
-
 
 EXTENSION_PAIRS = tuple(itertools.combinations(
     ('twb', 'twbx', 'tds', 'tdsx', 'tfl', 'tflx'), 2))

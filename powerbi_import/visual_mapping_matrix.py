@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
 import re
+from typing import Any, Dict, List
 
 from powerbi_import import visual_generator
 
@@ -52,7 +52,10 @@ def summarize_visual_mapping_matrix(rows: List[Dict[str, Any]]) -> Dict[str, Any
 def find_visual_approximations_in_use(extracted: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Match approximation mappings against extracted worksheet mark metadata."""
     rows = build_visual_mapping_matrix()
-    normalize = lambda value: re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+    def normalize(value):
+        return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
     approximations = {
         normalize(row["source"]): row
         for row in rows if row.get("status") == "approximation"

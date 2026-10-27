@@ -1,9 +1,7 @@
 """Tests for deterministic local file staging into Fabric Lakehouse Files."""
 
 import csv
-import os
 import zipfile
-from xml.sax.saxutils import escape
 
 from powerbi_import.fabric_file_staging import (
     read_xlsx_sheets,

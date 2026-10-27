@@ -9,12 +9,14 @@ import pytest
 
 import migrate
 from powerbi_import.desktop_paths import (
-    DesktopPathError, plan_desktop_project_name, validate_desktop_project,
-    validate_desktop_tree, path_units,
+    DesktopPathError,
+    path_units,
+    plan_desktop_project_name,
+    validate_desktop_tree,
 )
 from powerbi_import.openability import _check_path_length
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
-from powerbi_import.tmdl_writers import _write_tmdl_files, _safe_filename
+from powerbi_import.tmdl_writers import _safe_filename, _write_tmdl_files
 
 
 def _root_at(base, length):

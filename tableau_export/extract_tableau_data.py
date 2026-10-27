@@ -5,15 +5,14 @@ This script extracts metadata and structures from Tableau workbooks
 and exports them in JSON format for conversion to Power BI.
 """
 
-import os
-import sys
-import ntpath
 import json
 import logging
-import zipfile
-import xml.etree.ElementTree as ET
-from datetime import datetime
+import ntpath
+import os
 import re
+import sys
+import xml.etree.ElementTree as ET
+import zipfile
 from copy import deepcopy
 
 # Legacy script/top-level callers need the sibling security modules on sys.path.
@@ -50,14 +49,18 @@ except ImportError:
 try:
     from powerbi_import.errors import ConfigurationError, ExtractionError
     from powerbi_import.security_validator import (
-        get_zip_entry_limit_mb, safe_zip_extract_member, safe_parse_xml, SecurityError,
-        validate_path, ALLOWED_EXTENSIONS,
+        SecurityError,
+        get_zip_entry_limit_mb,
+        safe_parse_xml,
+        safe_zip_extract_member,
     )
 except ModuleNotFoundError:
     from errors import ConfigurationError, ExtractionError
     from security_validator import (
-        get_zip_entry_limit_mb, safe_zip_extract_member, safe_parse_xml, SecurityError,
-        validate_path, ALLOWED_EXTENSIONS,
+        SecurityError,
+        get_zip_entry_limit_mb,
+        safe_parse_xml,
+        safe_zip_extract_member,
     )
 _HAS_SECURITY = True
 
@@ -67,24 +70,24 @@ logger = logging.getLogger(__name__)
 # Leaf helpers live in extract_primitives; re-exported here so existing
 # imports of these names keep working.
 from extract_primitives import (  # noqa: E402,F401
-    _clean_field_ref,
-    _clean_tableau_run_text,
-    _extract_calculation_formula,
     _RE_DERIVATION_PREFIX,
     _RE_FIELD_REF,
     _RE_TABLE_CALC_PREFIX,
     _RE_TYPE_SUFFIX,
-    _safe_int,
-    _strip_brackets,
     _TABLEAU_LB_SENTINEL_RE,
     _TABLEAU_RUN_STYLE_ATTRS,
+    _clean_field_ref,
+    _clean_tableau_run_text,
+    _extract_calculation_formula,
+    _safe_int,
+    _strip_brackets,
 )
 
 # Ensure Unicode output on Windows consoles (✓, →, ❌, etc.)
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
     try:
-        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
     except (AttributeError, OSError):
         pass
 
@@ -104,17 +107,17 @@ _COLOR_RAMP_KINDS = {'palette': 'categorical', 'interpolated': 'quantitative'}
 
 #: Marks-card encodings and chart-type inference now live outside this
 #: module; re-exported so existing imports keep working.
-from extract_primitives import _MARK_ENCODINGS  # noqa: E402,F401
 from chart_type_inference import (  # noqa: E402,F401
     _CARD_MARK_CLASSES,
-    _extract_mark_class,
-    determine_chart_type,
-    _shelfless_marks_card_type,
     _detect_bar_orientation,
+    _extract_mark_class,
     _infer_automatic_chart_type,
     _map_tableau_mark_to_type,
+    _shelfless_marks_card_type,
+    determine_chart_type,
     extract_combined_axis_panes,
 )
+from extract_primitives import _MARK_ENCODINGS  # noqa: E402,F401
 
 #: What Tableau's action commands mean, in the vocabulary the pipeline uses.
 _TABLEAU_ACTION_COMMANDS = {
@@ -186,10 +189,10 @@ def _read_action_kind(action):
 from extract_primitives import _read_filter_condition  # noqa: E402,F401
 from worksheet_extractor import (  # noqa: E402,F401
     build_field_provenance,
-    extract_worksheet_fields,
-    extract_worksheet_filters,
     extract_formatting,
     extract_tooltips,
+    extract_worksheet_fields,
+    extract_worksheet_filters,
 )
 
 
@@ -229,13 +232,13 @@ def _split_sql_values(values_str):
 # Dashboard extraction and its alignment helpers live in
 # dashboard_extractor; re-exported so existing imports keep working.
 from dashboard_extractor import (  # noqa: E402,F401
-    extract_dashboard_objects,
-    extract_dashboard_filters,
-    extract_dashboard_parameters,
-    extract_layout_containers,
-    extract_device_layouts,
     _map_text_alignment,
     _map_vertical_alignment,
+    extract_dashboard_filters,
+    extract_dashboard_objects,
+    extract_dashboard_parameters,
+    extract_device_layouts,
+    extract_layout_containers,
 )
 
 
@@ -286,7 +289,7 @@ class TableauExtractor:
         'custom_geocoding', 'published_datasources', 'data_blending',
         'table_extensions', 'linguistic_schema',
     )
-    
+
     def __init__(self, tableau_file, output_dir=None, hyper_max_rows=None,
                  max_zip_entry_mb=None):
         self.max_zip_entry_mb = get_zip_entry_limit_mb(max_zip_entry_mb)
@@ -296,7 +299,7 @@ class TableauExtractor:
         self.extraction_warnings = []
         self.hyper_max_rows = hyper_max_rows or 20
         self._xml_node_cache = {}
-        
+
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _clear_xml_node_cache(self):
@@ -316,25 +319,25 @@ class TableauExtractor:
         """Record a non-fatal extraction warning for diagnostics."""
         warning = ExtractionWarning(code=code, message=message, context=context)
         self.extraction_warnings.append(warning.as_dict())
-    
+
     def extract_all(self):
         """Extracts all objects from the Tableau workbook"""
-        
+
         print(f"Extracting {self.tableau_file}...")
-        
+
         # Read the Tableau file
         xml_content = self.read_tableau_file()
-        
+
         if not xml_content:
             print("❌ Unable to read the Tableau file")
             return False
-        
+
         # Parse the XML with XXE protection
         if _HAS_SECURITY:
             root = safe_parse_xml(xml_content)
         else:
             root = ET.fromstring(xml_content)
-        
+
         # Standalone .tds/.tdsx: root IS the <datasource> element.
         # Wrap it in a synthetic <workbook> so all extract_* methods
         # that use .//datasource XPath queries find it normally.
@@ -345,7 +348,7 @@ class TableauExtractor:
             root = wrapper
 
         self._clear_xml_node_cache()
-        
+
         # Extract the different objects
         self.extract_worksheets(root)
         self.extract_dashboards(root)
@@ -383,13 +386,13 @@ class TableauExtractor:
                 source=self.tableau_file,
                 item=', '.join(missing_outputs),
             )
-        
+
         # Save the exports
         self.save_extractions()
-        
+
         print("✓ Extraction complete")
         return True
-    
+
     def read_tableau_file(self):
         """Reads the XML content of the Tableau file with security protections.
 
@@ -398,14 +401,14 @@ class TableauExtractor:
         - Path traversal validation on archive entry names
         - Size limit enforcement on extracted entries
         """
-        
+
         file_ext = os.path.splitext(self.tableau_file)[1].lower()
-        
+
         if file_ext in ['.twb', '.tds']:
             # Direct XML file
             with open(self.tableau_file, 'r', encoding='utf-8') as f:
                 return f.read()
-        
+
         elif file_ext in ['.twbx', '.tdsx']:
             if not zipfile.is_zipfile(self.tableau_file):
                 if file_ext != '.twbx':
@@ -448,16 +451,16 @@ class TableauExtractor:
                             with z.open(name) as f:
                                 self._workbook_archive_member = name
                                 return f.read().decode('utf-8')
-        
+
         return None
-    
+
     def extract_worksheets(self, root):
         """Extracts worksheets"""
-        
+
         worksheets = []
         self._color_index = self._build_color_index(root)
         self._worksheet_field_provenance = build_field_provenance(root)
-        
+
         for worksheet in _find_collection_items(root, 'worksheets', 'worksheet'):
             ws_data = {
             'name': safe_get_attr(worksheet, 'name', ''),
@@ -506,13 +509,13 @@ class TableauExtractor:
                 for position, field in zip(positions, ordered):
                     ws_data['fields'][position] = field
             worksheets.append(ws_data)
-        
+
         self.workbook_data['worksheets'] = worksheets
         print(f"  ✓ {len(worksheets)} worksheets extracted")
-    
+
     def extract_dashboards(self, root):
         """Extracts dashboards"""
-        
+
         dashboards = []
         # Quick-filter zones reference workbook/datasource filters that need
         # not be children of the dashboard (or even its named worksheet).
@@ -520,15 +523,15 @@ class TableauExtractor:
             filt.get('column', '') for filt in root.findall('.//filter')
             if filt.get('class', '').lower() in ('quantitative', 'range')
         }
-        
+
         for dashboard in _find_collection_items(root, 'dashboards', 'dashboard'):
             size_elem = safe_find(dashboard, 'size')
             if size_elem is not None:
                 db_width = _safe_int(safe_get_attr(size_elem, 'maxwidth', safe_get_attr(size_elem, 'minwidth', '1280')))
                 db_height = _safe_int(safe_get_attr(size_elem, 'maxheight', safe_get_attr(size_elem, 'minheight', '720')))
             else:
-                db_width = _safe_int(safe_get_attr(dashboard, 'width', 1280))
-                db_height = _safe_int(safe_get_attr(dashboard, 'height', 720))
+                db_width = _safe_int(safe_get_attr(dashboard, 'width', '1280'))
+                db_height = _safe_int(safe_get_attr(dashboard, 'height', '720'))
             db_data = {
                 'name': safe_get_attr(dashboard, 'name', ''),
                 'title': safe_findtext(dashboard, './/title', ''),
@@ -549,23 +552,23 @@ class TableauExtractor:
                 'zone_hierarchy': self.extract_zone_hierarchy(dashboard),
             }
             dashboards.append(db_data)
-        
+
         self.workbook_data['dashboards'] = dashboards
         print(f"  ✓ {len(dashboards)} dashboards extracted")
-    
+
     def extract_datasources(self, root):
         """Extracts datasources with enhanced extraction.
-        
+
         Filters out empty datasources and deduplicates by name to keep
         only the most complete version (with the most tables/calculations).
         """
-        
+
         raw_datasources = []
-        
+
         for datasource in self._findall_root_cached(root, './/datasource'):
             ds_data = extract_datasource(datasource, twbx_path=self.tableau_file)
             raw_datasources.append(ds_data)
-        
+
         # Deduplicate: keep the richest DS by name
         best_ds = {}  # ds_name -> ds_data
         for ds in raw_datasources:
@@ -573,10 +576,10 @@ class TableauExtractor:
             tables = ds.get('tables', [])
             calcs = ds.get('calculations', [])
             richness = len(tables) + len(calcs)
-            
+
             if ds_name not in best_ds or richness > (len(best_ds[ds_name].get('tables', [])) + len(best_ds[ds_name].get('calculations', []))):
                 best_ds[ds_name] = ds
-        
+
         # Filter: keep only DSs with real content
         datasources = []
         for ds in best_ds.values():
@@ -585,10 +588,10 @@ class TableauExtractor:
             has_rels = len(ds.get('relationships', [])) > 0
             if has_tables or has_calcs or has_rels:
                 datasources.append(ds)
-        
+
         self.workbook_data['datasources'] = datasources
         print(f"  ✓ {len(datasources)} datasources extracted (filtered from {len(raw_datasources)} raw)")
-    
+
     def extract_calculations(self, root):
         """Extracts calculated fields - now integrated in enhanced datasource extraction.
 
@@ -596,7 +599,7 @@ class TableauExtractor:
         ``<datasource-dependencies>`` blocks (common for LOD ratio formulas
         that Tableau auto-generates per worksheet).
         """
-        
+
         # Calculations are now extracted directly in extract_datasource
         # This method maintains backward compatibility
         calculations = []
@@ -620,7 +623,7 @@ class TableauExtractor:
                 if cname not in seen_names:
                     seen_names.add(cname)
                     calculations.append(calc)
-        
+
         # Capture worksheet-level calculations from <datasource-dependencies>
         # These are calculations scoped to a specific worksheet (e.g. LOD
         # ratio formulas) that are NOT part of the main datasource definition.
@@ -670,27 +673,27 @@ class TableauExtractor:
                     if ds_ref in ds_by_name and cname not in ds_seen.get(ds_ref, set()):
                         ds_by_name[ds_ref].setdefault('calculations', []).append(calc_entry)
                         ds_seen.setdefault(ds_ref, set()).add(cname)
-        
+
         self.workbook_data['calculations'] = calculations
         print(f"  ✓ {len(calculations)} calculations extracted")
-    
+
     def _resolve_cross_datasource_calcs(self):
         """Bug #6: Resolve cross-datasource calculation ID references.
-        
+
         When calculations reference other calculations via [Calculation_NNNNNNNNNNNNNNNN]
         (18-digit ID suffix), attempt to resolve to the actual calculation name using
         a 3-stage fallback:
         1. Look in the same datasource
         2. If not found, search all datasources by suffix match
         3. If still not found, try by calculation name
-        
+
         Impact: Recovers calculations skipped in multi-datasource workbooks (DPN, OGDAA, etc.)
         """
         # Build a map of all calculation IDs across all datasources
         # ID suffix -> (datasource_name, calc_name, calc_obj)
         all_calc_ids = {}  # suffix (18 digits) -> (ds_name, calc_name, calc)
         all_calc_names = {}  # calc_name -> (ds_name, calc)
-        
+
         for ds in self.workbook_data.get('datasources', []):
             ds_name = ds.get('name', '')
             for calc in ds.get('calculations', []):
@@ -704,7 +707,7 @@ class TableauExtractor:
                 clean_name = re.sub(r'_\d{18}$', '', calc_name)
                 if clean_name not in all_calc_names:
                     all_calc_names[clean_name] = (ds_name, calc)
-        
+
         # Now resolve references in all calculation formulas
         formula_resolution_count = 0
         for ds in self.workbook_data.get('datasources', []):
@@ -713,17 +716,17 @@ class TableauExtractor:
                 formula = calc.get('formula', '')
                 if not formula:
                     continue
-                
+
                 # Find all [Calculation_NNNNNNNNNNNNNNNN] patterns
                 def resolve_calc_ref(match):
                     nonlocal formula_resolution_count
                     ref_name = match.group(1).strip('[]')
-                    
+
                     # Stage 1: Look in same datasource
                     for local_calc in ds.get('calculations', []):
                         if local_calc.get('name', '') == ref_name:
                             return match.group(0)  # Already found locally
-                    
+
                     # Stage 2: Extract suffix and search cross-datasource
                     suffix_match = re.search(r'_(\d{18})$', ref_name)
                     if suffix_match:
@@ -734,7 +737,7 @@ class TableauExtractor:
                                 formula_resolution_count += 1
                                 print(f"  ⚕ Self-heal: Resolved cross-datasource calc '{ref_name}' → '{resolved_name}' (from '{resolved_ds}')")
                                 return f"[{resolved_name}]"
-                    
+
                     # Stage 3: Try by calculation name (strip suffix)
                     clean_ref = re.sub(r'_\d{18}$', '', ref_name)
                     if clean_ref in all_calc_names:
@@ -743,35 +746,35 @@ class TableauExtractor:
                         formula_resolution_count += 1
                         print(f"  ⚕ Self-heal: Resolved calculation name '{ref_name}' → '{resolved_name}' (from '{resolved_ds}')")
                         return f"[{resolved_name}]"
-                    
+
                     # Not found — return unchanged
                     return match.group(0)
-                
+
                 # Apply resolution to all [Calculation_...] references
                 updated_formula = re.sub(r'\[([Cc]alculation_[^\]]*)\]', resolve_calc_ref, formula)
                 if updated_formula != formula:
                     calc['formula'] = updated_formula
-        
+
         if formula_resolution_count > 0:
             print(f"  ✓ {formula_resolution_count} cross-datasource calculation references resolved")
-    
+
     def extract_parameters(self, root):
         """Extracts parameters (deduplicated by name).
         Handles both XML formats:
         - Old: <column param-domain-type="..."> (Tableau Desktop classic)
         - New: <parameters><parameter> (Tableau Desktop modern)
         """
-        
+
         parameters = []
         seen_names = set()
-        
+
         # Format 1: Old-style column-based parameters
         for param in self._findall_root_cached(root, './/column[@param-domain-type]'):
             param_name = param.get('name', '')
             if param_name in seen_names:
                 continue
             seen_names.add(param_name)
-            
+
             param_data = {
                 'name': param_name,
                 'caption': param.get('caption', ''),
@@ -796,21 +799,21 @@ class TableauExtractor:
                 param_data['refresh_on_open'] = True
 
             parameters.append(param_data)
-        
+
         # Format 2: New-style <parameters><parameter> elements
         for param in self._findall_root_cached(root, './/parameters/parameter'):
             param_name = param.get('name', '')
             if param_name in seen_names:
                 continue
             seen_names.add(param_name)
-            
+
             # Determine domain type from children
             domain_type = 'any'
             if param.find('range') is not None:
                 domain_type = 'range'
             elif param.find('domain') is not None:
                 domain_type = 'list'
-            
+
             param_data = {
                 'name': param_name,
                 'caption': param.get('caption', ''),
@@ -845,17 +848,17 @@ class TableauExtractor:
                 param_data['refresh_on_open'] = True
 
             parameters.append(param_data)
-        
+
         self.workbook_data['parameters'] = parameters
         print(f"  ✓ {len(parameters)} parameters extracted")
-    
+
     def extract_filters(self, root):
         """Extracts filters with mode classification.
 
         Classifies each filter as categorical, range, relative-date,
         wildcard, top-n, or context based on XML attributes and values.
         """
-        
+
         filters = []
 
         # Filters are collected in one flat pass below; pre-map each element to
@@ -943,15 +946,15 @@ class TableauExtractor:
 
             filter_data['filter_mode'] = filter_mode
             filters.append(filter_data)
-        
+
         self.workbook_data['filters'] = filters
         print(f"  ✓ {len(filters)} filters extracted")
-    
+
     def extract_stories(self, root):
         """Extracts stories"""
-        
+
         stories = []
-        
+
         for story in self._findall_root_cached(root, './/story'):
             story_data = {
                 'name': story.get('name', ''),
@@ -959,12 +962,12 @@ class TableauExtractor:
                 'story_points': self.extract_story_points(story),
             }
             stories.append(story_data)
-        
+
         self.workbook_data['stories'] = stories
         print(f"  ✓ {len(stories)} stories extracted")
-    
+
     # Helper methods
-    
+
     # Chart-type inference lives in chart_type_inference; these delegate
     # so extractor.determine_chart_type(worksheet) keeps working.
     def _extract_mark_class(self, worksheet):
@@ -985,7 +988,7 @@ class TableauExtractor:
     def _map_tableau_mark_to_type(self, mark_class):
         return _map_tableau_mark_to_type(mark_class)
 
-    
+
     # Worksheet extraction lives in worksheet_extractor; these delegate so
     # extractor.extract_worksheet_fields(worksheet) keeps working.
     def extract_worksheet_fields(self, worksheet):
@@ -1127,13 +1130,13 @@ class TableauExtractor:
     def extract_tooltips(self, worksheet):
         return extract_tooltips(worksheet)
 
-    
+
     def extract_actions(self, worksheet):
         """Extracts actions referenced in this worksheet"""
         # Actions are at the workbook level, not worksheet
         # This method remains for backward compatibility
         return []
-    
+
     # Dashboard extraction lives in dashboard_extractor; these delegate so
     # extractor.extract_*(dashboard) keeps working.
     def extract_dashboard_objects(self, dashboard):
@@ -1158,11 +1161,11 @@ class TableauExtractor:
     def extract_device_layouts(self, dashboard):
         return extract_device_layouts(dashboard)
 
-    
+
     def extract_theme(self, dashboard):
         """Extracts the theme (colors, fonts, custom color palettes) from the dashboard or workbook"""
         theme = {}
-        
+
         # Palette colors from dashboard preferences
         for prefs in dashboard.findall('.//preferences'):
             colors = []
@@ -1171,7 +1174,7 @@ class TableauExtractor:
                     colors.append(color.text)
             if colors:
                 theme['color_palette'] = colors
-        
+
         # Custom color palettes (named palettes)
         custom_palettes = {}
         for palette in dashboard.findall('.//color-palette'):
@@ -1188,7 +1191,7 @@ class TableauExtractor:
                 }
         if custom_palettes:
             theme['custom_palettes'] = custom_palettes
-        
+
         # Global formatting style
         for style in dashboard.findall('.//style'):
             for rule in style.findall('.//style-rule'):
@@ -1197,11 +1200,11 @@ class TableauExtractor:
                     attrs = dict(fmt.attrib)
                     if attrs:
                         theme.setdefault('styles', {})[elem] = attrs
-        
+
         # Font family from formatting
         for fmt in dashboard.findall('.//format[@attr="font-family"]'):
             theme['font_family'] = fmt.get('value', '')
-        
+
         # Extract global workbook-level color palette from parent
         parent = dashboard
         for color_pal in parent.findall('.//preferences/color-palette'):
@@ -1212,9 +1215,9 @@ class TableauExtractor:
                     'type': color_pal.get('type', 'regular'),
                     'colors': pal_colors,
                 }
-        
+
         return theme
-    
+
     def extract_allowable_values(self, param):
         """Extracts the allowed values for a parameter (list, range).
         Handles both old (<members><member>) and new (<domain><member>) formats.
@@ -1226,7 +1229,7 @@ class TableauExtractor:
             if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
                 return s[1:-1]
             return s
-        
+
         # List values — old format: <members><member>
         for member in param.findall('.//members/member'):
             val = member.get('value', '')
@@ -1236,7 +1239,7 @@ class TableauExtractor:
                 clean_val = _strip_outer_quotes(val)
                 clean_alias = _strip_outer_quotes(alias) if alias else clean_val
                 result.append({'value': clean_val, 'alias': clean_alias})
-        
+
         # List values — new format: <domain><member>
         for member in param.findall('.//domain/member'):
             val = member.get('value', '')
@@ -1246,7 +1249,7 @@ class TableauExtractor:
                 clean_val = _strip_outer_quotes(val)
                 clean_alias = _strip_outer_quotes(alias) if alias else clean_val
                 result.append({'value': clean_val, 'alias': clean_alias})
-        
+
         # Range (min/max/step)
         range_elem = param.find('.//range')
         if range_elem is not None:
@@ -1260,9 +1263,9 @@ class TableauExtractor:
                     'max': max_val,
                     'step': step
                 })
-        
+
         return result
-    
+
     def extract_story_points(self, story):
         """Extracts story points (= slides of a story)"""
         story_points = []
@@ -1282,7 +1285,7 @@ class TableauExtractor:
                     sp_data['filters_state'].append({'field': col, 'values': vals})
             story_points.append(sp_data)
         return story_points
-    
+
     def extract_worksheet_sort_orders(self, worksheet):
         """Extracts sort orders of a worksheet including computed sorts."""
         sorts = []
@@ -1290,20 +1293,20 @@ class TableauExtractor:
             col = _strip_brackets(sort.get('column', ''))
             direction = sort.get('direction', 'ASC')
             sort_entry = {'field': col, 'direction': direction.upper()}
-            
+
             # Computed sort: sort by another field/measure
             sort_using = sort.get('using', '')
             if sort_using:
                 sort_entry['sort_by'] = _strip_brackets(sort_using)
-            
+
             # Sort type: alphabetic, manual, computed
             sort_type = sort.get('type', '')
             if sort_type:
                 sort_entry['sort_type'] = sort_type
-            
+
             sorts.append(sort_entry)
         return sorts
-    
+
     def _build_color_index(self, root):
         """Index the document's colour definitions.
 
@@ -1349,17 +1352,17 @@ class TableauExtractor:
     def extract_mark_encoding(self, worksheet):
         """Extracts visual mark encodings (color, size, shape, label)"""
         encoding = {}
-        
+
         for enc_elem in worksheet.findall('.//encodings'):
             # Use module-level _clean_field_ref for derivation prefix cleaning
-            
+
             # Color
             color = enc_elem.find('.//color')
             if color is not None:
                 column = color.get('column', '')
                 palette = color.get('palette', '')
                 col_refs = re.findall(r'\[([^\]]+)\]\.\[([^\]]+)\]', column)
-                
+
                 # Detect quantitative vs categorical color encoding
                 # quantitative = `:qk` suffix or explicit `type="quantitative"`
                 color_type = color.get('type', '')
@@ -1404,7 +1407,7 @@ class TableauExtractor:
                         index.get('palettes', {}).get(palette, []))
                 if palette_colors:
                     color_data['palette_colors'] = palette_colors
-                
+
                 # Stepped color thresholds from <bucket> elements
                 thresholds = []
                 for bucket in color.findall('.//bucket'):
@@ -1419,14 +1422,14 @@ class TableauExtractor:
                         thresholds.append(thresh)
                 if thresholds:
                     color_data['thresholds'] = thresholds
-                
+
                 # Legend position
                 legend = color.find('.//legend')
                 if legend is not None:
                     color_data['legend_position'] = legend.get('position', 'right')
-                
+
                 encoding['color'] = color_data
-            
+
             # Size
             size = enc_elem.find('.//size')
             if size is not None:
@@ -1435,7 +1438,7 @@ class TableauExtractor:
                 encoding['size'] = {
                     'field': _clean_field_ref(col_refs[0][1]) if col_refs else _strip_brackets(column)
                 }
-            
+
             # Shape
             shape = enc_elem.find('.//shape')
             if shape is not None:
@@ -1444,7 +1447,7 @@ class TableauExtractor:
                 encoding['shape'] = {
                     'field': _clean_field_ref(col_refs[0][1]) if col_refs else _strip_brackets(column)
                 }
-            
+
             # Label (with position, font, orientation)
             label = enc_elem.find('.//label')
             if label is not None:
@@ -1462,21 +1465,21 @@ class TableauExtractor:
                     'font_color': label.get('font-color', ''),
                     'content_type': label.get('content-type', ''),  # value, percent, category
                 }
-        
+
         return encoding
-    
+
     def extract_axes(self, worksheet):
         """Extracts axis configuration including continuous/discrete detection and dual-axis."""
         axes = {}
         axis_elements = worksheet.findall('.//axis')
-        
+
         for axis in axis_elements:
             axis_type = axis.get('type', '')  # x, y
-            
+
             # Detect continuous vs discrete
-            # Continuous axes have numeric/date ranges; discrete have categories  
+            # Continuous axes have numeric/date ranges; discrete have categories
             is_continuous = axis.get('auto-range', 'true') != '' or axis.get('range-min') is not None
-            
+
             axes[axis_type] = {
                 'auto_range': axis.get('auto-range', 'true') == 'true',
                 'range_min': axis.get('range-min', None),
@@ -1486,7 +1489,7 @@ class TableauExtractor:
                 'reversed': axis.get('reversed', 'false') == 'true',
                 'continuous': is_continuous,
             }
-        
+
         # Detect dual axis: multiple y-axis definitions or sync flag
         y_axes = [a for a in axis_elements if a.get('type') == 'y']
         dual_axis = self.extract_dual_axis_sync(worksheet)
@@ -1497,9 +1500,9 @@ class TableauExtractor:
         else:
             axes['dual_axis'] = False
             axes['dual_axis_sync'] = False
-        
+
         return axes
-    
+
     def extract_reference_lines(self, worksheet):
         """Extracts reference lines, bands, and distributions"""
         ref_lines = []
@@ -1559,7 +1562,7 @@ class TableauExtractor:
                 'percentile': rd.get('percentile', ''),
             })
         return ref_lines
-    
+
     def extract_annotations(self, worksheet):
         """Extracts annotations (text callouts on charts).
 
@@ -1672,15 +1675,15 @@ class TableauExtractor:
                 annotations.append(ann_data)
 
         return annotations
-    
+
     def extract_workbook_actions(self, root):
         """Extracts actions at the workbook level (filter, highlight, url, navigate, param, set)"""
         actions = []
-        
+
         for action in root.findall('.//action'):
             action_type = action.get('type', '') or _read_action_kind(action)
             action_name = action.get('name', '')
-            
+
             action_data = {
                 'name': action_name,
                 'type': action_type,
@@ -1692,7 +1695,7 @@ class TableauExtractor:
                 'target_dashboards': [],
                 'command': action.get('command', ''),
             }
-            
+
             # Source sheets
             for source in action.findall('.//source'):
                 ws = source.get('worksheet', '')
@@ -1701,7 +1704,7 @@ class TableauExtractor:
                 dash = source.get('dashboard', '')
                 if dash and dash not in action_data['source_dashboards']:
                     action_data['source_dashboards'].append(dash)
-            
+
             # Target sheets
             for target in action.findall('.//target'):
                 ws = target.get('worksheet', '')
@@ -1710,7 +1713,7 @@ class TableauExtractor:
                 dash = target.get('dashboard', '')
                 if dash and dash not in action_data['target_dashboards']:
                     action_data['target_dashboards'].append(dash)
-            
+
             # URL action
             if action_type == 'url':
                 # The target is the <url> element's text or link/@expression;
@@ -1724,7 +1727,7 @@ class TableauExtractor:
                 ]
                 action_data['url'] = next(
                     (c.strip() for c in candidates if c and c.strip()), '')
-            
+
             # Clearing behavior (what happens when selection is cleared)
             clearing = action.get('clearing', '')
             if clearing:
@@ -1732,7 +1735,7 @@ class TableauExtractor:
             run_on = action.get('run-on', action.get('activation', ''))
             if run_on:
                 action_data['run_on'] = run_on
-            
+
             # Filter action: filtered fields
             if action_type == 'filter':
                 field_mappings = []
@@ -1741,7 +1744,7 @@ class TableauExtractor:
                     tgt = _strip_brackets(fm.get('target-field', ''))
                     field_mappings.append({'source': src, 'target': tgt})
                 action_data['field_mappings'] = field_mappings
-            
+
             # Highlight action: field mappings
             if action_type == 'highlight':
                 field_mappings = []
@@ -1751,7 +1754,7 @@ class TableauExtractor:
                     field_mappings.append({'source': src, 'target': tgt})
                 if field_mappings:
                     action_data['field_mappings'] = field_mappings
-            
+
             # Sheet-navigate action: capture target sheet for PageNavigation
             if action_type == 'sheet-navigate':
                 # Flatten first target worksheet for convenience
@@ -1778,7 +1781,7 @@ class TableauExtractor:
                     action_data['target_parameter'] = _strip_brackets(param_elem.get('name', param_elem.text or ''))
                 elif action_data['parameter']:
                     action_data['target_parameter'] = _strip_brackets(action_data['parameter'])
-            
+
             # Set-value action: parse target set details
             if action_type == 'set-value':
                 set_elem = action.find('.//set')
@@ -1799,14 +1802,14 @@ class TableauExtractor:
                 action_data['activation'] = run_on if run_on else 'select'
 
             actions.append(action_data)
-        
+
         self.workbook_data['actions'] = actions
         print(f"  ✓ {len(actions)} actions extracted")
-    
+
     def extract_sets(self, root):
         """Extracts sets (IN/OUT sets)"""
         sets = []
-        
+
         for ds in self._findall_root_cached(root, './/datasource'):
             for col in ds.findall('.//column'):
                 # Sets have a set attribute or a <set> element
@@ -1817,13 +1820,13 @@ class TableauExtractor:
                         'raw_name': _strip_brackets(col.get('name', '')),
                         'datatype': col.get('datatype', 'boolean'),
                     }
-                    
+
                     if set_elem is not None:
                         # Conditional set (formula)
                         formula = set_elem.get('formula', '')
                         if formula:
                             set_data['formula'] = formula
-                        
+
                         # Set by list of members
                         members = []
                         for member in set_elem.findall('.//member'):
@@ -1832,15 +1835,15 @@ class TableauExtractor:
                                 members.append(val)
                         if members:
                             set_data['members'] = members
-                    
+
                     sets.append(set_data)
-        
+
         self.workbook_data['sets'] = sets
         print(f"  ✓ {len(sets)} sets extracted")
-    
+
     def extract_groups(self, root):
         """Extracts manual groups (value grouping)
-        
+
         Three types of Tableau groups:
         1. crossjoin/level-members: combined field
            → calculated columns concatenating the sources
@@ -1852,19 +1855,19 @@ class TableauExtractor:
         """
         groups = []
         seen_group_names = set()
-        
+
         for ds in self._findall_root_cached(root, './/datasource'):
             for group_elem in ds.findall('.//group'):
                 group_name = _strip_brackets(group_elem.get('caption', group_elem.get('name', '')))
                 if not group_name:
                     continue
-                
+
                 top_gf = group_elem.find('./groupfilter')
                 if top_gf is None:
                     continue
-                
+
                 func = top_gf.get('function', '')
-                
+
                 if func == 'crossjoin':
                     # Combined Field — extract source fields
                     levels = []
@@ -1873,7 +1876,7 @@ class TableauExtractor:
                         # Clean all Tableau derivation prefixes (yr:, mn:, none:, etc.)
                         level = _clean_field_ref(level)
                         levels.append(level)
-                    
+
                     groups.append({
                         'name': group_name,
                         'group_type': 'combined',
@@ -1882,7 +1885,7 @@ class TableauExtractor:
                         'members': {}
                     })
                     seen_group_names.add(group_name)
-                
+
                 elif func == 'union':
                     # Value grouping — extract members
                     source_field = ''
@@ -1890,7 +1893,7 @@ class TableauExtractor:
                     if first_member is not None:
                         level = first_member.get('level', '')
                         source_field = _clean_field_ref(_strip_brackets(level))
-                    
+
                     members = {}
                     for child_gf in top_gf.findall('./groupfilter'):
                         if child_gf.get('function') == 'union':
@@ -1914,7 +1917,7 @@ class TableauExtractor:
                                 if marker not in members:
                                     members[marker] = []
                                 members[marker].append(member_val)
-                    
+
                     groups.append({
                         'name': group_name,
                         'group_type': 'values',
@@ -1923,7 +1926,7 @@ class TableauExtractor:
                         'members': members
                     })
                     seen_group_names.add(group_name)
-                
+
                 else:
                     # Other types — record as-is
                     groups.append({
@@ -1934,7 +1937,7 @@ class TableauExtractor:
                         'members': {}
                     })
                     seen_group_names.add(group_name)
-        
+
         # Also extract categorical-bin groups from <column> elements.
         # These are defined as <column name='[X (group)]'><calculation class='categorical-bin'>
         # with <bin value='label'><value>member</value></bin> children.
@@ -1976,11 +1979,11 @@ class TableauExtractor:
 
         self.workbook_data['groups'] = groups
         print(f"  ✓ {len(groups)} groups extracted")
-    
+
     def extract_bins(self, root):
         """Extract legacy numeric bins; calculation bins and groups use other paths."""
         bins = []
-        
+
         for ds in self._findall_root_cached(root, './/datasource'):
             for col in ds.findall('.//column'):
                 calc_elem = col.find('.//calculation')
@@ -1995,14 +1998,14 @@ class TableauExtractor:
                         'size': bin_elem.get('size', '10'),
                         'datatype': col.get('datatype', 'integer')
                     })
-        
+
         self.workbook_data['bins'] = bins
         print(f"  ✓ {len(bins)} bins extracted")
-    
+
     def extract_hierarchies(self, root):
         """Extracts hierarchies (drill-paths) from datasources"""
         hierarchies = []
-        
+
         for ds in self._findall_root_cached(root, './/datasource'):
             for drill_path in ds.findall('.//drill-path'):
                 h_name = drill_path.get('name', '')
@@ -2011,20 +2014,20 @@ class TableauExtractor:
                     level_name = _strip_brackets(field.get('name', ''))
                     if level_name:
                         levels.append(level_name)
-                
+
                 if h_name and levels:
                     hierarchies.append({
                         'name': h_name,
                         'levels': levels
                     })
-        
+
         self.workbook_data['hierarchies'] = hierarchies
         print(f"  ✓ {len(hierarchies)} hierarchies extracted")
-    
+
     def extract_sort_orders(self, root):
         """Extracts global sort orders (datasource-level, manual, and computed sorts)"""
         sorts = []
-        
+
         for ds in self._findall_root_cached(root, './/datasource'):
             for sort in ds.findall('.//sort'):
                 col = _strip_brackets(sort.get('column', ''))
@@ -2049,14 +2052,14 @@ class TableauExtractor:
                     sort_data['sort_using'] = sort.get('sort-using', '')
                 if col:
                     sorts.append(sort_data)
-        
+
         self.workbook_data['sort_orders'] = sorts
         print(f"  ✓ {len(sorts)} sort orders extracted")
-    
+
     def extract_aliases(self, root):
         """Extracts aliases (display name overrides for values)"""
         aliases = {}
-        
+
         for ds in self._findall_root_cached(root, './/datasource'):
             for col in ds.findall('.//column'):
                 col_name = _strip_brackets(col.get('name', ''))
@@ -2070,14 +2073,14 @@ class TableauExtractor:
                             col_aliases[key] = value
                     if col_aliases:
                         aliases[col_name] = col_aliases
-        
+
         self.workbook_data['aliases'] = aliases
         print(f"  ✓ {len(aliases)} columns with aliases extracted")
-    
+
     def extract_custom_sql(self, root):
         """Extracts custom SQL queries from datasources"""
         custom_sql = []
-        
+
         for ds in self._findall_root_cached(root, './/datasource'):
             ds_name = ds.get('name', '')
             for relation in ds.findall('.//relation[@type=\"text\"]'):
@@ -2088,30 +2091,30 @@ class TableauExtractor:
                         'name': relation.get('name', 'Custom SQL Query'),
                         'query': query.strip()
                     })
-        
+
         self.workbook_data['custom_sql'] = custom_sql
         print(f"  ✓ {len(custom_sql)} custom SQL queries extracted")
-    
+
     def extract_user_filters(self, root):
         """Extracts user filters and security-related calculations for RLS migration.
-        
+
         Parses:
         1. <user-filter> elements (explicit user-to-row mappings)
         2. <group-filter> elements within user filters
         3. Calculations using USERNAME(), FULLNAME(), USERDOMAIN(), ISMEMBEROF()
-        
+
         These are converted to Power BI Row-Level Security (RLS) roles.
         """
         user_filters = []
-        
+
         # ---- 1. Explicit user filters (<user-filter> elements) ----
         for ds in self._findall_root_cached(root, './/datasource'):
             ds_name = ds.get('caption', ds.get('name', ''))
-            
+
             for uf in ds.findall('.//user-filter'):
                 filter_name = _strip_brackets(uf.get('name', ''))
                 filter_column = _strip_brackets(uf.get('column', ''))
-                
+
                 # Extract user-to-value mappings
                 user_mappings = []
                 for member in uf.findall('.//member'):
@@ -2122,7 +2125,7 @@ class TableauExtractor:
                             'user': user,
                             'value': value
                         })
-                
+
                 # Extract group-filter if present
                 group_filter = uf.find('.//groupfilter')
                 gf_data = None
@@ -2135,7 +2138,7 @@ class TableauExtractor:
                         'member': gf_member,
                         'level': gf_level
                     }
-                
+
                 if filter_name or filter_column:
                     user_filters.append({
                         'type': 'user_filter',
@@ -2145,13 +2148,13 @@ class TableauExtractor:
                         'user_mappings': user_mappings,
                         'group_filter': gf_data
                     })
-            
+
             # ---- 2. Calculation-based user filters ----
             # Look for calculations that reference USERNAME(), FULLNAME(), USERDOMAIN(), ISMEMBEROF()
             user_func_pattern = re.compile(
                 r'\b(USERNAME|FULLNAME|USERDOMAIN|ISMEMBEROF)\s*\(', re.IGNORECASE
             )
-            
+
             for col in ds.findall('.//column'):
                 calc = col.find('.//calculation')
                 if calc is not None:
@@ -2159,17 +2162,17 @@ class TableauExtractor:
                     if formula and user_func_pattern.search(formula):
                         col_name = _strip_brackets(col.get('caption', col.get('name', '')))
                         raw_name = _strip_brackets(col.get('name', ''))
-                        
+
                         # Detect which user functions are used
                         functions_used = list(set(
                             m.upper() for m in user_func_pattern.findall(formula)
                         ))
-                        
+
                         # Extract ISMEMBEROF group names if present
                         ismemberof_groups = re.findall(
                             r'ISMEMBEROF\s*\(\s*["\']([^"\']+)["\']\s*\)', formula, re.IGNORECASE
                         )
-                        
+
                         user_filters.append({
                             'type': 'calculated_security',
                             'name': col_name,
@@ -2179,7 +2182,7 @@ class TableauExtractor:
                             'functions_used': functions_used,
                             'ismemberof_groups': ismemberof_groups
                         })
-        
+
         self.workbook_data['user_filters'] = user_filters
         print(f"  ✓ {len(user_filters)} user filters/security rules extracted")
 
@@ -2198,7 +2201,6 @@ class TableauExtractor:
 
         for ds in self._findall_root_cached(root, './/datasource'):
             ds_name = ds.get('caption', ds.get('name', ''))
-            ds_raw_name = ds.get('name', '')
 
             # 1. Top-level <filter> elements on the datasource
             for filt in ds.findall('./filter'):
@@ -3408,19 +3410,19 @@ class TableauExtractor:
 
 def main():
     """Main entry point"""
-    
+
     import sys
-    
+
     if len(sys.argv) < 2:
         print("Usage: python extract_tableau_data.py <tableau_file.twbx>")
         sys.exit(1)
-    
+
     tableau_file = sys.argv[1]
-    
+
     if not os.path.exists(tableau_file):
         print(f"❌ File not found: {tableau_file}")
         sys.exit(1)
-    
+
     extractor = TableauExtractor(tableau_file)
     extractor.extract_all()
 

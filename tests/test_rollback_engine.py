@@ -367,7 +367,7 @@ class TestTriageHTML(unittest.TestCase):
         verdict = Verdict(Severity.ERROR, [
             (Severity.ERROR, 'test', '<script>alert("xss")</script>'),
         ])
-        result = engine.execute(verdict)
+        engine.execute(verdict)
 
         failed_dir = os.path.join(self.tmp, '_FAILED')
         triage_html = os.path.join(failed_dir, 'TestProject_triage.html')

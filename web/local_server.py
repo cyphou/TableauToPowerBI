@@ -6,14 +6,10 @@ Native applications are launched only by explicitly confirmed diagnostic jobs.
 from __future__ import annotations
 
 import argparse
-from collections import deque
-from datetime import datetime, timezone
 import glob
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
 import os
-from pathlib import Path
 import re
 import secrets
 import shutil
@@ -23,11 +19,14 @@ import subprocess
 import sys
 import tempfile
 import threading
-from urllib.parse import quote, unquote, urlsplit
 import uuid
 import webbrowser
 import zipfile
-
+from collections import deque
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = Path(__file__).resolve().parent

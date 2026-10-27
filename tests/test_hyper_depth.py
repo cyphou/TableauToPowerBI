@@ -18,16 +18,13 @@ _TAB = os.path.join(_ROOT, 'tableau_export')
 if _TAB not in sys.path:
     sys.path.insert(0, _TAB)
 
+from datasource_extractor import enrich_datasource_from_hyper
 from hyper_reader import (
+    INLINE_ROW_THRESHOLD,
     export_hyper_to_csv,
     generate_m_for_hyper_table,
     infer_hyper_relationships,
-    generate_m_inline_table,
-    generate_m_csv_reference,
-    INLINE_ROW_THRESHOLD,
 )
-from datasource_extractor import enrich_datasource_from_hyper
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Helpers
@@ -404,6 +401,7 @@ class TestCheckHyperCli(unittest.TestCase):
     def test_flag_parsed(self):
         sys.path.insert(0, _ROOT)
         import importlib
+
         import migrate
         importlib.reload(migrate)
         parser = argparse.ArgumentParser()
@@ -414,6 +412,7 @@ class TestCheckHyperCli(unittest.TestCase):
     def test_flag_default_false(self):
         sys.path.insert(0, _ROOT)
         import importlib
+
         import migrate
         importlib.reload(migrate)
         parser = argparse.ArgumentParser()

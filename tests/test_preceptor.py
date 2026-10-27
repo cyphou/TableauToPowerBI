@@ -7,6 +7,10 @@ import unittest
 from pathlib import Path
 
 from powerbi_import.preceptor import (
+    DIMENSIONS,
+    MAX_CYCLES,
+    MIN_PASS_SCORE,
+    SSIM_THRESHOLD,
     CoachingItem,
     PreceptorLoop,
     ReviewCycle,
@@ -20,12 +24,7 @@ from powerbi_import.preceptor import (
     _review_tmdl_structure,
     _review_visual_equivalence,
     run_preceptor_review,
-    DIMENSIONS,
-    MAX_CYCLES,
-    MIN_PASS_SCORE,
-    SSIM_THRESHOLD,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────
 

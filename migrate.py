@@ -11,37 +11,39 @@ Generation is batch-only: place one or more workbooks in a source folder.
 File-based assessment and diagnostic commands remain available.
 """
 
-import os
-import sys
-import textwrap
+import argparse
+import concurrent.futures
 import glob
-import json
 import hashlib
 import itertools
+import json
 import logging
-import argparse
-import tempfile
-import zipfile
-import concurrent.futures
-import threading
+import os
 import shutil
+import sys
+import tempfile
+import textwrap
+import threading
 import time
+import zipfile
 from datetime import datetime
 from enum import IntEnum
 
 from powerbi_import.errors import (
-    MigrationError, ConfigurationError, ExtractionError, GenerationError,
+    ConfigurationError,
+    ExtractionError,
+    GenerationError,
+    MigrationError,
     ValidationError,
 )
+from powerbi_import.incremental import MigrationCheckpoint
 from powerbi_import.security_validator import (
+    SecurityError,
     get_zip_entry_limit_mb,
     lexical_path_key,
     safe_zip_copy_member,
     safe_zip_extract_member,
-    SecurityError,
 )
-from powerbi_import.incremental import MigrationCheckpoint
-
 
 # ── Structured exit codes ────────────────────────────────────────────
 
@@ -151,6 +153,7 @@ def _validate_uploaded_workbook(path, boundary=None, max_size_mb=None):
     """Validate bindings before extraction/generation can open local sources."""
     import ntpath
     import stat
+
     from powerbi_import.security_validator import safe_parse_xml
 
     def xml_bindings(data, members=None):
@@ -802,10 +805,8 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
         if os.path.exists(project_dir):
             _stats.pbip_path = project_dir
             # Count TMDL tables
-            tables_dir = None
             for root, dirs, files in os.walk(project_dir):
                 if os.path.basename(root) == 'tables':
-                    tables_dir = root
                     _stats.tmdl_tables = len([f for f in files if f.endswith('.tmdl')])
                 # Count pages: only ReportSection dirs that contain page.json
                 if os.path.basename(root) == 'pages':
@@ -868,7 +869,9 @@ def run_migration_report(report_name, output_dir=None):
 
         # Load extracted JSON files
         json_dir = _get_extract_dir()
-        _load = lambda fname: _load_json(os.path.join(json_dir, fname))
+
+        def _load(fname):
+            return _load_json(os.path.join(json_dir, fname))
 
         datasources = _load('datasources.json')
         worksheets = _load('worksheets.json')
@@ -1179,10 +1182,10 @@ def _build_calc_map_from_tmdl(report_name, output_dir=None):
                     expr_lines = []
                     i += 1
                     while i < len(lines):
-                        l = lines[i].strip()
-                        if l == '```':
+                        body_line = lines[i].strip()
+                        if body_line == '```':
                             break
-                        expr_lines.append(l)
+                        expr_lines.append(body_line)
                         i += 1
                     expression = ' '.join(expr_lines).strip()
                     if expression and not expression.startswith('let'):
@@ -1245,7 +1248,7 @@ def run_prep_flow(prep_file, datasources_json=None):
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
     try:
-        from prep_flow_parser import parse_prep_flow, merge_prep_with_workbook
+        from prep_flow_parser import merge_prep_with_workbook, parse_prep_flow
 
         # Parse the Prep flow
         prep_datasources = parse_prep_flow(prep_file)
@@ -1370,7 +1373,12 @@ def _run_check_hyper(args):
     sys_path = os.path.dirname(os.path.abspath(__file__))
     if os.path.join(sys_path, 'tableau_export') not in _sys.path:
         _sys.path.insert(0, os.path.join(sys_path, 'tableau_export'))
-    from hyper_reader import read_hyper, read_hyper_from_twbx, get_hyper_metadata, infer_hyper_relationships
+    from hyper_reader import (
+        get_hyper_metadata,
+        infer_hyper_relationships,
+        read_hyper,
+        read_hyper_from_twbx,
+    )
 
     tableau_file = getattr(args, 'tableau_file', None)
     if not tableau_file:
@@ -1416,7 +1424,7 @@ def _run_check_hyper(args):
                 high_card = [(c, s) for c, s in stats.items()
                              if s.get('distinct_count', 0) and s['distinct_count'] > 100000]
                 if high_card:
-                    print(f"       ⚠ High-cardinality columns:")
+                    print("       ⚠ High-cardinality columns:")
                     for cname, st in high_card[:5]:
                         print(f"           {cname}: {st['distinct_count']:,} distinct values")
 
@@ -1432,25 +1440,25 @@ def _run_check_hyper(args):
 
         # Recommendations
         total_rows = sum(t.get('row_count', 0) for t in all_tables)
-        print(f"\n  ── Summary ──")
+        print("\n  ── Summary ──")
         print(f"     Total tables: {len(all_tables)}")
         print(f"     Total rows:   {total_rows:,}")
         if total_rows > 10_000_000:
-            print(f"     ⚠ Over 10M rows — consider DirectQuery instead of Import")
+            print("     ⚠ Over 10M rows — consider DirectQuery instead of Import")
         elif total_rows > 1_000_000:
-            print(f"     ℹ Over 1M rows — monitor refresh times in Import mode")
+            print("     ℹ Over 1M rows — monitor refresh times in Import mode")
 
         # Check tableauhyperapi availability
         try:
             import tableauhyperapi  # noqa: F401
-            print(f"     ✓ tableauhyperapi installed — full Hyper reading available")
+            print("     ✓ tableauhyperapi installed — full Hyper reading available")
         except ImportError:
             fmt_found = {r.get('format') for r in results}
             if 'hyper_api' not in fmt_found and any(r.get('format') == 'unknown' or
                                                      (r.get('format') == 'hyper' and not r.get('tables'))
                                                      for r in results):
-                print(f"     ⚠ tableauhyperapi not installed — some .hyper files may have limited data")
-                print(f"       Install: pip install tableauhyperapi")
+                print("     ⚠ tableauhyperapi not installed — some .hyper files may have limited data")
+                print("       Install: pip install tableauhyperapi")
     elif ext == '.hyper':
         result = read_hyper(tableau_file, max_rows=getattr(args, 'hyper_rows', None) or 20)
         meta_report = get_hyper_metadata(tableau_file, max_rows=getattr(args, 'hyper_rows', None) or 20)
@@ -1525,7 +1533,11 @@ def _run_check_baseline(project_dir, baseline_dir, output_base):
 
 def _run_check_drift(args):
     """Compare a Tableau source against a previous extraction snapshot."""
-    from powerbi_import.schema_drift import detect_schema_drift, load_snapshot, save_snapshot
+    from powerbi_import.schema_drift import (
+        detect_schema_drift,
+        load_snapshot,
+        save_snapshot,
+    )
 
     tableau_file = getattr(args, 'tableau_file', None)
     snapshot_dir = args.check_drift
@@ -1613,7 +1625,6 @@ def _run_batch_config(args):
     batch_start = datetime.now()
     results = {}
 
-    global _stats
     for i, entry in enumerate(entries, 1):
         raw_file = entry.get('file', '')
         if not raw_file:
@@ -2226,8 +2237,8 @@ def _run_batch_prep_lineage(batch_results, migrated_root):
         from powerbi_import.prep_lineage_report import (
             compute_merge_recommendations,
             generate_prep_lineage_report,
-            save_lineage_json,
             print_lineage_summary,
+            save_lineage_json,
         )
     except ImportError:
         try:
@@ -2235,8 +2246,8 @@ def _run_batch_prep_lineage(batch_results, migrated_root):
             from prep_lineage_report import (
                 compute_merge_recommendations,
                 generate_prep_lineage_report,
-                save_lineage_json,
                 print_lineage_summary,
+                save_lineage_json,
             )
         except ImportError:
             logger.warning("Cannot import prep_lineage modules for cross-flow analysis")
@@ -2472,7 +2483,10 @@ def _run_full_lineage(batch_results, migrated_root):
         return
 
     try:
-        from powerbi_import.full_lineage import build_full_lineage, print_full_lineage_summary
+        from powerbi_import.full_lineage import (
+            build_full_lineage,
+            print_full_lineage_summary,
+        )
     except ImportError:
         try:
             from full_lineage import build_full_lineage, print_full_lineage_summary
@@ -2740,7 +2754,10 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                     else os.path.isfile(marker)):
                 continue
             if output_format != 'fabric':
-                from powerbi_import.desktop_paths import DesktopPathError, validate_desktop_tree
+                from powerbi_import.desktop_paths import (
+                    DesktopPathError,
+                    validate_desktop_tree,
+                )
                 try:
                     validate_desktop_tree(project)
                 except DesktopPathError:
@@ -2883,7 +2900,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
     if parallel:
         print(f"  Parallel:   {parallel} workers")
     if resume:
-        print(f"  Resume:     enabled (skip completed)")
+        print("  Resume:     enabled (skip completed)")
     if jsonl_log:
         print(f"  JSONL log:  {jsonl_log}")
     print()
@@ -4716,7 +4733,6 @@ def _handle_enterprise_server_ops(args):
     if not is_enterprise:
         return None
 
-    import tempfile
     from tableau_export.server_client import TableauServerClient
 
     output_dir = getattr(args, 'output_dir', None) or 'artifacts/server_migration'
@@ -4735,9 +4751,12 @@ def _handle_enterprise_server_ops(args):
         if getattr(args, 'server_discover', False) or getattr(args, 'plan_migration', False):
             print_header("SITE TOPOLOGY DISCOVERY")
             from powerbi_import.dependency_graph import (
-                build_site_topology, build_dependency_graph,
-                classify_usage, audit_certifications,
-                generate_topology_report, save_topology,
+                audit_certifications,
+                build_dependency_graph,
+                build_site_topology,
+                classify_usage,
+                generate_topology_report,
+                save_topology,
             )
 
             topology = build_site_topology(ts_client)
@@ -4778,7 +4797,7 @@ def _handle_enterprise_server_ops(args):
             print(f"  Dashboard: {html_path}")
 
             summary = plan.get('summary', {})
-            print(f"\n  Summary:")
+            print("\n  Summary:")
             print(f"    Workbooks: {summary.get('total_workbooks', 0)}")
             print(f"    Waves:     {summary.get('total_waves', 0)}")
             print(f"    Effort:    {summary.get('total_effort_hours', 0)}h")
@@ -4790,8 +4809,9 @@ def _handle_enterprise_server_ops(args):
         if getattr(args, 'map_permissions', False):
             print_header("PERMISSION MAPPING")
             from powerbi_import.permission_mapper import (
-                map_site_roles, generate_azure_ad_scripts,
+                generate_azure_ad_scripts,
                 generate_permission_report,
+                map_site_roles,
             )
 
             users = ts_client.list_users_with_groups()
@@ -4813,10 +4833,13 @@ def _handle_enterprise_server_ops(args):
         if getattr(args, 'migrate_subscriptions', False):
             print_header("SUBSCRIPTION MIGRATION")
             from powerbi_import.subscription_generator import (
-                extract_all_subscriptions, extract_data_alerts,
-                generate_pbi_subscriptions, generate_power_automate_flows,
                 detect_schedule_conflicts,
-                generate_subscription_report, save_subscriptions,
+                extract_all_subscriptions,
+                extract_data_alerts,
+                generate_pbi_subscriptions,
+                generate_power_automate_flows,
+                generate_subscription_report,
+                save_subscriptions,
             )
 
             subscriptions = extract_all_subscriptions(ts_client)
@@ -4841,8 +4864,10 @@ def _handle_enterprise_server_ops(args):
         if getattr(args, 'cutover', False) or getattr(args, 'cutover_plan_only', False):
             print_header("CUTOVER MANAGEMENT")
             from powerbi_import.cutover_manager import (
-                generate_cutover_plan, execute_cutover,
-                generate_cutover_dashboard, save_cutover_plan,
+                execute_cutover,
+                generate_cutover_dashboard,
+                generate_cutover_plan,
+                save_cutover_plan,
             )
 
             plan_only = getattr(args, 'cutover_plan_only', False)
@@ -4960,7 +4985,7 @@ def _download_from_server(args):
 
             preserve_folders = getattr(args, 'server_preserve_folders', False)
             if preserve_folders:
-                print(f"  Folders: preserving project structure")
+                print("  Folders: preserving project structure")
 
             import re as _re_srv
             total_downloaded = 0
@@ -5188,7 +5213,7 @@ def _print_migration_summary(results, report_summary, start_time):
 
     # Generation summary
     if results.get('generation'):
-        print(f"\n  Generation Summary:")
+        print("\n  Generation Summary:")
         gen_items = [
             ("TMDL Tables", _stats.tmdl_tables),
             ("TMDL Columns", _stats.tmdl_columns),
@@ -5212,7 +5237,7 @@ def _print_migration_summary(results, report_summary, start_time):
         exact = report_summary.get('exact', 0)
         approx = report_summary.get('approximate', 0)
         unsup = report_summary.get('unsupported', 0)
-        print(f"\n  Migration Fidelity:")
+        print("\n  Migration Fidelity:")
         print(f"    {'Fidelity Score':<30} {fidelity}%")
         print(f"    {'Exact Conversions':<30} {exact}/{total}")
         if approx:
@@ -5249,7 +5274,7 @@ def _print_migration_summary(results, report_summary, start_time):
             pbi_validation_passed = pbi_result.get('passed', True)
 
             if pbi_errors or pbi_warnings:
-                print(f"\n  PBI Desktop Validation:")
+                print("\n  PBI Desktop Validation:")
                 if pbi_errors:
                     print(f"    ✗ {len(pbi_errors)} error(s) — these will cause errors in PBI Desktop:")
                     for e in pbi_errors[:20]:
@@ -5263,7 +5288,7 @@ def _print_migration_summary(results, report_summary, start_time):
                     if len(pbi_warnings) > 10:
                         print(f"      ... and {len(pbi_warnings) - 10} more")
             else:
-                print(f"\n  PBI Desktop Validation: ✓ No issues detected")
+                print("\n  PBI Desktop Validation: ✓ No issues detected")
         except Exception as exc:
             logger.debug("PBI validation skipped: %s", exc)
 
@@ -5391,7 +5416,8 @@ def _run_multi_tenant_deploy(args, project_dir):
     config_path = getattr(args, 'multi_tenant', None)
     try:
         from powerbi_import.deploy.multi_tenant import (
-            MultiTenantConfig, deploy_multi_tenant,
+            MultiTenantConfig,
+            deploy_multi_tenant,
         )
 
         print_header("MULTI-TENANT DEPLOYMENT")
@@ -5456,22 +5482,23 @@ def run_prep_lineage_mode(args):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
 
     try:
-        from prep_flow_analyzer import analyze_flow, analyze_flows_bulk
+        from prep_flow_analyzer import analyze_flow
+
         from powerbi_import.prep_lineage import build_lineage_graph
         from powerbi_import.prep_lineage_report import (
             compute_merge_recommendations,
             generate_prep_lineage_report,
-            save_lineage_json,
             print_lineage_summary,
+            save_lineage_json,
         )
     except ImportError:
-        from prep_flow_analyzer import analyze_flow, analyze_flows_bulk
+        from prep_flow_analyzer import analyze_flow
         from prep_lineage import build_lineage_graph
         from prep_lineage_report import (
             compute_merge_recommendations,
             generate_prep_lineage_report,
-            save_lineage_json,
             print_lineage_summary,
+            save_lineage_json,
         )
 
     # Collect .tfl/.tflx paths
@@ -5527,7 +5554,7 @@ def run_prep_lineage_mode(args):
         return ExitCode.GENERAL_ERROR
 
     # Phase 2: Build cross-flow lineage
-    print(f'\n  Building cross-flow lineage graph...')
+    print('\n  Building cross-flow lineage graph...')
     graph = build_lineage_graph(profiles)
 
     # Phase 3: Merge recommendations
@@ -5613,8 +5640,8 @@ def run_bulk_assessment_mode(args):
     Returns:
         ExitCode
     """
-    import tempfile
     import shutil
+    import tempfile
 
     batch_dir = args.bulk_assess
     if not os.path.isdir(batch_dir):
@@ -5659,10 +5686,11 @@ def run_bulk_assessment_mode(args):
     try:
         from extract_tableau_data import TableauExtractor
         from import_to_powerbi import PowerBIImporter
+
         from powerbi_import.server_assessment import (
-            run_server_assessment,
-            print_server_summary,
             generate_server_html_report,
+            print_server_summary,
+            run_server_assessment,
             save_server_assessment_json,
         )
 
@@ -5686,7 +5714,7 @@ def run_bulk_assessment_mode(args):
                     success = False
 
                 if not success:
-                    print(f"    ⚠ Extraction failed, skipping")
+                    print("    ⚠ Extraction failed, skipping")
                     all_converted.append(_empty_converted_objects())
                     continue
 
@@ -5755,9 +5783,9 @@ def run_bulk_assessment_mode(args):
             print("\n  ▸ Cross-workbook merge & duplication analysis...")
             try:
                 from powerbi_import.global_assessment import (
-                    run_global_assessment,
-                    print_global_summary,
                     generate_global_html_report,
+                    print_global_summary,
+                    run_global_assessment,
                     save_global_assessment_json,
                 )
                 global_result = run_global_assessment(all_converted, workbook_names)
@@ -5851,8 +5879,8 @@ def run_global_assessment_mode(args):
     Returns:
         ExitCode
     """
-    import tempfile
     import shutil
+    import tempfile
 
     workbook_paths = list(args.global_assess or [])
 
@@ -5892,10 +5920,11 @@ def run_global_assessment_mode(args):
     try:
         from extract_tableau_data import TableauExtractor
         from import_to_powerbi import PowerBIImporter
+
         from powerbi_import.global_assessment import (
-            run_global_assessment,
-            print_global_summary,
             generate_global_html_report,
+            print_global_summary,
+            run_global_assessment,
             save_global_assessment_json,
         )
 
@@ -6145,8 +6174,8 @@ def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
     Returns:
         ExitCode
     """
-    import tempfile
     import shutil
+    import tempfile
 
     model_mode = _resolve_model_mode(model_mode)
     hyper_options = _resolve_hyper_options(
@@ -6170,7 +6199,7 @@ def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
     print(f"  Workbooks:    {len(workbook_paths)}")
     print(f"  Model name:   {model_name}")
     if assess_only:
-        print(f"  Mode:         Assessment only")
+        print("  Mode:         Assessment only")
     print()
 
     # Step 1: Extract each workbook to an isolated temp directory
@@ -6219,8 +6248,11 @@ def run_shared_model_migration(workbook_paths, model_name=None, output_dir=None,
             return _print_merge_preview(all_converted, workbook_names)
 
         if assess_only:
+            from powerbi_import.merge_assessment import (
+                generate_merge_report,
+                print_merge_summary,
+            )
             from powerbi_import.shared_model import assess_merge
-            from powerbi_import.merge_assessment import print_merge_summary, generate_merge_report
 
             assessment = assess_merge(all_converted, workbook_names)
             print_merge_summary(assessment)
@@ -6324,8 +6356,8 @@ def _empty_converted_objects():
 
 def _run_add_to_model(args):
     """Handle --add-to-model DIR WORKBOOK."""
-    import tempfile
     import shutil
+    import tempfile
 
     model_dir, workbook_path = args.add_to_model
     if not os.path.isdir(model_dir):
@@ -6347,8 +6379,9 @@ def _run_add_to_model(args):
     temp_dir = None
     try:
         from extract_tableau_data import TableauExtractor
-        from powerbi_import.shared_model import add_to_model
         from import_to_powerbi import PowerBIImporter
+
+        from powerbi_import.shared_model import add_to_model
 
         # Extract new workbook
         temp_dir = tempfile.mkdtemp(prefix=f'tableau_{basename}_')
@@ -6396,8 +6429,8 @@ def _run_add_to_model(args):
                 )
 
             # Generate thin report for new workbook
+            from powerbi_import.shared_model import build_field_mapping
             from powerbi_import.thin_report_generator import ThinReportGenerator
-            from powerbi_import.shared_model import build_field_mapping, assess_merge
 
             assessment = result['assessment']
             field_mapping = build_field_mapping(assessment, basename)
@@ -6565,8 +6598,11 @@ def _run_quality_report(args, source_basename):
     """Run the unified post-generation quality report."""
     try:
         from powerbi_import.migration_quality import (
-            add_ai_summary, apply_desktop_probe, build_quality_report,
-            resolve_quality_report_name)
+            add_ai_summary,
+            apply_desktop_probe,
+            build_quality_report,
+            resolve_quality_report_name,
+        )
 
         extracted = {}
         json_files = ['datasources', 'worksheets', 'dashboards', 'calculations',
@@ -6639,8 +6675,11 @@ def _run_quality_report(args, source_basename):
 def _run_assessment_mode(args, results):
     """Run pre-migration assessment and strategy analysis. Returns ExitCode."""
     try:
-        from powerbi_import.assessment import run_assessment, print_assessment_report
-        from powerbi_import.strategy_advisor import recommend_strategy, print_recommendation
+        from powerbi_import.assessment import print_assessment_report, run_assessment
+        from powerbi_import.strategy_advisor import (
+            print_recommendation,
+            recommend_strategy,
+        )
 
         # Load extracted data
         extracted = {}
@@ -6693,11 +6732,22 @@ def _run_assessment_mode(args, results):
         if do_pdf or do_package:
             # Generate interactive HTML for PDF rendering / packaging
             try:
-                from powerbi_import.server_assessment import generate_single_assessment_html
+                from powerbi_import.server_assessment import (
+                    generate_single_assessment_html,
+                )
                 html_content = generate_single_assessment_html(report)
             except (ImportError, AttributeError):
                 # Fallback: build minimal HTML from report data
-                from powerbi_import.html_template import html_open, html_close, stat_grid, stat_card, section_open, section_close, data_table, badge
+                from powerbi_import.html_template import (
+                    badge,
+                    data_table,
+                    html_close,
+                    html_open,
+                    section_close,
+                    section_open,
+                    stat_card,
+                    stat_grid,
+                )
                 html_content = html_open(f"Assessment — {report.workbook_name}", subtitle="Pre-Migration Readiness")
                 cards = [
                     stat_card(report.total_checks, "Total Checks"),
@@ -6736,7 +6786,8 @@ def _run_assessment_mode(args, results):
                 manifest_path = os.path.join(
                     out_dir, f'assessment_{source_basename}_manifest.json')
                 from powerbi_import.evidence_manifest import (
-                    build_evidence_manifest, save_evidence_manifest,
+                    build_evidence_manifest,
+                    save_evidence_manifest,
                 )
                 save_evidence_manifest(
                     build_evidence_manifest(
@@ -7003,7 +7054,8 @@ def main():
 
     if getattr(args, 'm_emitter_matrix', False):
         from powerbi_import.m_emitter_matrix import (
-            build_m_emitter_matrix, summarize_m_emitter_matrix,
+            build_m_emitter_matrix,
+            summarize_m_emitter_matrix,
         )
         output_dir = args.output_dir or os.path.join('artifacts', 'm_emitter_matrix')
         os.makedirs(output_dir, exist_ok=True)
@@ -7291,7 +7343,7 @@ def _print_single_migration_header(args):
     if args.output_dir:
         print(f"Output dir:  {args.output_dir}")
     if args.dry_run:
-        print(f"Mode:        DRY RUN (no files will be written)")
+        print("Mode:        DRY RUN (no files will be written)")
     if args.calendar_start or args.calendar_end:
         cal_start = args.calendar_start or 2020
         cal_end = args.calendar_end or 2030
@@ -7303,9 +7355,9 @@ def _print_single_migration_header(args):
     if args.output_format and args.output_format != 'pbip':
         print(f"Format:      {args.output_format}")
     if args.rollback:
-        print(f"Rollback:    enabled")
+        print("Rollback:    enabled")
     if getattr(args, 'telemetry', False):
-        print(f"Telemetry:   enabled")
+        print("Telemetry:   enabled")
     print()
 
 
@@ -7363,7 +7415,7 @@ def _run_incremental_merge(args, source_basename):
                 for c in merge_stats['conflicts']:
                     print(f"    ⚠ {c}")
         else:
-            print(f"  ⚠ Incremental merge skipped: directory not found")
+            print("  ⚠ Incremental merge skipped: directory not found")
     except (ImportError, OSError, ValueError) as exc:
         print(f"  ⚠ Incremental merge failed: {exc}")
 
@@ -7373,9 +7425,10 @@ def _run_goals_generation(args, source_basename):
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
-        from pulse_extractor import extract_pulse_metrics, has_pulse_metrics
-        from goals_generator import generate_goals_json, write_goals_artifact
         import xml.etree.ElementTree as _ET
+
+        from goals_generator import generate_goals_json, write_goals_artifact
+        from pulse_extractor import extract_pulse_metrics, has_pulse_metrics
 
         twb_path = args.tableau_file
         pulse_root = None
@@ -7415,7 +7468,7 @@ def _run_governance_checks(args, source_basename):
     """
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'powerbi_import'))
-        from governance import GovernanceEngine, AuditTrail, run_governance
+        from governance import AuditTrail, run_governance
 
         # Load governance config
         gov_config = {"mode": args.governance}
@@ -7679,7 +7732,7 @@ def _run_autoheal(args, source_basename):
     out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
     project_dir = os.path.join(out_base, source_basename)
     if not os.path.isdir(project_dir):
-        print(f"  ⚠ Autoheal skipped: project directory not found")
+        print("  ⚠ Autoheal skipped: project directory not found")
         return
     try:
         from healing import AutoHealer, LogFileSource
@@ -7732,7 +7785,7 @@ def _run_desktop_probe(args, source_basename):
     out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
     project_dir = os.path.join(out_base, source_basename)
     if not os.path.isdir(project_dir):
-        print(f"  ⚠ Desktop probe skipped: project directory not found")
+        print("  ⚠ Desktop probe skipped: project directory not found")
         return
     import glob as _glob
     pbips = _glob.glob(os.path.join(project_dir, '*.pbip'))
@@ -7773,7 +7826,7 @@ def _run_desktop_probe(args, source_basename):
 def _run_openability_gate(project_dir):
     """Run and persist the static Power BI openability gate for a project directory."""
     if not os.path.isdir(project_dir):
-        print(f"  ✗ Openability preflight failed: project directory not found")
+        print("  ✗ Openability preflight failed: project directory not found")
         return False
     try:
         from healing import check_openability
@@ -7857,7 +7910,7 @@ def _run_qa_suite(args, source_basename):
     project_dir = os.path.join(out_base, source_basename)
 
     if not os.path.isdir(project_dir):
-        print(f"  ⚠ QA suite skipped: project directory not found")
+        print("  ⚠ QA suite skipped: project directory not found")
         return
 
     qa_results = {
@@ -7898,7 +7951,7 @@ def _run_qa_suite(args, source_basename):
             print(f"  QA Auto-fix: ✓ {fix_result['total_repairs']} DAX leaks repaired "
                   f"in {len(fix_result['file_repairs'])} files")
         else:
-            print(f"  QA Auto-fix: ✓ No DAX leaks found")
+            print("  QA Auto-fix: ✓ No DAX leaks found")
     except (ImportError, OSError) as exc:
         logger.warning("QA auto-fix failed: %s", exc)
 
@@ -7956,7 +8009,7 @@ def _run_qa_suite(args, source_basename):
     # 6. Real-world output QA suite (Sprint 207): stray sentinels, empty visuals,
     #    format coverage, zone matching, orphan filters → qa_report.html
     try:
-        from powerbi_import.qa_suite import run_qa_suite, generate_qa_html
+        from powerbi_import.qa_suite import generate_qa_html, run_qa_suite
         extract_dir = _get_extract_dir()
         rw_report = run_qa_suite(
             project_dir,
@@ -8057,10 +8110,10 @@ def _extract_m_from_tmdl(tmdl_path):
         return None
 
     # Remove common leading indentation
-    non_empty = [l for l in m_lines if l.strip()]
+    non_empty = [line for line in m_lines if line.strip()]
     if non_empty:
-        min_tabs = min(len(l) - len(l.lstrip('\t')) for l in non_empty)
-        m_lines = [l[min_tabs:] if len(l) > min_tabs else l.lstrip('\t') for l in m_lines]
+        min_tabs = min(len(line) - len(line.lstrip('\t')) for line in non_empty)
+        m_lines = [line[min_tabs:] if len(line) > min_tabs else line.lstrip('\t') for line in m_lines]
 
     return '\n'.join(m_lines)
 
@@ -8073,7 +8126,6 @@ def _export_dax_files(project_dir, source_basename):
     ``{project}/DAX/{table_name}.dax``.
     """
     import glob as _glob
-    import re as _re
 
     tables_dir = os.path.join(
         project_dir,
@@ -8095,7 +8147,7 @@ def _export_dax_files(project_dir, source_basename):
             dax_path = os.path.join(dax_dir, f'{table_name}.dax')
             with open(dax_path, 'w', encoding='utf-8') as f:
                 f.write(f'// DAX measures for table: {table_name}\n')
-                f.write(f'// Auto-generated by Tableau → Power BI migration\n\n')
+                f.write('// Auto-generated by Tableau → Power BI migration\n\n')
                 for mname, mexpr in measures:
                     f.write(f'{mname} =\n{mexpr}\n\n')
             exported += 1
@@ -8437,6 +8489,7 @@ def _stage_pending_hyper_partition(content, data_dir, export_records, *,
     Invalid/ambiguous placeholders remain refresh-visible errors.
     """
     import re
+
     from tableau_export.m_query_builder import _m_literal
 
     marker = 'Migration.HyperExportRequired'
@@ -8588,6 +8641,7 @@ def _convert_hyper_to_csv_in_data_impl(data_dir, source_basename, project_dir,
     """
     import csv as _csv
     import glob as _glob
+
     from tableau_export.m_query_builder import _m_literal
 
     _widen_csv_field_limit(_csv)
@@ -9473,6 +9527,7 @@ def _hyper_csv_type_changes(content, physical_columns, source_types):
     schema are eligible; measures/calculated columns must not be pre-typed.
     """
     import re
+
     from tableau_export.m_query_builder import _m_literal, map_tableau_to_m_type
 
     model_types = {}
@@ -9863,7 +9918,7 @@ def _hyper_to_csv_files(hyper_path, out_dir, prefix, _csv, identity=None, *,
     api_module = None
     try:
         import tableauhyperapi as api_module
-        from tableauhyperapi import HyperProcess, Telemetry, Connection
+        from tableauhyperapi import Connection, HyperProcess, Telemetry
     except ImportError:
         HyperProcess = Telemetry = Connection = None
 
@@ -12480,7 +12535,9 @@ def _run_post_generation_reports(args, source_basename, results):
 
     if getattr(args, 'dashboard', False) and results.get('generation') and not args.dry_run:
         try:
-            from powerbi_import.telemetry_dashboard import generate_dashboard as gen_telem_dashboard
+            from powerbi_import.telemetry_dashboard import (
+                generate_dashboard as gen_telem_dashboard,
+            )
             out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
             dash_path = gen_telem_dashboard(out_base)
             if dash_path:
@@ -12490,7 +12547,8 @@ def _run_post_generation_reports(args, source_basename, results):
 
     if getattr(args, 'fidelity', False) and results.get('generation') and not args.dry_run:
         try:
-            from scripts.compare_migration import run_comparison, print_results as print_fidelity
+            from scripts.compare_migration import print_results as print_fidelity
+            from scripts.compare_migration import run_comparison
             extract_dir = _get_extract_dir()
             out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
             pbip_dir = os.path.join(out_base, source_basename)
@@ -12507,7 +12565,7 @@ def _run_post_generation_reports(args, source_basename, results):
 
     if getattr(args, 'autoplay', False) and results.get('generation') and not args.dry_run:
         try:
-            from scripts.autoplay import run_autoplay, print_autoplay
+            from scripts.autoplay import print_autoplay, run_autoplay
             extract_dir = _get_extract_dir()
             out_base = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
             pbip_dir = os.path.join(out_base, source_basename)
@@ -12595,15 +12653,12 @@ def _run_deploy_to_pbi_service(args, source_basename):
             if roll_result['status'] == 'succeeded':
                 print(f"  ✓ Rolling deploy succeeded — production={roll_result['production_id']}")
                 dataset_id = roll_result['production_id']
-                report_id = None
             elif roll_result['status'] == 'rolled_back':
                 print(f"  ⚠ Rolled back: {roll_result['error']}")
                 dataset_id = None
-                report_id = None
             else:
                 print(f"  ✗ Rolling deploy failed: {roll_result['error']}")
                 dataset_id = None
-                report_id = None
         elif gateway_id:
             # Deploy + bind to gateway in one pipeline
             print(f"  Gateway:   {gateway_id}")
@@ -12617,11 +12672,9 @@ def _run_deploy_to_pbi_service(args, source_basename):
             if deploy_info.get('status') == 'succeeded':
                 print(f"  ✓ Deployed — dataset={deploy_info.get('dataset_id')}")
                 dataset_id = deploy_info.get('dataset_id')
-                report_id = deploy_info.get('report_id')
             else:
                 print(f"  ✗ Deploy failed: {deploy_info.get('error')}")
                 dataset_id = None
-                report_id = None
 
             bind_info = pipeline.get('gateway_bind')
             if bind_info and bind_info.get('status') == 'succeeded':
@@ -12649,11 +12702,9 @@ def _run_deploy_to_pbi_service(args, source_basename):
                 if deploy_result.report_id:
                     print(f"  ✓ Report  — id={deploy_result.report_id}")
                 dataset_id = deploy_result.dataset_id
-                report_id = deploy_result.report_id
             else:
                 print(f"  ✗ Deploy failed: {deploy_result.error}")
                 dataset_id = None
-                report_id = None
 
         # Endorsement (--endorse flag)
         if getattr(args, 'endorse', None) and dataset_id:
@@ -13018,7 +13069,11 @@ def _run_single_migration_impl(args):
     # Step 3c: LLM-assisted DAX refinement (optional, --llm-refine flag)
     if getattr(args, 'llm_refine', False) and results.get('generation'):
         try:
-            from powerbi_import.llm_client import LLMClient, refine_approximated_measures, generate_llm_report
+            from powerbi_import.llm_client import (
+                LLMClient,
+                generate_llm_report,
+                refine_approximated_measures,
+            )
             print("\n  🤖 LLM-assisted DAX refinement...")
             client = LLMClient(
                 provider=getattr(args, 'llm_provider', 'openai'),

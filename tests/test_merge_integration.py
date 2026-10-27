@@ -12,7 +12,6 @@ These tests verify:
 - Lineage metadata propagation
 """
 
-import json
 import os
 import shutil
 import sys
@@ -26,10 +25,10 @@ if _project_root not in sys.path:
 
 from powerbi_import.shared_model import (
     assess_merge,
-    merge_semantic_models,
     build_merge_manifest,
     extract_lineage,
     generate_merge_validation_report,
+    merge_semantic_models,
 )
 
 _SAMPLES_DIR = os.path.join(_project_root, 'examples', 'tableau_samples')

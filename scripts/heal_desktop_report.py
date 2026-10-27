@@ -18,7 +18,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from powerbi_import.desktop_feedback_healing import heal_from_desktop_evidence
 from powerbi_import.healing import AutoHealer, check_openability
 from powerbi_import.recovery_report import RecoveryReport
-from powerbi_import.self_healing_report import load_report, run_report_healers, write_report
+from powerbi_import.self_healing_report import (
+    load_report,
+    run_report_healers,
+    write_report,
+)
 
 
 def _preserves_content(before, after):

@@ -17,13 +17,16 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.assessment import (
-    _check_performance,
+    FAIL,
+    INFO,
+    PASS,
+    WARN,
     _check_data_volume,
-    _check_prep_complexity,
     _check_licensing,
     _check_multi_datasource,
+    _check_performance,
+    _check_prep_complexity,
     run_assessment,
-    PASS, WARN, FAIL, INFO,
 )
 from powerbi_import.server_assessment import _compute_complexity
 

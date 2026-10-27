@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 
 # ── Ownership map: keyword → (owning file, owning agent) ─────────────────────

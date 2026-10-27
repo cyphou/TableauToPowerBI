@@ -12,11 +12,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.visual_generator import (
-    solve_nested_layout,
-    get_nesting_depth,
-    _fix_overflow,
     MIN_VISUAL_DIM,
-    DEFAULT_CONTAINER_PADDING,
+    _fix_overflow,
+    get_nesting_depth,
+    solve_nested_layout,
 )
 
 

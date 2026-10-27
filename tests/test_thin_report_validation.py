@@ -20,14 +20,14 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.thin_report_generator import (
-    validate_field_references,
-    validate_drillthrough_targets,
-    validate_filter_references,
-    validate_parameter_references,
-    validate_cross_report_navigation,
-    generate_thin_report_validation,
     _collect_model_fields,
     _find_closest_match,
+    generate_thin_report_validation,
+    validate_cross_report_navigation,
+    validate_drillthrough_targets,
+    validate_field_references,
+    validate_filter_references,
+    validate_parameter_references,
 )
 
 

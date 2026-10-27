@@ -79,7 +79,6 @@ def generate_report_package(
         zf.writestr('assessment_report.pdf.html', print_html)
 
         # 3. PPTX executive summary
-        pptx_buf = io.BytesIO()
         # Generate PPTX to a temp buffer
         import tempfile
         with tempfile.NamedTemporaryFile(suffix='.pptx', delete=False) as tmp:

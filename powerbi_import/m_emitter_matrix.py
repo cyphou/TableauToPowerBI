@@ -7,7 +7,6 @@ from typing import Any, Dict, List
 from powerbi_import.m_validator import validate_m_query
 from tableau_export import m_query_builder
 
-
 _SAMPLE_TABLE = {
     "name": "SampleTable",
     "columns": [

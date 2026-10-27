@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 import struct
 import zlib
-
+from pathlib import Path
+from typing import NoReturn
 
 PIXEL_LIMITATION = (
     "Local non-semantic pixel diagnostic, not SSIM or parity certification. "
@@ -45,7 +45,7 @@ def _decode_strict_png(data: bytes) -> tuple[int, int, bytes]:
     equivalence_tester._decode_png is intentionally not reused: it ignores CRC,
     drops alpha, accepts incomplete containers and decompresses without a bound.
     """
-    def invalid(message):
+    def invalid(message: str) -> NoReturn:
         raise _PNGError("corrupt_png", message)
 
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -111,7 +111,7 @@ def _decode_strict_png(data: bytes) -> tuple[int, int, bytes]:
             elif not kind[0] & 32:
                 raise _PNGError("unsupported_png", "Unknown critical PNG chunk")
         offset = end
-    if not ended:
+    if not ended or header is None:
         invalid("Missing PNG IEND")
     width, height, channels, expected = header
     try:

@@ -13,8 +13,8 @@ Covers:
 
 import json
 import os
-import tempfile
 import shutil
+import tempfile
 import unittest
 
 
@@ -116,9 +116,7 @@ class TestBuildMergeManifest(unittest.TestCase):
     """Test build_merge_manifest() from merge results."""
 
     def test_build_manifest_basic(self):
-        from powerbi_import.shared_model import (
-            build_merge_manifest, MergeAssessment
-        )
+        from powerbi_import.shared_model import MergeAssessment, build_merge_manifest
         extracted1 = {
             'datasources': [{
                 'connection': {'type': 'sqlserver', 'details': {'server': 'srv', 'database': 'db'}},
@@ -177,9 +175,7 @@ class TestBuildMergeManifest(unittest.TestCase):
 
     def test_build_manifest_with_shared_tables(self):
         """Shared tables should not be in exclusive_tables."""
-        from powerbi_import.shared_model import (
-            build_merge_manifest, MergeAssessment
-        )
+        from powerbi_import.shared_model import MergeAssessment, build_merge_manifest
         shared_table = {'name': 'DimDate', 'type': 'table', 'columns': []}
         ds = {
             'connection': {'type': 'sqlserver', 'details': {'server': 's', 'database': 'd'}},
@@ -711,12 +707,12 @@ class TestRemoveFromModel(unittest.TestCase):
         for tname in ['Orders', 'Products', 'DimDate']:
             with open(os.path.join(tables_dir, f'{tname}.tmdl'), 'w') as f:
                 f.write(f"table {tname}\n\tlineageTag: abc\n\n")
-                f.write(f"\tcolumn ID\n")
-                f.write(f"\t\tdataType: int64\n")
-                f.write(f"\t\tsourceColumn: ID\n")
-                f.write(f"\t\tlineageTag: c1\n")
-                f.write(f"\t\tsummarizeBy: none\n\n")
-                f.write(f"\tannotation PBI_ResultType = Table\n")
+                f.write("\tcolumn ID\n")
+                f.write("\t\tdataType: int64\n")
+                f.write("\t\tsourceColumn: ID\n")
+                f.write("\t\tlineageTag: c1\n")
+                f.write("\t\tsummarizeBy: none\n\n")
+                f.write("\tannotation PBI_ResultType = Table\n")
         with open(os.path.join(sm_dir, 'relationships.tmdl'), 'w') as f:
             f.write("")
 
@@ -844,8 +840,8 @@ class TestDiffManifests(unittest.TestCase):
 
     def test_diff_with_manifest_objects(self):
         """diff_manifests should accept MergeManifest objects."""
-        from powerbi_import.shared_model import MergeManifest
         from powerbi_import.merge_assessment import diff_manifests
+        from powerbi_import.shared_model import MergeManifest
 
         old = MergeManifest(
             model_name='M',

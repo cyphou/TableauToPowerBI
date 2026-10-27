@@ -7,12 +7,12 @@ Microsoft Fabric REST API operations.
 Requires: pip install requests (optional dependency)
 """
 
-import logging
 import json as _json
+import logging
 import time
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
 
 logger = logging.getLogger(__name__)
 

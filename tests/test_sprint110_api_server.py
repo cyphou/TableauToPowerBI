@@ -4,24 +4,31 @@ Tests the HTTP migration API server (api_server.py) using stdlib TestClient
 pattern with a threaded server on a random port.
 """
 
-import io
 import json
 import os
 import sys
 import threading
 import time
 import unittest
-import urllib.request
 import urllib.error
+import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
-from api_server import (
-    MigrationHandler, _jobs, _lock, _new_job, _get_job, _update_job,
-    _parse_multipart, _int_param, run_server,
-)
 from http.server import HTTPServer
+
+from api_server import (
+    MigrationHandler,
+    _get_job,
+    _int_param,
+    _jobs,
+    _lock,
+    _new_job,
+    _parse_multipart,
+    _update_job,
+    run_server,
+)
 
 
 class TestServerBindingSecurity(unittest.TestCase):
@@ -229,7 +236,6 @@ class TestParseMultipart(unittest.TestCase):
     """Multipart form data parsing."""
 
     def test_parse_valid(self):
-        boundary = b'----boundary123'
         body = (
             b'------boundary123\r\n'
             b'Content-Disposition: form-data; name="file"; filename="test.twbx"\r\n'
@@ -249,7 +255,6 @@ class TestParseMultipart(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_path_traversal_stripped(self):
-        boundary = b'----b'
         body = (
             b'------b\r\n'
             b'Content-Disposition: form-data; name="file"; filename="../../etc/passwd"\r\n'

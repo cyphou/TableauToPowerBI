@@ -7,7 +7,6 @@ before they are emitted into model artifacts.
 import re
 from typing import List
 
-
 __all__ = ['validate_dax_expression', 'DaxExpressionValidator',
            'mask_literal_spans']
 

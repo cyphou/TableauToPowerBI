@@ -5,20 +5,23 @@ DAX override persistence, visual type override, notebook generation,
 and output format compatibility.
 """
 
+import contextlib
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
+from powerbi_import.errors import ExtractionError
 from powerbi_import.notebook_api import (
     MigrationSession,
-    _make_markdown_cell,
     _make_code_cell,
+    _make_markdown_cell,
 )
 
 
@@ -118,6 +121,36 @@ class TestGenerateModelMode(unittest.TestCase):
                     self.assertEqual(kwargs["output_dir"], output)
                     self.assertEqual(summary["tables"], 1)
                     self.assertEqual(session._generated_path, output)
+
+
+class TestLoad(unittest.TestCase):
+    """load() stores the extracted objects, not the extractor's success flag."""
+
+    SAMPLE = os.path.join(os.path.dirname(__file__), '..', 'examples',
+                          'tableau_samples', 'Security_Test.twb')
+
+    def test_load_stores_extracted_objects(self):
+        with tempfile.TemporaryDirectory(prefix='notebook_load_') as extract_dir, \
+             patch.dict(os.environ, {'TTPBI_EXTRACT_DIR': extract_dir}), \
+             contextlib.redirect_stdout(io.StringIO()):
+            s = MigrationSession()
+            summary = s.load(self.SAMPLE)
+        self.assertIsInstance(s._extracted, dict)
+        self.assertIn('datasources', s._extracted)
+        self.assertEqual(set(summary), set(s._extracted))
+        self.assertEqual(s.step_extract(), summary)
+
+    def test_load_raises_when_extraction_fails(self):
+        extractor = MagicMock()
+        extractor.extract_all.return_value = False
+        s = MigrationSession()
+        with patch('tableau_export.extract_tableau_data.TableauExtractor',
+                   return_value=extractor):
+            with self.assertRaises(ExtractionError):
+                s.load('Missing.twbx')
+        self.assertIsNone(s._extracted)
+        with self.assertRaises(RuntimeError):
+            s.preview_dax()
 
 
 class TestRequireLoaded(unittest.TestCase):

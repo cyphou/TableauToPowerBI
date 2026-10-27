@@ -19,8 +19,8 @@ from tableau_export.m_query_builder import (
     gen_extract_regex,
     gen_parse_json,
     gen_parse_xml,
-    parameterize_connection,
     inject_m_steps,
+    parameterize_connection,
 )
 
 

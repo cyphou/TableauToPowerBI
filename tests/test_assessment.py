@@ -4,23 +4,34 @@ Tests for Pre-Migration Assessment Module (powerbi_import.assessment).
 
 import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 
 # Ensure parent dir on path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.assessment import (
-    CheckItem, CategoryResult, AssessmentReport,
-    run_assessment, print_assessment_report, save_assessment_report,
-    _check_datasources, _check_calculations, _check_visuals,
-    _check_filters, _check_data_model, _check_interactivity,
-    _check_extract_and_packaging, _check_migration_scope,
-    PASS, INFO, WARN, FAIL,
+    FAIL,
+    INFO,
+    PASS,
+    WARN,
+    AssessmentReport,
+    CategoryResult,
+    CheckItem,
+    _check_calculations,
+    _check_data_model,
+    _check_datasources,
+    _check_extract_and_packaging,
+    _check_filters,
+    _check_interactivity,
+    _check_migration_scope,
+    _check_visuals,
+    print_assessment_report,
+    run_assessment,
+    save_assessment_report,
 )
-
 
 # ── Test fixtures ───────────────────────────────────────────────────
 
@@ -551,12 +562,12 @@ class TestEdgeCases(unittest.TestCase):
 
     def test_empty_formulas(self):
         ext = {'calculations': [{'name': 'X', 'formula': ''}]}
-        cat = _check_calculations(ext)
+        _check_calculations(ext)
         # Should not crash
 
     def test_none_values(self):
         ext = {'datasources': [{'name': None, 'connection': {'type': None}}]}
-        cat = _check_datasources(ext)
+        _check_datasources(ext)
         # Should not crash
 
 

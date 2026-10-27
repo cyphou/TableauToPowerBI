@@ -7,13 +7,13 @@ All flow connections below are invented public placeholders.
 import io
 import json
 import os
-from pathlib import Path
 import re
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from copy import deepcopy
+from pathlib import Path
 
 from tests.prep_flow_fixtures import operation, output, source, write_flow
 
@@ -22,10 +22,12 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'tableau_export'))
 
 from prep_flow_parser import (
-    _process_transform_node, merge_prep_with_workbook, parse_prep_flow,
+    _process_transform_node,
+    merge_prep_with_workbook,
+    parse_prep_flow,
 )
-from powerbi_import.tmdl_generator import generate_tmdl
 
+from powerbi_import.tmdl_generator import generate_tmdl
 
 FIXTURE = Path(__file__).parent / 'prep_dialect_samples' / 'remap_evidence.json'
 PATHS = ('standalone', 'beforeActionGroup', 'actionGroup', 'afterActionGroup')

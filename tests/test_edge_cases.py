@@ -15,9 +15,13 @@ class TestPublishedDatasourceResolution(unittest.TestCase):
     """87.1 — resolve_published_datasource handles sqlproxy."""
 
     def _import(self):
-        import sys, os
+        import os
+        import sys
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
-        from tableau_export.datasource_extractor import resolve_published_datasource, _parse_published_datasource_file
+        from tableau_export.datasource_extractor import (
+            _parse_published_datasource_file,
+            resolve_published_datasource,
+        )
         return resolve_published_datasource, _parse_published_datasource_file
 
     def test_non_sqlproxy_passthrough(self):
@@ -249,7 +253,8 @@ class TestTypeCoercionDetection(unittest.TestCase):
     """87.5 — Detect auto-coercion of types that should be explicit."""
 
     def _import(self):
-        import sys, os
+        import os
+        import sys
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
         from tableau_export.datasource_extractor import detect_type_coercions
         return detect_type_coercions

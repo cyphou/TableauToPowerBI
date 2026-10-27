@@ -146,9 +146,10 @@ class RollbackEngine:
         if not schema_results:
             return
         for result in schema_results:
-            items = result.get('issues', []) if isinstance(result, dict) else []
-            if hasattr(result, 'issues'):
-                items = result.issues
+            if isinstance(result, dict):
+                items = result.get('issues', [])
+            else:
+                items = getattr(result, 'issues', [])
             for issue in items:
                 if isinstance(issue, dict):
                     sev = issue.get('severity', 'warning')

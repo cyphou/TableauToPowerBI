@@ -15,6 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
+# isort: off
 from m_query_builder import (
     map_tableau_to_m_type,
     generate_power_query_m,
@@ -72,8 +73,8 @@ from m_query_builder import (
     m_transform_add_column,
     m_transform_conditional_column,
 )
+# isort: on
 from powerbi_import.m_validator import validate_m_query
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # Type Mapping
@@ -270,8 +271,9 @@ class TestGeneratePowerQueryM(unittest.TestCase):
                 self.assertNotIn("TODO: Configure the data source", result)
 
     def test_hyper_uses_dbname_when_filename_is_absent(self):
-        import m_query_builder as builder
         from unittest import mock
+
+        import m_query_builder as builder
         details = {"dbname": "C:/data/extract.hyper"}
         columns = self._make_columns(("Amount", "real"))
         with mock.patch("hyper_reader.read_hyper", return_value={

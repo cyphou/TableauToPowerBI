@@ -6,7 +6,6 @@ Each test pins the *producer's* real shape, so a future divergence fails
 loudly instead of silently penalising correct output.
 """
 
-import json
 import os
 import sys
 import tempfile
@@ -25,7 +24,6 @@ from powerbi_import.preceptor import (  # noqa: E402
     _review_tmdl_structure,
 )
 from tests.test_preceptor import _make_pbip_project  # noqa: E402
-
 
 #: A partition exactly as tmdl_generator writes M: a bare ``source =``
 #: followed by an indented body, with no fence.

@@ -25,14 +25,14 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from scripts.generate_pixel_fixtures import (  # noqa: E402
+    _load_json,
+    build_snapshot_for_workbook,
+)
 from tests.fixture_corpus import (  # noqa: E402
     describe,
     golden_path,
     golden_workbooks,
-)
-from scripts.generate_pixel_fixtures import (  # noqa: E402
-    build_snapshot_for_workbook,
-    _load_json,
 )
 
 

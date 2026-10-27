@@ -19,17 +19,19 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from powerbi_import.interface_diff import compare_report_interface
 from powerbi_import.artifact_diff import _parse_tmdl_table
+from powerbi_import.interface_diff import compare_report_interface
 from powerbi_import.powerquery_diff import (
-    compare_calculation_metadata, compare_caption_metadata,
-    compare_report_counts, compare_report_metadata, compare_report_tables,
+    compare_calculation_metadata,
+    compare_caption_metadata,
+    compare_report_counts,
+    compare_report_metadata,
+    compare_report_tables,
     compare_semantic_metadata,
 )
 from powerbi_import.visual_diff import generate_visual_diff_json
 from powerbi_import.visual_size_diff import compare_report_visual_sizes
 from tableau_export.extract_tableau_data import TableauExtractor
-
 
 _EXTRACTED = ('worksheets', 'dashboards', 'datasources', 'calculations',
               'parameters', 'filters', 'actions', 'user_filters')

@@ -2,22 +2,22 @@
 Tests for powerbi_import.m_query_generator — sample data M query generation.
 """
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from powerbi_import.m_query_generator import (
-    generate_m_query_from_datasource,
-    generate_sql_query,
-    generate_excel_query,
-    generate_csv_query,
-    generate_web_query,
-    generate_json_query,
-    generate_sample_data_query,
-    get_column_type_mapping,
-    extract_m_partitions_from_tmdl,
     export_final_power_query_files,
+    extract_m_partitions_from_tmdl,
+    generate_csv_query,
+    generate_excel_query,
+    generate_json_query,
+    generate_m_query_from_datasource,
+    generate_sample_data_query,
+    generate_sql_query,
+    generate_web_query,
+    get_column_type_mapping,
     sync_final_calendar_source_expressions,
 )
 
@@ -303,7 +303,7 @@ class TestGenerateSampleDataQuery(unittest.TestCase):
         ds = {'tables': [{'name': 'T', 'columns': [{'name': 'x'}]}]}
         result = generate_sample_data_query('T', ds)
         # Each row starts with { — count data rows
-        lines = [l.strip() for l in result.split('\n') if l.strip().startswith('{') and ',' in l]
+        lines = [line.strip() for line in result.split('\n') if line.strip().startswith('{') and ',' in line]
         self.assertGreaterEqual(len(lines), 5)
 
     def test_sample_query_id_column_generates_numbers(self):

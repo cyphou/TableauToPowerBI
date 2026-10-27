@@ -6,7 +6,6 @@ import urllib.request
 import zlib
 from unittest import mock
 
-
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 

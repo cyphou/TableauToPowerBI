@@ -10,23 +10,19 @@ Ensures fixes for:
 import os
 import re
 import sys
-import json
-import unittest
 import tempfile
-import shutil
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tableau_export'))
 
+import xml.etree.ElementTree as ET
+
+from powerbi_import.tmdl_generator import _write_measure, generate_tmdl
+from powerbi_import.validator import ArtifactValidator
 from tableau_export.datasource_extractor import extract_calculations
 from tableau_export.extract_tableau_data import _clean_field_ref
-from powerbi_import.tmdl_generator import generate_tmdl
-from powerbi_import.validator import ArtifactValidator
-
-import xml.etree.ElementTree as ET
-from powerbi_import.tmdl_generator import _write_measure
-
 
 # ═══════════════════════════════════════════════════════════════════
 # 1. Empty Measure Expression Tests
@@ -118,7 +114,7 @@ class TestEmptyMeasurePrevention(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             sm_dir = os.path.join(tmpdir, 'Test.SemanticModel')
             os.makedirs(sm_dir, exist_ok=True)
-            result = generate_tmdl(datasources, 'Test', extra_objects, sm_dir)
+            generate_tmdl(datasources, 'Test', extra_objects, sm_dir)
 
             # Scan generated TMDL for empty measures
             empty_pattern = re.compile(r"^\s*measure\s+'[^']+'\s*=\s*$", re.MULTILINE)
@@ -140,7 +136,7 @@ class TestEmptyMeasurePrevention(unittest.TestCase):
         measure = {'name': 'Test Measure', 'expression': '', 'formatString': '0'}
         _write_measure(lines, measure)
         # Should produce "measure 'Test Measure' = 0" not "measure 'Test Measure' = "
-        measure_line = [l for l in lines if 'measure' in l][0]
+        measure_line = [line for line in lines if 'measure' in line][0]
         self.assertTrue(measure_line.strip().endswith('= 0'),
                         f'Expected fallback to 0, got: {measure_line}')
 
@@ -149,7 +145,7 @@ class TestEmptyMeasurePrevention(unittest.TestCase):
         lines = []
         measure = {'name': 'Null Measure'}
         _write_measure(lines, measure)
-        measure_line = [l for l in lines if 'measure' in l][0]
+        measure_line = [line for line in lines if 'measure' in line][0]
         self.assertTrue(measure_line.strip().endswith('= 0'))
 
 

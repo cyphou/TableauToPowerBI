@@ -11,14 +11,11 @@ extraction. Behaviour is exercised through the public API; failures
 assert observable contracts (return values, file output, exceptions).
 """
 
-import io
 import json
 import os
 import sys
 import tempfile
 import unittest
-from unittest import mock
-
 
 # ════════════════════════════════════════════════════════════════════
 #  api_server — additional helper / endpoint coverage

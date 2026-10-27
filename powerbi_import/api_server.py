@@ -26,11 +26,13 @@ import collections
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import logging
 import os
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -39,10 +41,8 @@ import threading
 import time
 import uuid
 import zipfile
-import ipaddress
-import socket
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -901,16 +901,16 @@ def run_server(host='127.0.0.1', port=8000, api_key=None):
 
     server = HTTPServer((host, port), MigrationHandler)
     print(f"Migration API server running on http://{host}:{port}")
-    print(f"  POST /migrate          Retired (410); use /migrate/batch")
-    print(f"  POST /migrate/batch    Upload ZIP of workbooks for batch migration")
-    print(f"  GET  /status/{{id}}      Check job status")
-    print(f"  GET  /download/{{id}}    Download result as ZIP")
-    print(f"  GET  /batch/{{id}}       Check batch migration status")
-    print(f"  GET  /health           Health check")
-    print(f"  GET  /jobs             List all jobs (paginated)")
-    print(f"  GET  /openapi.json     OpenAPI 3.0 specification")
+    print("  POST /migrate          Retired (410); use /migrate/batch")
+    print("  POST /migrate/batch    Upload ZIP of workbooks for batch migration")
+    print("  GET  /status/{id}      Check job status")
+    print("  GET  /download/{id}    Download result as ZIP")
+    print("  GET  /batch/{id}       Check batch migration status")
+    print("  GET  /health           Health check")
+    print("  GET  /jobs             List all jobs (paginated)")
+    print("  GET  /openapi.json     OpenAPI 3.0 specification")
     if _API_KEY:
-        print(f"  Auth: Bearer token required (--api-key set)")
+        print("  Auth: Bearer token required (--api-key set)")
     print()
     try:
         server.serve_forever()

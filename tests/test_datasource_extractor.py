@@ -11,7 +11,6 @@ Targets uncovered lines:
   - extract_relationships()               lines 550-643+
 """
 
-import io
 import os
 import sys
 import tempfile
@@ -24,21 +23,21 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 
 from datasource_extractor import (
-    _detect_csv_delimiter,
-    _read_csv_header_from_twbx,
-  _extract_col_local_name_map,
-  _extract_col_type_map,
-    _parse_connection_class,
     _build_connection_map,
+    _detect_csv_delimiter,
+    _extract_col_local_name_map,
+    _extract_col_type_map,
+    _parse_connection_class,
+    _read_csv_header_from_twbx,
     _rename_sqlproxy_tables,
     _sanitize_caption_for_table_name,
+    extract_calculations,
+    extract_column_metadata,
     extract_connection_details,
     extract_datasource,
-    extract_tables_with_columns,
-    extract_column_metadata,
-    extract_calculations,
-    extract_relationships,
     extract_relation_metadata,
+    extract_relationships,
+    extract_tables_with_columns,
 )
 
 
@@ -204,9 +203,12 @@ class TestRelationMetadata(unittest.TestCase):
     def test_complete_composite_equality_and_non_equi_predicate_preserved(self):
         ds = self.fixture()
         metadata = extract_relation_metadata(ds)
-        field = lambda table, column: dict(
-            table=table, column=column, remote_column=column,
-            reference=f"[{table}].[{column}]")
+
+        def field(table, column):
+            return dict(
+                table=table, column=column, remote_column=column,
+                reference=f"[{table}].[{column}]")
+
         expected = {
             "left": {"object_id": "Current", "tables": ["Current"]},
             "right": {"object_id": "Prior", "tables": ["Prior"]},

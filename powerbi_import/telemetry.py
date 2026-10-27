@@ -89,7 +89,7 @@ class PhaseTimingCollector:
         end = self._finished_at
         if end is None and self._started_at is not None:
             end = self._clock()
-        total = 0.0 if self._started_at is None else end - self._started_at
+        total = 0.0 if self._started_at is None or end is None else end - self._started_at
         measured = sum(self._phases.values())
         return {
             'total_seconds': total,
@@ -434,12 +434,15 @@ class ChangeNotifier:
 
     def _post_webhook(self, payload):
         """Post to Teams/Slack webhook. Best-effort, no exceptions raised."""
+        url = self._webhook_url
+        if not url:
+            return
         import json as _json
         try:
             import urllib.request
             data = _json.dumps(payload).encode('utf-8')
             req = urllib.request.Request(
-                self._webhook_url,
+                url,
                 data=data,
                 headers={'Content-Type': 'application/json'},
                 method='POST',

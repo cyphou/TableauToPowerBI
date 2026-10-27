@@ -7,9 +7,9 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from powerbi_import.recovery_report import RecoveryReport  # noqa: E402
 from powerbi_import.dax_healing import heal_dax  # noqa: E402
 from powerbi_import.m_healing import heal_m  # noqa: E402
+from powerbi_import.recovery_report import RecoveryReport  # noqa: E402
 
 
 class TestRecordHeal(unittest.TestCase):

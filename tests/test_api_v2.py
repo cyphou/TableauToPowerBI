@@ -8,21 +8,13 @@ Covers:
 - Batch migration stores
 """
 
-import collections
 import hashlib
 import hmac
-import io
-import json
 import os
 import sys
-import tempfile
-import threading
 import time
 import unittest
-import zipfile
-from http.server import HTTPServer
-from unittest.mock import patch, MagicMock
-from urllib.parse import urlencode
+from unittest.mock import MagicMock, patch
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -397,7 +389,7 @@ class TestQueryParams(unittest.TestCase):
     """Tests for _get_query_params helper."""
 
     def test_parse_query_params(self):
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import parse_qs, urlparse
 
         url = '/jobs?status=completed&page=2&per_page=10'
         parsed = urlparse(url)
@@ -407,7 +399,7 @@ class TestQueryParams(unittest.TestCase):
         self.assertEqual(params['per_page'], ['10'])
 
     def test_empty_query(self):
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import parse_qs, urlparse
 
         url = '/jobs'
         parsed = urlparse(url)

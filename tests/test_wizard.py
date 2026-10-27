@@ -9,16 +9,16 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch, call
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 from wizard import (
+    _choose,
     _input,
     _yes_no,
-    _choose,
-    wizard_to_args,
     run_wizard,
+    wizard_to_args,
 )
 
 

@@ -14,7 +14,6 @@ if ROOT not in sys.path:
 
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
 
-
 # ════════════════════════════════════════════════════════════════════
 # Sprint 101 — Recursive LOD Parser
 # ════════════════════════════════════════════════════════════════════
@@ -447,7 +446,7 @@ class TestDAXRecipes(unittest.TestCase):
         from powerbi_import.dax_recipes import apply_recipes
         recipes = [{'name': 'cleanup', 'match': r'SUM\(', 'replacement': 'SUMX(T, '}]
         measures = {'M1': 'SUM([X])'}
-        changes = apply_recipes(measures, recipes)
+        apply_recipes(measures, recipes)
         self.assertIn('SUMX(T, ', measures['M1'])
 
     def test_get_all_recipes(self):
@@ -538,14 +537,14 @@ class TestModelTemplates(unittest.TestCase):
                                f"{industry} template has no hierarchies")
 
     def test_apply_template_new_tables(self):
-        from powerbi_import.model_templates import get_template, apply_template
+        from powerbi_import.model_templates import apply_template, get_template
         tpl = get_template('retail')
         existing = [{'name': 'Sales', 'columns': [{'name': 'Revenue', 'dataType': 'double'}]}]
         result = apply_template(tpl, existing)
         self.assertGreater(result['stats']['new_tables'], 0)
 
     def test_apply_template_enrich_columns(self):
-        from powerbi_import.model_templates import get_template, apply_template
+        from powerbi_import.model_templates import apply_template, get_template
         tpl = get_template('retail')
         existing = [{'name': 'Sales', 'columns': [{'name': 'Revenue', 'dataType': 'double'}]}]
         result = apply_template(tpl, existing)
@@ -556,7 +555,7 @@ class TestModelTemplates(unittest.TestCase):
         self.assertIn('Quantity', col_names)  # from template
 
     def test_apply_template_relationships(self):
-        from powerbi_import.model_templates import get_template, apply_template
+        from powerbi_import.model_templates import apply_template, get_template
         tpl = get_template('healthcare')
         existing = [
             {'name': 'Encounters', 'columns': [{'name': 'EncounterID', 'dataType': 'string'}]},
@@ -566,7 +565,7 @@ class TestModelTemplates(unittest.TestCase):
         self.assertGreater(len(result['relationships']), 0)
 
     def test_apply_template_returns_measures(self):
-        from powerbi_import.model_templates import get_template, apply_template
+        from powerbi_import.model_templates import apply_template, get_template
         tpl = get_template('finance')
         result = apply_template(tpl, [])
         self.assertGreater(len(result['measures']), 0)
@@ -729,14 +728,14 @@ class TestCrossSprintIntegration(unittest.TestCase):
 
     def test_marketplace_with_industry_recipes(self):
         """Load industry recipes into marketplace and apply."""
-        from powerbi_import.marketplace import PatternRegistry
         from powerbi_import.dax_recipes import recipes_to_marketplace_format
+        from powerbi_import.marketplace import PatternRegistry
         reg = PatternRegistry()
         for pattern in recipes_to_marketplace_format('healthcare'):
             reg.register(pattern)
         self.assertGreater(reg.count, 0)
         measures = {}
-        changes = reg.apply_dax_recipes(measures, tags=['healthcare'])
+        reg.apply_dax_recipes(measures, tags=['healthcare'])
         self.assertGreater(len(measures), 0)
 
     def test_nested_lod_in_window(self):
@@ -751,14 +750,14 @@ class TestCrossSprintIntegration(unittest.TestCase):
 
     def test_template_and_recipes_together(self):
         """Apply template then inject recipes."""
-        from powerbi_import.model_templates import get_template, apply_template
-        from powerbi_import.dax_recipes import get_industry_recipes, apply_recipes
+        from powerbi_import.dax_recipes import apply_recipes, get_industry_recipes
+        from powerbi_import.model_templates import apply_template, get_template
         tpl = get_template('retail')
         result = apply_template(tpl, [])
         # Now apply retail recipes on top
         measures = {m['name']: m['dax'] for m in result['measures']}
         recipes = get_industry_recipes('retail')
-        changes = apply_recipes(measures, recipes)
+        apply_recipes(measures, recipes)
         # Should have both template measures and recipe measures
         self.assertGreater(len(measures), len(result['measures']))
 

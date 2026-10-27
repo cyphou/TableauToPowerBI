@@ -15,7 +15,7 @@ import tempfile
 import unittest
 
 from powerbi_import.openability import _check_literal_grammar
-from powerbi_import.pbip_generator import _L, _pbi_literal, _filter_literal
+from powerbi_import.pbip_generator import _L, _filter_literal, _pbi_literal
 
 
 class TestNumericLiteralIsTyped(unittest.TestCase):

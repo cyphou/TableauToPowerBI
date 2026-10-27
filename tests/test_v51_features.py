@@ -6,29 +6,29 @@ Covers:
 - Sprint 11: Assessment 2024.3+ detection, REGEXP_EXTRACT_NTH improvement
 """
 
-import json
 import os
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
+import logging
+
+import powerbi_import.pbip_generator as pg
+from powerbi_import.assessment import (
+    _PARTIAL_FUNCTIONS,
+    _check_migration_scope,
+    run_assessment,
+)
+from powerbi_import.visual_generator import create_filters_config
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
 from tableau_export.m_query_builder import (
     _gen_m_fallback,
     wrap_source_with_try_otherwise,
 )
 from tableau_export.prep_flow_parser import _PREP_AGG_MAP, _PREP_JOIN_MAP
-from powerbi_import.visual_generator import create_filters_config
-from powerbi_import.assessment import run_assessment, _check_migration_scope
-
-from powerbi_import.assessment import _PARTIAL_FUNCTIONS
-import powerbi_import.pbip_generator as pg
-import logging
-
 
 # ════════════════════════════════════════════════════════════════════
 #  Sprint 9: DAX Conversion Accuracy

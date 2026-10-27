@@ -14,21 +14,20 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+from powerbi_import.marketplace import PatternRegistry
 from powerbi_import.plugin_sdk import (
     SDK_API_VERSION,
-    PluginManifest,
-    PluginValidationError,
-    validate_manifest,
     MigrationPlugin,
+    PluginManifest,
     PluginSDK,
-    PluginTestRunner,
     PluginTestError,
-    register_with_manager,
+    PluginTestRunner,
+    PluginValidationError,
     _parse_version,
+    register_with_manager,
+    validate_manifest,
 )
-from powerbi_import.marketplace import PatternRegistry
 from powerbi_import.plugins import reset_plugin_manager
-
 
 # ── Manifest ──────────────────────────────────────────────────
 

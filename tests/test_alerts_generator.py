@@ -19,17 +19,17 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.alerts_generator import (
-    extract_alerts,
-    generate_alert_rules,
-    save_alert_rules,
-    _extract_from_parameters,
+    _FREQUENCY_MAP,
+    _OPERATOR_MAP,
     _extract_from_calculations,
+    _extract_from_parameters,
     _extract_from_reference_lines,
     _infer_measure_from_param,
     _infer_measure_from_worksheet,
     _lookup_param_value,
-    _OPERATOR_MAP,
-    _FREQUENCY_MAP,
+    extract_alerts,
+    generate_alert_rules,
+    save_alert_rules,
 )
 
 

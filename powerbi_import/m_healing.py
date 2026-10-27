@@ -17,10 +17,9 @@ Public API:
 
 from __future__ import annotations
 
-import re
 from typing import List, Optional, Tuple
 
-from powerbi_import.healing_core import HealAction, HealReport, HIGH, MEDIUM, LOW
+from powerbi_import.healing_core import HIGH, MEDIUM, HealAction, HealReport
 
 # Reuse the project's canonical M identifier-quoting logic for consistency.
 try:

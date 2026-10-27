@@ -29,7 +29,6 @@ defensive pattern used by the DAX optimizer's protect/restore helper.
 import re
 from typing import List
 
-
 __all__ = ['validate_m_query', 'MQueryValidator']
 
 

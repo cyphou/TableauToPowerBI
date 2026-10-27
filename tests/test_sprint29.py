@@ -12,7 +12,6 @@ import os
 import sys
 import tempfile
 import unittest
-import uuid
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
@@ -604,7 +603,6 @@ class TestCLIFlags(unittest.TestCase):
         parser = migrate._build_parser() if hasattr(migrate, '_build_parser') else None
         if parser is None:
             # Fall back: parse known args
-            import argparse
             # Check the source for the argument
             import inspect
             source = inspect.getsource(migrate)
@@ -612,15 +610,17 @@ class TestCLIFlags(unittest.TestCase):
 
     def test_goals_flag_exists(self):
         """--goals flag is registered in argparse."""
-        import migrate
         import inspect
+
+        import migrate
         source = inspect.getsource(migrate)
         self.assertIn("'--goals'", source)
 
     def test_languages_in_run_generation(self):
         """run_generation accepts languages parameter."""
-        import migrate
         import inspect
+
+        import migrate
         sig = inspect.signature(migrate.run_generation)
         self.assertIn('languages', sig.parameters)
 
@@ -648,7 +648,7 @@ class TestGenerateTMDLWithLanguages(unittest.TestCase):
             'calculations': [],
         }]
         with tempfile.TemporaryDirectory() as tmpdir:
-            stats = generate_tmdl(
+            generate_tmdl(
                 datasources=datasources,
                 report_name='TestReport',
                 extra_objects={},

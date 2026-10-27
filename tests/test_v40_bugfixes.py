@@ -15,9 +15,9 @@ Covers five fixes verified against CurrentError.txt:
 
 import unittest
 
+from powerbi_import.visual_generator import create_visual_container
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
 from tableau_export.m_query_builder import _clean_sheet_name
-from powerbi_import.visual_generator import create_visual_container
 
 
 class TestAnnotationsAtContainerRoot(unittest.TestCase):

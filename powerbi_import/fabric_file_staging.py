@@ -13,7 +13,6 @@ from xml.etree import ElementTree as ET
 from .fabric_naming import sanitize_table_name
 from .fabric_sources import is_file_connection, table_connection
 
-
 _MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 _DOC_REL_NS = (
     'http://schemas.openxmlformats.org/officeDocument/2006/relationships')

@@ -6,15 +6,17 @@ import os
 import threading
 from contextlib import ExitStack
 from pathlib import Path
-from unittest import TestCase
-from unittest import mock
+from unittest import TestCase, mock
 
 import pytest
 
 import migrate
 from powerbi_import.desktop_paths import (
-    DesktopPathError, path_units, plan_desktop_project_name,
-    validate_desktop_project, validate_desktop_tree,
+    DesktopPathError,
+    path_units,
+    plan_desktop_project_name,
+    validate_desktop_project,
+    validate_desktop_tree,
 )
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
 from powerbi_import.thin_report_generator import ThinReportGenerator

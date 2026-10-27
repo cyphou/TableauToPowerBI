@@ -4,6 +4,21 @@
 
 ## Unreleased
 
+- Clear the CI lint findings: flake8, ruff (`E,F,W,I`) and pyright all report
+  zero diagnostics with the CI commands. Most of the change is mechanical
+  (whitespace, unused imports and variables, placeholder-free f-strings, import
+  order) plus type annotations and narrowing guards that keep behavior
+  unchanged. `pyrightconfig.json` now targets Python 3.12 on all platforms,
+  matching `requires-python` and the CI matrix, and optional third-party
+  imports carry a `# type: ignore` marker. Two real defects found on the way are
+  fixed. `MigrationSession.load()` stored the boolean returned by
+  `TableauExtractor.extract_all()` instead of the extracted workbook data and
+  now raises `ExtractionError` when extraction fails. The LLM refinement gate
+  imported a validator class that does not exist, so the failed import was
+  swallowed and only the parenthesis check ran; it now applies
+  `ArtifactValidator.validate_dax_formula`, which also rejects Tableau function
+  leaks, unresolved `[Parameters].[X]` references and `//` comments.
+
 - Name the retained source in the quality report when an enabled extract hides
   another connection: the Hyper Import section gains a bilingual **Source
   decision** table (datasource, retained packaged Hyper snapshot, unused

@@ -7,14 +7,12 @@ Generates Jupyter notebooks (.ipynb) with PySpark code for:
 3. Schema validation and data quality checks
 """
 
-import os
 import json
-import re
+import os
 from datetime import datetime
 
 from .calc_column_utils import (
     classify_calculations,
-    sanitize_calc_col_name,
     tableau_formula_to_pyspark,
 )
 from .fabric_item import logical_id, write_platform
@@ -368,10 +366,10 @@ class NotebookGenerator:
 
             code += f'\n# Preview\ndf_{table_var}.printSchema()\n'
             code += f'print(f"Rows: {{df_{table_var}.count()}}")\n'
-            code += f'\n# Write to Lakehouse Delta table\n'
+            code += '\n# Write to Lakehouse Delta table\n'
             code += f'df_{table_var}.write \\\n'
-            code += f'    .format("delta") \\\n'
-            code += f'    .mode("overwrite") \\\n'
+            code += '    .format("delta") \\\n'
+            code += '    .mode("overwrite") \\\n'
             code += f'    .saveAsTable("{lh_table}")\n'
             code += f'print(f"Written to Lakehouse: {lh_table}")\n'
 
@@ -455,9 +453,9 @@ class NotebookGenerator:
             ]))
 
             cells.append(_code_cell([
-                f'# Read the main table from Lakehouse\n',
+                '# Read the main table from Lakehouse\n',
                 f'df = spark.read.format("delta").table("{main_table_name}")\n',
-                f'print(f"Rows: {{df.count()}}, Columns: {{len(df.columns)}}")\n',
+                'print(f"Rows: {df.count()}, Columns: {len(df.columns)}")\n',
             ]))
 
             for cc in calc_columns:
@@ -473,7 +471,7 @@ class NotebookGenerator:
                 cells.append(_code_cell(pyspark_line + '\n'))
 
             cells.append(_code_cell([
-                f'# Overwrite the Delta table with the new columns\n',
+                '# Overwrite the Delta table with the new columns\n',
                 f'df.write.format("delta").mode("overwrite")'
                 f'.option("overwriteSchema", "true")'
                 f'.saveAsTable("{main_table_name}")\n',

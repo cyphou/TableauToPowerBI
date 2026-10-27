@@ -1,8 +1,11 @@
 """Regression tests for fidelity v2 preprocessing components."""
 
-from powerbi_import.dual_axis_and_reference_lines import DualAxisBuilder, ReferenceLineBuilder
-from powerbi_import.relationship_inference_v2 import RelationshipInferenceEngine
+from powerbi_import.dual_axis_and_reference_lines import (
+    DualAxisBuilder,
+    ReferenceLineBuilder,
+)
 from powerbi_import.equivalence_tester_v2 import run_full_equivalence_suite
+from powerbi_import.relationship_inference_v2 import RelationshipInferenceEngine
 
 
 def test_dual_axis_detection_with_axes_flag():

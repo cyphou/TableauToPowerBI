@@ -19,13 +19,12 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from tableau_export.extract_tableau_data import TableauExtractor
 from powerbi_import.visual_generator import (
     MAP_BASE_STYLE_MAP,
     build_map_config,
     build_map_layer_config,
-    _build_map_config,
 )
+from tableau_export.extract_tableau_data import TableauExtractor
 
 
 def _make_extractor():

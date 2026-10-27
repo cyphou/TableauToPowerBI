@@ -9,15 +9,13 @@ Usage:
     python scripts/verify_fields.py examples/real_world/vishnu_dashboard.twb C:\\temp\\vishnu_fix6\\vishnu_dashboard
 """
 import argparse
-import json
 import glob
+import json
 import os
 import re
 import sys
-import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
-
 
 # ── Tableau field parsing helpers ─────────────────────────────────────────────
 
@@ -112,7 +110,6 @@ def extract_tableau_worksheets(twb_path):
         for col in ds.findall('.//column'):
             col_name = col.get('name', '')
             caption = col.get('caption', '')
-            calc = col.find('calculation')
             if caption and col_name:
                 # Strip brackets if present
                 clean = col_name.strip('[]')
@@ -269,7 +266,7 @@ def _match_ws_to_visual(ws, pbi_visuals, used_ids):
 
 def compare_fields(tableau_ws, pbi_visuals):
     """Compare Tableau worksheet fields against PBI visual fields.
-    
+
     Returns a list of comparison results with match status.
     """
     results = []

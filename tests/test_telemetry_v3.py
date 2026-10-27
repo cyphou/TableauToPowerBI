@@ -10,14 +10,13 @@ Covers:
 """
 
 import unittest
-from unittest.mock import MagicMock
 
-from powerbi_import.telemetry import TelemetryCollector, TELEMETRY_VERSION
 from powerbi_import.monitoring import (
-    telemetry_to_openmetrics,
-    _sanitize_metric_name,
     _escape_label_value,
+    _sanitize_metric_name,
+    telemetry_to_openmetrics,
 )
+from powerbi_import.telemetry import TELEMETRY_VERSION, TelemetryCollector
 
 
 def _enabled():
@@ -185,7 +184,7 @@ class TestApiServerMetricsEndpoint(unittest.TestCase):
     def test_metrics_handler_path(self):
         # Verify the /metrics branch exists and the import wiring
         # does not raise.
-        from powerbi_import import api_server as api
+        from powerbi_import import api_server as api  # noqa: F401
         from powerbi_import import telemetry as tel_mod
         from powerbi_import.monitoring import telemetry_to_openmetrics
 

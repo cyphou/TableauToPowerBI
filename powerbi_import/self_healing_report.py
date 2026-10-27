@@ -265,7 +265,8 @@ def _heal_visual_zero_size(state, recovery=None) -> int:
             w = pos.get('width', 0)
             h = pos.get('height', 0)
             try:
-                w = float(w); h = float(h)
+                w = float(w)
+                h = float(h)
             except (TypeError, ValueError):
                 w = h = 0
             if w <= 0:
@@ -298,8 +299,10 @@ def _heal_visual_off_canvas(state, recovery=None) -> int:
             if not pos:
                 continue
             try:
-                x = float(pos.get('x', 0)); y = float(pos.get('y', 0))
-                w = float(pos.get('width', 0)); h = float(pos.get('height', 0))
+                x = float(pos.get('x', 0))
+                y = float(pos.get('y', 0))
+                w = float(pos.get('width', 0))
+                h = float(pos.get('height', 0))
             except (TypeError, ValueError):
                 continue
             if cw < _MIN_VISUAL_W or ch < _MIN_VISUAL_H:
@@ -309,9 +312,13 @@ def _heal_visual_off_canvas(state, recovery=None) -> int:
                 continue
             changed = False
             if x < 0:
-                pos['x'] = 0; x = 0; changed = True
+                pos['x'] = 0
+                x = 0
+                changed = True
             if y < 0:
-                pos['y'] = 0; y = 0; changed = True
+                pos['y'] = 0
+                y = 0
+                changed = True
             # Slide back inside first so the visual keeps its size; shrinking is
             # only for a visual genuinely larger than the page.
             if x + w > cw and w <= cw:
@@ -1172,8 +1179,8 @@ def _heal_invalid_visualtype(state, recovery=None) -> int:
     """
     try:
         from powerbi_import.visual_generator import (
-            VISUAL_TYPE_MAP,
             APPROXIMATION_MAP,
+            VISUAL_TYPE_MAP,
             resolve_visual_type,
         )
     except ImportError:

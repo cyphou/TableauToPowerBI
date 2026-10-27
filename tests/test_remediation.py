@@ -8,9 +8,13 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.remediation import (  # noqa: E402
-    RemediationSuggestion, RemediationReport,
-    explain_finding, remediate_findings, remediate_assessment,
-    refine_with_llm, _route_owner, _match_template,
+    RemediationSuggestion,
+    _match_template,
+    _route_owner,
+    explain_finding,
+    refine_with_llm,
+    remediate_assessment,
+    remediate_findings,
 )
 
 

@@ -6,7 +6,6 @@ Covers:
 - Multi-connection blend M query generation
 - Linguistic schema extraction and TMDL culture synonyms
 """
-import json
 import os
 import sys
 import tempfile

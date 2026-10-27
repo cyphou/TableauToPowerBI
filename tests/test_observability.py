@@ -12,15 +12,13 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from powerbi_import.telemetry import TelemetryCollector, TELEMETRY_VERSION
+from powerbi_import.telemetry import TELEMETRY_VERSION, TelemetryCollector
 from powerbi_import.telemetry_dashboard import (
-    generate_dashboard,
-    _load_reports,
-    _load_telemetry_events,
     _analyze_bottlenecks,
     _compute_portfolio_progress,
+    _load_telemetry_events,
+    generate_dashboard,
 )
-
 
 # ── Telemetry v2 ──────────────────────────────────────────
 

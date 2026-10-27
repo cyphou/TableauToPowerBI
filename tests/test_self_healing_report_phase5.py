@@ -5,22 +5,21 @@ Tests the 10 new healers added in Phase 5 of the Zero-Error roadmap.
 
 import unittest
 
+from powerbi_import.recovery_report import RecoveryReport
 from powerbi_import.self_healing_report import (
     _REPORT_HEALERS,
-    _heal_visual_overlap_full,
-    _heal_visual_filter_unknown_field,
-    _heal_visual_query_unknown_measure,
-    _heal_slicer_targets_missing_field,
     _heal_bookmark_targets_missing_visual,
-    _heal_theme_dataColors_empty,
+    _heal_mobile_layout_orphan_visual,
     _heal_page_no_visuals,
     _heal_pagesmeta_duplicate_pageorder,
+    _heal_slicer_targets_missing_field,
+    _heal_theme_dataColors_empty,
     _heal_tooltip_page_oversized,
-    _heal_mobile_layout_orphan_visual,
+    _heal_visual_filter_unknown_field,
+    _heal_visual_overlap_full,
+    _heal_visual_query_unknown_measure,
     run_report_healers,
 )
-from powerbi_import.recovery_report import RecoveryReport
-
 
 # ────────────────────────────────────────────────────────────────────
 #  Helpers

@@ -743,7 +743,7 @@ def _deactivate_ambiguous_paths(model):
 
     deactivated = []
     for rel in sorted_rels:
-        if rel.get('isActive') == False:
+        if rel.get('isActive') is False:
             continue  # already inactive, skip
         from_t = rel.get('fromTable', '')
         to_t = rel.get('toTable', '')

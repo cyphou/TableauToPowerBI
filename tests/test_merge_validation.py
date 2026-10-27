@@ -10,22 +10,21 @@ Covers:
 - _find_closest helper
 """
 
-import unittest
-import sys
 import os
+import sys
+import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.shared_model import (
+    _find_closest,
     check_type_compatibility,
     detect_merge_cycles,
     detect_type_conflicts,
-    validate_merged_dax_references,
-    validate_dax_relationship_functions,
     generate_merge_validation_report,
-    _find_closest,
+    validate_dax_relationship_functions,
+    validate_merged_dax_references,
 )
-
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -453,7 +452,7 @@ class TestGenerateMergeValidationReport(unittest.TestCase):
             tables=[_table('T', [_col('X')],
                            type_history={'x': ['string', 'integer']})]
         )
-        report = generate_merge_validation_report(merged)
+        generate_merge_validation_report(merged)
         # string↔integer promotion is 'ok' via safe promotion, so no warning
         # Let's use a truly non-standard type that isn't in matrix
         merged2 = _make_merged(

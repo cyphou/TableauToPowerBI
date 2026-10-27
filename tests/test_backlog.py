@@ -11,22 +11,17 @@ Tests for v4.1.0 backlog features:
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 
-from tests.conftest import SAMPLE_DATASOURCE, SAMPLE_EXTRACTED, make_temp_dir, cleanup_dir
-
-from powerbi_import.tmdl_generator import resolve_table_for_column
-from powerbi_import.tmdl_generator import generate_tmdl
-from powerbi_import.incremental import IncrementalMerger, DiffEntry
-from powerbi_import.incremental import IncrementalMerger
-from powerbi_import.incremental import DiffEntry
-from powerbi_import.validator import ArtifactValidator
-from powerbi_import.telemetry import is_telemetry_enabled
-from powerbi_import.telemetry import TelemetryCollector
-import sys
-from docs.generate_api_docs import generate_with_builtin
 import docs.generate_api_docs as gen_mod
+from docs.generate_api_docs import generate_with_builtin
+from powerbi_import.incremental import DiffEntry, IncrementalMerger
+from powerbi_import.telemetry import TelemetryCollector, is_telemetry_enabled
+from powerbi_import.tmdl_generator import generate_tmdl, resolve_table_for_column
+from powerbi_import.validator import ArtifactValidator
+from tests.conftest import cleanup_dir, make_temp_dir
 
 
 class TestMultiDatasourceContext(unittest.TestCase):
@@ -335,7 +330,7 @@ class TestIncrementalMigration(unittest.TestCase):
         """Non-JSON files (like .tmdl) always take the incoming version."""
         self._write(self.existing, 'model.tmdl', 'model Model\n  old content')
         self._write(self.incoming, 'model.tmdl', 'model Model\n  new content')
-        stats = IncrementalMerger.merge(self.existing, self.incoming, self.output)
+        IncrementalMerger.merge(self.existing, self.incoming, self.output)
         with open(os.path.join(self.output, 'model.tmdl'), 'r') as f:
             content = f.read()
         self.assertIn('new content', content)
@@ -1298,7 +1293,8 @@ class TestFilterControlParamResolution(unittest.TestCase):
     def test_param_field_resolved_from_param_ref(self):
         """When calc_column_id is empty, the calc ID should be extracted from
         the `param` field and resolved via calc_id_to_caption."""
-        import tempfile, shutil
+        import shutil
+        import tempfile
         gen = self._make_generator(
             bim_symbols={('T', 'Probability %')},
             bim_measures=set(),
@@ -1318,7 +1314,8 @@ class TestFilterControlParamResolution(unittest.TestCase):
             gen._create_visual_filter_control(
                 tmpdir, obj, 1.0, 1.0, 0, calc_map, converted)
             # Slicer should be created with resolved column name
-            import glob, json
+            import glob
+            import json
             visuals = glob.glob(os.path.join(tmpdir, '*', 'visual.json'))
             self.assertEqual(len(visuals), 1)
             data = json.loads(open(visuals[0]).read())
@@ -1330,7 +1327,8 @@ class TestFilterControlParamResolution(unittest.TestCase):
     def test_measure_slicer_skipped(self):
         """Slicers referencing measures should be skipped — measures cannot
         be slicer fields in Power BI."""
-        import tempfile, shutil
+        import shutil
+        import tempfile
         gen = self._make_generator(
             bim_symbols={('T', 'Pipeline Value')},
             bim_measures={'Pipeline Value'},
@@ -1359,7 +1357,8 @@ class TestFilterControlParamResolution(unittest.TestCase):
     def test_unknown_field_slicer_skipped(self):
         """Slicers referencing fields not in the semantic model should be
         skipped to avoid 'missing field' errors in PBI Desktop."""
-        import tempfile, shutil
+        import shutil
+        import tempfile
         gen = self._make_generator(
             bim_symbols={('T', 'RealColumn')},
             bim_measures=set(),
@@ -1969,7 +1968,9 @@ class TestParameterControlSlicerSkip(unittest.TestCase):
     def test_missing_param_table_slicer_skipped(self):
         """If the parameter table doesn't exist in the model, the slicer
         should not be generated."""
-        import tempfile, shutil, glob
+        import glob
+        import shutil
+        import tempfile
         # Model has NO pSelectOpportunityOwner table
         gen = self._make_generator(
             bim_symbols={('Sales', 'Amount'), ('Sales', 'Region')},
@@ -2001,7 +2002,9 @@ class TestParameterControlSlicerSkip(unittest.TestCase):
 
     def test_existing_param_table_slicer_created(self):
         """If the parameter table exists, the slicer should be created."""
-        import tempfile, shutil, glob
+        import glob
+        import shutil
+        import tempfile
         gen = self._make_generator(
             bim_symbols={('pSelectOwner', 'Value'), ('pSelectOwner', 'Name')},
             bim_measures=set(),
@@ -2171,7 +2174,9 @@ class TestBareCalcReferenceInlining(unittest.TestCase):
 
     def test_bare_param_value_inlined_in_calc_column(self):
         """__MyToday bare ref → DATE(2022,04,18) when is_calc_column=True."""
-        from tableau_export.dax_converter import convert_tableau_formula_to_dax as convert_to_dax
+        from tableau_export.dax_converter import (
+            convert_tableau_formula_to_dax as convert_to_dax,
+        )
         formula = '[Close Date]>DATEADD(\'month\',-36,__MyToday) AND [Close Date] <= __MyToday'
         dax = convert_to_dax(
             formula,
@@ -2190,7 +2195,9 @@ class TestBareCalcReferenceInlining(unittest.TestCase):
 
     def test_bare_param_value_inlined_in_measure(self):
         """__MyToday bare ref → DATE(2022,04,18) even in measures."""
-        from tableau_export.dax_converter import convert_tableau_formula_to_dax as convert_to_dax
+        from tableau_export.dax_converter import (
+            convert_tableau_formula_to_dax as convert_to_dax,
+        )
         formula = '__MyToday'
         dax = convert_to_dax(
             formula,
@@ -2209,7 +2216,9 @@ class TestBareCalcReferenceInlining(unittest.TestCase):
 
     def test_bare_ref_not_replaced_inside_string(self):
         """Bare ref inside a string literal should NOT be replaced."""
-        from tableau_export.dax_converter import convert_tableau_formula_to_dax as convert_to_dax
+        from tableau_export.dax_converter import (
+            convert_tableau_formula_to_dax as convert_to_dax,
+        )
         formula = 'IF [X]="__MyToday" THEN 1 ELSE 0 END'
         dax = convert_to_dax(
             formula,
@@ -2227,7 +2236,9 @@ class TestBareCalcReferenceInlining(unittest.TestCase):
 
     def test_bare_ref_not_replaced_inside_brackets(self):
         """Bare ref inside a [column name] should NOT be replaced."""
-        from tableau_export.dax_converter import convert_tableau_formula_to_dax as convert_to_dax
+        from tableau_export.dax_converter import (
+            convert_tableau_formula_to_dax as convert_to_dax,
+        )
         formula = 'if [Is Closed in Last x Days?] then "Last " + [Parameters].[pDays] + " days" else "Other" end'
         dax = convert_to_dax(
             formula,

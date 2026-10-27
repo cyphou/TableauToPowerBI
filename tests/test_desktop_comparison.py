@@ -2,9 +2,9 @@
 import hashlib
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from powerbi_import import desktop_comparison as comparison

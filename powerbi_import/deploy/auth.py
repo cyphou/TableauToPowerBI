@@ -9,12 +9,13 @@ Requires: pip install azure-identity (optional dependency)
 """
 
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # Lazy import — azure-identity is optional
 try:
-    from azure.identity import ClientSecretCredential, DefaultAzureCredential
+    from azure.identity import ClientSecretCredential, DefaultAzureCredential  # type: ignore[import-not-found]
 except ImportError:
     ClientSecretCredential = None
     DefaultAzureCredential = None
@@ -36,7 +37,7 @@ class FabricAuthenticator:
         """
         self.use_managed_identity = use_managed_identity
         self._token = None
-        self._credential = None
+        self._credential: Any = None
         self._init_credential()
 
     def _init_credential(self):

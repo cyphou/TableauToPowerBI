@@ -25,16 +25,13 @@ Generated structure:
       {TableName}.tmdl
 """
 
-import sys
-import os
-import re
-import uuid
 import json
 import logging
-import shutil
-import time
-import zipfile
+import os
+import re
+import sys
 import xml.etree.ElementTree as ET
+import zipfile
 
 from powerbi_import.errors import ConfigurationError
 
@@ -183,46 +180,18 @@ def _auto_partition_mode(connection, table):
 # Add path to import from tableau_export
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 from datasource_extractor import (
-    generate_power_query_m,
     convert_tableau_formula_to_dax,
+    generate_power_query_m,
     map_tableau_to_powerbi_type,
     sanitize_param_brackets,
 )
 from m_query_builder import (
-    inject_m_steps,
-    m_transform_rename,
-    m_transform_remove_columns,
-    m_transform_filter_values,
-    m_transform_filter_nulls,
-    m_transform_add_column,
     generate_m_from_hyper,
+    inject_m_steps,
+    m_transform_add_column,
+    m_transform_rename,
     map_tableau_to_m_type,
 )
-
-
-
-
-# DAX -> Power Query M conversion lives in tmdl_m_conversion (owned by @wiring).
-# Re-exported here so existing tmdl_generator callers keep working.
-from powerbi_import.tmdl_m_conversion import (  # noqa: F401
-    _DAX_TO_M_TYPE,
-    _DATE_DATATYPES,
-    _RE_COL_SUBTRACTION,
-    _dax_to_m_expression,
-    _extract_function_body,
-    _inject_m_steps_into_partition,
-    _M_SPECIAL_CHARS,
-    _quote_m_identifiers,
-    _split_dax_args,
-    _split_top_level_binop,
-    _strip_m_inline_comments,
-    _build_m_transform_steps,
-    m_rename_map,
-    rename_m_column_refs,
-    _fix_m_if_else_balance,
-    _wrap_date_subtraction_in_duration_days,
-)
-
 
 # DAX post-processing lives in tmdl_dax_postprocess (owned by @dax);
 # re-exported here so existing imports keep working.
@@ -241,6 +210,26 @@ from powerbi_import.tmdl_dax_postprocess import (  # noqa: E402,F401
     retarget_dax_column_refs,
 )
 
+# DAX -> Power Query M conversion lives in tmdl_m_conversion (owned by @wiring).
+# Re-exported here so existing tmdl_generator callers keep working.
+from powerbi_import.tmdl_m_conversion import (  # noqa: F401
+    _DATE_DATATYPES,
+    _DAX_TO_M_TYPE,
+    _M_SPECIAL_CHARS,
+    _RE_COL_SUBTRACTION,
+    _build_m_transform_steps,
+    _dax_to_m_expression,
+    _extract_function_body,
+    _fix_m_if_else_balance,
+    _inject_m_steps_into_partition,
+    _quote_m_identifiers,
+    _split_dax_args,
+    _split_top_level_binop,
+    _strip_m_inline_comments,
+    _wrap_date_subtraction_in_duration_days,
+    m_rename_map,
+    rename_m_column_refs,
+)
 
 # Pre-write TMDL self-healing lives in tmdl_self_heal (owned by @healing).
 # Re-exported here so existing tmdl_generator callers keep working.
@@ -249,7 +238,6 @@ from powerbi_import.tmdl_self_heal import (  # noqa: F401
     _self_heal_model,
     _validate_m_partitions,
 )
-
 
 # ════════════════════════════════════════════════════════════════════
 #  PUBLIC ENTRY POINT
@@ -881,7 +869,6 @@ from powerbi_import.tmdl_lineage import (  # noqa: E402,F401
     _normalize_column,
 )
 
-
 # ════════════════════════════════════════════════════════════════════
 #  SEMANTIC MODEL BUILDING
 # ════════════════════════════════════════════════════════════════════
@@ -1246,7 +1233,7 @@ def _prepare_logical_relationship_measures(ctx, datasources, extra_objects, mode
 
 # Relationship inference lives in tmdl_relationships; re-exported here so
 # existing imports of these names keep working.
-from powerbi_import.tmdl_relationships import (  # noqa: E402
+from powerbi_import.tmdl_relationships import (  # noqa: E402,F401
     _build_relationships,
     _create_and_validate_relationships,
     _deactivate_ambiguous_paths,
@@ -1262,7 +1249,6 @@ from powerbi_import.tmdl_relationships import (  # noqa: E402
 def _generate_aggregation_tables(model):
     """Generate Import-mode aggregation tables for directQuery fact tables."""
     new_tables = []
-    new_rels = []
     for table in model['model']['tables']:
         partitions = table.get('partitions', [])
         if not partitions or partitions[0].get('mode') != 'directQuery':
@@ -1347,10 +1333,6 @@ def _collect_semantic_context(datasources, extra_objects):
     m_query_overrides = {}  # table_name -> complete M query (from Prep flows)
     all_calculations = []
     all_columns_metadata = []
-    all_hierarchies = []
-    all_sets = []
-    all_groups = []
-    all_bins = []
     _logger = logging.getLogger(__name__)
 
     for ds in datasources:
@@ -1802,7 +1784,6 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
                 ]
         elif table_name == main_table_name:
             # Fallback: calcs with no datasource match go to the global main table
-            routed_ds_names = set(ds_main_table.values())
             table_calculations = [
                 c for c in unattributed
                 if c.get('datasource_name', '') not in datasource_table_map.values()
@@ -2145,7 +2126,7 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
             key = cname.casefold()
             if key not in all_column_names:
                 all_column_names[key] = (tname, cname)
-    
+
     # Check measures against column names
     for table in model["model"]["tables"]:
         tname = table.get("name", "")
@@ -2360,13 +2341,6 @@ def _inject_r_squared_measures(model, worksheets, main_table_name, column_table_
 
             if measure_field:
                 tbl = column_table_map.get(measure_field, main_table_name)
-                r2_expr = (
-                    f"VAR _x = RANKX(ALL('{tbl}'), [{measure_field}],,ASC,Dense) "
-                    f"VAR _corr = POWER(CORREL(ADDCOLUMNS(ALL('{tbl}'), "
-                    f"\"_rank\", RANKX(ALL('{tbl}'), [{measure_field}],,ASC,Dense), "
-                    f"\"_val\", [{measure_field}]), [_rank], [_val]), 2) "
-                    f"RETURN _corr"
-                )
                 main_table['measures'].append({
                     'name': measure_name,
                     'expression': f"POWER(CORREL(ADDCOLUMNS(ALL('{tbl}'), \"_idx\", RANKX(ALL('{tbl}'), [{measure_field}],,ASC,Dense)), [_idx], [{measure_field}]), 2)",
@@ -2848,6 +2822,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             col['datatype'] = ds_dt
 
     is_direct_lake = model_mode == 'directLake'
+    m_query = ''
     if not is_direct_lake:
         # Generate M query: use Prep flow override if available, else generate from connection
         if m_query_override:
@@ -3506,21 +3481,20 @@ def _get_display_folder(datatype, role):
     return 'Calculations'
 
 
-# Sets, groups and bins live in tmdl_sets; re-exported here so existing
-# imports keep working.
-from powerbi_import.tmdl_sets import (  # noqa: E402,F401
-    _clean_tableau_field_ref,
-    _process_sets_groups_bins,
-    _RE_TMDL_DERIVATION_PREFIX,
-    _RE_TMDL_TYPE_SUFFIX,
-)
-
-
 # Hierarchies live in tmdl_hierarchies; re-exported here so existing
 # imports keep working.
 from powerbi_import.tmdl_hierarchies import (  # noqa: E402,F401
     _apply_hierarchies,
     _auto_date_hierarchies,
+)
+
+# Sets, groups and bins live in tmdl_sets; re-exported here so existing
+# imports keep working.
+from powerbi_import.tmdl_sets import (  # noqa: E402,F401
+    _RE_TMDL_DERIVATION_PREFIX,
+    _RE_TMDL_TYPE_SUFFIX,
+    _clean_tableau_field_ref,
+    _process_sets_groups_bins,
 )
 
 
@@ -3557,7 +3531,6 @@ from powerbi_import.tmdl_parameters import (  # noqa: E402,F401
     _create_parameter_tables,
     _parse_switch_branches,
 )
-
 
 # RLS roles live in tmdl_rls; re-exported here so existing imports keep
 # working.
@@ -3838,7 +3811,7 @@ def _agg_for_column(model, table_name, column_name, agg_func):
 
 def _create_quick_table_calc_measures(model, worksheets, main_table_name, column_table_map):
     """Auto-generate DAX measures for Tableau quick table calculations.
-    
+
     Detects fields with table_calc metadata (pcto, pctd, running_sum, rank, etc.)
     and creates corresponding DAX measures:
     - pcto (% of Total): DIVIDE(SUM([Field]), CALCULATE(SUM([Field]), ALL('Table')))
@@ -3849,7 +3822,7 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
     """
     if not worksheets:
         return
-    
+
     # Find the main table to add measures to
     target_table = None
     for t in model["model"]["tables"]:
@@ -3858,27 +3831,27 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
             break
     if not target_table:
         return
-    
+
     existing_measures = {m.get("name", "") for m in target_table.get("measures", [])}
     added = 0
-    
+
     _AGG_MAP = {
         'sum': 'SUM', 'avg': 'AVERAGE', 'count': 'COUNT',
         'min': 'MIN', 'max': 'MAX', 'countd': 'DISTINCTCOUNT',
     }
-    
+
     for ws in worksheets:
         for field in ws.get('fields', []):
             tc_type = field.get('table_calc')
             if not tc_type:
                 continue
-            
+
             field_name = field.get('name', '')
             tc_agg = field.get('table_calc_agg', 'sum')
             agg_func = _AGG_MAP.get(tc_agg, 'SUM')
             tbl = column_table_map.get(field_name, main_table_name)
             agg_func = _agg_for_column(model, tbl, field_name, agg_func)
-            
+
             if tc_type == 'pcto':
                 measure_name = f"% of Total {field_name}"
                 if measure_name not in existing_measures:
@@ -3893,7 +3866,7 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
                     })
                     existing_measures.add(measure_name)
                     added += 1
-            
+
             elif tc_type == 'pctd':
                 measure_name = f"% Difference {field_name}"
                 if measure_name not in existing_measures:
@@ -3908,7 +3881,7 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
                     })
                     existing_measures.add(measure_name)
                     added += 1
-            
+
             elif tc_type.startswith('running_'):
                 running_agg = tc_type.replace('running_', '')
                 running_func = _AGG_MAP.get(running_agg, 'SUM')
@@ -3924,7 +3897,7 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
                     })
                     existing_measures.add(measure_name)
                     added += 1
-            
+
             elif tc_type in ('rank', 'rank_unique', 'rank_dense'):
                 dense = ", DENSE" if tc_type == 'rank_dense' else ""
                 measure_name = f"Rank {field_name}"
@@ -3938,7 +3911,7 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
                     })
                     existing_measures.add(measure_name)
                     added += 1
-            
+
             elif tc_type == 'diff':
                 measure_name = f"Difference {field_name}"
                 if measure_name not in existing_measures:
@@ -3953,7 +3926,7 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
                     })
                     existing_measures.add(measure_name)
                     added += 1
-    
+
     if added:
         print(f"  ✓ {added} quick table calc measures generated")
 
@@ -3961,22 +3934,20 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
 # Date-table detection and the generated Calendar live in tmdl_dates;
 # re-exported here so existing imports keep working.
 from powerbi_import.tmdl_dates import (  # noqa: E402,F401
-    _add_date_table,
-    _refresh_calendar_source_expressions,
     _DATE_PART_PATTERNS,
     _DATE_TABLE_NAMES,
+    _add_date_table,
     _is_date_table,
+    _refresh_calendar_source_expressions,
 )
-
 
 # ════════════════════════════════════════════════════════════════════
 #  TMDL FILE WRITERS
 # ════════════════════════════════════════════════════════════════════
-
-
 # TMDL serialization lives in tmdl_writers; re-exported here so existing
 # imports of these names keep working.
-from powerbi_import.tmdl_writers import (  # noqa: E402
+from powerbi_import.tmdl_writers import (  # noqa: E402,F401
+    _DISPLAY_FOLDER_TRANSLATIONS,
     _generate_column_description,
     _generate_measure_description,
     _generate_table_description,
@@ -4003,15 +3974,7 @@ from powerbi_import.tmdl_writers import (  # noqa: E402
     _write_roles_tmdl,
     _write_table_tmdl,
     _write_tmdl_files,
-    _DISPLAY_FOLDER_TRANSLATIONS,
 )
-
-
-
-
-
-
-
 
 # ════════════════════════════════════════════════════════════════════
 #  THEME GENERATION
@@ -4178,15 +4141,15 @@ def generate_theme_json(theme_data=None):
 
 # Incremental refresh policy lives in tmdl_refresh_policy; re-exported
 # here so existing imports of these names keep working.
-from powerbi_import.tmdl_refresh_policy import (  # noqa: E402
-    detect_refresh_policy,
+from powerbi_import.tmdl_refresh_policy import (  # noqa: E402,F401
+    _DATE_COL_KEYWORDS,
+    _DATE_TYPE_KEYWORDS,
+    _INCREMENTAL_CONNECTORS,
     _detect_incremental_refresh_tables,
-    _pick_best_date_column,
+    _generate_incremental_m_parameters,
     _generate_refresh_policy,
     _inject_range_filter_m,
-    _generate_incremental_m_parameters,
+    _pick_best_date_column,
     apply_incremental_refresh,
-    _INCREMENTAL_CONNECTORS,
-    _DATE_TYPE_KEYWORDS,
-    _DATE_COL_KEYWORDS,
+    detect_refresh_policy,
 )

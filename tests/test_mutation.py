@@ -14,15 +14,13 @@ Usage:
     python -m pytest tests/test_mutation.py -v
 """
 
-import unittest
 import importlib
-import copy
-import re
+import os
+import unittest
 
+from powerbi_import.validator import ArtifactValidator
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
 from tableau_export.m_query_builder import generate_power_query_m
-from powerbi_import.validator import ArtifactValidator
-import os
 
 
 class TestMutationSmoke(unittest.TestCase):

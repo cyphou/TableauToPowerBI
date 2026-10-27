@@ -25,20 +25,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
-from powerbi_import.validator import ArtifactValidator
-from powerbi_import.deploy.utils import DeploymentReport
 import io
-from powerbi_import.deploy.utils import ArtifactCache
-from powerbi_import.deploy.config.environments import EnvironmentType
-from powerbi_import.deploy.config.environments import EnvironmentConfig, EnvironmentType
-from powerbi_import.deploy.config.settings import get_settings
-from powerbi_import.deploy.config import settings as settings_mod
-from powerbi_import.deploy.config import get_settings, EnvironmentType, EnvironmentConfig
+
 from powerbi_import.deploy import auth as _auth_mod
 from powerbi_import.deploy.client import FabricClient
-from powerbi_import.deploy.deployer import ArtifactType
-from powerbi_import.deploy.deployer import FabricDeployer
-
+from powerbi_import.deploy.config import (
+    EnvironmentConfig,
+    EnvironmentType,
+    get_settings,
+)
+from powerbi_import.deploy.config import settings as settings_mod
+from powerbi_import.deploy.deployer import ArtifactType, FabricDeployer
+from powerbi_import.deploy.utils import ArtifactCache, DeploymentReport
+from powerbi_import.validator import ArtifactValidator
 
 # ═══════════════════════════════════════════════════════════════════
 # Validator Tests

@@ -194,7 +194,7 @@ class TestTelemetrySave(unittest.TestCase):
                 t.save()
 
             with open(tmp_path, 'r', encoding='utf-8') as f:
-                lines = [l.strip() for l in f if l.strip()]
+                lines = [line.strip() for line in f if line.strip()]
             self.assertEqual(len(lines), 3)
             for i, line in enumerate(lines):
                 entry = json.loads(line)

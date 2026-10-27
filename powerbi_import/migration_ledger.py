@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Mapping
 
-
 TARGET_DISPOSITIONS = ("exact", "healed", "approximated", "unsupported")
 VALIDATION_STATES = ("pending", "validated", "blocked")
 

@@ -36,7 +36,7 @@ def _apply_hierarchies(model, hierarchies, column_table_map):
         for table in model["model"]["tables"]:
             if table.get("name") == target_table_name:
                 table_col_names = {col.get("name", "") for col in table.get("columns", [])}
-                valid_levels = [l for l in levels if l in table_col_names]
+                valid_levels = [level for level in levels if level in table_col_names]
 
                 if valid_levels:
                     if "hierarchies" not in table:

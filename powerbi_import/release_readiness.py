@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-
 RUNTIME_GATES = ("desktop", "semantic_execution", "refresh", "deployment")
 
 

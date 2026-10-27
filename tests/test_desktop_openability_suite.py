@@ -21,10 +21,9 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
-from tableau_export.extract_tableau_data import TableauExtractor
 from powerbi_import.import_to_powerbi import PowerBIImporter
 from powerbi_import.openability import check_openability
-
+from tableau_export.extract_tableau_data import TableauExtractor
 
 _RUN_OPENABILITY_SUITE = os.environ.get('RUN_OPENABILITY_SUITE') == '1'
 

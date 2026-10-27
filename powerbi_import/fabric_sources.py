@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 FILE_SOURCE_TYPES = {'csv', 'excel'}
 
 

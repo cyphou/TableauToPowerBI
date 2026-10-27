@@ -12,14 +12,14 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.visual_generator import (
+    _SPARKLINE_SUBTYPE_MAP,
+    SPARKLINE_AREA,
+    SPARKLINE_COLUMN,
+    SPARKLINE_LINE,
+    SPARKLINE_WINLOSS,
+    VISUAL_TYPE_MAP,
     _build_sparkline_config,
     detect_sparkline_subtype,
-    VISUAL_TYPE_MAP,
-    SPARKLINE_LINE,
-    SPARKLINE_COLUMN,
-    SPARKLINE_AREA,
-    SPARKLINE_WINLOSS,
-    _SPARKLINE_SUBTYPE_MAP,
 )
 
 

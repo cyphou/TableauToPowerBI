@@ -20,20 +20,20 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.server_assessment import (
+    MigrationWave,
     ServerAssessment,
     WorkbookReadiness,
-    MigrationWave,
-    run_server_assessment,
-    generate_server_html_report,
-    save_server_assessment_json,
-    print_server_summary,
     _assess_single_workbook,
+    _build_migration_waves,
     _compute_complexity,
     _estimate_effort,
-    _build_migration_waves,
+    build_server_lineage_graph,
     collect_server_workbook_evidence,
     enrich_with_server_evidence,
-    build_server_lineage_graph,
+    generate_server_html_report,
+    print_server_summary,
+    run_server_assessment,
+    save_server_assessment_json,
 )
 
 
@@ -212,8 +212,8 @@ class TestBuildMigrationWaves(unittest.TestCase):
         waves = _build_migration_waves(results)
         self.assertGreaterEqual(len(waves), 2)
         wave_labels = [w.label for w in waves]
-        self.assertTrue(any("Easy" in l for l in wave_labels))
-        self.assertTrue(any("Complex" in l for l in wave_labels))
+        self.assertTrue(any("Easy" in label for label in wave_labels))
+        self.assertTrue(any("Complex" in label for label in wave_labels))
 
     def test_empty_input(self):
         waves = _build_migration_waves([])

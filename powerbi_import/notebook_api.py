@@ -17,7 +17,6 @@ Usage in a Jupyter notebook::
     session.validate()
 """
 
-import copy
 import json
 import logging
 import os
@@ -70,11 +69,16 @@ class MigrationSession:
         if extract_dir not in sys.path:
             sys.path.insert(0, extract_dir)
 
+        from powerbi_import.errors import ExtractionError
         from tableau_export.extract_tableau_data import TableauExtractor
 
         self._workbook_path = os.path.abspath(workbook_path)
         extractor = TableauExtractor(self._workbook_path)
-        self._extracted = extractor.extract_all()
+        # extract_all() returns a success flag; the data lives in workbook_data.
+        if not extractor.extract_all():
+            raise ExtractionError(
+                "Could not read the Tableau workbook", source=self._workbook_path)
+        self._extracted = extractor.workbook_data
 
         summary = {}
         for key, value in self._extracted.items():
@@ -96,14 +100,14 @@ class MigrationSession:
         Returns:
             dict: Assessment report with per-category scores.
         """
-        self._require_loaded()
+        extracted = self._require_loaded()
 
         from powerbi_import.assessment import run_assessment
 
         workbook_name = (self._config.get('workbook_name')
-                         or self._extracted.get('workbook_name')
+                         or extracted.get('workbook_name')
                          or 'Workbook')
-        report = run_assessment(self._extracted, workbook_name=workbook_name)
+        report = run_assessment(extracted, workbook_name=workbook_name)
         self._assessment = report.to_dict()
         return self._assessment
 
@@ -115,12 +119,12 @@ class MigrationSession:
         Returns:
             list[dict]: Per-calculation Tableau→DAX mapping with accuracy.
         """
-        self._require_loaded()
+        extracted = self._require_loaded()
 
         from tableau_export.dax_converter import convert_tableau_formula_to_dax
 
-        calculations = self._extracted.get('calculations', [])
-        datasources = self._extracted.get('datasources', [])
+        calculations = extracted.get('calculations', [])
+        datasources = extracted.get('datasources', [])
         # Build column_table_map from datasources
         col_table_map = {}
         for ds in datasources:
@@ -200,11 +204,11 @@ class MigrationSession:
         Returns:
             list[dict]: Per-table M query preview.
         """
-        self._require_loaded()
+        extracted = self._require_loaded()
 
         from tableau_export.m_query_builder import generate_power_query_m
 
-        datasources = self._extracted.get('datasources', [])
+        datasources = extracted.get('datasources', [])
         results = []
         for ds in datasources:
             conn = ds.get('connection', ds.get('connection_map', {}))
@@ -231,11 +235,11 @@ class MigrationSession:
         Returns:
             list[dict]: Per-visual mapping with data role coverage.
         """
-        self._require_loaded()
+        extracted = self._require_loaded()
 
         from powerbi_import.visual_generator import resolve_visual_type
 
-        worksheets = self._extracted.get('worksheets', [])
+        worksheets = extracted.get('worksheets', [])
         results = []
         for ws in worksheets:
             ws_name = ws.get('name', '')
@@ -303,7 +307,7 @@ class MigrationSession:
         Returns:
             dict: Generation summary (path, table count, measure count).
         """
-        self._require_loaded()
+        extracted = self._require_loaded()
 
         from powerbi_import.import_to_powerbi import PowerBIImporter
 
@@ -314,7 +318,7 @@ class MigrationSession:
 
         # Apply DAX overrides to extracted calculations
         if self._dax_overrides:
-            calcs = self._extracted.get('calculations', [])
+            calcs = extracted.get('calculations', [])
             for calc in calcs:
                 name = calc.get('name', calc.get('caption', ''))
                 if name in self._dax_overrides:
@@ -364,7 +368,7 @@ class MigrationSession:
 
     def quality_report(self, output_dir=None):
         """Run the unified deterministic quality report for the generated project."""
-        self._require_loaded()
+        extracted = self._require_loaded()
         if not self._generated_path:
             raise RuntimeError("No project generated yet — call generate() first")
 
@@ -373,7 +377,7 @@ class MigrationSession:
         report_name = (self._config.get('workbook_name') or
                        os.path.splitext(os.path.basename(self._workbook_path or 'Workbook'))[0])
         output_dir = output_dir or self._generated_path
-        report = build_quality_report(self._extracted, self._generated_path, report_name)
+        report = build_quality_report(extracted, self._generated_path, report_name)
         json_path = os.path.join(output_dir, f'migration_quality_{report_name}.json')
         html_path = os.path.join(output_dir, f'migration_quality_{report_name}.html')
         report.save_json(json_path)
@@ -655,12 +659,13 @@ class MigrationSession:
 
     # ── Internals ─────────────────────────────────────────────
 
-    def _require_loaded(self):
-        """Raise if no workbook has been loaded."""
+    def _require_loaded(self) -> dict:
+        """Return the extracted data, or raise if no workbook has been loaded."""
         if self._extracted is None:
             raise RuntimeError(
                 "No workbook loaded — call load('path.twbx') first"
             )
+        return self._extracted
 
 
 # ── Notebook cell helpers ─────────────────────────────────────
@@ -725,7 +730,7 @@ class _DaxExplorer:
     def to_frame(self):
         """Return a pandas DataFrame if pandas is installed, else the rows."""
         try:
-            import pandas as pd  # noqa: WPS433 — optional dependency
+            import pandas as pd  # noqa: WPS433 — optional dependency  # type: ignore[import-not-found]
             return pd.DataFrame(self._rows)
         except Exception:  # noqa: BLE001 — pandas optional
             return list(self._rows)

@@ -12,7 +12,8 @@ Architecture:
 
 import re
 
-from .fabric_constants import AGG_PATTERN as _AGG_PATTERN, SPARK_TYPE_MAP
+from .fabric_constants import AGG_PATTERN as _AGG_PATTERN
+from .fabric_constants import SPARK_TYPE_MAP
 
 _CALC_SPARK_TYPE = {k: v for k, v in SPARK_TYPE_MAP.items()
                     if k in ('string', 'integer', 'int64', 'real',

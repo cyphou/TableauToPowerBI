@@ -222,7 +222,7 @@ def _compare_calculations(prev_calcs, curr_calcs):
             if prev_formula != curr_formula:
                 entries.append(SchemaDriftEntry(
                     'calculation', 'modified', key,
-                    detail=f'formula changed',
+                    detail='formula changed',
                 ))
 
     for key in prev_map:

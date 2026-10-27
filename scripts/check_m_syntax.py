@@ -1,7 +1,8 @@
 """Check all generated TMDL files for M if/else balance."""
-import re
 import os
+import re
 import sys
+
 
 def check_m_if_else(text):
     """Count if/else outside M string literals."""

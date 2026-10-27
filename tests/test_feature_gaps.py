@@ -37,13 +37,12 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
+import re
+
+from dax_converter import convert_tableau_formula_to_dax
 from extract_tableau_data import TableauExtractor
 from pbip_generator import PowerBIProjectGenerator
-
-import re
-from dax_converter import convert_tableau_formula_to_dax
 from tmdl_generator import _add_date_table
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Helpers
@@ -946,14 +945,6 @@ class TestQuickTableCalcDetection(unittest.TestCase):
         """pcto: prefix is detected on a field."""
         ext, tmpdir = _make_extractor()
         try:
-            ws_xml = ET.fromstring('''
-            <worksheet>
-                <datasource-dependencies>
-                    <column-instance column="[Sales]" derivation="pcto:sum"
-                                     type="quantitative" />
-                </datasource-dependencies>
-            </worksheet>
-            ''')
             # Simulate field extraction logic
             field_name = 'pcto:sum:Sales'
             table_calc_re = re.compile(r'^(pcto|pctd|diff|running_sum|running_avg|running_count|running_min|running_max|rank|rank_unique|rank_dense)(?::(\w+))?:')
@@ -980,7 +971,7 @@ class TestQuickTableCalcDetection(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Table Calc Addressing — ALLEXCEPT 
+# Table Calc Addressing — ALLEXCEPT
 # ═══════════════════════════════════════════════════════════════════
 
 class TestTableCalcAddressing(unittest.TestCase):

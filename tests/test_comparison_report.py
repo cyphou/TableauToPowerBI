@@ -7,21 +7,21 @@ and main() CLI.
 
 import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
 from comparison_report import (
-    _load_json,
-    _load_extracted,
-    _load_pbip,
-    _compare_worksheets,
     _compare_calculations,
     _compare_datasources,
+    _compare_worksheets,
+    _load_extracted,
+    _load_json,
+    _load_pbip,
     generate_comparison_report,
     main,
 )

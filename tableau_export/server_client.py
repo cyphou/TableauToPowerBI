@@ -136,9 +136,9 @@ class TableauServerClient:
             pass
 
         # urllib fallback
-        import urllib.request
-        import urllib.error
         import ssl
+        import urllib.error
+        import urllib.request
 
         body = None
         if json_body is not None:
@@ -188,10 +188,8 @@ class TableauServerClient:
                 err_obj = err_json.get('error', {})
                 summary = err_obj.get('summary', '')
                 detail = err_obj.get('detail', '')
-                code = err_obj.get('code', '')
             except (json.JSONDecodeError, AttributeError):
                 summary = ''
-                code = ''
 
             if e.code == 403:
                 hint = (

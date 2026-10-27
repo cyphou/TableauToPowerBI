@@ -25,9 +25,7 @@ Covers edge cases in:
 - _write_roles_tmdl (migration_note annotation)
 """
 
-import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -36,24 +34,20 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.tmdl_generator import (
+    _auto_date_hierarchies,
+    _build_table,
+    _create_quick_table_calc_measures,
     _dax_to_m_expression,
     _extract_function_body,
-    _split_dax_args,
-    _quote_name,
-    resolve_table_for_formula,
-    _build_semantic_model,
-    _write_tmdl_files,
-    _write_roles_tmdl,
-    _write_expressions_tmdl,
-    _write_culture_tmdl,
     _fix_relationship_type_mismatches,
-    _create_quick_table_calc_measures,
     _process_sets_groups_bins,
-    _build_table,
+    _write_culture_tmdl,
+    _write_expressions_tmdl,
+    _write_roles_tmdl,
+    _write_tmdl_files,
     generate_tmdl,
-    _auto_date_hierarchies,
+    resolve_table_for_formula,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════
 #  1. _extract_function_body — trailing text after function call (L141)
@@ -407,8 +401,6 @@ class TestBuildTableCalcClassification(unittest.TestCase):
             'datatype': 'string',
         }]
         result = self._build(calcs)
-        calc_cols = [c['name'] for c in result.get('columns', [])
-                     if c.get('isCalculated') or c.get('sourceColumn')]
         # Should be a calculated column (sourceColumn for M-based, or isCalculated for DAX)
         self.assertTrue(
             any(c.get('name') == 'SalesGroup' for c in result.get('columns', []))
@@ -1572,7 +1564,7 @@ class TestIntegrationRlsRoles(unittest.TestCase):
         }]
         tmp = tempfile.mkdtemp()
         try:
-            result = generate_tmdl(datasources, 'test', {'user_filters': user_filters}, tmp)
+            generate_tmdl(datasources, 'test', {'user_filters': user_filters}, tmp)
             roles_path = os.path.join(tmp, 'definition', 'roles.tmdl')
             self.assertTrue(os.path.exists(roles_path))
             content = open(roles_path, encoding='utf-8').read()

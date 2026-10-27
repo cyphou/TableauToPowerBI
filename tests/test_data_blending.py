@@ -3,15 +3,15 @@
 import unittest
 
 from tableau_export.blend_graph import (
-    build_blend_graph,
-    blend_graph_to_relationships,
-    blend_graph_to_merge_queries,
-    blend_graph_dax_hint,
-    assess_blend_graph,
+    VIRTUAL_SECONDARIES,
+    _grade_blend,
     _infer_cardinality,
     _link_field,
-    _grade_blend,
-    VIRTUAL_SECONDARIES,
+    assess_blend_graph,
+    blend_graph_dax_hint,
+    blend_graph_to_merge_queries,
+    blend_graph_to_relationships,
+    build_blend_graph,
 )
 
 

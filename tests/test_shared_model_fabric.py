@@ -12,9 +12,9 @@ Validates that --shared-model --output-format fabric produces:
 
 import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 
 import pytest
 
@@ -139,7 +139,7 @@ class TestSharedModelFabricIntegration:
         from import_to_powerbi import PowerBIImporter
 
         importer = PowerBIImporter()
-        result = importer.import_shared_model(
+        importer.import_shared_model(
             model_name='MergedModel',
             all_converted_objects=all_converted,
             workbook_names=wb_names,
@@ -362,6 +362,7 @@ class TestRunSharedModelMigrationFabric:
     def test_output_format_parameter_accepted(self):
         """run_shared_model_migration should accept output_format parameter."""
         import inspect
+
         from migrate import run_shared_model_migration
         sig = inspect.signature(run_shared_model_migration)
         assert 'output_format' in sig.parameters
@@ -369,6 +370,7 @@ class TestRunSharedModelMigrationFabric:
     def test_import_shared_model_accepts_output_format(self):
         """import_shared_model should accept output_format parameter."""
         import inspect
+
         from import_to_powerbi import PowerBIImporter
         sig = inspect.signature(PowerBIImporter.import_shared_model)
         assert 'output_format' in sig.parameters

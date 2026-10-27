@@ -11,8 +11,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.visual_generator import (
-    _build_motion_chart_bookmarks,
     _build_motion_chart_action_button,
+    _build_motion_chart_bookmarks,
     has_motion_chart,
 )
 

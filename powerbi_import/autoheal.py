@@ -31,15 +31,16 @@ import glob
 import json
 import os
 import re
-import shutil
-from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
 
 # Deterministic healers
 from powerbi_import.dax_healing import heal_dax
 from powerbi_import.m_healing import heal_m
-from powerbi_import.visual_healing import heal_visual
 from powerbi_import.openability import extract_m_partitions as _extract_m_partitions
+from powerbi_import.visual_healing import heal_visual
+
+# isort: split
 
 # Validators (issue lists; empty == valid). These are in-package and stdlib-only,
 # so a failed import is a broken install, not a missing optional dependency:
@@ -253,7 +254,7 @@ class AutoHealer:
 
     def __init__(self, gateway=None, autofix=False, max_iterations=3,
                  error_source: Optional[ErrorSource] = None):
-        self.gateway = gateway
+        self.gateway: Any = gateway
         self.autofix = autofix
         self.max_iterations = max(1, int(max_iterations))
         self.error_source = error_source or StaticValidatorSource()
@@ -299,7 +300,7 @@ class AutoHealer:
                 original = _read(tmdl)
             except OSError:
                 continue
-            out_lines = []
+            out_lines: List[str] = []
             file_changed = False
             for line in original.splitlines():
                 m = _MEASURE_RE.match(line)

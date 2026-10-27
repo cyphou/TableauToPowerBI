@@ -1,11 +1,11 @@
 """Source percentage-mask propagation: metadata only, explicit bindings only."""
 
 import copy
-from contextlib import redirect_stdout
 import io
-from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 
 from powerbi_import.tmdl_generator import _apply_source_measure_formats, generate_tmdl
 from tests.test_audit_source_to_output import _datasource

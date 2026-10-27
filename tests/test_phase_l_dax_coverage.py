@@ -2,9 +2,9 @@
 
 50 new tests covering untested and under-tested DAX conversion patterns.
 """
-import unittest
-import sys
 import os
+import sys
+import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from tableau_export.dax_converter import convert_tableau_formula_to_dax

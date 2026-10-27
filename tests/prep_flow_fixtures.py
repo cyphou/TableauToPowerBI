@@ -4,8 +4,8 @@ All paths, fields and node IDs are invented; no Tableau/private exports needed.
 """
 
 import json
-from pathlib import Path
 import zipfile
+from pathlib import Path
 
 
 def edge(target):

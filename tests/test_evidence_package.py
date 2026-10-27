@@ -6,7 +6,10 @@ import tempfile
 import unittest
 import zipfile
 
-from powerbi_import.evidence_package import build_evidence_package, write_evidence_package
+from powerbi_import.evidence_package import (
+    build_evidence_package,
+    write_evidence_package,
+)
 
 
 class _Report:

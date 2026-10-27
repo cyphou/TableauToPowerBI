@@ -8,17 +8,19 @@ they never launch Power BI.
 import json
 import os
 import struct
-import sys
 import tempfile
 import unittest
 import zlib
 from unittest import mock
 
 from powerbi_import import desktop_window
-from powerbi_import.desktop_probe import (DesktopProbeReport,
-                                          WINDOW_VERIFIED_SCOPE, desktop_pids,
-                                          probe_desktop_open,
-                                          verify_desktop_data)
+from powerbi_import.desktop_probe import (
+    WINDOW_VERIFIED_SCOPE,
+    DesktopProbeReport,
+    desktop_pids,
+    probe_desktop_open,
+    verify_desktop_data,
+)
 
 
 def _win(title='Report - Power BI Desktop', hwnd=11, owned=False,

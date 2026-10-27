@@ -30,54 +30,54 @@ Targets the 302 missed lines (73.7% → 90%+) by testing:
  - detect_script_functions / _detect_script_language / has_script_functions (L2118-2181)
 """
 
-import unittest
-import sys
 import os
+import sys
+import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from tableau_export.dax_converter import (
-    convert_tableau_formula_to_dax,
-    _reverse_tableau_bracket_escape,
-    _extract_balanced_call,
+    _convert_agg_expr_to_aggx,
+    _convert_agg_if_to_aggx,
+    _convert_attr,
     _convert_case_structure,
-    _convert_regexp_match,
-    _convert_regexp_extract,
-    _convert_regexp_extract_nth,
-    _convert_regexp_replace,
     _convert_corr_covar,
-    _convert_previous_value,
-    _convert_lookup,
-    _convert_rawsql,
-    _convert_find,
-    _convert_str_to_format,
-    _convert_float_to_convert,
+    _convert_datediff,
     _convert_datename,
     _convert_dateparse,
-    _convert_isdate,
-    _convert_attr,
     _convert_endswith,
-    _convert_startswith,
-    _convert_proper,
-    _convert_split,
+    _convert_find,
+    _convert_float_to_convert,
+    _convert_isdate,
     _convert_lod_expressions,
-    _convert_window_functions,
+    _convert_lookup,
+    _convert_previous_value,
+    _convert_proper,
     _convert_rank_functions,
+    _convert_rawsql,
+    _convert_regexp_extract,
+    _convert_regexp_extract_nth,
+    _convert_regexp_match,
+    _convert_regexp_replace,
     _convert_running_functions,
-    _convert_total_function,
+    _convert_split,
+    _convert_startswith,
+    _convert_str_to_format,
     _convert_string_concat,
-    _fix_ceiling_floor,
-    _fix_startof_calc_columns,
-    _fix_date_literals,
-    _infer_iteration_table,
-    _convert_agg_if_to_aggx,
-    _convert_agg_expr_to_aggx,
-    _transform_func_call,
-    generate_combined_field_dax,
-    detect_script_functions,
-    has_script_functions,
+    _convert_total_function,
+    _convert_window_functions,
     _detect_script_language,
-    _convert_datediff,
+    _extract_balanced_call,
+    _fix_ceiling_floor,
+    _fix_date_literals,
+    _fix_startof_calc_columns,
+    _infer_iteration_table,
+    _reverse_tableau_bracket_escape,
+    _transform_func_call,
+    convert_tableau_formula_to_dax,
+    detect_script_functions,
+    generate_combined_field_dax,
+    has_script_functions,
 )
 
 
@@ -523,7 +523,7 @@ class TestRegexpMatch(unittest.TestCase):
 
     def test_string_literal_brackets_not_resolved_as_columns(self):
         """Ensure bracket patterns inside string literals are not resolved as columns.
-        
+
         Regression test: [a-z0-9_-] inside a regex string literal was being
         resolved as a column reference (e.g., 'Table'[a-z0-9_-]).
         """

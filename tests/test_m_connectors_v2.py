@@ -17,12 +17,12 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from tableau_export.m_query_builder import (
-    generate_power_query_m,
-    _gen_m_mongodb,
-    _gen_m_cosmosdb,
-    _gen_m_athena,
-    _gen_m_db2,
     _M_GENERATORS,
+    _gen_m_athena,
+    _gen_m_cosmosdb,
+    _gen_m_db2,
+    _gen_m_mongodb,
+    generate_power_query_m,
 )
 
 

@@ -7,7 +7,6 @@ import json
 from collections import Counter
 from typing import Any, Dict, Iterable, List
 
-
 OBJECT_TYPES = (
     "worksheets",
     "dashboards",

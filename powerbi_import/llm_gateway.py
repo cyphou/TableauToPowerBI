@@ -29,7 +29,7 @@ import hashlib
 import logging
 import os
 import socket
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Dict, Optional
 from urllib.parse import urlparse
 

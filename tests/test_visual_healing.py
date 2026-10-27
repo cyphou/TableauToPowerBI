@@ -6,12 +6,17 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+from powerbi_import.dax_healing import HIGH, LOW, MEDIUM  # noqa: E402
 from powerbi_import.visual_healing import (  # noqa: E402
-    heal_visual, heal_visuals, VisualHealReport,
-    heal_annotations_placement, heal_position, heal_missing_name,
-    heal_visual_type, _MIN_W, _MIN_H,
+    _MIN_H,
+    _MIN_W,
+    heal_annotations_placement,
+    heal_missing_name,
+    heal_position,
+    heal_visual,
+    heal_visual_type,
+    heal_visuals,
 )
-from powerbi_import.dax_healing import HIGH, MEDIUM, LOW  # noqa: E402
 
 
 def _valid_container():

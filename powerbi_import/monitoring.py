@@ -19,8 +19,8 @@ Backend selection via `--monitor azure|prometheus|json|none`.
 import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class _BaseBackend:
     def record_event(self, name, properties=None):
         raise NotImplementedError
 
-    def flush(self):
+    def flush(self) -> Optional[int]:
         pass
 
 
@@ -97,7 +97,7 @@ class _AzureMonitorBackend(_BaseBackend):
 
     def _init_client(self):
         try:
-            from opencensus.ext.azure import metrics_exporter
+            from opencensus.ext.azure import metrics_exporter  # type: ignore[import-not-found]
             self._client = metrics_exporter
             logger.info("Azure Monitor backend initialized")
         except ImportError:
@@ -146,7 +146,7 @@ class _PrometheusBackend(_BaseBackend):
 
     def _init_client(self):
         try:
-            from prometheus_client import CollectorRegistry, Gauge
+            from prometheus_client import CollectorRegistry, Gauge  # type: ignore[import-not-found]
             self._registry = CollectorRegistry()
             self._Gauge = Gauge
             logger.info("Prometheus backend initialized")
@@ -180,7 +180,7 @@ class _PrometheusBackend(_BaseBackend):
     def flush(self):
         if self._registry and self.gateway_url:
             try:
-                from prometheus_client import push_to_gateway
+                from prometheus_client import push_to_gateway  # type: ignore[import-not-found]
                 push_to_gateway(
                     self.gateway_url, job="tableau_to_pbi",
                     registry=self._registry,

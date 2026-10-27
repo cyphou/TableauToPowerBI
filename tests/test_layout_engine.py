@@ -9,9 +9,9 @@ padding propagation, and real-world NBA layout validation.
 
 import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -19,9 +19,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from tableau_export.extract_tableau_data import TableauExtractor
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
-
+from tableau_export.extract_tableau_data import TableauExtractor
 
 # ── Helpers ─────────────────────────────────────────────────────────
 

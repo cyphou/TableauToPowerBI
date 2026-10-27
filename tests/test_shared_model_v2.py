@@ -19,20 +19,26 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from powerbi_import.shared_model import (
-    MergeAssessment, MergeCandidate, MeasureConflict, TableFingerprint,
-    assess_merge, merge_semantic_models, build_field_mapping,
-    validate_thin_report_fields,
-    build_column_lineage, generate_lineage_annotations,
-    analyze_measure_risk, MeasureRiskAssessment,
-    consolidate_rls_roles, merge_rls_roles, RLSConsolidation,
-    build_cross_report_navigation,
-)
 from powerbi_import.merge_config import (
-    save_merge_config, load_merge_config, apply_merge_config,
+    apply_merge_config,
     get_measure_action,
+    load_merge_config,
+    save_merge_config,
 )
-
+from powerbi_import.shared_model import (
+    MeasureConflict,
+    MergeAssessment,
+    analyze_measure_risk,
+    assess_merge,
+    build_column_lineage,
+    build_cross_report_navigation,
+    build_field_mapping,
+    consolidate_rls_roles,
+    generate_lineage_annotations,
+    merge_rls_roles,
+    merge_semantic_models,
+    validate_thin_report_fields,
+)
 
 # ═══════════════════════════════════════════════════════════════════
 #  Test data factories
@@ -708,7 +714,7 @@ class TestImportSharedModelEnhanced(unittest.TestCase):
         all_extracted, names = _two_workbooks_with_conflict()
         importer = PowerBIImporter()
         tmpdir = tempfile.mkdtemp()
-        result = importer.import_shared_model(
+        importer.import_shared_model(
             model_name='ConfigTest',
             all_converted_objects=all_extracted,
             workbook_names=names,
@@ -929,8 +935,6 @@ class TestKeyPatternWordBoundary(unittest.TestCase):
 
     def test_grid_not_matched_as_key(self):
         """Column named 'grid_data' should NOT match key pattern 'id'."""
-        # Shared table: Orders with order_id, amount
-        shared_t = _make_table('Orders', ['order_id', 'amount'])
         # Unique table: GridLayout with 'grid_data' and 'rapidly'
         # 'grid_data' contains 'id' as substring; 'rapidly' contains 'id' too
         grid_t = _make_table('GridLayout', ['grid_data', 'rapidly'])

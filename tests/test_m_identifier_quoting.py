@@ -8,8 +8,7 @@ to quote whenever the bare form is not.
 """
 import unittest
 
-from powerbi_import.calc_column_utils import (_m_identifier_needs_quoting,
-                                              _quote_m_ids)
+from powerbi_import.calc_column_utils import _m_identifier_needs_quoting, _quote_m_ids
 from powerbi_import.m_validator import validate_m_query
 
 
@@ -113,8 +112,7 @@ class TestDuplicatedPredicatesAgree(unittest.TestCase):
     """m_validator keeps its own copy so the gate stays stdlib-only."""
 
     def test_both_copies_agree(self):
-        from powerbi_import.m_validator import (
-            _m_identifier_needs_quoting as gate_copy)
+        from powerbi_import.m_validator import _m_identifier_needs_quoting as gate_copy
         names = ['Amount', 'Montant Articles', 'Montant Articles ', ' M',
                  'Montant  Articles', 'Montant\tArticles', '', 'Degré',
                  '% part', 'Nb(logts)/2', 'A&B', 'a.b', 'Order Date 2026',

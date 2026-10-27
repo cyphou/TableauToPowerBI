@@ -17,9 +17,12 @@ from contextlib import ExitStack, redirect_stdout
 from io import StringIO
 from unittest import mock
 
+import powerbi_import.healing  # noqa: F401 - so at least one patch target exists
 from powerbi_import.openability import (
-    CheckResult, OpenabilityReport, _check_data_files_present)
-import powerbi_import.healing            # so at least one patch target exists
+    CheckResult,
+    OpenabilityReport,
+    _check_data_files_present,
+)
 
 
 def _model(root, folder, refs, model_name='Sales.SemanticModel'):
@@ -110,7 +113,7 @@ class TestTheWarningReachesTheUser(unittest.TestCase):
     def _run(self, warnings):
         import migrate
         try:                       # migrate puts its own dir on sys.path
-            import healing         # noqa: F401
+            import healing  # noqa: F401
         except ImportError:
             pass
         report = OpenabilityReport(project_dir='x')

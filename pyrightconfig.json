@@ -3,6 +3,7 @@
         "tableau_export",
         "powerbi_import"
     ],
-    "pythonVersion": "3.8",
+    "pythonVersion": "3.12",
+    "pythonPlatform": "All",
     "reportMissingModuleSource": "none"
 }

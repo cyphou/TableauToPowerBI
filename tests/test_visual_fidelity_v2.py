@@ -6,9 +6,7 @@ shading, data label formatting, mark size → bubble size, trend line
 preservation.
 """
 
-import json
 import os
-import re
 import sys
 import unittest
 import xml.etree.ElementTree as ET
@@ -17,8 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
-from tableau_export.extract_tableau_data import TableauExtractor
 from powerbi_import import visual_generator as vg
+from tableau_export.extract_tableau_data import TableauExtractor
 
 
 def _make_extractor():

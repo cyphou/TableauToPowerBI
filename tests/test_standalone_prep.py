@@ -10,29 +10,28 @@ Covers:
 - Batch scanner including .tfl/.tflx files
 """
 
+import io
+import json
 import os
 import sys
-import json
 import tempfile
 import unittest
-import zipfile
-from unittest.mock import patch, MagicMock
-from types import SimpleNamespace
 from contextlib import redirect_stdout
-import io
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from tests.prep_flow_fixtures import clean_chain, source, output, operation, write_flow
+from tests.prep_flow_fixtures import clean_chain, operation, output, source, write_flow
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 
-import prep_flow_parser  # ensure module is loaded so we can patch it
+import prep_flow_parser  # noqa: F401 - ensure module is loaded so we can patch it
 
 from migrate import (
-    run_standalone_prep,
-    _migrate_single_workbook,
     _migrate_single_prep_flow,
+    _migrate_single_workbook,
+    run_standalone_prep,
 )
 
 
@@ -266,7 +265,7 @@ class TestMigrateSinglePrepFlow(unittest.TestCase):
         outputs = [SimpleNamespace(name=f'Output_{i}') for i in range(num_outputs)]
         transforms = [SimpleNamespace(name=f'Transform_{i}') for i in range(num_transforms)]
         if m_queries is None:
-            m_queries = {f'Output_{i}': f'let\n  Source = Csv.Document(...)\nin\n  Source' for i in range(num_outputs)}
+            m_queries = {f'Output_{i}': 'let\n  Source = Csv.Document(...)\nin\n  Source' for i in range(num_outputs)}
         return SimpleNamespace(
             name=name, inputs=inputs, outputs=outputs, transforms=transforms,
             m_queries=m_queries,
@@ -430,11 +429,11 @@ class TestFileValidation(unittest.TestCase):
 
     def test_tfl_accepted(self):
         """Verify .tfl extension is in the accepted set."""
-        from migrate import _build_argument_parser
         # The validation is inline — we verify by checking that the
         # accepted extensions include .tfl/.tflx
         # This is a structural test, the actual validation is in main()
         import migrate
+        from migrate import _build_argument_parser  # noqa: F401
         src = open(migrate.__file__, encoding='utf-8').read()
         self.assertIn('.tfl', src)
         self.assertIn('.tflx', src)

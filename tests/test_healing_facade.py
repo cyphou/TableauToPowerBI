@@ -63,13 +63,18 @@ class TestFacadeIsTheImportSurface(unittest.TestCase):
 class TestHealingCore(unittest.TestCase):
     def test_confidence_levels(self):
         from powerbi_import.healing_core import (
-            HIGH, MEDIUM, LOW, CONFIDENCE_LEVELS, CONFIDENCE_RANK)
+            CONFIDENCE_LEVELS,
+            CONFIDENCE_RANK,
+            HIGH,
+            LOW,
+            MEDIUM,
+        )
         self.assertEqual(CONFIDENCE_LEVELS, (HIGH, MEDIUM, LOW))
         self.assertGreater(CONFIDENCE_RANK[HIGH], CONFIDENCE_RANK[MEDIUM])
         self.assertGreater(CONFIDENCE_RANK[MEDIUM], CONFIDENCE_RANK[LOW])
 
     def test_heal_action_to_dict(self):
-        from powerbi_import.healing_core import HealAction, HIGH
+        from powerbi_import.healing_core import HIGH, HealAction
         a = HealAction("h", "cat", HIGH, "b", "a", "note")
         self.assertEqual(a.to_dict(), {
             "healer": "h", "category": "cat", "confidence": "high",
@@ -90,8 +95,8 @@ class TestCanonicalContract(unittest.TestCase):
     """The contract must be one shared class, not per-module duplicates."""
 
     def test_healaction_is_shared_identity(self):
-        from powerbi_import.healing_core import HealAction as Core
         from powerbi_import.dax_healing import HealAction as Dax
+        from powerbi_import.healing_core import HealAction as Core
         from powerbi_import.m_healing import HealAction as M
         from powerbi_import.visual_healing import HealAction as Vis
         self.assertIs(Core, Dax)
@@ -99,8 +104,8 @@ class TestCanonicalContract(unittest.TestCase):
         self.assertIs(Core, Vis)
 
     def test_healreport_is_shared_identity(self):
-        from powerbi_import.healing_core import HealReport as Core
         from powerbi_import.dax_healing import HealReport as Dax
+        from powerbi_import.healing_core import HealReport as Core
         from powerbi_import.m_healing import HealReport as M
         self.assertIs(Core, Dax)
         self.assertIs(Core, M)
@@ -134,7 +139,7 @@ class TestFacade(unittest.TestCase):
         self.assertFalse(heal_visual({"name": "v", "visual": {"visualType": "card"}}).changed)
 
     def test_detection_reachable(self):
-        from powerbi_import.healing import check_openability, extract_m_partitions
+        from powerbi_import.healing import check_openability, extract_m_partitions  # noqa: F401
         t = ("\tpartition 'T-g' = m\n\t\tmode: import\n\t\tsource =\n"
              "\t\t\t\tlet x=1 in x\n")
         self.assertEqual(len(extract_m_partitions(t)), 1)
@@ -150,7 +155,11 @@ class TestFacade(unittest.TestCase):
             heal_and_verify(os.path.join(tempfile.gettempdir(), "nope-xyz-123"))
 
     def test_heal_and_verify_returns_pair(self):
-        from powerbi_import.healing import heal_and_verify, AutoHealReport, OpenabilityReport
+        from powerbi_import.healing import (
+            AutoHealReport,
+            OpenabilityReport,
+            heal_and_verify,
+        )
         from tests.test_openability import _write_project
         with tempfile.TemporaryDirectory() as d:
             _write_project(d, tmdl_text=(

@@ -5,7 +5,6 @@ Validates per-table StorageMode, aggregation table generation,
 hybrid relationship constraints, and CLI flags.
 """
 
-import json
 import os
 import re
 import shutil
@@ -14,7 +13,6 @@ import unittest
 
 from powerbi_import import tmdl_generator
 from powerbi_import.errors import ConfigurationError
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Helper: minimal datasource for TMDL generation
@@ -703,6 +701,7 @@ class TestCLIFlags(unittest.TestCase):
     def _make_parser(self):
         import argparse
         import importlib
+
         import migrate
         importlib.reload(migrate)
         parser = argparse.ArgumentParser()
@@ -740,6 +739,7 @@ class TestPBIPGeneratorPassthrough(unittest.TestCase):
     def test_generate_project_signature(self):
         """generate_project() must accept composite_threshold and agg_tables."""
         import inspect
+
         from powerbi_import.pbip_generator import PowerBIProjectGenerator
         sig = inspect.signature(PowerBIProjectGenerator.generate_project)
         params = list(sig.parameters.keys())

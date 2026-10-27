@@ -1,7 +1,6 @@
 """Unit tests for lineage metadata injection and TMDL annotation round-trip."""
 
 import copy
-import json
 import os
 import sys
 import tempfile

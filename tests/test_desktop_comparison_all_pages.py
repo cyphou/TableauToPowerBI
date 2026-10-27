@@ -1,22 +1,20 @@
 """Mocked all-page inventory, mapping, navigation and report regressions."""
 import copy
 import hashlib
-from html.parser import HTMLParser
 import json
-from pathlib import Path
 import tempfile
 import unittest
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
+from html.parser import HTMLParser
+from pathlib import Path
 from unittest import mock
 from urllib.parse import quote, unquote, urlsplit
 
 from powerbi_import import desktop_comparison as comparison
 from powerbi_import import desktop_navigation, desktop_window
-from powerbi_import.desktop_probe import DesktopProbeReport
 from powerbi_import.tableau_desktop_probe import TableauProbeReport
 from tests.pixel_comparison_fixtures import forbid_network, tiny_png
-
 
 TABLEAU_XML = """<?xml version="1.0"?>
 <workbook>

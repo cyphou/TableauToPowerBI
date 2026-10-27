@@ -11,10 +11,10 @@ Usage:
     results = ArtifactValidator.validate_directory(Path('artifacts/powerbi_projects/MyReport'))
 """
 
-import os
 import json
-import re
 import logging
+import os
+import re
 from pathlib import Path
 
 # Single source of truth for Tableau→DAX leak repairs, shared with the healer
@@ -150,15 +150,12 @@ class ArtifactValidator:
         # Determine which structural schema to apply
         if 'report/' in schema_url and 'page' not in schema_url and 'visualContainer' not in schema_url:
             required = cls.PBIR_REPORT_REQUIRED_KEYS
-            allowed = required | cls.PBIR_REPORT_OPTIONAL_KEYS
             label = 'report'
         elif '/page/' in schema_url:
             required = cls.PBIR_PAGE_REQUIRED_KEYS
-            allowed = required | cls.PBIR_PAGE_OPTIONAL_KEYS
             label = 'page'
         elif 'visualContainer' in schema_url:
             required = cls.PBIR_VISUAL_REQUIRED_KEYS
-            allowed = required | cls.PBIR_VISUAL_OPTIONAL_KEYS
             label = 'visual'
         else:
             # Unknown schema — skip structural validation
@@ -282,7 +279,7 @@ class ArtifactValidator:
             basename = os.path.basename(filepath)
             if basename == 'model.tmdl':
                 if not content.strip().startswith('model Model'):
-                    errors.append(f'model.tmdl must start with "model Model"')
+                    errors.append('model.tmdl must start with "model Model"')
 
             # Validate M partition expressions have balanced if/else
             parts = re.split(r'partition\s', content)
@@ -1107,10 +1104,6 @@ class ArtifactValidator:
         def_dir = sm_path / 'definition'
         issues = []
 
-        # Collect model symbols
-        symbols = cls._collect_model_symbols(sm_dir)
-        known_cols = symbols['columns']
-
         # Parse relationships to find key columns (toColumn in manyToOne)
         key_columns = set()  # (table, column) pairs that are unique keys
         rel_file = def_dir / 'relationships.tmdl'
@@ -1235,15 +1228,6 @@ class ArtifactValidator:
             except OSError:
                 continue
             basename = tmdl_file.name
-
-            # Find current table
-            current_table = basename.replace('.tmdl', '')
-            for line in content.splitlines():
-                tm = cls._RE_TABLE_DEF.match(line.strip())
-                if tm:
-                    raw = tm.group(1) if tm.group(1) is not None else tm.group(2)
-                    current_table = cls._unescape_tmdl_name(raw)
-                    break
 
             # Scan measures for bare column references
             for line in content.splitlines():
@@ -1761,8 +1745,8 @@ class ArtifactValidator:
             str | None: Latest version string, or None on failure.
         """
         try:
-            from urllib.request import urlopen, Request
-            from urllib.error import URLError, HTTPError
+            from urllib.error import HTTPError, URLError  # noqa: F401
+            from urllib.request import Request, urlopen  # noqa: F401
         except ImportError:
             return None
 
@@ -1806,8 +1790,7 @@ class ArtifactValidator:
             bool: True if the URL is reachable and returns 200.
         """
         try:
-            from urllib.request import urlopen, Request
-            from urllib.error import URLError, HTTPError
+            from urllib.request import Request, urlopen
             req = Request(url, method='HEAD')
             req.add_header('User-Agent', 'TableauToPowerBI-SchemaCheck/1.0')
             with urlopen(req, timeout=5) as resp:
@@ -2089,7 +2072,7 @@ class ArtifactValidator:
         issues = []
         lines = content.split('\n')
         for i, line in enumerate(lines, 1):
-            if not line or not line[0] in (' ', '\t'):
+            if not line or line[0] not in (' ', '\t'):
                 continue
             stripped = line.lstrip()
             if not stripped:

@@ -6,7 +6,6 @@ Verifies that Sprint 91–94 features work together end-to-end:
 - Equivalence testing + regression snapshots
 - CLI integration across all new flags
 """
-import json
 import os
 import sys
 import tempfile
@@ -126,8 +125,8 @@ class TestEquivalenceAndRegressionIntegration(unittest.TestCase):
     def test_snapshot_then_compare(self):
         """Generate snapshot, modify, compare — detect drift."""
         from powerbi_import.regression_suite import (
-            generate_regression_snapshot,
             compare_snapshots,
+            generate_regression_snapshot,
         )
 
         converted = {
@@ -255,7 +254,9 @@ class TestNewModulesImport(unittest.TestCase):
         self.assertTrue(callable(PipelineGenerator))
 
     def test_import_fabric_semantic_model(self):
-        from powerbi_import.fabric_semantic_model_generator import FabricSemanticModelGenerator
+        from powerbi_import.fabric_semantic_model_generator import (
+            FabricSemanticModelGenerator,
+        )
         self.assertTrue(callable(FabricSemanticModelGenerator))
 
     def test_import_fabric_project_generator(self):

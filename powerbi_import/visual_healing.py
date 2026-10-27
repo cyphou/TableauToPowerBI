@@ -23,9 +23,9 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-from powerbi_import.healing_core import HealAction, HIGH, MEDIUM, LOW
+from powerbi_import.healing_core import HIGH, LOW, MEDIUM, HealAction
 
 # Minimum sane visual dimensions (Power BI rejects zero/negative sizes).
 _MIN_W = 40.0

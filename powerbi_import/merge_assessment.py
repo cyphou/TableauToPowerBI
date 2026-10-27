@@ -23,13 +23,14 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 try:
-    from powerbi_import.report_localization import text, render
+    from powerbi_import.report_localization import render, text
 except ImportError:
-    from report_localization import text, render
+    from report_localization import render, text
 
 try:
     from powerbi_import.shared_model import MergeAssessment
@@ -38,13 +39,27 @@ except ImportError:
 
 try:
     from powerbi_import.html_template import (
-        html_open, html_close, stat_grid, stat_card, section_open,
-        section_close, data_table, badge, esc,
+        badge,
+        data_table,
+        esc,
+        html_close,
+        html_open,
+        section_close,
+        section_open,
+        stat_card,
+        stat_grid,
     )
 except ImportError:
     from html_template import (
-        html_open, html_close, stat_grid, stat_card, section_open,
-        section_close, data_table, badge, esc,
+        badge,
+        data_table,
+        esc,
+        html_close,
+        html_open,
+        section_close,
+        section_open,
+        stat_card,
+        stat_grid,
     )
 
 # HTML report colors
@@ -57,7 +72,7 @@ _RED = "#d13438"
 
 
 def generate_merge_report(assessment: MergeAssessment,
-                          output_path: str = None) -> dict:
+                          output_path: Optional[str] = None) -> dict:
     """Generate a detailed merge assessment report.
 
     Args:
@@ -176,8 +191,8 @@ def print_merge_summary(assessment: MergeAssessment):
 def generate_merge_html_report(
     assessment: MergeAssessment,
     output_path: str = "merge_assessment.html",
-    rls_conflicts: list = None,
-    relationship_suggestions: list = None,
+    rls_conflicts: Optional[list] = None,
+    relationship_suggestions: Optional[list] = None,
 ) -> str:
     """Generate an HTML merge assessment report.
 
@@ -303,7 +318,7 @@ def generate_merge_html_report(
 #  Manifest diff — compare two merge manifests
 # ═══════════════════════════════════════════════════════════════════
 
-def diff_manifests(old: dict, new: dict) -> dict:
+def diff_manifests(old: Any, new: Any) -> dict:
     """Compare two merge manifests and return a structured diff.
 
     Both *old* and *new* can be either ``MergeManifest.to_dict()`` dicts

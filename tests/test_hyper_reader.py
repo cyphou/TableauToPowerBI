@@ -8,8 +8,8 @@ import unittest
 import zipfile
 from types import SimpleNamespace
 from unittest import mock
-import tableau_export.hyper_reader as _hyper_reader
 
+import tableau_export.hyper_reader as _hyper_reader
 from powerbi_import.errors import ConfigurationError, ExtractionError
 from tableau_export.hyper_reader import (
     INLINE_ROW_THRESHOLD,

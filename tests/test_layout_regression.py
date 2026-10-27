@@ -4,12 +4,10 @@ Sprint 80.2 — Layout regression tests.
 Golden-file comparison: stores expected visual positions for key workbooks.
 Fails if positions drift beyond tolerance after code changes.
 """
-import copy
-import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,8 +15,8 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
-from tableau_export.extract_tableau_data import TableauExtractor
 from powerbi_import.pbip_generator import PowerBIProjectGenerator
+from tableau_export.extract_tableau_data import TableauExtractor
 
 # ── Position tolerance ─────────────────────────────────────────────────
 

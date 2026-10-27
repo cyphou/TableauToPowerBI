@@ -17,11 +17,10 @@ Usage::
 
 from __future__ import annotations
 
-import glob
+import html as html_mod
 import json
 import logging
 import os
-import html as html_mod
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)

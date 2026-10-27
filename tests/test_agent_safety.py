@@ -5,7 +5,6 @@ LLM path opt-in.
 """
 
 import os
-import re
 import sys
 import unittest
 
@@ -13,7 +12,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.mcp_server import MigrationTools, _tool_catalogue  # noqa: E402
 from powerbi_import.remediation import (  # noqa: E402
-    remediate_findings, refine_with_llm, _build_prompt, explain_finding,
+    _build_prompt,
+    explain_finding,
+    refine_with_llm,
+    remediate_findings,
 )
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

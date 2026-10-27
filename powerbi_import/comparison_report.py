@@ -15,11 +15,11 @@ Usage::
         --output comparison.html
 """
 
-import json
-import os
-import html as html_mod
 import argparse
 import glob
+import html as html_mod
+import json
+import os
 
 try:
     from powerbi_import.html_template import get_report_css, get_report_js
@@ -118,7 +118,6 @@ def _compare_worksheets(extracted, pbip_data):
     if isinstance(worksheets, dict):
         worksheets = worksheets.get('worksheets', [])
 
-    pbi_pages = pbip_data.get('pages', [])
     pbi_visuals = pbip_data.get('visuals', [])
 
     for ws in worksheets:

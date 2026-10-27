@@ -13,12 +13,11 @@ Supported auth flows:
 Requires: ``azure-identity`` (optional) and ``requests`` (optional)
 """
 
-import logging
 import json as _json
+import logging
 import os
-import base64
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
 
 logger = logging.getLogger(__name__)
 

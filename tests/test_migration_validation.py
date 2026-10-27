@@ -6,11 +6,11 @@ DAX formula validity, TMDL syntax, visual query mapping, Power Query M,
 and cross-referencing between semantic model and report.
 """
 
+import glob
 import json
 import os
 import re
 import sys
-import glob
 
 # ── Configuration ──────────────────────────────────────────────────────
 PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)),
@@ -183,14 +183,7 @@ def test_dax_formulas():
             with open(tf, "r", encoding="utf-8") as fh:
                 content = fh.read()
 
-            # Extract all DAX expressions (measure and calculated column)
-            # Pattern: expression = <dax> or expression =\n\t\t<multiline dax>
-            blocks = re.findall(
-                r'(measure|column)\s+\'[^\']*(?:\'\'[^\']*)*\'\s*(?:=\s*(.+?))\s*(?=\n\t(?:annotation|lineageTag|displayFolder|formatString|dataCategory|isHidden|summarizeBy|dataType|sourceColumn|column|measure|partition|table)|$)',
-                content, re.DOTALL
-            )
-
-            # Simpler approach: find all "= <DAX>" after measure/column declarations
+            # Find all "= <DAX>" after measure/column declarations
             lines = content.split("\n")
             i = 0
             while i < len(lines):
@@ -281,7 +274,6 @@ def validate_dax(dax, fname, line_num):
                 issues.append(f"{prefix} {fn} may be missing table ref: {dax[:60]}")
 
     # 6. RELATED/LOOKUPVALUE referencing same table (useless)
-    related_matches = re.findall(r"RELATED\s*\(\s*'([^']+)'\[", dax)
     # Can't fully validate without context, skip
 
     # 7. Trailing/leading operators
@@ -435,15 +427,6 @@ def test_power_query():
 
         # Check 2: Known source functions should be present
         # Each partition should have a valid M source expression
-        partitions = re.findall(r'partition\s+\'[^\']+\'\s*=\s*m\s*(.*?)(?=\n\tpartition|\n\ttable|\Z)',
-                                content, re.DOTALL)
-
-        valid_sources = {"Excel.Workbook", "Csv.Document", "Json.Document",
-                         "PostgreSQL.Database", "Sql.Database",
-                         "GoogleBigQuery.Database", "Oracle.Database",
-                         "MySQL.Database", "Snowflake.Databases",
-                         "File.Contents", "GENERATESERIES", "DATATABLE",
-                         "CALENDAR", "#table", "Web.Contents"}
 
         # Check each M expression block for proper let/in structure or DAX calc table
         m_blocks = re.findall(r'expression\s*=\s*\n((?:\t\t\t.*\n)*)', content)

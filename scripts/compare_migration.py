@@ -348,8 +348,6 @@ def compare_visuals(src, pbi):
     """
     worksheets = src["worksheets"]
     dashboards = src["dashboards"]
-    ws_by_name = {ws.get("name", ""): ws for ws in worksheets}
-    field_map = _build_field_map(src)
 
     all_pbi_visuals = []
     for page_name, visuals in pbi["visuals_by_page"].items():
@@ -433,7 +431,6 @@ def compare_calculations(src, pbi):
 
     for c in calcs:
         caption = c.get("caption", c.get("name", ""))
-        name = c.get("name", "")
         formula = c.get("formula", "")
         role = c.get("role", "")
         if not caption:
@@ -505,7 +502,6 @@ def compare_filters(src, pbi):
     tab_filters = src["filters"]
     # Count PBI filters at report, page, visual levels
     report_filters = len(pbi["report"].get("filters", []))
-    page_filters = 0
     visual_filters = 0
     slicer_count = 0
     for page_name, visuals in pbi["visuals_by_page"].items():
@@ -591,7 +587,6 @@ def run_comparison(pbip_dir, extract_dir, verbose=False):
     dash = results["dashboards"]
     vis = results["visuals"]
     calc = results["calculations"]
-    ds = results["datasources"]
 
     scores = []
     if dash["dashboard_count"]:

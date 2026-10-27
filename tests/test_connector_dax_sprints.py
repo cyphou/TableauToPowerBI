@@ -1,19 +1,20 @@
 """Tests for Sprint 155 (Cloud Connectors) and Sprint 158-160 (DAX extensions)."""
 
 import unittest
-from tableau_export.m_query_builder import generate_power_query_m
+
 from tableau_export.dax_converter import (
+    convert_ismemberof_to_rls,
+    convert_lookup_offset,
+    convert_multi_dim_exclude,
+    convert_nested_lod,
+    convert_regexp_extract,
     convert_regexp_match,
     convert_regexp_replace,
-    convert_regexp_extract,
+    convert_running_with_partition,
     convert_spatial_to_python_visual,
     convert_window_percentile,
-    convert_running_with_partition,
-    convert_lookup_offset,
-    convert_nested_lod,
-    convert_multi_dim_exclude,
-    convert_ismemberof_to_rls,
 )
+from tableau_export.m_query_builder import generate_power_query_m
 
 
 class TestCloudConnectors(unittest.TestCase):

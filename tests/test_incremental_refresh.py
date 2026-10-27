@@ -3,7 +3,6 @@
 Sprint 120 — v37.0.0: Incremental Refresh & M Parameter Wiring.
 """
 
-import json
 import os
 import sys
 import tempfile
@@ -13,16 +12,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.tmdl_generator import (
     _detect_incremental_refresh_tables,
-    _pick_best_date_column,
+    _generate_incremental_m_parameters,
     _generate_refresh_policy,
     _inject_range_filter_m,
-    _generate_incremental_m_parameters,
-    apply_incremental_refresh,
+    _pick_best_date_column,
     _write_expressions_tmdl,
-    detect_refresh_policy,
+    apply_incremental_refresh,
     generate_tmdl,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -334,7 +331,7 @@ class TestApplyIncrementalRefresh(unittest.TestCase):
     def test_custom_rolling_months(self):
         table = _make_table('Orders', [_date_col()])
         model = _make_model([table])
-        result = apply_incremental_refresh(model, [_make_datasource()], rolling_months=24)
+        apply_incremental_refresh(model, [_make_datasource()], rolling_months=24)
         self.assertEqual(table['refreshPolicy']['rollingWindowPeriods'], 24)
 
     def test_parameterize_false_no_m_injection(self):
@@ -453,7 +450,7 @@ class TestCLIArgs(unittest.TestCase):
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
         # We need to build the parser the same way migrate.py does
         import importlib
-        migrate = importlib.import_module('migrate')
+        importlib.import_module('migrate')
         # Build parser — migrate.py uses argparse directly in main()
         # We'll test the argument definitions exist by parsing test args
         import argparse

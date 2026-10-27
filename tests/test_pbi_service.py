@@ -15,21 +15,19 @@ import sys
 import tempfile
 import unittest
 import zipfile
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from powerbi_import.deploy.pbi_client import PBIServiceClient
-from powerbi_import.deploy.pbix_packager import PBIXPackager
-from powerbi_import.deploy.pbi_deployer import PBIWorkspaceDeployer, DeploymentResult
-
-import io
 import argparse
-from powerbi_import.deploy import PBIServiceClient
-from powerbi_import.deploy import PBIXPackager
-from powerbi_import.deploy import PBIWorkspaceDeployer
-from powerbi_import.deploy import DeploymentResult
+import io
 
+from powerbi_import.deploy import (
+    DeploymentResult,
+    PBIServiceClient,
+    PBIWorkspaceDeployer,
+    PBIXPackager,
+)
 
 # ── DeploymentResult ──────────────────────────────────────────
 
@@ -105,7 +103,7 @@ class TestPBIServiceClient(unittest.TestCase):
         client = PBIServiceClient()
         with patch.object(client, '_request') as mock_req:
             mock_req.return_value = {'value': []}
-            result = client.list_workspaces()
+            client.list_workspaces()
             mock_req.assert_called_once()
             args, kwargs = mock_req.call_args
             self.assertIn('/groups', args[1])
@@ -115,7 +113,7 @@ class TestPBIServiceClient(unittest.TestCase):
         client = PBIServiceClient()
         with patch.object(client, '_request') as mock_req:
             mock_req.return_value = {'value': [{'id': 'ds1'}]}
-            result = client.list_datasets('ws-123')
+            client.list_datasets('ws-123')
             args, kwargs = mock_req.call_args
             self.assertIn('/groups/ws-123/datasets', args[1])
 

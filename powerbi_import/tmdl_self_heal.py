@@ -313,7 +313,7 @@ def _self_heal_model(model, recovery=None):
                         )
 
             # Check for references to columns using [ColumnName] pattern
-            broken = False
+            broken_ref = None
             for ref in refs:
                 # Skip if it's a known measure or known column
                 if ref in measure_names_in_model or ref in all_columns:
@@ -326,25 +326,25 @@ def _self_heal_model(model, recovery=None):
                 if ref in foreign_qualified_cols:
                     continue
                 # This reference doesn't resolve — mark as broken
-                broken = True
+                broken_ref = ref
                 break
 
-            if broken:
+            if broken_ref is not None:
                 measure['isHidden'] = True
                 measure.setdefault('annotations', []).append({
                     'name': 'MigrationNote',
-                    'value': f'Self-heal: measure contains unresolved column reference [{ref}]. Review and fix manually.'
+                    'value': f'Self-heal: measure contains unresolved column reference [{broken_ref}]. Review and fix manually.'
                 })
                 repairs += 1
                 mname = measure.get('name', '?')
-                print(f"  ⚕ Self-heal: Hidden measure '{mname}' (broken ref [{ref}])")
+                print(f"  ⚕ Self-heal: Hidden measure '{mname}' (broken ref [{broken_ref}])")
                 if recovery:
                     recovery.record('tmdl', 'broken_column_ref',
                                     item_name=mname,
-                                    description=f"Measure references non-existent column [{ref}]",
+                                    description=f"Measure references non-existent column [{broken_ref}]",
                                     action="Measure hidden with MigrationNote",
                                     severity='warning',
-                                    follow_up=f"Fix column reference [{ref}] in measure '{mname}'")
+                                    follow_up=f"Fix column reference [{broken_ref}] in measure '{mname}'")
 
     # 2b. Validate calculated column references — add placeholders for missing refs
     for t in tables:
@@ -504,7 +504,7 @@ def _self_heal_model(model, recovery=None):
                 for m in t.get('measures', []):
                     m.setdefault('annotations', []).append({
                         'name': 'MigrationNote',
-                        'value': f'Self-heal: orphan measure reassigned from unnamed table.'
+                        'value': 'Self-heal: orphan measure reassigned from unnamed table.'
                     })
                     main_table.setdefault('measures', []).append(m)
                     repairs += 1
@@ -532,7 +532,7 @@ def _self_heal_model(model, recovery=None):
 
     # 5. Circular relationship detection already handled by _deactivate_ambiguous_paths
     #    but log to recovery report if any were deactivated
-    deactivated = [r for r in relationships if r.get('isActive') == False]
+    deactivated = [r for r in relationships if r.get('isActive') is False]
     for rel in deactivated:
         if recovery:
             desc = (f"{rel.get('fromTable','')}.{rel.get('fromColumn','')} → "
@@ -569,7 +569,7 @@ def _self_heal_model(model, recovery=None):
         re.IGNORECASE
     )
     _TABLE_COL_RE = re.compile(r"'((?:[^']|'')+)'\[([^\]]+)\]")
-    
+
     # Phase 11: Enhanced many-to-many detection via column name similarity
     #           Improves on Phase 10 by scoring column overlap (Jaccard)
     def _similarity_score(from_cols, to_cols):
@@ -581,7 +581,7 @@ def _self_heal_model(model, recovery=None):
         intersection = len(from_set & to_set)
         union = len(from_set | to_set)
         return intersection / union if union > 0 else 0.0
-    
+
     # Upgrade manyToOne to manyToMany if overlap is high (>80%) and table sizes are similar
     for rel in relationships:
         if rel.get('cardinality') != 'manyToOne':
@@ -592,14 +592,14 @@ def _self_heal_model(model, recovery=None):
         to_tbl = next((t for t in tables if t.get('name') == to_table_name), None)
         if not from_tbl or not to_tbl:
             continue
-        
+
         from_cols = {c.get('name', '') for c in from_tbl.get('columns', []) if c.get('name')}
         to_cols = {c.get('name', '') for c in to_tbl.get('columns', []) if c.get('name')}
         similarity = _similarity_score(from_cols, to_cols)
         from_size = len(from_cols)
         to_size = len(to_cols)
         size_ratio = min(to_size, from_size) / max(to_size, from_size) if max(to_size, from_size) > 0 else 0.0
-        
+
         # If >80% column overlap and tables have similar width, likely peer tables (many-to-many)
         if similarity > 0.80 and size_ratio > 0.70:
             rel['cardinality'] = 'manyToMany'
@@ -689,7 +689,7 @@ def _self_heal_model(model, recovery=None):
                 if recovery:
                     recovery.record('tmdl', 'bare_column_ref_in_measure',
                                     item_name=mname,
-                                    description=f"Measure references column without aggregation",
+                                    description="Measure references column without aggregation",
                                     action="Wrapped bare column references in MAX()",
                                     severity='info',
                                     follow_up=f"Review measure '{mname}' — MAX() may not be the best aggregation")

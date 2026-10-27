@@ -7,11 +7,19 @@ could act on it. These tests pin the split, and pin that it can still fail.
 import unittest
 
 from powerbi_import.assessment import (
-    AssessmentReport, CategoryResult, CheckItem, run_assessment)
+    AssessmentReport,
+    CategoryResult,
+    CheckItem,
+    run_assessment,
+)
 from powerbi_import.migration_quality import (
-    _ASSESSMENT_CATEGORY_FINDINGS, _FINDING_ACTIONS,
-    _ADVISORY_ASSESSMENT_CATEGORIES, _assessment_blocking_failures,
-    _assessment_check_findings, _Findings)
+    _ADVISORY_ASSESSMENT_CATEGORIES,
+    _ASSESSMENT_CATEGORY_FINDINGS,
+    _FINDING_ACTIONS,
+    _assessment_blocking_failures,
+    _assessment_check_findings,
+    _Findings,
+)
 
 
 def _check(category, name, severity, detail="d", recommendation="r"):

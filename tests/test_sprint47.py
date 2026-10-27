@@ -13,20 +13,17 @@ Covers:
 import json
 import os
 import shutil
-import stat
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
 
-from tests.conftest import make_temp_dir, cleanup_dir
-
+from tests.conftest import cleanup_dir, make_temp_dir
 
 # ═══════════════════════════════════════════════════════════════════
 #  Retry-with-backoff tests
@@ -134,6 +131,7 @@ class TestPathHandling(unittest.TestCase):
     def test_os_path_join_used_in_pbip_generator(self):
         """Verify pbip_generator uses os.path.join (not hardcoded '/')."""
         import inspect
+
         from pbip_generator import PowerBIProjectGenerator
         source = inspect.getsource(PowerBIProjectGenerator.create_report_structure)
         # os.path.join should be present
@@ -142,6 +140,7 @@ class TestPathHandling(unittest.TestCase):
     def test_os_path_join_used_in_tmdl_generator(self):
         """Verify tmdl_generator uses os.path.join."""
         import inspect
+
         from tmdl_generator import _write_tmdl_files
         source = inspect.getsource(_write_tmdl_files)
         self.assertIn('os.path.join', source)
@@ -372,7 +371,6 @@ class TestCICompatibility(unittest.TestCase):
         result = os.path.join(*parts)
         self.assertIn(os.sep, result)
         # Should NOT contain the wrong separator
-        wrong_sep = '/' if os.sep == '\\' else '\\'
         # os.path.join may still include / on Windows in some cases,
         # but the result should be valid
         self.assertIn('sub', result)

@@ -5,14 +5,10 @@ correctly in error paths.
 """
 
 import json
-import logging
 import os
-import shutil
-import sqlite3
 import sys
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -113,7 +109,7 @@ class TestMQueryBuilderHyperFallback(unittest.TestCase):
 
         details = {'filename': '/fake.hyper'}
         columns = [{'name': 'Col1'}, {'name': 'Col2'}]
-        with self.assertLogs('tableau_export.m_query_builder', level='DEBUG') as cm:
+        with self.assertLogs('tableau_export.m_query_builder', level='DEBUG'):
             # Force ImportError by patching the import inside
             with patch.dict('sys.modules', {'hyper_reader': None}):
                 result = _gen_m_hyper(details, 'TestTable', columns)

@@ -5,9 +5,9 @@ a migrated Power BI project into a JSON snapshot. Re-running against
 the same workbook after re-migration detects quality drift.
 """
 
+import hashlib
 import json
 import os
-import hashlib
 
 
 def generate_regression_snapshot(converted_objects, output_path=None):

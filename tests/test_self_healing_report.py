@@ -9,29 +9,28 @@ import shutil
 import tempfile
 import unittest
 
+from powerbi_import.recovery_report import RecoveryReport
 from powerbi_import.self_healing_report import (
     _REPORT_HEALERS,
+    _heal_bookmark_dangling_page,
+    _heal_filter_dangling_field,
+    _heal_filter_empty_in_expression,
+    _heal_filter_literal_null_placeholder,
+    _heal_invalid_visualtype,
+    _heal_pagesmeta_missing_active,
+    _heal_pagesmeta_orphan_pageorder,
     _heal_visual_missing_position,
-    _heal_visual_zero_size,
-    _heal_visual_off_canvas,
-    _heal_visual_zindex_collision,
     _heal_visual_missing_visualtype,
     _heal_visual_negative_zindex,
-    _heal_filter_dangling_field,
-    _heal_bookmark_dangling_page,
-    _heal_pagesmeta_orphan_pageorder,
-    _heal_pagesmeta_missing_active,
+    _heal_visual_off_canvas,
     _heal_visual_query_no_select,
-    _heal_filter_literal_null_placeholder,
-    _heal_filter_empty_in_expression,
-    _heal_invalid_visualtype,
+    _heal_visual_zero_size,
+    _heal_visual_zindex_collision,
     heal_report,
     load_report,
     run_report_healers,
     write_report,
 )
-from powerbi_import.recovery_report import RecoveryReport
-
 
 # ────────────────────────────────────────────────────────────────────
 #  Helpers

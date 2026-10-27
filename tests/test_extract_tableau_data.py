@@ -6,28 +6,27 @@ Uses XML snippets parsed with ET.fromstring() to test each method in isolation.
 """
 
 import io
-import json
 import os
-import re
 import sys
 import tempfile
 import unittest
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
 from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 
+import extract_tableau_data as etd
 from extract_tableau_data import (
     TableauExtractor,
     _clean_field_ref,
-    _strip_brackets,
-    _split_sql_values,
     _scan_delimited_sample,
+    _split_sql_values,
+    _strip_brackets,
 )
-import extract_tableau_data as etd
+
 from powerbi_import.errors import ConfigurationError, ExtractionError
 
 

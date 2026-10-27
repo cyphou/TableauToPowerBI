@@ -1,25 +1,16 @@
 """Tests targeting uncovered lines in visual_generator.py for Sprint 30 coverage push."""
 
 import inspect
-import json
 import unittest
 
 from powerbi_import.visual_generator import (
-    _L,
-    APPROXIMATION_MAP,
-    CUSTOM_VISUAL_GUIDS,
-    VISUAL_TYPE_MAP,
     _apply_visual_decorations,
     _build_data_bar_config,
     _build_dynamic_reference_line,
     _build_small_multiples_config,
     _build_visual_filters,
-    _build_visual_query_state,
     _calculate_proportional_layout,
     build_query_state,
-    create_filters_config,
-    create_projections,
-    create_prototype_query,
     create_visual_container,
     generate_script_visual,
     generate_visual_containers,
@@ -692,7 +683,7 @@ class TestBuildDynamicReferenceLine(unittest.TestCase):
         self.assertIsNotNone(result)
 
     def test_unknown_type(self):
-        result = _build_dynamic_reference_line("unknown_type", "X", "T", "L", "#000", "solid")
+        _build_dynamic_reference_line("unknown_type", "X", "T", "L", "#000", "solid")
         # Unknown types may return None or a best-effort result
         # Just verify no crash
 

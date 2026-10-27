@@ -2,26 +2,23 @@
 Tests for Site Topology Discovery (powerbi_import.dependency_graph).
 """
 
-import json
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.dependency_graph import (
-    build_site_topology,
-    build_dependency_graph,
-    classify_usage,
     audit_certifications,
-    enrich_with_lineage,
+    build_dependency_graph,
+    build_site_topology,
+    classify_usage,
     generate_topology_report,
-    save_topology,
     load_topology,
+    save_topology,
 )
-
 
 # ── Fixtures ────────────────────────────────────────────────────────
 

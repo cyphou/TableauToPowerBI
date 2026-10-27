@@ -6,9 +6,9 @@ Single workbook migration must be fast. No regression vs v21 baseline.
 """
 import glob
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import time
 import unittest
 
@@ -17,8 +17,8 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
-from tableau_export.extract_tableau_data import TableauExtractor
 from powerbi_import.import_to_powerbi import PowerBIImporter
+from tableau_export.extract_tableau_data import TableauExtractor
 
 SAMPLE_DIR = os.path.join(ROOT, 'examples', 'tableau_samples')
 REAL_WORLD_DIR = os.path.join(ROOT, 'examples', 'real_world')

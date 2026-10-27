@@ -11,10 +11,21 @@ Usage::
     python migrate.py --wizard
 """
 
+import getpass
+import glob
 import os
 import sys
-import glob
-import getpass
+from typing import Optional, overload
+
+
+@overload
+def _input(prompt: str, default: str, sensitive: bool = False) -> str:
+    ...
+
+
+@overload
+def _input(prompt: str, default: None = None, sensitive: bool = False) -> Optional[str]:
+    ...
 
 
 def _input(prompt, default=None, sensitive=False):
@@ -130,7 +141,7 @@ def run_wizard():
     if not valid:
         print(f"\n  Error: {err}")
         return None
-    if not os.path.isdir(config['batch']):
+    if not config['batch'] or not os.path.isdir(config['batch']):
         print(f"\n  Error: Source folder not found: {config['batch']}. Single-file generation is retired.")
         return None
 
@@ -257,7 +268,7 @@ def main():
     # Patch argparse to return our args
     import argparse
     original_parse = argparse.ArgumentParser.parse_args
-    argparse.ArgumentParser.parse_args = lambda self, a=None, n=None: args
+    argparse.ArgumentParser.parse_args = lambda self, a=None, n=None: args  # type: ignore[method-assign]
     try:
         migrate_main()
     finally:

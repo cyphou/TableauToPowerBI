@@ -16,12 +16,11 @@ Usage:
     python scripts/version_bump.py major          # 3.5.0 → 4.0.0
 """
 
+import argparse
 import os
 import re
 import sys
-import argparse
 from datetime import datetime
-
 
 # ── Paths relative to project root ──────────────────────────────────
 
@@ -89,7 +88,7 @@ def _update_migrate_py(new_version, dry_run=False):
 
     pattern = r"(__version__\s*=\s*['\"])([0-9]+\.[0-9]+\.[0-9]+)(['\"])"
     if not re.search(pattern, content):
-        print(f"  [SKIP] No __version__ found in migrate.py")
+        print("  [SKIP] No __version__ found in migrate.py")
         return False
 
     new_content = re.sub(pattern, rf'\g<1>{new_version}\3', content)
@@ -157,11 +156,11 @@ def _update_pyproject_toml(new_version, dry_run=False):
 
 def bump_version(version_arg, dry_run=False):
     """Main version bump logic.
-    
+
     Args:
         version_arg: 'major', 'minor', 'patch', or explicit 'X.Y.Z'
         dry_run: If True, only print what would change
-    
+
     Returns:
         tuple: (old_version, new_version)
     """
