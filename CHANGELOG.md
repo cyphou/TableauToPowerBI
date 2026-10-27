@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+- Stop the credential scan from treating ordinary English as an HTTP Basic
+  credential. The `basic_auth` rule matched any word after "Basic", so the
+  `preceptor-review` job failed on every workbook whose quality report listed
+  the label "Basic calculated field" (and would on a calculation named "Basic
+  Salary"), and `redact_credentials()` rewrote such text to "Basic
+  ***REDACTED***". A word after "Basic" now counts only when it is base64 of a
+  printable `user:password` (standard or URL-safe alphabet, padding optional),
+  or when it sits on an `Authorization` / `Proxy-Authorization` line, where any
+  token is kept as a credential. The scan and the redaction share that
+  decision. The report files stay in scope of the scan. A token without a colon
+  outside such a line is no longer reported, which is a deliberate narrowing
+  for non-conformant tokens. Six deliberate-defect controls keep the new tests
+  able to fail.
+
 - Fix thin reports that pointed at fields the semantic model does not contain.
   `ThinReportGenerator` wrote its visuals with a fresh `PowerBIProjectGenerator`
   that never saw the model it was bound to, so reports of a shared model, of a

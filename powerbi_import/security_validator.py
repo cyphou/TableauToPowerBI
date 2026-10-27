@@ -13,6 +13,8 @@ Provides:
 - File size limit enforcement
 """
 
+import base64
+import binascii
 import logging
 import ntpath
 import os
@@ -40,6 +42,51 @@ ALLOWED_EXTENSIONS = frozenset({
 
 # ── Credential redaction patterns ────────────────────────────────────────────
 
+_REDACTED = '***REDACTED***'
+
+# "Basic <word>" is also ordinary English ("Basic calculated field", "Basic
+# Salary"), so the word after "Basic" is a credential only when it really is
+# one: the base64 of "user:password" (RFC 7617, standard or URL-safe alphabet,
+# padding optional), or any token on an Authorization-style header line.
+_BASIC_AUTH_PATTERN = re.compile(r'Basic\s+([A-Za-z0-9+/_\-]+=*)', re.IGNORECASE)
+_BASIC_AUTH_CONTEXT = re.compile(r'(?:proxy-)?auth(?:orization)?["\'\s:=]*$', re.IGNORECASE)
+_BASIC_AUTH_CONTEXT_WINDOW = 64
+
+
+def _decodes_to_user_password(token):
+    """True when ``token`` is base64 text holding printable ``user:password``."""
+    raw = token.rstrip('=').replace('-', '+').replace('_', '/')
+    if not raw or len(raw) % 4 == 1:
+        return False
+    try:
+        decoded = base64.b64decode(raw + '=' * (-len(raw) % 4), validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    for encoding in ('utf-8', 'latin-1'):
+        try:
+            text = decoded.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        return ':' in text and text.isprintable()
+    return False
+
+
+def _is_basic_credential(match):
+    """Decide whether a ``_BASIC_AUTH_PATTERN`` match is a real credential."""
+    if _decodes_to_user_password(match.group(1)):
+        return True
+    text = match.string
+    line_start = text.rfind('\n', 0, match.start()) + 1
+    prefix = text[max(line_start, match.start() - _BASIC_AUTH_CONTEXT_WINDOW):match.start()]
+    return bool(_BASIC_AUTH_CONTEXT.search(prefix))
+
+
+def _redact_basic_auth(match):
+    if not _is_basic_credential(match):
+        return match.group(0)
+    return match.group(0)[:match.start(1) - match.start()] + _REDACTED
+
+
 _CREDENTIAL_PATTERNS = [
     (re.compile(r'(password\s*=\s*)([^\s;,"\']+)', re.IGNORECASE), r'\1***REDACTED***'),
     (re.compile(r'(secret\s*=\s*)([^\s;,"\']+)', re.IGNORECASE), r'\1***REDACTED***'),
@@ -48,7 +95,7 @@ _CREDENTIAL_PATTERNS = [
     (re.compile(r'(account.?key\s*=\s*)([^\s;,"\']+)', re.IGNORECASE), r'\1***REDACTED***'),
     (re.compile(r'(private.?key\s*=\s*)([^\s;,"\']+)', re.IGNORECASE), r'\1***REDACTED***'),
     (re.compile(r'(Bearer\s+)([A-Za-z0-9\-._~+/]+=*)', re.IGNORECASE), r'\1***REDACTED***'),
-    (re.compile(r'(Basic\s+)([A-Za-z0-9+/]+=*)', re.IGNORECASE), r'\1***REDACTED***'),
+    (_BASIC_AUTH_PATTERN, _redact_basic_auth),
     (re.compile(r'(client.?secret\s*=\s*)([^\s;,"\']+)', re.IGNORECASE), r'\1***REDACTED***'),
     (re.compile(r'(api.?key\s*=\s*)([^\s;,"\']+)', re.IGNORECASE), r'\1***REDACTED***'),
 ]
@@ -475,13 +522,15 @@ def scan_for_credentials(text):
         (re.compile(r'(?:access|account).?key\s*=\s*\S+', re.IGNORECASE), 'access_key'),
         (re.compile(r'private.?key\s*=\s*\S+', re.IGNORECASE), 'private_key'),
         (re.compile(r'Bearer\s+[A-Za-z0-9\-._~+/]+=*', re.IGNORECASE), 'bearer_token'),
-        (re.compile(r'Basic\s+[A-Za-z0-9+/]+=*', re.IGNORECASE), 'basic_auth'),
+        (_BASIC_AUTH_PATTERN, 'basic_auth'),
         (re.compile(r'client.?secret\s*=\s*\S+', re.IGNORECASE), 'client_secret'),
         (re.compile(r'api.?key\s*=\s*\S+', re.IGNORECASE), 'api_key'),
     ]
     for pattern, cred_type in all_patterns:
-        matches = pattern.findall(text)
-        for match in matches:
+        for found in pattern.finditer(text):
+            if cred_type == 'basic_auth' and not _is_basic_credential(found):
+                continue
+            match = found.group(0)
             # Show only the first 20 chars as a sample
             sample = match[:20] + '...' if len(match) > 20 else match
             findings.append({'type': cred_type, 'sample': sample})

@@ -12,6 +12,7 @@ Tests cover:
 8. Migration artifact scanning
 """
 
+import base64
 import json
 import os
 import sys
@@ -321,6 +322,77 @@ class TestCredentialRedaction:
         assert "def" not in result
         assert "ghi" not in result
         assert result.count("***REDACTED***") >= 3
+
+
+class TestBasicAuthPrecision:
+    """The word after "Basic" is a credential only when it really is one.
+
+    Calculated-field labels such as "Basic calculated field" must not fail the
+    artifact scan or be corrupted by redaction, while genuine HTTP Basic
+    credentials stay detected and redacted.
+    """
+
+    CREDENTIAL = 'svc-user:p4ss>>>?'
+
+    @classmethod
+    def _token(cls, *, urlsafe=False, padded=True):
+        encode = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+        token = encode(cls.CREDENTIAL.encode()).decode()
+        return token if padded else token.rstrip('=')
+
+    @pytest.mark.parametrize('text', [
+        '"label": "Basic calculated field"',
+        'Basic Salary',
+        'A basic information table',
+        'WWW-Authenticate: Basic realm="Secure"',
+        '"x": "Basic notbase64"',
+        'Authorization:\n"Basic calculated field"',
+    ])
+    def test_prose_is_neither_flagged_nor_redacted(self, text):
+        assert scan_for_credentials(text) == []
+        assert redact_credentials(text) == text
+
+    @pytest.mark.parametrize('urlsafe,padded', [(False, True), (False, False), (True, False)])
+    def test_encoded_user_password_is_flagged_and_redacted(self, urlsafe, padded):
+        token = self._token(urlsafe=urlsafe, padded=padded)
+        assert ('-' in token) if urlsafe else ('+' in token)
+        text = '{"credential": "Basic %s"}' % token
+        assert [f['type'] for f in scan_for_credentials(text)] == ['basic_auth']
+        redacted = redact_credentials(text)
+        assert token not in redacted
+        assert 'Basic ***REDACTED***' in redacted
+
+    @pytest.mark.parametrize('text', [
+        'Authorization: Basic notbase64',
+        'Proxy-Authorization: Basic notbase64',
+        '{"Authorization": "Basic notbase64"}',
+        'Web.Contents(u, [Headers=[Authorization = "Basic notbase64"]])',
+    ])
+    def test_any_token_on_an_authorization_line_is_a_credential(self, text):
+        assert [f['type'] for f in scan_for_credentials(text)] == ['basic_auth']
+        redacted = redact_credentials(text)
+        assert 'notbase64' not in redacted
+        assert 'Basic ***REDACTED***' in redacted
+
+    def test_redaction_is_idempotent(self):
+        once = redact_credentials('Auth: Basic %s' % self._token())
+        assert redact_credentials(once) == once
+
+    def test_artifact_scan_ignores_labels_but_catches_credentials(self, tmp_path):
+        clean = tmp_path / 'Report.SemanticModel'
+        clean.mkdir()
+        (clean / 'migration_quality.json').write_text(
+            '{"usages": [{"key": "calc_basic", "label": "Basic calculated field"}]}',
+            encoding='utf-8')
+        assert validate_migration_artifacts(str(clean))['clean'] is True
+
+        leaky = tmp_path / 'Leaky.SemanticModel'
+        leaky.mkdir()
+        (leaky / 'connection.json').write_text(
+            '{"credential": "Basic %s"}' % self._token(), encoding='utf-8')
+        results = validate_migration_artifacts(str(leaky))
+        assert results['clean'] is False
+        assert [i['type'] for i in results['issues']] == ['basic_auth']
 
 
 # ═══════════════════════════════════════════════════════════════════

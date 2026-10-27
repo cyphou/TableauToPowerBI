@@ -357,4 +357,50 @@ CONTROLS = [
         "new": "            with patch.object(tg, '_write_table_tmdl',",
         "test": "tests/test_patch_targets.py",
     },
+
+    # ── Credential scanning ────────────────────────────────────────────
+    {
+        "name": "the scan flags every word after Basic again",
+        "file": "powerbi_import/security_validator.py",
+        "old": "    if _decodes_to_user_password(match.group(1)):\n"
+               "        return True\n",
+        "new": "    return True\n",
+        "test": "tests/test_security.py",
+    },
+    {
+        "name": "the scan stops catching tokens on an Authorization line",
+        "file": "powerbi_import/security_validator.py",
+        "old": "    return bool(_BASIC_AUTH_CONTEXT.search(prefix))",
+        "new": "    return False",
+        "test": "tests/test_security.py",
+    },
+    {
+        "name": "the scan ignores the Basic precision rule",
+        "file": "powerbi_import/security_validator.py",
+        "old": "            if cred_type == 'basic_auth' and not _is_basic_credential(found):\n"
+               "                continue\n",
+        "new": "",
+        "test": "tests/test_security.py",
+    },
+    {
+        "name": "redaction corrupts prose after Basic again",
+        "file": "powerbi_import/security_validator.py",
+        "old": "    (_BASIC_AUTH_PATTERN, _redact_basic_auth),",
+        "new": "    (re.compile(r'(Basic\\s+)([A-Za-z0-9+/]+=*)', re.IGNORECASE), r'\\1***REDACTED***'),",
+        "test": "tests/test_security.py",
+    },
+    {
+        "name": "URL-safe Basic credentials stop being recognised",
+        "file": "powerbi_import/security_validator.py",
+        "old": "    raw = token.rstrip('=').replace('-', '+').replace('_', '/')",
+        "new": "    raw = token.rstrip('=')",
+        "test": "tests/test_security.py",
+    },
+    {
+        "name": "unpadded Basic credentials stop being recognised",
+        "file": "powerbi_import/security_validator.py",
+        "old": "base64.b64decode(raw + '=' * (-len(raw) % 4), validate=True)",
+        "new": "base64.b64decode(raw, validate=True)",
+        "test": "tests/test_security.py",
+    },
 ]
