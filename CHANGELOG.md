@@ -4,6 +4,21 @@
 
 ## Unreleased
 
+- Name the retained source in the quality report when an enabled extract hides
+  another connection: the Hyper Import section gains a bilingual **Source
+  decision** table (datasource, retained packaged Hyper snapshot, unused
+  original connector type) and a `source_decisions` evidence field. Only the
+  datasource label and connector type are reported, never server, database,
+  user or other connection details, and the table changes neither the gate nor
+  the PASS/WARN status. When the Hyper gate has already failed and the workbook
+  disables the extract of a datasource while a `.hyper` is still packaged, add
+  one `Hint:` diagnostic that names up to three datasources and the two ways out
+  (re-enable the extract, or remove the extract and its `.hyper`); it is never
+  added to a passing result and no live source is substituted. Document the
+  behavior under "Active extract behind a live connection". Verified with
+  synthetic fixtures only; no live connection, Desktop load, refresh or value
+  parity was exercised.
+
 - Require complete Hyper snapshot exports for PBIP and exact CSV/Parquet file
   bindings to Import partitions. Reject row caps (including environment caps),
   sample-only readers, unknown/inconsistent counts and unresolved required

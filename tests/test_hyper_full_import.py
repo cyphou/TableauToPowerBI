@@ -2757,6 +2757,352 @@ class TestHyperImportEvidence(unittest.TestCase):
             self.assertIn(diagnostic, report.blockers)
 
 
+class TestHyperSourceDecisionEvidence(unittest.TestCase):
+    """Name the source an active extract retains without changing the gate.
+
+    Every connection here uses reserved example names: no live connection is
+    opened and nothing is compared with real data.
+    """
+
+    SENSITIVE = ("db.example.invalid", "synthetic_db", "synthetic_user")
+
+    @staticmethod
+    def _builder():
+        from powerbi_import.migration_quality import build_hyper_import_evidence
+        return build_hyper_import_evidence
+
+    @staticmethod
+    def _live_extract_xml(enabled):
+        """A live PostgreSQL join, with one explicit Hyper extract object."""
+        import xml.etree.ElementTree as ET
+
+        datasource = ET.Element("datasource", {
+            "name": "synthetic-live-source", "caption": "Synthetic Live Source",
+        })
+        root = ET.SubElement(datasource, "connection", {"class": "federated"})
+        tree = ET.SubElement(root, "relation", {"type": "join", "join": "left"})
+        clause = ET.SubElement(tree, "clause", {"type": "join"})
+        comparison = ET.SubElement(clause, "expression", {"op": "="})
+        ET.SubElement(comparison, "expression", {"op": "[Left].[ID]"})
+        ET.SubElement(comparison, "expression", {"op": "[Right].[ID]"})
+        for alias in ("Left", "Right"):
+            named = ET.SubElement(root, "named-connection", {"name": alias + "-ref"})
+            ET.SubElement(named, "connection", {
+                "class": "postgres", "server": "db.example.invalid",
+                "port": "5432", "dbname": "synthetic_db",
+                "username": "synthetic_user",
+            })
+            relation = ET.SubElement(tree, "relation", {
+                "type": "table", "name": alias, "connection": alias + "-ref",
+                "table": "[public].[" + alias + "]",
+            })
+            columns = ET.SubElement(relation, "columns")
+            ET.SubElement(columns, "column", {
+                "name": alias + " field",
+                "datatype": "integer" if alias == "Left" else "string",
+            })
+        native_records = ET.SubElement(root, "metadata-records")
+        extract = ET.SubElement(datasource, "extract", {"enabled": enabled})
+        hyper = ET.SubElement(extract, "connection", {
+            "class": "hyper", "dbname": "Data/exact.hyper",
+            "schema": "Extract", "tablename": "Materialized",
+        })
+        physical = ET.SubElement(hyper, "relation", {
+            "name": "Extract", "type": "table",
+            "table": "[Extract].[Materialized]",
+        })
+        physical_columns = ET.SubElement(physical, "columns")
+        extract_records = ET.SubElement(hyper, "metadata-records")
+        maps = ET.SubElement(hyper, "cols")
+        for alias, datatype in (("Left", "integer"), ("Right", "string")):
+            local, remote = alias + " field", alias.lower() + "_physical"
+            ET.SubElement(datasource, "column", {
+                "name": f"[{local}]", "datatype": datatype,
+            })
+            ET.SubElement(physical_columns, "column", {
+                "name": local, "datatype": datatype,
+            })
+            for parent, table, source in (
+                    (native_records, alias, alias + "_native"),
+                    (extract_records, "Extract", remote)):
+                record = ET.SubElement(parent, "metadata-record", {
+                    "class": "column",
+                })
+                for tag, value in (("local-name", f"[{local}]"),
+                                   ("remote-name", source),
+                                   ("parent-name", f"[{table}]"),
+                                   ("local-type", datatype)):
+                    ET.SubElement(record, tag).text = value
+            ET.SubElement(maps, "map", {
+                "key": f"[{local}]", "value": f"[Extract].[{remote}]",
+            })
+        graph = ET.SubElement(datasource, "object-graph")
+        obj = ET.SubElement(
+            ET.SubElement(graph, "objects"), "object",
+            {"id": "logical-101", "caption": "Logical object"})
+        ET.SubElement(obj, "properties", {"context": ""}).append(deepcopy(tree))
+        ET.SubElement(obj, "properties", {"context": "extract"}).append(
+            deepcopy(physical))
+        return datasource
+
+    def _extracted(self, *, enabled="true"):
+        from tableau_export.datasource_extractor import extract_datasource
+
+        temp = _temporary_directory("hyper-source-decision-")
+        self.addCleanup(temp.cleanup)
+        workbook, _staged, _identity = _write_synthetic_package(
+            temp.name, member="Data/exact.hyper")
+        datasource = extract_datasource(self._live_extract_xml(enabled), workbook)
+        project = os.path.join(temp.name, REPORT_NAME)
+        os.makedirs(project)
+        extracted = {
+            "datasources": [datasource],
+            "hyper_files": [{
+                "path": "Data/exact.hyper", "filename": "exact.hyper",
+            }],
+        }
+        return extracted, project
+
+    def _bound_fixture(self):
+        temp = _temporary_directory("hyper-source-decision-bound-")
+        self.addCleanup(temp.cleanup)
+        return _build_bound_fixture(temp.name)
+
+    @staticmethod
+    def _report(evidence):
+        from powerbi_import.migration_quality import MigrationQualityReport
+        return MigrationQualityReport(
+            report_name=REPORT_NAME, assessment={}, parity={}, data={},
+            interface={}, openability={}, status="WARN", hyper_import=evidence,
+        )
+
+    def test_active_extract_over_a_live_connection_names_the_retained_source(self):
+        extracted, project = self._extracted(enabled="true")
+        datasource = extracted["datasources"][0]
+        self.assertIn("materialized_extract", datasource)
+        self.assertEqual(datasource["connection"]["type"], "PostgreSQL")
+        evidence = self._builder()(extracted, project)
+        self.assertEqual(evidence["source_decisions"], [{
+            "datasource": "Synthetic Live Source",
+            "retained": "hyper_snapshot",
+            "not_used": "original_connection",
+            "connectors": ["PostgreSQL"],
+        }])
+        self.assertFalse(
+            [item for item in evidence["diagnostics"] if item.startswith("Hint:")],
+            evidence["diagnostics"])
+
+    def test_decision_never_exposes_connection_details(self):
+        extracted, project = self._extracted(enabled="true")
+        serialized_source = json.dumps(extracted)
+        for value in self.SENSITIVE:
+            self.assertIn(value, serialized_source)
+        evidence = self._builder()(extracted, project)
+        self.assertTrue(evidence["source_decisions"])
+        rendered = {
+            "json": json.dumps(evidence, ensure_ascii=False, default=str),
+            "html": self._report(evidence).render_body(),
+        }
+        for label, document in rendered.items():
+            for value in self.SENSITIVE:
+                with self.subTest(document=label, value=value):
+                    self.assertNotIn(value, document)
+
+    def test_decision_does_not_change_the_gate_outcome(self):
+        fixture = self._bound_fixture()
+        baseline = self._builder()(fixture["extracted"], fixture["project"])
+        self.assertEqual(
+            baseline["status"], "static_verified", baseline["diagnostics"])
+        self.assertEqual(baseline["source_decisions"], [])
+
+        extracted = deepcopy(fixture["extracted"])
+        datasource = extracted["datasources"][0]
+        datasource["materialized_extract"] = {"object_id": "synthetic-object"}
+        datasource["connection_map"]["synthetic-live-ref"] = {
+            "type": "PostgreSQL",
+            "details": {"server": "db.example.invalid"},
+        }
+        evidence = self._builder()(extracted, fixture["project"])
+        self.assertEqual(evidence["status"], "static_verified", evidence["diagnostics"])
+        self.assertEqual(evidence["diagnostics"], [])
+        self.assertEqual(
+            [item["connectors"] for item in evidence["source_decisions"]],
+            [["PostgreSQL"]])
+        for key in ("exports", "bindings", "manifest_status", "runtime_status"):
+            with self.subTest(key=key):
+                self.assertEqual(evidence[key], baseline[key])
+
+    def test_only_an_active_extract_over_a_non_hyper_connection_is_reported(self):
+        builder = self._builder()
+        cases = {
+            "no extract": {"datasources": [{
+                "name": "Plain", "connection": {"type": "PostgreSQL"},
+                "connection_map": {"ref": {"type": "PostgreSQL"}},
+                "tables": [],
+            }]},
+            "hyper connection only": {"datasources": [{
+                "name": "Direct", "materialized_extract": {"object_id": "x"},
+                "connection": {"type": "HYPER"},
+                "connection_map": {"ref": {"type": "Hyper"}},
+                "tables": [],
+            }]},
+            "unknown connection": {"datasources": [{
+                "name": "Opaque", "materialized_extract": {"object_id": "x"},
+                "connection": {"type": "Unknown", "details": {}},
+                "tables": [],
+            }]},
+            "malformed records": {"datasources": [
+                "text", None, {"name": "Odd", "materialized_extract": {"x": 1},
+                               "connection": "PostgreSQL",
+                               "connection_map": ["PostgreSQL"]},
+            ]},
+            "no datasources": {},
+        }
+        project = _temporary_directory("hyper-source-decision-empty-")
+        self.addCleanup(project.cleanup)
+        for label, extracted in cases.items():
+            with self.subTest(case=label):
+                self.assertEqual(
+                    builder(extracted, project.name)["source_decisions"], [])
+
+    def test_connectors_are_distinct_sorted_and_hyper_free(self):
+        extracted = {"datasources": [{
+            "name": "Mixed", "caption": "", "materialized_extract": {"object_id": "x"},
+            "connection": {"type": "PostgreSQL", "details": {"server": "x"}},
+            "connection_map": {
+                "a": {"type": "PostgreSQL"}, "b": {"type": "excel"},
+                "c": {"type": "DATAENGINE"}, "d": {"type": "  "},
+                "e": {"type": None}, "f": "text",
+            },
+        }, {
+            "name": "Second", "caption": "Second Caption",
+            "materialized_extract": {"object_id": "y"},
+            "connection_map": {"a": {"type": "Tableau Server"}},
+        }]}
+        project = _temporary_directory("hyper-source-decision-empty-")
+        self.addCleanup(project.cleanup)
+        decisions = self._builder()(extracted, project.name)["source_decisions"]
+        self.assertEqual(
+            [(item["datasource"], item["connectors"]) for item in decisions],
+            [("Mixed", ["excel", "PostgreSQL"]),
+             ("Second Caption", ["Tableau Server"])])
+
+    def test_disabled_extract_with_a_packaged_snapshot_adds_one_conditional_hint(self):
+        builder = self._builder()
+        extracted, project = self._extracted(enabled="false")
+        datasource = extracted["datasources"][0]
+        self.assertIn("inactive_extract_context", datasource)
+        self.assertNotIn("materialized_extract", datasource)
+
+        evidence = builder(extracted, project)
+        self.assertEqual(evidence["status"], "failed")
+        self.assertEqual(evidence["source_decisions"], [])
+        hints = [item for item in evidence["diagnostics"] if item.startswith("Hint:")]
+        self.assertEqual(len(hints), 1, evidence["diagnostics"])
+        self.assertIn("'Synthetic Live Source'", hints[0])
+        self.assertIn("If that snapshot belongs to the disabled extract", hints[0])
+        self.assertIn("remove the extract and its .hyper", hints[0])
+        self.assertIn("no live source is substituted automatically", hints[0])
+        for value in self.SENSITIVE:
+            self.assertNotIn(value, hints[0])
+
+        baseline_source = deepcopy(extracted)
+        baseline_source["datasources"][0].pop("inactive_extract_context")
+        baseline = builder(baseline_source, project)
+        self.assertEqual(baseline["status"], "failed")
+        self.assertEqual(
+            [item for item in evidence["diagnostics"] if item != hints[0]],
+            baseline["diagnostics"])
+
+    def test_hint_is_never_added_to_a_passing_or_unrelated_evidence(self):
+        builder = self._builder()
+        fixture = self._bound_fixture()
+        extracted = deepcopy(fixture["extracted"])
+        extracted["datasources"][0]["inactive_extract_context"] = {
+            "selection": "native_no_enabled_extract",
+        }
+        passing = builder(extracted, fixture["project"])
+        self.assertEqual(passing["status"], "static_verified", passing["diagnostics"])
+        self.assertEqual(passing["diagnostics"], [])
+
+        active, project = self._extracted(enabled="true")
+        failing = builder(active, project)
+        self.assertEqual(failing["status"], "failed")
+        self.assertFalse(
+            [item for item in failing["diagnostics"] if item.startswith("Hint:")])
+
+        disabled, project = self._extracted(enabled="false")
+        disabled["hyper_files"] = []
+        disabled["datasources"].append({
+            "name": "Broken", "connection": {"type": "Hyper"},
+            "tables": [{"name": "Table"}],
+        })
+        unrelated = builder(disabled, project)
+        self.assertEqual(unrelated["status"], "failed")
+        self.assertTrue(unrelated["diagnostics"])
+        self.assertFalse(
+            [item for item in unrelated["diagnostics"] if item.startswith("Hint:")])
+
+    def test_hint_reaches_the_generation_gate_error(self):
+        from powerbi_import.errors import GenerationError
+
+        extracted, project = self._extracted(enabled="false")
+        with self.assertRaises(GenerationError) as raised:
+            migrate._require_hyper_import(project, extracted=extracted)
+        self.assertEqual(raised.exception.source, "hyper_import")
+        self.assertIn("Hint:", str(raised.exception))
+
+    def test_hint_lists_a_bounded_number_of_datasource_names(self):
+        extracted, project = self._extracted(enabled="false")
+        base = extracted["datasources"][0]
+        extracted["datasources"] = [
+            dict(base, name=f"ds-{index}", caption=f"Source {index}")
+            for index in range(5)
+        ]
+        evidence = self._builder()(extracted, project)
+        hint, = [item for item in evidence["diagnostics"] if item.startswith("Hint:")]
+        self.assertIn("'Source 0', 'Source 1', 'Source 2' (+2 more)", hint)
+        self.assertNotIn("Source 3", hint)
+
+    def test_report_renders_the_decision_table_with_escaped_values(self):
+        evidence = {
+            "status": "static_verified", "runtime_status": "not_run",
+            "diagnostics": [], "exports": [],
+            "source_decisions": [{
+                "datasource": '<b>Sales</b> & "Ops"',
+                "retained": "hyper_snapshot",
+                "not_used": "original_connection",
+                "connectors": ["PostgreSQL", "<i>Excel</i>"],
+            }, "not a record"],
+        }
+        body = self._report(evidence).render_body()
+        self.assertIn('id="quality-hyper-source-decisions"', body)
+        self.assertIn('data-i18n-en="Packaged Hyper snapshot (Import)"', body)
+        self.assertIn('data-i18n-fr="Instantané Hyper empaqueté (Import)"', body)
+        self.assertIn('data-i18n-en="Original source connection"', body)
+        self.assertIn('data-i18n-fr="Connexion source d’origine"', body)
+        self.assertIn("&lt;b&gt;Sales&lt;/b&gt; &amp; &quot;Ops&quot;", body)
+        self.assertIn("PostgreSQL, &lt;i&gt;Excel&lt;/i&gt;", body)
+        self.assertNotIn("<b>Sales</b>", body)
+        self.assertNotIn("<i>Excel</i>", body)
+
+    def test_report_omits_the_decision_table_without_decisions(self):
+        stub = {
+            "status": "not_applicable", "runtime_status": "not_run",
+            "diagnostics": [], "exports": [],
+            "verification_scope": "Fabric DirectLake uses separate evidence.",
+        }
+        for label, evidence in (
+                ("fabric stub", stub),
+                ("empty list", dict(stub, source_decisions=[])),
+                ("not a list", dict(stub, source_decisions="PostgreSQL")),
+                ("only malformed", dict(stub, source_decisions=[None, "x"]))):
+            with self.subTest(case=label):
+                body = self._report(evidence).render_body()
+                self.assertNotIn("quality-hyper-source-decisions", body)
+                self.assertIn('id="quality-hyper-import"', body)
+
+
 class TestHyperMetadataPathContainment(unittest.TestCase):
     """Paths read from a project are compared lexically, never resolved remotely.
 

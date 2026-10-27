@@ -104,6 +104,32 @@ Neither native Import nor DirectQuery generation establishes credentials,
 gateway availability, query folding or successful Power BI refresh.
 Fabric-native DirectLake generation retains its separate file-staging contract.
 
+### Active extract behind a live connection
+
+When a federated datasource has a live connection (for example PostgreSQL) and
+an **enabled** extract, the packaged Hyper snapshot is the source: it is
+exported in full and bound in Import mode, and explicit DirectQuery is rejected.
+The live connection stays in `datasources.json`. The Hyper Import section of the
+quality report states this choice in a **Source decision** table (datasource,
+retained source, unused original connector type). Only the datasource label and
+the connector type are reported, never the server, database, user or any other
+connection detail, and the table adds no warning: it does not change the
+PASS/WARN status or the gate. There is no option to prefer the live source,
+because a Tableau extract can be filtered, aggregated or dated and is therefore
+not interchangeable with its source.
+
+To migrate such a datasource against its live source, remove the extract and its
+`.hyper` in Tableau before migrating. Only disabling the extract is not enough
+while the `.hyper` stays packaged in the TWBX: the model is built from the live
+tables, but the unused snapshot is still exported and the Hyper Import gate then
+stops the migration (`Hyper export record … is unconsumed by a final annotated
+Import table`). When the gate fails for that reason, an extra `Hint:` diagnostic
+names the datasources whose extract is disabled and the two ways out (re-enable
+the extract, or remove the extract and its `.hyper`); it is never added to a
+passing result and no live source is substituted automatically. Observed with
+synthetic fixtures only, not with a workbook saved by Tableau; no live
+connection was opened and no Desktop load, refresh or value parity was checked.
+
 ### Windows / Power BI Desktop path lengths
 
 For workbook batch migrations, the orchestrator budgets the full absolute path

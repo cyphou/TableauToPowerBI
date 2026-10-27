@@ -106,6 +106,13 @@ Select **Import** in the local browser or pass `--mode import` to override
 automatic DirectQuery. See the
 [decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
 
+When an enabled extract sits over a live connection, the snapshot still wins and
+the quality report's Hyper Import section lists the retained snapshot and the
+unused connector type in a **Source decision** table. There is no "prefer live"
+switch; see
+[Active extract behind a live connection](KNOWN_LIMITATIONS.md#active-extract-behind-a-live-connection)
+for the reasons and the workaround.
+
 For non-Hyper sources, **Import does not mean extracting their data during
 migration**. The PBIP contains the datasource connection, schema and Power Query
 M; Power BI loads the rows on refresh. One native-file copy is supported: an

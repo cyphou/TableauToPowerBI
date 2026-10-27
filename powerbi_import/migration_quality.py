@@ -194,6 +194,31 @@ class MigrationQualityReport:
                 ],
                 detail=True,
             )
+            decision_rows = []
+            for decision in self.hyper_import.get("source_decisions") or []:
+                if not isinstance(decision, dict):
+                    continue
+                connectors = decision.get("connectors")
+                connectors = connectors if isinstance(connectors, list) else []
+                decision_rows.append([
+                    esc(str(decision.get("datasource") or "—")),
+                    ui(text("Packaged Hyper snapshot (Import)",
+                            "Instantané Hyper empaqueté (Import)")),
+                    ui(text("Original source connection",
+                            "Connexion source d’origine")),
+                    esc(", ".join(str(item) for item in connectors) or "—"),
+                ])
+            if decision_rows:
+                html += "<h4>" + ui(text("Source decision", "Décision de source")) + "</h4>"
+                html += data_table(
+                    [text("Datasource", "Source de données"),
+                     text("Retained source", "Source retenue"),
+                     text("Not used", "Non utilisée"),
+                     text("Original connector(s)", "Connecteur(s) d’origine")],
+                    decision_rows,
+                    table_id="quality-hyper-source-decisions",
+                    detail=True,
+                )
             export_rows = []
             for item in self.hyper_import.get("exports", []) or []:
                 identity = item.get("identity") if isinstance(item, dict) else {}
@@ -2951,6 +2976,96 @@ def _hyper_source_identity_inventory(
     return identities, diagnostics, uses_hyper
 
 
+_HYPER_CONNECTOR_TYPES = frozenset({"hyper", "dataengine", "unknown"})
+
+
+def _hyper_datasource_records(extracted: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the readable datasource dictionaries of an extraction result."""
+    datasources = extracted.get("datasources", [])
+    if isinstance(datasources, dict):
+        datasources = [datasources]
+    if not isinstance(datasources, list):
+        return []
+    return [item for item in datasources if isinstance(item, dict)]
+
+
+def _hyper_datasource_label(datasource: dict[str, Any]) -> str:
+    for key in ("caption", "name"):
+        value = datasource.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "unnamed datasource"
+
+
+def _hyper_original_connectors(datasource: dict[str, Any]) -> list[str]:
+    """Connector display names declared besides Hyper; details are never read."""
+    candidates = [datasource.get("connection")]
+    connection_map = datasource.get("connection_map")
+    if isinstance(connection_map, dict):
+        candidates.extend(connection_map.values())
+    names: set[str] = set()
+    for candidate in candidates:
+        kind = candidate.get("type") if isinstance(candidate, dict) else None
+        if not isinstance(kind, str):
+            continue
+        kind = kind.strip()
+        if kind and kind.casefold() not in _HYPER_CONNECTOR_TYPES:
+            names.add(kind)
+    return sorted(names, key=str.casefold)
+
+
+def _hyper_source_decisions(extracted: dict[str, Any]) -> list[dict[str, Any]]:
+    """Name the source retained when an active extract hides another connection.
+
+    The packaged Hyper snapshot is the migrated source, so any other connection
+    the datasource declares is not used. Only the datasource label and the
+    connector type are reported: server, database, user and every other
+    connection detail stay out of the evidence.
+    """
+    decisions: list[dict[str, Any]] = []
+    for datasource in _hyper_datasource_records(extracted):
+        if not datasource.get("materialized_extract"):
+            continue
+        connectors = _hyper_original_connectors(datasource)
+        if connectors:
+            decisions.append({
+                "datasource": _hyper_datasource_label(datasource),
+                "retained": "hyper_snapshot",
+                "not_used": "original_connection",
+                "connectors": connectors,
+            })
+    return decisions
+
+
+def _hyper_disabled_extract_hint(extracted: dict[str, Any]) -> str | None:
+    """Explain a failed gate when a disabled extract may still ship a snapshot.
+
+    Only called once the gate has already failed: a hint never turns a passing
+    result into a failing one, and nothing here substitutes a live source.
+    """
+    if not extracted.get("hyper_files"):
+        return None
+    names = sorted({
+        _hyper_datasource_label(datasource)
+        for datasource in _hyper_datasource_records(extracted)
+        if datasource.get("inactive_extract_context")
+    }, key=str.casefold)
+    if not names:
+        return None
+    shown = ", ".join(f"'{name}'" for name in names[:3])
+    if len(names) > 3:
+        shown += f" (+{len(names) - 3} more)"
+    return (
+        f"Hint: the workbook disables the extract of datasource {shown}, so "
+        "the model follows its native source, yet a packaged Hyper snapshot is "
+        "present. If that snapshot belongs to the disabled extract it has no "
+        "final Import table, which fails this gate. Re-enable the extract to "
+        "import the snapshot, or remove the extract and its .hyper from the "
+        "workbook before migrating; no live source is substituted "
+        "automatically."
+    )
+
+
 def _hyper_project_tmdl_tables(project_root: str
                                ) -> tuple[list[dict[str, Any]], list[str], bool]:
     """Read final model tables and detect unresolved Hyper source markers."""
@@ -3518,6 +3633,7 @@ def build_hyper_import_evidence(extracted: Dict[str, Any],
         "diagnostics": diagnostics,
         "exports": [],
         "bindings": [],
+        "source_decisions": _hyper_source_decisions(extracted),
         "verification_scope": (
             "Static manifest, file integrity, CSV header/count, sourceColumn "
             "and final Import binding evidence only. Runtime load/refresh, "
@@ -3719,6 +3835,10 @@ def build_hyper_import_evidence(extracted: Dict[str, Any],
             str(item.get("filename", "")).casefold(),
         ),
     )
+    if diagnostics:
+        hint = _hyper_disabled_extract_hint(extracted)
+        if hint:
+            diagnostics.append(hint)
     result["diagnostics"] = sorted(set(diagnostics))
     result["status"] = (
         "static_verified" if not result["diagnostics"] else "failed")
