@@ -4,6 +4,44 @@
 
 ## Unreleased
 
+- Fix thin reports that pointed at fields the semantic model does not contain.
+  `ThinReportGenerator` wrote its visuals with a fresh `PowerBIProjectGenerator`
+  that never saw the model it was bound to, so reports of a shared model, of a
+  single-workbook Fabric project and of `--add-to-model` kept raw Tableau names
+  (`Employee_Count`, `Calculation_1`, the datasource table `federated.1`) and
+  bound measures as aggregated columns. The openability gate rejected those
+  projects, and the gated Desktop openability suite had never passed. The
+  generator now takes a `model_context`, the name index of the model that was
+  just written (`PowerBIProjectGenerator.apply_model_context()` and
+  `export_model_context()`), and the three flows pass it, so thin reports
+  resolve fields exactly as the model's own report does. New tests read the
+  generated TMDL and visual JSON back and check every projected field against
+  the model, and five deliberate-defect controls keep them able to fail. No
+  Power BI Desktop load or refresh was exercised.
+
+- Resolve the job directory of the browser UI (`web/app.py`, Streamlit and the
+  stdlib fallback server) to its canonical path. Upload confinement compares
+  real and lexical paths, so a temporary root reached through an alias (Windows
+  8.3 names such as `RUNNER~1`, macOS `/var`) was refused.
+
+- Stage the canonical Hyper CSV when its name is another name of the source
+  file. A case-only rename was recognised through `os.path.normcase`, which does
+  not fold case on macOS, so copying onto the same file raised `SameFileError`;
+  `os.path.samefile` is now consulted as well.
+
+- Make the test suite and the CI matrix honest on Windows and macOS. The
+  Windows unit-test step ran under `pwsh`, which reports only the exit code of
+  its last command, so pytest failures and the coverage gate were never
+  enforced there; it now runs under `bash` on every OS. Temporary roots are
+  canonicalised in `tests/conftest.py`, the desktop-probe and path-length tests
+  no longer assume a platform, and the skill lint reports a path on another
+  drive in full instead of failing in `os.path.relpath`. Duration limits of the
+  large-workbook benchmark are skipped while a tracer, profiler or
+  `sys.monitoring` tool is active and enforced by the existing performance
+  step, which runs without coverage; memory ceilings are enforced everywhere.
+  The SLA and CLI elapsed-time tests no longer depend on the 15.6 ms Windows
+  clock used before Python 3.13.
+
 - Clear the CI lint findings: flake8, ruff (`E,F,W,I`) and pyright all report
   zero diagnostics with the CI commands. Most of the change is mechanical
   (whitespace, unused imports and variables, placeholder-free f-strings, import
