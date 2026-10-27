@@ -199,6 +199,61 @@
             <local-type>real</local-type>
             <aggregation>Sum</aggregation>
           </metadata-record>
+          <metadata-record class='column'><remote-name>sale_id</remote-name><local-name>[sale_id]</local-name><parent-name>[fact_sales]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>date_key</remote-name><local-name>[date_key]</local-name><parent-name>[fact_sales]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>customer_key</remote-name><local-name>[customer_key]</local-name><parent-name>[fact_sales]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>product_key</remote-name><local-name>[product_key]</local-name><parent-name>[fact_sales]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>store_key</remote-name><local-name>[store_key]</local-name><parent-name>[fact_sales]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>channel</remote-name><local-name>[channel]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>region</remote-name><local-name>[region]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>territory</remote-name><local-name>[territory]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>country</remote-name><local-name>[country]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>state</remote-name><local-name>[state]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>city</remote-name><local-name>[city]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>postal_code</remote-name><local-name>[postal_code]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>latitude</remote-name><local-name>[latitude]</local-name><parent-name>[fact_sales]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>longitude</remote-name><local-name>[longitude]</local-name><parent-name>[fact_sales]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>unit_cost</remote-name><local-name>[unit_cost]</local-name><parent-name>[fact_sales]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>discount_pct</remote-name><local-name>[discount_pct]</local-name><parent-name>[fact_sales]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>tax_rate</remote-name><local-name>[tax_rate]</local-name><parent-name>[fact_sales]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>shipping_cost</remote-name><local-name>[shipping_cost]</local-name><parent-name>[fact_sales]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>currency_code</remote-name><local-name>[currency_code]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>order_status</remote-name><local-name>[order_status]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>payment_method</remote-name><local-name>[payment_method]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>sales_rep</remote-name><local-name>[sales_rep]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>promotion_code</remote-name><local-name>[promotion_code]</local-name><parent-name>[fact_sales]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>is_returned</remote-name><local-name>[is_returned]</local-name><parent-name>[fact_sales]</parent-name><local-type>boolean</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>full_date</remote-name><local-name>[full_date]</local-name><parent-name>[dim_date]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>year</remote-name><local-name>[year]</local-name><parent-name>[dim_date]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>quarter</remote-name><local-name>[quarter]</local-name><parent-name>[dim_date]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>month_num</remote-name><local-name>[month_num]</local-name><parent-name>[dim_date]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>month_name</remote-name><local-name>[month_name]</local-name><parent-name>[dim_date]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>week_num</remote-name><local-name>[week_num]</local-name><parent-name>[dim_date]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>day_name</remote-name><local-name>[day_name]</local-name><parent-name>[dim_date]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>is_weekend</remote-name><local-name>[is_weekend]</local-name><parent-name>[dim_date]</parent-name><local-type>boolean</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>is_holiday</remote-name><local-name>[is_holiday]</local-name><parent-name>[dim_date]</parent-name><local-type>boolean</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>fiscal_quarter</remote-name><local-name>[fiscal_quarter]</local-name><parent-name>[dim_date]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>fiscal_year</remote-name><local-name>[fiscal_year]</local-name><parent-name>[dim_date]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>customer_id</remote-name><local-name>[customer_id]</local-name><parent-name>[dim_customer]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>customer_name</remote-name><local-name>[customer_name]</local-name><parent-name>[dim_customer]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>email</remote-name><local-name>[email]</local-name><parent-name>[dim_customer]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>phone</remote-name><local-name>[phone]</local-name><parent-name>[dim_customer]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>segment</remote-name><local-name>[segment]</local-name><parent-name>[dim_customer]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>industry</remote-name><local-name>[industry]</local-name><parent-name>[dim_customer]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>company_size</remote-name><local-name>[company_size]</local-name><parent-name>[dim_customer]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>first_order_date</remote-name><local-name>[first_order_date]</local-name><parent-name>[dim_customer]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>credit_limit</remote-name><local-name>[credit_limit]</local-name><parent-name>[dim_customer]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>account_manager</remote-name><local-name>[account_manager]</local-name><parent-name>[dim_customer]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>is_active</remote-name><local-name>[is_active]</local-name><parent-name>[dim_customer]</parent-name><local-type>boolean</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>product_id</remote-name><local-name>[product_id]</local-name><parent-name>[dim_product]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>product_name</remote-name><local-name>[product_name]</local-name><parent-name>[dim_product]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>category</remote-name><local-name>[category]</local-name><parent-name>[dim_product]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>subcategory</remote-name><local-name>[subcategory]</local-name><parent-name>[dim_product]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>brand</remote-name><local-name>[brand]</local-name><parent-name>[dim_product]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>supplier</remote-name><local-name>[supplier]</local-name><parent-name>[dim_product]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>weight_kg</remote-name><local-name>[weight_kg]</local-name><parent-name>[dim_product]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>is_perishable</remote-name><local-name>[is_perishable]</local-name><parent-name>[dim_product]</parent-name><local-type>boolean</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>launch_date</remote-name><local-name>[launch_date]</local-name><parent-name>[dim_product]</parent-name><local-type>date</local-type></metadata-record>
         </metadata-records>
       </connection>
 
@@ -416,6 +471,17 @@ WHERE b.fiscal_year >= EXTRACT(YEAR FROM CURRENT_DATE) - 2</expression>
           <map key='[actual_revenue]' value='[Custom SQL Query].[actual_revenue]' />
           <map key='[actual_margin]' value='[Custom SQL Query].[actual_margin]' />
         </cols>
+        <metadata-records>
+          <metadata-record class='column'><remote-name>fiscal_year</remote-name><local-name>[fiscal_year]</local-name><parent-name>[Custom SQL Query]</parent-name></metadata-record>
+          <metadata-record class='column'><remote-name>fiscal_quarter</remote-name><local-name>[fiscal_quarter]</local-name><parent-name>[Custom SQL Query]</parent-name></metadata-record>
+          <metadata-record class='column'><remote-name>region</remote-name><local-name>[budget_region]</local-name><parent-name>[Custom SQL Query]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>channel</remote-name><local-name>[budget_channel]</local-name><parent-name>[Custom SQL Query]</parent-name></metadata-record>
+          <metadata-record class='column'><remote-name>revenue_target</remote-name><local-name>[revenue_target]</local-name><parent-name>[Custom SQL Query]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>margin_target</remote-name><local-name>[margin_target]</local-name><parent-name>[Custom SQL Query]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>growth_target_pct</remote-name><local-name>[growth_target_pct]</local-name><parent-name>[Custom SQL Query]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>actual_revenue</remote-name><local-name>[actual_revenue]</local-name><parent-name>[Custom SQL Query]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>actual_margin</remote-name><local-name>[actual_margin]</local-name><parent-name>[Custom SQL Query]</parent-name><local-type>real</local-type></metadata-record>
+        </metadata-records>
       </connection>
       <column caption='Budget Region' datatype='string' name='[budget_region]' role='dimension' type='nominal' />
       <column caption='Revenue Target' datatype='real' name='[revenue_target]' role='measure' type='quantitative' />

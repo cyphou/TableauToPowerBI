@@ -4,6 +4,39 @@
 
 ## Unreleased
 
+- Prefer a complete, explicitly bound original database over its Hyper extract
+  in the same datasource. Select before reading/exporting Hyper data; keep
+  native tables, columns, relations and worksheet lineage. Do not query the
+  database during generation. Incomplete/ambiguous database bindings fail
+  explicitly, while file-backed extracts and unresolved published references
+  remain on the existing snapshot path. A Hyper shared with a remaining
+  consumer still requires full export. Normalize validated physical column
+  names before local caption/calculation steps, and resolve scoped PBIP
+  projections to the terminal model names without borrowing another source.
+  Record database/snapshot source decisions
+  without endpoint details; no selected Hyper means `not_applicable`, not
+  verified refresh or snapshot parity. Invalidate older migration checkpoints.
+  This supersedes the earlier snapshot-first policy below only for eligible
+  native databases; retained Hyper still requires complete CSV/Parquet and
+  exact Import bindings.
+
+- Restore column ownership from explicit Tableau `<connection><cols><map>`
+  entries when an individual field lacks metadata-record ownership. This
+  restores the `Orders.Region` category in the regional-sales sample without
+  choosing an arbitrary side of a join. Metadata ownership remains authoritative;
+  conflicting or malformed fallback maps are warned about and stay unresolved.
+  Native metadata history and named-Hyper diagnostic scopes are preserved.
+  Complete 195 mapping-derived metadata records in seven synthetic sample
+  workbooks, covering all 199 explicit maps. Types come only from existing
+  declarations in the same datasource; three undeclared Custom SQL types stay
+  absent. Independent A-only and B-only migrations both restore the exact PBIR
+  binding. Update only the matching golden snapshot from a one-field table to
+  a two-field native bar, with layout unchanged. Hyper Import requirements,
+  corpus exceptions and quality thresholds
+  are unchanged. Static binding checks are not native Desktop/refresh evidence;
+  the legacy equivalence score still reports 57.1% because its field-name
+  comparison does not translate calculation IDs to generated measure captions.
+
 - Change the corpus gate so that it accounts for every artefact instead of
   stopping at "migration exited 7". `scripts/check_corpus_gate.py` now reads
   the batch state that `migrate.py --batch` records, names each artefact that
@@ -123,7 +156,8 @@
   `.hyper` file when the SDK is installed (skipped otherwise). No production
   caller uses this function yet.
 
-- Name the retained source in the quality report when an enabled extract hides
+- Earlier snapshot-first behavior (eligible DB cases are superseded above):
+  name the retained source in the quality report when an enabled extract hides
   another connection: the Hyper Import section gains a bilingual **Source
   decision** table (datasource, retained packaged Hyper snapshot, unused
   original connector type) and a `source_decisions` evidence field. Only the
@@ -138,7 +172,7 @@
   synthetic fixtures only; no live connection, Desktop load, refresh or value
   parity was exercised.
 
-- Require complete Hyper snapshot exports for PBIP and exact CSV/Parquet file
+- Require complete retained Hyper snapshot exports for PBIP and exact CSV/Parquet file
   bindings to Import partitions. Reject row caps (including environment caps),
   sample-only readers, unknown/inconsistent counts and unresolved required
   bindings instead of accepting a partial model. Keep the uncompressed 10 MiB
@@ -235,7 +269,8 @@
   Power BI refresh. Hyper still exports its data to CSV/Parquet
   using the existing 10 MiB rule; Fabric keeps its separate staging behavior.
 
-- Simplify PBIP source selection: Hyper snapshots use Import; native sources
+- Earlier storage-mode slice (before the database-first decision above):
+  Hyper snapshots use Import; native sources
   without Hyper use DirectQuery when supported. Import-only files stay Import
   with a diagnostic, and the user can always force Import through `--mode import`
   or the local browser. PBIP automatic native Hyper export requires Parquet

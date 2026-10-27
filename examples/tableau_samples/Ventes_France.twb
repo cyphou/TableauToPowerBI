@@ -102,6 +102,35 @@
           <map key='[type_client]' value='[Clients].[type_client]' />
           <map key='[date_inscription]' value='[Clients].[date_inscription]' />
         </cols>
+        <metadata-records>
+          <metadata-record class='column'><remote-name>commande_id</remote-name><local-name>[commande_id]</local-name><parent-name>[Commandes]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>date_commande</remote-name><local-name>[date_commande]</local-name><parent-name>[Commandes]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>date_livraison</remote-name><local-name>[date_livraison]</local-name><parent-name>[Commandes]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>client_id</remote-name><local-name>[client_id]</local-name><parent-name>[Commandes]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>produit_id</remote-name><local-name>[produit_id]</local-name><parent-name>[Commandes]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>region</remote-name><local-name>[region]</local-name><parent-name>[Commandes]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>departement</remote-name><local-name>[departement]</local-name><parent-name>[Commandes]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>ville</remote-name><local-name>[ville]</local-name><parent-name>[Commandes]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>code_postal</remote-name><local-name>[code_postal]</local-name><parent-name>[Commandes]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>quantite</remote-name><local-name>[quantite]</local-name><parent-name>[Commandes]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>prix_unitaire</remote-name><local-name>[prix_unitaire]</local-name><parent-name>[Commandes]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>remise</remote-name><local-name>[remise]</local-name><parent-name>[Commandes]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>frais_port</remote-name><local-name>[frais_port]</local-name><parent-name>[Commandes]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>mode_paiement</remote-name><local-name>[mode_paiement]</local-name><parent-name>[Commandes]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>statut</remote-name><local-name>[statut]</local-name><parent-name>[Commandes]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>commercial</remote-name><local-name>[commercial]</local-name><parent-name>[Commandes]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>nom_produit</remote-name><local-name>[nom_produit]</local-name><parent-name>[Produits]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>categorie</remote-name><local-name>[categorie]</local-name><parent-name>[Produits]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>sous_categorie</remote-name><local-name>[sous_categorie]</local-name><parent-name>[Produits]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>marque</remote-name><local-name>[marque]</local-name><parent-name>[Produits]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>cout_achat</remote-name><local-name>[cout_achat]</local-name><parent-name>[Produits]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>nom_client</remote-name><local-name>[nom_client]</local-name><parent-name>[Clients]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>prenom_client</remote-name><local-name>[prenom_client]</local-name><parent-name>[Clients]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>email</remote-name><local-name>[email]</local-name><parent-name>[Clients]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>segment</remote-name><local-name>[segment]</local-name><parent-name>[Clients]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>type_client</remote-name><local-name>[type_client]</local-name><parent-name>[Clients]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>date_inscription</remote-name><local-name>[date_inscription]</local-name><parent-name>[Clients]</parent-name><local-type>date</local-type></metadata-record>
+        </metadata-records>
       </connection>
 
       <!-- Colonnes physiques avec captions français -->

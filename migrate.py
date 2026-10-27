@@ -2693,8 +2693,8 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 # No stable sentinel may validate an earlier success. Leave
                 # source failure reporting to the isolated migration worker.
                 return None
-        # Invalidate output predating packaged-Excel binding/full Hyper Import.
-        config['signature_version'] = 6
+        # Source selection changed: prefer an explicitly bound native database.
+        config['signature_version'] = 7
         return hashlib.sha256(
             json.dumps(config, sort_keys=True, default=str).encode('utf-8')
         ).hexdigest()
@@ -12142,8 +12142,8 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename, *,
                                   stage_native_files=None):
     """Post-generation processing for TWBX files.
 
-    PBIP keeps and exports Hyper data plus image resources referenced by report
-    visuals; native source files remain at their declared paths for refresh.
+    PBIP keeps and exports selected Hyper data plus referenced image resources.
+    Extracts deliberately superseded by their native database are not opened.
     Fabric retains its existing source-file staging behavior.
 
     Called from both single-file and batch migration paths.
@@ -12169,6 +12169,24 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename, *,
         stage_native_files = output_format == 'fabric'
     data_dir = os.path.join(project_dir, 'Data')
     max_zip_entry_mb = options['max_zip_entry_mb']
+    from tableau_export.datasource_extractor import unused_hyper_members
+
+    datasources_path = os.path.join(
+        extract_dir or _get_extract_dir(), 'datasources.json')
+    ignored_hyper = set()
+    if os.path.isfile(datasources_path):
+        try:
+            with open(datasources_path, encoding='utf-8') as stream:
+                datasources = json.load(stream)
+        except (OSError, ValueError) as exc:
+            raise GenerationError(
+                "Could not read datasource source-selection evidence",
+                source='native_database') from exc
+        if not isinstance(datasources, list):
+            raise GenerationError(
+                "Datasource source-selection evidence must be a list",
+                source='native_database')
+        ignored_hyper = unused_hyper_members(datasources, source_path)
 
     # ── 1. Retain embedded Hyper files and report resources ────────
     _SKIP_EXT = {'.twb', '.tds', '.twbr'}
@@ -12182,6 +12200,7 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename, *,
                     and options['hyper_export_max_rows'] is not None
                     and any(not info.is_dir()
                             and info.filename.lower().endswith('.hyper')
+                            and info.filename not in ignored_hyper
                             for info in infos)):
                 raise ConfigurationError(
                     "PBIP Hyper migrations reject resolved row caps, "
@@ -12311,6 +12330,11 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename, *,
                 ext = os.path.splitext(entry)[1].lower()
                 if ext in _SKIP_EXT or entry.endswith('/'):
                     continue
+                if ext == '.hyper' and entry in ignored_hyper:
+                    logger.info(
+                        "Skipping packaged Hyper selected out by native "
+                        "database policy: %s", entry)
+                    continue
                 if ext == '.hyper' or stage_native_files:
                     targets = [entry]
                 else:
@@ -12344,7 +12368,11 @@ def _process_twbx_post_generation(source_path, project_dir, source_basename, *,
               f"from TWBX")
 
     # ── 1b. Convert Hyper files to CSV so M queries can load data ────
-    if stage_native_files or packaged_hyper or merge_manifest:
+    has_hyper_manifest = os.path.isfile(
+        os.path.join(data_dir, 'hyper_exports.json'))
+    if ((stage_native_files or packaged_hyper or merge_manifest)
+            and not (ignored_hyper and not packaged_hyper
+                     and not has_hyper_manifest)):
         _convert_hyper_to_csv_in_data(
             data_dir, source_basename, project_dir, packaged_hyper=packaged_hyper,
             hyper_export_format=options['hyper_export_format'],
@@ -12891,8 +12919,8 @@ def _run_single_migration_impl(args):
         'hyper_export_max_rows': hyper_options['hyper_export_max_rows'],
         'hyper_rows': getattr(args, 'hyper_rows', None),
         'max_zip_entry_mb': hyper_options['max_zip_entry_mb'],
-        # Invalidate output predating packaged-Excel binding/full Hyper Import.
-        'signature_version': 6,
+        # Source selection changed: prefer an explicitly bound native database.
+        'signature_version': 7,
     }
     try:
         source_signature = MigrationCheckpoint.hash_file(args.tableau_file)

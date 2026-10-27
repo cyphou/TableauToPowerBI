@@ -296,7 +296,7 @@ class TestDocumentationPresentations(unittest.TestCase):
             for slide in self.overview.slides
         ]
         ordered_titles = (
-            "Hyper ou source native : une règle simple",
+            "Base d’origine ou Hyper : choisir la source",
             "Une preuve statique, pas une promesse de parité",
             "Comparer le même périmètre de travail",
             "Trois scénarios, pas une promesse",
@@ -431,7 +431,7 @@ class TestDocumentationPresentations(unittest.TestCase):
     def _assert_source_policy(self, presentation):
         slide = _find_slide(
             presentation,
-            "Hyper ou source native : une règle simple",
+            "Base d’origine ou Hyper : choisir la source",
         )
         visible = _normalized(_slide_text(slide))
         notes = _normalized(_notes_text(slide))
@@ -448,9 +448,17 @@ class TestDocumentationPresentations(unittest.TestCase):
             "strictement au-dessus",
             "parquet natif + import",
             "sdk hyper optionnel requis",
+            "si une même source déclare hyper et une base d’origine explicite, "
+            "complète et non ambiguë",
+            "retenir cette base avant toute lecture/export hyper",
+            "ne pas deviner une base depuis excel/csv ou une référence publiée non résolue",
+            "un lien de base incomplet ou ambigu est une erreur explicite",
             "directquery si le connecteur le permet",
             "sinon import",
             "l'utilisateur peut forcer import",
+            "sans changer la source retenue",
+            "aucune connexion à la base pendant la génération",
+            "pas de garantie de parité avec un extrait filtré, agrégé ou daté",
             "aucune extraction/copie de lignes par l'outil",
             "excel réellement embarqué dans le twbx",
             "copié sans modification dans data/",
@@ -460,8 +468,21 @@ class TestDocumentationPresentations(unittest.TestCase):
         ):
             with self.subTest(surface="speaker notes", phrase=phrase):
                 self.assertIn(phrase, notes)
-        self.assertIn("aucune extraction des données natives", visible)
-        self.assertIn("excel embarqué : copié tel quel dans data/", visible)
+        for phrase in (
+            "même source tableau : base explicite complète prioritaire ; sinon hyper.",
+            "1 — base d’origine si éligible",
+            "2 — sinon : hyper conservé",
+            "directquery si compatible",
+            "import si forcé ou si incompatible",
+            "aucune lecture ni export du hyper.",
+            "connexion, schéma et m ; accès à configurer",
+            "export complet des données hyper.",
+            "pour parquet : sdk hyper requis.",
+            "source retenue : parité avec l’extrait tableau et actualisation restent à vérifier.",
+            "exception — excel embarqué : copié inchangé dans data/, lié par chemin absolu.",
+        ):
+            with self.subTest(surface="visible", phrase=phrase):
+                self.assertIn(phrase, visible)
 
     def test_overview_source_policy_covers_hyper_and_native_sources(self):
         self._assert_source_policy(self.overview)

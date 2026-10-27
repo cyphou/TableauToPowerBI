@@ -108,11 +108,15 @@ workflows are outside this exception.
      repositories. Copying alone does not establish successful refresh
    - Relative paths from loose workbooks resolve against their original folder;
      other packaged native sources still need an accessible external binding
-   - For Hyper, review the complete staged CSV/Parquet files, their recorded
+   - When the same datasource declares Hyper and an eligible complete original
+     database binding, generation keeps that database and skips the Hyper.
+     Review the quality report's Source decision; configure access separately.
+     This choice is not proof of parity with the Tableau snapshot
+   - For retained Hyper, review the complete staged CSV/Parquet files, their recorded
      counts/identities and the absolute `DataFolder` parameter. Every required
      export must have its exact Import binding; incomplete or unbound results
-     block generation. Do not replace the snapshot with its historical live
-     connection. Static checks do not prove that Desktop has loaded the data
+     block generation. Do not switch sources to hide an export failure.
+     Static checks do not prove that Desktop has loaded the data
    - Configure credentials and gateway access separately
    - Refresh native Import data in Power BI after configuring source access
    - Inspect the refresh result, then save after successful processing to retain

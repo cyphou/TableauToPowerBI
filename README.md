@@ -327,12 +327,19 @@ user filters, Hyper metadata, datasource filters, custom geocoding, published
 datasources, data blending, table extensions and linguistic schema. See the
 [extraction contract](tableau_export/README.md).
 
-**Hyper extract data:** export the complete packaged snapshot, then bind its
+**Source selection:** when the same datasource declares a Hyper extract and a
+complete, unambiguous original database binding, generate Power Query on that
+database **without reading or exporting the Hyper**. This is the default source
+choice, not a fallback after export failure. Native Excel/CSV sources and
+unresolved Tableau Server references do not qualify. Incomplete database
+bindings fail explicitly; no endpoint or table is guessed.
+
+**Retained Hyper extract data:** export the complete packaged snapshot, then bind its
 CSV or native Parquet files to Import partitions through exact physical
 identities. Bounded streaming avoids full-table Python lists. Missing exports,
 unknown or mismatched row counts, incomplete data and missing Import bindings
 block the PBIP migration; producing a file alone is not a successful import.
-Hyper uses Import; native database sources without Hyper use DirectQuery
+Retained Hyper uses Import; selected native database sources use DirectQuery
 when supported. The user can always force Import. For PBIP, native Hyper export
 requires Parquet above 10 MiB and uses CSV otherwise. SQLite-compatible inputs
 above that threshold fail unless CSV is explicitly selected. See the
@@ -344,14 +351,16 @@ TWBX is copied unchanged into the project's `Data/` folder and bound by its
 absolute path. Loose native files and packaged non-Excel files are not copied.
 This exception covers trusted local per-workbook batch generation, not uploaded
 jobs or shared-model/add-to-model/remove-from-model workflows.
-Power BI loads native rows at refresh. Hyper data exports remain enabled.
+Power BI loads native rows at refresh. Retained Hyper data exports remain enabled.
 The earlier no-copy follow-up passed **1,442 targeted tests**, before the
 packaged-Excel exception; it does not establish native
 Power BI refresh or replace the dated full-suite measurement above.
 PBIP Hyper migrations reject row caps, including
 `TTPBI_HYPER_EXPORT_MAX_ROWS`, rather than silently generating a partial model.
-Metadata/header samples cannot replace a full reader. The original database
-connection is not substituted for an available Hyper snapshot. See the
+Metadata/header samples cannot replace a full reader for a retained snapshot.
+The quality report names the database or snapshot selected, without publishing
+connection details. A database choice does not establish parity with Tableau's
+possibly filtered, aggregated or dated extract. See the
 [large-extract options and progress](docs/FAQ.md#how-are-hyper-extract-files-handled).
 Parquet uses a private ASCII transit path for native SDK writing, then Python
 publishes the file at its actual destination, including accented paths.
@@ -983,7 +992,7 @@ Other rows below describe separate routes or retained parser options.
 | `--calendar-end YEAR` | Calendar table end year (default: 2030) |
 | `--culture LOCALE` | Culture/locale for linguistic metadata (e.g., `fr-FR`) |
 | `--languages LOCALES` | Shared-model culture files (e.g., `fr-FR,de-DE`); not forwarded by batch |
-| `--mode MODE` | Default `auto`: Hyper/import-only sources use Import, capable native sources use DirectQuery; `import` overrides to Import. Native Import generates connection/schema/M without row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Hyper still exports data. Advanced `directquery`/`composite` remain available |
+| `--mode MODE` | Source selection comes first: an eligible original database takes precedence over its Hyper. Default `auto`: retained Hyper/import-only sources use Import, capable native sources use DirectQuery; `import` overrides to Import, not back to Hyper. Native Import generates connection/schema/M without row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Retained Hyper still exports data. Advanced `directquery`/`composite` remain available |
 | `--composite-threshold COLS` | Legacy per-table storage threshold; not forwarded by batch |
 | `--agg-tables MODE` | Legacy aggregation-table toggle; not forwarded by batch |
 | `--goals` | Legacy Pulse/Goals postprocessing toggle; not forwarded by batch |

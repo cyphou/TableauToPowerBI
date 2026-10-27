@@ -100,6 +100,34 @@
           <map key='[technician]' value='[Maintenance].[technician]' />
           <map key='[description]' value='[Maintenance].[description]' />
         </cols>
+        <metadata-records>
+          <metadata-record class='column'><remote-name>reading_id</remote-name><local-name>[reading_id]</local-name><parent-name>[Sensors]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>reading_time</remote-name><local-name>[reading_time]</local-name><parent-name>[Sensors]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>machine_id</remote-name><local-name>[machine_id]</local-name><parent-name>[Sensors]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>sensor_type</remote-name><local-name>[sensor_type]</local-name><parent-name>[Sensors]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>value</remote-name><local-name>[value]</local-name><parent-name>[Sensors]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>threshold_min</remote-name><local-name>[threshold_min]</local-name><parent-name>[Sensors]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>threshold_max</remote-name><local-name>[threshold_max]</local-name><parent-name>[Sensors]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>unit</remote-name><local-name>[unit]</local-name><parent-name>[Sensors]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>quality_score</remote-name><local-name>[quality_score]</local-name><parent-name>[Sensors]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>plant_id</remote-name><local-name>[plant_id]</local-name><parent-name>[Sensors]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>delta_value</remote-name><local-name>[delta_value]</local-name><parent-name>[Sensors]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>angle_degrees</remote-name><local-name>[angle_degrees]</local-name><parent-name>[Sensors]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>power_watts</remote-name><local-name>[power_watts]</local-name><parent-name>[Sensors]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>machine_name</remote-name><local-name>[machine_name]</local-name><parent-name>[Machines]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>machine_type</remote-name><local-name>[machine_type]</local-name><parent-name>[Machines]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>install_date</remote-name><local-name>[install_date]</local-name><parent-name>[Machines]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>location</remote-name><local-name>[location]</local-name><parent-name>[Machines]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>line_id</remote-name><local-name>[line_id]</local-name><parent-name>[Machines]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>rated_capacity</remote-name><local-name>[rated_capacity]</local-name><parent-name>[Machines]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>maint_id</remote-name><local-name>[maint_id]</local-name><parent-name>[Maintenance]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>maint_date</remote-name><local-name>[maint_date]</local-name><parent-name>[Maintenance]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>maint_type</remote-name><local-name>[maint_type]</local-name><parent-name>[Maintenance]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>maint_cost</remote-name><local-name>[maint_cost]</local-name><parent-name>[Maintenance]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>downtime_hours</remote-name><local-name>[downtime_hours]</local-name><parent-name>[Maintenance]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>technician</remote-name><local-name>[technician]</local-name><parent-name>[Maintenance]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>description</remote-name><local-name>[description]</local-name><parent-name>[Maintenance]</parent-name><local-type>string</local-type></metadata-record>
+        </metadata-records>
       </connection>
 
       <!-- Physical columns -->

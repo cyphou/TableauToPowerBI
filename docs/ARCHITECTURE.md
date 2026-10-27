@@ -148,19 +148,26 @@ For environments without Mermaid rendering:
 
 ## Automatic storage mode and Hyper export
 
-For PBIP generation, decide independently for each source table. An available
-Hyper file is the snapshot to import; its size controls the export format,
-not the storage mode. A native database source without Hyper uses DirectQuery
+For PBIP generation, select the source independently for each datasource,
+before reading Hyper data. When Hyper and a complete explicit original database
+binding coexist, prefer that database without reading or exporting the Hyper.
+Physical table ownership and column lineage must be unambiguous; incomplete
+database metadata fails explicitly. File sources and unresolved published
+references are not eligible. Remaining Hyper sources retain their snapshots;
+their size controls the export format, not the storage mode.
+A selected native database source uses DirectQuery
 when its connector supports it. The user can always choose **Import** instead.
 For a non-Hyper Import source, migrate the connection, schema and Power Query M
 without exporting native rows. An explicitly declared Excel workbook packaged
 in a TWBX is copied unchanged into the PBIP project's `Data/` folder and bound
 by its absolute path. Loose native files and packaged non-Excel files are not
 copied. Power BI retrieves native rows at refresh. Hyper is different:
-all rows already present in each migrated Hyper table are exported, then
-connected to the corresponding Import partition. Do not replace the snapshot
-with its historical live connection or reapply its already-materialized joins
-and filters as if it were that live source.
+all rows already present in each retained Hyper table are exported, then
+connected to the corresponding Import partition. Do not reapply that snapshot's
+already-materialized joins and filters as if it were the live source.
+For a selected database, native lineage is restored instead; discarded extract
+metadata must not route worksheets or filters. This choice does not establish
+parity with a filtered, aggregated or dated snapshot.
 
 The packaged-Excel exception applies to trusted local per-workbook generation
 through batch folders/manifests and batch configuration. Uploaded jobs remain
@@ -171,7 +178,10 @@ contract is unchanged.
 ```mermaid
 flowchart TD
     Source["Tableau source table"] --> Hyper{"Hyper file present?"}
-    Hyper -->|Yes| Complete["Read complete Hyper tables; no row cap or metadata sample"]
+    Hyper -->|Yes| NativeDB{"Same datasource has eligible explicit original database?"}
+    NativeDB -->|Yes| ChooseDB["Keep native database; do not read or export Hyper"]
+    ChooseDB --> Capable
+    NativeDB -->|No| Complete["Read complete retained Hyper tables; no row cap or metadata sample"]
     Complete --> Size{"Uncompressed Hyper size > 10 MiB?"}
     Size -->|Yes| SDK{"Native Hyper input and Hyper SDK available?"}
     SDK -->|Yes| Parquet["Complete native Parquet export"]
@@ -195,6 +205,7 @@ flowchart TD
 
 The default `--mode auto` applies this rule. `--mode import`, or **Import** in
 the local browser, forces Import instead of DirectQuery during generation.
+It does not undo source selection or restore an ignored Hyper snapshot.
 A mixed-source model can therefore contain both Import and DirectQuery tables.
 Explicit DirectQuery requests for Hyper or import-only files fail rather than
 silently changing the requested mode.
@@ -250,7 +261,10 @@ or saved the model. Native refresh, save/reopen, values and screenshots need
 their own authorized validation.
 
 Generating a database connection never refreshes it or proves credential,
-gateway or query-folding availability. Limited low-level diagnostic exports
+gateway or query-folding availability. Source decisions are recorded without
+endpoint/credential details; Hyper-only evidence is `not_applicable` when no
+snapshot is selected, not proof of native refresh. Mixed-source gates still
+check every retained Hyper identity. Limited low-level diagnostic exports
 and Fabric's separate staging behavior are not full PBIP imports. See the
 [Hyper options and progress contract](FAQ.md#how-are-hyper-extract-files-handled).
 

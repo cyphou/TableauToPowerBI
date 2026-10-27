@@ -80,6 +80,31 @@
           <map key='[customer_email]' value='[Customers].[customer_email]' />
           <map key='[first_purchase_date]' value='[Customers].[first_purchase_date]' />
         </cols>
+        <metadata-records>
+          <metadata-record class='column'><remote-name>order_id</remote-name><local-name>[order_id]</local-name><parent-name>[Orders]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>order_date</remote-name><local-name>[order_date]</local-name><parent-name>[Orders]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>customer_id</remote-name><local-name>[customer_id]</local-name><parent-name>[Orders]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>product_id</remote-name><local-name>[product_id]</local-name><parent-name>[Orders]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>region</remote-name><local-name>[region]</local-name><parent-name>[Orders]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>channel</remote-name><local-name>[channel]</local-name><parent-name>[Orders]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>quantity</remote-name><local-name>[quantity]</local-name><parent-name>[Orders]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>unit_price</remote-name><local-name>[unit_price]</local-name><parent-name>[Orders]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>discount</remote-name><local-name>[discount]</local-name><parent-name>[Orders]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>shipping_cost</remote-name><local-name>[shipping_cost]</local-name><parent-name>[Orders]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>order_status</remote-name><local-name>[order_status]</local-name><parent-name>[Orders]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>sales_rep</remote-name><local-name>[sales_rep]</local-name><parent-name>[Orders]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>territory</remote-name><local-name>[territory]</local-name><parent-name>[Orders]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>customer_name</remote-name><local-name>[customer_name]</local-name><parent-name>[Customers]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>segment</remote-name><local-name>[segment]</local-name><parent-name>[Customers]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>city</remote-name><local-name>[city]</local-name><parent-name>[Customers]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>state</remote-name><local-name>[state]</local-name><parent-name>[Customers]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>country</remote-name><local-name>[country]</local-name><parent-name>[Customers]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>postal_code</remote-name><local-name>[postal_code]</local-name><parent-name>[Customers]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>latitude</remote-name><local-name>[latitude]</local-name><parent-name>[Customers]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>longitude</remote-name><local-name>[longitude]</local-name><parent-name>[Customers]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>customer_email</remote-name><local-name>[customer_email]</local-name><parent-name>[Customers]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>first_purchase_date</remote-name><local-name>[first_purchase_date]</local-name><parent-name>[Customers]</parent-name><local-type>date</local-type></metadata-record>
+        </metadata-records>
       </connection>
       <!-- Physical columns -->
       <column caption='Order ID' datatype='integer' name='[order_id]' role='dimension' type='ordinal' />

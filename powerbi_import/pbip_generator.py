@@ -5157,6 +5157,20 @@ class PowerBIProjectGenerator:
             table = source_table.strip('[]')
             entity = getattr(self, '_table_rename_map', {}).get((datasource, table), table)
             column = (source_column or clean).strip('[]')
+            selection = source.get('source_selection') if source is not None else None
+            if (source is not None and isinstance(selection, dict)
+                    and selection.get('policy') == 'prefer_native_database'
+                    and selection.get('selected') == 'native_database'):
+                # Native M exposes local names before applying model captions.
+                locals_ = {
+                    item['name'].strip('[]')
+                    for native_table in source.get('tables', [])
+                    if native_table.get('name') == table
+                    for item in native_table.get('columns', [])
+                    if (item.get('sourceColumn') or item.get('name')) == column
+                }
+                if len(locals_) == 1:
+                    column = next(iter(locals_))
             prop = getattr(self, '_column_rename_map', {}).get((entity, column), column)
             return (entity, prop)
         if source is not None:

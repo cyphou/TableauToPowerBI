@@ -72,13 +72,15 @@ job. Do not expose the loopback runner on a network interface.
 3. Select the Power BI project or local Fabric artifact format and, if needed,
    the model culture, calendar years, quality policy, and resume setting.
    For Power BI projects, leave storage mode on **Automatique**, or select
-   **Import** to override DirectQuery. Automatic mode imports Hyper snapshots
-   and uses DirectQuery only for capable native sources without Hyper.
+   **Import** to override DirectQuery. An eligible explicit original database
+   takes precedence over its Hyper in the same datasource, without Hyper
+   reading/export. Automatic mode imports retained Hyper snapshots and uses
+   DirectQuery for capable selected native databases.
    Non-Hyper Import generates the datasource connection, schema and M without
    exporting rows. An explicitly packaged Excel workbook is copied unchanged
    into the project's `Data/` folder and bound by its absolute path; loose
    native files and packaged non-Excel files are not copied.
-   Power BI loads native rows at refresh. Hyper data still export.
+   Power BI loads native rows at refresh. Retained Hyper data still export.
 4. Start the migration and follow its real status and technical log.
 5. Open the generated reports or project artifacts from the result list, or
    download the completed output as a ZIP.

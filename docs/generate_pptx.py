@@ -321,12 +321,18 @@ def _pipeline(prs, section):
 
 def _source_policy(prs, section):
     slide = _slide(
-        prs, "Hyper ou source native : une règle simple",
-        "Politique PBIP automatique ; la taille Hyper est mesurée décompressée.",
+        prs, "Base d’origine ou Hyper : choisir la source",
+        "Même source Tableau : base explicite complète prioritaire ; sinon Hyper.",
         section, sources=("architecture",),
-        note="Hyper <= 10 * 1024 * 1024 octets : CSV + Import. Strictement au-dessus : "
-        "Parquet natif + Import, SDK Hyper optionnel requis. Sans Hyper, DirectQuery "
-        "si le connecteur le permet, sinon Import. L'utilisateur peut forcer Import. "
+        note="Si une même source déclare Hyper et une base d’origine explicite, complète "
+        "et non ambiguë, retenir cette base avant toute lecture/export Hyper. "
+        "Ne pas deviner une base depuis Excel/CSV ou une référence publiée non résolue. "
+        "Un lien de base incomplet ou ambigu est une erreur explicite. "
+        "Hyper conservé <= 10 * 1024 * 1024 octets : CSV + Import. Strictement au-dessus : "
+        "Parquet natif + Import, SDK Hyper optionnel requis. Base native : DirectQuery "
+        "si le connecteur le permet, sinon Import. L'utilisateur peut forcer Import "
+        "sans changer la source retenue. Aucune connexion à la base pendant la génération ; "
+        "pas de garantie de parité avec un extrait filtré, agrégé ou daté. "
         "L'Import natif ne déclenche aucune extraction/copie de lignes par l'outil. "
         "Exception explicite : un classeur Excel réellement embarqué dans le TWBX est "
         "copié sans modification dans Data/ et lié par chemin absolu ; ce n'est pas une "
@@ -334,17 +340,19 @@ def _source_policy(prs, section):
         "partagés, et le chemin absolu local figure dans le projet. "
         "Fabric conserve un contrat de staging distinct.",
     )
-    _tag(slide, 0.65, 2.53, 5.8, "HYPER PRÉSENT : EXPORT DU SNAPSHOT", ORANGE_LIGHT, ORANGE)
-    _tag(slide, 6.85, 2.53, 5.8, "SANS HYPER : SOURCE CONSERVÉE", TEAL_LIGHT, TEAL)
-    _node(slide, 0.65, 3.19, 2.7, "≤ 10 MiB", "CSV + Import", fill=ORANGE)
-    _node(slide, 3.75, 3.19, 2.7, "> 10 MiB", "Parquet + Import", fill=INK)
-    _node(slide, 6.85, 3.19, 5.8, "DirectQuery si compatible", "Sinon Import", fill=TEAL)
-    _text(slide, 0.72, 4.80, 5.6, 1.10,
-          "Export réel des données Hyper.\nParquet : SDK Hyper optionnel requis.", 16)
-    _text(slide, 6.92, 4.80, 5.6, 1.10,
-          "Connexion, schéma et M uniquement.\nAucune extraction des données natives.\n"
-          "Excel embarqué : copié tel quel dans Data/.", 16)
-    _banner(slide, "L'utilisateur garde la main : passer de DirectQuery à Import reste possible.")
+    _tag(slide, 0.65, 2.53, 5.8, "1 — BASE D’ORIGINE SI ÉLIGIBLE", TEAL_LIGHT, TEAL)
+    _tag(slide, 6.85, 2.53, 5.8, "2 — SINON : HYPER CONSERVÉ", ORANGE_LIGHT, ORANGE)
+    _node(slide, 0.65, 3.19, 5.8, "DirectQuery si compatible",
+          "Import si forcé ou si incompatible", fill=TEAL)
+    _node(slide, 6.85, 3.19, 2.7, "≤ 10 MiB", "CSV + Import", fill="A3430C")
+    _node(slide, 9.95, 3.19, 2.7, "> 10 MiB", "Parquet + Import", fill=INK)
+    _text(slide, 0.72, 4.80, 5.6, 0.65,
+          "Aucune lecture ni export du Hyper.\nConnexion, schéma et M ; accès à configurer.", 16)
+    _text(slide, 6.92, 4.80, 5.6, 0.65,
+          "Export complet des données Hyper.\nPour Parquet : SDK Hyper requis.", 16)
+    _text(slide, 0.72, 5.57, 11.9, 0.28,
+          "Exception — Excel embarqué : copié inchangé dans Data/, lié par chemin absolu.", 13, MUTED)
+    _banner(slide, "Source retenue : parité avec l’extrait Tableau et actualisation restent à vérifier.")
 
 
 def _evidence(prs, section):

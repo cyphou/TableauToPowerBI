@@ -84,6 +84,33 @@
           <map key='[lead_status]' value='[Leads].[lead_status]' />
           <map key='[engagement_score]' value='[Leads].[engagement_score]' />
         </cols>
+        <metadata-records>
+          <metadata-record class='column'><remote-name>campaign_id</remote-name><local-name>[campaign_id]</local-name><parent-name>[Campaigns]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>campaign_name</remote-name><local-name>[campaign_name]</local-name><parent-name>[Campaigns]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>channel</remote-name><local-name>[channel]</local-name><parent-name>[Campaigns]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>start_date</remote-name><local-name>[start_date]</local-name><parent-name>[Campaigns]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>end_date</remote-name><local-name>[end_date]</local-name><parent-name>[Campaigns]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>budget</remote-name><local-name>[budget]</local-name><parent-name>[Campaigns]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>spend</remote-name><local-name>[spend]</local-name><parent-name>[Campaigns]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>target_audience</remote-name><local-name>[target_audience]</local-name><parent-name>[Campaigns]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>creative_url</remote-name><local-name>[creative_url]</local-name><parent-name>[Campaigns]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>utm_source</remote-name><local-name>[utm_source]</local-name><parent-name>[Campaigns]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>utm_medium</remote-name><local-name>[utm_medium]</local-name><parent-name>[Campaigns]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>utm_campaign</remote-name><local-name>[utm_campaign]</local-name><parent-name>[Campaigns]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>region</remote-name><local-name>[region]</local-name><parent-name>[Campaigns]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>status</remote-name><local-name>[status]</local-name><parent-name>[Campaigns]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>lead_id</remote-name><local-name>[lead_id]</local-name><parent-name>[Leads]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>lead_name</remote-name><local-name>[lead_name]</local-name><parent-name>[Leads]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>email</remote-name><local-name>[email]</local-name><parent-name>[Leads]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>phone</remote-name><local-name>[phone]</local-name><parent-name>[Leads]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>company</remote-name><local-name>[company]</local-name><parent-name>[Leads]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>job_title</remote-name><local-name>[job_title]</local-name><parent-name>[Leads]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>created_date</remote-name><local-name>[created_date]</local-name><parent-name>[Leads]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>deal_value</remote-name><local-name>[deal_value]</local-name><parent-name>[Leads]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>lead_source</remote-name><local-name>[lead_source]</local-name><parent-name>[Leads]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>lead_status</remote-name><local-name>[lead_status]</local-name><parent-name>[Leads]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>engagement_score</remote-name><local-name>[engagement_score]</local-name><parent-name>[Leads]</parent-name><local-type>real</local-type></metadata-record>
+        </metadata-records>
       </connection>
 
       <!-- Physical columns -->

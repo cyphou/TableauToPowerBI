@@ -8,6 +8,19 @@
    "page": "Sales Overview",
    "title_font": "",
    "title_size": "",
+   "type": "barChart",
+   "width": 600,
+   "x": 0,
+   "y": 240,
+   "z": 0
+  },
+  {
+   "fields": 2,
+   "has_format": true,
+   "height": 280,
+   "page": "Sales Overview",
+   "title_font": "",
+   "title_size": "",
    "type": "clusteredBarChart",
    "width": 600,
    "x": 600,
@@ -26,19 +39,6 @@
    "x": 0,
    "y": 520,
    "z": 2000
-  },
-  {
-   "fields": 1,
-   "has_format": true,
-   "height": 280,
-   "page": "Sales Overview",
-   "title_font": "",
-   "title_size": "",
-   "type": "tableEx",
-   "width": 600,
-   "x": 0,
-   "y": 240,
-   "z": 0
   }
  ]
 }

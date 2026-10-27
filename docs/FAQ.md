@@ -45,11 +45,19 @@ Optional dependencies for advanced features:
 
 ### How are `.hyper` extract files handled?
 
-Packaged Hyper tables retain their exact workbook, archive member, schema and
+Source selection happens **before Hyper data reading**. If the same datasource
+has a concrete original database connection with complete, unambiguous native
+table/column lineage, that database is preferred and its Hyper is not read or
+exported. Credentials are configured later, in Power BI. A missing endpoint or
+ambiguous native binding fails explicitly instead of guessing or silently
+retrying another source. Excel/CSV-backed extracts and unresolved published
+`sqlproxy` references do not qualify as database bindings.
+
+Retained packaged Hyper tables keep their exact workbook, archive member, schema and
 table identity. PBIP generation exports all rows present in the snapshot and
 requires each migrated table's Import partition to read its matching staged
 CSV/Parquet file. It does not select a file by similar columns or filenames,
-or switch back to the original database connection.
+or switch sources after an export failure.
 
 The reader chain uses optional `tableauhyperapi`, then SQLite for compatible
 files, then a bounded header scan for metadata. PBIP full export requires a
@@ -65,8 +73,8 @@ Use these batch options for large extracts:
 | Option | Purpose |
 |--------|---------|
 | `--max-zip-entry-mb N` | Positive per-member uncompressed limit in MiB; explicit option overrides `TTPBI_MAX_ZIP_ENTRY_MB`, then the 1024 MiB default |
-| `--mode auto` | Default: Hyper means Import; without Hyper, use DirectQuery when supported, otherwise Import |
-| `--mode import` | Force Import; non-Hyper sources generate connection/schema/M without native row export. Explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path; Hyper still exports its data |
+| `--mode auto` | After source selection: retained Hyper means Import; selected native databases use DirectQuery when supported, otherwise Import |
+| `--mode import` | Force Import for the selected source; a database selection stays on that database, without native row export. Explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path; retained Hyper still exports its data |
 | `--hyper-export-format auto` | PBIP: Hyper strictly larger than 10 MiB requires native Parquet; at most 10 MiB becomes CSV. Fabric stays CSV |
 | `--hyper-export-format csv` | Explicit CSV export |
 | `--hyper-export-format parquet` | Require native Parquet support; unavailable prerequisites are errors, not silent CSV substitution |
@@ -96,9 +104,9 @@ outside that boundary or silently changing format.
 `--hyper-rows` is a separate legacy metadata/inline-sample option. It is not
 an export row cap and is not forwarded by batch generation.
 
-The decision is deliberately simple: **Hyper means Import**, even when the
-workbook also records an original database connection. Without Hyper, a supported
-native database connector uses DirectQuery. Excel, CSV and other import-only
+The decision is deliberately source-local: **eligible original database first;
+otherwise retain the Hyper snapshot**. A supported selected native database
+connector uses DirectQuery. Excel, CSV and other import-only
 connectors cannot use DirectQuery and remain Import with an explanation.
 This also applies to the native [MySQL connector](https://learn.microsoft.com/en-us/power-query/connectors/mysql-database#supported-capabilities),
 whose supported storage capability is Import, not DirectQuery.
@@ -106,12 +114,13 @@ Select **Import** in the local browser or pass `--mode import` to override
 automatic DirectQuery. See the
 [decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
 
-When an enabled extract sits over a live connection, the snapshot still wins and
-the quality report's Hyper Import section lists the retained snapshot and the
-unused connector type in a **Source decision** table. There is no "prefer live"
-switch; see
+The quality report's Hyper Import section lists the retained source and the
+unused source in a **Source decision** table, using datasource/connector labels
+only, never endpoints or credentials. A deliberately unused snapshot needs no
+export proof; remaining Hyper consumers keep every existing strict check.
+There is no new CLI switch: this source selection is the default. See
 [Active extract behind a live connection](KNOWN_LIMITATIONS.md#active-extract-behind-a-live-connection)
-for the reasons and the workaround.
+for eligibility and snapshot-parity limitations.
 
 For non-Hyper sources, **Import does not mean extracting their data during
 migration**. The PBIP contains the datasource connection, schema and Power Query
@@ -134,8 +143,15 @@ table has a partial nested schema; their declared types and caption mappings
 are preserved instead of creating calculated placeholders. Tableau pseudo-fields
 are excluded from that physical schema. Declarations without proven ownership
 are not assigned to an arbitrary table in a multi-table source.
-Metadata extraction from the Tableau workbook still takes place. Hyper is the
-exception: its data are exported to CSV/Parquet and used by the Import partition.
+Metadata-record ownership remains authoritative. When an individual field
+lacks that ownership, an explicit `[local]` to `[Table].[physical]` mapping in
+the datasource connection's `<cols>` can supply its parent table. Partial
+metadata does not disable this fallback for other fields. Conflicting or
+malformed maps produce warnings, not a guessed join side; mappings from nested
+extract or object scopes are not borrowed for this fallback. This establishes
+table ownership, not a blanket guarantee of physical-column rename recovery.
+Metadata extraction from the Tableau workbook still takes place. Retained Hyper
+is the exception: its data are exported to CSV/Parquet and used by the Import partition.
 
 The size test uses the uncompressed Hyper file: strictly more than
 `10 * 1024 * 1024` bytes chooses Parquet; exactly that size still chooses CSV.

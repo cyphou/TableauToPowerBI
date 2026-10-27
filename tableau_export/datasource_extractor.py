@@ -19,8 +19,10 @@ from dax_converter import _reverse_tableau_bracket_escape
 
 try:
     from powerbi_import.errors import ExtractionError
+    from powerbi_import.security_validator import canonical_path_key, lexical_path_key
 except ModuleNotFoundError:  # Legacy callers put powerbi_import on sys.path.
     from errors import ExtractionError
+    from security_validator import canonical_path_key, lexical_path_key
 try:
     from .extract_primitives import _extract_calculation_formula
     from .safe_xml import safe_findall, safe_findtext, safe_get_attr
@@ -91,11 +93,10 @@ def _read_csv_header_from_twbx(twbx_path, directory, filename):
 def _extract_col_local_name_map(datasource_elem):
     """Build mapping of Tableau local-names to their parent table names.
 
-    Uses ``<metadata-record class="column">`` elements which contain the
-    authoritative local-name → parent-name association.  This captures
-    columns that may not have a ``<column>`` element at the datasource
-    level (e.g. Salesforce Id, Probability fields) but are referenced by
-    calculations.
+    ``<metadata-record class="column">`` ownership is authoritative when
+    present. Explicit ``<connection><cols><map>`` entries
+    supplement fields whose metadata record has no parent, but malformed or
+    conflicting maps never select an owner.
 
     Returns:
         dict mapping column local-name (without brackets) to parent table
@@ -104,12 +105,67 @@ def _extract_col_local_name_map(datasource_elem):
     if datasource_elem is None:
         return {}
 
+    def metadata_identifier(value):
+        value = (value or '').strip()
+        match = re.fullmatch(r'\[((?:[^\]]|\]\])*)\]', value)
+        if match:
+            name = match.group(1).replace(']]', ']')
+            return name if name.strip() else ''
+        if '[' not in value and ']' not in value:
+            return value
+        return ''
+
+    # Keep the first declared metadata scope: native history and an enabled
+    # extract can intentionally give the same local field different owners.
+    metadata_parents = {}
+    for scope in [datasource_elem] + safe_findall(datasource_elem, './/*'):
+        scope_parents = {}
+        for record in safe_findall(scope, './metadata-record[@class="column"]'):
+            raw_local = safe_findtext(record, 'local-name', '')
+            raw_parent = safe_findtext(record, 'parent-name', '')
+            local_name = metadata_identifier(raw_local)
+            parent_name = metadata_identifier(raw_parent)
+            if local_name and parent_name:
+                scope_parents.setdefault(local_name, set()).add(parent_name)
+            elif local_name and (raw_parent or '').strip():
+                scope_parents.setdefault(local_name, set()).add(None)
+            elif (raw_local or '').strip() and not local_name:
+                logger.warning('Ignoring malformed Tableau column metadata local-name')
+        for local_name, parents in scope_parents.items():
+            metadata_parents.setdefault(local_name, parents)
     result = {}
-    for mr in safe_findall(datasource_elem, './/metadata-record[@class="column"]'):
-        local_name = (safe_findtext(mr, 'local-name', '') or '').strip().strip('[]')
-        parent_name = (safe_findtext(mr, 'parent-name', '') or '').strip().strip('[]')
-        if local_name and parent_name and local_name not in result:
-            result[local_name] = parent_name
+    for local_name, parents in metadata_parents.items():
+        if len(parents) == 1 and None not in parents:
+            result[local_name] = next(iter(parents))
+        else:
+            logger.warning(
+                'Conflicting or malformed Tableau column metadata for %r; '
+                'ownership remains unresolved', local_name)
+
+    map_values = {}
+    for mapping in safe_findall(datasource_elem, './connection/cols/map'):
+        raw_key = (safe_get_attr(mapping, 'key', '') or '').strip()
+        if not re.fullmatch(r'\[((?:[^\]]|\]\])*)\]', raw_key):
+            logger.warning('Ignoring Tableau column map with an invalid local key')
+            continue
+        local_name = metadata_identifier(raw_key)
+        if not local_name:
+            logger.warning('Ignoring Tableau column map with an empty local key')
+            continue
+        physical = _hyper_table_parts((safe_get_attr(mapping, 'value', '') or '').strip())
+        if physical is None or any(not part.strip() for part in physical):
+            logger.warning(
+                'Ignoring malformed or unqualified Tableau column map for %r; '
+                'ownership remains unresolved without metadata', local_name)
+            physical = None
+        map_values.setdefault(local_name, set()).add(physical)
+    for local_name, values in map_values.items():
+        if len(values) != 1 or None in values:
+            logger.warning(
+                'Conflicting or malformed Tableau column maps for %r; '
+                'only authoritative metadata ownership can be used', local_name)
+        elif local_name not in metadata_parents:
+            result[local_name] = next(iter(values))[0]
     return result
 
 
@@ -136,7 +192,7 @@ def _extract_col_type_map(datasource_elem):
     return result
 
 
-def extract_datasource(datasource_elem, twbx_path=None):
+def extract_datasource(datasource_elem, twbx_path=None, *, source_selection=None):
     """
     Extracts the full details of a Tableau datasource
 
@@ -144,6 +200,8 @@ def extract_datasource(datasource_elem, twbx_path=None):
         datasource_elem: XML element of the datasource
         twbx_path: Original workbook/datasource path (archive delimiter detection
             or loose native-file source provenance)
+        source_selection: Selection cached before workbook-wide XML extraction.
+            Standalone callers leave this unset to select from the original XML.
 
     Returns:
         dict with connection, tables, columns, calculations, relationships
@@ -165,12 +223,29 @@ def extract_datasource(datasource_elem, twbx_path=None):
         }
 
     original_elem = datasource_elem
-    datasource_elem, inactive_context = _native_datasource_context(datasource_elem)
+    hyper_members = _declared_hyper_members(original_elem)
+    if source_selection is None:
+        datasource_elem, source_selection = select_native_database_context(
+            datasource_elem, twbx_path)
+    inactive_context = None
+    if source_selection is None:
+        datasource_elem, inactive_context = _native_datasource_context(datasource_elem)
     ds_name = safe_get_attr(datasource_elem, 'name', 'Unknown')
     ds_caption = safe_get_attr(datasource_elem, 'caption', ds_name)
 
-    # Build the connection_name -> connection_details mapping
-    connection_map = _build_connection_map(datasource_elem, twbx_path=twbx_path)
+    # Build selected database bindings without probing unused native files.
+    # Otherwise preserve the existing named-connection/archive handling.
+    bindings = None
+    if source_selection is not None:
+        bindings = _native_database_table_bindings(datasource_elem)
+        if not bindings:
+            raise ExtractionError(
+                'Selected native database lineage is no longer concrete',
+                source='native_database')
+    connection_map = ({
+        binding['connection']: binding['connection_details']
+        for binding in bindings.values() if binding['connection']
+    } if bindings else _build_connection_map(datasource_elem, twbx_path=twbx_path))
 
     calcs = extract_calculations(datasource_elem)
     for c in calcs:
@@ -180,9 +255,11 @@ def extract_datasource(datasource_elem, twbx_path=None):
     datasource = {
         'name': ds_name,
         'caption': ds_caption,
-        'connection': extract_connection_details(datasource_elem, twbx_path=twbx_path),
+        'connection': (next(iter(bindings.values()))['connection_details'] if bindings
+                       else extract_connection_details(datasource_elem, twbx_path=twbx_path)),
         'connection_map': connection_map,
-        'tables': extract_tables_with_columns(datasource_elem, connection_map),
+        'tables': (list(bindings.values()) if bindings
+                   else extract_tables_with_columns(datasource_elem, connection_map)),
         'calculations': calcs,
         'columns': extract_column_metadata(datasource_elem),
         'relationships': extract_relationships(datasource_elem, relation_metadata),
@@ -190,6 +267,21 @@ def extract_datasource(datasource_elem, twbx_path=None):
         'col_local_name_map': _extract_col_local_name_map(datasource_elem),
         'col_type_map': _extract_col_type_map(datasource_elem),
     }
+    if bindings and source_selection is not None:
+        # Native selection uses only individually proven physical fields, not
+        # the legacy extractor's singleton/schema-population fallbacks.
+        datasource['col_local_name_map'] = {
+            column['name']: table['name']
+            for table in datasource['tables'] for column in table['columns']
+        }
+        datasource['col_type_map'] = {
+            column['name']: column['datatype']
+            for table in datasource['tables'] for column in table['columns']
+        }
+        datasource['source_selection'] = copy.deepcopy(source_selection)
+        hyper_members = sorted(set(hyper_members) | set(source_selection['hyper_members']))
+    if hyper_members:
+        datasource['hyper_source_members'] = hyper_members
     # Direct native connections have no named map entry to share with tables.
     if (not connection_map
             and not datasource_elem.findall('.//named-connection')
@@ -218,7 +310,7 @@ def extract_datasource(datasource_elem, twbx_path=None):
 
     materialized = (_bind_packaged_hyper_identities(
         original_elem, datasource['tables'], twbx_path)
-        if not inactive_context else None)
+        if source_selection is None and not inactive_context else None)
     if materialized is not None:
         # Native joins/unions and extract filters have already been evaluated
         # by Tableau. Keep them as evidence, never as executable model edges.
@@ -242,7 +334,7 @@ def extract_datasource(datasource_elem, twbx_path=None):
             c['name']: name for c in table['columns']}
         # Existing datasource-scoped calculation routing now has exactly one
         # host. Do not stamp a raw table name: the model may rename collisions.
-    else:
+    elif source_selection is None:
         _rebuild_extract_join_field_maps(original_elem, datasource)
 
     # Rename 'sqlproxy' tables to use the datasource caption.
@@ -292,7 +384,7 @@ def _native_datasource_context(datasource_elem, force=False):
     No extract declaration means native operation; an explicit single disabled
     extract does too. Missing/unknown enabled flags and multiple declarations
     are deliberately not interpreted as native activation evidence.
-    ``force`` is for native relation provenance, not a model binding policy.
+    ``force`` also supplies the pruned view for validated native DB selection.
     """
     extracts = [e for e in datasource_elem if _extract_context_tag(e) == 'extract']
     native = (not extracts or
@@ -307,6 +399,7 @@ def _native_datasource_context(datasource_elem, force=False):
         'object_extract_contexts_xml': [ET.tostring(e, encoding='unicode') for e in contexts],
     }
     selected = copy.deepcopy(datasource_elem)
+    selected.tag = _extract_context_tag(selected)
 
     def prune(parent):
         for child in list(parent):
@@ -320,6 +413,465 @@ def _native_datasource_context(datasource_elem, force=False):
                 prune(child)
     prune(selected)
     return selected, provenance
+
+
+def _declared_hyper_members(datasource_elem):
+    """Keep exact XML-declared member paths, including inactive declarations."""
+    if datasource_elem is None:
+        return []
+    return sorted({
+        value for elem in datasource_elem.iter()
+        if _relation_xml_name(elem.tag) in ('connection', 'extract')
+        for key, value in elem.attrib.items()
+        if key.rsplit('}', 1)[-1] in ('dbname', 'filename', 'path')
+        if isinstance(value, str) and value.lower().endswith('.hyper')
+    })
+
+
+def _native_database_table_bindings(datasource_elem):
+    """Prove native leaf ownership and schema using XML only, without source I/O.
+
+    None means the actual native source mix is not wholly supported databases.
+    Once database lineage is indicated, missing/ambiguous ownership or metadata
+    is an error, not permission to fall back to the snapshot.
+    """
+    from m_query_builder import native_database_binding_issues
+
+    parents = {child: parent for parent in datasource_elem.iter() for child in parent}
+    connections = {
+        elem: _parse_connection_class(elem)
+        for elem in datasource_elem.iter()
+        if _extract_context_tag(elem) == 'connection'
+        and elem.get('class', '') not in ('', 'federated')
+    }
+    issues = {}
+    for elem, connection in connections.items():
+        required = native_database_binding_issues({
+            'type': connection['type'], 'details': {},
+        })
+        if required is None:
+            issues[elem] = None
+            continue
+        # Parser defaults (for example ClickHouse's "default" database or
+        # Starburst's "default" schema) are not explicit native lineage.
+        # Keep the ordinary parser unchanged; tighten only selection metadata.
+        for key in required:
+            attribute = ('dbname' if key == 'database' and 'dbname' in elem.attrib
+                         else key)
+            connection['details'][key] = elem.get(attribute, '')
+        issues[elem] = native_database_binding_issues(connection)
+    if not any(detail is not None for detail in issues.values()):
+        return None
+
+    named = {}
+    for elem in datasource_elem.iter():
+        if _extract_context_tag(elem) == 'named-connection' and elem.get('name'):
+            named.setdefault(elem.get('name'), []).extend(
+                child for child in elem.iter() if child in connections)
+
+    leaves = []
+    for relation in datasource_elem.iter():
+        if (_extract_context_tag(relation) != 'relation'
+                or any(_extract_context_tag(child) == 'relation' for child in relation)):
+            continue
+        reference = relation.get('connection', '')
+        owner = None
+        in_object = False
+        ancestor = parents.get(relation)
+        while ancestor is not None:
+            tag = _extract_context_tag(ancestor)
+            if tag == 'relation' and not reference:
+                reference = ancestor.get('connection', '')
+            if tag == 'connection' and owner is None:
+                owner = ancestor
+            if tag == 'properties':
+                in_object = True
+            ancestor = parents.get(ancestor)
+        candidates = named.get(reference, []) if reference else []
+        if not candidates and owner is not None and owner in connections and (
+                not reference or reference == owner.get('name')):
+            candidates = [owner]
+        leaves.append((relation, reference, candidates, in_object and owner is None))
+
+    # Object-model copies outside a connection may refer to a physical leaf
+    # without repeating its direct connection. Only an exact declared leaf
+    # identity can supply that ownership; a singleton named DB cannot.
+    def identity(relation):
+        return (relation.get('type', ''), relation.get('name', ''),
+                relation.get('table', ''))
+
+    origins = {}
+    for relation, _, candidates, _ in leaves:
+        if candidates:
+            origins.setdefault(identity(relation), []).extend(candidates)
+    resolved = []
+    for relation, reference, candidates, object_reference in leaves:
+        if not candidates and not reference and object_reference:
+            candidates = origins.get(identity(relation), [])
+        resolved.append((relation, reference, candidates))
+
+    published = any(
+        _extract_context_tag(elem) == 'repository-location'
+        for elem in datasource_elem.iter())
+    unresolved_published = any(
+        (relation.get('name', '').lower() == 'sqlproxy'
+         or relation.get('table', '').strip('[]').lower() == 'sqlproxy'
+         or (published and not candidates))
+        for relation, _, candidates in resolved)
+    if (unresolved_published or any(issues[owner] is None
+                                   for _, _, candidates in resolved for owner in candidates)):
+        logger.warning(
+            'Retaining Hyper snapshot: native source mix includes a non-database '
+            'or unresolved published connection')
+        return None
+    if not resolved:
+        raise ExtractionError(
+            'Native database has no declared relation leaves', source='native_database')
+
+    bindings = {}
+    physical = {}
+    for relation, reference, candidates in resolved:
+        if not candidates:
+            raise ExtractionError(
+                'Native database relation connection ownership is unresolved',
+                source='native_database')
+        connection = connections[candidates[0]]
+        if any(connections[owner] != connection for owner in candidates[1:]):
+            raise ExtractionError(
+                'Native database relation connection ownership is ambiguous',
+                source='native_database')
+        missing = issues[candidates[0]]
+        connection_type = connection.get('type')
+        if (missing and 'database' in missing and isinstance(connection_type, str)
+                and connection_type.casefold() == 'clickhouse'):
+            # ClickHouse qualifies physical tables as [database].[table].
+            # This leaf's explicit qualifier may establish its database; an
+            # unrelated table or the parser's default must never supply it.
+            parts = _hyper_table_parts(relation.get('table', ''))
+            if parts is not None and all(part.strip() for part in parts):
+                connection = copy.deepcopy(connection)
+                connection['details']['database'] = parts[0]
+                missing = native_database_binding_issues(connection)
+        if missing:
+            raise ExtractionError(
+                'Native database connection is missing required metadata: '
+                + ', '.join(missing), source='native_database')
+        if relation.get('type') != 'table':
+            raise ExtractionError(
+                'Native database custom SQL or non-table relation leaf is not supported',
+                source='native_database')
+        name = relation.get('name', '')
+        source_table = relation.get('table', '')
+        if not name.strip() or not source_table.strip():
+            raise ExtractionError(
+                'Native database relation lacks an explicit table binding',
+                source='native_database')
+        binding = {
+            'name': name, 'type': 'table', 'caption': relation.get('caption', ''),
+            'source_table': source_table.strip('[]'),
+            'connection': reference, 'connection_details': connection,
+        }
+        if name in bindings and (
+                bindings[name]['connection_details'] != connection
+                or physical[name] != source_table):
+            raise ExtractionError(
+                'Native database table alias has ambiguous physical lineage',
+                source='native_database')
+        if name not in bindings or reference:
+            bindings[name] = binding
+        physical[name] = source_table
+
+    fields = _native_database_column_bindings(
+        datasource_elem, [relation for relation, _, _ in resolved], set(bindings))
+    for alias, binding in bindings.items():
+        binding['columns'] = fields[alias]
+        binding['cols_physical_map'] = {
+            column['remote_name']: column['name'] for column in fields[alias]
+            if column['remote_name'] != column['name']
+        }
+    return bindings
+
+
+def _native_database_column_bindings(datasource_elem, relations, aliases):
+    """Prove every native field's owner and remote name before source selection.
+
+    Only the pruned native XML is accepted here. Datasource display declarations
+    and a singleton table are not physical lineage. Metadata, qualified maps,
+    and relation-local columns may supplement missing details, but conflicting
+    native declarations never select a first/last owner or physical column.
+    """
+    def fail(message) -> NoReturn:
+        raise ExtractionError(message, source='native_database')
+
+    def identifier(value):
+        value = (value or '').strip()
+        match = re.fullmatch(r'\[((?:[^\]]|\]\])*)\]', value)
+        if match:
+            return match.group(1).replace(']]', ']') or None
+        return value if value and '[' not in value and ']' not in value else None
+
+    fields, definitions, excluded = {}, {}, set()
+
+    def field(local):
+        return fields.setdefault(local, {
+            'owners': set(), 'remotes': set(), 'types': set(),
+            'leaf_types': set(), 'presentation': None, 'records': [],
+        })
+
+    for column in datasource_elem.findall('./column'):
+        local = identifier(column.get('name', ''))
+        if (_is_tableau_pseudo_field(column.get('name', ''), column.get('datatype', ''))
+                or (local and local.startswith(':'))):
+            continue
+        if not local:
+            fail('Native database column has no valid local identity')
+        if (column.find('.//calculation') is not None
+                or column.get('param-domain-type') is not None
+                or column.get('user:auto-column') == 'sheet_link'):
+            excluded.add(local)
+            continue
+        definitions.setdefault(local, []).append(column)
+        field(local)
+    for parameter in datasource_elem.findall('.//parameters/parameter'):
+        local = identifier(parameter.get('name', ''))
+        if local:
+            excluded.add(local)
+
+    for record in datasource_elem.findall('.//metadata-record[@class="column"]'):
+        raw_local = record.findtext('local-name', '') or ''
+        dtype = (record.findtext('local-type', '') or '').strip()
+        if _is_tableau_pseudo_field(raw_local, dtype):
+            continue
+        local = identifier(raw_local)
+        if local in excluded or (local and local.startswith(':')):
+            continue
+        if not local:
+            fail('Native database column metadata has no valid local identity')
+        entry = field(local)
+        for key in ('local-name', 'parent-name', 'remote-name', 'local-type'):
+            if len(record.findall(key)) > 1:
+                fail('Native database column metadata repeats a lineage detail')
+        parent = (record.findtext('parent-name', '') or '').strip()
+        remote = (record.findtext('remote-name', '') or '').strip()
+        if parent:
+            owner = identifier(parent)
+            if owner not in aliases:
+                fail('Native database column parent is not a declared native table')
+            entry['owners'].add(owner)
+        if remote:
+            physical = identifier(remote)
+            if physical is None:
+                fail('Native database physical column metadata is malformed')
+            entry['remotes'].add(physical)
+        if dtype:
+            entry['types'].add(dtype)
+        entry['records'].append(record)
+
+    for mapping in datasource_elem.findall('.//connection/cols/map'):
+        local = identifier(mapping.get('key', ''))
+        if local in excluded or (local and local.startswith(':')):
+            continue
+        physical = _hyper_table_parts(mapping.get('value', ''))
+        if (not local or physical is None or physical[0] not in aliases
+                or not all(part.strip() for part in physical)):
+            fail('Native database column map lacks an exact native table/column binding')
+        entry = field(local)
+        entry['owners'].add(physical[0])
+        entry['remotes'].add(physical[1])
+
+    for relation in relations:
+        alias = relation.get('name', '')
+        for column in relation.findall('./columns/column'):
+            raw = identifier(column.get('name', ''))
+            dtype = column.get('datatype', '')
+            if _is_tableau_pseudo_field(column.get('name', ''), dtype):
+                continue
+            if not raw or raw in excluded or column.find('.//calculation') is not None:
+                fail('Native database physical column declaration is malformed')
+            # A relation may declare the local label OR the physical name.
+            # Existing explicit remotes take precedence over a display label;
+            # the label must never overwrite a differently named native field.
+            candidates = {
+                local for local, entry in fields.items()
+                if (not entry['owners'] or alias in entry['owners'])
+                and (raw == local or raw in entry['remotes'])
+            }
+            if len(candidates) > 1:
+                fail('Native database physical column has ambiguous local lineage')
+            local = next(iter(candidates)) if candidates else raw
+            entry = field(local)
+            entry['owners'].add(alias)
+            if not entry['remotes']:
+                entry['remotes'].add(raw)  # Explicit relation-local physical declaration.
+            if dtype:
+                entry['leaf_types'].add(dtype)
+            if entry['presentation'] is None:
+                entry['presentation'] = column
+
+    columns = {alias: [] for alias in aliases}
+    for local, entry in fields.items():
+        if len(entry['owners']) != 1:
+            fail('Native database column ownership is missing or conflicting')
+        if len(entry['remotes']) != 1:
+            fail('Native database physical column binding is missing or conflicting')
+        if len(entry['types']) > 1 or len(entry['leaf_types']) > 1:
+            fail('Native database column types conflict within native metadata')
+        declared = definitions.get(local, [])
+        declared_types = {column.get('datatype') for column in declared
+                          if column.get('datatype')}
+        roles = {column.get('role') for column in declared if column.get('role')}
+        if len(declared_types) > 1 or len(roles) > 1:
+            fail('Native database field declarations conflict')
+        types = declared_types or entry['types'] or entry['leaf_types']
+        if not types:
+            fail('Native database column lacks a declared native datatype')
+        dtype = next(iter(types))
+        if dtype not in ('string', 'integer', 'real', 'boolean', 'date', 'datetime', 'spatial'):
+            fail('Native database column datatype is not supported')
+        owner, remote = next(iter(entry['owners'])), next(iter(entry['remotes']))
+        if any(column['remote_name'] == remote for column in columns[owner]):
+            fail('Native database physical column maps to multiple local fields')
+        presentation = declared[0] if declared else entry['presentation']
+        column = {
+            'name': local, 'remote_name': remote, 'sourceColumn': remote,
+            'datatype': dtype,
+            'role': next(iter(roles)) if roles else (
+                'measure' if dtype in ('integer', 'real') else 'dimension'),
+            'ordinal': len(columns[owner]), 'length': None, 'nullable': True,
+            'default_format': '',
+        }
+        if presentation is not None:
+            column['length'] = presentation.get('length')
+            column['nullable'] = presentation.get('nullable', 'true') == 'true'
+            column['default_format'] = presentation.get('default-format', '')
+            if presentation.get('ordinal') is not None:
+                try:
+                    column['ordinal'] = int(presentation.get('ordinal'))
+                except (ValueError, TypeError):
+                    fail('Native database column ordinal is malformed')
+        for record in entry['records']:
+            nullable = record.findtext('contains-null')
+            if nullable is not None:
+                if nullable.strip().lower() not in ('true', 'false'):
+                    fail('Native database column nullability is malformed')
+                column['nullable'] = nullable.strip().lower() == 'true'
+        columns[owner].append(column)
+
+    if any(not declared for declared in columns.values()):
+        raise ExtractionError(
+            'Every native database relation requires declared native columns',
+            source='native_database')
+
+    def require(parts):
+        if len(parts) == 2 and parts[0] == 'Parameters':
+            return
+        if parts[-1] in excluded and (
+                len(parts) == 1 or parts[0] in (
+                    datasource_elem.get('name'), datasource_elem.get('caption'))):
+            return
+        if len(parts) == 1:
+            matches = [column for declared in columns.values() for column in declared
+                       if column['name'] == parts[0]]
+        elif len(parts) == 2 and parts[0] in columns:
+            # Tableau expressions address declared local field identities.
+            # A physical name may equal another field's local name in an
+            # explicit swap; do not combine those two identifier namespaces.
+            matches = [column for column in columns[parts[0]]
+                       if column['name'] == parts[1]]
+            if not matches:
+                # Physical-only references still require a unique mapping in
+                # this exact owner, with no fallback to another table.
+                matches = [column for column in columns[parts[0]]
+                           if column['remote_name'] == parts[1]]
+        elif len(parts) == 2 and parts[0] in (
+                datasource_elem.get('name'), datasource_elem.get('caption')):
+            matches = [column for declared in columns.values() for column in declared
+                       if column['name'] == parts[1]]
+        else:
+            matches = []
+        if len(matches) != 1:
+            fail('Native database expression field has no unambiguous native column binding')
+
+    for declaration in datasource_elem.findall('.//column'):
+        for calculation in declaration.findall('./calculation'):
+            formula = _extract_calculation_formula(
+                calculation, declaration.get('name', ''))
+            for parts in _extract_formula_references(formula):
+                require(parts)
+    for clause in datasource_elem.findall('.//relation/clause'):
+        for expression in clause.iter():
+            if _extract_context_tag(expression) == 'expression':
+                parts = _relation_ref_parts(_relation_attr(expression, 'op'))
+                if parts:
+                    require(parts)
+        for parts in _extract_formula_references(_relation_attr(clause, 'expression')):
+            require(parts)
+    return columns
+
+
+def select_native_database_context(datasource_elem, twbx_path=None):
+    """Prefer a proven native database over retained Hyper, without XML mutation."""
+    hyper_members = _declared_hyper_members(datasource_elem)
+    if not hyper_members:
+        return datasource_elem, None
+    native, provenance = _native_datasource_context(datasource_elem, force=True)
+    if _native_database_table_bindings(native) is None:
+        return datasource_elem, None
+    if provenance is None:
+        raise ExtractionError(
+            'Native database selection lacks extract provenance',
+            source='native_database')
+    return native, {
+        'policy': 'prefer_native_database',
+        'selected': 'native_database',
+        'workbook': os.path.abspath(twbx_path) if twbx_path else '',
+        'hyper_members': hyper_members,
+        'extract_xml': provenance['extract_xml'],
+        'object_extract_contexts_xml': provenance['object_extract_contexts_xml'],
+    }
+
+
+def unused_hyper_members(datasources, workbook=None):
+    """Return only exact members superseded by native DBs and unused elsewhere.
+
+    Selection provenance nominates skips; declarations of nonselected sources
+    and any surviving Hyper identity veto them. Unreferenced archive members
+    are never nominated. Metadata paths are compared lexically, without opening
+    them; only the caller-owned workbook path may be canonicalized.
+    """
+    workbook_keys = (
+        {lexical_path_key(workbook), canonical_path_key(workbook)}
+        if workbook is not None else None)
+    unused, required = set(), set()
+
+    def active_identities(value):
+        if isinstance(value, dict):
+            identity = value.get('hyper_identity')
+            if isinstance(identity, dict) and identity.get('archive_member'):
+                required.add(identity['archive_member'])
+            for child in value.values():
+                active_identities(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                active_identities(child)
+
+    for datasource in datasources or []:
+        selection = datasource.get('source_selection') or {}
+        selected = (selection.get('policy') == 'prefer_native_database'
+                    and selection.get('selected') == 'native_database')
+        declared = set(datasource.get('hyper_source_members') or [])
+        if selected:
+            members = set(selection.get('hyper_members') or [])
+            selection_workbook = selection.get('workbook')
+            if (workbook_keys is None or (
+                    selection_workbook
+                    and lexical_path_key(selection_workbook) in workbook_keys)):
+                unused.update(members)
+            required.update(declared - members)
+        else:
+            required.update(declared)
+        active_identities(datasource)
+    return unused - required
 
 
 def _bind_packaged_hyper_identities(datasource_elem, tables, twbx_path):
@@ -1539,6 +2091,9 @@ def _ensure_relationship_columns(datasource):
     rels = datasource.get('relationships', [])
     if not tables or not rels:
         return
+    selection = datasource.get('source_selection') or {}
+    native_database = (selection.get('policy') == 'prefer_native_database'
+                       and selection.get('selected') == 'native_database')
 
     table_map = {}
     for t in tables:
@@ -1552,10 +2107,18 @@ def _ensure_relationship_columns(datasource):
             tname = info.get('table', '')
             col = info.get('column', '')
             if not tname or not col or tname not in table_map:
+                if native_database:
+                    raise ExtractionError(
+                        'Native database relationship lacks a declared native endpoint',
+                        source='native_database')
                 continue
             table_obj, col_names = table_map[tname]
             if col in col_names:
                 continue
+            if native_database:
+                raise ExtractionError(
+                    'Native database relationship column has no proven native binding',
+                    source='native_database')
             if _has_declared_hyper_fields(table_obj):
                 raise ExtractionError(
                     'Packaged Hyper join relationship column has no exact declared extract mapping',
@@ -1607,23 +2170,33 @@ def _ensure_calc_referenced_columns(datasource):
     referenced_cols = set()
     executable_refs = set()
     has_declared_fields = any(_has_declared_hyper_fields(t) for t in tables)
+    selection = datasource.get('source_selection') or {}
+    native_database = (selection.get('policy') == 'prefer_native_database'
+                       and selection.get('selected') == 'native_database')
     for calc in calcs:
         formula = calc.get('formula', '')
         if formula:
             referenced_cols.update(re.findall(r'\[([^\]]+)\]', formula))
-            if has_declared_fields:
+            if has_declared_fields or native_database:
                 executable_refs.update(parts[-1] for parts in _extract_formula_references(formula))
 
     # Add missing columns to their parent table
     calculated_names = {
         calc['name'].strip('[]') for calc in calcs if calc.get('name')}
     for col_name in referenced_cols:
+        if native_database and (
+                col_name not in executable_refs or col_name in calculated_names):
+            continue
         parent_table = col_map.get(col_name)
         if not parent_table or parent_table not in table_lookup:
             continue
         table_obj, col_names = table_lookup[parent_table]
         if col_name in col_names:
             continue
+        if native_database:
+            raise ExtractionError(
+                'Native database calculation column has no proven native binding',
+                source='native_database')
         if _has_declared_hyper_fields(table_obj):
             if col_name not in executable_refs:
                 continue  # comments, literals and qualified scope names are not fields
@@ -2314,11 +2887,24 @@ def _parse_connection_class(inner_conn, named_conn=None, twbx_path=None):
             }
         }
 
-    # ── Fallback for unknown connector types ────────────────────────────────
-    return _with_native_source_context({
+    # ── Generic connectors with an existing concrete M emitter ──────────────
+    result = {
         'type': conn_class.upper(),
         'details': dict(inner_conn.attrib)
-    }, inner_conn, twbx_path)
+    }
+    from m_query_builder import native_database_binding_issues
+    # These Tableau spellings are already used by the Prep connector contract.
+    # An alias alone is never proof of support: require a real database emitter.
+    alias = {'saphana': 'SAP HANA', 'azure_sql_dw': 'Azure Synapse'}.get(
+        conn_class.lower())
+    if alias and native_database_binding_issues(
+            {'type': alias, 'details': result['details']}) is not None:
+        result['type'] = alias
+    missing = native_database_binding_issues(result)
+    if (missing is not None and 'database' in missing
+            and 'database' not in result['details'] and 'dbname' in inner_conn.attrib):
+        result['details']['database'] = inner_conn.get('dbname', '')
+    return _with_native_source_context(result, inner_conn, twbx_path)
 
 
 def _build_from_dispatch(inner_conn, spec):

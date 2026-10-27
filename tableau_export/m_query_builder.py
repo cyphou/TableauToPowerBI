@@ -545,12 +545,13 @@ def _gen_m_teradata(details, table_name, columns):
 def _gen_m_sap_hana(details, table_name, columns):
     server = details.get('server', 'localhost')
     port = details.get('port', '30015')
+    schema = _m_escape_string(details.get('schema', 'PUBLIC'))
     safe = '#"' + table_name + ' Table"'
 
     m_query = 'let\n'
     m_query += f'    // Source SAP HANA: {server}:{port}\n'
     m_query += f'    Source = SapHana.Database("{server}:{port}"),\n'
-    m_query += f'    {safe} = Source{{[Schema="PUBLIC", Name="{table_name}"]}}[Data],\n'
+    m_query += f'    {safe} = Source{{[Schema="{schema}", Name="{table_name}"]}}[Data],\n'
     m_query += f'    Result = {safe}\nin\n    Result'
     return m_query
 
@@ -1487,6 +1488,104 @@ _M_GENERATORS = {
     'Azure Synapse Deep': _gen_m_synapse_depth,
 }
 
+# Required connection metadata, not credentials or a DirectQuery certification.
+_DATABASE_REQUIRED_DETAILS = {
+    _gen_m_sql_server: ('server', 'database'),
+    _gen_m_postgresql: ('server', 'database'),
+    _gen_m_mysql: ('server', 'database'),
+    _gen_m_oracle: ('server', 'service'),
+    _gen_m_snowflake: ('server', 'database', 'warehouse'),
+    _gen_m_bigquery: ('project', 'dataset'),
+    _gen_m_teradata: ('server', 'database'),
+    _gen_m_sap_hana: ('server',),
+    _gen_m_redshift: ('server', 'database'),
+    _gen_m_databricks: ('server', 'http_path', 'catalog', 'schema'),
+    _gen_m_spark: ('server',),
+    _gen_m_azure_sql: ('server', 'database'),
+    _gen_m_synapse: ('server', 'database'),
+    _gen_m_vertica: ('server', 'database'),
+    _gen_m_impala: ('server',),
+    _gen_m_hadoop_hive: ('server',),
+    _gen_m_presto: ('server', 'catalog', 'schema'),
+    _gen_m_db2: ('server', 'database'),
+    _gen_m_databricks_unity: ('server', 'http_path', 'catalog', 'schema'),
+    _gen_m_denodo: ('server', 'database'),
+    _gen_m_sap_hana_depth: ('server',),
+    _gen_m_redshift_depth: ('server', 'database'),
+    _gen_m_dremio: ('server', 'schema'),
+    _gen_m_clickhouse: ('server', 'database'),
+    _gen_m_singlestore: ('server', 'database'),
+    _gen_m_firebolt: ('server', 'database'),
+    _gen_m_starburst: ('server', 'catalog', 'schema'),
+    _gen_m_db2_depth: ('server', 'database'),
+    _gen_m_teradata_depth: ('server', 'database'),
+    _gen_m_synapse_depth: ('server', 'database'),
+}
+
+
+def _m_generator(connection_type):
+    if not isinstance(connection_type, str):
+        return None
+    exact = _M_GENERATORS.get(connection_type)
+    if exact is not None:
+        return exact
+    normalized = connection_type.strip().casefold()
+    return next((generator for name, generator in _M_GENERATORS.items()
+                 if name.casefold() == normalized), None)
+
+
+def native_database_binding_issues(connection):
+    """Return missing DB metadata, or None for a non-database connector.
+
+    Eligibility uses the actual M emitter, never a server attribute alone.
+    No source is opened, and missing authentication is a refresh concern.
+    """
+    generator = _m_generator(connection.get('type'))
+    if generator is None:
+        return None
+    required = _DATABASE_REQUIRED_DETAILS.get(generator)
+    if required is None:
+        return None
+    details = connection.get('details', {})
+    return [
+        key for key in required
+        if not isinstance(details.get(key), str) or not details[key].strip()
+    ]
+
+
+def _normalize_native_database_columns(query, columns):
+    """Expose validated Tableau locals before captions and calculated steps."""
+    physical = [column.get('sourceColumn') or column['name'] for column in columns]
+    owners = {}
+    for column, source in zip(columns, physical):
+        if source in owners and owners[source] != column['name']:
+            raise ValueError(
+                "Native database physical column maps to multiple local fields")
+        owners[source] = column['name']
+    renames = {
+        column['sourceColumn']: column['name']
+        for column in columns
+        if column.get('sourceColumn')
+        and column['sourceColumn'] != column['name']
+    }
+    if not renames:
+        return query
+    steps: list[tuple[str, str]] = [m_transform_select_columns(physical)]
+    if set(renames.values()) & set(physical):
+        # A local name may already be another physical field (including swaps).
+        taken = set(physical) | set(renames.values())
+        temporary = {}
+        for index, name in enumerate(renames):
+            candidate = f'__TableauNativeColumn_{index}'
+            while candidate in taken:
+                candidate += '_'
+            taken.add(candidate)
+            temporary[name] = candidate
+        steps.append(m_transform_rename(temporary))
+        renames = {temporary[name]: target for name, target in renames.items()}
+    steps.append(m_transform_rename(renames))
+    return inject_m_steps(query, steps)
+
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
@@ -1516,9 +1615,7 @@ def generate_power_query_m(connection, table, *, use_original_file_paths=False):
         details = dict(details)
         details['_source_table'] = source_table
 
-    generator = _M_GENERATORS.get(conn_type)
-    if generator is None and isinstance(conn_type, str):
-        generator = _M_GENERATORS.get(conn_type.lower())
+    generator = _m_generator(conn_type)
     if generator:
         if (generator is _gen_m_excel and source_table
                 and '].[' in source_table and not table.get('connection_details')):
@@ -1532,7 +1629,31 @@ def generate_power_query_m(connection, table, *, use_original_file_paths=False):
                 _gen_m_excel, _gen_m_csv, _gen_m_geojson,
                 _gen_m_json, _gen_m_xml, _gen_m_pdf):
             return generator(details, table_name, columns, use_original_file_paths=True)
-        return generator(details, table_name, columns)
+        database_source = generator in _DATABASE_REQUIRED_DETAILS
+        query_columns = (
+            [dict(column, name=column.get('sourceColumn') or column['name'])
+             for column in columns] if database_source else columns)
+        query_table = table_name
+        if (source_table and generator in _DATABASE_REQUIRED_DETAILS
+                and generator not in {
+                    _gen_m_sql_server, _gen_m_postgresql, _gen_m_mysql,
+                    _gen_m_oracle, _gen_m_azure_sql, _gen_m_synapse,
+                    _gen_m_singlestore,
+                }):
+            # Some emitters historically navigated by the model caption.
+            # Native selection must instead address the declared physical leaf.
+            schema, physical_name = _sql_source_identity(
+                details, table_name, details.get('schema', ''))
+            details = dict(details)
+            if schema:
+                details['schema'] = schema
+                if generator is _gen_m_bigquery:
+                    details['dataset'] = schema
+            query_table = physical_name
+        query = generator(details, query_table, query_columns)
+        if database_source:
+            query = _normalize_native_database_columns(query, columns)
+        return query
 
     # Fallback — pass conn_type through details for the message
     details_copy = dict(details)

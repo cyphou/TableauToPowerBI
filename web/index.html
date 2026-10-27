@@ -63,8 +63,8 @@
                 <option value="auto" selected>Automatique (recommandé)</option>
                 <option value="import">Import (modèle local)</option>
               </select>
-              <p id="model-mode-help" class="hint">Ces modes concernent les projets Power BI (.pbip) ; la sortie Fabric conserve DirectLake. Automatique : avec Hyper, Import ; sans Hyper, DirectQuery pour les bases compatibles. Excel, CSV et les autres fichiers non compatibles DirectQuery restent en Import. Vous pouvez toujours choisir Import, même si DirectQuery est possible. Hors Hyper, Import migre uniquement la connexion, le schéma et le code Power Query (M), sans extraire ni copier les données sources ; Power BI les charge dans le modèle lors de l’actualisation.</p>
-              <p id="hyper-export-help" class="hint">Exception Hyper : les données sont toujours exportées. Pour les projets Power BI (.pbip), CSV jusqu’à 10 Mio inclus (10 485 760 octets), Parquet au-delà. Les exports Fabric restent en CSV.</p>
+              <p id="model-mode-help" class="hint">Ces modes concernent les projets Power BI (.pbip) ; la sortie Fabric conserve DirectLake. Si une même source contient Hyper et une connexion complète et explicite à sa base d’origine, cette base est retenue sans lire ni exporter le Hyper. Automatique : DirectQuery pour les bases compatibles ; Import pour les Hyper conservés, Excel, CSV et les autres sources non compatibles DirectQuery. Vous pouvez toujours choisir Import : la base retenue reste la source, sans extraction de ses lignes. Power BI charge les données natives lors de l’actualisation ; seul un Excel explicitement embarqué est copié tel quel dans Data. La génération ne teste ni l’accès à la base ni la parité avec l’extrait Tableau.</p>
+              <p id="hyper-export-help" class="hint">Pour les sources Hyper conservées, les données sont intégralement exportées. Pour les projets Power BI (.pbip), CSV jusqu’à 10 Mio inclus (10 485 760 octets), Parquet au-delà. Les exports Fabric restent en CSV.</p>
               <p id="model-mode-error" class="field-error" hidden></p>
             </div>
           </div>

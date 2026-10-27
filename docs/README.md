@@ -47,8 +47,9 @@ launcher, and Power BI/Tableau Desktop remain optional diagnostic prerequisites.
 
 | Source | PBIP behavior | Data handling |
 |---|---|---|
-| Hyper at most 10 MiB, uncompressed | **Import + CSV** | Export the Hyper snapshot |
-| Hyper strictly above 10 MiB, uncompressed | **Import + native Parquet** | Requires the optional Hyper SDK; failures stay explicit |
+| Hyper + eligible explicit original database in the same datasource | **Original database**, DirectQuery where supported or Import | No Hyper data read/export; complete native binding required; no runtime or snapshot-parity guarantee |
+| Retained Hyper at most 10 MiB, uncompressed | **Import + CSV** | Export the Hyper snapshot |
+| Retained Hyper strictly above 10 MiB, uncompressed | **Import + native Parquet** | Requires the optional Hyper SDK; failures stay explicit |
 | No Hyper | **DirectQuery where supported**, otherwise Import | No native row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Loose native files and packaged non-Excel files are not copied |
 
 The user can always select **Import** instead of automatic DirectQuery.
@@ -61,8 +62,9 @@ Fabric keeps its separate staging contract. See the
 ## Presentations: architecture and business value
 
 Two French decks, edition **26 October 2026**, use editable PowerPoint diagrams
-and speaker notes with source references. Their source-policy slide includes the
-packaged-Excel exception; its absolute-path/privacy limitations are in the
+and speaker notes with source references. Their source-policy slide includes
+database-first selection and the packaged-Excel exception; source eligibility,
+snapshot-parity and absolute-path/privacy limitations are in the
 [source architecture](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
 
 | Deck | Audience and content |

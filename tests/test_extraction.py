@@ -8,10 +8,12 @@ workbook, and validates that all 16 object types are correctly extracted.
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from copy import deepcopy
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +21,8 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 
 from extract_tableau_data import TableauExtractor
+
+from tests.fixture_corpus import all_workbooks, describe
 
 SAMPLE_TWB = os.path.join(ROOT, 'examples', 'tableau_samples', 'Superstore_Sales.twb')
 
@@ -338,6 +342,122 @@ class TestFullExtraction(unittest.TestCase):
         for ws in worksheets:
             if ws.get('fields'):
                 self.assertIsInstance(ws['fields'], list)
+
+
+_SAMPLE_BRACKETED_IDENTIFIER = r'\[((?:[^\]]|\]\])*)\]'
+
+
+class TestSampleColumnMapProvenance(unittest.TestCase):
+    """Sample ownership records must agree with their explicit XML maps."""
+
+    def _map_parts(self, mapping):
+        key = (mapping.get('key') or '').strip()
+        value = (mapping.get('value') or '').strip()
+        local = re.fullmatch(_SAMPLE_BRACKETED_IDENTIFIER, key)
+        physical = re.fullmatch(
+            _SAMPLE_BRACKETED_IDENTIFIER + r'\.' + _SAMPLE_BRACKETED_IDENTIFIER,
+            value,
+        )
+        self.assertIsNotNone(local, f'Malformed explicit map key: {key!r}')
+        self.assertIsNotNone(physical, f'Malformed explicit map value: {value!r}')
+        parts = (local.group(1), *physical.groups())
+        self.assertTrue(all(parts), f'Empty explicit map identifier: {key!r} -> {value!r}')
+        return tuple(part.replace(']]', ']') for part in parts)
+
+    def _record_for_map(self, connection, mapping, context):
+        local, parent, remote = self._map_parts(mapping)
+        records = [
+            record for record in connection.findall(
+                './metadata-records/metadata-record[@class="column"]')
+            if (record.findtext('local-name') or '').strip() == mapping.get('key').strip()
+        ]
+        label = f'{context}: {local!r} -> {parent!r}.{remote!r}'
+        self.assertEqual(len(records), 1,
+                         f'{label}: expected exactly one same-connection column metadata record')
+        record = records[0]
+        self.assertEqual((record.findtext('parent-name') or '').strip(),
+                         '[' + parent.replace(']', ']]') + ']', label)
+        self.assertEqual((record.findtext('remote-name') or '').strip(), remote, label)
+        return record
+
+    def _declared_types(self, datasource, connection, mapping):
+        """Read original declarations only, never the metadata under test."""
+        local, parent, remote = self._map_parts(mapping)
+
+        def identifier(name):
+            match = re.fullmatch(_SAMPLE_BRACKETED_IDENTIFIER, name)
+            return match.group(1).replace(']]', ']') if match else name
+
+        declarations = [
+            column for column in datasource.findall('./column')
+            if identifier(column.get('name', '')) == local
+        ]
+        for relation in connection.findall('.//relation'):
+            if identifier(relation.get('name', '')) == parent:
+                declarations.extend(
+                    column for column in relation.findall('./columns/column')
+                    if identifier(column.get('name', '')) == remote
+                )
+        return {column.get('datatype').strip() for column in declarations
+                if (column.get('datatype') or '').strip()}
+
+    def test_custom_sql_unknown_local_types_remain_absent(self):
+        fixtures = dict(all_workbooks())
+        self.assertIn('wb_64c6c0a2', fixtures)
+        root = ET.parse(fixtures['wb_64c6c0a2']).getroot()
+        candidates = [
+            datasource for datasource in root.findall('./datasources/datasource')
+            if datasource.find('./connection//relation[@type="text"]') is not None
+        ]
+        self.assertEqual(len(candidates), 1, 'Expected one Custom SQL datasource')
+        datasource = candidates[0]
+        connection = datasource.find('./connection')
+        self.assertIsNotNone(connection)
+        unknown = [
+            mapping for mapping in connection.findall('./cols/map')
+            if not self._declared_types(datasource, connection, mapping)
+        ]
+        unknown_names = {self._map_parts(mapping)[0] for mapping in unknown}
+        self.assertTrue(
+            {'fiscal_year', 'fiscal_quarter', 'budget_channel'} <= unknown_names,
+            'Custom SQL has no original type declaration for these local fields',
+        )
+        context = f"{describe('wb_64c6c0a2')} / {datasource.get('name')}"
+        for mapping in unknown:
+            with self.subTest(local=mapping.get('key')):
+                record = self._record_for_map(connection, mapping, context)
+                self.assertIsNone(
+                    record.find('local-type'),
+                    f'{context}: {mapping.get("key")} has no declared type in this '
+                    'datasource; do not infer SQL types or borrow another datasource type',
+                )
+
+
+def _make_sample_column_map_case(fid, workbook):
+    def _test(self):
+        root = ET.parse(workbook).getroot()
+        for datasource in root.findall('./datasources/datasource'):
+            context = f"{describe(fid)} / {datasource.get('name')}"
+            # Only explicit maps in the datasource's own direct connection
+            # require records; unreferenced physical columns are not required.
+            for connection in datasource.findall('./connection'):
+                for mapping in connection.findall('./cols/map'):
+                    record = self._record_for_map(connection, mapping, context)
+                    declared_types = self._declared_types(datasource, connection, mapping)
+                    if declared_types:
+                        self.assertEqual(len(declared_types), 1, context)
+                        self.assertEqual(record.findtext('local-type'),
+                                         next(iter(declared_types)), context)
+                    else:
+                        self.assertIsNone(record.find('local-type'), context)
+    _test.__name__ = f'test_mapped_column_metadata_{fid}'
+    return _test
+
+
+for _fid, _path in all_workbooks():
+    if os.path.splitext(_path)[1].lower() == '.twb':
+        setattr(TestSampleColumnMapProvenance, f'test_mapped_column_metadata_{_fid}',
+                _make_sample_column_map_case(_fid, _path))
 
 
 if __name__ == '__main__':

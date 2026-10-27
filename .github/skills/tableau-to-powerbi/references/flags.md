@@ -67,7 +67,7 @@ output and is not forwarded.
 | Flag | Purpose |
 |------|---------|
 | `--max-zip-entry-mb N` | Positive per-entry uncompressed limit in MiB; explicit option > `TTPBI_MAX_ZIP_ENTRY_MB` > 1024 MiB |
-| `--mode {auto,import,directquery,composite}` | Default `auto`: Hyper/import-only files use Import, capable native sources use DirectQuery; `import` overrides to Import. No native row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Hyper still exports data |
+| `--mode {auto,import,directquery,composite}` | After source selection: retained Hyper/import-only files use Import, capable selected native databases use DirectQuery; `import` overrides storage mode, not the database-first source choice. No native row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Retained Hyper still exports data |
 | `--hyper-export-format {auto,csv,parquet}` | PBIP `auto`: Hyper strictly > 10 MiB requires native Parquet, otherwise CSV; Fabric `auto` remains CSV |
 | `--hyper-export-max-rows N` | Positive limited diagnostic/Fabric staging cap; explicit option > `TTPBI_HYPER_EXPORT_MAX_ROWS`. A resolved cap is rejected for a full PBIP Hyper migration |
 
@@ -77,7 +77,10 @@ PBIP requires full rows and exact Import bindings; metadata-only samples,
 unknown/mismatched counts and missing bindings cannot satisfy that contract.
 Limited diagnostic/staging exports have no guaranteed subset/order from an
 unordered query and are not full-data parity evidence.
-Hyper snapshots always use Import; do not substitute a live source. Native
+Prefer a complete explicit original database over Hyper in the same datasource
+before any Hyper read/export. File-backed extracts and unresolved published
+references do not qualify; incomplete/ambiguous DB bindings fail explicitly.
+Retained Hyper snapshots use Import; do not switch sources after export failure. Native
 connection generation is not a refresh or credential test. Required Parquet
 needs the optional Hyper API; missing support is an explicit prerequisite error.
 SQLite-compatible inputs above the PBIP threshold fail rather than silently

@@ -50,7 +50,11 @@ connectivity and refresh are separate checks.
 - `hyper_reader.py` uses optional `tableauhyperapi`, SQLite and metadata-scan
   fallbacks with bounded archive copies and header scans. Metadata-only
   extraction may supply a bounded sample, never complete data; `.tde` is not
-  read. Packaged Hyper snapshots remain Import sources; PBIP orchestration
+  read. A complete explicit original database binding takes precedence over
+  Hyper in the same datasource, before any Hyper data read/export; native file
+  connections and unresolved published references do not qualify. Missing or
+  ambiguous database lineage fails explicitly. Retained packaged Hyper snapshots
+  remain Import sources; PBIP orchestration
   requires full CSV/Parquet exports and exact Import bindings rather than
   using metadata samples as successful row recovery. Row caps/sample-only
   readers or unresolved required bindings block a full PBIP migration:

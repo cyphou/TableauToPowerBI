@@ -53,6 +53,14 @@ it correctly. **Prefer running the CLI over hand-editing generated artifacts.**
 - **Generation** (`powerbi_import/`): produces the full `.pbip` (TMDL semantic model,
   PBIR v4.0 report, Power Query M, visuals, filters, bookmarks).
 
+Source selection precedes Hyper data reading: prefer a complete explicit original
+database over Hyper in the same datasource, without exporting that Hyper.
+File-backed extracts and unresolved published references do not qualify;
+incomplete/ambiguous database bindings fail explicitly. Remaining Hyper consumers
+still require full CSV/Parquet export and exact Import bindings. Generating native
+M does not query the database or prove snapshot parity. See the
+[source decision diagram](../../../docs/ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).
+
 Generation is batch-only: pass a source folder to the `batch` or `fabric`
 command. A folder containing just one workbook is valid. Assessment, quality,
 and parity can still analyze individual source files; `qa` and

@@ -72,7 +72,8 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 - Both formats must be extracted and deduplicated into `param_map`
 - Datasource extraction handles `[Table].[Column]` AND bare `[Column]` join clause formats
 - Tableau Server REST API uses PAT or password auth with paginated responses
-- Hyper metadata readers use optional `tableauhyperapi`, SQLite and bounded scans; metadata samples are not complete data. PBIP migrations require a full reader and all Hyper rows exported to CSV/Parquet, with exact Import bindings; reject row caps or sample-only fallback.
+- Prefer a complete, explicit original database binding over Hyper in the same datasource before any Hyper data read/export. Normalize native worksheet/filter lineage too; incomplete or ambiguous DB bindings fail explicitly. File sources and unresolved published references do not qualify. Do not query the database during extraction.
+- Hyper metadata readers use optional `tableauhyperapi`, SQLite and bounded scans; metadata samples are not complete data. Retained Hyper requires a full reader and all rows exported to CSV/Parquet, with exact Import bindings; reject row caps or sample-only fallback.
 
 ## XML Parsing Rules
 
@@ -94,6 +95,6 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 - **Multi-connection blending**: Single worksheets referencing 2+ datasources → separate M partitions + merge-append
 - **Linguistic schema**: Field captions as Q&A synonyms → `linguisticSchema.xml`
 
-- **Hyper snapshot binding**: Preserve explicit packaged workbook/member/schema/table identities, including named Hyper connections and declared extract aliases. PBIP orchestration stages complete CSV/Parquet data and checks final Import references; missing full-reader support or unresolved identity is an explicit failure, not an inline sample or empty-table replacement.
+- **Hyper snapshot binding**: For retained snapshots, preserve explicit packaged workbook/member/schema/table identities, including named Hyper connections and declared extract aliases. PBIP orchestration stages complete CSV/Parquet data and checks final Import references; missing full-reader support or unresolved identity is an explicit failure, not an inline sample or empty-table replacement. A DB-selected member is skipped only if no remaining datasource consumes it; unknown/orphan Hyper files remain subject to the gate. A native source decision is not snapshot-parity evidence.
 - **REST API server**: `POST /migrate/batch` accepts ZIP batch uploads; `POST /migrate` is retired (410). This is separate from the local folder-path browser UI
 - **Schema drift detection**: compare extracted dictionaries with `schema_drift.detect_schema_drift(current, previous)`; the legacy `--check-drift` postprocessing flag is not forwarded by batch generation

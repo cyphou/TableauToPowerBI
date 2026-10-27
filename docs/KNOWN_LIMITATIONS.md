@@ -24,7 +24,7 @@ local generation is not proof of native refresh or runtime parity.
 
 | Area | Limitation | Impact |
 |------|-----------|--------|
-| **Hyper files** | PBIP requires complete snapshot export and exact CSV/Parquet-to-Import bindings. Auto requires native Parquet when the uncompressed Hyper file is strictly > 10 MiB, otherwise CSV; Fabric auto remains CSV. Row caps, including environment caps, and metadata-only sample readers are rejected for complete PBIP migrations. Missing/incomplete/unbound required exports block success. `--hyper-rows` remains separate legacy metadata sampling, not a batch export cap. | Proprietary Hyper and native Parquet require optional `tableauhyperapi`. SQLite handles compatible inputs, but cannot provide native Parquet: above the PBIP threshold it requires an explicit CSV override. Native Parquet needs a writable, authorized ASCII transit directory; uploads cannot escape their job boundary to obtain one. Full-export/static binding checks do not prove Desktop loading, saved state or parity. See the [decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export). |
+| **Hyper files** | A complete explicit original database takes precedence over Hyper in the same datasource, without Hyper data reading/export. Otherwise PBIP requires complete retained-snapshot export and exact CSV/Parquet-to-Import bindings. Auto requires native Parquet when the uncompressed Hyper file is strictly > 10 MiB, otherwise CSV; Fabric auto remains CSV. Row caps, including environment caps, and metadata-only sample readers are rejected for retained-Hyper PBIP migrations. Missing/incomplete/unbound required exports block success. `--hyper-rows` remains separate legacy metadata sampling, not a batch export cap. | Proprietary Hyper and native Parquet require optional `tableauhyperapi` only when Hyper is retained. SQLite handles compatible inputs, but cannot provide native Parquet: above the PBIP threshold it requires an explicit CSV override. Native Parquet needs a writable, authorized ASCII transit directory; uploads cannot escape their job boundary to obtain one. Full-export/static binding checks and database source selection do not prove Desktop loading, saved state or parity. See the [decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export). |
 | **TDE files (legacy)** | ⚠️ `.tde` is the **pre-2018 legacy extract format** and cannot be read by any tier (not a Hyper database, not SQLite-compatible). Tables get a placeholder `#table()` partition with a `TODO` comment. | Re-save the workbook in Tableau Desktop to convert `.tde` → `.hyper`, or manually export data to CSV |
 | **Tableau Server/Cloud** | ✅ `--server` CLI flag enables direct extraction from Tableau Server/Cloud via REST API (PAT or password auth). Live connections still need reconfiguration in PBI |
 | **Tableau 2024.3+** | ✅ Dynamic parameters with database queries fully extracted and converted to M partition with `Value.NativeQuery()`. Dynamic zone visibility parses conditions and maps to PBI bookmark visibility toggles. Table extensions (Einstein Discovery, external API) generate M `Web.Contents()` or placeholder. Linguistic schema extraction feeds PBI Q&A synonyms. | Some newer Tableau 2024.3+ features may still need manual adjustment |
@@ -66,8 +66,10 @@ successful export does not establish spatial or visual parity.
 
 ### Automatic storage mode
 
-`--mode auto` imports Hyper snapshots and selects DirectQuery for supported
-native database connectors without Hyper. Excel, CSV, native MySQL and other import-only
+Source selection precedes storage mode: an eligible explicit original database
+takes precedence over its Hyper extract. `--mode auto` imports retained Hyper
+snapshots and selects DirectQuery for supported selected native database
+connectors. Excel, CSV, native MySQL and other import-only
 sources must remain Import; they cannot be made DirectQuery by changing a
 partition label. `--mode import` and the local browser **Import** control let
 the user override automatic DirectQuery. Mixed-source models are resolved per
@@ -86,7 +88,7 @@ Other packaged native data are not copied or rebound to guessed files, and
 drive-relative/ambiguous paths still need explicit configuration. Source
 delimiters and schemas must agree with the file. Credentials and source access
 are required when Power BI loads the data at refresh.
-Hyper data still export to CSV/Parquet and use Import.
+Retained Hyper data still export to CSV/Parquet and use Import.
 
 The packaged-Excel copy preserves every sheet and the workbook metadata; it
 contains source data, including when included in a downloadable output ZIP.
@@ -106,29 +108,37 @@ Fabric-native DirectLake generation retains its separate file-staging contract.
 
 ### Active extract behind a live connection
 
-When a federated datasource has a live connection (for example PostgreSQL) and
-an **enabled** extract, the packaged Hyper snapshot is the source: it is
-exported in full and bound in Import mode, and explicit DirectQuery is rejected.
-The live connection stays in `datasources.json`. The Hyper Import section of the
-quality report states this choice in a **Source decision** table (datasource,
-retained source, unused original connector type). Only the datasource label and
-the connector type are reported, never the server, database, user or any other
-connection detail, and the table adds no warning: it does not change the
-PASS/WARN status or the gate. There is no option to prefer the live source,
-because a Tableau extract can be filtered, aggregated or dated and is therefore
-not interchangeable with its source.
+When the same datasource contains Hyper and a concrete original database
+connection (for example PostgreSQL), the database is preferred **before any
+Hyper data read or row export**. Native connections, physical table ownership
+and column lineage must be complete and unambiguous. Missing database endpoint
+metadata or unsupported native relation bindings are explicit errors, not a
+fallback to another source. Generation does not query the database.
 
-To migrate such a datasource against its live source, remove the extract and its
-`.hyper` in Tableau before migrating. Only disabling the extract is not enough
-while the `.hyper` stays packaged in the TWBX: the model is built from the live
-tables, but the unused snapshot is still exported and the Hyper Import gate then
-stops the migration (`Hyper export record … is unconsumed by a final annotated
-Import table`). When the gate fails for that reason, an extra `Hint:` diagnostic
-names the datasources whose extract is disabled and the two ways out (re-enable
-the extract, or remove the extract and its `.hyper`); it is never added to a
-passing result and no live source is substituted automatically. Observed with
-synthetic fixtures only, not with a workbook saved by Tableau; no live
-connection was opened and no Desktop load, refresh or value parity was checked.
+This rule is per datasource, not per workbook. It does not turn an Excel/CSV
+connection or an unresolved published `sqlproxy` reference into a database.
+An extract shared with a remaining Hyper consumer is still required. Unknown
+or unreferenced packaged Hyper files are not silently exempted.
+Remaining snapshots retain full CSV/Parquet export and exact Import gates.
+Custom SQL and other native non-table relation leaves are currently rejected
+for this database-preference path; a physical table is not guessed from a
+relation caption. Existing native-only Custom SQL handling is unchanged.
+
+The Hyper Import section of the quality report records the **Source decision**
+(database retained / Hyper not used, or snapshot retained / original connection
+not used). Only datasource and connector labels are reported, never server,
+database, user or other connection details. A database-only choice is
+`not_applicable` for Hyper Import, not `static_verified`. Stale Hyper files,
+manifests or unresolved Hyper partitions in an existing output still fail
+their checks; use a fresh output directory instead of treating old exports as
+evidence for the newly selected source.
+
+This is an intentional source change, not snapshot parity: Tableau extracts
+can be filtered, aggregated or dated. Credentials, gateway access, native
+refresh, save/reopen, values and rendered comparison require separate
+validation. Disabling an extract alone does not establish database eligibility.
+For noneligible disabled extracts with an unused packaged Hyper, the existing
+unconsumed-export diagnostic and conditional remediation hint still apply.
 
 ### Windows / Power BI Desktop path lengths
 
@@ -275,7 +285,7 @@ Generated expressions still require runtime and source-value checks.
 | **Prep #81 incomplete clean dialect coverage** | N2's first bounded `.v2018_3_3.Remap` slice supports observed explicit JSON-encoded TEXT maps standalone and in grouped clean actions: simultaneous exact case-sensitive lookup preserves unmatched values/nulls. Missing/non-string upstream fields and invalid/ambiguous maps reject. `groupMethodProps` is provenance for the materialized map, not fuzzy execution. Static source-to-TMDL tests cover conversion and M/schema preservation; native refresh/value execution remains `not_run`. N1 is partial (one observed dialect of eight). The other seven dialects (`ValueFilter`, `RichRangeFilter`, `RangeFilter`, `RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter`, `RichNullFilter`) remain unsupported and lack demonstrated producer payloads. M helper availability/analyzer classification is not parser support. Existing #82/#83 safeguards are preserved. See the [Prep dialect evidence](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#clean-node-dialect-evidence-status). |
 | **M identifier quoting** | ✅ FIXED — Column names with special characters (hyphens, slashes, parentheses, etc.) are now auto-quoted as `[#"Name"]` in M expressions. Previously, names like `Sub-Category` caused "Invalid identifier" errors |
 | **Custom SQL params** | ✅ IMPLEMENTED — `Value.NativeQuery()` with parameter record binding and `[EnableFolding=true]` |
-| **Hyper data** | Packaged extracts require complete staged CSV/Parquet sources and exact physical-identity Import bindings, not sample/empty M `#table()` substitutes. Metadata/header fallback remains diagnostic only; it cannot satisfy a full PBIP migration. File counts/hashes and bindings are checked independently of native loaded-row and value parity. See the [Hyper contract](FAQ.md#how-are-hyper-extract-files-handled). |
+| **Hyper data** | Retained packaged extracts require complete staged CSV/Parquet sources and exact physical-identity Import bindings, not sample/empty M `#table()` substitutes. An eligible explicit native database is selected before Hyper reading/export; remaining Hyper consumers keep all strict checks. Metadata/header fallback remains diagnostic only; it cannot satisfy a full PBIP migration. File counts/hashes and bindings are checked independently of native loaded-row and value parity. See the [Hyper contract](FAQ.md#how-are-hyper-extract-files-handled). |
 | **Query folding** | ✅ IMPLEMENTED — `m_transform_buffer()` + `m_transform_join(buffer_right=True)` for `Table.Buffer()` folding boundaries |
 | **PDF connector** | ✅ IMPROVED — `Pdf.Tables(File.Contents(...), [StartPage=N, EndPage=M])` with page range and table index selection |
 | **Salesforce connector** | ✅ IMPROVED — SOQL passthrough via `Value.NativeQuery()`, API version specification, relationship traversal via `Table.ExpandRecordColumn()` |

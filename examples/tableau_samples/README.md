@@ -2,6 +2,13 @@
 
 This folder contains sample Tableau workbooks to test the Power BI migration tool.
 
+These are synthetic migration fixtures. Their column metadata records were
+completed from the existing explicit XML mappings and declarations, not by
+querying databases or re-exporting through Tableau. Local field, parent relation
+and physical remote column remain separate identities. Undeclared datatypes
+are left absent, including three fields in the Custom SQL datasource. These
+records are not independently verified source schemas or evidence of real data.
+
 ## 📁 Available Files
 
 ### 1. Superstore_Sales.twb
@@ -9,9 +16,9 @@ This folder contains sample Tableau workbooks to test the Power BI migration too
 **Data Source:** Excel  
 **Complexity:** Simple to Medium  
 **Content:**
-- ✅ 1 data source with 21 columns
+- ✅ 1 data source with 3 physical tables (21 columns in Orders)
 - ✅ 4 custom calculations (Total Sales, Total Profit, Profit Ratio, Number of Orders)
-- ✅ 3 worksheets: Sales by Region (bubble), Profit by Category (bar), Sales Trend (line)
+- ✅ 3 worksheets: Sales by Region (bar), Profit by Category (bar), Sales Trend (line)
 - ✅ 1 dashboard (Sales Overview)
 - ✅ Aggregations: SUM, COUNTD
 
@@ -339,13 +346,20 @@ After migration, verify:
 
 ## ✅ Migration Output Summary
 
+Static local batch output measured on 2026-10-27 after the column-provenance
+correction. Counts include generated Calendar/parameter tables and all PBIR
+visual containers, including navigation/text objects, not just chart worksheets.
+These counts do not certify Desktop loading, refresh or rendered parity.
+
 | Workbook | Tables | Columns | Measures | Relationships | RLS Roles | Visuals |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
-| Superstore_Sales | 2 | 29 | 7 | 0 | 0 | 3 |
-| HR_Analytics | 2 | 20 | 6 | 0 | 0 | 4 |
-| Financial_Report | 2 | 16 | 9 | 0 | 0 | 4 |
-| BigQuery_Analytics | 3 | 27 | 10 | 1 | 0 | 4 |
-| Security_Test | 3 | 16 | 4 | 0 | 5 | 2 |
-| Enterprise_Sales | 5 | 41 | 21 | 2 | 2 | 5 |
-| **Manufacturing_IoT** | **5** | **50** | **14** | **1** | **0** | **6** |
-| **Marketing_Campaign** | **4** | **52** | **13** | **2** | **0** | **5** |
+| Superstore_Sales | 4 | 33 | 10 | 3 | 0 | 3 |
+| HR_Analytics | 2 | 20 | 7 | 1 | 0 | 4 |
+| Financial_Report | 4 | 18 | 16 | 1 | 0 | 4 |
+| BigQuery_Analytics | 3 | 28 | 14 | 3 | 0 | 4 |
+| Security_Test | 3 | 17 | 10 | 2 | 5 | 2 |
+| Enterprise_Sales | 5 | 44 | 34 | 3 | 2 | 5 |
+| Manufacturing_IoT | 5 | 50 | 16 | 6 | 0 | 8 |
+| Marketing_Campaign | 4 | 54 | 19 | 3 | 0 | 6 |
+| Complex_Enterprise | 6 | 68 | 52 | 6 | 3 | 13 |
+| Ventes_France | 6 | 49 | 30 | 5 | 1 | 7 |

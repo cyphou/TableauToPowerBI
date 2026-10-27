@@ -2758,7 +2758,7 @@ class TestHyperImportEvidence(unittest.TestCase):
 
 
 class TestHyperSourceDecisionEvidence(unittest.TestCase):
-    """Name the source an active extract retains without changing the gate.
+    """Name the retained source without relaxing the selected-Hyper gate.
 
     Every connection here uses reserved example names: no live connection is
     opened and nothing is compared with real data.
@@ -2783,8 +2783,8 @@ class TestHyperSourceDecisionEvidence(unittest.TestCase):
         tree = ET.SubElement(root, "relation", {"type": "join", "join": "left"})
         clause = ET.SubElement(tree, "clause", {"type": "join"})
         comparison = ET.SubElement(clause, "expression", {"op": "="})
-        ET.SubElement(comparison, "expression", {"op": "[Left].[ID]"})
-        ET.SubElement(comparison, "expression", {"op": "[Right].[ID]"})
+        ET.SubElement(comparison, "expression", {"op": "[Left].[Left key]"})
+        ET.SubElement(comparison, "expression", {"op": "[Right].[Right key]"})
         for alias in ("Left", "Right"):
             named = ET.SubElement(root, "named-connection", {"name": alias + "-ref"})
             ET.SubElement(named, "connection", {
@@ -2801,7 +2801,11 @@ class TestHyperSourceDecisionEvidence(unittest.TestCase):
                 "name": alias + " field",
                 "datatype": "integer" if alias == "Left" else "string",
             })
+            ET.SubElement(columns, "column", {
+                "name": alias + " key", "datatype": "integer",
+            })
         native_records = ET.SubElement(root, "metadata-records")
+        native_maps = ET.SubElement(root, "cols")
         extract = ET.SubElement(datasource, "extract", {"enabled": enabled})
         hyper = ET.SubElement(extract, "connection", {
             "class": "hyper", "dbname": "Data/exact.hyper",
@@ -2814,8 +2818,11 @@ class TestHyperSourceDecisionEvidence(unittest.TestCase):
         physical_columns = ET.SubElement(physical, "columns")
         extract_records = ET.SubElement(hyper, "metadata-records")
         maps = ET.SubElement(hyper, "cols")
-        for alias, datatype in (("Left", "integer"), ("Right", "string")):
-            local, remote = alias + " field", alias.lower() + "_physical"
+        for alias, suffix, datatype in (
+                ("Left", "field", "integer"), ("Right", "field", "string"),
+                ("Left", "key", "integer"), ("Right", "key", "integer")):
+            local = alias + " " + suffix
+            remote = alias.lower() + "_" + suffix + "_physical"
             ET.SubElement(datasource, "column", {
                 "name": f"[{local}]", "datatype": datatype,
             })
@@ -2823,7 +2830,7 @@ class TestHyperSourceDecisionEvidence(unittest.TestCase):
                 "name": local, "datatype": datatype,
             })
             for parent, table, source in (
-                    (native_records, alias, alias + "_native"),
+                    (native_records, alias, local),
                     (extract_records, "Extract", remote)):
                 record = ET.SubElement(parent, "metadata-record", {
                     "class": "column",
@@ -2836,6 +2843,9 @@ class TestHyperSourceDecisionEvidence(unittest.TestCase):
             ET.SubElement(maps, "map", {
                 "key": f"[{local}]", "value": f"[Extract].[{remote}]",
             })
+            ET.SubElement(native_maps, "map", {
+                "key": f"[{local}]", "value": f"[{alias}].[{local}]",
+            })
         graph = ET.SubElement(datasource, "object-graph")
         obj = ET.SubElement(
             ET.SubElement(graph, "objects"), "object",
@@ -2845,14 +2855,27 @@ class TestHyperSourceDecisionEvidence(unittest.TestCase):
             deepcopy(physical))
         return datasource
 
-    def _extracted(self, *, enabled="true"):
+    def _extracted(self, *, enabled="true", native_file=False):
         from tableau_export.datasource_extractor import extract_datasource
 
         temp = _temporary_directory("hyper-source-decision-")
         self.addCleanup(temp.cleanup)
         workbook, _staged, _identity = _write_synthetic_package(
             temp.name, member="Data/exact.hyper")
-        datasource = extract_datasource(self._live_extract_xml(enabled), workbook)
+        xml = self._live_extract_xml(enabled)
+        if native_file:
+            # Disabled-file controls still exercise the orphan-snapshot hint;
+            # an eligible database now deliberately selects out its Hyper.
+            for connection in xml.findall("./connection/named-connection/connection"):
+                connection.attrib.clear()
+                connection.attrib.update({
+                    "class": "excel-direct", "directory": "Data",
+                    "filename": "synthetic.xlsx",
+                })
+            for relation in xml.findall(".//relation"):
+                if relation.get("connection") in ("Left-ref", "Right-ref"):
+                    relation.set("table", "[" + relation.get("name") + "$]")
+        datasource = extract_datasource(xml, workbook)
         project = os.path.join(temp.name, REPORT_NAME)
         os.makedirs(project)
         extracted = {
@@ -2879,18 +2902,70 @@ class TestHyperSourceDecisionEvidence(unittest.TestCase):
     def test_active_extract_over_a_live_connection_names_the_retained_source(self):
         extracted, project = self._extracted(enabled="true")
         datasource = extracted["datasources"][0]
-        self.assertIn("materialized_extract", datasource)
+        self.assertNotIn("materialized_extract", datasource)
+        self.assertEqual(datasource["source_selection"]["policy"], "prefer_native_database")
+        self.assertEqual(datasource["source_selection"]["selected"], "native_database")
+        self.assertEqual(datasource["hyper_source_members"], ["Data/exact.hyper"])
         self.assertEqual(datasource["connection"]["type"], "PostgreSQL")
+        self.assertTrue(datasource["relationships"])
+        self.assertTrue(all("hyper_identity" not in table for table in datasource["tables"]))
         evidence = self._builder()(extracted, project)
         self.assertEqual(evidence["source_decisions"], [{
             "datasource": "Synthetic Live Source",
-            "retained": "hyper_snapshot",
-            "not_used": "original_connection",
+            "retained": "native_database",
+            "not_used": "hyper_snapshot",
             "connectors": ["PostgreSQL"],
         }])
+        self.assertEqual(evidence["status"], "not_applicable", evidence["diagnostics"])
+        self.assertEqual(evidence["runtime_status"], "not_run")
+        self.assertEqual(evidence["diagnostics"], [])
+        self.assertEqual(evidence["exports"], [])
+        self.assertEqual(evidence["bindings"], [])
+        self.assertEqual(migrate._require_hyper_import(
+            project, extracted=extracted)["status"], "not_applicable")
         self.assertFalse(
             [item for item in evidence["diagnostics"] if item.startswith("Hint:")],
             evidence["diagnostics"])
+
+    def test_disabled_database_extract_names_the_deliberately_retained_native_source(self):
+        extracted, project = self._extracted(enabled="false")
+        datasource = extracted["datasources"][0]
+        self.assertNotIn("materialized_extract", datasource)
+        self.assertEqual(datasource["source_selection"]["selected"], "native_database")
+        self.assertTrue(datasource["relationships"])
+        evidence = self._builder()(extracted, project)
+        self.assertEqual(evidence["status"], "not_applicable", evidence["diagnostics"])
+        self.assertEqual(evidence["source_decisions"], [{
+            "datasource": "Synthetic Live Source",
+            "retained": "native_database", "not_used": "hyper_snapshot",
+            "connectors": ["PostgreSQL"],
+        }])
+        self.assertEqual(evidence["diagnostics"], [])
+        self.assertEqual(evidence["exports"], [])
+        self.assertEqual(evidence["bindings"], [])
+        self.assertEqual(migrate._require_hyper_import(
+            project, extracted=extracted)["status"], "not_applicable")
+
+    def test_active_file_extract_still_names_a_snapshot_and_requires_full_export(self):
+        from powerbi_import.errors import GenerationError
+
+        extracted, project = self._extracted(enabled="true", native_file=True)
+        datasource = extracted["datasources"][0]
+        self.assertNotIn("source_selection", datasource)
+        self.assertIn("materialized_extract", datasource)
+        self.assertTrue(all("hyper_identity" in table for table in datasource["tables"]))
+        evidence = self._builder()(extracted, project)
+        self.assertEqual(evidence["source_decisions"], [{
+            "datasource": "Synthetic Live Source",
+            "retained": "hyper_snapshot", "not_used": "original_connection",
+            "connectors": ["Excel"],
+        }])
+        self.assertEqual(evidence["status"], "failed")
+        self.assertTrue(evidence["diagnostics"])
+        self.assertFalse(any(item.startswith("Hint:") for item in evidence["diagnostics"]))
+        with self.assertRaises(GenerationError) as raised:
+            migrate._require_hyper_import(project, extracted=extracted)
+        self.assertEqual(raised.exception.source, "hyper_import")
 
     def test_decision_never_exposes_connection_details(self):
         extracted, project = self._extracted(enabled="true")
@@ -2989,10 +3064,12 @@ class TestHyperSourceDecisionEvidence(unittest.TestCase):
 
     def test_disabled_extract_with_a_packaged_snapshot_adds_one_conditional_hint(self):
         builder = self._builder()
-        extracted, project = self._extracted(enabled="false")
+        extracted, project = self._extracted(enabled="false", native_file=True)
         datasource = extracted["datasources"][0]
         self.assertIn("inactive_extract_context", datasource)
         self.assertNotIn("materialized_extract", datasource)
+        self.assertNotIn("source_selection", datasource)
+        self.assertEqual(datasource["hyper_source_members"], ["Data/exact.hyper"])
 
         evidence = builder(extracted, project)
         self.assertEqual(evidence["status"], "failed")
@@ -3025,13 +3102,13 @@ class TestHyperSourceDecisionEvidence(unittest.TestCase):
         self.assertEqual(passing["status"], "static_verified", passing["diagnostics"])
         self.assertEqual(passing["diagnostics"], [])
 
-        active, project = self._extracted(enabled="true")
+        active, project = self._extracted(enabled="true", native_file=True)
         failing = builder(active, project)
         self.assertEqual(failing["status"], "failed")
         self.assertFalse(
             [item for item in failing["diagnostics"] if item.startswith("Hint:")])
 
-        disabled, project = self._extracted(enabled="false")
+        disabled, project = self._extracted(enabled="false", native_file=True)
         disabled["hyper_files"] = []
         disabled["datasources"].append({
             "name": "Broken", "connection": {"type": "Hyper"},
@@ -3046,14 +3123,14 @@ class TestHyperSourceDecisionEvidence(unittest.TestCase):
     def test_hint_reaches_the_generation_gate_error(self):
         from powerbi_import.errors import GenerationError
 
-        extracted, project = self._extracted(enabled="false")
+        extracted, project = self._extracted(enabled="false", native_file=True)
         with self.assertRaises(GenerationError) as raised:
             migrate._require_hyper_import(project, extracted=extracted)
         self.assertEqual(raised.exception.source, "hyper_import")
         self.assertIn("Hint:", str(raised.exception))
 
     def test_hint_lists_a_bounded_number_of_datasource_names(self):
-        extracted, project = self._extracted(enabled="false")
+        extracted, project = self._extracted(enabled="false", native_file=True)
         base = extracted["datasources"][0]
         extracted["datasources"] = [
             dict(base, name=f"ds-{index}", caption=f"Source {index}")

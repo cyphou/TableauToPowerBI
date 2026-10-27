@@ -79,9 +79,36 @@ authorized environment. Owners: Web Designer / Orchestrator for the local UI,
 Tester / Reviewer / Evidence for further operational acceptance. See the
 [operator contract](USER_MANUAL.md#local-browser-alternative-source-checkout).
 
+### Original database preferred over Hyper — local follow-up
+
+The source-selection policy now prefers a complete, explicit original database
+over Hyper in the same datasource, before any Hyper data read or row export.
+File-backed extracts and unresolved published references do not qualify.
+Incomplete or ambiguous native database bindings fail explicitly. Native
+lineage governs the generated M and report bindings; no database query is run.
+Remaining Hyper consumers retain the complete export and Import gate.
+The source decision is reported without endpoint/credential details.
+
+This narrowly supersedes the snapshot-first rule in the dated Hyper slices
+below. It does not claim that a live database reproduces a filtered, aggregated
+or dated extract. Native refresh, save/reopen, values and rendered comparison
+still require separate authorized evidence. See the current
+[source contract](KNOWN_LIMITATIONS.md#active-extract-behind-a-live-connection).
+Local acceptance for this follow-up: **12,324 passed, 66 skipped, 1 xfailed**
+across **12,391 collected tests**, with **3,765 passing subtests**, on Python
+**3.14.2**. The full run includes exact physical-to-local-to-caption M lineage,
+captioned PBIP projections, collision-safe renames, explicit invalid-binding
+errors, retained-Hyper export gates and stale-artifact rejection. The corpus
+gate remains **39/44 migrated**, with the same **five known limitations**,
+**27 statically openable projects** and **zero unexcused blockers**. Ruff,
+source Flake8 and Pyright pass. The two updated documentation decks were
+regenerated and their source-policy slides rendered without text overflow.
+These are local static/regression results, not native database refresh or
+snapshot-parity evidence; skipped environment-dependent checks remain unrun.
+
 ### Hyper correction slice — delivered locally
 
-The current Hyper correction slice follows a deliberately small PBIP policy:
+The historical Hyper correction slice followed a deliberately small PBIP policy:
 Hyper snapshots use Import; supported native sources without Hyper use
 DirectQuery; the user can force Import. The automatic export threshold is
 strictly above 10 MiB for Parquet, otherwise CSV. Source/file incompatibilities,
@@ -101,7 +128,8 @@ Native Power BI Desktop refresh and rendered parity remain `not_run`.
 
 **Delivered locally — static export/binding slice:** preserve the Hyper snapshot, export all its rows to CSV
 (<= 10 MiB uncompressed Hyper) or native Parquet (> 10 MiB), then verify
-the exact Import file binding. Do not substitute the historical live source.
+the exact Import file binding. This historical snapshot-first slice is now
+superseded for eligible explicit native databases by the follow-up above.
 The 2026-10-22 result above is historical evidence for its tested paths, not
 proof of the later reported missing CSV bindings or accented-path behavior.
 
@@ -140,6 +168,42 @@ native Import without dataset reads/copies, original M file bindings, retained
 Hyper exports, Fabric staging, upload confinement, shared models, CLI/API,
 notebooks and the local UI. This targeted run is not a new full-suite or native
 Power BI refresh measurement.
+
+### Column provenance / Region-axis regression — A + B
+
+**Status: implemented; local static evidence, 2026-10-27.** The datasource
+extractor supplements missing per-field ownership from explicit connection
+`<cols><map>` entries. Metadata records retain precedence and native diagnostic
+history; conflicting fallback mappings remain unresolved rather than selecting
+an arbitrary join side. No Hyper Import requirement or corpus exception changed.
+
+The seven affected synthetic sample workbooks now contain 195 additional
+mapping-derived identity records, covering all 199 explicit maps across the ten
+TWB samples. Of the additions, 192 have a type already declared in the same
+datasource. The three unknown Custom SQL types remain absent. XML comparison
+confirmed that connections, SQL, worksheets, calculations, layout and original
+metadata records were unchanged.
+
+Independent migrations with **A only** (original sample XML), **B only** (new
+metadata without connection maps), and **A + B** all serialize the regional-sales
+category as **Orders.Region** with native `barChart`, replacing the previous
+unresolved-field `tableEx`. The regression test removes the field's metadata
+from a temporary clone so B cannot mask whether A works; its negative control
+also removes the map and requires ambiguous Region ownership to stay unresolved.
+Final focused validation across twelve extraction, generation, golden-fixture
+and documentation test files passed **518 tests**, with **11 skipped** and
+**540 subtests**. The unchanged corpus gate passed: **39/44 artefacts migrated,
+five recorded limitations, 27 statically openable projects, zero unexcused
+blockers**. These are targeted/static checks, not a native runtime certificate.
+
+The sample's legacy equivalence-v2 score remains **57.1%**: its field-name check
+compares raw `Calculation_1` / `Calculation_2` identifiers with generated measure
+captions, reporting 50% coverage for each of the three sheets even when PBIR
+bindings are correct. That score does not test the generated Region projection;
+the earlier attribution of its drop solely to the Region regression was
+incorrect. This change does not alter that scoring logic or its thresholds.
+Power BI Desktop loading, refresh, saved-state validation and rendered parity
+remain `not_run` for this change.
 
 ### Native refresh-binding corrections — targeted evidence
 

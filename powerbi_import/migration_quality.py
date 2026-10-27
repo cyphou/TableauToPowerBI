@@ -204,11 +204,18 @@ class MigrationQualityReport:
                     continue
                 connectors = decision.get("connectors")
                 connectors = connectors if isinstance(connectors, list) else []
+                native_database = decision.get("retained") == "native_database"
                 decision_rows.append([
                     esc(str(decision.get("datasource") or "—")),
-                    ui(text("Packaged Hyper snapshot (Import)",
+                    ui(text("Original database connection",
+                            "Connexion à la base d’origine")
+                       if native_database else
+                       text("Packaged Hyper snapshot (Import)",
                             "Instantané Hyper empaqueté (Import)")),
-                    ui(text("Original source connection",
+                    ui(text("Packaged Hyper snapshot",
+                            "Instantané Hyper empaqueté")
+                       if native_database else
+                       text("Original source connection",
                             "Connexion source d’origine")),
                     esc(", ".join(str(item) for item in connectors) or "—"),
                 ])
@@ -2918,6 +2925,7 @@ def _hyper_source_identity_inventory(
         extracted: Dict[str, Any]) -> tuple[dict[tuple[str, ...], set[str]],
                                             list[str], bool]:
     """Collect explicit source identities and Hyper connector omissions."""
+    extracted = _hyper_consumed_source_view(extracted)
     identities: dict[tuple[str, ...], set[str]] = {}
     diagnostics: list[str] = []
     uses_hyper = _hyper_value_signals(extracted)
@@ -2983,6 +2991,32 @@ def _hyper_source_identity_inventory(
 _HYPER_CONNECTOR_TYPES = frozenset({"hyper", "dataengine", "unknown"})
 
 
+def _hyper_consumed_source_view(extracted: dict[str, Any]) -> dict[str, Any]:
+    """Keep retained Hyper consumers, not deliberately unused source history.
+
+    Final TMDL and Data signals are checked separately, including stale exports.
+    A source decision cannot excuse a Hyper partition or file in the project.
+    """
+    from tableau_export.datasource_extractor import unused_hyper_members
+
+    datasources = _hyper_datasource_records(extracted)
+    ignored = unused_hyper_members(datasources)
+    selected = dict(extracted)
+    if "datasources" in extracted:
+        selected["datasources"] = [
+            {key: value for key, value in datasource.items()
+             if key not in {"source_selection", "hyper_source_members"}}
+            for datasource in datasources
+        ]
+    hyper_files = extracted.get("hyper_files")
+    if ignored and isinstance(hyper_files, list):
+        selected["hyper_files"] = [
+            item for item in hyper_files
+            if not isinstance(item, dict) or item.get("path") not in ignored
+        ]
+    return selected
+
+
 def _hyper_datasource_records(extracted: dict[str, Any]) -> list[dict[str, Any]]:
     """Return the readable datasource dictionaries of an extraction result."""
     datasources = extracted.get("datasources", [])
@@ -3019,23 +3053,26 @@ def _hyper_original_connectors(datasource: dict[str, Any]) -> list[str]:
 
 
 def _hyper_source_decisions(extracted: dict[str, Any]) -> list[dict[str, Any]]:
-    """Name the source retained when an active extract hides another connection.
+    """Name the retained source without disclosing connection details.
 
-    The packaged Hyper snapshot is the migrated source, so any other connection
-    the datasource declares is not used. Only the datasource label and the
-    connector type are reported: server, database, user and every other
-    connection detail stay out of the evidence.
+    Database-first selection is intentional, not a Hyper-reader fallback.
+    Server, database, user and other endpoint details stay out of the report.
     """
     decisions: list[dict[str, Any]] = []
     for datasource in _hyper_datasource_records(extracted):
-        if not datasource.get("materialized_extract"):
+        selection = datasource.get("source_selection")
+        native_database = (
+            isinstance(selection, dict)
+            and selection.get("policy") == "prefer_native_database"
+            and selection.get("selected") == "native_database")
+        if not native_database and not datasource.get("materialized_extract"):
             continue
         connectors = _hyper_original_connectors(datasource)
         if connectors:
             decisions.append({
                 "datasource": _hyper_datasource_label(datasource),
-                "retained": "hyper_snapshot",
-                "not_used": "original_connection",
+                "retained": "native_database" if native_database else "hyper_snapshot",
+                "not_used": "hyper_snapshot" if native_database else "original_connection",
                 "connectors": connectors,
             })
     return decisions
@@ -3667,9 +3704,13 @@ def build_hyper_import_evidence(extracted: Dict[str, Any],
         _hyper_manifest_preflight(manifest_path))
     if manifest_issue:
         diagnostics.append(manifest_issue)
+    unused_native_manifest = (
+        manifest is not None and not extracted_uses_hyper
+        and any(decision.get("retained") == "native_database"
+                for decision in result["source_decisions"]))
     uses_hyper = (
         extracted_uses_hyper or tmdl_uses_hyper or manifest_uses_hyper
-        or data_uses_hyper)
+        or data_uses_hyper or unused_native_manifest)
     if not uses_hyper:
         result["manifest_status"] = manifest_status
         result["diagnostics"] = []
@@ -3679,6 +3720,10 @@ def build_hyper_import_evidence(extracted: Dict[str, Any],
     result["manifest_status"] = manifest_status
     diagnostics.extend(tmdl_issues)
     diagnostics.extend(data_issues)
+    if unused_native_manifest:
+        diagnostics.append(
+            "An unused Hyper export manifest remains after native database "
+            "selection; use a fresh output directory for this source policy.")
     if manifest_status == "missing":
         diagnostics.append(
             "Hyper is required, but Data/hyper_exports.json is missing; "

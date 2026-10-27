@@ -22,10 +22,18 @@ for _module_dir in (_EXPORT_DIR, _PI_DIR):
     if _module_dir not in sys.path:
         sys.path.insert(0, _module_dir)
 try:
-    from .datasource_extractor import extract_datasource
+    from .datasource_extractor import (
+        extract_datasource,
+        select_native_database_context,
+        unused_hyper_members,
+    )
     from .hyper_reader import read_hyper_from_twbx
 except ImportError:
-    from datasource_extractor import extract_datasource
+    from datasource_extractor import (
+        extract_datasource,
+        select_native_database_context,
+        unused_hyper_members,
+    )
     from hyper_reader import read_hyper_from_twbx
 try:
     from .safe_xml import (
@@ -299,6 +307,7 @@ class TableauExtractor:
         self.extraction_warnings = []
         self.hyper_max_rows = hyper_max_rows or 20
         self._xml_node_cache = {}
+        self._datasource_source_selections = {}
 
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -319,6 +328,30 @@ class TableauExtractor:
         """Record a non-fatal extraction warning for diagnostics."""
         warning = ExtractionWarning(code=code, message=message, context=context)
         self.extraction_warnings.append(warning.as_dict())
+
+    def _normalize_datasource_contexts(self, root):
+        """Select source XML before any workbook-wide provenance/metadata scans."""
+        self._datasource_source_selections = {}
+
+        def normalize(parent):
+            for index, child in enumerate(list(parent)):
+                if child.tag.rsplit('}', 1)[-1] == 'datasource':
+                    selected, selection = select_native_database_context(
+                        child, self.tableau_file)
+                    if selection is not None:
+                        parent[index] = selected
+                        child = selected
+                        self._datasource_source_selections[child] = selection
+                normalize(child)
+
+        normalize(root)
+
+    def _extract_datasource_with_selection(self, datasource):
+        selection = getattr(self, '_datasource_source_selections', {}).get(datasource)
+        if selection is not None:
+            return extract_datasource(
+                datasource, twbx_path=self.tableau_file, source_selection=selection)
+        return extract_datasource(datasource, twbx_path=self.tableau_file)
 
     def extract_all(self):
         """Extracts all objects from the Tableau workbook"""
@@ -341,18 +374,19 @@ class TableauExtractor:
         # Standalone .tds/.tdsx: root IS the <datasource> element.
         # Wrap it in a synthetic <workbook> so all extract_* methods
         # that use .//datasource XPath queries find it normally.
-        if root.tag == 'datasource':
+        if root.tag.rsplit('}', 1)[-1] == 'datasource':
             wrapper = ET.Element('workbook')
             ds_parent = ET.SubElement(wrapper, 'datasources')
             ds_parent.append(root)
             root = wrapper
 
         self._clear_xml_node_cache()
+        self._normalize_datasource_contexts(root)
 
         # Extract the different objects
+        self.extract_datasources(root)
         self.extract_worksheets(root)
         self.extract_dashboards(root)
-        self.extract_datasources(root)
         self.extract_calculations(root)
         # Bug #6: Resolve cross-datasource calculation ID references
         self._resolve_cross_datasource_calcs()
@@ -460,6 +494,24 @@ class TableauExtractor:
         worksheets = []
         self._color_index = self._build_color_index(root)
         self._worksheet_field_provenance = build_field_provenance(root)
+        # A selected DB may prove a field through native cols maps or physical
+        # leaf declarations rather than a complete metadata-record. Use the
+        # same validated remote identities as datasources.json; never infer a
+        # physical column from a worksheet's local/display name.
+        for datasource in self.workbook_data.get('datasources', []):
+            selection = datasource.get('source_selection') or {}
+            if (selection.get('policy') != 'prefer_native_database'
+                    or selection.get('selected') != 'native_database'):
+                continue
+            for table in datasource.get('tables', []):
+                for column in table.get('columns', []):
+                    self._worksheet_field_provenance[
+                        (datasource['name'], column['name'])
+                    ] = {
+                        'source_table': table['name'],
+                        'source_column': column['remote_name'],
+                        'datatype': column['datatype'],
+                    }
 
         for worksheet in _find_collection_items(root, 'worksheets', 'worksheet'):
             ws_data = {
@@ -566,7 +618,7 @@ class TableauExtractor:
         raw_datasources = []
 
         for datasource in self._findall_root_cached(root, './/datasource'):
-            ds_data = extract_datasource(datasource, twbx_path=self.tableau_file)
+            ds_data = self._extract_datasource_with_selection(datasource)
             raw_datasources.append(ds_data)
 
         # Deduplicate: keep the richest DS by name
@@ -613,7 +665,7 @@ class TableauExtractor:
         else:
             # Compatibility fallback for direct/isolated method calls.
             source_datasources = [
-                extract_datasource(ds, twbx_path=self.tableau_file)
+                self._extract_datasource_with_selection(ds)
                 for ds in self._findall_root_cached(root, './/datasource')
             ]
 
@@ -2696,6 +2748,8 @@ class TableauExtractor:
         }
         max_sample_rows = 5  # number of sample rows to extract per table
 
+        ignored_members = unused_hyper_members(
+            self.workbook_data.get('datasources', []), self.tableau_file)
         hyper_files = []
         file_ext = os.path.splitext(self.tableau_file)[1].lower()
         if file_ext in ['.twbx', '.tdsx'] and zipfile.is_zipfile(self.tableau_file):
@@ -2709,6 +2763,12 @@ class TableauExtractor:
                                 'size_bytes': info.file_size,
                                 'compressed_size': info.compress_size,
                             }
+                            if info.filename in ignored_members:
+                                # Inventory only: do not open even a header of
+                                # a snapshot superseded by a proven native DB.
+                                entry['selection'] = 'native_database'
+                                hyper_files.append(entry)
+                                continue
                             # Attempt to parse header for column metadata
                             try:
                                 normalized = info.filename.replace('\\', '/')
@@ -2802,12 +2862,28 @@ class TableauExtractor:
 
         # Attempt deeper reading via SQLite (hyper_reader module)
         file_ext = os.path.splitext(self.tableau_file)[1].lower()
-        if file_ext in ['.twbx', '.tdsx'] and zipfile.is_zipfile(self.tableau_file):
+        required_members = [
+            entry['path'] for entry in hyper_files
+            if entry.get('selection') != 'native_database'
+        ]
+        if (file_ext in ['.twbx', '.tdsx'] and zipfile.is_zipfile(self.tableau_file)
+                and (not ignored_members or required_members)):
             try:
-                deep_results = read_hyper_from_twbx(
-                    self.tableau_file, max_rows=self.hyper_max_rows,
-                    max_zip_entry_mb=self.max_zip_entry_mb,
-                )
+                if ignored_members:
+                    deep_results = []
+                    for member in required_members:
+                        deep_results.extend(read_hyper_from_twbx(
+                            self.tableau_file, hyper_filename=member,
+                            max_rows=self.hyper_max_rows,
+                            max_zip_entry_mb=self.max_zip_entry_mb,
+                        ) or [])
+                else:
+                    # Preserve the legacy one-call reader path when no source
+                    # selection excludes a member.
+                    deep_results = read_hyper_from_twbx(
+                        self.tableau_file, max_rows=self.hyper_max_rows,
+                        max_zip_entry_mb=self.max_zip_entry_mb,
+                    )
                 if deep_results:
                     # Merge deep data (actual row counts, richer sample rows)
                     deep_map = {}
@@ -2823,6 +2899,8 @@ class TableauExtractor:
                             legacy_map.setdefault(
                                 dr.get('original_filename', ''), []).append(dr)
                     for entry in hyper_files:
+                        if entry.get('selection') == 'native_database':
+                            continue
                         matches = deep_map.get(entry.get('path', ''), [])
                         if not matches:
                             filename = entry.get('filename', '')

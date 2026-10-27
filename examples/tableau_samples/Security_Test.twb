@@ -22,6 +22,17 @@
           <map key='[RegionName]' value='[Regions].[RegionName]' />
           <map key='[RegionManager]' value='[Regions].[RegionManager]' />
         </cols>
+        <metadata-records>
+          <metadata-record class='column'><remote-name>OrderID</remote-name><local-name>[OrderID]</local-name><parent-name>[Orders]</parent-name><local-type>integer</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>Region</remote-name><local-name>[Region]</local-name><parent-name>[Orders]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>Sales</remote-name><local-name>[Sales]</local-name><parent-name>[Orders]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>Profit</remote-name><local-name>[Profit]</local-name><parent-name>[Orders]</parent-name><local-type>real</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>CustomerEmail</remote-name><local-name>[CustomerEmail]</local-name><parent-name>[Orders]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>Category</remote-name><local-name>[Category]</local-name><parent-name>[Orders]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>OrderDate</remote-name><local-name>[OrderDate]</local-name><parent-name>[Orders]</parent-name><local-type>date</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>RegionName</remote-name><local-name>[RegionName]</local-name><parent-name>[Regions]</parent-name><local-type>string</local-type></metadata-record>
+          <metadata-record class='column'><remote-name>RegionManager</remote-name><local-name>[RegionManager]</local-name><parent-name>[Regions]</parent-name><local-type>string</local-type></metadata-record>
+        </metadata-records>
       </connection>
       <column caption='Order ID' datatype='integer' name='[OrderID]' role='dimension' type='ordinal' />
       <column caption='Region' datatype='string' name='[Region]' role='dimension' type='nominal' />

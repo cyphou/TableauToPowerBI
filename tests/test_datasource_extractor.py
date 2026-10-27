@@ -1528,6 +1528,247 @@ class TestRenameSqlproxyTables(unittest.TestCase):
         self.assertIn('My Published DS', table_names)
 
 
+class TestColumnLocalNameMapFallback(unittest.TestCase):
+    """Explicit connection maps supplement ownership, never guess it."""
+
+    @staticmethod
+    def _datasource(maps=(), records=()):
+        datasource = ET.Element('datasource')
+        connection = ET.SubElement(datasource, 'connection', {'class': 'federated'})
+        cols = ET.SubElement(connection, 'cols')
+        for attributes in maps:
+            ET.SubElement(cols, 'map', attributes)
+        metadata = ET.SubElement(connection, 'metadata-records')
+        for fields in records:
+            record = ET.SubElement(metadata, 'metadata-record', {'class': 'column'})
+            for tag, text in fields.items():
+                ET.SubElement(record, tag).text = text
+        return datasource
+
+    def test_maps_only_use_local_keys_and_explicit_parents(self):
+        datasource = self._datasource(maps=(
+            {'key': '[Region]', 'value': '[Orders].[Region]'},
+            {'key': '[Display Region]', 'value': '[Orders].[physical_region]'},
+            {'key': '[Manager]', 'value': '[People].[manager_name]'},
+        ))
+        self.assertEqual(_extract_col_local_name_map(datasource), {
+            'Region': 'Orders', 'Display Region': 'Orders', 'Manager': 'People',
+        })
+
+    def test_partial_metadata_is_supplemented_per_field(self):
+        datasource = self._datasource(
+            maps=(
+                {'key': '[Sales]', 'value': '[Orders].[Sales]'},
+                {'key': '[Region]', 'value': '[Orders].[Region]'},
+                {'key': '[Manager]', 'value': '[People].[manager_name]'},
+            ),
+            records=(
+                {'local-name': '[Row ID]', 'parent-name': '[Orders]'},
+                {'local-name': '[Sales]', 'parent-name': '[Orders]'},
+            ),
+        )
+        self.assertEqual(_extract_col_local_name_map(datasource), {
+            'Row ID': 'Orders', 'Sales': 'Orders',
+            'Region': 'Orders', 'Manager': 'People',
+        })
+
+    def test_metadata_without_parent_can_be_supplemented(self):
+        for fields in (
+            {'local-name': '[Region]', 'local-type': 'string'},
+            {'local-name': '[Region]', 'parent-name': ''},
+        ):
+            with self.subTest(record=fields):
+                datasource = self._datasource(
+                    maps=({'key': '[Region]', 'value': '[Orders].[Region]'},),
+                    records=(fields,),
+                )
+                self.assertEqual(_extract_col_local_name_map(datasource),
+                                 {'Region': 'Orders'})
+
+    def test_metadata_ownership_wins_fallback_conflicts(self):
+        for values in (
+            ('[People].[Region]',),
+            ('[Orders].[Region]', '[People].[Region]'),
+            ('[People].[Region]', '[Orders].[Region]'),
+        ):
+            with self.subTest(values=values):
+                datasource = self._datasource(
+                    maps=tuple({'key': '[Region]', 'value': value} for value in values),
+                    records=({'local-name': '[Region]', 'parent-name': '[Orders]'},),
+                )
+                self.assertEqual(_extract_col_local_name_map(datasource),
+                                 {'Region': 'Orders'})
+
+    def test_descendant_metadata_scopes_remain_authoritative(self):
+        for path in ('./metadata-records', './connection/named-connection/connection'):
+            with self.subTest(path=path):
+                datasource = self._datasource(maps=(
+                    {'key': '[Region]', 'value': '[People].[Region]'},
+                ))
+                parent = datasource
+                for tag in path.removeprefix('./').split('/'):
+                    parent = ET.SubElement(parent, tag)
+                record = ET.SubElement(parent, 'metadata-record', {'class': 'column'})
+                ET.SubElement(record, 'local-name').text = '[Region]'
+                ET.SubElement(record, 'parent-name').text = '[Orders]'
+                self.assertEqual(_extract_col_local_name_map(datasource),
+                                 {'Region': 'Orders'})
+
+    def test_conflicting_metadata_cannot_be_overridden_by_a_map(self):
+        datasource = self._datasource(
+            maps=({'key': '[Region]', 'value': '[Orders].[Region]'},),
+            records=(
+                {'local-name': '[Region]', 'parent-name': '[Orders]'},
+                {'local-name': '[Region]', 'parent-name': '[People]'},
+            ),
+        )
+        with self.assertLogs('datasource_extractor', level='WARNING') as logs:
+            self.assertEqual(_extract_col_local_name_map(datasource), {})
+        self.assertIn('ownership remains unresolved', '\n'.join(logs.output))
+
+    def test_nested_or_inactive_map_scopes_cannot_supply_fallback(self):
+        datasource = self._datasource()
+        for tag, attributes in (
+            ('extract', {'enabled': 'false'}),
+            ('object-graph', {}),
+            ('datasource', {'name': 'other'}),
+        ):
+            scope = ET.SubElement(datasource, tag, attributes)
+            connection = ET.SubElement(scope, 'connection')
+            cols = ET.SubElement(connection, 'cols')
+            ET.SubElement(cols, 'map', key='[Region]', value='[People].[Region]')
+        self.assertEqual(_extract_col_local_name_map(datasource), {})
+
+    def test_identical_duplicate_maps_are_safe(self):
+        datasource = self._datasource(maps=(
+            {'key': '[Region]', 'value': '[Orders].[Region]'},
+            {'key': '[Region]', 'value': '[Orders].[Region]'},
+            {'key': '[Region]', 'value': '[Orders].[Region]'},
+        ))
+        self.assertEqual(_extract_col_local_name_map(datasource),
+                         {'Region': 'Orders'})
+
+    def test_conflicting_map_values_never_choose_first_or_last(self):
+        # A different physical column is a conflict even on the same table.
+        for other in ('[People].[Region]', '[Orders].[Other Region]'):
+            for values in (
+                ('[Orders].[Region]', other),
+                (other, '[Orders].[Region]'),
+                ('[Orders].[Region]', other, '[Orders].[Region]'),
+            ):
+                with self.subTest(values=values):
+                    datasource = self._datasource(maps=tuple(
+                        {'key': '[Region]', 'value': value} for value in values))
+                    self.assertEqual(_extract_col_local_name_map(datasource), {})
+
+    def test_conflicting_maps_do_not_hide_unambiguous_siblings(self):
+        datasource = self._datasource(maps=(
+            {'key': '[Region]', 'value': '[Orders].[Region]'},
+            {'key': '[Sales]', 'value': '[Orders].[Sales]'},
+            {'key': '[Region]', 'value': '[People].[Region]'},
+            {'key': '[Manager]', 'value': '[People].[manager_name]'},
+        ))
+        self.assertEqual(_extract_col_local_name_map(datasource),
+                         {'Sales': 'Orders', 'Manager': 'People'})
+
+    def test_malformed_missing_and_unqualified_maps_never_invent_parent(self):
+        invalid_maps = [
+            {}, {'key': '[Region]'}, {'value': '[Orders].[Region]'},
+            {'key': '', 'value': '[Orders].[Region]'},
+            {'key': '[]', 'value': '[Orders].[Region]'},
+        ]
+        invalid_maps.extend(
+            {'key': key, 'value': '[Orders].[Region]'}
+            for key in ('Region', '[Region', '[Region]]',
+                        '[Orders].[Region]', '[Region] trailing')
+        )
+        invalid_maps.extend(
+            {'key': '[Region]', 'value': value}
+            for value in (
+                '', 'Region', '[Region]', 'Orders.Region', 'Orders.[Region]',
+                '[Orders].Region', '[Orders].[Region', '[Orders].[Region] trailing',
+                '[Orders].[Region].[Extra]', '[].[Region]', '[Orders].[]',
+                '[Orders].[Region] + [People].[Region]',
+            )
+        )
+        for attributes in invalid_maps:
+            with self.subTest(mapping=attributes):
+                datasource = self._datasource(maps=(attributes,))
+                self.assertEqual(_extract_col_local_name_map(datasource), {})
+
+    def test_same_local_name_is_scoped_to_its_datasource(self):
+        workbook = ET.Element('workbook')
+        datasources = ET.SubElement(workbook, 'datasources')
+        left = self._datasource(maps=(
+            {'key': '[Region]', 'value': '[Orders].[Region]'},
+            {'key': '[Sales]', 'value': '[Orders].[Sales]'},
+        ))
+        right = self._datasource(maps=(
+            {'key': '[Region]', 'value': '[People].[Region]'},
+            {'key': '[Manager]', 'value': '[People].[Manager]'},
+        ))
+        empty = self._datasource()
+        for name, datasource in (('left', left), ('right', right), ('empty', empty)):
+            datasource.set('name', name)
+            datasources.append(datasource)
+        for datasource, expected in (
+            (left, {'Region': 'Orders', 'Sales': 'Orders'}),
+            (right, {'Region': 'People', 'Manager': 'People'}),
+            (empty, {}),
+            (left, {'Region': 'Orders', 'Sales': 'Orders'}),
+        ):
+            with self.subTest(datasource=datasource.get('name')):
+                self.assertEqual(_extract_col_local_name_map(datasource), expected)
+
+    def test_no_map_leaves_duplicate_physical_column_unowned(self):
+        datasource = ET.fromstring('''
+            <datasource>
+              <connection class="federated">
+                <relation type="join" join="left">
+                  <relation name="Orders" type="table"><columns>
+                    <column name="Region" datatype="string"/>
+                  </columns></relation>
+                  <relation name="People" type="table"><columns>
+                    <column name="Region" datatype="string"/>
+                  </columns></relation>
+                </relation>
+              </connection>
+              <column name="[Region]" datatype="string"/>
+            </datasource>
+        ''')
+        self.assertEqual(_extract_col_local_name_map(datasource), {})
+
+    def test_special_unicode_and_dotted_identifiers_are_preserved(self):
+        for key, value, local, parent in (
+            ('[Net sales (%)/€]', "[Orders & Returns' archive].[net-sales (%)]",
+             'Net sales (%)/€', "Orders & Returns' archive"),
+            ('[Région – 東京]', '[Commandes_日本].[physical_region]',
+             'Région – 東京', 'Commandes_日本'),
+            ('[local.part]', '[schema.table].[physical.part]',
+             'local.part', 'schema.table'),
+        ):
+            with self.subTest(key=key, value=value):
+                datasource = self._datasource(maps=({'key': key, 'value': value},))
+                # Exercise XML attribute escaping as well as identifier parsing.
+                datasource = ET.fromstring(ET.tostring(datasource))
+                self.assertEqual(_extract_col_local_name_map(datasource),
+                                 {local: parent})
+
+    def test_escaped_brackets_are_decoded_without_stripping_content(self):
+        for key, value, local, parent in (
+            ('[Local]]name]', '[Orders]]archive].[physical]]field]',
+             'Local]name', 'Orders]archive'),
+            ('[Tail]]]', '[Orders]]].[physical]]]',
+             'Tail]', 'Orders]'),
+            ('[[Local]]]', '[[Orders]]].[physical]',
+             '[Local]', '[Orders]'),
+        ):
+            with self.subTest(key=key, value=value):
+                datasource = self._datasource(maps=({'key': key, 'value': value},))
+                self.assertEqual(_extract_col_local_name_map(datasource),
+                                 {local: parent})
+
+
 class TestDatasourceGuardHelpers(unittest.TestCase):
     def test_local_name_map_none(self):
         self.assertEqual(_extract_col_local_name_map(None), {})

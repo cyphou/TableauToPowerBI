@@ -19,12 +19,14 @@ import shutil
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
+from powerbi_import.artifact_diff import _parse_tmdl_table
 from powerbi_import.cross_validator import cross_validate
 from powerbi_import.import_to_powerbi import PowerBIImporter
 from powerbi_import.regression_suite import (
@@ -37,7 +39,7 @@ from tableau_export.extract_tableau_data import TableauExtractor
 
 # Snapshots are keyed by a derived id: workbook names are only legal under
 # examples/, so they must not appear as tracked filenames under tests/.
-from tests.fixture_corpus import baseline_path, fixture_id
+from tests.fixture_corpus import all_workbooks, baseline_path, fixture_id
 
 # ── Paths ────────────────────────────────────────────────────────────
 
@@ -159,6 +161,129 @@ def _load_report_state(project_dir, name):
         'pages': pages,
         '_dirty_files': set(),
     }
+
+
+class TestExplicitColumnMapMigration(unittest.TestCase):
+    """XML ownership must survive extraction and bind the serialized PBIR."""
+
+    def _migrate_without_region_metadata(self, keep_map):
+        fixtures = dict(all_workbooks())
+        self.assertIn('wb_9272bb1a', fixtures)
+        tree = ET.parse(fixtures['wb_9272bb1a'])
+        datasource = tree.find('./datasources/datasource')
+        self.assertIsNotNone(datasource)
+
+        # Remove by local field, not by today's sparse record count. Completing
+        # the sample metadata later must not mask this extractor regression.
+        for records in datasource.findall('.//metadata-records'):
+            for record in list(records):
+                local = (record.findtext('local-name') or '').strip().strip('[]')
+                if record.get('class') == 'column' and local == 'Region':
+                    records.remove(record)
+        self.assertFalse(any(
+            (record.findtext('local-name') or '').strip().strip('[]') == 'Region'
+            for record in datasource.findall('.//metadata-record[@class="column"]')
+        ))
+
+        cols = datasource.find('./connection/cols')
+        self.assertIsNotNone(cols)
+        region_maps = cols.findall("./map[@key='[Region]']")
+        self.assertEqual(len(region_maps), 1)
+        self.assertEqual(region_maps[0].get('value'), '[Orders].[Region]')
+        if not keep_map:
+            cols.remove(region_maps[0])
+            self.assertEqual(cols.findall("./map[@key='[Region]']"), [])
+
+        temporary = tempfile.TemporaryDirectory(prefix='column_map_regression_')
+        self.addCleanup(temporary.cleanup)
+        workbook = os.path.join(temporary.name, 'column_map.twb')
+        tree.write(workbook, encoding='utf-8', xml_declaration=True)
+        project, name, extracted = _migrate_workbook(
+            workbook, os.path.join(temporary.name, 'output'))
+        sources = [item for item in extracted['datasources']
+                   if item['name'] == datasource.get('name')]
+        self.assertEqual(len(sources), 1)
+        source = sources[0]
+        self.assertEqual({
+            table['name'] for table in source['tables']
+            if any(column['name'] == 'Region' for column in table['columns'])
+        }, {'Orders', 'People'}, 'The negative control must remain genuinely ambiguous')
+
+        table_paths = glob.glob(os.path.join(
+            project, f'{name}.SemanticModel', 'definition', 'tables', '*.tmdl'))
+        self.assertTrue(table_paths, 'Migration emitted no physical model tables')
+        tables = {}
+        for path in table_paths:
+            table = _parse_tmdl_table(path)
+            self.assertIsNotNone(table, path)
+            tables[table['name']] = table
+        for owner in ('Orders', 'People'):
+            self.assertIn(owner, tables)
+            columns = [column for column in tables[owner]['columns']
+                       if column['name'] == 'Region']
+            self.assertEqual(len(columns), 1, f'{owner}.Region is missing from the model')
+            self.assertEqual(columns[0].get('sourceColumn'), 'Region')
+            self.assertEqual(columns[0].get('dataType'), 'string')
+
+        report = _load_report_state(project, name)
+        self.assertIsNotNone(report)
+        matches = []
+        for page in report['pages']:
+            for visual in page['visuals']:
+                payload = visual['json']
+                titles = payload.get('visual', {}).get(
+                    'visualContainerObjects', {}).get('title', [])
+                if any(title.get('properties', {}).get('text', {}).get(
+                        'expr', {}).get('Literal', {}).get('Value') == "'Sales by Region'"
+                       for title in titles):
+                    matches.append(payload)
+        self.assertEqual(len(matches), 1, 'Expected exactly one regional-sales visual')
+        return source, matches[0], tables
+
+    def test_explicit_map_restores_category_without_field_metadata(self):
+        source, payload, tables = self._migrate_without_region_metadata(keep_map=True)
+        with self.subTest(stage='extracted ownership'):
+            self.assertEqual(source['col_local_name_map'].get('Region'), 'Orders')
+        with self.subTest(stage='bar visual'):
+            # Automatic marks with a discrete colour use the native stacked bar.
+            self.assertEqual(payload['visual']['visualType'], 'barChart')
+        with self.subTest(stage='serialized Category binding'):
+            state = payload['visual'].get('query', {}).get('queryState', {})
+            self.assertIn('Category', state, 'The regional category must not be dropped')
+            projections = state['Category']['projections']
+            self.assertEqual(len(projections), 1)
+            self.assertEqual(projections[0]['field'], {
+                'Column': {
+                    'Expression': {'SourceRef': {'Entity': 'Orders'}},
+                    'Property': 'Region',
+                },
+            })
+            column = projections[0]['field']['Column']
+            entity = column['Expression']['SourceRef']['Entity']
+            physical = [item for item in tables[entity]['columns']
+                        if item['name'] == column['Property']]
+            self.assertEqual(len(physical), 1)
+            self.assertEqual(physical[0].get('sourceColumn'), 'Region')
+
+    def test_no_map_keeps_duplicate_column_unresolved(self):
+        source, payload, _tables = self._migrate_without_region_metadata(keep_map=False)
+        self.assertNotIn('Region', source['col_local_name_map'])
+        state = payload['visual'].get('query', {}).get('queryState', {})
+        self.assertTrue(state, 'Other valid fields must still be projected')
+        self.assertFalse(state.get('Category', {}).get('projections'), state)
+        for role in state.values():
+            for projection in role.get('projections', []):
+                field = projection['field']
+                column = field.get('Column') or field.get(
+                    'Aggregation', {}).get('Expression', {}).get('Column', {})
+                self.assertNotEqual(column.get('Property'), 'Region',
+                                    'An ambiguous field must not bind to either join side')
+        notes = [item.get('value', '') for item in payload.get('annotations', [])
+                 if item.get('name') == 'MigrationNote']
+        self.assertTrue(any(
+            'Unresolved Tableau datasource fields:' in note and 'Region' in note
+            for note in notes
+        ), f'The genuinely unresolved Region must remain disclosed: {notes}')
 
 
 # ── Baseline snapshot management ─────────────────────────────────────
