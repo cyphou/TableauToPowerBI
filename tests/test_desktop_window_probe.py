@@ -277,6 +277,8 @@ class TestWindowAwareProbe(unittest.TestCase):
                  mock.patch.object(desktop_window, 'IS_WINDOWS', True), \
                  mock.patch.object(desktop_window, 'wait_for_window',
                                    return_value=(_win(), [])), \
+                 mock.patch.object(desktop_window, 'window_process_id',
+                                   return_value=4242), \
                  mock.patch.object(desktop_window, 'dialog_windows',
                                    return_value=[_win('Fields that need to be '
                                                       'fixed', owned=True)]):

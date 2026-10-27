@@ -3,6 +3,8 @@ import builtins
 import hashlib
 import json
 import os
+import shutil
+import tempfile
 import threading
 from contextlib import ExitStack
 from pathlib import Path
@@ -23,11 +25,39 @@ from powerbi_import.thin_report_generator import ThinReportGenerator
 
 
 def _root_at(base, units):
+    """Build an exact-length, normalized root; a single unit cannot be a component."""
     root = str(base)
+    if path_units(root) == units - 1:
+        root += 'x'
     while path_units(root) < units:
-        root = os.path.join(root, 'd' * min(18, units - path_units(root) - 1))
+        remaining = units - path_units(root)
+        name = min(18, remaining - 1)
+        if remaining - (name + 1) == 1:
+            name -= 1
+        root = os.path.join(root, 'd' * name)
     assert path_units(root) == units
     return root
+
+
+@pytest.fixture
+def short_tmp():
+    """Short scratch root: the 120/179/181-unit cases cannot sit on a runner's deep tmp_path."""
+    root = tempfile.mkdtemp(prefix='b')
+    try:
+        yield Path(root)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.mark.parametrize('units', [120, 179, 181])
+@pytest.mark.parametrize('name_length', range(0, 61))
+def test_root_at_is_exact_and_stays_normalized(units, name_length):
+    # Windows normalizes a trailing separator away, so an exact length reached
+    # through an empty component would shrink by one unit inside the product.
+    base = os.path.join(os.path.abspath(os.sep), 'b' * name_length)
+    root = _root_at(base, units)
+    assert path_units(root) == units
+    assert os.path.abspath(root) == root
 
 
 def _publish(report_name, output_dir, output_format='pbip', **kwargs):
@@ -46,13 +76,13 @@ def _publish(report_name, output_dir, output_format='pbip', **kwargs):
 @pytest.mark.parametrize('output_format', ['pbip', 'fabric'])
 @pytest.mark.parametrize('with_checkpoint', [True, False])
 def test_batch_resume_uses_generated_identity_without_extract_or_generate(
-        tmp_path, monkeypatch, output_format, with_checkpoint):
+        tmp_path, short_tmp, monkeypatch, output_format, with_checkpoint):
     # Exercise the real worker and checkpoint, not just a fabricated skip.
     source_dir = tmp_path / 'sources'
     (source_dir / 'nested').mkdir(parents=True)
     name = 'Workbook_' + 'a' * 85 if output_format == 'pbip' else 'Orders'
     (source_dir / 'nested' / f'{name}.twb').write_text('<workbook/>')
-    output = _root_at(tmp_path / 'output', 120)
+    output = _root_at(short_tmp / 'output', 120)
     extract = mock.Mock(return_value=True)
     generate = mock.Mock(side_effect=_publish)
     monkeypatch.setattr(migrate, 'run_extraction', extract)
@@ -88,12 +118,12 @@ def test_batch_resume_uses_generated_identity_without_extract_or_generate(
 
 @pytest.mark.parametrize('with_checkpoint', [True, False])
 def test_batch_resume_retains_safe_legacy_identity(
-        tmp_path, monkeypatch, with_checkpoint):
+        tmp_path, short_tmp, monkeypatch, with_checkpoint):
     source_dir = tmp_path / 'sources'
     source_dir.mkdir()
     name = 'Legacy_' + 'a' * 35
     (source_dir / f'{name}.twb').write_text('<workbook/>')
-    output = _root_at(tmp_path / 'output', 120)
+    output = _root_at(short_tmp / 'output', 120)
     planned = plan_desktop_project_name(output, name)
     assert planned != name
 
@@ -117,10 +147,10 @@ def test_batch_resume_retains_safe_legacy_identity(
 
 
 @pytest.mark.parametrize('live_connection', [None, 'workspace/Shared'])
-def test_real_thin_report_at_181_utf16_root(tmp_path, live_connection):
+def test_real_thin_report_at_181_utf16_root(short_tmp, live_connection):
     # Both byPath (shared model) and byConnection (Fabric) reuse the PBIP
     # content generator, without a nested <name>/<name>.Report layout.
-    root = _root_at(tmp_path / '\U0001f600', 181)
+    root = _root_at(short_tmp / '\U0001f600', 181)
     with pytest.raises(DesktopPathError):
         validate_desktop_project(root, 'P')
     PowerBIProjectGenerator(root)  # Root alone is valid; no write needed.
@@ -167,7 +197,7 @@ def test_thin_report_final_path_failure_does_not_publish_pbip(tmp_path):
 
 
 @pytest.mark.parametrize('route', ['fabric', 'shared_pbip', 'shared_fabric'])
-def test_real_shared_and_fabric_generation_with_deep_thin_report_root(tmp_path, route):
+def test_real_shared_and_fabric_generation_with_deep_thin_report_root(short_tmp, route):
     objects = {
         'datasources': [{
             'name': 'Sales',
@@ -182,7 +212,7 @@ def test_real_shared_and_fabric_generation_with_deep_thin_report_root(tmp_path, 
                         'formatting': {}, 'mark_encoding': {}, 'filters': []}],
         'dashboards': [], 'calculations': [], 'parameters': [],
     }
-    output = _root_at(tmp_path, 179)
+    output = _root_at(short_tmp, 179)
     if route == 'fabric':
         from powerbi_import.fabric_project_generator import FabricProjectGenerator
         result = FabricProjectGenerator(output).generate_project('F', objects)
@@ -389,13 +419,13 @@ _BATCH_HOOKS = (
 
 
 @pytest.fixture
-def batch_case(tmp_path, monkeypatch):
+def batch_case(tmp_path, short_tmp, monkeypatch):
     """Real batch worker/checkpoint; only extraction/generation are faked."""
     source_dir = tmp_path / 'sources'
     source_dir.mkdir()
     name = 'Workbook_' + 'a' * 85  # long enough for a planned short identity
     (source_dir / f'{name}.twb').write_text('<workbook/>')
-    output = _root_at(tmp_path / 'output', 120)
+    output = _root_at(short_tmp / 'output', 120)
     extract = mock.Mock(return_value=True)
     generate = mock.Mock(side_effect=_publish)
     monkeypatch.setattr(migrate, 'run_extraction', extract)

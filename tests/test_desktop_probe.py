@@ -58,9 +58,9 @@ class TestFind(unittest.TestCase):
             self.assertIsNone(find_pbi_desktop())
 
     def test_accepts_explicit_path(self):
-        path = r"C:\pbi\PBIDesktop.exe"
+        path = os.path.join(tempfile.gettempdir(), "pbi", "PBIDesktop.exe")
         with mock.patch("powerbi_import.desktop_probe.os.path.isfile", return_value=True):
-            self.assertEqual(find_pbi_desktop(path), path)
+            self.assertEqual(find_pbi_desktop(path), os.path.abspath(path))
 
 
 class TestProbe(unittest.TestCase):

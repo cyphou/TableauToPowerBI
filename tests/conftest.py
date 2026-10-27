@@ -6,6 +6,12 @@ import os
 import shutil
 import tempfile
 
+# The product refuses non-canonical locations by design: symlinks, reparse
+# points and aliases of a directory. Runners expose such a temp root (8.3
+# "RUNNER~1" on Windows, /var -> /private/var on macOS), so tests build their
+# scratch directories on the canonical one, as a real deployment does.
+tempfile.tempdir = os.path.realpath(tempfile.gettempdir())
+
 # ── Sample extracted data (mimics tableau_export JSON output) ───────
 
 SAMPLE_DATASOURCE = {
