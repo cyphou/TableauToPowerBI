@@ -13,6 +13,8 @@ single-file postprocessing flags do not become batch features.
 | Workflow | Preferred command |
 |----------|-------------------|
 | Generate PBIP from one or more workbooks | `python migrate.py batch FOLDER` |
+| Generate, open Power BI, verify refresh and capture | `python migrate.py batch FOLDER --screenshots` |
+| Generate and capture Tableau / Power BI comparison | `python migrate.py batch FOLDER --compare-desktop --all-pages` |
 | Readiness assessment | `python migrate.py assess WORKBOOK` |
 | Unified post-migration validation | `python migrate.py quality WORKBOOK` |
 | Feature parity scorecard | `python migrate.py parity WORKBOOK` |
@@ -31,6 +33,37 @@ single-file postprocessing flags do not become batch features.
 | `--output-format {pbip,fabric}` | PBIR+TMDL (default) or Fabric-native artifacts |
 | `--culture fr-FR` | Semantic-model locale |
 | `--calendar-start / --calendar-end` | Calendar table year range |
+
+## Optional native opening, screenshots and comparison
+
+The same `migrate.py` command performs generation first, then the requested
+diagnostic. No desktop option means no application launch. An interactive
+Windows session and installed apps are required; these options authorize
+Power BI refresh against its configured sources, not license/authentication
+acceptance or deployment.
+
+| Flag | Purpose |
+|------|---------|
+| `--screenshots` / `--desktop-probe` | Open each current successful/resumed PBIP workbook output, verify Power BI refresh, then capture |
+| `--compare-desktop` | Open Tableau and Power BI, verify Power BI refresh and capture both; mutually exclusive with `--screenshots` |
+| `--all-pages` | With either desktop mode, inventory and attempt individual pages; selected-tab identity must be verified before and after capture |
+| `--desktop-timeout N` | Finite positive opening deadline per application; default 90 seconds |
+| `--refresh-timeout N` | Finite positive Power BI refresh deadline; default 300 seconds |
+| `--page-timeout N` | Finite positive selection/capture/verification deadline per page; default 30 seconds |
+| `--powerbi-desktop-path PATH` | Explicit `PBIDesktop.exe` override; invalid overrides fail closed |
+| `--tableau-desktop-path PATH` | Explicit `tableau.exe` override for paired captures |
+| `--screen-comparison {manual,local}` | Comparison-only mode: manual review by default, or local decoded PNG pixel differences; no parity verdict |
+
+Folder, manifest and batch-config routes use the same opted-in diagnostic
+contract. It targets only selected successful/resumed workbook outputs, not
+stale failed projects. Fabric, shared-model and inspection-only modes are
+incompatible and rejected, not silently treated as desktop-capable. Prep flows
+have no PBIP report to capture. Dry-run never launches apps or writes captures.
+The diagnostic closes only the processes it launched; it does not save the
+project automatically. Missing apps, unverified refreshes, failed captures and
+unavailable page navigation remain explicit and produce a nonzero exit without
+reclassifying generation as failed. See the
+[one-command guide](../../../../docs/DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command).
 
 ## Assessment & QA
 

@@ -66,10 +66,15 @@ class TestLocalInitialPixels(FolderFixture):
                                   screenshot=screenshot_path,
                                   screenshot_blank=False, pid=111)
 
-    def powerbi_capture(self, pbip, shot, timeout, desktop_path):
+    def powerbi_capture(self, pbip, shot, timeout, desktop_path, *, refresh_timeout=300):
         shot.write_bytes(self.target_image)
         return {"status": "captured", "screenshot": str(shot),
-                "screenshot_blank": False, "pid": 222, "note": ""}
+                "screenshot_blank": False, "pid": 222, "note": "",
+                "screenshot_data_verified": True,
+                "data_load": {"status": "verified", "tables_checked": 1,
+                              "tables_nonempty": 1, "tables_empty": 0,
+                              "tables_failed": 0, "total_rows": 5},
+                "refresh": {"status": "verified"}}
 
     def run_comparison(self, **kwargs):
         return comparison.compare_desktop_reports(
@@ -277,7 +282,7 @@ class TestPowerBICapture(FolderFixture):
     def report(self, **kwargs):
         values = dict(pbip_path=str(self.pbip), status="opened",
                       window_title="Sales - Power BI Desktop", screenshot=str(self.shot),
-                      screenshot_blank=False, note="",
+                      screenshot_blank=False, screenshot_data_verified=True, note="",
                       data_load={"status": "verified", "tables_checked": 1,
                                  "tables_nonempty": 1, "tables_empty": 0,
                                  "tables_failed": 0, "total_rows": 5},
@@ -299,7 +304,7 @@ class TestPowerBICapture(FolderFixture):
         self.probe.assert_called_once_with(
             str(self.pbip), timeout=7, close_after=False, wait_for_window=True,
             screenshot_path=str(self.shot), desktop_path="override",
-            verify_data=True, refresh=True)
+            verify_data=True, refresh=True, refresh_timeout=300)
 
     def test_process_survival_fallback_blank_and_wrong_path_are_not_evidence(self):
         for overrides in ({"window_title": None}, {"window_title": "Sales2 - Power BI Desktop"},
@@ -422,10 +427,13 @@ class TestComparisonWorkflow(FolderFixture):
             source, status="captured", screenshot=screenshot_path,
             screenshot_blank=False, pid=111)
 
-    def powerbi_capture(self, pbip, shot, timeout, desktop_path):
+    def powerbi_capture(self, pbip, shot, timeout, desktop_path, *, refresh_timeout=300):
         self.image(shot)
         return {"status": "captured", "screenshot": str(shot), "note": "", "pid": 222,
-                "data_load": {"status": "verified"},
+                "screenshot_blank": False, "screenshot_data_verified": True,
+                "data_load": {"status": "verified", "tables_checked": 1,
+                              "tables_nonempty": 1, "tables_empty": 0,
+                              "tables_failed": 0, "total_rows": 5},
                 "refresh": {"status": "verified"}}
 
     def run_comparison(self, **kwargs):

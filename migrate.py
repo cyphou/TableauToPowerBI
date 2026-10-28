@@ -18,6 +18,7 @@ import hashlib
 import itertools
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -26,8 +27,10 @@ import textwrap
 import threading
 import time
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
+from typing import Optional
 
 from powerbi_import.errors import (
     ConfigurationError,
@@ -63,6 +66,7 @@ class ExitCode(IntEnum):
     VALIDATION_FAILED = 5
     ASSESSMENT_FAILED = 6
     BATCH_PARTIAL_FAIL = 7
+    DESKTOP_DIAGNOSTIC_FAILED = 8
     KEYBOARD_INTERRUPT = 130
 
 # Ensure Unicode output on Windows consoles (✓, →, ❌, etc.)
@@ -373,6 +377,279 @@ def _resolve_hyper_options(*, hyper_export_format='auto',
         'hyper_export_max_rows': resolved_max_rows,
         'max_zip_entry_mb': get_zip_entry_limit_mb(max_zip_entry_mb),
     }
+
+
+def _positive_float_argument(value):
+    """argparse converter for finite, positive Desktop timeouts."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise argparse.ArgumentTypeError("must be a finite positive number") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite positive number")
+    return parsed
+
+
+class _DesktopModifierAction(argparse.Action):
+    """Remember explicit modifiers, including values equal to their defaults."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        flags = getattr(namespace, '_desktop_modifier_flags', ())
+        namespace._desktop_modifier_flags = (*flags, option_string)
+
+
+@dataclass(frozen=True)
+class DesktopDiagnosticOptions:
+    """Explicit local-launch consent; None keeps native diagnostics disabled."""
+
+    capture_tableau: bool = False
+    timeout: float = 90
+    all_pages: bool = False
+    page_timeout: float = 30
+    screen_comparison: str = 'manual'
+    tableau_desktop_path: Optional[str] = None
+    powerbi_desktop_path: Optional[str] = None
+    refresh_timeout: float = 300
+
+
+def _validate_desktop_options(options, output_format='pbip'):
+    """Validate the Python batch API as well as CLI-derived options."""
+    if options is None:
+        return
+    if not isinstance(options, DesktopDiagnosticOptions):
+        raise ConfigurationError("desktop_options must be DesktopDiagnosticOptions or None")
+    if output_format != 'pbip':
+        raise ConfigurationError("Desktop diagnostics require --output-format pbip (a full PBIP project)")
+    if not all(isinstance(getattr(options, name), bool)
+               for name in ('capture_tableau', 'all_pages')):
+        raise ConfigurationError("capture_tableau and all_pages must be booleans")
+    for name in ('timeout', 'refresh_timeout', 'page_timeout'):
+        value = getattr(options, name)
+        try:
+            valid = not isinstance(value, bool) and math.isfinite(value) and value > 0
+        except (TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid:
+            raise ConfigurationError(f"Desktop {name} must be a finite positive number")
+    if options.screen_comparison not in ('manual', 'local'):
+        raise ConfigurationError("screen_comparison must be 'manual' or 'local'")
+    if not options.capture_tableau and (
+            options.tableau_desktop_path or options.screen_comparison != 'manual'):
+        raise ConfigurationError("--tableau-desktop-path and --screen-comparison require --compare-desktop")
+
+
+def _desktop_options_from_args(args):
+    """Reject orphan modifiers and non-generating routes before any generation."""
+    screenshots = getattr(args, 'desktop_probe', False)
+    comparison = getattr(args, 'compare_desktop', False)
+    modifiers: set[str] = set(getattr(args, '_desktop_modifier_flags', ()))
+    for name, default in (
+            ('all_pages', False), ('desktop_timeout', 90),
+            ('refresh_timeout', 300), ('page_timeout', 30),
+            ('screen_comparison', 'manual'), ('tableau_desktop_path', None),
+            ('powerbi_desktop_path', None)):
+        if getattr(args, name, default) != default:
+            modifiers.add('--' + name.replace('_', '-'))
+    if not screenshots and not comparison:
+        if modifiers:
+            raise ConfigurationError(
+                f"{', '.join(sorted(modifiers))} requires --screenshots or --compare-desktop")
+        return None
+    if screenshots and comparison:
+        raise ConfigurationError("--screenshots and --compare-desktop are mutually exclusive")
+    if not comparison and modifiers.intersection(
+            ('--screen-comparison', '--tableau-desktop-path')):
+        raise ConfigurationError("--screen-comparison and --tableau-desktop-path require --compare-desktop")
+
+    incompatible = [name for name in (
+        'wizard', 'web_ui', 'm_emitter_matrix', 'assess', 'parity', 'parity_strict',
+        'clear_cache', 'check_schema', 'check_hyper', 'server_discover',
+        'plan_migration', 'map_permissions', 'migrate_subscriptions',
+        'cutover', 'cutover_plan_only', 'assess_merge', 'merge_preview',
+    ) if getattr(args, name, False)]
+    incompatible.extend(name for name in (
+        'shared_model', 'prep_lineage', 'bulk_assess', 'global_assess',
+        'add_to_model', 'remove_from_model', 'cutover_rollback', 'check_drift',
+        'consolidate', 'server_assess', 'deploy_bundle',
+    ) if getattr(args, name, None) is not None)
+    if incompatible:
+        flags = ', '.join('--' + name.replace('_', '-') for name in incompatible)
+        raise ConfigurationError(f"Desktop diagnostics are not supported with {flags}")
+
+    source = getattr(args, 'tableau_file', None)
+    source_folder = bool(source and os.path.isdir(source))
+    server_download = bool(getattr(args, 'server', None) and (
+        getattr(args, 'workbook', None) or getattr(args, 'server_batch', None)))
+    if source and not source_folder:
+        raise ConfigurationError(
+            "Desktop diagnostics require folder/batch migration, not single-file inspection; "
+            "place the .twb/.twbx in a folder and use --batch DIR")
+    if not (source_folder or server_download or any(getattr(args, key, None)
+            for key in ('batch', 'batch_config', 'manifest'))):
+        raise ConfigurationError(
+            "Desktop diagnostics require a source folder, --batch, --manifest, "
+            "--batch-config, or a Tableau Server workbook download")
+    if server_download and getattr(args, 'server_batch', None):
+        assets = getattr(args, 'server_assets', None)
+        if assets and not set(assets).intersection(('workbooks', 'all')):
+            raise ConfigurationError("Desktop diagnostics require server workbook assets, not only flows/datasources")
+
+    options = DesktopDiagnosticOptions(
+        capture_tableau=bool(comparison),
+        timeout=getattr(args, 'desktop_timeout', 90),
+        all_pages=getattr(args, 'all_pages', False),
+        page_timeout=getattr(args, 'page_timeout', 30),
+        screen_comparison=getattr(args, 'screen_comparison', 'manual'),
+        tableau_desktop_path=getattr(args, 'tableau_desktop_path', None),
+        powerbi_desktop_path=getattr(args, 'powerbi_desktop_path', None),
+        refresh_timeout=getattr(args, 'refresh_timeout', 300))
+    _validate_desktop_options(options, getattr(args, 'output_format', 'pbip'))
+    return options
+
+
+def _desktop_workbook_pair(source, source_dir, pbip):
+    """Exact current output identity, never an output-directory search."""
+    pbip = os.path.abspath(pbip)
+    return {
+        'source': os.path.abspath(source),
+        'relative_source': os.path.relpath(source, source_dir).replace(os.sep, '/'),
+        'pair_status': 'paired', 'pbip': pbip, 'candidates': [pbip], 'issues': [],
+    }
+
+
+def _print_desktop_statuses(record, label):
+    """Bounded stage summaries; full page/UI evidence stays in the manifest."""
+    if not isinstance(record, dict):
+        return
+
+    def brief(value):
+        return ' '.join(str(value).split())[:240]
+
+    print(f"    {brief(label)}: {record.get('status', 'not_reported')} "
+          f"(pair: {record.get('pair_status', 'not_reported')})")
+    for side in ('tableau', 'powerbi'):
+        evidence = record.get(side)
+        if not isinstance(evidence, dict):
+            continue
+        parts = [f"capture={evidence.get('status', 'not_reported')}"]
+        if 'probe_status' in evidence:
+            parts.append(f"open={evidence['probe_status']}")
+        for stage in ('refresh', 'data_load', 'capture_gate', 'cleanup'):
+            result = evidence.get(stage)
+            if isinstance(result, dict):
+                parts.append(f"{stage}={result.get('status', 'not_reported')}")
+        print(f"      {side}: {'; '.join(parts)}")
+        if evidence.get('status') not in ('captured', 'not_requested'):
+            note = evidence.get('note') or evidence.get('error')
+            if note:
+                print(f"        {brief(note)}")
+
+    failed_pages = []
+    failure_count = 0
+    requested = record.get('inventory_requested') or {}
+    for side, key in (('tableau', 'source_inventory'), ('powerbi', 'target_inventory')):
+        if key not in record or requested.get('source' if side == 'tableau' else 'target') is False:
+            continue
+        counts = {}
+        for page in record.get(key, []):
+            capture = page.get('capture') or {}
+            status = capture.get('status', 'not_reported')
+            counts[status] = counts.get(status, 0) + 1
+            if status != 'captured':
+                failure_count += 1
+                if len(failed_pages) < 5:
+                    name = page.get('name') or page.get('id') or 'unnamed'
+                    note = capture.get('note') or capture.get('error') or page.get('inventory_error')
+                    failed_pages.append(
+                        f"{side} page {brief(name)}: {status}"
+                        + (f" — {brief(note)}" if note else ""))
+        print(f"      {side} pages: "
+              + (', '.join(f'{status}={count}' for status, count in sorted(counts.items()))
+                 or 'no pages reported'))
+    for detail in failed_pages:
+        print(f"        {detail}")
+    if failure_count > len(failed_pages):
+        print(f"        {failure_count - len(failed_pages)} more page failures; see evidence manifest.")
+    if 'page_mapping_status' in record:
+        print(f"      page mapping: {record['page_mapping_status']}")
+    pixels = record.get('page_pixel_comparison_summary') or record.get('pixel_comparison')
+    if isinstance(pixels, dict):
+        print(f"      local pixel diagnostics: {pixels.get('status', 'not_reported')} (not parity)")
+    issues = record.get('issues') or []
+    for issue in issues[:3]:
+        print(f"      issue: {brief(issue)}")
+    if len(issues) > 3:
+        print(f"      {len(issues) - 3} more issues; see evidence manifest.")
+
+
+def _run_batch_desktop_diagnostics(source_dir, output_root, workbook_pairs,
+                                   desktop_options, migration_exit=ExitCode.SUCCESS,
+                                   *, dry_run=False):
+    """Run opt-in diagnostics after migration; never retract successful PBIPs."""
+    if desktop_options is None:
+        return migration_exit
+    prefix = '[DRY RUN] Would run' if dry_run else 'Running'
+    mode = '--compare-desktop' if desktop_options.capture_tableau else '--screenshots'
+    stages = ['Power BI Desktop open', 'local Power BI refresh',
+              'all-page screenshots' if desktop_options.all_pages else 'initial screenshot']
+    if desktop_options.capture_tableau:
+        stages.insert(0, 'Tableau Desktop open/capture')
+        stages.append(f'{desktop_options.screen_comparison} screen comparison')
+    stages.append('launched-process cleanup')
+    print(f"\n  {prefix} {mode} diagnostics: {os.path.abspath(output_root)}")
+    print(f"  Requested stages: {' -> '.join(stages)}")
+    print("  Local launch/refresh consent only; no deployment, sign-in or EULA acceptance. No parity verdict.")
+    if dry_run:
+        print("  No native imports/launches or evidence writes; successful/resumed .twb/.twbx outputs would be used.")
+        return migration_exit
+
+    failure_exit = migration_exit if migration_exit != ExitCode.SUCCESS else ExitCode.DESKTOP_DIAGNOSTIC_FAILED
+    if not workbook_pairs:
+        message = (
+            f"{mode}: no successful/resumed .twb/.twbx PBIP pairs from this migration. "
+            "Migrate a workbook to full PBIP output (or --resume a completed workbook); "
+            "no native apps were launched.")
+        logger.error("%s", message)
+        print(f"  Desktop diagnostics failed: {message}")
+        return failure_exit
+    try:
+        from powerbi_import.desktop_comparison import compare_desktop_reports
+        manifest = compare_desktop_reports(
+            os.path.abspath(source_dir), os.path.abspath(output_root),
+            timeout=desktop_options.timeout, all_pages=desktop_options.all_pages,
+            page_timeout=desktop_options.page_timeout,
+            screen_comparison=desktop_options.screen_comparison,
+            tableau_desktop_path=desktop_options.tableau_desktop_path,
+            powerbi_desktop_path=desktop_options.powerbi_desktop_path,
+            refresh_timeout=desktop_options.refresh_timeout,
+            capture_tableau=desktop_options.capture_tableau,
+            workbook_pairs=workbook_pairs)
+        if not isinstance(manifest, dict):
+            raise ValueError("Desktop diagnostics returned no evidence manifest object")
+        run_dir = manifest.get('run_dir')
+        manifest_path = manifest.get('manifest_path') or (
+            os.path.join(run_dir, 'manifest.json') if run_dir else None)
+        html_path = manifest.get('html_path') or (
+            os.path.join(run_dir, 'comparison.html') if run_dir else None)
+        print(f"  Desktop diagnostics status: {manifest.get('status', 'not_reported')}")
+        print(f"  Evidence manifest: {manifest_path or 'not reported'}")
+        print(f"  Evidence HTML:     {html_path or 'not reported'}")
+        print("  Full page/UI-selection evidence is recorded in the manifest.")
+        for row in manifest.get('workbooks', []):
+            _print_desktop_statuses(row, row.get('relative_source', row.get('source', 'workbook')))
+        if not manifest_path or not html_path or not manifest.get('workbooks'):
+            raise ValueError("Desktop diagnostics did not report evidence paths and workbook results")
+    except Exception as exc:  # noqa: BLE001 - a diagnostic failure must retain the migration exit
+        logger.exception("Desktop diagnostics failed (%s): %s", type(exc).__name__, exc)
+        print(f"  Desktop diagnostics failed ({type(exc).__name__}): {exc}. Generated PBIPs are retained.")
+        return failure_exit
+    if manifest.get('status') != 'captured':
+        logger.error("Desktop diagnostics status is %s; generated PBIPs are retained",
+                     manifest.get('status', 'not_reported'))
+        print("  Requested desktop stages did not all succeed; generated PBIPs are retained.")
+        return failure_exit
+    return migration_exit
 
 
 def setup_logging(verbose=False, log_file=None, quiet=False):
@@ -1583,7 +1860,7 @@ def _run_check_drift(args):
     return ExitCode.SUCCESS
 
 
-def _run_batch_config(args):
+def _run_batch_config(args, desktop_options=None):
     """Run migrations using a JSON batch configuration file.
 
     The config file is a JSON array of objects, each specifying a
@@ -1599,6 +1876,9 @@ def _run_batch_config(args):
         calendar_end, mode/model_mode, hyper_export_format,
         hyper_export_max_rows, max_zip_entry_mb, paginated, skip_extraction
     """
+    if desktop_options is None:
+        desktop_options = _desktop_options_from_args(args)
+    _validate_desktop_options(desktop_options, getattr(args, 'output_format', 'pbip'))
     config_path = args.batch_config
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -1611,11 +1891,22 @@ def _run_batch_config(args):
         print("Error: Batch config must be a JSON array of objects")
         return ExitCode.GENERAL_ERROR
 
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+    if desktop_options is not None:
+        if not all(isinstance(entry, dict) for entry in entries):
+            print("Error: Desktop diagnostics require batch-config entries to be JSON objects")
+            return ExitCode.GENERAL_ERROR
+        if not any(isinstance(entry.get('file'), str) and
+                   os.path.splitext(entry['file'])[1].lower() in ('.twb', '.twbx')
+                   for entry in entries):
+            print("Error: Desktop diagnostics require at least one .twb/.twbx batch-config source, not Prep/datasource-only input. No generation performed.")
+            return ExitCode.DESKTOP_DIAGNOSTIC_FAILED
+
     if getattr(args, 'dry_run', False):
         print(f"[DRY RUN] Would process {len(entries)} batch-config entries from {config_path}; no files written.")
-        return ExitCode.SUCCESS
-
-    config_dir = os.path.dirname(os.path.abspath(config_path))
+        return _run_batch_desktop_diagnostics(
+            config_dir, args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated'),
+            [], desktop_options, dry_run=True)
 
     print_header("TABLEAU TO POWER BI BATCH-CONFIG MIGRATION")
     print(f"  Config file:  {config_path}")
@@ -1624,6 +1915,7 @@ def _run_batch_config(args):
 
     batch_start = datetime.now()
     results = {}
+    desktop_outputs = {}
 
     for i, entry in enumerate(entries, 1):
         raw_file = entry.get('file', '')
@@ -1692,6 +1984,17 @@ def _run_batch_config(args):
             results[raw_file] = {'success': False, 'error': str(exc)}
             logger.error("Output path planning failed for %s: %s", raw_file, exc)
             continue
+
+        desktop_pbip: Optional[str] = None
+        desktop_target: Optional[str] = None
+        if desktop_options is not None:
+            desktop_pbip = os.path.abspath(os.path.join(
+                out_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated'),
+                basename, f'{basename}.pbip'))
+            desktop_target = os.path.normcase(os.path.realpath(desktop_pbip))
+            # A later entry may overwrite this destination or fail halfway.
+            # Never keep an earlier source paired to that entry's stale PBIP.
+            desktop_outputs[desktop_target] = None
 
         # Extract
         if not skip:
@@ -1825,6 +2128,18 @@ def _run_batch_config(args):
             'fidelity': report_summary.get('overall_score', report_summary.get('fidelity_score')) if report_summary else None,
             'metadata_path': os.path.join(dashboard_dir, basename, 'migration_metadata.json'),
         }
+        if (desktop_options is not None and all_ok
+                and desktop_target is not None and desktop_pbip is not None
+                and os.path.splitext(tableau_file)[1].lower() in ('.twb', '.twbx')):
+            source_root = config_dir
+            try:
+                if os.path.commonpath((os.path.abspath(tableau_file), config_dir)) != config_dir:
+                    source_root = os.path.dirname(os.path.abspath(tableau_file))
+            except ValueError:  # Absolute entries may be on another Windows drive.
+                source_root = os.path.dirname(os.path.abspath(tableau_file))
+            desktop_outputs[desktop_target] = (
+                source_root, os.path.abspath(dashboard_dir),
+                _desktop_workbook_pair(tableau_file, source_root, desktop_pbip))
 
     # Summary
     batch_duration = datetime.now() - batch_start
@@ -1858,7 +2173,19 @@ def _run_batch_config(args):
         fid_str = f"  (extracted: {fid}%)" if fid is not None else ""
         print(f"  {status} {name}{fid_str}")
 
-    return ExitCode.SUCCESS if failed == 0 else ExitCode.BATCH_PARTIAL_FAIL
+    exit_code = ExitCode.SUCCESS if failed == 0 else ExitCode.BATCH_PARTIAL_FAIL
+    if desktop_options is not None:
+        groups = {}
+        for completed in desktop_outputs.values():
+            if completed is not None:
+                source_root, output_root, pair = completed
+                groups.setdefault((source_root, output_root), []).append(pair)
+        if not groups:
+            groups[(config_dir, effective_output)] = []
+        for (source_root, output_root), pairs in groups.items():
+            exit_code = _run_batch_desktop_diagnostics(
+                source_root, output_root, pairs, desktop_options, exit_code)
+    return exit_code
 
 
 def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, display_name):
@@ -2516,7 +2843,8 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                         full_lineage=False, verify_open=True, output_format='pbip',
                         quality_policy='report', dry_run=False, model_mode='auto',
                         hyper_export_format='auto', hyper_export_max_rows=None,
-                        max_zip_entry_mb=None, quiet=False):
+                        max_zip_entry_mb=None, quiet=False,
+                        desktop_options: Optional[DesktopDiagnosticOptions] = None):
     """Batch migrate all .twb/.twbx files in a directory (recursive).
 
     Searches the directory tree recursively for Tableau workbooks and
@@ -2539,10 +2867,12 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         jsonl_log: Path to write structured JSONL migration events
         manifest: List of manifest entries [{file, culture, calendar_start, ...}] for per-workbook config
         output_format: ``pbip`` or ``fabric`` generation target
+        desktop_options: Explicit native launch/refresh consent; None disables diagnostics.
 
     Returns:
-        int: 0 if all succeeded, 1 if any failed
+        int: Structured migration exit; 8 for diagnostics-only failure.
     """
+    _validate_desktop_options(desktop_options, output_format)
     if not os.path.isdir(batch_dir):
         print(f"Error: Batch directory not found: {batch_dir}")
         return 1
@@ -2566,9 +2896,13 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
 
     if not tableau_files:
         print(f"Error: No .twb/.twbx/.tds/.tdsx/.tfl/.tflx files found in {batch_dir}")
-        return 1
+        return ExitCode.DESKTOP_DIAGNOSTIC_FAILED if desktop_options is not None else 1
 
     tableau_files.sort()
+    if desktop_options is not None and not any(
+            os.path.splitext(path)[1].lower() in ('.twb', '.twbx') for path in tableau_files):
+        print("Error: Desktop diagnostics require at least one .twb/.twbx source, not Prep/datasource-only input. No generation performed.")
+        return ExitCode.DESKTOP_DIAGNOSTIC_FAILED
 
     # Output root: honour --output-dir or default to <batch_dir>/migrated
     migrated_root = output_dir if output_dir else os.path.join(batch_dir, 'migrated')
@@ -2611,7 +2945,8 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         for path in tableau_files:
             print(f"  {os.path.relpath(path, batch_dir)}")
         print(f"  Output: {migrated_root}; no extraction or generation performed.")
-        return ExitCode.SUCCESS
+        return _run_batch_desktop_diagnostics(
+            batch_dir, migrated_root, [], desktop_options, dry_run=True)
     os.makedirs(migrated_root, exist_ok=True)
 
     checkpoint_path = os.path.join(migrated_root, '.migration_batch_state.json')
@@ -2934,6 +3269,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
     })
 
     # ── Resume: filter out completed workbooks ────────────────
+    desktop_pairs = []
     if resume:
         original_count = len(tableau_files)
         filtered = []
@@ -3004,6 +3340,10 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                                              'legacy_marker': True})
             else:
                 filtered.append(twb)
+                continue
+            if (desktop_options is not None
+                    and os.path.splitext(twb)[1].lower() in ('.twb', '.twbx')):
+                desktop_pairs.append(_desktop_workbook_pair(twb, batch_dir, completed_path))
         tableau_files = filtered
         skipped = original_count - len(tableau_files)
         if skipped:
@@ -3013,7 +3353,8 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             if jsonl_fh:
                 _write_jsonl('batch_end', {'status': 'all_completed', 'skipped': skipped})
                 jsonl_fh.close()
-            return ExitCode.SUCCESS
+            return _run_batch_desktop_diagnostics(
+                batch_dir, migrated_root, desktop_pairs, desktop_options)
 
     batch_start = datetime.now()
     batch_results = {}
@@ -3245,7 +3586,19 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
     if jsonl_fh:
         jsonl_fh.close()
 
-    return ExitCode.SUCCESS if failed == 0 else ExitCode.BATCH_PARTIAL_FAIL
+    exit_code = ExitCode.SUCCESS if failed == 0 else ExitCode.BATCH_PARTIAL_FAIL
+    if desktop_options is not None:
+        for task in tasks:
+            result = batch_results.get(task['display_name'], {})
+            if (result.get('success') and
+                    os.path.splitext(task['tableau_file'])[1].lower() in ('.twb', '.twbx')):
+                name = result.get('report_name') or task['basename']
+                out = result.get('output_dir') or task['workbook_output_dir']
+                desktop_pairs.append(_desktop_workbook_pair(
+                    task['tableau_file'], batch_dir,
+                    os.path.join(out, name, f'{name}.pbip')))
+    return _run_batch_desktop_diagnostics(
+        batch_dir, migrated_root, desktop_pairs, desktop_options, exit_code)
 
 
 # ── Argument parser ──────────────────────────────────────────────────────────
@@ -3616,22 +3969,86 @@ def _add_report_args(parser):
         help='Disable the default static Power BI openability preflight.'
     )
 
-    parser.add_argument(
-        '--desktop-probe',
+    desktop_mode = parser.add_mutually_exclusive_group()
+    desktop_mode.add_argument(
+        '--screenshots', '--desktop-probe',
+        dest='desktop_probe',
         action='store_true',
         default=False,
-        help='Best-effort REAL open self-check: after generation, launch Power BI '
-             'Desktop against the generated .pbip and watch for an early crash / '
-             'FrownDump / error traces. Windows + Desktop install required; the '
-             'static --verify-open preflight remains the authoritative check.'
+        help='After PBIP batch migration, open/refresh Power BI Desktop locally '
+             'and capture screenshots (never opens Tableau). Explicit launch/refresh '
+             'consent; Windows + installed Desktop required. Diagnostic failure exits '
+             'nonzero without removing generated projects. Alias: --desktop-probe.'
+    )
+
+    desktop_mode.add_argument(
+        '--compare-desktop',
+        action='store_true',
+        default=False,
+        help='After PBIP batch migration, capture Tableau and Power BI Desktop '
+             '(including local Power BI refresh) for visual review. Explicit launch '
+             'consent; no automatic sign-in, EULA acceptance, deployment or parity verdict.'
+    )
+
+    parser.add_argument(
+        '--all-pages',
+        action='store_true',
+        default=False,
+        help='With --screenshots or --compare-desktop, request every report page '
+             '(and Tableau sheet/dashboard for paired comparison); default: initial view only.'
+    )
+
+    parser.add_argument(
+        '--desktop-timeout',
+        type=_positive_float_argument,
+        action=_DesktopModifierAction,
+        default=90,
+        metavar='SECONDS',
+        help='Finite positive timeout for each native Desktop open (default: 90). Requires a desktop mode.'
+    )
+
+    parser.add_argument(
+        '--refresh-timeout',
+        type=_positive_float_argument,
+        action=_DesktopModifierAction,
+        default=300,
+        metavar='SECONDS',
+        help='Finite positive timeout for local Power BI refresh (default: 300). Requires a desktop mode.'
+    )
+
+    parser.add_argument(
+        '--page-timeout',
+        type=_positive_float_argument,
+        action=_DesktopModifierAction,
+        default=30,
+        metavar='SECONDS',
+        help='Finite positive per-page timeout with --all-pages (default: 30). Requires a desktop mode.'
+    )
+
+    parser.add_argument(
+        '--screen-comparison',
+        choices=('manual', 'local'),
+        action=_DesktopModifierAction,
+        default='manual',
+        help='With --compare-desktop only: manual visual review (default), or '
+             'local pixel diagnostics; neither is semantic parity.'
+    )
+
+    parser.add_argument(
+        '--tableau-desktop-path',
+        action=_DesktopModifierAction,
+        default=None,
+        metavar='PATH',
+        help='Explicit Tableau Desktop executable path; requires --compare-desktop.'
     )
 
     parser.add_argument(
         '--powerbi-desktop-path',
+        action=_DesktopModifierAction,
         default=None,
         metavar='PATH',
-        help='Explicit path to PBIDesktop.exe for --desktop-probe. Overrides '
-             'POWERBI_DESKTOP_PATH and automatic discovery.'
+        help='Explicit PBIDesktop.exe path for --screenshots or --compare-desktop. '
+             'Overrides POWERBI_DESKTOP_PATH and automatic discovery.'
     )
 
     parser.add_argument(
@@ -4497,7 +4914,18 @@ def _add_shared_model_args(parser):
 def _build_argument_parser():
     """Build and return the CLI argument parser."""
     parser = argparse.ArgumentParser(
-        description='Migrate a Tableau workbook to a Power BI project (.pbip)'
+        description='Migrate Tableau workbooks to Power BI projects (.pbip)',
+        epilog=textwrap.dedent("""\
+            One-command examples:
+              python migrate.py migrate FOLDER
+              python migrate.py migrate FOLDER --screenshots
+              python migrate.py migrate FOLDER --compare-desktop --all-pages
+              python migrate.py --batch FOLDER --compare-desktop --screen-comparison local
+            Desktop modes explicitly allow local app launches and Power BI refresh only.
+            No desktop mode: no native launch. --dry-run: no launches or file writes.
+            Diagnostic failure returns 8 unless migration already returned a nonzero code.
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     _add_source_args(parser)
@@ -4564,11 +4992,31 @@ Common options:
   --hyper-export-format FMT  PBIP auto: CSV <=10 MiB, Parquet >10 MiB
   --hyper-export-max-rows N  Diagnostic/Fabric cap; PBIP Hyper rejects caps
 
+Optional native Desktop diagnostics (Windows + installed apps):
+  --screenshots       Open/refresh Power BI locally and capture (alias --desktop-probe)
+  --compare-desktop   Capture Tableau and Power BI for visual review; not parity
+  --all-pages         Capture every page; default is the initially opened view
+  --desktop-timeout N Open timeout, seconds (default: 90)
+  --refresh-timeout N Local Power BI refresh timeout, seconds (default: 300)
+  --page-timeout N    Per-page timeout with --all-pages (default: 30)
+  --screen-comparison manual|local  Paired comparison only (default: manual)
+  --tableau-desktop-path PATH / --powerbi-desktop-path PATH  Explicit app paths
+
+One-command examples:
+  python migrate.py migrate FOLDER
+  python migrate.py migrate FOLDER --screenshots
+  python migrate.py migrate FOLDER --compare-desktop --all-pages
+  python migrate.py --batch FOLDER --compare-desktop --screen-comparison local
+  Desktop flags consent to local launches/refresh only, not auth/EULA/deployment.
+  Modes are mutually exclusive and require full PBIP batch output.
+  --dry-run never launches apps or writes files. Diagnostics-only failure exits 8;
+  existing nonzero migration codes are preserved and generated PBIPs are retained.
+
 Compatibility:
   Project generation requires a source folder, --batch, --batch-config,
   --manifest, or --shared-model. Direct single-file generation is retired.
   Use "python migrate.py --advanced-help" for every legacy option.
-    Power BI Desktop opens only when --desktop-probe is explicitly provided.
+    No Desktop flags: no native imports or launches; ordinary migration is unchanged.
 """).strip().replace("\n    python migrate", "\n  python migrate").replace(
     "\n    qa        ", "\n  qa        ").replace(
     "\n    quality  ", "\n  quality  ").replace(
@@ -4655,7 +5103,8 @@ def _expand_simple_command(argv):
     return args
 
 
-def _parse_cli_args(parser, argv=None):
+def _parse_cli_args(parser: argparse.ArgumentParser,
+                    argv: Optional[list[str]] = None) -> argparse.Namespace:
     """Parse the concise command facade or the legacy advanced CLI."""
     raw_args = list(sys.argv[1:] if argv is None else argv)
     if raw_args in ([], ['-h'], ['--help']):
@@ -7014,13 +7463,21 @@ def main():
     except ConfigurationError as exc:
         parser.error(str(exc))
 
+    try:
+        desktop_options = _desktop_options_from_args(args)
+    except ConfigurationError as exc:
+        parser.error(str(exc))
+
     # ── Interactive wizard mode ───────────────────────────────
     if getattr(args, 'wizard', False):
         from powerbi_import.wizard import run_wizard, wizard_to_args
         config = run_wizard()
         if config is None:
             return ExitCode.SUCCESS
-        args = wizard_to_args(config)
+        wizard_args = wizard_to_args(config)
+        if wizard_args is None:
+            return ExitCode.SUCCESS
+        args = wizard_args
 
     try:
         args.mode = _resolve_model_mode(getattr(args, 'mode', None))
@@ -7078,10 +7535,17 @@ def main():
 
     # ── Batch-config migration mode ───────────────────────────
     if args.batch_config:
-        return _run_batch_config(args)
+        return _run_batch_config(args, desktop_options=desktop_options)
 
     # ── Tableau Server download ───────────────────────────────
     if getattr(args, 'server', None):
+        if desktop_options is not None and args.dry_run:
+            print("[DRY RUN] Would download the requested Tableau workbook assets into a new isolated batch, then migrate PBIP.")
+            print("  No server sign-in/download, generation or file writes. PENDING below is a placeholder for the new download folder.")
+            return _run_batch_desktop_diagnostics(
+                '.', args.output_dir or os.path.join(
+                    tempfile.gettempdir(), 'tableau_server_downloads_PENDING', 'migrated'),
+                [], desktop_options, dry_run=True)
         # ── Sprint 167 — Enterprise server operations ─────────
         enterprise_result = _handle_enterprise_server_ops(args)
         if enterprise_result is not None:
@@ -7267,6 +7731,7 @@ def main():
             hyper_export_max_rows=getattr(args, 'hyper_export_max_rows', None),
             max_zip_entry_mb=getattr(args, 'max_zip_entry_mb', None),
             quiet=getattr(args, 'quiet', False),
+            desktop_options=desktop_options,
         )
 
     # ── Single-file diagnostics only (never project generation) ──
@@ -8484,7 +8949,8 @@ class _HyperCsvExports(dict):
 
 
 def _stage_pending_hyper_partition(content, data_dir, export_records, *,
-                                   require_full=False, binding_updates=None):
+                                   require_full=False, binding_updates=None,
+                                   column_metadata=None):
     """Resolve only the semantic producer's exact identity-bearing error.
 
     The final TMDL table declaration and the error's Table must agree. Neither
@@ -8569,9 +9035,15 @@ def _stage_pending_hyper_partition(content, data_dir, export_records, *,
         expression = (
             'Parquet.Document(File.Contents(DataFolder & '
             + _m_literal('\\' + filename) + '))')
-    # Source columns in the model are physical names; captions remain model
-    # metadata. Restore only the physical exported columns' scalar types.
-    type_changes = _hyper_csv_type_changes(content, columns, {})
+    # The producer's explicit renames run after Source. Metadata must therefore
+    # type the raw headers, not the logical/captioned model columns. Resolve it
+    # by the same exact identity as the export, including renamed model tables.
+    metadata = (column_metadata or {}).get(key, [])
+    source_types, physical_to_logical = (
+        metadata[0] if len(metadata) == 1 else ({}, {}))
+    type_changes = _hyper_csv_type_changes(
+        content, columns, source_types,
+        physical_to_logical=physical_to_logical)
     if type_changes:
         expression = ('Table.TransformColumnTypes(' + expression + ', {'
                       + ', '.join(type_changes) + '}, "en-US")')
@@ -9027,7 +9499,8 @@ def _convert_hyper_to_csv_in_data_impl(data_dir, source_basename, project_dir,
     # Also build per-table physical→display column name mapping from
     # the cols_physical_map field stored during extraction (<cols><map> entries).
     tmdl_col_remote = {}  # tmdl_table_name → {physical_name: display_name}
-    tmdl_col_types = {}  # tmdl_table_name → physical/caption column types
+    tmdl_col_types = {}  # tmdl_table_name → staged source column types
+    hyper_column_metadata = {}  # exact identity → distinct physical metadata
     _ds_json_path = os.path.join(
         extract_dir or _get_extract_dir(), 'datasources.json')
     try:
@@ -9067,17 +9540,23 @@ def _convert_hyper_to_csv_in_data_impl(data_dir, source_basename, project_dir,
                     if len(choices) == 1:
                         tmdl_source_candidates.setdefault(
                             tbl_name, set()).update(choices)
-                # Use cols_physical_map for complete mapping
+                # Keep physical and logical schemas separate: an alias can
+                # itself be another column's physical name.
                 pm = tbl.get('cols_physical_map')
                 if pm and tbl_name:
                     tmdl_col_remote[tbl_name] = pm
+                physical_types, logical_types, physical_to_logical = (
+                    _hyper_source_column_metadata(tbl))
                 if tbl_name:
                     types = tmdl_col_types.setdefault(tbl_name, {})
-                    for col in tbl.get('columns', []):
-                        if col.get('name') and col.get('datatype'):
-                            types[col['name']] = col['datatype']
-                            if pm and col['name'] in pm:
-                                types[pm[col['name']]] = col['datatype']
+                    types.update(physical_types)
+                    types.update(logical_types)
+                key = _hyper_binding_identity_key(tbl.get('hyper_identity'))
+                if key is not None:
+                    candidates = hyper_column_metadata.setdefault(key, [])
+                    metadata = (physical_types, physical_to_logical)
+                    if metadata not in candidates:
+                        candidates.append(metadata)
     except (OSError, ValueError) as exc:
         logger.warning("Could not load extraction metadata for Hyper routing: %s", exc)
 
@@ -9117,7 +9596,8 @@ def _convert_hyper_to_csv_in_data_impl(data_dir, source_basename, project_dir,
                 and 'Migration.HyperExportRequired' in content):
             content = _stage_pending_hyper_partition(
                 content, data_dir, export_records, require_full=require_full,
-                binding_updates=binding_updates)
+                binding_updates=binding_updates,
+                column_metadata=hyper_column_metadata)
             if content != original:
                 try:
                     if require_full:
@@ -9521,13 +10001,51 @@ def _convert_hyper_to_csv_in_data_impl(data_dir, source_basename, project_dir,
         _remove_hyper_export_tree(export_stage_dir)
 
 
-def _hyper_csv_type_changes(content, physical_columns, source_types):
+def _hyper_source_column_metadata(table):
+    """Exact declared types for raw physical and staged logical schemas.
+
+    cols_physical_map is physical -> logical, never its inverse. remote_name
+    supplies another explicit binding when that map has no entry. Resolve each
+    binding once against the original declarations so aliases cannot chain.
+    """
+    declared_types = {}
+    physical_to_logical = {}
+    for column in table.get('columns', []):
+        name = column.get('name')
+        if not isinstance(name, str) or not name:
+            continue
+        datatype = column.get('datatype')
+        if isinstance(datatype, str) and datatype:
+            declared_types[name] = datatype
+        remote = column.get('remote_name')
+        if isinstance(remote, str) and remote:
+            physical_to_logical[remote] = name
+    physical_to_logical.update(table.get('cols_physical_map') or {})
+    physical_types = dict(declared_types)
+    logical_types = dict(declared_types)
+    logical_names = set(physical_to_logical.values())
+    for physical, logical in physical_to_logical.items():
+        if logical in declared_types:
+            physical_types[physical] = declared_types[logical]
+        elif physical in declared_types and physical not in logical_names:
+            # Older extraction snapshots declared physical names directly.
+            logical_types.setdefault(logical, declared_types[physical])
+        else:
+            # A header may also name a different logical column. If this
+            # binding lacks a declared type, use its own model fallback.
+            physical_types.pop(physical, None)
+    return physical_types, logical_types, physical_to_logical
+
+
+def _hyper_csv_type_changes(content, physical_columns, source_types, *,
+                            physical_to_logical=None):
     """M type entries for CSV source columns, excluding derived columns.
 
     Prefer extraction metadata (which retains date versus datetime, etc.).
     Model sourceColumn/dataType declarations provide a fallback when the
-    extraction snapshot is unavailable. Only columns in the original Source
-    schema are eligible; measures/calculated columns must not be pre-typed.
+    extraction snapshot is unavailable, following only explicitly declared
+    physical -> logical bindings. Only columns in the original Source schema
+    are eligible; measures/calculated columns must not be pre-typed.
     """
     import re
 
@@ -9563,7 +10081,8 @@ def _hyper_csv_type_changes(content, physical_columns, source_types):
                       ('datetimezone', 'duration') else
                       map_tableau_to_m_type(datatype))
         else:
-            m_type = model_types.get(name)
+            logical = (physical_to_logical or {}).get(name, name)
+            m_type = model_types.get(logical)
         if m_type:
             entries.append('{' + _m_literal(name) + ', ' + m_type + '}')
     return entries

@@ -216,9 +216,9 @@ class TestDaxToMCommentBoundary(unittest.TestCase):
             ("[A] * [B] + 2", "(([A] * [B]) + 2)"),
             ("[A] - [B]", "([A] - [B])"),
             ('IF([Value] > 0, "yes", "no")',
-             'if [Value] > 0 then "yes" else "no"'),
+             'if ([Value] > 0) = true then "yes" else "no"'),
             ('IF([Value] > 0, "/* literal */", "// literal")',
-             'if [Value] > 0 then "/* literal */" else "// literal"'),
+             'if ([Value] > 0) = true then "/* literal */" else "// literal"'),
             ("BLANK()", "null"),
             ("TRUE()", "true"),
             ("UPPER([Name])", "Text.Upper([Name])"),
@@ -246,8 +246,8 @@ class TestQuarterOffsetAndBooleanConversion(unittest.TestCase):
         self.assertEqual(validate_dax_expression(dax), [])
         self.assertEqual(
             _dax_to_m_expression(dax, "Facts"),
-            'if Date.QuarterOfYear([Date de début]) <= '
-            'Date.QuarterOfYear(Date.AddDays(DateTime.LocalNow(), -(45))) '
+            'if (Date.QuarterOfYear([Date de début]) <= '
+            'Date.QuarterOfYear(Date.AddDays(DateTime.LocalNow(), -(45)))) = true '
             'then true else false')
 
     def test_proven_date_offsets_use_days_including_fractional_day_offsets(self):
@@ -277,9 +277,9 @@ class TestQuarterOffsetAndBooleanConversion(unittest.TestCase):
 
     def test_boolean_literals_are_normalized_without_rewriting_literal_text(self):
         self.assertEqual(_dax_to_m_expression("IF(TRUE,FALSE,TRUE)", "Facts"),
-                         "if true then false else true")
+                         "if (true) = true then false else true")
         self.assertEqual(_dax_to_m_expression("IF(TRUE(),FALSE(),TRUE())", "Facts"),
-                         "if true then false else true")
+                         "if (true) = true then false else true")
         for literal in ('"TRUE FALSE TRUE() FALSE()"',
                         '"He said ""TRUE"" and ""FALSE"""'):
             with self.subTest(literal=literal):
@@ -291,7 +291,138 @@ class TestQuarterOffsetAndBooleanConversion(unittest.TestCase):
                 self.assertEqual(_dax_to_m_expression(field, "Facts"), field)
         self.assertEqual(
             _dax_to_m_expression('IF([TRUE], "FALSE", [FALSE])', "Facts"),
-            'if [TRUE] then "FALSE" else [FALSE]')
+            'if ([TRUE]) = true then "FALSE" else [FALSE]')
+
+
+class TestNullableIfDaxToMSemantics(unittest.TestCase):
+    """Evaluate guarded conditions without coercing nulls or swallowing errors."""
+
+    def convert(self, dax, expected=None):
+        expression = _dax_to_m_expression(dax, table_name="Facts")
+        self.assertIsNotNone(expression, dax)
+        self.assertNotRegex(expression, r"\b(?:try|otherwise)\b")
+        if expected is not None:
+            self.assertEqual(expression, expected)
+        return EmittedScalarM(expression)
+
+    def test_nullable_relational_comparisons_select_else_without_zero_coercion(self):
+        for operator, bound, cases in (
+            ("<", 1, ((None, "else"), (-1, "then"), (0, "then"),
+                      (1, "else"), (2, "else"))),
+            ("<=", 0, ((None, "else"), (-1, "then"), (0, "then"), (1, "else"))),
+            (">", 0, ((None, "else"), (-1, "else"), (0, "else"), (1, "then"))),
+            (">=", 0, ((None, "else"), (-1, "else"), (0, "then"), (1, "then"))),
+        ):
+            with self.subTest(operator=operator, bound=bound):
+                condition = f"[Value] {operator} {bound}"
+                emitted = self.convert(
+                    f'IF({condition}, "then", "else")',
+                    f'if ({condition}) = true then "then" else "else"')
+                for value, expected in cases:
+                    with self.subTest(value=value):
+                        self.assertEqual(emitted.evaluate({"Value": value}), expected)
+
+    def test_bare_boolean_condition_selects_then_only_for_true(self):
+        emitted = self.convert(
+            'IF([Flag], "selected", "fallback")',
+            'if ([Flag]) = true then "selected" else "fallback"')
+        for flag, expected in ((None, "fallback"), (False, "fallback"),
+                               (True, "selected")):
+            with self.subTest(flag=flag):
+                self.assertEqual(emitted.evaluate({"Flag": flag}), expected)
+
+    def test_nested_if_guards_both_branches_recursively(self):
+        emitted = self.convert(
+            "IF([OuterFlag], IF([InnerFlag], 11, 12), "
+            "IF([Value] <= 0, 21, 22))",
+            "if ([OuterFlag]) = true then "
+            "if ([InnerFlag]) = true then 11 else 12 else "
+            "if ([Value] <= 0) = true then 21 else 22")
+        # Unselected branches deliberately have no fields in the row.
+        for row, expected in (
+            ({"OuterFlag": True, "InnerFlag": True}, 11),
+            ({"OuterFlag": True, "InnerFlag": False}, 12),
+            ({"OuterFlag": True, "InnerFlag": None}, 12),
+            ({"OuterFlag": False, "Value": 0}, 21),
+            ({"OuterFlag": False, "Value": 1}, 22),
+            ({"OuterFlag": None, "Value": 0}, 21),
+            ({"OuterFlag": None, "Value": None}, 22),
+        ):
+            with self.subTest(row=row):
+                self.assertEqual(emitted.evaluate(row), expected)
+
+    def test_logical_precedence_is_guarded_as_one_whole_condition(self):
+        emitted = self.convert(
+            'IF([LeftFlag] || [MiddleFlag] && [RightFlag], "then", "else")')
+        condition = (
+            "binary", "or", ("field", "LeftFlag"),
+            ("binary", "and", ("field", "MiddleFlag"), ("field", "RightFlag")))
+        # Equality must wrap the entire OR/AND tree, not just its last operand.
+        self.assertEqual(
+            emitted.tree,
+            ("if", ("binary", "=", condition, ("literal", True)),
+             ("literal", "then"), ("literal", "else")))
+        for left, middle, right, expected in (
+            (True, False, False, "then"),
+            (False, True, True, "then"),
+            (False, True, False, "else"),
+            (None, False, True, "else"),
+            (None, True, True, "then"),
+            (False, None, True, "else"),
+            (False, True, None, "else"),
+            (True, None, None, "then"),
+        ):
+            with self.subTest(left=left, middle=middle, right=right):
+                self.assertEqual(
+                    emitted.evaluate({"LeftFlag": left, "MiddleFlag": middle,
+                                      "RightFlag": right}),
+                    expected)
+
+    def test_omitted_else_remains_null_for_nullable_and_false_conditions(self):
+        for condition, field, cases in (
+            ("[Value] <= 0", "Value", ((None, None), (0, 7), (1, None))),
+            ("[Flag]", "Flag", ((None, None), (False, None), (True, 7))),
+        ):
+            with self.subTest(condition=condition):
+                emitted = self.convert(
+                    f"IF({condition}, 7)",
+                    f"if ({condition}) = true then 7 else null")
+                for value, expected in cases:
+                    with self.subTest(value=value):
+                        actual = emitted.evaluate({field: value})
+                        if expected is None:
+                            self.assertIsNone(actual)
+                        else:
+                            self.assertEqual(actual, expected)
+
+    def test_real_condition_errors_propagate_without_try_or_otherwise(self):
+        emitted = self.convert(
+            "IF([Value] <= 0, [ThenValue], [ElseValue])",
+            "if ([Value] <= 0) = true then [ThenValue] else [ElseValue]")
+        # Null is not zero: zero selects THEN, but null must select ELSE.
+        self.assertEqual(emitted.evaluate({"Value": 0, "ThenValue": 11}), 11)
+        self.assertEqual(emitted.evaluate({"Value": None, "ElseValue": 23}), 23)
+        with self.assertRaises(TypeError):
+            emitted.evaluate({"Value": "invalid value", "ThenValue": 11, "ElseValue": 23})
+        with self.assertRaises(KeyError):
+            emitted.evaluate({"ThenValue": 11, "ElseValue": 23})
+
+    def test_selected_branch_errors_propagate_and_other_branch_stays_lazy(self):
+        emitted = self.convert(
+            "IF([Flag], [ThenValue] + 1, [ElseValue] + 2)",
+            "if ([Flag]) = true then ([ThenValue] + 1) else ([ElseValue] + 2)")
+        for flag, selected_field, expected in (
+            (True, "ThenValue", 5),
+            (False, "ElseValue", 6),
+            (None, "ElseValue", 6),
+        ):
+            with self.subTest(flag=flag):
+                self.assertEqual(
+                    emitted.evaluate({"Flag": flag, selected_field: 4}), expected)
+                with self.assertRaises(KeyError):
+                    emitted.evaluate({"Flag": flag})
+                with self.assertRaises(TypeError):
+                    emitted.evaluate({"Flag": flag, selected_field: "invalid value"})
 
 
 class TestDivideDaxToMSemantics(unittest.TestCase):

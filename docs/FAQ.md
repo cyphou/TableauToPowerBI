@@ -137,7 +137,29 @@ needed. Native CSV parsing determines the full physical width before selecting
 the exact declared source columns by name, rather than truncating the input to
 the model's column count. Selection precedes type and caption transformations:
 an unmodeled physical field cannot collide with a caption rename, while a
-missing declared source field still raises an error.
+still-unresolved declared source field raises an error.
+
+For declared-schema Excel, CSV, Google Sheets, SharePoint, PDF and Azure Blob
+queries that promote headers, generated M reserves exact source-header matches
+first, including names with intentional leading or trailing whitespace. Only
+an otherwise missing declared name may match a unique unclaimed header after
+Power Query's `Text.Trim` removes its outer whitespace. Case and internal spaces
+remain significant. Missing or ambiguous matches raise explicit errors instead
+of inventing suffixes or substituting null columns. This is not global header
+trimming: exact physical names and their caption bindings remain unchanged.
+The helper does not read or rewrite source files. Wildcard/no-schema queries,
+explicit promote-header transformations, database queries and Hyper bindings
+retain their existing behavior.
+
+When a header binding fails, Desktop raises `HeaderSchema.Error` or
+`HeaderMatch.Error` and may display only the message, for example "Source headers
+must uniquely match the declared source column names." The opt-in
+`--screenshots` / `--compare-desktop` probe classifies these complete texts as
+refresh errors: it stops without waiting out the refresh timeout, and the
+screenshot is never labelled data verified, even if stale row counts exist.
+Resolve the ambiguous or duplicate source headers, then refresh again; the
+migration never edits source files.
+
 Explicitly declared physical columns are also retained when the sole source
 table has a partial nested schema; their declared types and caption mappings
 are preserved instead of creating calculated placeholders. Tableau pseudo-fields
@@ -184,12 +206,30 @@ row-by-row percentage.
 
 For Hyper data staged as CSV, physical columns are typed at the M `Source`
 step immediately after header promotion and before derived calculations.
-Column types come from extraction metadata, with model `sourceColumn`/`dataType`
-as a fallback, and use explicit `en-US` culture for invariant CSV values. This
-was verified in Power BI on World Indicators: schema and data refresh confirmed
-numeric types and successful `AVERAGE` queries, and the Business scatter was
-populated without an aggregate error. This evidence applies to that workbook;
-it does not establish a general Desktop or all-workbook pass.
+Physical scalar type metadata is matched by exact Hyper identity before the
+physical-to-logical rename, so aliasing does not make date, logical or numeric
+values fall back to text. Column types come from extraction metadata, with model
+`sourceColumn`/`dataType` as a fallback, and use explicit `en-US` culture for
+invariant CSV values.
+
+Earlier Power BI evidence for World Indicators recorded numeric types,
+successful `AVERAGE` queries, and a populated Business scatter without an
+aggregate error. A separate pre-fix refresh loaded 2,691 rows but reported 345
+row errors in generated nullable `IF` conditions. These are historical,
+workbook-specific observations, not a general Desktop/all-workbook result.
+
+Converted DAX `IF` expressions now generate M that compares the complete
+condition with `true` before taking the `then` branch. A `null` condition
+therefore selects the existing `else` branch; nested `IF` conditions use the
+same recursive conversion. No exception-catching or type coercion is added.
+
+Separate authorized, owned-window UI checks subsequently confirmed refreshes
+for two formerly failing fixtures: each physical partition's `RefreshedTime`
+advanced, the owned UI reported `Clear`, and verified row counts matched
+expected values without row errors. The standard probe's refresh state remained
+`waiting` because it missed the UI refresh cycle; that probe did not itself
+observe these successful refreshes. This scoped evidence is not a general
+Desktop, rendered-output, or parity certification.
 
 ### What about `.tde` files (legacy Tableau Data Extract)?
 
@@ -526,10 +566,12 @@ cause is an invalid generated M partition. Fix the source generator, not the emi
 `.tmdl`. Re-run with `--no-verify-open` only to bypass the gate deliberately for diagnosis.
 
 For separate deterministic DAX/M/visual recovery, use the MCP `autoheal` tool
-and review the resulting repair evidence. The parser's legacy `--autoheal`,
-`--llm-autofix`, and `--desktop-probe` switches are not forwarded by batch
-generation. Use the local browser's separately confirmed native diagnostic or
-`python scripts\probe_projects.py PROJECTS_DIR` for a Desktop smoke test.
+and review the resulting repair evidence. The parser's legacy `--autoheal` and
+`--llm-autofix` switches are not forwarded by batch generation. Native diagnostics
+can be requested in the same migration command with `--screenshots` (also
+`--desktop-probe`) or `--compare-desktop`; without these options, no apps open.
+The local browser's separately confirmed diagnostics and
+`python scripts\probe_projects.py PROJECTS_DIR` remain alternatives.
 The `--verify-open` verdict applies only to its static checks; it does not
 override a Desktop load or refresh failure.
 
@@ -551,7 +593,28 @@ bissection are needed to establish a causal fix.
 
 ### How do I validate a client report opening and its screenshot?
 
-Run the batch probe against the generated output directory:
+Use one ordinary migration command, with the desired optional diagnostic:
+
+```powershell
+# Migration + Power BI opening, verified refresh and screenshots.
+python migrate.py batch C:\Client\Tableau --output-dir C:\Client\migration_output --screenshots
+
+# Migration + Tableau / Power BI captures, with selected-page verification.
+python migrate.py batch C:\Client\Tableau --output-dir C:\Client\migration_output `
+   --compare-desktop --all-pages --page-timeout 90
+```
+
+The two desktop modes are mutually exclusive. They require an interactive
+Windows session and installed apps. Default captures show opening windows;
+`--all-pages` attempts individual pages and requires selection checks before
+and after capture. Failed/inaccessible pages remain explicit, with no parity
+claim. Only current successful/resumed workbook outputs are captured, and only
+applications launched by the diagnostic are closed. There is no automatic
+Desktop save, credential/license acceptance or deployment.
+See the [one-command guide](DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command)
+for timeouts, executable overrides and evidence locations.
+
+For already generated output, the standalone batch probe avoids rerunning migration:
 
 ```powershell
 python scripts/probe_projects.py C:\Client\migration_output `
@@ -561,8 +624,11 @@ python scripts/probe_projects.py C:\Client\migration_output `
 ```
 
 The default probe waits for the report window, presses **Home > Refresh >
-Schema and data**, checks aggregate row counts in Desktop's local model, and
-labels each screenshot *data verified* or *data not verified*. Read `DESKTOP_OPENING_VALIDATION.html` for the green `OPENED` and red
+Schema and data**, verifies completion separately from aggregate model rows, and
+labels each screenshot *data verified* or *data not verified*. Completion needs
+an observed refresh lifecycle or strictly advanced expected M-partition timestamps
+with ready/error-free partitions, plus a clear owned UI and complete table checks.
+Rows alone do not prove refresh. Read `DESKTOP_OPENING_VALIDATION.html` for the green `OPENED` and red
 `CRASHED` cards. `empty` means Desktop opened but the model returned zero rows;
 `unavailable` or `query_failed` means the data check could not complete. Use
 `--skip-data-check` only for diagnostic captures, never as a successful data

@@ -347,7 +347,7 @@ healing.py (facade — one import surface, heal_and_verify())
 | `m_healing.py` | `heal_m()` — Power Query M repairs (identifier quoting, trailing commas, paren balance). |
 | `visual_healing.py` | `heal_visual()` — PBIR container repairs; flagship fix moves annotations to the container root (critical load-failure bug). |
 | `openability.py` | `check_openability()` preflight + `extract_m_partitions()` — validates every M partition, executable DAX, JSON file, TMDL, PBIP shell, semantic reference, visual binding, report→model reference and PBIR schema without opening Desktop. |
-| `desktop_probe.py` | `probe_desktop_open()` — best-effort **real** open self-check: launches Power BI Desktop against the `.pbip`, watches for an early crash / FrownDump / error traces, and can inspect aggregate row counts before a screenshot (Windows + Desktop install; static and native verdicts remain separate). |
+| `desktop_probe.py` | `probe_desktop_open()` — best-effort **real** open self-check: launches Power BI Desktop against the `.pbip`, watches for crashes / FrownDump / error traces, and can verify refresh through an owned UI lifecycle or expected M-partition timestamp advancement, with partition health and aggregate table checks before a verified screenshot (Windows + Desktop install; static and native verdicts remain separate). |
 | `autoheal.py` | `AutoHealer` closed loop — deterministic heal → collect residual errors (`StaticValidatorSource`/`LogFileSource`/`PbiDesktopSource`) → optional LLM correction via `LLMGateway` → **re-validate → apply only if valid** (never degrades). Records each applied fix as a `RepairAttempt` (distinct from `HealAction` — it carries the validation outcome). |
 | `recovery_report.py` | Records every applied repair (`record_heal`) into the recovery ledger via duck typing (no import coupling to the healers). |
 | `healing.py` | Unified facade re-exporting the whole subsystem; `heal_and_verify(project_dir)` heals then re-runs the openability preflight, returning `(AutoHealReport, OpenabilityReport)`. |
@@ -355,16 +355,25 @@ healing.py (facade — one import surface, heal_and_verify())
 The static openability gate runs automatically after every PBIP generation, and
 after closed-loop autoheal when autoheal is enabled. A blocking result fails the
 migration and writes `openability_report.json`; `--no-verify-open` is the explicit
-escape hatch. Power BI Desktop is never launched automatically. Batch does not
-forward the legacy `--desktop-probe` or autoheal postprocessing switches.
-Use separately confirmed browser diagnostics or the probe harness below for
-native evidence. The subsystem is also reachable through MCP (`verify_open`,
+escape hatch. Without explicit desktop options, batch launches no native apps.
+`--screenshots` (also `--desktop-probe`) adds Power BI opening, verified refresh
+and captures; `--compare-desktop` also opens Tableau for paired comparison.
+These diagnostics run after generation using only the current successful/resumed
+workbook outputs, with owned-process cleanup and separate native evidence.
+Autoheal postprocessing switches are still not forwarded by batch.
+See the [one-command workflow](DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command).
+Separately confirmed browser diagnostics and the probe harness below remain
+available. The subsystem is also reachable through MCP (`verify_open`,
 `autoheal` tools).
 
 For batch Desktop evidence, run `python scripts\probe_projects.py PROJECTS_DIR`.
-It requires both a loaded Desktop window and a non-empty aggregate data result for
-every M-backed table before saving a screenshot. `--skip-data-check` is diagnostic
-only: it permits a window screenshot without claiming that data loaded.
+Its screenshot evidence records document opening, aggregate data checks and an
+independent refresh status. Verified-refresh evidence requires complete table
+checks without failures, ready/error-free partitions when observed, and a
+clear owned UI plus either an observed refresh lifecycle or strict advancement
+of all expected M-partition timestamps. Existing rows alone are insufficient;
+valid empty tables are not themselves refresh failures. `--skip-data-check` is
+diagnostic only: it permits a window screenshot without claiming that data loaded.
 
 For a client machine with a non-standard Desktop installation, set
 `POWERBI_DESKTOP_PATH` to the full path of `PBIDesktop.exe`. An explicit path must exist

@@ -93,7 +93,18 @@ Opening a generated `.pbip` in Desktop does not rerun the migration.
 
 ```powershell
 .\.venv\Scripts\python.exe migrate.py batch "C:\Migration\Sources" --output-dir "C:\Migration\Output"
+
+# Optional Power BI opening, verified refresh and screenshots, in the same command.
+.\.venv\Scripts\python.exe migrate.py batch "C:\Migration\Sources" --output-dir "C:\Migration\Output" --screenshots
+
+# Optional Tableau / Power BI comparison with selected-page captures.
+.\.venv\Scripts\python.exe migrate.py batch "C:\Migration\Sources" --output-dir "C:\Migration\Output" --compare-desktop --all-pages
 ```
+
+Without either desktop option, migration launches no application. The two
+options are mutually exclusive and require an interactive Windows session and
+the requested applications. See [one-command diagnostics](DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command)
+for deadlines, executable overrides and failure states.
 
 ### Local browser alternative (source checkout)
 
@@ -232,10 +243,15 @@ workflows. Fabric keeps its separate staging contract.
 | `DESKTOP_SMOKE_PASS` | Power BI Desktop process launched and survived the smoke window; it does not prove document correctness by itself |
 | `OPERATIONAL_100` | Reserved for authorized Desktop, semantic execution, refresh, deployment, and post-deploy evidence |
 
-For the client opening-validation service, read the evidence in two dimensions:
+For the client opening-validation service, read three independent dimensions:
 the Desktop status (`OPENED` or `CRASHED`) and the local model data status
-(`verified`, `empty`, `unavailable`, or `query_failed`). Only `OPENED` plus
-`verified` qualifies as a data-bearing screenshot. Diagnostic screenshots made
+(`verified`, `empty`, `unavailable`, or `query_failed`), plus `refresh.status`.
+A verified-refresh screenshot requires an opened document, complete table
+checks without failures, and `refresh.status=verified`; existing rows alone are
+insufficient. Valid empty tables are not themselves refresh errors. Completion
+is established by an observed refresh lifecycle or fresh expected M-partition
+timestamps, with ready/error-free partitions when observed and a clear owned UI.
+Diagnostic screenshots made
 with `--skip-data-check` are useful for visual troubleshooting but must not be
 reported as proof that the model contains rows. Keep the HTML, JSON, and PNG
 evidence outside the source repository when it contains customer information.
@@ -248,7 +264,10 @@ Generation and self-healing do not add `try ... otherwise #table(...)` around
 `Source`, for any connector (including SQL Server, Oracle and file sources).
 Connection, authentication and navigation failures remain refresh errors in
 Power BI instead of becoming successful empty loads. Configure credentials,
-gateway access and the exact source objects before refreshing.
+gateway access and the exact source objects before refreshing. Declared-schema
+file sources whose promoted headers cannot be bound uniquely likewise fail with
+`HeaderMatch.Error` or `HeaderSchema.Error`, which the native probe reports as
+refresh errors (see the FAQ for details).
 
 Existing authored M `try` expressions and targeted value conversions/regex
 error handling are preserved. The legacy Python helper
@@ -260,11 +279,26 @@ automatic guards, or review its existing M manually.
 
 ### Tableau and Power BI screenshots (optional local diagnostic)
 
-The paired Desktop diagnostic is included in the source tree, separate from
-bulk generation, and must be started explicitly.
+The paired Desktop diagnostic is included in the source tree and must be
+requested explicitly. For migration plus diagnostics, use the same entry point:
 
-Prerequisites: an interactive Windows session, Tableau Desktop and Power BI
-Desktop installed, and existing batch output. Run from the repository root:
+```powershell
+python migrate.py batch "C:\Migration\Sources" --output-dir "C:\Migration\Output" --screenshots
+python migrate.py batch "C:\Migration\Sources" --output-dir "C:\Migration\Output" --compare-desktop --all-pages
+```
+
+`--screenshots` (also `--desktop-probe`) opens only Power BI. `--compare-desktop`
+opens both applications. Generation runs first; only successful/resumed workbook
+outputs from that invocation are captured. `--desktop-timeout`, `--refresh-timeout`
+and `--page-timeout` accept finite positive seconds (defaults: 90, 300 and 30).
+Native options are not supported for Fabric, shared-model or inspection-only
+commands; dry-run never launches apps. Requested diagnostic failures return
+nonzero without deleting valid generated projects. No project save or
+credential/license acceptance is automated.
+
+For existing batch output without regeneration, the standalone script remains
+available. Prerequisites: an interactive Windows session and installed requested
+applications. Run from the repository root:
 
 ```powershell
 $py = ".\.venv\Scripts\python.exe"

@@ -137,16 +137,24 @@ For terminal automation:
 ```powershell
 # Generate PBIP projects from every workbook in a folder
 python migrate.py batch .\workbooks --output-dir .\output
+
+# Same migration, then open Power BI, verify refresh and capture screenshots
+python migrate.py batch .\workbooks --output-dir .\output --screenshots
+
+# Same migration, then open Tableau + Power BI and capture a comparison
+python migrate.py batch .\workbooks --output-dir .\output --compare-desktop --all-pages
 ```
 
 > [!TIP]
 > The output is a `.pbip` project (PBIR v4.0). Every PBIP migration automatically
 > runs a static openability gate over project structure, JSON, TMDL, Power Query M,
 > DAX, report/model references, and PBIR schemas. Use `--no-verify-open` only to
-> bypass this gate deliberately. Power BI Desktop is never launched automatically.
-> For native checks, use the local browser's separately confirmed diagnostics or
-> `python scripts\probe_projects.py PROJECTS_DIR`; batch does not forward the
-> legacy `--desktop-probe` switch.
+> bypass this gate deliberately. Without explicit desktop options, no native
+> application is launched. Add `--screenshots` (also `--desktop-probe`) for
+> Power BI opening, verified refresh and capture, or `--compare-desktop` for
+> Tableau / Power BI captures in the same command. These options require an
+> interactive Windows session and installed applications. Static QA and native
+> evidence remain separate; see the [one-command workflow](docs/DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command).
 
 <details>
 <summary><b>📦 Installation</b></summary>
@@ -229,7 +237,7 @@ variables, never in command history.
 **Bulk/batch only, not a single-file load:** select a source folder for
 project generation, including when it contains just one workbook. Loading or
 assessing a `.twb`/`.twbx` file alone does not generate a Power BI project.
-Opening an already generated `.pbip` is a separate validation step.
+Opening an already generated `.pbip` is a runtime validation step, not generation.
 
 Use this flow for a repeatable client migration plus a real Desktop opening
 check. Keep customer source files and generated evidence outside this repository.
@@ -237,8 +245,10 @@ For explicit batch Tableau/PBI opening and side-by-side screenshots, see
 [paired Desktop screenshots](docs/DEPLOYMENT_GUIDE.md#paired-tableau--power-bi-desktop-screenshots).
 The paired capture script and its companion modules are included in the source
 tree. Installed Desktop applications and an interactive Windows session are
-still required; these diagnostics are not run automatically during migration.
-This separate diagnostic captures initial window states by default. Add
+still required. The ordinary `migrate.py batch` command can opt in with
+`--screenshots` or `--compare-desktop`; the standalone scripts remain available
+for already generated output. Without either option, migration launches no apps.
+The diagnostic captures initial window states by default. Add
 `--all-pages` to inventory and attempt individual Tableau views and Power BI
 pages, with verified UI selection and explicit failures for inaccessible views.
 Tableau is not refreshed; the Power BI probe requests refresh and data
@@ -265,8 +275,9 @@ For each report the probe presses **Home > Refresh > Schema and data** through
 UI Automation (English or French UI), checks refresh completion separately from
 aggregate model rows, then captures the rendered page. A screenshot is labelled
 *data verified* only after an observed successful refresh lifecycle and complete
-table checks; rows alone are insufficient, and valid empty tables are not
-refresh errors. `--no-refresh` skips the click and
+table checks, or strictly advanced M-partition refresh timestamps with ready,
+error-free partitions and a clear owned UI. Rows alone are insufficient, and
+valid empty tables are not refresh errors. The standalone probe's `--no-refresh` skips the click and
 `--skip-data-check` captures the window state only. `OPENED` means the
 report window loaded, `CRASHED` means a Desktop crash or error dialog was
 detected. `data_load.status=verified` means checked tables contained rows, not
@@ -935,7 +946,9 @@ Batch dispatch forwards folder/output/Prep settings, extraction reuse,
 calendar/culture, model mode, parallel/resume settings, JSONL/manifest,
 full lineage, static openability, output format, quality policy and dry-run.
 Automatic/forced storage mode, Hyper export format/row limits and ZIP limits are
-also explicit batch controls.
+also explicit batch controls. Optional native diagnostics run sequentially after
+generation and only against the successful/resumed workbook outputs selected by
+that invocation, not unrelated old projects.
 Other rows below describe separate routes or retained parser options.
 
 | Flag | Description |
@@ -946,6 +959,11 @@ Other rows below describe separate routes or retained parser options.
 | `--output-dir DIR` | Batch output root; defaults to `<source-folder>\migrated` |
 | `--output-format FORMAT` | Output format: `pbip` (default) or `fabric` |
 | `--dry-run` | Preview migration without writing files |
+| `--screenshots` / `--desktop-probe` | Opt in to Power BI opening, verified native refresh and screenshots after PBIP batch generation |
+| `--compare-desktop` | Opt in to Tableau / Power BI opening and paired captures after PBIP batch generation; mutually exclusive with `--screenshots` |
+| `--all-pages` | With a desktop mode, attempt every inventoried page with selected-tab checks before and after each capture |
+| `--desktop-timeout` / `--refresh-timeout` / `--page-timeout` | Finite positive opening / refresh / per-page deadlines in seconds |
+| `--screen-comparison {manual,local}` | With `--compare-desktop`, manual review (default) or local PNG pixel differences; never a parity verdict |
 | `--skip-extraction` | Skip extraction, re-use existing datasources.json |
 | `--skip-conversion` | Legacy conversion toggle; not forwarded by batch generation |
 | `--rollback` | Legacy backup toggle; not forwarded by batch generation |

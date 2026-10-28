@@ -253,7 +253,7 @@ class TestCalculationIdentitySemanticContext(unittest.TestCase):
         self.assertEqual(dax, 'IF(\'table\'[Mail]="Mail", 1, BLANK())')
         self.assertEqual(validate_dax_expression(dax), [])
         self.assertEqual(_dax_to_m_expression(dax, 'table'),
-                         'if [Mail] = "Mail" then 1 else null')
+                         'if ([Mail] = "Mail") = true then 1 else null')
 
     def test_absent_empty_and_canonical_captions_share_the_same_identity(self):
         for caption in (None, '', 'Number of Records', '[Number of Records]'):

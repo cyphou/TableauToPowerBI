@@ -149,6 +149,8 @@ Automated migration of Tableau workbooks (.twb/.twbx) to Power BI projects (.pbi
 
 ```bash
 python migrate.py --batch path/to/workbooks --output-dir C:\pbi_output
+python migrate.py batch path\to\workbooks --output-dir C:\pbi_output --screenshots
+python migrate.py batch path\to\workbooks --output-dir C:\pbi_output --compare-desktop --all-pages
 python migrate.py --batch path\to\workbooks --prep path\to\flow.tfl
 python migrate.py --batch path\to\workbooks --dry-run
 python migrate.py --batch path\to\workbooks --culture fr-FR --calendar-start 2018 --calendar-end 2028
@@ -179,6 +181,14 @@ unified quality reports and evidence ZIPs, but does not invoke the preceptor,
 legacy specialized `--qa` suite or `--report-package` workflow. For a quality
 exit gate, use `quality WORKBOOK --quality-strict` after generation; batch
 does not forward that switch.
+
+Keep migration on this ordinary Python entry point. Desktop apps remain
+unopened unless `--screenshots` (alias `--desktop-probe`) or
+`--compare-desktop` is explicitly requested. Those PBIP batch options add native
+opening, verified Power BI refresh and captures after generation; `--all-pages`
+adds selected-tab verification. Preserve raw failures and current-output scope,
+close only owned launches, and never infer visual parity or automatic save,
+deployment, authentication or license acceptance from capture success.
 
 ## Standalone Prep Flow Batch Mode
 

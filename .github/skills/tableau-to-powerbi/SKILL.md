@@ -28,10 +28,12 @@ it correctly. **Prefer running the CLI over hand-editing generated artifacts.**
    generation. Don't call the internal extractors/generators directly unless
    debugging.
 3. **Validate, don't assume.** Every PBIP migration runs the static openability gate
-  automatically. Do not disable it except for diagnosis. Power BI Desktop is never
-  launched automatically. Batch does not forward `--desktop-probe`; use separately
-  confirmed local browser diagnostics or `scripts\probe_projects.py` for a native
-  check. Static QA and Desktop evidence remain separate.
+  automatically. Do not disable it except for diagnosis. Native apps are not
+  launched by default. Explicit `--screenshots` (alias `--desktop-probe`) adds
+  Power BI opening, verified refresh and capture to the same batch command;
+  `--compare-desktop` captures Tableau and Power BI. Add `--all-pages` for
+  selected-tab-verified page captures. An interactive Windows session and
+  installed apps are required. Static QA and Desktop evidence remain separate.
 4. **Read before editing generated code.** If a DAX/TMDL/PBIR fix is needed, find the
    *source generator* (see "Where things live") and fix it there so the fix is
    reproducible — not in the emitted artifact.
@@ -72,17 +74,22 @@ For a guided local workflow, run `.\run_web_ui.ps1` or
 `python web\local_server.py` from the repository root. This loopback-only
 folder-path UI submits the same batch engine; it is separate from the optional
 Streamlit/upload UI and REST ZIP API. See the
-[local browser guide](../../../docs/LOCAL_WEB_UI.md). Native diagnostics are
-separately confirmed, never automatic migration steps.
+[local browser guide](../../../docs/LOCAL_WEB_UI.md). Browser native diagnostics
+are separately confirmed. CLI native diagnostics require explicit desktop
+options; never add them without authorization to launch applications and
+refresh the configured Power BI sources.
 
 Deployment is a separate operation: use the MCP `deploy` tool on a generated
 PBIP project, preview first, then explicitly confirm the write. Batch dispatch
-does not forward `--deploy` or refresh flags; they do not deploy batch outputs.
+does not forward `--deploy` or remote deployment refresh flags; they do not
+deploy batch outputs. This is separate from opted-in local Desktop refresh.
 
 ## Supported CLI workflows
 
 ```bash
 .venv\Scripts\python.exe migrate.py batch .\workbooks --output-dir C:\out
+.venv\Scripts\python.exe migrate.py batch .\workbooks --output-dir C:\out --screenshots
+.venv\Scripts\python.exe migrate.py batch .\workbooks --output-dir C:\out --compare-desktop --all-pages
 .venv\Scripts\python.exe migrate.py assess workbook.twbx
 .venv\Scripts\python.exe migrate.py batch folder --output-dir C:\out
 .venv\Scripts\python.exe migrate.py server https://tableau.example "Sales Dashboard"
@@ -100,6 +107,18 @@ does not forward `--deploy` or refresh flags; they do not deploy batch outputs.
 Legacy flag-based entry points include `--batch folder` and `--assess file`.
 The legacy `--qa` flag is retained, but on batch generation it does not run
 the specialized single-workbook QA suite.
+
+The two desktop modes are mutually exclusive and apply to PBIP workbook batch
+outputs, not Fabric, shared-model or inspection-only commands. Diagnostics use
+only the current successful/resumed workbook pairs, close only processes they
+launched, and preserve partial/unavailable outcomes with a nonzero exit.
+`--dry-run` never opens an app. Use `--desktop-timeout`, `--refresh-timeout`
+and `--page-timeout` for finite positive time budgets; defaults are 90, 300
+and 30 seconds. `--screen-comparison local` requires `--compare-desktop` and
+adds only local PNG pixel metrics, never semantic or visual parity.
+An initial window capture is not a verified page identity. Capture success
+requires verified Power BI refresh, not just existing rows. No automatic
+Desktop save, credential/license acceptance or deployment is performed.
 
 Use `quality` for one deterministic report combining assessment, feature parity,
 data coverage, interface coverage, and Power BI openability. Use `parity` for the

@@ -4,6 +4,60 @@
 
 ## Unreleased
 
+- Reconcile whitespace-only promoted-header mismatches in declared-schema
+  Excel, CSV, Google Sheets, SharePoint, PDF and Azure Blob queries. Preserve
+  exact physical names first; an otherwise missing declared name requires a
+  unique unclaimed header whose outer whitespace can be trimmed. Missing,
+  ambiguous, blank or duplicate bindings fail explicitly. No global header
+  trimming or source-data modification is added. Wildcard/no-schema queries,
+  explicit promote-header transformations, database and Hyper paths are
+  unchanged. Generated-M checks remain separate from native refresh evidence.
+
+- Classify declared-schema header failures as native refresh errors. The
+  Desktop probe's refresh-state check now recognizes the `HeaderMatch.Error` and
+  `HeaderSchema.Error` reasons and the three canonical messages raised by the
+  header guard, including when Desktop shows only the message and omits the
+  reason. A message matches only as the complete UI text, so partial sentences,
+  trailing prose and zero-count banners stay clear. Such a failure blocks a
+  `data verified` screenshot and is not offset by stale non-empty row counts.
+  Previously an unrecognized dialog could end as a refresh timeout. Native
+  evidence is limited to public synthetic fixtures; this is not general
+  Desktop, refresh or parity certification.
+
+- Add opt-in native diagnostics to the ordinary `migrate.py` batch command:
+  `--screenshots` (also `--desktop-probe`) opens Power BI, verifies refresh and
+  captures; `--compare-desktop` opens Tableau and Power BI for comparison.
+  Optional all-page navigation, bounded timeouts and local PNG metrics reuse
+  the existing diagnostics. Default migration opens no apps; current-output
+  scoping, owned-process cleanup and explicit partial/failure evidence remain
+  separate from static quality and visual/semantic parity. Native refresh can
+  also be established by strict expected M-partition timestamp advancement,
+  ready/error-free partitions, complete table checks and a clear owned UI.
+  Transient startup UI states are retried before taking the pre-refresh
+  baseline, within the same refresh deadline; an unsafe UI never triggers
+  refresh clicks.
+  No automatic save, credential/license acceptance or deployment is added.
+
+- Withhold "ready for visual review" in all-pages desktop comparison reports
+  unless the Power BI launch also captured with a verified refresh and complete
+  aggregate data checks. Otherwise the page is reported as incomplete even when
+  its page screenshots exist. This is a presentation gate, not a parity score.
+
+- Preserve physical scalar types for aliased Hyper CSV columns. Resolve their
+  metadata by exact Hyper identity before physical-to-logical renames so dates,
+  logical values and numerics retain their source types when names are aliased.
+  This is a generation fix, not a claim of successful native refresh.
+
+- Convert DAX `IF` predicates into explicit M true checks so null conditions
+  select the existing `else` branch, including for nested `IF`s. This adds no
+  exception-catching or type coercion. Separate authorized owned-window UI
+  checks confirmed refresh for two formerly failing fixtures: physical
+  partition `RefreshedTime` advanced, the UI reported `Clear`, and expected row
+  counts matched without errors. The standard probe remained `waiting` after
+  missing the UI cycle and did not itself observe those refreshes. This is
+  fixture-scoped evidence, not general Desktop, rendered-output or parity
+  certification.
+
 - Prefer a complete, explicitly bound original database over its Hyper extract
   in the same datasource. Select before reading/exporting Hyper data; keep
   native tables, columns, relations and worksheet lineage. Do not query the

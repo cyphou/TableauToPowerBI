@@ -149,6 +149,17 @@ class TestDesktopComparisonLocalization(unittest.TestCase):
         def missing_capture():
             return {"status": "error", "screenshot": None, "note": "Page capture failed"}
 
+        # A page is ready for review only when the Power BI launch also passed
+        # refresh and aggregate data verification.
+        powerbi_launch = {
+            **capture("opening.png"),
+            "screenshot_data_verified": True,
+            "data_load": {"status": "verified", "tables_checked": 1,
+                          "tables_nonempty": 1, "tables_empty": 0,
+                          "tables_failed": 0, "total_rows": 5},
+            "refresh": {"status": "verified"},
+        }
+
         self.workbook_name = 'Sales <North> & "West".twb'
         self.page_name = 'Revenue <script>alert("raw")</script> & café'
         incomplete_page = "Unmapped <page> & evidence"
@@ -184,7 +195,7 @@ class TestDesktopComparisonLocalization(unittest.TestCase):
                 "status": "mapped", "candidate_source_ids": [],
             }],
             "tableau": capture("opening.png"),
-            "powerbi": capture("opening.png"),
+            "powerbi": powerbi_launch,
         }
         self.manifest = {
             "all_pages": True,

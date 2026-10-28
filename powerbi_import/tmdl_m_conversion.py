@@ -247,7 +247,11 @@ def _dax_to_m_expression(dax_expr, table_name=''):
             true_v = _dax_to_m_expression(args[1], table_name)
             false_v = _dax_to_m_expression(args[2], table_name) if len(args) >= 3 else 'null'
             if cond is not None and true_v is not None and false_v is not None:
-                return f'if {cond} then {true_v} else {false_v}'
+                # M predicates can be null; only true selects the then branch.
+                # Group the whole predicate, including logical/nested IF
+                # expressions. Equality preserves evaluation errors without
+                # catching them or substituting a value for a null operand.
+                return f'if ({cond}) = true then {true_v} else {false_v}'
         return None
 
     # ── SWITCH(expr, v1, r1, …, default) ────────────────────────────

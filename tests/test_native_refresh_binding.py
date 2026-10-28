@@ -943,8 +943,36 @@ class TestNativeCsvDeclaredPhysicalColumns(RefreshBindingFixture):
         selected = (
             'Table.SelectColumns(#"Promoted Headers", '
             '{"ID", "Amount", "Trailing Metric "})')
+        header_rename = "else Table.RenameColumns(Promoted, Renames)"
+        caption_rename = (
+            'Table.RenameColumns(#"Changed Types", '
+            '{{"Trailing Metric ", "Trailing Metric"}})')
+        self.assertIn('Expected = {"ID", "Amount", "Trailing Metric "},', content)
+        self.assertNotIn('Expected = {"ID", "Amount", "Trailing Metric"},', content)
+        self.assertIn(
+            "Exact = List.Select(Expected, "
+            "(name) => List.Contains(Headers, name, Comparer.Ordinal)),",
+            content,
+        )
+        self.assertIn(
+            "Available = List.Select(Headers, "
+            "(name) => not List.Contains(Exact, name, Comparer.Ordinal)),",
+            content,
+        )
+        self.assertIn(header_rename, content)
         self.assertIn(selected, content)
-        self.assertLess(content.index(selected), content.index("Table.RenameColumns"))
+        self.assertIn(caption_rename, content)
+        # Header reconciliation now has its own RenameColumns. Keep the
+        # physical trailing space through reconciliation, projection and
+        # typing; only the separate caption rename may remove it.
+        self.assertLess(content.index(header_rename), content.index(selected))
+        self.assertLess(content.index(selected), content.index("Table.TransformColumnTypes("))
+        self.assertLess(content.index("Table.TransformColumnTypes("), content.index(caption_rename))
+        self.assertEqual(content.count(header_rename), 1)
+        self.assertEqual(content.count(caption_rename), 1)
+        self.assertNotIn("Table.TransformColumnNames(", content)
+        self.assertNotIn("MissingField.Ignore", content)
+        self.assertNotIn("MissingField.UseNull", content)
         self.assertNotIn("Self-heal placeholder", content)
         self.assertEqual(
             re.findall(r"^\tcolumn ([^\n]+)$", content, re.M),
@@ -967,3 +995,180 @@ class TestNativeCsvDeclaredPhysicalColumns(RefreshBindingFixture):
         self.assertIn("\tmeasure 'Total Trailing Metric' =", content)
         self.assertIn("SUM('NativeFacts'[Trailing Metric])", content)
         self.assertNotIn("'NativeFacts'[Trailing Metric ]", content)
+
+
+class TestNativeSchemaBoundHeaderMetadata(RefreshBindingFixture):
+    """Real generated M/TMDL metadata, deliberately NOT native M execution."""
+
+    def _assert_schema_and_guards(self, content):
+        self.assertEqual(
+            re.findall(r"^\tcolumn ([^\n]+)$", content, re.M), ["ID", "Amount"],
+        )
+        self.assertEqual(
+            re.findall(r"^\s*sourceColumn:\s*([^\n]+)$", content, re.M), ["ID", "Amount"],
+        )
+        self.assertIn('Expected = {"ID", "Amount"},', content)
+        self.assertEqual(content.count("Headers = Table.ColumnNames(Promoted),"), 1)
+        self.assertEqual(content.count("Promoted = Table.PromoteHeaders("), 1)
+        self.assertIn(
+            "Exact = List.Select(Expected, "
+            "(name) => List.Contains(Headers, name, Comparer.Ordinal)),",
+            content,
+        )
+        self.assertIn(
+            "Available = List.Select(Headers, "
+            "(name) => not List.Contains(Exact, name, Comparer.Ordinal)),",
+            content,
+        )
+        self.assertIn(
+            "Candidates = List.Select(Available, "
+            "(header) => Comparer.Ordinal(Text.Trim(header), name) = 0)",
+            content,
+        )
+        self.assertIn(
+            "[MissingExpectedNames = MissingExpectedNames, "
+            "AmbiguousExpectedNames = AmbiguousExpectedNames]",
+            content,
+        )
+        self.assertEqual(content.count('error Error.Record("HeaderMatch.Error",'), 2)
+        self.assertIn('{"ID", Int64.Type}', content)
+        self.assertIn('{"Amount", type number}', content)
+        for forbidden in (
+            "MissingField.Ignore", "MissingField.UseNull", "otherwise",
+            "BLANK()", "Self-heal placeholder", "Table.RemoveRowsWithErrors(",
+            "Table.ReplaceErrorValues(", "Table.TransformColumnNames(",
+        ):
+            self.assertNotIn(forbidden, content)
+
+    def test_padded_csv_import_serializes_guards_before_strict_projection_and_types(self):
+        xml = _build_refresh_binding_datasource([
+            ("NativeFacts", _CSV_ATTRIBUTES, "[source#csv]"),
+        ])
+        before_xml = ET.tostring(xml)
+        source = self._source(xml, "original/source.twb")
+        # The file exists, but its header and rows must remain unread until
+        # refresh. This test proves metadata wiring, not a successful M trim.
+        payload = b"ID,        Amount\n17,3.5\n18,\n"
+        native = self._put("original/Data/source.csv", payload)
+        with forbid_native_payload_io([native]) as attempts:
+            datasource, _ = self._extract_metadata(source, "padded_headers")
+            before = copy.deepcopy(datasource)
+            table, = datasource["tables"]
+            self.assertEqual(
+                [(column["name"], column["datatype"]) for column in table["columns"]],
+                [("ID", "integer"), ("Amount", "real")],
+            )
+            query = generate_power_query_m(
+                table["connection_details"], table, use_original_file_paths=True,
+            )
+            self.assertEqual(validate_m_query(query), [])
+            project, contents = self._import_tmdl(datasource, "padded_headers")
+            content = contents["NativeFacts"]
+            self._assert_schema_and_guards(content)
+            self._assert_native_literal(content, f'File.Contents("{native}")')
+            self._assert_no_native_copy(project, {"source.csv"})
+            self.assertEqual(datasource, before)
+        self.assertEqual(attempts, [])
+        self.assertEqual(ET.tostring(xml), before_xml)
+        selected = 'Table.SelectColumns(#"Promoted Headers", {"ID", "Amount"})'
+        header_rename = "else Table.RenameColumns(Promoted, Renames)"
+        self.assertIn(selected, content)
+        self.assertIn('Table.TransformColumnTypes(#"Selected Columns", {', content)
+        self.assertLess(content.index("error Error.Record("), content.index(header_rename))
+        self.assertLess(content.index(header_rename), content.index(selected))
+        self.assertLess(content.index(selected), content.index("Table.TransformColumnTypes("))
+        self.assertNotRegex(content, r"\bColumns\s*=")
+        with open(native, "rb") as stream:
+            self.assertEqual(stream.read(), payload)
+
+    def test_payload_header_variations_cannot_change_declared_schema_or_generated_m(self):
+        xml = _build_refresh_binding_datasource([
+            ("NativeFacts", _CSV_ATTRIBUTES, "[source#csv]"),
+        ])
+        source = self._source(xml, "original/source.twb")
+        native = os.path.join(os.path.dirname(source), "Data", "source.csv")
+        self.assertFalse(os.path.exists(native))
+        with forbid_native_payload_io([native]) as attempts:
+            datasource, _ = self._extract_metadata(source, "header_independence")
+            before = copy.deepcopy(datasource)
+            table, = datasource["tables"]
+            baseline = generate_power_query_m(
+                table["connection_details"], table, use_original_file_paths=True,
+            )
+        self.assertEqual(attempts, [])
+        self.assertIn('Expected = {"ID", "Amount"},', baseline)
+        self.assertIn('error Error.Record("HeaderMatch.Error",', baseline)
+
+        # These are data-independence fixtures, not a Python model of M's
+        # answers. Missing/ambiguous headers must still fail at native refresh,
+        # not cause the generator to guess a schema, inspect rows or omit it.
+        cases = (
+            ("exact", "ID,Amount\n17,3.5\n"),
+            ("leading", "ID,        Amount\n17,3.5\n"),
+            ("trailing", "ID,Amount   \n17,3.5\n"),
+            ("tab", "ID,\tAmount\t\n17,3.5\n"),
+            ("nbsp", "ID,\u00a0Amount\u00a0\n17,3.5\n"),
+            ("ambiguous", "ID, Amount,Amount \n17,3.5,8.5\n"),
+            ("unknown", "ID,Unrelated\n17,3.5\n"),
+            ("case_only", "ID,amount\n17,3.5\n"),
+            ("internal_space", "ID,A mount\n17,3.5\n"),
+            ("blank_numeric", ",123,Column1\n17,3.5,8.5\n"),
+        )
+        for tag, payload in cases:
+            with self.subTest(header_case=tag):
+                self._put("original/Data/source.csv", payload)
+                with forbid_native_payload_io([native]) as attempts:
+                    query = generate_power_query_m(
+                        table["connection_details"], table, use_original_file_paths=True,
+                    )
+                    self.assertEqual(query, baseline)
+                    self.assertEqual(datasource, before)
+                self.assertEqual(attempts, [])
+                with open(native, "rb") as stream:
+                    self.assertEqual(stream.read(), payload.encode("utf-8"))
+        self.assertEqual(validate_m_query(baseline), [])
+        self.assertEqual(
+            [(column["name"], column["datatype"]) for column in table["columns"]],
+            [("ID", "integer"), ("Amount", "real")],
+        )
+
+    def test_excel_import_keeps_exact_sheet_schema_and_guards_without_payload_io(self):
+        xml = _build_refresh_binding_datasource([
+            (
+                "NativeFacts",
+                {"class": "excel-direct", "directory": "Data", "filename": "source.xlsx"},
+                "[Exact$]",
+            ),
+        ])
+        before_xml = ET.tostring(xml)
+        source = self._source(xml, "original/source.twb")
+        # Not a real Excel workbook: no workbook parser is allowed to see this
+        # public placeholder during metadata extraction or TMDL generation.
+        payload = b"PUBLIC_SYNTHETIC_WORKBOOK_PLACEHOLDER"
+        native = self._put("original/Data/source.xlsx", payload)
+        with forbid_native_payload_io([native]) as attempts:
+            datasource, _ = self._extract_metadata(source, "excel_header_metadata")
+            before = copy.deepcopy(datasource)
+            table, = datasource["tables"]
+            query = generate_power_query_m(
+                table["connection_details"], table, use_original_file_paths=True,
+            )
+            self.assertEqual(validate_m_query(query), [])
+            project, contents = self._import_tmdl(datasource, "excel_header_metadata")
+            content = contents["NativeFacts"]
+            self._assert_schema_and_guards(content)
+            self._assert_native_literal(content, f'File.Contents("{native}")')
+            self._assert_no_native_copy(project, {"source.xlsx"})
+            self.assertIn(f'Excel.Workbook(File.Contents("{native}"), null, true)', content)
+            self.assertIn('Item="Exact",Kind="Sheet"', content)
+            self.assertNotIn("Table.SelectColumns(", content)
+            self.assertIn('Table.TransformColumnTypes(#"Promoted Headers", {', content)
+            self.assertLess(
+                content.index("else Table.RenameColumns(Promoted, Renames)"),
+                content.index("Table.TransformColumnTypes("),
+            )
+            self.assertEqual(datasource, before)
+        self.assertEqual(attempts, [])
+        self.assertEqual(ET.tostring(xml), before_xml)
+        with open(native, "rb") as stream:
+            self.assertEqual(stream.read(), payload)

@@ -30,12 +30,14 @@ from __future__ import annotations
 import base64
 import glob
 import json
+import math
 import ntpath
 import os
 import re
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from typing import List, Optional
 
 from powerbi_import import desktop_window
@@ -94,7 +96,10 @@ REFRESH_LIMITATION = (
 
 _TMDL_TABLE_RE = re.compile(r"^table\s+(.+?)\s*$", re.MULTILINE)
 _TMDL_M_PARTITION_RE = re.compile(
-    r"^\s*partition\s+.+?\s*=\s*m\s*$", re.MULTILINE)
+    r"^[\t ]*partition[\t ]+(.+?)[\t ]*=[\t ]*m[\t ]*$", re.MULTILINE)
+_PARTITION_TIME_RE = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})"
+    r"(?:\.(\d{1,7}))?(Z|[+-]\d{2}:\d{2})?")
 _DATA_LOAD_KEYS = (
     "status", "tables_checked", "tables_nonempty", "tables_empty",
     "tables_failed", "total_rows",
@@ -108,15 +113,31 @@ $result = [ordered]@{
     status = 'unavailable'; tables_checked = 0; tables_nonempty = 0
     tables_empty = 0; tables_failed = 0; total_rows = 0
 }
+$partitionMode = $false
+$failureNote = 'invalid_request'
 try {
     $requestJson = [Text.Encoding]::UTF8.GetString(
         [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()))
     $request = ConvertFrom-Json -InputObject $requestJson
     $ownerPid = [int]$request.owner_pid
-    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $partitionMode = $request.operation -eq 'partitions'
+    if ($partitionMode) {
+        $result = [ordered]@{
+            status = 'unavailable'; note = 'invalid_request'
+            owner_pid = $ownerPid; engine_pid = 0; port = 0
+            partitions = @(); unexpected = @()
+        }
+    }
+    $failureNote = 'process_query_failed'
+    # Project only binding fields; a full Win32_Process query fetches many
+    # unrelated properties for every process on each observation.
+    $processes = @(Get-CimInstance Win32_Process `
+        -Property ProcessId,ParentProcessId,Name,ExecutablePath -ErrorAction Stop)
     $byId = @{}
     foreach ($process in $processes) { $byId[[int]$process.ProcessId] = $process }
+    $failureNote = 'owner_unavailable'
     if (-not $byId.ContainsKey($ownerPid)) { throw 'owner unavailable' }
+    if ($byId[$ownerPid].Name -ine 'PBIDesktop.exe') { throw 'owner not Desktop' }
 
     $descendants = New-Object 'System.Collections.Generic.HashSet[int]'
     $pending = New-Object System.Collections.Queue
@@ -134,59 +155,149 @@ try {
     $engines = @($processes | Where-Object {
         $_.Name -ieq 'msmdsrv.exe' -and $descendants.Contains([int]$_.ProcessId)
     })
+    $failureNote = 'engine_unavailable_or_ambiguous'
     if ($engines.Count -ne 1) { throw 'engine unavailable or ambiguous' }
 
     $engine = $engines[0]
-    $ports = @(Get-NetTCPConnection -State Listen `
-        -OwningProcess ([int]$engine.ProcessId) -ErrorAction Stop |
+    if ($partitionMode) { $result.engine_pid = [int]$engine.ProcessId }
+    $failureNote = 'port_query_failed'
+    # Use the same TCP provider without loading the NetTCPIP cmdlet module.
+    # MSFT_NetTCPConnection State 2 is Listen; retain exact PID/unique-port binding.
+    $ports = @(Get-CimInstance -Namespace root/StandardCimv2 `
+        -ClassName MSFT_NetTCPConnection `
+        -Filter "State = 2 AND OwningProcess = $([int]$engine.ProcessId)" `
+        -Property LocalPort -ErrorAction Stop |
         Select-Object -ExpandProperty LocalPort -Unique)
+    $failureNote = 'port_unavailable_or_ambiguous'
     if ($ports.Count -ne 1) { throw 'engine port unavailable or ambiguous' }
+    if ($partitionMode) { $result.port = [int]$ports[0] }
     $owner = $byId[$ownerPid]
+    $failureNote = 'adomd_client_unavailable'
     $dllPath = Join-Path (Split-Path -Parent $owner.ExecutablePath) `
         'Microsoft.PowerBI.AdomdClient.dll'
     if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
         throw 'ADOMD client unavailable'
     }
     Add-Type -Path $dllPath -ErrorAction Stop
+    $failureNote = 'connection_failed'
     $connection = New-Object Microsoft.AnalysisServices.AdomdClient.AdomdConnection(
         "Data Source=localhost:$($ports[0]);Connect Timeout=10")
     try {
         $connection.Open()
-        foreach ($table in $request.tables) {
-            $result.tables_checked++
-            $escaped = ([string]$table).Replace("'", "''")
+        if ($partitionMode) {
+            # Metadata only: never return expressions, source details, records,
+            # or ErrorMessage text. Both operations share the exact owner binding.
+            $failureNote = 'metadata_query_failed'
+            $tableIds = @{}
             $command = $connection.CreateCommand()
             $command.CommandTimeout = 8
-            $command.CommandText = "EVALUATE ROW(`"Rows`", COUNTROWS('$escaped'))"
+            $command.CommandText = 'SELECT [ID], [Name] FROM $SYSTEM.TMSCHEMA_TABLES'
             $reader = $null
             try {
                 $reader = $command.ExecuteReader()
-                if (-not $reader.Read()) { throw 'query returned no aggregate' }
-                $rows = [long]$reader.GetValue(0)
-                if ($rows -gt 0) { $result.tables_nonempty++ }
-                else { $result.tables_empty++ }
-                $result.total_rows += $rows
-            }
-            catch {
-                $result.tables_failed++
+                while ($reader.Read()) {
+                    $name = [string]$reader['Name']
+                    if (@($request.tables) -ccontains $name) {
+                        $id = [Convert]::ToString($reader['ID'],
+                            [Globalization.CultureInfo]::InvariantCulture)
+                        $tableIds[$id] = $name
+                    }
+                }
             }
             finally {
                 if ($reader) { $reader.Dispose() }
                 $command.Dispose()
             }
+            $command = $connection.CreateCommand()
+            $command.CommandTimeout = 8
+            $command.CommandText = 'SELECT [ID], [TableID], [Name], [Type], [State], [RefreshedTime], [ErrorMessage] FROM $SYSTEM.TMSCHEMA_PARTITIONS'
+            $reader = $null
+            try {
+                $reader = $command.ExecuteReader()
+                while ($reader.Read()) {
+                    $tableId = [Convert]::ToString($reader['TableID'],
+                        [Globalization.CultureInfo]::InvariantCulture)
+                    if (-not $tableIds.ContainsKey($tableId) -or
+                        [int]$reader['Type'] -ne 4) { continue } # M partitions only
+                    $table = $tableIds[$tableId]
+                    $partition = [string]$reader['Name']
+                    $partitionId = [Convert]::ToString($reader['ID'],
+                        [Globalization.CultureInfo]::InvariantCulture)
+                    $expected = @($request.partitions | Where-Object {
+                        $_.table -ceq $table -and $_.partition -ceq $partition
+                    })
+                    if ($expected.Count -ne 1) {
+                        # Do not include unrelated partition contents, but never
+                        # hide added M partitions in an expected table.
+                        $result.unexpected += [ordered]@{
+                            table_id = $tableId; partition_id = $partitionId
+                        }
+                        continue
+                    }
+                    $stamp = $reader['RefreshedTime']
+                    $refreshedTime = $null
+                    if ($stamp -is [DateTime]) {
+                        $refreshedTime = $stamp.ToString('o',
+                            [Globalization.CultureInfo]::InvariantCulture)
+                    }
+                    $result.partitions += [ordered]@{
+                        table = $table; partition = $partition
+                        table_id = $tableId; partition_id = $partitionId
+                        refreshed_time = $refreshedTime
+                        state = [int]$reader['State']
+                        has_error = -not [string]::IsNullOrEmpty(
+                            [string]$reader['ErrorMessage'])
+                    }
+                }
+            }
+            finally {
+                if ($reader) { $reader.Dispose() }
+                $command.Dispose()
+            }
+            $result.status = 'observed'
+            $result.note = 'metadata_observed'
         }
-        if ($result.tables_failed -gt 0) { $result.status = 'query_failed' }
-        elseif ($result.tables_checked -gt 0 -and
-                $result.tables_nonempty -eq $result.tables_checked) {
-            $result.status = 'verified'
+        else {
+            foreach ($table in $request.tables) {
+                $result.tables_checked++
+                $escaped = ([string]$table).Replace("'", "''")
+                $command = $connection.CreateCommand()
+                $command.CommandTimeout = 8
+                $command.CommandText = "EVALUATE ROW(`"Rows`", COUNTROWS('$escaped'))"
+                $reader = $null
+                try {
+                    $reader = $command.ExecuteReader()
+                    if (-not $reader.Read()) { throw 'query returned no aggregate' }
+                    $rows = [long]$reader.GetValue(0)
+                    if ($rows -gt 0) { $result.tables_nonempty++ }
+                    else { $result.tables_empty++ }
+                    $result.total_rows += $rows
+                }
+                catch { $result.tables_failed++ }
+                finally {
+                    if ($reader) { $reader.Dispose() }
+                    $command.Dispose()
+                }
+            }
+            if ($result.tables_failed -gt 0) { $result.status = 'query_failed' }
+            elseif ($result.tables_checked -gt 0 -and
+                    $result.tables_nonempty -eq $result.tables_checked) {
+                $result.status = 'verified'
+            }
+            elseif ($result.tables_nonempty -gt 0) { $result.status = 'partial' }
+            else { $result.status = 'empty' }
         }
-        elseif ($result.tables_nonempty -gt 0) { $result.status = 'partial' }
-        else { $result.status = 'empty' }
     }
     finally { $connection.Dispose() }
 }
-catch { $result.status = 'unavailable' }
-[Console]::Out.WriteLine((ConvertTo-Json -InputObject $result -Compress))
+catch {
+    $result.status = 'unavailable'
+    if ($partitionMode) {
+        $result.note = $failureNote
+        if ($failureNote -eq 'metadata_query_failed') { $result.status = 'query_failed' }
+    }
+}
+[Console]::Out.WriteLine((ConvertTo-Json -InputObject $result -Depth 6 -Compress))
 '''
 
 
@@ -326,7 +437,7 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: float = 90,
                        verify_data: bool = False,
                        desktop_path: Optional[str] = None,
                        refresh: bool = False,
-                       refresh_timeout: int = 300,
+                       refresh_timeout: float = 300.0,
                        capture_unverified: bool = False,
                        launch_report_definition: bool = False) -> DesktopProbeReport:
     """Launch Power BI Desktop against ``pbip_path`` and watch for load failure.
@@ -553,7 +664,7 @@ def _capture_any(report, screenshot_path, allowed_pids) -> None:
 
 def _watch_window(report, proc, pbip_path, start, timeout,
                   screenshot_path, verify_data=False, pre_existing=None,
-                  refresh=False, refresh_timeout=300,
+                  refresh=False, refresh_timeout: float = 300.0,
                   capture_unverified=False) -> bool:
     """Wait for the report window, then capture it. Returns True when crashed."""
     pre_existing = pre_existing or set()
@@ -787,7 +898,8 @@ $root = [Windows.Automation.AutomationElement]::FromHandle([IntPtr][long]$reques
 if ($root.Current.ProcessId -ne [int]$request.owner_pid) { exit 1 }
 # WebView2 provides Desktop's refresh dialog from a child process. Anchor the
 # UI tree to the owned HWND, then admit only providers in its process tree.
-$processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+$processes = @(Get-CimInstance Win32_Process `
+    -Property ProcessId,ParentProcessId -ErrorAction Stop)
 $providers = New-Object 'System.Collections.Generic.HashSet[int]'
 $pending = New-Object System.Collections.Queue
 $null = $providers.Add([int]$request.owner_pid)
@@ -841,7 +953,12 @@ _REFRESH_ERROR_PATTERN = (
     r"|ont rencontré).*erreurs?|"
     r"(?<![\d.,])\d*[1-9]\d*(?:[.,\s\u00a0\u202f]\d{3})*\s+"
     r"(?:errors?|erreurs?)\b|"
-    r"(?:DataSource|Expression|DataFormat)\.Error\b|"
+    r"(?:DataSource|Expression|DataFormat|HeaderMatch|HeaderSchema)\.Error\b|"
+    # Desktop can display only Error.Record's canonical Message, not its Reason.
+    # Match the entire UI name, permitting only surrounding UI whitespace.
+    r"^\s*(?:Declared source column names must be nonblank and unique|"
+    r"Source headers must uniquely match the declared source column names|"
+    r"Source header matches must be one-to-one)\.\s*$|"
     r"(?:OLE DB (?:or|ou) ODBC (?:error|erreur)|"
     r"an error occurred while (?:loading|refreshing)|"
     r"erreur (?:lors|au cours) (?:du|de l['’])\s*(?:chargement|actualisation))|"
@@ -859,9 +976,24 @@ _REFRESH_COMPLETED_PATTERN = (
 )
 
 
-def _refresh_ui_state(hwnd: int, owner_pid: Optional[int]) -> str:
+def _positive_timeout(timeout: float) -> float:
+    """Keep fractional budgets; zero, nonfinite and invalid values cannot run."""
+    seconds = float(timeout)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("timeout must be positive and finite")
+    return seconds
+
+
+def _refresh_ui_state(hwnd: int, owner_pid: Optional[int], *,
+                      timeout: float = 30.0) -> str:
     """Inspect the report and only its process-owned visible popup windows."""
     if not owner_pid:
+        return "unavailable"
+    try:
+        # A read-only snapshot must not inherit the two-minute UI action
+        # allowance and monopolize the refresh budget on a blocked provider.
+        deadline = time.monotonic() + min(_positive_timeout(timeout), 30.0)
+    except (TypeError, ValueError, OverflowError):
         return "unavailable"
     roots = {int(hwnd): False}
     for window in desktop_window.dialog_windows(owner_pid):
@@ -878,7 +1010,7 @@ def _refresh_ui_state(hwnd: int, owner_pid: Optional[int]) -> str:
                 re.escape(text) for text in _PENDING_CHANGES_TEXT),
             "busy_pattern": _REFRESH_BUSY_PATTERN,
             "completed_pattern": _REFRESH_COMPLETED_PATTERN,
-        })
+        }, timeout=max(0.0, deadline - time.monotonic()))
         states.append(observation.get("status", "unavailable"))
     for state in ("refresh_error", "pending_changes", "busy", "unavailable"):
         if state in states:
@@ -888,24 +1020,27 @@ def _refresh_ui_state(hwnd: int, owner_pid: Optional[int]) -> str:
     return "unavailable"
 
 
-def _run_uia(script: str, payload: dict) -> dict:
+def _run_uia(script: str, payload: dict, *, timeout: float = 120.0) -> dict:
     if not desktop_window.IS_WINDOWS:
         return {}
     request = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
     try:
+        bounded_timeout = min(_positive_timeout(timeout), 120.0)
         completed = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
              script],
-            input=request, capture_output=True, text=True, timeout=120)
+            input=request, capture_output=True, text=True, timeout=bounded_timeout)
         result = json.loads(completed.stdout.strip().splitlines()[-1])
         return result if isinstance(result, dict) else {}
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+    except (OSError, TypeError, ValueError, OverflowError, IndexError,
+            subprocess.SubprocessError):
         return {}
 
 
-def _invoke_button(hwnd: int, names) -> int:
+def _invoke_button(hwnd: int, names, *, timeout: float = 120.0) -> int:
     """Invoke the first enabled button named in *names*. Returns clicks made."""
-    result = _run_uia(_UIA_INVOKE_SCRIPT, {"hwnd": int(hwnd), "names": list(names)})
+    result = _run_uia(
+        _UIA_INVOKE_SCRIPT, {"hwnd": int(hwnd), "names": list(names)}, timeout=timeout)
     return int(result.get("invoked", 0) or 0)
 
 
@@ -920,17 +1055,18 @@ def _text_present(hwnd: int, names) -> bool:
     return bool(result.get("found", 0))
 
 
-def _click_button(hwnd: int, names) -> int:
+def _click_button(hwnd: int, names, *, timeout: float = 120.0) -> int:
     """Mouse-click the first enabled button named in *names*. Returns clicks made."""
-    result = _run_uia(_UIA_CLICK_SCRIPT, {"hwnd": int(hwnd), "names": list(names)})
+    result = _run_uia(
+        _UIA_CLICK_SCRIPT, {"hwnd": int(hwnd), "names": list(names)}, timeout=timeout)
     return int(result.get("invoked", 0) or 0)
 
 
-def _invoke_schema_refresh(hwnd: int) -> int:
+def _invoke_schema_refresh(hwnd: int, *, timeout: float = 120.0) -> int:
     """Home > Refresh arrow > Schema and data. Returns clicks made."""
     result = _run_uia(_UIA_MENU_SCRIPT, {
         "hwnd": int(hwnd), "ribbon": list(_RIBBON_REFRESH_NAMES),
-        "names": list(_SCHEMA_REFRESH_NAMES)})
+        "names": list(_SCHEMA_REFRESH_NAMES)}, timeout=timeout)
     return int(result.get("invoked", 0) or 0)
 
 
@@ -955,68 +1091,143 @@ def _wait_for_render(hwnd: int, screenshot_path: str, *, timeout: float = 60.0,
 
 
 def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
-                   timeout: int = 300, poll: float = 10.0) -> dict:
-    """Refresh, observing owned UI completion separately from aggregate rows.
+                   timeout: float = 300.0, poll: float = 10.0) -> dict:
+    """Refresh, observing owned UI or physical partition freshness, not just rows.
 
     Counts may reflect a previous or partial load. They never override a visible
     error, pending changes or busy UI. Empty tables are not refresh failures.
+    All refresh observations, UI requests and sleeps share one monotonic budget;
+    a positive fractional timeout is honored without a minimum timeout floor.
     """
+    unobserved = _partition_observation_result("not_observed", "refresh_not_requested")
     result = {"status": "not_found", "mode": "none", "clicks": 0,
-              "waited_s": 0.0, "data_load": _data_load_result("unavailable")}
-    started = time.time()
-    initial_state = _refresh_ui_state(hwnd, owner_pid)
-    result["ui_state"] = {"initial": initial_state, "observed_progress": False}
-    if initial_state == "refresh_error":
-        result["status"] = initial_state
-        result["waited_s"] = round(time.time() - started, 1)
+              "waited_s": 0.0, "data_load": _data_load_result("unavailable"),
+              "completion_basis": "none",
+              "partition_freshness": _compare_partition_freshness(
+                  unobserved, unobserved)}
+    started = time.monotonic()
+    try:
+        timeout = _positive_timeout(timeout)
+        poll = float(poll)
+        if not math.isfinite(poll) or poll < 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        result.update(status="error", note="invalid_refresh_timeout_or_poll")
         return result
+    deadline = started + timeout
+
+    def remaining():
+        return max(0.0, deadline - time.monotonic())
+
+    def finish():
+        now = time.monotonic()
+        result["waited_s"] = round(max(0.0, now - started), 1)
+        if now >= deadline:
+            result.update(status="timed_out", note="refresh_timeout",
+                          completion_basis="none")
+        return result
+
+    if remaining() <= 0:
+        return finish()
+    initial_state = _refresh_ui_state(hwnd, owner_pid, timeout=remaining())
+    result["ui_state"] = {
+        "initial": initial_state, "readiness": initial_state,
+        "readiness_checks": 1, "observed_progress": False,
+    }
+    ready_state = initial_state
+    # Startup UI providers can be transiently unavailable or still loading.
+    # Do not request refresh until a safe pre-request baseline can be attempted.
+    # Readiness progress predates this request and is not refresh completion.
+    while ready_state not in {"clear", "completed"}:
+        result["status"] = ready_state
+        if ready_state == "refresh_error" or remaining() <= 0:
+            return finish()
+        time.sleep(min(poll, 1.0, remaining()))
+        if remaining() <= 0:
+            return finish()
+        ready_state = _refresh_ui_state(hwnd, owner_pid, timeout=remaining())
+        result["ui_state"]["readiness"] = ready_state
+        result["ui_state"]["readiness_checks"] += 1
+    if remaining() <= 0:
+        return finish()
+    # A baseline taken after invoking Refresh could already contain the new
+    # timestamps. Never infer freshness without a safe pre-request observation.
+    baseline = observe_desktop_partitions(
+        pbip_path, owner_pid, timeout=min(30.0, remaining()))
+    result["partition_freshness"] = _compare_partition_freshness(
+        baseline, unobserved)
     for _attempt in range(3):
-        result["clicks"] = _invoke_schema_refresh(hwnd)
-        if result["clicks"]:
+        if remaining() <= 0:
+            return finish()
+        result["clicks"] = _invoke_schema_refresh(hwnd, timeout=remaining())
+        if result["clicks"] or remaining() <= 0:
             break
-        time.sleep(5)
+        time.sleep(min(5.0, remaining()))
     if result["clicks"]:
         result["mode"] = "schema_and_data"
-    else:
-        result["clicks"] = _invoke_button(hwnd, _RIBBON_REFRESH_NAMES)
+    elif remaining() > 0:
+        result["clicks"] = _invoke_button(
+            hwnd, _RIBBON_REFRESH_NAMES, timeout=remaining())
         if result["clicks"]:
             result["mode"] = "data"
-    if not result["clicks"]:
-        return result
+    if not result["clicks"] or remaining() <= 0:
+        return finish()
     result["status"] = "clicked"
     banner_done = False
     applied = False
     apply_attempted_at = None
     observed_progress = False
-    while time.time() - started < timeout:
-        time.sleep(poll)
-        before = _refresh_ui_state(hwnd, owner_pid)
+    while remaining() > 0:
+        time.sleep(min(poll, remaining()))
+        if remaining() <= 0:
+            break
+        before = _refresh_ui_state(hwnd, owner_pid, timeout=remaining())
         observed_progress = observed_progress or before == "busy"
         result["ui_state"].update(
             before=before, observed_progress=observed_progress)
         if before == "refresh_error":
             result["status"] = before
             break
+        if remaining() <= 0:
+            break
         if not applied:
-            applied_clicks = _click_button(hwnd, _APPLY_CHANGES_NAMES)
-            if not applied_clicks:
-                applied_clicks = _invoke_button(hwnd, _APPLY_CHANGES_NAMES)
+            applied_clicks = _click_button(
+                hwnd, _APPLY_CHANGES_NAMES, timeout=remaining())
+            if not applied_clicks and remaining() > 0:
+                applied_clicks = _invoke_button(
+                    hwnd, _APPLY_CHANGES_NAMES, timeout=remaining())
             if applied_clicks:
                 result["clicks"] += applied_clicks
                 result["applied_changes"] = True
                 applied = True
-                apply_attempted_at = time.time()
+                apply_attempted_at = time.monotonic()
         elif (result["data_load"].get("status") != "verified"
-              and apply_attempted_at and time.time() - apply_attempted_at >= 10):
+              and apply_attempted_at is not None
+              and time.monotonic() - apply_attempted_at >= 10):
             # Desktop occasionally leaves the banner visible after a click.
             # Retry without treating its presence as a successful refresh.
-            retry_clicks = _click_button(hwnd, _APPLY_CHANGES_NAMES)
+            retry_clicks = _click_button(
+                hwnd, _APPLY_CHANGES_NAMES, timeout=remaining())
             if retry_clicks:
                 result["clicks"] += retry_clicks
-                apply_attempted_at = time.time()
-        data = verify_desktop_data(pbip_path, owner_pid)
+                apply_attempted_at = time.monotonic()
+        if remaining() <= 0:
+            break
+        data = verify_desktop_data(
+            pbip_path, owner_pid, timeout=min(60.0, remaining()))
         result["data_load"] = data
-        after = _refresh_ui_state(hwnd, owner_pid)
+        if remaining() <= 0:
+            break
+        partitions = (
+            observe_desktop_partitions(
+                pbip_path, owner_pid, timeout=min(30.0, remaining()))
+            if before in {"clear", "completed"}
+            else _partition_observation_result("not_observed", "ui_not_clear"))
+        freshness = _compare_partition_freshness(baseline, partitions)
+        result["partition_freshness"] = freshness
+        if remaining() <= 0:
+            break
+        after = _refresh_ui_state(hwnd, owner_pid, timeout=remaining())
         observed_progress = observed_progress or after == "busy"
         result["ui_state"].update(
             after=after, observed_progress=observed_progress)
@@ -1025,29 +1236,49 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
             break
         result["status"] = (
             "waiting" if after in {"clear", "completed"} else after)
-        if after == "unavailable":
+        if after == "unavailable" or remaining() <= 0:
             break
+        if (before in {"clear", "completed"} and after in {"clear", "completed"}
+                and (data["status"] == "no_m_tables"
+                     or freshness["status"] == "no_m_tables")):
+            result["status"] = "no_m_tables"
+            break
+        observed_tables = {
+            item["table"] for snapshot in (baseline, partitions)
+            for item in snapshot["partitions"]
+        }
         counts_complete = (
             data["status"] in {"verified", "partial", "empty"}
             and data["tables_checked"] > 0
             and data["tables_failed"] == 0
             and data["tables_nonempty"] + data["tables_empty"]
-            == data["tables_checked"])
-        # Existing rows (including intentionally empty tables) say nothing
-        # about whether this request actually ran. Require a UI lifecycle or
-        # explicit load completion, not just the absence of a visible error.
+            == data["tables_checked"]
+            and (not observed_tables or data["tables_checked"] == len(observed_tables)))
+        ui_completed = observed_progress or (
+            ready_state == "clear"
+            and "completed" in {before, after})
+        # A healthy but unchanged snapshot is not freshness. It can still
+        # accompany an independently observed UI lifecycle. If the read-only
+        # observer is unavailable, preserve that existing UI verification path;
+        # explicit metadata failures/mismatches must never become "unavailable".
+        partitions_safe = freshness["status"] in {
+            "advanced", "unchanged", "unavailable",
+        }
         if (before in {"clear", "completed"}
                 and after in {"clear", "completed"} and counts_complete
-                and (observed_progress or (
-                    initial_state not in {"completed", "unavailable"}
-                    and "completed" in {before, after}))):
+                and partitions_safe
+                and (ui_completed or freshness["status"] == "advanced")
+                and remaining() > 0):
             result["status"] = "verified"
+            result["completion_basis"] = (
+                "ui_lifecycle" if ui_completed else "partition_freshness")
             break
-        if not banner_done and time.time() - started >= timeout / 3:
-            result["clicks"] += _invoke_button(hwnd, _BANNER_REFRESH_NAMES)
+        if (not banner_done and remaining() > 0
+                and time.monotonic() - started >= timeout / 3):
+            result["clicks"] += _invoke_button(
+                hwnd, _BANNER_REFRESH_NAMES, timeout=remaining())
             banner_done = True
-    result["waited_s"] = round(time.time() - started, 1)
-    return result
+    return finish()
 
 
 def _data_load_result(status="unavailable", *, checked=0, nonempty=0,
@@ -1062,38 +1293,297 @@ def _data_load_result(status="unavailable", *, checked=0, nonempty=0,
     }
 
 
-def _m_backed_tables(pbip_path: str):
-    """Return local TMDL table names with M partitions, or None if ambiguous."""
+def _m_backed_partitions(pbip_path: str):
+    """Return declared M table/partition names, or None if ambiguous."""
     project_dir = os.path.dirname(os.path.abspath(pbip_path))
     model_dirs = glob.glob(os.path.join(project_dir, "*.SemanticModel"))
     if len(model_dirs) != 1:
         return None
     tables_dir = os.path.join(model_dirs[0], "definition", "tables")
-    table_names = []
-    for path in glob.glob(os.path.join(tables_dir, "*.tmdl")):
+    partitions = []
+    seen = set()
+    for path in sorted(glob.glob(os.path.join(tables_dir, "*.tmdl"))):
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 text = handle.read()
         except (OSError, UnicodeError):
             return None
-        table_match = _TMDL_TABLE_RE.search(text)
-        if not table_match or not _TMDL_M_PARTITION_RE.search(text):
+        partition_matches = list(_TMDL_M_PARTITION_RE.finditer(text))
+        if not partition_matches:
             continue
-        name = table_match.group(1).strip()
-        if len(name) >= 2 and name[0] == "'" and name[-1] == "'":
-            name = name[1:-1].replace("''", "'")
-        if name:
-            table_names.append(name)
-    return table_names
+        table_matches = _TMDL_TABLE_RE.findall(text)
+        if len(table_matches) != 1:
+            return None
+
+        def unquote(name):
+            name = name.strip()
+            return (name[1:-1].replace("''", "'")
+                    if len(name) >= 2 and name[0] == name[-1] == "'" else name)
+
+        table = unquote(table_matches[0])
+        for match in partition_matches:
+            partition = unquote(match.group(1))
+            key = (table.casefold(), partition.casefold())
+            if not table or not partition or key in seen:
+                return None
+            seen.add(key)
+            partitions.append({"table": table, "partition": partition})
+    return partitions
+
+
+def _m_backed_tables(pbip_path: str):
+    """Return local TMDL table names with M partitions, or None if ambiguous."""
+    partitions = _m_backed_partitions(pbip_path)
+    if partitions is None:
+        return None
+    return list(dict.fromkeys(partition["table"] for partition in partitions))
+
+
+def _partition_observation_result(status="unavailable", note="not_observed", *,
+                                  expected=0):
+    return {
+        "status": status, "note": note, "expected_partitions": expected,
+        "partitions": [], "missing": [], "unexpected": [],
+    }
+
+
+def observe_desktop_partitions(pbip_path: str, owner_pid: Optional[int], *,
+                               timeout: float = 30.0) -> dict:
+    """Read only expected M partition metadata from the HWND owner's engine.
+
+    Shares the aggregate verifier's unique descendant-engine/port and local
+    ADOMD resolution. IDs are decimal strings; RefreshedTime is a round-trip
+    .NET timestamp, never a float. Diagnostics are fixed codes, not exceptions
+    or SQL errors. A failed metadata query is not observer unavailability.
+    Timeout is positive finite seconds (including fractions), capped at 60.
+    """
+    try:
+        deadline = time.monotonic() + min(_positive_timeout(timeout), 60.0)
+    except (TypeError, ValueError, OverflowError):
+        return _partition_observation_result(note="invalid_observer_request")
+    try:
+        expected = _m_backed_partitions(pbip_path)
+    except (OSError, TypeError, ValueError):
+        expected = None
+    if expected is None:
+        return _partition_observation_result(note="expected_partitions_unavailable")
+    if not expected:
+        return _partition_observation_result("no_m_tables", "no_m_tables")
+    observation = _partition_observation_result(
+        note="owner_unavailable", expected=len(expected))
+    if type(owner_pid) is not int or owner_pid <= 0:
+        return observation
+    if not desktop_window.IS_WINDOWS:
+        observation["note"] = "windows_unavailable"
+        return observation
+    request = {
+        "operation": "partitions", "owner_pid": owner_pid,
+        "tables": list(dict.fromkeys(item["table"] for item in expected)),
+        "partitions": expected,
+    }
+    encoded = base64.b64encode(json.dumps(request).encode("utf-8")).decode("ascii")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        observation["note"] = "observer_timeout"
+        return observation
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+             _ADOMD_VERIFY_SCRIPT],
+            input=encoded, capture_output=True, text=True, timeout=remaining)
+    except subprocess.TimeoutExpired:
+        observation["note"] = "observer_timeout"
+        return observation
+    except (OSError, ValueError, subprocess.SubprocessError):
+        observation["note"] = "observer_process_failed"
+        return observation
+    if time.monotonic() >= deadline:
+        observation["note"] = "observer_timeout"
+        return observation
+    if completed.returncode != 0:
+        observation["note"] = "observer_process_failed"
+        return observation
+    try:
+        raw = json.loads(completed.stdout.strip().splitlines()[-1])
+        status = raw["status"]
+        allowed_notes = {
+            "invalid_request", "process_query_failed", "owner_unavailable",
+            "engine_unavailable_or_ambiguous", "port_query_failed",
+            "port_unavailable_or_ambiguous", "adomd_client_unavailable",
+            "connection_failed", "metadata_query_failed", "metadata_observed",
+        }
+        if (status not in {"observed", "unavailable", "query_failed"}
+                or raw["note"] not in allowed_notes
+                or (status == "observed") != (raw["note"] == "metadata_observed")
+                or (status == "query_failed") != (raw["note"] == "metadata_query_failed")
+                or type(raw["owner_pid"]) is not int
+                or raw["owner_pid"] != owner_pid):
+            raise ValueError
+        for key in ("engine_pid", "port"):
+            if type(raw[key]) is not int or raw[key] < 0:
+                raise ValueError
+        if (raw["port"] > 65535 or (status != "unavailable"
+                and (not raw["engine_pid"] or not raw["port"]))):
+            raise ValueError
+
+        def identity(item):
+            ids = {key: str(item[key]) for key in ("table_id", "partition_id")}
+            if any(not re.fullmatch(r"[1-9]\d{0,19}", value)
+                   for value in ids.values()):
+                raise ValueError
+            return ids
+
+        if not isinstance(raw["partitions"], list) or not isinstance(raw["unexpected"], list):
+            raise ValueError
+        pairs = {(item["table"], item["partition"]) for item in expected}
+        partitions = []
+        for item in raw["partitions"]:
+            name = (item["table"], item["partition"])
+            if (name not in pairs or type(item["state"]) is not int
+                    or type(item["has_error"]) is not bool
+                    or not (item["refreshed_time"] is None
+                            or isinstance(item["refreshed_time"], str))):
+                raise ValueError
+            partitions.append({
+                "table": name[0], "partition": name[1], **identity(item),
+                "refreshed_time": item["refreshed_time"],
+                "state": item["state"], "has_error": item["has_error"],
+            })
+        unexpected = [identity(item) for item in raw["unexpected"]]
+        if status == "unavailable" and (partitions or unexpected):
+            raise ValueError
+        found = {(item["table"], item["partition"]) for item in partitions}
+        ids = {(item["table_id"], item["partition_id"]) for item in partitions}
+        observation.update(
+            status=status, note=raw["note"], owner_pid=owner_pid,
+            engine_pid=raw["engine_pid"], port=raw["port"],
+            partitions=partitions, unexpected=unexpected)
+        if status == "observed":
+            observation["missing"] = [
+                item for item in expected if (item["table"], item["partition"]) not in found]
+            if (observation["missing"] or unexpected or len(ids) != len(partitions)
+                    or len(found) != len(partitions)):
+                observation.update(status="mismatch", note="expected_partition_mismatch")
+        return observation
+    except (IndexError, KeyError, TypeError, ValueError):
+        return _partition_observation_result(
+            "invalid", "observer_result_invalid", expected=len(expected))
+
+
+def _refreshed_time_key(value):
+    """Parse ISO/.NET time into exact 100 ns ticks and clock-kind, without floats."""
+    match = _PARTITION_TIME_RE.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        raise ValueError("invalid partition timestamp")
+    year, month, day, hour, minute, second = map(int, match.groups()[:6])
+    date = datetime(year, month, day, hour, minute, second)
+    ticks = (((date.toordinal() - 1) * 86400 + hour * 3600 + minute * 60 + second)
+             * 10_000_000 + int((match[7] or "").ljust(7, "0")))
+    zone = match[8]
+    if zone and zone != "Z":
+        hours, minutes = int(zone[1:3]), int(zone[4:6])
+        if hours > 23 or minutes > 59:
+            raise ValueError("invalid partition timestamp zone")
+        ticks -= (1 if zone[0] == "+" else -1) * (hours * 60 + minutes) * 600_000_000
+    return zone is not None, ticks
+
+
+def _compare_partition_freshness(before: dict, after: dict) -> dict:
+    """Compare every expected identity; never discard a failed/stale partition."""
+    result = {
+        "status": "unavailable", "before": before, "after": after,
+        "changed": [], "unchanged": [], "regressed": [],
+        "missing": [], "added": [], "baseline_failed": [], "failed": [],
+        "invalid_timestamps": [],
+    }
+
+    def key(item):
+        return item["table_id"], item["partition_id"]
+
+    def identities(keys):
+        return [{"table_id": table, "partition_id": partition}
+                for table, partition in sorted(keys)]
+
+    # Unprocessed/new (State4) or previously failed partitions can be repaired
+    # by this refresh. Keep their baseline health, but gate on terminal health.
+    # Their IDs and parseable timestamps still participate in every comparison;
+    # a real .NET MinValue timestamp is valid, an absent/invalid one is not.
+    for failed_key, snapshot in (("baseline_failed", before), ("failed", after)):
+        result[failed_key] = identities({
+            key(item) for item in snapshot["partitions"]
+            if item["state"] != 1 or item["has_error"]})
+    statuses = {before["status"], after["status"]}
+    comparable = statuses <= {"observed", "mismatch"}
+    duplicate_or_renamed = False
+    old = {}
+    new = {}
+    if comparable:
+        old = {key(item): item for item in before["partitions"]}
+        new = {key(item): item for item in after["partitions"]}
+        result["missing"] = identities(old.keys() - new.keys())
+        result["added"] = identities(new.keys() - old.keys())
+        duplicate_or_renamed = (
+            len(old) != len(before["partitions"])
+            or len(new) != len(after["partitions"]))
+        for identity in sorted(old.keys() & new.keys()):
+            previous, current = old[identity], new[identity]
+            duplicate_or_renamed |= any(
+                previous[name] != current[name] for name in ("table", "partition"))
+            try:
+                old_kind, old_time = _refreshed_time_key(previous["refreshed_time"])
+                new_kind, new_time = _refreshed_time_key(current["refreshed_time"])
+                if old_kind != new_kind:
+                    raise ValueError
+                category = ("changed" if new_time > old_time else
+                            "unchanged" if new_time == old_time else "regressed")
+            except ValueError:
+                category = "invalid_timestamps"
+            result[category].extend(identities({identity}))
+    if "no_m_tables" in statuses:
+        result["status"] = "no_m_tables"
+    elif "query_failed" in statuses:
+        result["status"] = "query_failed"
+    elif result["failed"]:
+        result["status"] = "partition_failed"
+    elif "invalid" in statuses:
+        result["status"] = "invalid"
+    elif ("mismatch" in statuses or result["missing"] or result["added"]
+          or duplicate_or_renamed):
+        result["status"] = "mismatch"
+    elif statuses == {"not_observed"}:
+        result["status"] = "not_observed"
+    elif comparable:
+        if (not old or len(old) != before["expected_partitions"]
+                or len(new) != after["expected_partitions"]):
+            result["status"] = "mismatch"
+        elif any(before[name] != after[name] for name in ("owner_pid", "engine_pid", "port")):
+            result["status"] = "binding_changed"
+        elif result["invalid_timestamps"]:
+            result["status"] = "invalid_timestamp"
+        elif result["regressed"]:
+            result["status"] = "regressed"
+        elif result["unchanged"]:
+            result["status"] = "unchanged"
+        elif (before["expected_partitions"] == after["expected_partitions"]
+              == len(result["changed"]) > 0):
+            result["status"] = "advanced"
+        else:
+            result["status"] = "mismatch"
+    return result
 
 
 def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
-                        timeout: int = 60) -> dict:
+                        timeout: float = 60.0) -> dict:
     """Verify M-backed tables through the Analysis Services engine owned by HWND.
 
     Only aggregate counts/status are returned. Query details and exceptions are
     deliberately kept out of stdout, warnings, and the report.
+    Positive fractional seconds are supported without a timeout floor.
     """
+    try:
+        deadline = time.monotonic() + min(_positive_timeout(timeout), 120.0)
+    except (TypeError, ValueError, OverflowError):
+        return _data_load_result("unavailable")
     tables = _m_backed_tables(pbip_path)
     if tables is None or not owner_pid or not desktop_window.IS_WINDOWS:
         return _data_load_result("unavailable")
@@ -1103,17 +1593,18 @@ def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
     request = json.dumps({"owner_pid": int(owner_pid), "tables": tables},
                          ensure_ascii=True).encode("utf-8")
     encoded = base64.b64encode(request).decode("ascii")
-    try:
-        bounded_timeout = max(5, min(int(timeout), 120))
-    except (TypeError, ValueError):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
         return _data_load_result("unavailable")
     try:
         completed = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
              _ADOMD_VERIFY_SCRIPT],
             input=encoded, capture_output=True, text=True,
-            timeout=bounded_timeout)
+            timeout=remaining)
     except (OSError, ValueError, subprocess.SubprocessError):
+        return _data_load_result("unavailable")
+    if time.monotonic() >= deadline:
         return _data_load_result("unavailable")
     if completed.returncode != 0:
         return _data_load_result("unavailable")

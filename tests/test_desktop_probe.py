@@ -19,6 +19,35 @@ from powerbi_import.desktop_probe import (
     probe_desktop_reopen,
 )
 
+_HEADER_REFRESH_ERRORS = (
+    ("HeaderSchema.Error",
+     "Declared source column names must be nonblank and unique."),
+    ("HeaderMatch.Error",
+     "Source headers must uniquely match the declared source column names."),
+    ("HeaderMatch.Error",
+     "Source header matches must be one-to-one."),
+)
+
+# Captured before the header-error fix. Keep this regression control independent
+# of the live pattern so the same UIA fixture demonstrates the original miss.
+_PRE_HEADER_REFRESH_ERROR_PATTERN = (
+    r"(?i)(?:contained errors|queries? (?:had|has|have) errors|"
+    r"(?<![\d.,])\d*[1-9]\d*\s+quer(?:y|ies)\s+(?:is|are)\s+"
+    r"blocked by the following errors?\b|"
+    r"(?<![\d.,])\d*[1-9]\d*\s+requêtes?\s+(?:est|sont)\s+"
+    r"bloquées?\s+par (?:les erreurs suivantes|l['’]erreur suivante)\b|"
+    r"requêtes?.*(?:contenaient|contenait|contiennent|contient|comportent|comporte"
+    r"|ont rencontré).*erreurs?|"
+    r"(?<![\d.,])\d*[1-9]\d*(?:[.,\s\u00a0\u202f]\d{3})*\s+"
+    r"(?:errors?|erreurs?)\b|"
+    r"(?:DataSource|Expression|DataFormat)\.Error\b|"
+    r"(?:OLE DB (?:or|ou) ODBC (?:error|erreur)|"
+    r"an error occurred while (?:loading|refreshing)|"
+    r"erreur (?:lors|au cours) (?:du|de l['’])\s*(?:chargement|actualisation))|"
+    r"(?:refresh|load|actualisation|chargement) (?:has failed|failed|a échoué)|"
+    r"(?:failed to load|échec (?:du|de l['’])\s*(?:chargement|actualisation)))"
+)
+
 
 def _pbip(root):
     p = os.path.join(root, "P.pbip")
@@ -243,12 +272,15 @@ class TestRefreshReport(unittest.TestCase):
         from powerbi_import import desktop_probe as dp
         clicked = []
 
-        def invoke(_hwnd, names):
+        def invoke(_hwnd, names, **kwargs):
             clicked.append(tuple(names))
             return 1 if tuple(names) == dp._APPLY_CHANGES_NAMES else 0
 
         verified = dp._data_load_result("verified", checked=1, nonempty=1, rows=5)
         with mock.patch.object(dp, "_invoke_schema_refresh", return_value=1), \
+             mock.patch.object(dp, "observe_desktop_partitions", return_value=
+                               dp._partition_observation_result(
+                                   "unavailable", "test_observer_unavailable")), \
              mock.patch.object(dp, "_refresh_ui_state",
                                side_effect=["clear", "busy", "clear", "clear", "clear"]), \
              mock.patch.object(dp, "_click_button", side_effect=invoke), \
@@ -261,17 +293,33 @@ class TestRefreshReport(unittest.TestCase):
         self.assertTrue(result["applied_changes"])
         self.assertEqual(clicked.count(dp._APPLY_CHANGES_NAMES), 1)
 
-    def run_refresh(self, states, data):
+    def run_refresh(self, states, data, *, with_calls=False):
         from powerbi_import import desktop_probe as dp
-        ticks = iter(index / 10 for index in range(1000))
-        with mock.patch.object(dp, "_invoke_schema_refresh", return_value=1), \
-             mock.patch.object(dp, "_click_button", return_value=0), \
-             mock.patch.object(dp, "_invoke_button", return_value=0), \
-             mock.patch.object(dp, "_refresh_ui_state", side_effect=states), \
-             mock.patch.object(dp, "verify_desktop_data", return_value=data), \
-             mock.patch.object(dp.time, "time", side_effect=lambda: next(ticks)), \
+        clock = [0.0]
+
+        def now():
+            clock[0] += 0.01
+            return clock[0]
+
+        with mock.patch.object(dp, "_invoke_schema_refresh", return_value=1) as request, \
+             mock.patch.object(dp, "observe_desktop_partitions", return_value=
+                               dp._partition_observation_result(
+                                   "unavailable", "test_observer_unavailable")) as observer, \
+             mock.patch.object(dp, "_click_button", return_value=0) as click, \
+             mock.patch.object(dp, "_invoke_button", return_value=0) as invoke, \
+             mock.patch.object(dp, "_refresh_ui_state",
+                               side_effect=(lambda *args, **kwargs: states(*args))
+                               if callable(states) else states), \
+             mock.patch.object(dp, "verify_desktop_data", return_value=data) as verifier, \
+             mock.patch.object(dp.time, "time", side_effect=now), \
+             mock.patch.object(dp.time, "monotonic", side_effect=now), \
              mock.patch.object(dp.time, "sleep"):
-            return dp.refresh_report(101, "P.pbip", 4242, timeout=1, poll=0)
+            result = dp.refresh_report(101, "P.pbip", 4242, timeout=1, poll=0)
+        if with_calls:
+            return SimpleNamespace(
+                result=result, request=request, observer=observer,
+                verifier=verifier, click=click, invoke=invoke)
+        return result
 
     def test_pre_refresh_error_blocks_nonempty_count_promotion(self):
         from powerbi_import import desktop_probe as dp
@@ -288,13 +336,68 @@ class TestRefreshReport(unittest.TestCase):
         self.assertEqual(result["status"], "refresh_error")
         self.assertEqual(result["data_load"], data)
 
+    def test_header_message_before_request_aborts_without_baseline_clicks_or_counts(self):
+        from powerbi_import import desktop_probe as dp
+        data = dp._data_load_result("verified", checked=1, nonempty=1, rows=50)
+        for reason, message in _HEADER_REFRESH_ERRORS:
+            with self.subTest(reason=reason, message=message):
+                state = TestRefreshUIState.observe_text(message)
+                self.assertEqual(state, "refresh_error")
+                run = self.run_refresh(lambda *args: state, data, with_calls=True)
+                self.assertEqual(run.result["status"], "refresh_error")
+                self.assertEqual(run.result["ui_state"]["initial"], "refresh_error")
+                self.assertEqual(run.result["completion_basis"], "none")
+                self.assertEqual(run.result["clicks"], 0)
+                self.assertEqual(run.result["mode"], "none")
+                self.assertEqual(
+                    run.result["data_load"], dp._data_load_result("unavailable"))
+                self.assertLess(run.result["waited_s"], 1)
+                for action in (run.request, run.observer, run.verifier,
+                               run.click, run.invoke):
+                    action.assert_not_called()
+
+    def test_header_message_after_request_short_circuits_even_stale_nonempty_counts(self):
+        from powerbi_import import desktop_probe as dp
+        data = dp._data_load_result("verified", checked=1, nonempty=1, rows=50)
+        for reason, message in _HEADER_REFRESH_ERRORS:
+            state = TestRefreshUIState.observe_text(message)
+            self.assertEqual(state, "refresh_error")
+            for phase, observations, sampled in (
+                    ("before", ["clear", state], False),
+                    ("after", ["clear", "clear", state], True),
+            ):
+                with self.subTest(reason=reason, message=message, phase=phase):
+                    states = iter(observations)
+                    run = self.run_refresh(
+                        lambda *args: next(states, state), data, with_calls=True)
+                    self.assertEqual(run.result["status"], "refresh_error")
+                    self.assertEqual(run.result["ui_state"][phase], "refresh_error")
+                    self.assertEqual(run.result["completion_basis"], "none")
+                    self.assertEqual(run.result["clicks"], 1)
+                    self.assertLess(run.result["waited_s"], 1)
+                    run.request.assert_called_once()
+                    if sampled:
+                        run.verifier.assert_called_once()
+                        self.assertEqual(run.result["data_load"], data)
+                    else:
+                        run.verifier.assert_not_called()
+                        run.click.assert_not_called()
+                        run.invoke.assert_not_called()
+                        self.assertEqual(
+                            run.result["data_load"], dp._data_load_result("unavailable"))
+
     def test_busy_pending_and_unavailable_never_verify_despite_nonempty_counts(self):
         from powerbi_import import desktop_probe as dp
         data = dp._data_load_result("verified", checked=1, nonempty=1, rows=50)
         for state in ("busy", "pending_changes", "unavailable"):
             with self.subTest(state=state):
-                result = self.run_refresh(lambda *args: state, data)
-                self.assertEqual(result["status"], state)
+                # Keep this a post-request gate test. Unsafe startup UI now
+                # waits for readiness without sampling rows or clicking.
+                states = iter(["clear"])
+                result = self.run_refresh(lambda *args: next(states, state), data)
+                self.assertEqual(result["status"],
+                                 "unavailable" if state == "unavailable" else "timed_out")
+                self.assertEqual(result["ui_state"]["after"], state)
                 self.assertEqual(result["data_load"], data)
 
     def test_progress_then_clear_complete_counts_verify_without_rewriting_data_status(self):
@@ -346,7 +449,8 @@ class TestRefreshReport(unittest.TestCase):
         ):
             with self.subTest(data=data):
                 result = self.run_refresh(lambda *args: "clear", data)
-                self.assertEqual(result["status"], "waiting")
+                self.assertEqual(result["status"], "timed_out")
+                self.assertEqual(result["ui_state"]["after"], "clear")
                 self.assertEqual(result["data_load"], data)
                 self.assertFalse(result["ui_state"]["observed_progress"])
 
@@ -354,7 +458,8 @@ class TestRefreshReport(unittest.TestCase):
         from powerbi_import import desktop_probe as dp
         data = dp._data_load_result("empty", checked=2, empty=2)
         result = self.run_refresh(lambda *args: "completed", data)
-        self.assertEqual(result["status"], "waiting")
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(result["ui_state"]["after"], "completed")
         self.assertEqual(result["ui_state"]["initial"], "completed")
         self.assertFalse(result["ui_state"]["observed_progress"])
         self.assertEqual(result["data_load"], data)
@@ -373,7 +478,8 @@ class TestRefreshReport(unittest.TestCase):
         data = dp._data_load_result("empty", checked=2, empty=2)
         states = iter(["unavailable"])
         result = self.run_refresh(lambda *args: next(states, "completed"), data)
-        self.assertEqual(result["status"], "waiting")
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(result["ui_state"]["after"], "completed")
         self.assertEqual(result["data_load"], data)
 
     def test_saved_smart_apostrophe_pending_banner_blocks_empty_count_verification(self):
@@ -383,8 +489,12 @@ class TestRefreshReport(unittest.TestCase):
         self.assertEqual(state, "pending_changes")
         data = dp._data_load_result("empty", checked=2, empty=2)
         result = self.run_refresh(lambda *args: state, data)
-        self.assertEqual(result["status"], "pending_changes")
-        self.assertEqual(result["data_load"], data)
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(result["ui_state"]["initial"], "pending_changes")
+        self.assertEqual(result["ui_state"]["readiness"], "pending_changes")
+        self.assertEqual(result["clicks"], 0)
+        self.assertNotIn("after", result["ui_state"])
+        self.assertEqual(result["data_load"], dp._data_load_result("unavailable"))
 
 
 class TestRefreshWindowVerification(unittest.TestCase):
@@ -430,6 +540,24 @@ class TestRefreshWindowVerification(unittest.TestCase):
                 render.assert_not_called()
                 state.assert_not_called()
 
+    def test_header_error_blocks_capture_despite_stale_nonempty_counts(self):
+        from powerbi_import import desktop_probe as dp
+        for reason, message in _HEADER_REFRESH_ERRORS:
+            with self.subTest(reason=reason, message=message):
+                error = TestRefreshUIState.observe_text(message)
+                self.assertEqual(error, "refresh_error")
+                report, data, capture, render, state = self.watch(error)
+                self.assertEqual(report.refresh["status"], "refresh_error")
+                self.assertEqual(report.data_load, data)
+                self.assertEqual(data["status"], "verified")
+                self.assertGreater(data["total_rows"], 0)
+                self.assertIs(report.screenshot_data_verified, False)
+                self.assertIsNone(report.screenshot)
+                self.assertEqual(report.note, dp.REFRESH_LIMITATION)
+                capture.assert_not_called()
+                render.assert_not_called()
+                state.assert_not_called()
+
     def test_late_error_after_render_settle_revokes_screenshot_verification(self):
         report, data, capture, render, state = self.watch(
             "verified", late_state="refresh_error")
@@ -439,6 +567,28 @@ class TestRefreshWindowVerification(unittest.TestCase):
         self.assertEqual(report.refresh["status"], "refresh_error")
         self.assertEqual(report.data_load, data)
         self.assertFalse(report.screenshot_data_verified)
+
+    def test_header_error_after_render_revokes_certification_despite_stale_nonempty_counts(self):
+        from powerbi_import import desktop_probe as dp
+        for reason, message in _HEADER_REFRESH_ERRORS:
+            with self.subTest(reason=reason, message=message):
+                error = TestRefreshUIState.observe_text(message)
+                self.assertEqual(error, "refresh_error")
+                report, data, capture, render, state = self.watch(
+                    "verified", late_state=error)
+                self.assertEqual(report.refresh["status"], "refresh_error")
+                self.assertEqual(
+                    report.refresh["ui_state"]["after_render"], "refresh_error")
+                self.assertEqual(report.data_load, data)
+                self.assertEqual(data["status"], "verified")
+                self.assertGreater(data["total_rows"], 0)
+                self.assertIs(report.screenshot_data_verified, False)
+                self.assertEqual(report.note, dp.REFRESH_LIMITATION)
+                render.assert_called_once()
+                state.assert_called_once_with(101, 4242)
+                # Retain diagnostic imagery, never certify it as refreshed data.
+                capture.assert_called_once()
+                self.assertEqual(report.screenshot, "synthetic.png")
 
     def test_clear_after_render_keeps_completed_refresh_verified(self):
         report, data, capture, render, state = self.watch("verified")
@@ -468,7 +618,7 @@ class TestRefreshUIState(unittest.TestCase):
         """Exercise the actual emitted UIA request patterns, without Windows."""
         from powerbi_import import desktop_probe as dp
 
-        def read(script, request):
+        def read(script, request, **kwargs):
             if re.search(request["error_pattern"], text):
                 return {"status": "refresh_error"}
             if re.search(request["pending_pattern"], text):
@@ -480,6 +630,60 @@ class TestRefreshUIState(unittest.TestCase):
         with mock.patch.object(dp.desktop_window, "dialog_windows", return_value=[]), \
              mock.patch.object(dp, "_run_uia", side_effect=read):
             return dp._refresh_ui_state(101, 4242)
+
+    def test_header_error_reasons_and_bare_canonical_messages_match(self):
+        for reason, message in _HEADER_REFRESH_ERRORS:
+            for text in (reason, f"{reason}: {message}", message,
+                         f" \t{message}\r\n"):
+                with self.subTest(text=text):
+                    self.assertEqual(self.observe_text(text), "refresh_error")
+
+    def test_header_error_matching_keeps_benign_near_misses_and_zero_counts_clear(self):
+        texts = [
+            "Load", "HeaderMatch", "HeaderSchema",
+            "HeaderMatchXError", "HeaderSchemaXError",
+            "HeaderMatch.Errorless", "HeaderSchema.Errors",
+            "Declared source column names are nonblank and unique.",
+            "Source headers uniquely match the declared source column names.",
+            "Source header matches are one-to-one.",
+            "0 errors", "0 erreurs", "0.0 errors", "0,0 erreurs",
+        ]
+        for _, message in _HEADER_REFRESH_ERRORS:
+            texts.extend((
+                message[:-1], f"Help: {message}",
+                f"{message} See the documentation.",
+                f"{message} 0 errors",
+            ))
+        for text in texts:
+            with self.subTest(text=text):
+                self.assertEqual(self.observe_text(text), "clear")
+
+    def test_generated_header_error_records_match_the_ui_request_contract(self):
+        from tableau_export.m_query_builder import generate_power_query_m
+
+        query = generate_power_query_m(
+            {"type": "CSV", "details": {"filename": "headers.csv"}},
+            {"name": "SyntheticHeaders",
+             "columns": [{"name": "KnownSourceColumn", "datatype": "string"}]})
+        records = re.findall(
+            r'error\s+Error\.Record\(\s*"([^"]+)"\s*,\s*"([^"]+)"', query)
+        self.assertCountEqual(records, _HEADER_REFRESH_ERRORS)
+        for reason, message in records:
+            for text in (reason, f"{reason}: {message}", message):
+                with self.subTest(text=text):
+                    self.assertEqual(self.observe_text(text), "refresh_error")
+
+    def test_header_error_samples_are_clear_with_pre_fix_pattern(self):
+        from powerbi_import import desktop_probe as dp
+
+        for reason, message in _HEADER_REFRESH_ERRORS:
+            for text in (reason, f"{reason}: {message}", message):
+                with self.subTest(text=text):
+                    with mock.patch.object(
+                            dp, "_REFRESH_ERROR_PATTERN",
+                            _PRE_HEADER_REFRESH_ERROR_PATTERN):
+                        self.assertEqual(self.observe_text(text), "clear")
+                    self.assertEqual(self.observe_text(text), "refresh_error")
 
     def test_saved_blocked_query_variants_match_narrowly_in_english_and_french(self):
         for text in (

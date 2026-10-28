@@ -93,7 +93,7 @@ class TestComparisonCLI(unittest.TestCase):
         help_text = " ".join(self.stdout.getvalue().split())
         self.assertIn("Comparison-launched processes close after captures", help_text)
         self.assertIn("Power BI refreshes/verifies data; Tableau is not refreshed", help_text)
-        self.assertIn("no automatic migration hook", " ".join(self.stdout.getvalue().split()))
+        self.assertIn("This standalone script does not run migration", help_text)
         self.compare.assert_not_called()
 
     def test_local_mode_is_forwarded_without_changing_capture_exit_status(self):

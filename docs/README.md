@@ -256,9 +256,16 @@ Desktop probe results are evidence gates: a successful launch can produce
 confidence level to `UNVERIFIED` even when static validation passed. Two
 successful consecutive launches produce `DESKTOP_REOPEN_PASS`; this still does
 not claim that Desktop saved project changes. The batch opening service also
-records `OPENED`/`CRASHED` and a separate model data status; only `OPENED` plus
-`verified` qualifies as a data-bearing screenshot. Its HTML/JSON/PNG evidence
-must remain outside the repository for customer reports.
+records `OPENED`/`CRASHED`, model data status and an independent refresh status.
+A verified-refresh screenshot requires an opened document, complete table
+checks without failures, and `refresh.status=verified`; existing rows alone
+are insufficient. A refresh lifecycle or fresh expected M-partition timestamps
+must establish completion with ready/error-free partitions when observed and a
+clear owned UI.
+Use `migrate.py batch ... --screenshots` or `--compare-desktop` to opt in after
+generation in one command; see the
+[one-command guide](DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command).
+HTML/JSON/PNG evidence must remain outside the repository for customer reports.
 
 The migration-level zero-touch tracker (`ZeroTouchTracker` in
 `powerbi_import/feedback_loop.py`) uses the unified quality status when recording

@@ -10,9 +10,10 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from powerbi_import import desktop_probe, desktop_window, tableau_desktop_probe
@@ -234,9 +235,91 @@ def _launched_window(result: dict, stem: str):
     return windows[0] if len(windows) == 1 else None
 
 
+def _complete_data_checks(data: Any) -> bool:
+    """Successful aggregate checks may include genuinely empty tables."""
+    if not isinstance(data, dict) or data.get("status") not in ("verified", "partial", "empty"):
+        return False
+    names = ("tables_checked", "tables_nonempty", "tables_empty", "tables_failed", "total_rows")
+    if any(type(data.get(name)) is not int or data[name] < 0 for name in names):
+        return False
+    checked, nonempty, empty, failed, rows = (data[name] for name in names)
+    if checked <= 0 or failed != 0 or nonempty + empty != checked:
+        return False
+    if rows < nonempty or (nonempty == 0 and rows != 0):
+        return False
+    if data["status"] == "empty" and nonempty != 0:
+        return False
+    if data["status"] == "partial" and not (nonempty > 0 and empty > 0):
+        return False
+    return True
+
+
+def _powerbi_data_gate(evidence: dict) -> dict:
+    """Do not infer refresh/data success from a loaded window or a PNG."""
+    refresh = evidence.get("refresh")
+    data = evidence.get("data_load")
+    refresh_status = refresh.get("status") if isinstance(refresh, dict) else None
+    data_status = data.get("status") if isinstance(data, dict) else None
+    checks = {
+        "refresh_verified": refresh_status == "verified",
+        "screenshot_data_verified": evidence.get("screenshot_data_verified") is True,
+        "complete_data_checks": _complete_data_checks(data),
+    }
+    # The probe normally records the same checks in both places. If both are
+    # present, a conflicting/incomplete refresh payload must not be ignored.
+    if isinstance(refresh, dict) and "data_load" in refresh:
+        refresh_data = refresh["data_load"]
+        checks["complete_refresh_data_checks"] = _complete_data_checks(refresh_data)
+        checks["consistent_data_checks"] = (
+            isinstance(data, dict) and isinstance(refresh_data, dict)
+            and all(data.get(key) == refresh_data.get(key) for key in (
+                "status", "tables_checked", "tables_nonempty", "tables_empty",
+                "tables_failed", "total_rows")))
+    failures = []
+    if not checks["refresh_verified"]:
+        failures.append(f"refresh.status={refresh_status!r}, expected 'verified'")
+    if not checks["screenshot_data_verified"]:
+        failures.append("screenshot_data_verified is not true")
+    if not checks["complete_data_checks"]:
+        failures.append(f"incomplete or unsuccessful data checks (status={data_status!r})")
+    if checks.get("complete_refresh_data_checks") is False:
+        failures.append("refresh.data_load checks are incomplete or unsuccessful")
+    if checks.get("consistent_data_checks") is False:
+        failures.append("refresh.data_load and data_load disagree")
+    return {
+        "status": "failed" if failures else "verified",
+        "scope": "initial_launch_refresh_and_aggregate_data_checks",
+        "refresh_status": refresh_status,
+        "data_load_status": data_status,
+        "screenshot_data_verified": evidence.get("screenshot_data_verified"),
+        "checks": checks,
+        "note": ("Power BI capture gate failed: " + "; ".join(failures)
+                 if failures else
+                 "Explicit refresh verified and all table checks completed successfully; "
+                 "empty tables are permitted. No semantic parity verdict."),
+    }
+
+
+def _verified_page_capture(capture: dict, expected: Path | None = None) -> bool:
+    """Require the existing exact-tab checks before and after a fresh capture."""
+    if (capture.get("status") != "captured" or not capture.get("screenshot")
+            or capture.get("screenshot_blank") is not False
+            or any(not isinstance(capture.get(key), dict)
+                   or capture[key].get("status") != "verified"
+                   for key in ("selection", "post_capture_selection"))):
+        return False
+    try:
+        path = Path(capture["screenshot"])
+        _safe_destination(path.absolute())
+        return path.is_file() and (expected is None or path.resolve() == expected.resolve())
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def _local_capture_pixels(source: dict, target: dict,
                           source_path: Path | None, target_path: Path | None,
-                          *, pages: bool = False) -> dict:
+                          *, pages: bool = False,
+                          powerbi_launch: dict | None = None) -> dict:
     """Accept only verified successes at the destinations requested in this run."""
     for side, capture, expected in (("source", source, source_path),
                                     ("target", target, target_path)):
@@ -262,6 +345,9 @@ def _local_capture_pixels(source: dict, target: dict,
         except (OSError, ValueError, TypeError) as exc:
             return unavailable_pixels("capture_not_current",
                                       f"{side}: invalid capture path: {exc}")
+    gate = _powerbi_data_gate(powerbi_launch if powerbi_launch is not None else target)
+    if gate["status"] != "verified":
+        return unavailable_pixels("capture_unverified", gate["note"])
     if source_path is None or target_path is None:
         return unavailable_pixels("capture_not_current",
                                   "capture is not the requested current-run path")
@@ -269,12 +355,18 @@ def _local_capture_pixels(source: dict, target: dict,
 
 
 def _capture_all_pages(row: dict, shots: Path, page_timeout: float,
-                       *, screen_comparison: str = "manual") -> None:
-    """Reuse the two initial launches; isolate inventories and individual tabs."""
-    inventories = {}
-    for field, function, path in (
-            ("source", inventory_tableau_pages, row["source"]),
-            ("target", inventory_powerbi_pages, row.get("pbip"))):
+                       *, screen_comparison: str = "manual",
+                       capture_tableau: bool = True) -> None:
+    """Reuse requested launches; an unverified PBI launch cannot yield page evidence."""
+    if not capture_tableau and screen_comparison == "local":
+        raise ValueError("local pixel comparison requires Tableau and Power BI captures")
+    inventories: dict[str, list[dict]] = {"source": [], "target": []}
+    inventory_requests: list[tuple[str, Callable[[str], list[dict]], str | None]] = [
+        ("target", inventory_powerbi_pages, row.get("pbip"))]
+    if capture_tableau:
+        inventory_requests.insert(0, ("source", inventory_tableau_pages, row["source"]))
+    row["inventory_requested"] = {"source": capture_tableau, "target": True}
+    for field, function, path in inventory_requests:
         try:
             inventories[field] = function(path) if path else []
         except Exception as exc:
@@ -287,7 +379,7 @@ def _capture_all_pages(row: dict, shots: Path, page_timeout: float,
             page["capture"] = {"status": "not_requested", "screenshot": None,
                                "note": "Page workflow did not reach this page"}
     lineage = {}
-    if row.get("pbip"):
+    if capture_tableau and row.get("pbip"):
         lineage_path = Path(row["pbip"]).parent / "lineage_map.json"
         if lineage_path.is_file():
             try:
@@ -297,16 +389,30 @@ def _capture_all_pages(row: dict, shots: Path, page_timeout: float,
             except Exception as exc:
                 row["issues"].append(f"Lineage read failed: {exc}")
                 lineage = {}
-    row["page_mappings"] = map_desktop_pages(inventories["source"], inventories["target"], lineage)
-    requested_paths = {"tableau": {}, "powerbi": {}}
-    for field, inventory, stem, subdir in (
-            ("tableau", inventories["source"], Path(row["source"]).stem, "source"),
-            ("powerbi", inventories["target"], Path(row["pbip"]).stem if row.get("pbip") else "", "output")):
+    row["page_mappings"] = []
+    if capture_tableau:
         try:
-            window = _launched_window(row[field], stem)
+            row["page_mappings"] = map_desktop_pages(
+                inventories["source"], inventories["target"], lineage)
         except Exception as exc:
-            row["issues"].append(f"{field} document resolution failed: {type(exc).__name__}: {exc}")
-            window = None
+            row["issues"].append(f"Page mapping failed: {type(exc).__name__}: {exc}")
+    row["page_mapping_status"] = "requested" if capture_tableau else "not_requested"
+    requested_paths = {"tableau": {}, "powerbi": {}}
+    capture_requests = [
+        ("powerbi", inventories["target"],
+         Path(row["pbip"]).stem if row.get("pbip") else "", "output")]
+    if capture_tableau:
+        capture_requests.insert(
+            0, ("tableau", inventories["source"], Path(row["source"]).stem, "source"))
+    powerbi_gate = _powerbi_data_gate(row["powerbi"])
+    for field, inventory, stem, subdir in capture_requests:
+        gate = powerbi_gate if field == "powerbi" else None
+        window = None
+        if gate is None or gate["status"] == "verified":
+            try:
+                window = _launched_window(row[field], stem)
+            except Exception as exc:
+                row["issues"].append(f"{field} document resolution failed: {type(exc).__name__}: {exc}")
         for index, page in enumerate(inventory):
             if page.get("inventory_error"):
                 page["capture"] = {"status": "error", "screenshot": None,
@@ -314,6 +420,10 @@ def _capture_all_pages(row: dict, shots: Path, page_timeout: float,
                 continue
             slug = re.sub(r"[^\w.-]", "_", page["name"])[:70] or "page"
             filename = f"{index:04d}-{slug}-{uuid.uuid4().hex[:10]}.png"
+            if gate is not None and gate["status"] != "verified":
+                page["capture"] = {"status": "not_run", "screenshot": None,
+                                   "powerbi_launch_gate": gate, "note": gate["note"]}
+                continue
             if window is None:
                 page["capture"] = {"status": "inaccessible", "screenshot": None,
                                    "note": "No uniquely verified launched document window"}
@@ -324,11 +434,25 @@ def _capture_all_pages(row: dict, shots: Path, page_timeout: float,
                 page["capture"] = capture_document_tab(
                     window.hwnd, row[field]["pid"], page["name"],
                     str(requested), timeout=page_timeout)
+                if (not isinstance(page["capture"], dict)
+                        or not isinstance(page["capture"].get("status"), str)):
+                    raise ValueError("Page capture returned no valid status")
+                page["capture"].setdefault("note", "")
+                if (page["capture"].get("status") == "captured"
+                        and not _verified_page_capture(page["capture"], requested)):
+                    page["capture"].update(
+                        probe_status="captured", probe_screenshot=page["capture"].get("screenshot"),
+                        status="error", screenshot=None,
+                        note="Page capture gate failed: current PNG and exact selected tab "
+                             "must be verified before and after capture")
             except Exception as exc:
                 page["capture"] = {"status": "error", "screenshot": None,
                                    "note": f"{type(exc).__name__}: {exc}"}
+            if gate is not None:
+                page["capture"]["powerbi_launch_gate"] = gate
             if page["capture"]["status"] != "captured" and (page.get("hidden") or page.get("tooltip")):
-                page["capture"]["note"] += " (hidden/tooltip page; no state changes to expose it)"
+                page["capture"]["note"] = (str(page["capture"].get("note", ""))
+                                           + " (hidden/tooltip page; no state changes to expose it)")
     if screen_comparison == "local":
         sources = {p["id"]: p for p in inventories["source"]}
         targets = {p["id"]: p for p in inventories["target"]}
@@ -342,12 +466,17 @@ def _capture_all_pages(row: dict, shots: Path, page_timeout: float,
                 result = _local_capture_pixels(
                     source["capture"], target["capture"],
                     requested_paths["tableau"].get(source["id"]),
-                    requested_paths["powerbi"].get(target["id"]), pages=True)
+                    requested_paths["powerbi"].get(target["id"]), pages=True,
+                    powerbi_launch=row["powerbi"])
             mapping["pixel_comparison"] = result
-    mapped = all(m["status"] == "mapped" for m in row["page_mappings"])
+    mapped = (not capture_tableau or (
+        bool(row["page_mappings"]) and all(m["status"] == "mapped" for m in row["page_mappings"])))
+    if capture_tableau:
+        row["page_mapping_status"] = "mapped" if mapped else "incomplete"
     captured = all(p["capture"]["status"] == "captured"
                    for items in inventories.values() for p in items)
-    row["status"] = ("manual_review" if mapped and captured and inventories["source"]
+    row["status"] = ("manual_review" if mapped and captured
+                     and (not capture_tableau or inventories["source"])
                      and inventories["target"] and not row["issues"] else "failed")
 
 
@@ -358,21 +487,37 @@ def _cleanup_comparison_processes(row: dict) -> None:
         ("powerbi", desktop_probe.close_probe_process),
     ):
         result = row[field]
-        pid = result.get("pid")
-        if not isinstance(pid, int):
+        if field == "tableau" and row.get("capture_tableau") is False:
+            result["cleanup"] = {
+                "status": "not_requested", "note": "Tableau capture was not requested"}
+            continue
+        pids = result.get("owned_probe_pids", [result.get("pid")])
+        pids = sorted({pid for pid in pids if type(pid) is int and pid > 0})
+        if not pids:
             result["cleanup"] = {
                 "status": "not_started", "note": "No launched PID was reported"}
+            if result.get("status") == "captured":
+                row["issues"].append(f"{field} cleanup not_started: no launched PID was reported")
             continue
-        try:
-            cleanup = closer(pid)
-        except Exception as exc:
-            cleanup = {"status": "error",
-                       "note": f"{type(exc).__name__}: {exc}"}
-        result["cleanup"] = cleanup
-        if cleanup.get("status") not in ("closed", "already_exited"):
-            row["issues"].append(
-                f"{field} cleanup {cleanup.get('status', 'error')}: "
-                f"{cleanup.get('note', 'No cleanup detail')}")
+        cleanups = []
+        for pid in pids:
+            try:
+                cleanup = closer(pid)
+                if not isinstance(cleanup, dict):
+                    raise ValueError("Probe cleanup returned no valid status")
+            except Exception as exc:
+                cleanup = {"status": "error",
+                           "note": f"{type(exc).__name__}: {exc}"}
+            cleanups.append({"pid": pid, **cleanup})
+            if cleanup.get("status") not in ("closed", "already_exited"):
+                row["issues"].append(
+                    f"{field} cleanup {cleanup.get('status', 'error')}: "
+                    f"{cleanup.get('note', 'No cleanup detail')}")
+        result["cleanup"] = (cleanups[0] if len(cleanups) == 1 else {
+            "status": ("closed" if all(c["status"] in ("closed", "already_exited")
+                                       for c in cleanups) else "error"),
+            "note": "Cleanup of comparison-launched probe processes",
+            "processes": cleanups})
 
 
 def _sorted_files(root: Path, pattern: str) -> list[Path]:
@@ -388,6 +533,77 @@ def _safe_destination(path: Path) -> None:
     for component in (path, *path.parents):
         if component.is_symlink() or component.is_junction():
             raise ValueError(f"Output path contains a link or junction: {component}")
+
+
+def _positive_timeout(value: Any, name: str) -> None:
+    try:
+        valid = not isinstance(value, bool) and math.isfinite(value) and value > 0
+    except (TypeError, ValueError, OverflowError):
+        valid = False
+    if not valid:
+        raise ValueError(f"{name} must be a finite positive number")
+
+
+def _file_identity(path: str) -> tuple:
+    stat = Path(path).stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def _explicit_workbook_pairs(pairs: Any, source: Path, output: Path) -> list[dict]:
+    """Validate the caller's current selection, without discovering other files."""
+    if not isinstance(pairs, list) or not pairs:
+        raise ValueError("workbook_pairs must be a nonempty list of current paired workbooks")
+
+    def selected_path(value, root, suffixes, label):
+        if not isinstance(value, str) or not value or not Path(value).is_absolute():
+            raise ValueError(f"{label} must be an absolute file path")
+        path = Path(value)
+        if root == output:
+            _safe_destination(path)
+        resolved = path.resolve(strict=True)
+        if (not resolved.is_file() or resolved.suffix.lower() not in suffixes
+                or not _inside(resolved, root)):
+            raise ValueError(f"{label} must be an existing {sorted(suffixes)} file inside {root}")
+        return resolved
+
+    rows = []
+    seen_sources, seen_targets = set(), set()
+    seen_source_files, seen_target_files = set(), set()
+    for index, entry in enumerate(pairs):
+        label = f"workbook_pairs[{index}]"
+        required = ("source", "relative_source", "pair_status", "pbip", "candidates", "issues")
+        if not isinstance(entry, dict) or any(key not in entry for key in required):
+            raise ValueError(f"{label} must contain {', '.join(required)}")
+        if (entry["pair_status"] != "paired" or not isinstance(entry["issues"], list)
+                or entry["issues"]):
+            raise ValueError(f"{label} must be paired with no issues; failed outputs are not eligible")
+        if (not isinstance(entry["relative_source"], str)
+                or not entry["relative_source"].strip() or "\x00" in entry["relative_source"]):
+            raise ValueError(f"{label}.relative_source must be a nonempty display label")
+        workbook = selected_path(entry["source"], source, {".twb", ".twbx"}, f"{label}.source")
+        pbip = selected_path(entry["pbip"], output, {".pbip"}, f"{label}.pbip")
+        if not isinstance(entry["candidates"], list) or len(entry["candidates"]) != 1:
+            raise ValueError(f"{label}.candidates must contain only the exact selected PBIP")
+        candidate = selected_path(
+            entry["candidates"][0], output, {".pbip"}, f"{label}.candidates[0]")
+        if candidate != pbip:
+            raise ValueError(f"{label}.candidates does not identify the selected PBIP")
+        source_file = _file_identity(str(workbook))[:2]
+        target_file = _file_identity(str(pbip))[:2]
+        if (workbook in seen_sources or pbip in seen_targets
+                or (source_file[1] and source_file in seen_source_files)
+                or (target_file[1] and target_file in seen_target_files)):
+            raise ValueError(f"{label} duplicates a source or claims an already selected PBIP")
+        seen_sources.add(workbook)
+        seen_targets.add(pbip)
+        seen_source_files.add(source_file)
+        seen_target_files.add(target_file)
+        # Only the selection contract is accepted, not prior capture/runtime
+        # evidence that a caller may have retained on an older manifest row.
+        row = {key: deepcopy(entry[key]) for key in required}
+        row.update(source=str(workbook), pbip=str(pbip), candidates=[str(pbip)], issues=[])
+        rows.append(row)
+    return rows
 
 
 def pair_workbooks(source_dir: str, output_root: str) -> list[dict]:
@@ -489,10 +705,14 @@ def pair_workbooks(source_dir: str, output_root: str) -> list[dict]:
 
 
 def _pbi_capture(pbip: str, shot: Path, timeout: float,
-                 desktop_path: str | None) -> dict:
+                 desktop_path: str | None, *, refresh_timeout: float = 300) -> dict:
     if not desktop_window.IS_WINDOWS:
+        note = "Power BI window capture requires interactive Windows"
         return {"status": "unavailable", "screenshot": None,
-                "note": "Power BI window capture requires interactive Windows"}
+                "refresh": {"status": "not_run"}, "data_load": {"status": "not_run"},
+                "screenshot_data_verified": None,
+                "capture_gate": {"status": "failed", "note": note}, "note": note}
+    evidence: dict[str, Any] = {"status": "error", "screenshot": None}
     try:
         if shot.exists() or shot.is_symlink():
             raise ValueError("screenshot destination must not already exist")
@@ -500,27 +720,41 @@ def _pbi_capture(pbip: str, shot: Path, timeout: float,
         report = desktop_probe.probe_desktop_open(
             pbip, timeout=timeout, close_after=False, wait_for_window=True,
             screenshot_path=str(shot), desktop_path=desktop_path,
-            verify_data=True, refresh=True)
-        evidence = report.to_dict()
+            verify_data=True, refresh=True, refresh_timeout=refresh_timeout)
+        # Retain ownership and raw diagnostics even if conversion/gating fails.
+        for key in ("pid", "pbip_path", "refresh", "data_load",
+                    "screenshot_data_verified", "window_title", "screenshot_blank"):
+            evidence[key] = getattr(report, key, None)
+        evidence.update(probe_status=report.status, probe_note=report.note,
+                        probe_screenshot=report.screenshot)
+        evidence.update(report.to_dict())
+        gate = _powerbi_data_gate(evidence)
+        evidence["capture_gate"] = gate
         # Never accept the probe's process-survival verdict or fallback capture.
         captured = (report.status == "opened" and report.window_loaded
                     and report.window_title is not None
                     and document_title_matches(report.window_title, Path(pbip).stem)
+                    and Path(report.pbip_path).resolve() == Path(pbip).resolve()
                     and report.screenshot is not None
                     and Path(report.screenshot).resolve() == shot.resolve()
-                    and shot.is_file() and report.screenshot_blank is False)
-        evidence["probe_status"] = report.status
+                    and shot.is_file() and report.screenshot_blank is False
+                    and gate["status"] == "verified")
         evidence["status"] = "captured" if captured else (
             report.status if report.status in ("unavailable", "timed_out", "error")
             else "error")
         evidence["screenshot"] = str(shot) if captured else None
         if not captured:
-            evidence["note"] = ("No verified document-window nonblank capture. "
-                                + report.note)
+            gate_note = (gate["note"] if gate["status"] != "verified" else
+                         "Power BI capture gate failed: no verified current document-window "
+                         "nonblank capture for the selected PBIP")
+            evidence["capture_gate"] = {**gate, "status": "failed", "note": gate_note}
+            evidence["note"] = gate_note + (". " + report.note if report.note else "")
         return evidence
     except Exception as exc:
-        return {"status": "error", "screenshot": None,
-                "note": f"{type(exc).__name__}: {exc}"}
+        note = f"Power BI capture gate failed: {type(exc).__name__}: {exc}"
+        evidence.update(status="error", screenshot=None, note=note,
+                        capture_gate={"status": "failed", "note": note})
+        return evidence
 
 
 def _ui(en: str, fr: str) -> str:
@@ -550,6 +784,7 @@ def _payload_details(payload: dict, label: str = "Full evidence payload") -> str
         "Full pixel evidence": "Preuves pixel complètes",
         "Totaux techniques complets": "Totaux techniques complets",
         "Full page correspondence evidence": "Preuves complètes de correspondance des pages",
+        "Full page evidence": "Preuves complètes de la page",
         "Full workbook evidence": "Preuves complètes du classeur",
     }
     en = "Full technical totals" if label == "Totaux techniques complets" else label
@@ -583,6 +818,71 @@ def _pixel_html(result: dict | None, table_id: str) -> str:
             + data_table([text("Metric", "Mesure"), text("Value", "Valeur")], rows, table_id=table_id)
             + f'<p>{esc(result["note"])}</p><p>{_pixel_limitation()}</p>'
             + _payload_details(result, "Full pixel evidence"))
+
+
+def _capture_scope_html(manifest: dict) -> str:
+    """Present requested work separately from recorded capture outcomes."""
+    capture_tableau = manifest.get("capture_tableau", True)
+    stages = manifest.get("requested_stages") or _requested_capture_stages(
+        capture_tableau, bool(manifest.get("all_pages")),
+        manifest.get("screen_comparison", "manual"))
+    labels = (
+        ("open", text("Open document", "Ouvrir le document")),
+        ("refresh", text("Refresh", "Actualisation")),
+        ("data_checks", text("Aggregate data checks", "Contrôles agrégés des données")),
+        ("capture", text("Initial full-window capture", "Capture initiale de la fenêtre complète")),
+        ("inventory", text("Page inventory", "Inventaire des pages")),
+        ("selected_tabs", text("Verified selected-tab captures", "Captures des onglets sélectionnés vérifiés")),
+    )
+    rows = []
+    for key, label in labels:
+        cells = [render(label, "fr")]
+        for field in ("tableau", "powerbi"):
+            requested = stages[field].get(key, False)
+            cells.append(badge(text("Requested", "Demandé") if requested else
+                               text("Not requested", "Non demandé"), "blue" if requested else "gray"))
+        rows.append(cells)
+    shared = []
+    for key, label in (
+            ("page_mapping", text("Page mapping", "Correspondance des pages")),
+            ("local_pixel_comparison", text("Local pixels", "Pixels locaux")),
+            ("cleanup", text("Close launched processes", "Fermer les processus lancés"))):
+        requested = stages.get(key, False)
+        shared.append(render(label, "fr") + ": " + badge(
+            text("Requested", "Demandé") if requested else text("Not requested", "Non demandé"),
+            "blue" if requested else "gray"))
+    totals = manifest.get("initial_capture_totals") or _initial_capture_totals(
+        manifest.get("workbooks", []), capture_tableau)
+    total_rows = [
+        [label, str(totals[side]["expected"]), str(totals[side]["captured"]),
+         str(totals[side]["error"])]
+        for side, label in (("source", "Tableau"), ("target", "Power BI"))
+        if totals[side]["requested"]]
+    scope = (_ui("Paired Tableau / Power BI captures; manual visual review is required.",
+                 "Captures associées Tableau / Power BI ; une revue visuelle manuelle reste nécessaire.")
+             if capture_tableau else
+             _ui("Power BI-only diagnostic: open, refresh, data checks and screenshots. "
+                 "Tableau launch, inventory, window operations and page mapping were not requested. "
+                 "This is not a paired comparison.",
+                 "Diagnostic Power BI uniquement : ouverture, actualisation, contrôles des données et captures. "
+                 "Le lancement, l’inventaire et les opérations de fenêtre Tableau, ainsi que la correspondance "
+                 "des pages, n’ont pas été demandés. Il ne s’agit pas d’une comparaison associée."))
+    return (
+        '<section><h2>' + _ui("Requested capture scope", "Périmètre des captures demandé") + '</h2>'
+        f'<p>{scope}</p>'
+        + data_table([text("Stage", "Étape"), "Tableau", "Power BI"], rows,
+                     table_id="requested-capture-stages")
+        + '<p>' + "; ".join(shared) + '</p>'
+        + '<p>' + _ui("Requested stages are not proof of success. Only recorded verified captures "
+                      "are accepted; no semantic parity, deployment or static certification is inferred.",
+                      "Les étapes demandées ne prouvent pas leur réussite. Seules les captures vérifiées "
+                      "enregistrées sont acceptées ; aucune parité sémantique, aucun déploiement ni aucune "
+                      "certification statique n’en sont déduits.") + '</p>'
+        + '<h3>' + _ui("Recorded initial capture totals", "Totaux enregistrés des captures initiales") + '</h3>'
+        + data_table([text("Application", "Application"), text("Requested", "Demandées"),
+                      text("Captured", "Capturées"), text("Other statuses", "Autres statuts")],
+                     total_rows, table_id="initial-capture-totals")
+        + '</section>')
 
 
 def _report_document(manifest: dict, title: str, body: str, *,
@@ -815,7 +1115,7 @@ html.dark .desktop-comparison button:disabled { color: #c4cfdd; }
                 "</head>", f'<style id="desktop-comparison-theme">{styles}</style></head>').replace(
                 "<script>", '<script type="text/javascript">')
     return (opening + '<main class="desktop-comparison">'
-            + limitation + body + '</main>'
+            + limitation + _capture_scope_html(manifest) + body + '</main>'
             + html_close(timestamp=timestamp).replace(
                 "<script>", '<script type="text/javascript">'))
 
@@ -840,9 +1140,16 @@ def _capture_asset_url(image: str, run_dir: Path) -> str:
 
 
 def _capture_html(capture: dict, run_dir: Path, alt: str, *,
-                  collapse_note: bool = False) -> str:
+                  collapse_note: bool = False,
+                  powerbi_launch: dict | None = None) -> str:
     """Render only an accepted, existing screenshot, without changing evidence."""
     esc = html.escape
+    if powerbi_launch is not None and capture.get("status") == "captured":
+        gate = _powerbi_data_gate(powerbi_launch)
+        if gate["status"] != "verified" or powerbi_launch.get("status") != "captured":
+            capture = {**capture, "status": "error", "screenshot": None,
+                       "note": (gate["note"] if gate["status"] != "verified" else
+                                "Power BI initial document-window capture was not verified")}
     status = capture.get("status", "not_requested")
     image = capture.get("screenshot")
     if status == "captured" and image and Path(image).is_file():
@@ -903,12 +1210,17 @@ def render_comparison_html(manifest: dict, run_dir: Path) -> None:
     if manifest.get("all_pages"):
         _write_all_page_html(manifest, run_dir)
         return
+    capture_tableau = manifest.get("capture_tableau", True)
+    apps = (("Tableau", "tableau"), ("Power BI", "powerbi")) if capture_tableau else (
+        ("Power BI", "powerbi"),)
     sections = []
     for index, row in enumerate(manifest["workbooks"]):
         panels = []
-        for label, field in (("Tableau", "tableau"), ("Power BI", "powerbi")):
+        for label, field in apps:
             panels.append(f'<div><h3>{label}</h3>'
-                          + _capture_html(row[field], run_dir, text(f"{label} capture", f"Capture {label}"))
+                          + _capture_html(
+                              row[field], run_dir, text(f"{label} capture", f"Capture {label}"),
+                              powerbi_launch=row[field] if field == "powerbi" else None)
                           + '</div>')
         sections.append(
             f'<section><h2>{esc(row["relative_source"])}</h2>'
@@ -918,7 +1230,9 @@ def render_comparison_html(manifest: dict, run_dir: Path) -> None:
             + _pixel_html(row.get("pixel_comparison"), f"pixels-{index}")
             + '</section>')
     document = _report_document(
-        manifest, text(f'Desktop comparison: {manifest["status"]}', f'Comparaison Desktop : {manifest["status"]}'),
+        manifest, (text(f'Desktop comparison: {manifest["status"]}', f'Comparaison Desktop : {manifest["status"]}')
+                   if capture_tableau else
+                   text(f'Power BI captures: {manifest["status"]}', f'Captures Power BI : {manifest["status"]}')),
         '<p>' + _ui("No SSIM or parity score is assigned. Missing captures are failures, not equivalent reports. Only the initially opened sheet/page is captured.",
                      "Aucun score SSIM ni de parité n’est attribué. Les captures manquantes sont des échecs, pas des rapports équivalents. Seule la feuille/page ouverte initialement est capturée.") + '</p>'
         + "".join(sections) + _payload_details(manifest))
@@ -927,20 +1241,21 @@ def render_comparison_html(manifest: dict, run_dir: Path) -> None:
 
 def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
     esc = html.escape
+    capture_tableau = manifest.get("capture_tableau", True)
+    inventory_sides = (("source", "source_inventory"), ("target", "target_inventory")) if capture_tableau else (
+        ("target", "target_inventory"),)
+    apps = (("Tableau", "tableau"), ("Power BI", "powerbi")) if capture_tableau else (
+        ("Power BI", "powerbi"),)
 
-    def verified(page):
+    def verified(page, powerbi_launch=None):
         """Presentation only: never promote an opening or unverified capture."""
         if not page:
             return False
-        capture = page["capture"]
-        return bool(
-            capture.get("status") == "captured"
-            and capture.get("screenshot")
-            and Path(capture["screenshot"]).is_file()
-            and capture.get("screenshot_blank") is False
-            and all(isinstance(capture.get(key), dict)
-                    and capture[key].get("status") == "verified"
-                    for key in ("selection", "post_capture_selection")))
+        if powerbi_launch is not None and (
+                powerbi_launch.get("status") != "captured"
+                or _powerbi_data_gate(powerbi_launch)["status"] != "verified"):
+            return False
+        return _verified_page_capture(page["capture"])
 
     def document(title, body):
         limitation = (f'<p>{_pixel_limitation()}</p>'
@@ -952,7 +1267,7 @@ def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
                         "Diagnostic de toutes les pages. Les captures initiales au lancement sont exclues des totaux de pages et des comparaisons pixel par page. Aucun score SSIM, de parité des données ni de fidélité n’est attribué.") + '</p>'
             + limitation + '</details>', collapse_limitations=True)
 
-    def panel(label, page):
+    def panel(label, page, powerbi_launch=None):
         icon = "&#128202;" if label == "Tableau" else "&#128200;"
         if not page:
             return (f'<div class="chart-card"><h3><span class="dc-icon" aria-hidden="true">{icon}</span>'
@@ -962,22 +1277,23 @@ def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
                     f'<span>{_ui("Page not mapped.", "Page non associée.")}</span></div>'
                     f'<details><summary>{_ui("Mapping diagnostic", "Diagnostic de correspondance")}</summary>'
                     f'<p>{_ui("No verified page mapping.", "Aucune correspondance de page vérifiée.")}</p></details></div>')
-        identity_status = ("Page capture verified" if verified(page)
+        accepted = verified(page, powerbi_launch)
+        identity_status = ("Page capture verified" if accepted
                            else "Page capture missing or unverified")
-        identity = (badge(text("Verified capture", "Capture vérifiée"), "blue") if verified(page)
+        identity = (badge(text("Verified capture", "Capture vérifiée"), "blue") if accepted
                     else badge(text("Missing or unverified capture", "Capture absente ou non vérifiée"), "yellow"))
         return (f'<div class="chart-card"><h3><span class="dc-icon" aria-hidden="true">{icon}</span>'
                 f'{label}: {esc(page["name"])}</h3>'
                 + f'<p data-status="{identity_status}">{identity}</p>'
                 + _capture_html(page["capture"], run_dir, f'{label} {page["name"]}',
-                                collapse_note=True)
+                                collapse_note=True, powerbi_launch=powerbi_launch)
                 + f'<details><summary>{_ui("Page metadata", "Métadonnées de page")}</summary>'
                 f'<p>{_ui("Kind:", "Type :")} {esc(page["kind"])} ; {_ui("Hidden:", "Masquée :")} {page.get("hidden", False)} ; '
                 f'{_ui("Tooltip:", "Info-bulle :")} {page.get("tooltip", False)}</p></details>'
                 + '</div>')
 
     total_rows = []
-    for side in ("source", "target"):
+    for side, _ in inventory_sides:
         totals = manifest["totals"][side]
         label = "Tableau" if side == "source" else "Power BI"
         total_rows.append([label, str(totals["inventory"]),
@@ -985,26 +1301,33 @@ def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
     workbooks = manifest["workbooks"]
     initial_count = sum(
         (row.get(side) or {}).get("status") == "captured"
-        for row in workbooks for side in ("tableau", "powerbi"))
+        for row in workbooks for _, side in apps)
+    initial_expected = len(apps) * len(workbooks)
     source_totals = manifest["totals"]["source"]
     target_totals = manifest["totals"]["target"]
     page_count = source_totals["inventory"] + target_totals["inventory"]
     verified_count = sum(
-        verified(page) for row in workbooks
-        for inventory_key in ("source_inventory", "target_inventory")
+        verified(page, row.get("powerbi") if side == "target" else None) for row in workbooks
+        for side, inventory_key in inventory_sides
         for page in row.get(inventory_key, []))
     not_verified_count = max(0, page_count - verified_count)
     sections = [
         '<section class="dc-hero" aria-labelledby="comparison-intro">'
         '<div class="dc-eyebrow"><span class="dc-icon" aria-hidden="true">&#128269;</span>'
         + _ui("VISUAL REVIEW · CAPTURE EVIDENCE", "REVUE VISUELLE · PREUVES DE CAPTURE") + '</div>'
-        '<h2 id="comparison-intro">' + _ui("Compare screenshots clearly", "Comparez les captures, en toute clarté") + '</h2>'
-        '<p>' + _ui("Choose a report and a page: Tableau on the left, Power BI on the right.",
-                     "Choisissez un rapport et une page : Tableau à gauche, Power BI à droite.") + '</p>'
+        '<h2 id="comparison-intro">'
+        + (_ui("Compare screenshots clearly", "Comparez les captures, en toute clarté") if capture_tableau else
+           _ui("Review Power BI screenshots", "Consultez les captures Power BI")) + '</h2>'
+        '<p>' + (_ui("Choose a report and a page: Tableau on the left, Power BI on the right.",
+                     "Choisissez un rapport et une page : Tableau à gauche, Power BI à droite.") if capture_tableau else
+                 _ui("Choose a report and a Power BI page. Tableau capture and page mapping were not requested.",
+                     "Choisissez un rapport et une page Power BI. La capture Tableau et la correspondance des pages n’ont pas été demandées.")) + '</p>'
         '</section>'
         f'<section class="dc-stats" aria-label="Résumé des captures" {i18n_attrs(text("Capture summary", "Résumé des captures"), "aria-label")}>'
         f'<div class="dc-stat"><strong>{len(workbooks)}</strong><span>{_ui("Reports", "Rapports")}</span></div>'
-        f'<div class="dc-stat"><strong>{page_count}</strong><span>{_ui("Pages (both sides)", "Pages (deux côtés)")}</span></div>'
+        f'<div class="dc-stat"><strong>{page_count}</strong><span>'
+        + (_ui("Pages (both sides)", "Pages (deux côtés)") if capture_tableau else _ui("Power BI pages", "Pages Power BI"))
+        + '</span></div>'
         f'<div class="dc-stat"><strong>{verified_count}</strong><span>{_ui("Verified captures", "Captures vérifiées")}</span></div>'
         f'<div class="dc-stat"><strong>{not_verified_count}</strong><span>{_ui("Without verified capture", "Sans capture vérifiée")}</span></div>'
         '</section>'
@@ -1018,14 +1341,16 @@ def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
         '<p>' + _ui(f'{len(workbooks)} report(s) recorded; {initial_count} initial capture(s). Recorded status:',
                      f'{len(workbooks)} rapport(s) dans le relevé ; {initial_count} capture(s) initiale(s). État du relevé :')
         + f' <strong>{esc(manifest["status"])}</strong> ' + _ui("(capture status only).", "(état des captures uniquement).") + '</p>'
-        '<p>' + _ui(
+        '<p>' + (_ui(
             f'Page capture status: Tableau {source_totals["captured"]}/{source_totals["inventory"]} with status “captured”; Power BI {target_totals["captured"]}/{target_totals["inventory"]} with status “captured”. Initial captures are excluded from page totals.',
-            f'État de capture des pages : Tableau {source_totals["captured"]}/{source_totals["inventory"]} au statut « captured » ; Power BI {target_totals["captured"]}/{target_totals["inventory"]} au statut « captured ». Les captures initiales sont exclues des totaux de pages.') + '</p>'
+            f'État de capture des pages : Tableau {source_totals["captured"]}/{source_totals["inventory"]} au statut « captured » ; Power BI {target_totals["captured"]}/{target_totals["inventory"]} au statut « captured ». Les captures initiales sont exclues des totaux de pages.') if capture_tableau else
+                 _ui(f'Power BI page captures: {target_totals["captured"]}/{target_totals["inventory"]}. Tableau and page mapping were not requested. Initial captures are excluded from page totals.',
+                     f'Captures des pages Power BI : {target_totals["captured"]}/{target_totals["inventory"]}. Tableau et la correspondance des pages n’ont pas été demandés. Les captures initiales sont exclues des totaux de pages.')) + '</p>'
         + data_table([text("Inventory", "Inventaire"), "Pages", text("Status captured", "Statut captured"), text("Other statuses", "Autres statuts")],
                      total_rows, table_id="page-totals")
         + _payload_details(manifest["totals"], "Totaux techniques complets")
-        + '<p>' + _ui(f'{len(workbooks)} workbooks; {initial_count}/{2 * len(workbooks)} initial captures recorded.',
-                       f'{len(workbooks)} classeurs ; {initial_count}/{2 * len(workbooks)} captures initiales enregistrées.') + '</p></details>',
+        + '<p>' + _ui(f'{len(workbooks)} workbooks; {initial_count}/{initial_expected} initial captures recorded.',
+                       f'{len(workbooks)} classeurs ; {initial_count}/{initial_expected} captures initiales enregistrées.') + '</p></details>',
         f'<nav id="report-navigation" aria-label="Sélection du rapport" {i18n_attrs(text("Report selection", "Sélection du rapport"), "aria-label")} hidden>'
         f'<label for="report-selector">{_ui("Report:", "Rapport :")} </label>'
         f'<select id="report-selector" aria-label="Choisir un rapport" {i18n_attrs(text("Choose a report", "Choisir un rapport"), "aria-label")}>'
@@ -1044,7 +1369,9 @@ def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
         sources = {p["id"]: p for p in row.get("source_inventory", [])}
         targets = {p["id"]: p for p in row.get("target_inventory", [])}
         coverage = []
-        for label, inventory in (("Tableau", sources), ("Power BI", targets)):
+        inventories = (("Tableau", sources), ("Power BI", targets)) if capture_tableau else (
+            ("Power BI", targets),)
+        for label, inventory in inventories:
             captured = sum(p["capture"]["status"] == "captured"
                            for p in inventory.values())
             coverage.append(_ui(
@@ -1061,13 +1388,18 @@ def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
                 + _capture_html(row.get(field) or {}, run_dir,
                                 text(f'{label} initial opening capture — page identity unverified',
                                      f'{label} — capture initiale, identité de page non vérifiée'),
-                                collapse_note=True)
+                                collapse_note=True,
+                                powerbi_launch=row.get(field) if field == "powerbi" else None)
                 + '</div>'
-                for label, field in (("Tableau", "tableau"), ("Power BI", "powerbi")))
+                for label, field in apps)
             + '</div></details>')
         page_sections = []
         page_options = []
-        for mapping in row.get("page_mappings", []):
+        # Target-only entries drive the same page report renderer, but are not
+        # persisted or presented as source/target correspondence evidence.
+        page_entries = (row.get("page_mappings", []) if capture_tableau else
+                        [{"source_id": None, "target_id": target_id} for target_id in targets])
+        for mapping in page_entries:
             number += 1
             source = sources.get(mapping["source_id"])
             target = targets.get(mapping["target_id"])
@@ -1076,35 +1408,53 @@ def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
                          f'Preuves de capture — {name} | {row["relative_source"]}')
             page_id = f"page-{number:05d}"
             filename = f"{page_id}.html"
-            if (row["pair_status"] == "paired" and mapping["status"] == "mapped"
-                    and verified(source) and verified(target)):
-                status = "Screenshots ready for visual review"
-                visible_status = text("Screenshots ready for visual review", "Captures prêtes à comparer")
+            ready = (row["pair_status"] == "paired" and verified(target, row["powerbi"])
+                     and (not capture_tableau or (
+                         mapping["status"] == "mapped" and verified(source))))
+            if ready:
+                status = ("Screenshots ready for visual review" if capture_tableau else
+                          "Power BI capture ready for visual review")
+                visible_status = (text("Screenshots ready for visual review", "Captures prêtes à comparer")
+                                  if capture_tableau else
+                                  text("Power BI capture ready for review", "Capture Power BI prête pour la revue"))
                 detail = text("Verified captures; business validation still required.", "Captures vérifiées ; validation métier encore nécessaire.")
                 status_class = "dc-status dc-status-ready"
             else:
-                status = "Comparison incomplete"
-                visible_status = text("Comparison incomplete", "Comparaison incomplète")
-                detail = text("A mapping or verified capture is missing, without substitution.", "Une correspondance ou une capture vérifiée manque, sans substitution.")
+                status = "Comparison incomplete" if capture_tableau else "Power BI capture incomplete"
+                visible_status = (text("Comparison incomplete", "Comparaison incomplète") if capture_tableau else
+                                  text("Power BI capture incomplete", "Capture Power BI incomplète"))
+                detail = (text("A mapping or verified capture is missing, without substitution.", "Une correspondance ou une capture vérifiée manque, sans substitution.")
+                          if capture_tableau else
+                          text("A verified Power BI page capture is missing, without substitution.",
+                               "Une capture vérifiée de la page Power BI manque, sans substitution."))
                 status_class = "dc-status"
             body = (f'<p><span class="{status_class}" role="status" data-status="{status}">'
-                    f'<span aria-hidden="true">{"&#10003;" if status.startswith("Screenshots") else "&#9888;"}</span>'
+                    f'<span aria-hidden="true">{"&#10003;" if ready else "&#9888;"}</span>'
                     f'{render(visible_status, "fr")}</span> {render(detail, "fr")}</p>'
-                    f'<div class="chart-row">{panel("Tableau", source)}{panel("Power BI", target)}</div>')
+                    '<div class="chart-row">'
+                    + (panel("Tableau", source) if capture_tableau else "")
+                    + panel("Power BI", target, row["powerbi"]) + '</div>')
             if mapping.get("pixel_comparison") is not None:
                 body += (f'<details><summary>{_ui("Technical pixel diagnostics (non-semantic)", "Diagnostics techniques des pixels (non sémantiques)")}</summary>'
                          + _pixel_html(mapping["pixel_comparison"], f"page-pixels-{number}")
                          + '</details>')
-            body += (f'<details><summary>{_ui("Mapping details", "Détails de correspondance")}</summary>'
-                     f'<p>{render(visible_status, "fr")}; '
-                     + (_ui('business approval is still required.', 'la validation métier reste nécessaire.')
-                        if status_class.endswith("ready")
-                        else _ui('Opening captures are not used in its place.', 'Les captures initiales ne remplacent pas les captures manquantes.'))
-                     + '</p>'
-                     f'<p>{_ui("Mapping:", "Correspondance :")} {esc(mapping["status"])}; '
-                     f'{_ui("Candidate source IDs:", "Identifiants source candidats :")} {esc(", ".join(mapping["candidate_source_ids"]))}</p>'
-                     + _payload_details(mapping, "Full page correspondence evidence")
-                     + '</details>')
+            if capture_tableau:
+                body += (f'<details><summary>{_ui("Mapping details", "Détails de correspondance")}</summary>'
+                         f'<p>{render(visible_status, "fr")}; '
+                         + (_ui('business approval is still required.', 'la validation métier reste nécessaire.')
+                            if status_class.endswith("ready")
+                            else _ui('Opening captures are not used in its place.', 'Les captures initiales ne remplacent pas les captures manquantes.'))
+                         + '</p>'
+                         f'<p>{_ui("Mapping:", "Correspondance :")} {esc(mapping["status"])}; '
+                         f'{_ui("Candidate source IDs:", "Identifiants source candidats :")} {esc(", ".join(mapping["candidate_source_ids"]))}</p>'
+                         + _payload_details(mapping, "Full page correspondence evidence")
+                         + '</details>')
+            else:
+                body += ('<p>' + _ui("Power BI-only page evidence; Tableau correspondence was not requested. "
+                                    "Data checks refer to the initial launch refresh, not per-page semantic execution.",
+                                    "Preuves de page Power BI uniquement ; la correspondance Tableau n’a pas été demandée. "
+                                    "Les contrôles des données concernent l’actualisation initiale, pas une exécution sémantique par page.")
+                         + '</p>' + _payload_details(target or {}, "Full page evidence"))
             (run_dir / filename).write_text(
                 document(title, f'<p><a href="comparison.html#{page_id}">'
                          + _ui('Back to report and page navigation', 'Retour à la navigation des rapports et pages') + '</a></p>' + body),
@@ -1129,8 +1479,10 @@ def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
                 '<span data-page-position role="status" aria-live="polite"></span></nav>'
                 + ''.join(page_sections))
         else:
-            sections.append('<p>' + _ui("No page correspondences recorded: see diagnostics.", "Aucune correspondance de page : consultez les diagnostics.") + '</p>'
-                            '<span hidden>No page correspondences recorded.</span>')
+            sections.append('<p>' + (_ui("No page correspondences recorded: see diagnostics.", "Aucune correspondance de page : consultez les diagnostics.") if capture_tableau else
+                                    _ui("No Power BI pages inventoried: see diagnostics.", "Aucune page Power BI inventoriée : consultez les diagnostics.")) + '</p>'
+                            + ('<span hidden>No page correspondences recorded.</span>'
+                               if capture_tableau else ""))
         sections.append(f'<details><summary>{_ui("Technical diagnostics and inventories", "Diagnostics techniques et inventaires")}</summary>')
         sections.append(f'<p class="dc-coverage">{_ui("Capture coverage", "Couverture de capture")} — '
                         + '; '.join(coverage) + '.</p>')
@@ -1148,14 +1500,13 @@ def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
                     table_id=f'pixel-summary-{len(sections)}')
                 + f'<p>{esc(summary["note"])}</p>')
         # Complete inventory is displayed even when mapping is ambiguous.
-        for label, inventory in (("Tableau", sources), ("Power BI", targets)):
+        for label, inventory in inventories:
             sections.append(f'<h3>{label} — {_ui("Inventory", "Inventaire")}</h3><table><tr><th>Page</th>'
                             f'<th>{_ui("Kind", "Type")}</th><th>{_ui("Hidden/tooltip", "Masquée/info-bulle")}</th><th>Capture</th></tr>')
             for page in inventory.values():
                 result = page["capture"]
                 status = esc(result["status"])
-                if (result["status"] == "captured" and result.get("screenshot")
-                        and Path(result["screenshot"]).is_file()):
+                if verified(page, row["powerbi"] if label == "Power BI" else None):
                     url = _capture_asset_url(result["screenshot"], run_dir)
                     status = f'<a href="{url}">{status}</a>'
                 sections.append(f'<tr><td>{esc(page["name"])}</td><td>{esc(page["kind"])}</td>'
@@ -1229,12 +1580,13 @@ def _write_all_page_html(manifest: dict, run_dir: Path) -> None:
 })();
 </script>''')
     (run_dir / "comparison.html").write_text(
-        document(text('Visual screenshot comparison', 'Comparaison visuelle des captures'),
+        document(text('Visual screenshot comparison', 'Comparaison visuelle des captures') if capture_tableau else
+                 text('Power BI screenshot evidence', 'Preuves de capture Power BI'),
                  "".join(sections) + _payload_details(manifest)),
         encoding="utf-8")
 
 
-def _page_totals(rows: list[dict]) -> dict:
+def _page_totals(rows: list[dict], *, capture_tableau: bool = True) -> dict:
     totals = {}
     for label, key in (("source", "source_inventory"), ("target", "target_inventory")):
         pages = [p for row in rows for p in row.get(key, [])]
@@ -1243,11 +1595,13 @@ def _page_totals(rows: list[dict]) -> dict:
         for page in pages:
             status = page["capture"]["status"]
             statuses[status] = statuses.get(status, 0) + 1
-        totals[label] = {"inventory": len(pages), "captured": captured,
+        totals[label] = {"requested": capture_tableau if label == "source" else True,
+                         "inventory": len(pages), "captured": captured,
                          "error": len(pages) - captured, "statuses": statuses}
     mappings = [m for row in rows for m in row.get("page_mappings", [])]
     totals["mapping"] = {s: sum(m["status"] == s for m in mappings)
                          for s in ("mapped", "ambiguous", "unmatched_source", "unmatched_target")}
+    totals["mapping_requested"] = capture_tableau
     totals["inventory_errors"] = (sum("inventory failed:" in issue
                                       for row in rows for issue in row["issues"])
                                   + sum(bool(p.get("inventory_error")) for row in rows
@@ -1256,97 +1610,196 @@ def _page_totals(rows: list[dict]) -> dict:
     return totals
 
 
+def _initial_capture_totals(rows: list[dict], capture_tableau: bool) -> dict:
+    totals = {}
+    for label, field in (("source", "tableau"), ("target", "powerbi")):
+        requested = capture_tableau if label == "source" else True
+        captures = [row[field] for row in rows] if requested else []
+        statuses: dict[str, int] = {}
+        for capture in captures:
+            status = capture["status"]
+            statuses[status] = statuses.get(status, 0) + 1
+        captured = statuses.get("captured", 0)
+        totals[label] = {"requested": requested, "expected": len(captures),
+                         "captured": captured, "error": len(captures) - captured,
+                         "statuses": statuses}
+    return totals
+
+
+def _requested_capture_stages(capture_tableau: bool, all_pages: bool,
+                              screen_comparison: str) -> dict:
+    return {
+        "tableau": {"open": capture_tableau, "refresh": False, "data_checks": False,
+                    "capture": capture_tableau, "inventory": capture_tableau and all_pages,
+                    "selected_tabs": capture_tableau and all_pages},
+        "powerbi": {"open": True, "refresh": True, "data_checks": True,
+                    "capture": True, "inventory": all_pages, "selected_tabs": all_pages},
+        "page_mapping": capture_tableau and all_pages,
+        "local_pixel_comparison": screen_comparison == "local",
+        "cleanup": True,
+    }
+
+
+def _owned_probe_pids(probe) -> set[int]:
+    """Only the probes' ownership registry, never a process/window inventory."""
+    registry = getattr(probe, "_OPEN_PROBE_PROCESSES", {})
+    return {pid for pid in registry if type(pid) is int and pid > 0}
+
+
 def compare_desktop_reports(source_dir: str, output_root: str, *,
-                            tableau_desktop_path: str | None = None,
-                            powerbi_desktop_path: str | None = None,
                             timeout: float = 90, all_pages: bool = False,
                             page_timeout: float = 30,
-                            screen_comparison: str = "manual") -> dict:
-    """User-run batch diagnostic; captures both apps for every unambiguous pair.
+                            screen_comparison: str = "manual",
+                            tableau_desktop_path: str | None = None,
+                            powerbi_desktop_path: str | None = None,
+                            refresh_timeout: float = 300,
+                            capture_tableau: bool = True,
+                            workbook_pairs: list[dict] | None = None) -> dict:
+    """Explicit native Desktop diagnostic, shared by migration and standalone CLI.
 
     Fresh per-project screenshots/runs/<run_id>/{source,output}/<stem>.png,
     plus output_root/desktop_comparisons/<run_id>/{manifest.json,comparison.html}.
     Returns manifest with status 'captured' or 'failed', never a parity score.
+    By default pair_workbooks discovers pairs and both applications are captured.
+    workbook_pairs instead selects only the caller's successfully generated or
+    resumed current workbooks: absolute source/PBIP paths, pair_status='paired',
+    candidates=[pbip], issues=[], and a relative_source display label. Entries
+    are copied, checked for unique current file identities, and never expanded
+    using source/output discovery. The caller supplies generation eligibility;
+    file existence alone does not establish a successful migration.
+    capture_tableau=False requests only Power BI open/refresh/data checks/capture;
+    Tableau inventory, window operations and page mapping are not requested.
     screen_comparison='local' adds read-only decoded PNG diagnostics to each
     initial workbook pair, or each page_mappings entry when all_pages=True.
+    It is invalid without requested Tableau captures.
     Pixel differences/errors do not change capture status or process cleanup.
     Raises ValueError/OSError for invalid folders/options or report write failures.
     """
     if screen_comparison not in ("manual", "local"):
         raise ValueError("screen_comparison must be 'manual' or 'local'")
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("timeout must be a finite positive number")
-    if not math.isfinite(page_timeout) or page_timeout <= 0:
-        raise ValueError("page_timeout must be a finite positive number")
-    rows = pair_workbooks(source_dir, output_root)
-    if not rows:
-        raise ValueError("source directory contains no .twb/.twbx workbooks")
+    if not isinstance(capture_tableau, bool):
+        raise ValueError("capture_tableau must be a boolean")
+    if not capture_tableau and screen_comparison == "local":
+        raise ValueError("local pixel comparison requires Tableau and Power BI captures")
+    for name, value in (("timeout", timeout), ("page_timeout", page_timeout),
+                        ("refresh_timeout", refresh_timeout)):
+        _positive_timeout(value, name)
+    source = Path(source_dir).resolve()
     output = Path(output_root).absolute()
+    if not source.is_dir() or not output.is_dir():
+        raise ValueError("source directory and generated output root must be directories")
     _safe_destination(output)
     output = output.resolve()
+    rows = (pair_workbooks(source_dir, output_root) if workbook_pairs is None else
+            _explicit_workbook_pairs(workbook_pairs, source, output))
+    if not rows:
+        raise ValueError("source directory contains no .twb/.twbx workbooks")
+    identities = ([{key: _file_identity(row[key]) for key in ("source", "pbip")}
+                   for row in rows] if workbook_pairs is not None else [])
+    capture_fields = (("tableau", "source"), ("powerbi", "output")) if capture_tableau else (
+        ("powerbi", "output"),)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex
     run_dir = output / "desktop_comparisons" / run_id
     _safe_destination(run_dir)
     run_dir.mkdir(parents=True, exist_ok=False)
-    for row in rows:
+    for index, row in enumerate(rows):
         requested_initial = {}
         absent = {"status": "not_requested", "screenshot": None,
                   "note": "Capture not attempted because workbook pair is unresolved"}
         row["tableau"] = dict(absent)
         row["powerbi"] = dict(absent)
-        if row["pair_status"] == "paired":
-            try:
-                project = Path(row["pbip"]).parent
-                shots = project / "screenshots" / "runs" / run_id
-                _safe_destination(shots)
-                # New directory, not canonical paths that may contain stale evidence.
-                shots.mkdir(parents=True, exist_ok=False)
-                filename = Path(row["source"]).stem + ".png"
-            except Exception as exc:
-                row["issues"].append(f"Capture setup failed: {type(exc).__name__}: {exc}")
-                for field in ("tableau", "powerbi"):
-                    row[field] = {"status": "error", "screenshot": None,
-                                  "note": row["issues"][-1]}
-            else:
-                # Each application's directory, launch, and result conversion
-                # are independent. Even unexpected probe exceptions must not
-                # suppress the other capture or subsequent workbooks.
-                for field, subdir in (("tableau", "source"), ("powerbi", "output")):
-                    try:
-                        destination = shots / subdir
-                        _safe_destination(destination)
-                        destination.mkdir(exist_ok=False)
-                        shot = destination / filename
-                        requested_initial[field] = shot
-                        if field == "tableau":
-                            row[field] = probe_tableau_open(
-                                row["source"], screenshot_path=str(shot),
-                                desktop_path=tableau_desktop_path,
-                                timeout=timeout).to_dict()
-                        else:
-                            row[field] = _pbi_capture(
-                                row["pbip"], shot, timeout, powerbi_desktop_path)
-                    except Exception as exc:
-                        note = f"{field} capture failed: {type(exc).__name__}: {exc}"
-                        row["issues"].append(note)
-                        row[field] = {"status": "error", "screenshot": None,
-                                      "note": note}
+        row["capture_tableau"] = capture_tableau
+        row["status"] = "failed"
         if all_pages:
-            # Even unresolved workbook pairs get their source inventory; initial
-            # screenshots are launch evidence only and never count as page captures.
-            try:
-                page_shots = (Path(row["pbip"]).parent / "screenshots" / "runs" / run_id
-                              if row.get("pbip") else run_dir / "unpaired")
-                if screen_comparison == "local":
-                    _capture_all_pages(row, page_shots, page_timeout,
-                                       screen_comparison=screen_comparison)
+            row.update(source_inventory=[], target_inventory=[], page_mappings=[],
+                       inventory_requested={"source": capture_tableau, "target": True},
+                       page_mapping_status="not_run" if capture_tableau else "not_requested")
+        if not capture_tableau:
+            row["tableau"]["note"] = "Tableau capture not requested (Power BI-only diagnostic)"
+        inventory_allowed = True
+        try:
+            if row["pair_status"] == "paired":
+                try:
+                    if identities:
+                        for key in ("source", "pbip"):
+                            path = Path(row[key])
+                            if (path.resolve(strict=True) != path
+                                    or _file_identity(str(path)) != identities[index][key]):
+                                raise ValueError(f"Selected {key} file identity changed before capture")
+                    project = Path(row["pbip"]).parent
+                    shots = project / "screenshots" / "runs" / run_id
+                    _safe_destination(shots)
+                    # New directory, not canonical paths that may contain stale evidence.
+                    shots.mkdir(parents=True, exist_ok=False)
+                    filename = Path(row["source"]).stem + ".png"
+                except Exception as exc:
+                    inventory_allowed = False
+                    row["issues"].append(f"Capture setup failed: {type(exc).__name__}: {exc}")
+                    for field, _ in capture_fields:
+                        row[field].update(status="error", screenshot=None, note=row["issues"][-1])
                 else:
-                    _capture_all_pages(row, page_shots, page_timeout)
-            except Exception as exc:
-                row["issues"].append(f"All-page workflow failed: {type(exc).__name__}: {exc}")
-            finally:
-                _cleanup_comparison_processes(row)
-        else:
+                    # Separate attempts, including directory and result-conversion
+                    # failures. Snapshot only probe-owned registrations so even a
+                    # probe raising after launch can be cleaned up in finally.
+                    for field, subdir in capture_fields:
+                        probe = tableau_desktop_probe if field == "tableau" else desktop_probe
+                        previously_owned = _owned_probe_pids(probe)
+                        row[field]["owned_probe_pids"] = []
+                        try:
+                            destination = shots / subdir
+                            _safe_destination(destination)
+                            destination.mkdir(exist_ok=False)
+                            shot = destination / filename
+                            requested_initial[field] = shot
+                            if field == "tableau":
+                                report = probe_tableau_open(
+                                    row["source"], screenshot_path=str(shot),
+                                    desktop_path=tableau_desktop_path, timeout=timeout)
+                                row[field]["pid"] = getattr(report, "pid", None)
+                                row[field].update(report.to_dict())
+                            else:
+                                refresh_options = ({"refresh_timeout": refresh_timeout}
+                                                   if refresh_timeout != 300 else {})
+                                row[field].update(_pbi_capture(
+                                    row["pbip"], shot, timeout, powerbi_desktop_path,
+                                    **refresh_options))
+                                if row[field].get("status") == "captured":
+                                    gate = _powerbi_data_gate(row[field])
+                                    if gate["status"] != "verified":
+                                        row[field].setdefault(
+                                            "probe_screenshot", row[field].get("screenshot"))
+                                        row[field].update(status="error", screenshot=None,
+                                                          capture_gate=gate, note=gate["note"])
+                        except Exception as exc:
+                            note = f"{field} capture failed: {type(exc).__name__}: {exc}"
+                            row["issues"].append(note)
+                            row[field].update(status="error", screenshot=None, note=note)
+                        finally:
+                            owned = _owned_probe_pids(probe) - previously_owned
+                            pid = row[field].get("pid")
+                            if type(pid) is int and pid > 0 and pid not in previously_owned:
+                                # The closer still independently checks probe ownership.
+                                owned.add(pid)
+                            row[field]["owned_probe_pids"] = sorted(owned)
+                            if type(pid) is int and pid in previously_owned:
+                                row[field].update(
+                                    status="error", screenshot=None,
+                                    note="Probe returned a pre-existing owned PID; capture rejected")
+            if all_pages and inventory_allowed:
+                # Initial screenshots never substitute for verified page captures.
+                try:
+                    page_shots = (Path(row["pbip"]).parent / "screenshots" / "runs" / run_id
+                                  if row.get("pbip") else run_dir / "unpaired")
+                    page_options = {}
+                    if screen_comparison == "local":
+                        page_options["screen_comparison"] = screen_comparison
+                    if not capture_tableau:
+                        page_options["capture_tableau"] = False
+                    _capture_all_pages(row, page_shots, page_timeout, **page_options)
+                except Exception as exc:
+                    row["status"] = "failed"
+                    row["issues"].append(f"All-page workflow failed: {type(exc).__name__}: {exc}")
+        finally:
             _cleanup_comparison_processes(row)
         if screen_comparison == "local":
             if all_pages:
@@ -1374,22 +1827,29 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                     row["tableau"], row["powerbi"],
                     requested_initial.get("tableau"), requested_initial.get("powerbi"))
         row["status"] = ("manual_review" if row["pair_status"] == "paired"
-                         and row["tableau"]["status"] == "captured"
-                         and row["powerbi"]["status"] == "captured"
+                         and all(row[field]["status"] == "captured" for field, _ in capture_fields)
                          and (not all_pages or row.get("status") == "manual_review")
                          and not row["issues"] else "failed")
     manifest = {
         "schema_version": 3 if all_pages else 2, "run_id": run_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_dir": str(Path(source_dir).resolve()), "output_root": str(output),
+        "source_dir": str(source), "output_root": str(output),
         "run_dir": str(run_dir), "limitation": CAPTURE_LIMITATION,
+        "capture_mode": "paired" if capture_tableau else "powerbi_only",
+        "capture_tableau": capture_tableau,
+        "pairing_mode": "pair_workbooks" if workbook_pairs is None else "explicit",
+        "timeout": timeout, "refresh_timeout": refresh_timeout,
+        "requested_stages": _requested_capture_stages(
+            capture_tableau, all_pages, screen_comparison),
+        "initial_capture_totals": _initial_capture_totals(rows, capture_tableau),
         "parity_score": None,
         "status": "captured" if all(r["status"] == "manual_review" for r in rows) else "failed",
         "workbooks": rows,
     }
     if all_pages:
         manifest.update(all_pages=True, page_timeout=page_timeout,
-                        initial_captures_counted=False, totals=_page_totals(rows))
+                        initial_captures_counted=False,
+                        totals=_page_totals(rows, capture_tableau=capture_tableau))
     if screen_comparison == "local":
         manifest.update(screen_comparison="local",
                         screen_comparison_limitations=PIXEL_LIMITATION)

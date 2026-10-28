@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Explicit optional Desktop diagnostic. Never invoked by migration."""
+"""Standalone Desktop diagnostic using the migration-shared capture engine."""
 
 from __future__ import annotations
 
@@ -7,11 +7,16 @@ import argparse
 import math
 import sys
 from pathlib import Path
+from typing import TypedDict
 
 # Support direct execution from any working directory, without installation.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from powerbi_import.desktop_comparison import compare_desktop_reports
+
+
+class _ComparisonOptions(TypedDict, total=False):
+    screen_comparison: str
 
 
 def _directory(value: str) -> str:
@@ -37,8 +42,8 @@ def main(argv=None) -> int:
                     "save fresh full-window captures and manual-review JSON/HTML. "
                     "Requires an interactive Windows session and installed apps. "
                     "Power BI refreshes/verifies data; Tableau is not refreshed. "
-                    "Comparison-launched processes close after captures; no automatic "
-                    "migration hook.")
+                    "Comparison-launched processes close after captures. "
+                    "This standalone script does not run migration.")
     parser.add_argument("source_dir", type=_directory,
                         help="Tableau source folder, recursively containing .twb/.twbx")
     parser.add_argument("output_root", type=_directory,
@@ -59,8 +64,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         # Preserve the existing default call contract for API wrappers.
-        comparison_options = ({"screen_comparison": "local"}
-                              if args.screen_comparison == "local" else {})
+        comparison_options: _ComparisonOptions = (
+            {"screen_comparison": "local"} if args.screen_comparison == "local" else {})
         manifest = compare_desktop_reports(
             args.source_dir, args.output_root, timeout=args.timeout,
             tableau_desktop_path=args.tableau_desktop_path,

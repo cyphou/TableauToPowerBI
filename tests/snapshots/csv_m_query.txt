@@ -6,7 +6,40 @@ let
         Encoding=65001,
         QuoteStyle=QuoteStyle.None
     ]),
-    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+    #"Promoted Headers" = let
+        Expected = {"id", "name", "value"},
+        BlankExpectedNames = List.Select(Expected, each Text.Trim(_) = ""),
+        DuplicateExpectedNames = List.Select(List.Distinct(Expected, Comparer.Ordinal),
+            (name) => List.Count(List.Select(Expected, (other) => Comparer.Ordinal(name, other) = 0)) > 1),
+        Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+        Headers = Table.ColumnNames(Promoted),
+        Exact = List.Select(Expected, (name) => List.Contains(Headers, name, Comparer.Ordinal)),
+        Available = List.Select(Headers, (name) => not List.Contains(Exact, name, Comparer.Ordinal)),
+        Missing = List.Select(Expected, (name) => not List.Contains(Exact, name, Comparer.Ordinal)),
+        Matches = List.Transform(Missing, (name) => [
+            ExpectedName = name,
+            Candidates = List.Select(Available, (header) => Comparer.Ordinal(Text.Trim(header), name) = 0)
+        ]),
+        MissingExpectedNames = List.Transform(
+            List.Select(Matches, each List.Count([Candidates]) = 0), each [ExpectedName]),
+        AmbiguousExpectedNames = List.Transform(
+            List.Select(Matches, each List.Count([Candidates]) > 1), each [ExpectedName]),
+        Renames = List.Transform(Matches, each {[Candidates]{0}, [ExpectedName]}),
+        RenameSources = List.Transform(Renames, each _{0})
+    in
+        if not List.IsEmpty(BlankExpectedNames) or not List.IsEmpty(DuplicateExpectedNames) then
+            error Error.Record("HeaderSchema.Error",
+                "Declared source column names must be nonblank and unique.",
+                [BlankExpectedNames = BlankExpectedNames, DuplicateExpectedNames = DuplicateExpectedNames])
+        else if not List.IsEmpty(MissingExpectedNames) or not List.IsEmpty(AmbiguousExpectedNames) then
+            error Error.Record("HeaderMatch.Error",
+                "Source headers must uniquely match the declared source column names.",
+                [MissingExpectedNames = MissingExpectedNames, AmbiguousExpectedNames = AmbiguousExpectedNames])
+        else if List.Count(List.Distinct(RenameSources, Comparer.Ordinal)) <> List.Count(Renames) then
+            error Error.Record("HeaderMatch.Error",
+                "Source header matches must be one-to-one.",
+                [ExpectedNames = Missing])
+        else Table.RenameColumns(Promoted, Renames),
     #"Changed Types" = Table.TransformColumnTypes(#"Promoted Headers", {
         {"id", Int64.Type},
         {"name", type text},

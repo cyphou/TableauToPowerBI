@@ -172,13 +172,22 @@ class TestBusinessComparisonReport(AllPagesFixture):
             mappings.append({
                 "source_id": sources[-1]["id"], "target_id": targets[-1]["id"],
                 "status": "mapped", "candidate_source_ids": []})
+        data_load = {
+            "status": "verified", "tables_checked": 1, "tables_nonempty": 1,
+            "tables_empty": 0, "tables_failed": 0, "total_rows": 5,
+        }
+        powerbi = dict(
+            self.capture(f"{name}-initial-powerbi.png"),
+            screenshot_data_verified=True, data_load=data_load,
+            refresh={"status": "verified", "clicks": 1,
+                     "data_load": copy.deepcopy(data_load)})
         return {
             "relative_source": name, "pair_status": "paired",
             "status": "manual_review", "issues": [],
             "source_inventory": sources, "target_inventory": targets,
             "page_mappings": mappings,
             "tableau": self.capture(f"{name}-initial-tableau.png"),
-            "powerbi": self.capture(f"{name}-initial-powerbi.png"),
+            "powerbi": powerbi,
         }
 
     def render(self):
@@ -468,6 +477,70 @@ class TestBusinessComparisonReport(AllPagesFixture):
         self.assertEqual(json.loads((self.run_dir / "manifest.json").read_text("utf-8")),
                          before)
 
+    def test_missing_refresh_proof_cannot_reappear_through_cached_gallery_assets(self):
+        original = copy.deepcopy(self.manifest)
+        for missing in ("refresh", "data_load", "screenshot_data_verified",
+                        "late_refresh_error"):
+            with self.subTest(missing=missing):
+                self.manifest = copy.deepcopy(original)
+                tree = self.render()
+                row = self.manifest["workbooks"][0]
+                report = next(tree.nodes(attribute="data-comparison-report"))
+                opening, = report.nodes("details", "data-opening-captures")
+                self.assertEqual(len(list(opening.nodes("img"))), 2)
+                for page in report.nodes(attribute="data-comparison-page"):
+                    self.assertEqual(len(list(page.nodes("img"))), 2)
+                captures = [row["powerbi"]] + [
+                    page["capture"] for page in row["target_inventory"]]
+                cached = {}
+                for capture in captures:
+                    payload = Path(capture["screenshot"]).read_bytes()
+                    url = f"assets/{hashlib.sha256(payload).hexdigest()}.png"
+                    self.assertEqual((self.run_dir / url).read_bytes(), payload)
+                    cached[url] = payload
+
+                if missing == "late_refresh_error":
+                    row["powerbi"]["refresh"]["status"] = "refresh_error"
+                else:
+                    del row["powerbi"][missing]
+                before = copy.deepcopy(self.manifest)
+                tree = self.render()
+                report = next(tree.nodes(attribute="data-comparison-report"))
+                opening, = report.nodes("details", "data-opening-captures")
+                pages = list(report.nodes(attribute="data-comparison-page"))
+                individuals = [
+                    self.read_html(f"page-{index:05d}.html")
+                    for index in range(1, len(pages) + 1)]
+                for scope in (opening, *pages, *individuals):
+                    images = list(scope.nodes("img"))
+                    self.assertEqual(len(images), 1)
+                    self.assertTrue(images[0].attrs["alt"].startswith("Tableau "))
+                    blocked, = scope.nodes(attribute="data-capture-status")
+                    self.assertEqual(blocked.attrs["data-capture-status"], "error")
+                    self.assertIn("Power BI capture gate failed", scope.text())
+                for page in (*pages, *individuals):
+                    self.assert_localized_ui(
+                        page, "Comparison incomplete", "Comparaison incomplète")
+                    self.assertFalse(any(
+                        node.attrs.get("data-i18n-en") == "Screenshots ready for visual review"
+                        for node in page.nodes(attribute="data-i18n-en")))
+                # The inventory/gallery must not offer links to the same rejected
+                # PNGs, even though their byte-identical cached assets still exist.
+                for scope in (report, *individuals):
+                    self.assertTrue(cached.keys().isdisjoint(
+                        image.attrs["src"] for image in scope.nodes("img")))
+                    self.assertTrue(cached.keys().isdisjoint(
+                        link.attrs.get("href") for link in scope.nodes("a")))
+                for url, payload in cached.items():
+                    self.assertEqual((self.run_dir / url).read_bytes(), payload)
+                for capture in captures:
+                    self.assertTrue(Path(capture["screenshot"]).is_file())
+                    self.assertEqual(capture["status"], "captured")
+                self.assertEqual(self.manifest, before)
+                self.assertEqual(
+                    json.loads((self.run_dir / "manifest.json").read_text("utf-8")),
+                    before)
+
     def test_opening_visibility_does_not_promote_launches_into_page_totals(self):
         row = self.manifest["workbooks"][0]
         for inventory in ("source_inventory", "target_inventory"):
@@ -673,10 +746,15 @@ class TestLocalAllPagePixels(AllPagesFixture):
             source, status="captured", screenshot=screenshot_path,
             screenshot_blank=False, pid=111)
 
-    def powerbi_launch(self, pbip, shot, timeout, desktop_path):
+    def powerbi_launch(self, pbip, shot, timeout, desktop_path, *, refresh_timeout=300):
         shot.write_bytes(b"another invalid launch image")
         return {"status": "captured", "screenshot": str(shot),
-                "screenshot_blank": False, "pid": 222, "note": ""}
+                "screenshot_blank": False, "pid": 222, "note": "",
+                "screenshot_data_verified": True,
+                "data_load": {"status": "verified", "tables_checked": 1,
+                              "tables_nonempty": 1, "tables_empty": 0,
+                              "tables_failed": 0, "total_rows": 5},
+                "refresh": {"status": "verified"}}
 
     @staticmethod
     def windows(pid):
@@ -792,13 +870,32 @@ class TestLocalAllPagePixels(AllPagesFixture):
         with mock.patch.object(comparison, "compare_png_files") as decode:
             manifest = self.run_comparison(screen_comparison="local")
             decode.assert_not_called()
-        self.assertEqual(manifest["status"], "captured")
+        self.assertEqual(manifest["status"], "failed")
         row, = manifest["workbooks"]
+        self.assertEqual(row["status"], "failed")
+        for field in ("tableau", "powerbi"):
+            self.assertEqual(row[field]["status"], "captured")
+        for side, inventory in (("source", "source_inventory"),
+                                ("target", "target_inventory")):
+            self.assertEqual(manifest["totals"][side]["captured"], 0)
+            self.assertEqual(manifest["totals"][side]["error"], 3)
+            for page in row[inventory]:
+                capture = page["capture"]
+                self.assertEqual(capture["status"], "error")
+                self.assertEqual(capture["probe_status"], "captured")
+                self.assertIsNone(capture["screenshot"])
+                self.assertTrue(Path(capture["probe_screenshot"]).is_file())
+                self.assertEqual(capture["selection"], {"status": "verified"})
+                self.assertIsNone(capture["post_capture_selection"])
+                self.assertIn("Page capture gate failed", capture["note"])
+                self.assertIn("before and after capture", capture["note"])
+                if side == "target":
+                    self.assertEqual(capture["powerbi_launch_gate"]["status"], "verified")
         self.assertEqual(row["page_pixel_comparison_summary"]["status"], "not_comparable")
         self.assertEqual(row["page_pixel_comparison_summary"]["counts"],
                          {"compared": 0, "not_comparable": 3, "error": 0})
         for mapping in row["page_mappings"]:
-            self.assertEqual(mapping["pixel_comparison"]["reason_code"], "capture_unverified")
+            self.assertEqual(mapping["pixel_comparison"]["reason_code"], "capture_unavailable")
             self.assertIsNone(mapping["pixel_comparison"]["metrics"])
 
     def test_unmatched_pages_are_not_compared_despite_successful_captures(self):
@@ -1010,8 +1107,10 @@ class TestAllPagesWorkflow(AllPagesFixture):
             screenshot_blank=False, pid=111, window_title="Sales - Tableau"))
         self.powerbi = mock.Mock(return_value={
             "status": "captured", "screenshot": str(self.powerbi_initial),
-            "screenshot_blank": False, "pid": 222,
-            "data_load": {"status": "verified"},
+            "screenshot_blank": False, "screenshot_data_verified": True, "pid": 222,
+            "data_load": {"status": "verified", "tables_checked": 1,
+                          "tables_nonempty": 1, "tables_empty": 0,
+                          "tables_failed": 0, "total_rows": 5},
             "refresh": {"status": "verified"},
             "window_title": "Sales - Power BI Desktop", "note": ""})
         self.events = []
@@ -1175,7 +1274,10 @@ class TestAllPagesWorkflow(AllPagesFixture):
             paths.append(path)
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_bytes(f"mock image {pid} {name}".encode())
-            return {"status": "captured", "screenshot": path, "note": "verified"}
+            return {"status": "captured", "screenshot": path, "note": "verified",
+                    "screenshot_blank": False,
+                    "selection": {"status": "verified"},
+                    "post_capture_selection": {"status": "verified"}}
 
         with mock.patch.object(comparison, "capture_document_tab", side_effect=capture) as tabs:
             manifest = self.run_comparison(all_pages=True, page_timeout=6)
@@ -1224,7 +1326,10 @@ class TestAllPagesWorkflow(AllPagesFixture):
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
                 Path(path).write_bytes(b"nonblank mocked image")
                 screenshot = path
-            return {"status": status, "screenshot": screenshot, "note": status}
+            return {"status": status, "screenshot": screenshot, "note": status,
+                    "screenshot_blank": False if status == "captured" else None,
+                    "selection": {"status": "verified"},
+                    "post_capture_selection": {"status": "verified"}}
 
         with mock.patch.object(comparison, "capture_document_tab", side_effect=capture) as tabs:
             manifest = self.run_comparison(all_pages=True)
@@ -1254,7 +1359,10 @@ class TestAllPagesWorkflow(AllPagesFixture):
             self.assertEqual(pid, 222)
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_bytes(b"target capture")
-            return {"status": "captured", "screenshot": path, "note": ""}
+            return {"status": "captured", "screenshot": path, "note": "",
+                    "screenshot_blank": False,
+                    "selection": {"status": "verified"},
+                    "post_capture_selection": {"status": "verified"}}
 
         def windows(pid):
             return [] if pid == 111 else self.window_for_pid(pid)
@@ -1304,7 +1412,10 @@ class TestAllPagesWorkflow(AllPagesFixture):
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
                 Path(path).write_bytes(b"mock image")
                 screenshot = path
-            return {"status": status, "screenshot": screenshot, "note": status}
+            return {"status": status, "screenshot": screenshot, "note": status,
+                    "screenshot_blank": False if status == "captured" else None,
+                    "selection": {"status": "verified"},
+                    "post_capture_selection": {"status": "verified"}}
 
         with mock.patch.object(comparison, "capture_document_tab", side_effect=capture):
             manifest = self.run_comparison(all_pages=True)

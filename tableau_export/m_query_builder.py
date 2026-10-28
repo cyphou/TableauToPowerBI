@@ -122,6 +122,13 @@ def _m_literal(value):
     return '"' + _m_escape_string(str(value)) + '"'
 
 
+def _m_header_literal(name):
+    """Quote an exact source header without interpreting M escape sequences."""
+    escaped = _m_escape_col_name(name).replace('#(', '#(#)(')
+    escaped = escaped.replace('\r', '#(cr)').replace('\n', '#(lf)').replace('\t', '#(tab)')
+    return '"' + escaped + '"'
+
+
 def _m_field_ref(name):
     """Return a quoted M field reference for arbitrary Tableau metadata."""
     if name.startswith('[') and name.endswith(']'):
@@ -147,9 +154,60 @@ def _build_type_changes(columns):
     entries = []
     for col in columns:
         m_type = map_tableau_to_m_type(col['datatype'])
-        col_name = _m_escape_col_name(col['name'])
-        entries.append('{"' + col_name + '", ' + m_type + '}')
+        col_name = _m_header_literal(col['name'])
+        entries.append('{' + col_name + ', ' + m_type + '}')
     return entries
+
+
+def _promote_headers_with_schema(table_ref, columns):
+    """Promote headers and reconcile only missing declared source names.
+
+    Exact ordinal matches reserve their raw headers, including intentional
+    whitespace. Only otherwise-unclaimed headers may match an unchanged
+    expected name through M's default Unicode-aware Text.Trim. Ambiguous or
+    missing matches fail at refresh without disclosing row or endpoint values.
+    No schema means ordinary promotion, with no inferred renames.
+    """
+    promotion = f'Table.PromoteHeaders({table_ref}, [PromoteAllScalars=true])'
+    if not columns:
+        return promotion
+    if any(not isinstance(col.get('name'), str) for col in columns):
+        raise ValueError("Declared source header names must be text.")
+    expected = ', '.join(_m_header_literal(col['name']) for col in columns)
+    return f'''let
+        Expected = {{{expected}}},
+        BlankExpectedNames = List.Select(Expected, each Text.Trim(_) = ""),
+        DuplicateExpectedNames = List.Select(List.Distinct(Expected, Comparer.Ordinal),
+            (name) => List.Count(List.Select(Expected, (other) => Comparer.Ordinal(name, other) = 0)) > 1),
+        Promoted = {promotion},
+        Headers = Table.ColumnNames(Promoted),
+        Exact = List.Select(Expected, (name) => List.Contains(Headers, name, Comparer.Ordinal)),
+        Available = List.Select(Headers, (name) => not List.Contains(Exact, name, Comparer.Ordinal)),
+        Missing = List.Select(Expected, (name) => not List.Contains(Exact, name, Comparer.Ordinal)),
+        Matches = List.Transform(Missing, (name) => [
+            ExpectedName = name,
+            Candidates = List.Select(Available, (header) => Comparer.Ordinal(Text.Trim(header), name) = 0)
+        ]),
+        MissingExpectedNames = List.Transform(
+            List.Select(Matches, each List.Count([Candidates]) = 0), each [ExpectedName]),
+        AmbiguousExpectedNames = List.Transform(
+            List.Select(Matches, each List.Count([Candidates]) > 1), each [ExpectedName]),
+        Renames = List.Transform(Matches, each {{[Candidates]{{0}}, [ExpectedName]}}),
+        RenameSources = List.Transform(Renames, each _{{0}})
+    in
+        if not List.IsEmpty(BlankExpectedNames) or not List.IsEmpty(DuplicateExpectedNames) then
+            error Error.Record("HeaderSchema.Error",
+                "Declared source column names must be nonblank and unique.",
+                [BlankExpectedNames = BlankExpectedNames, DuplicateExpectedNames = DuplicateExpectedNames])
+        else if not List.IsEmpty(MissingExpectedNames) or not List.IsEmpty(AmbiguousExpectedNames) then
+            error Error.Record("HeaderMatch.Error",
+                "Source headers must uniquely match the declared source column names.",
+                [MissingExpectedNames = MissingExpectedNames, AmbiguousExpectedNames = AmbiguousExpectedNames])
+        else if List.Count(List.Distinct(RenameSources, Comparer.Ordinal)) <> List.Count(Renames) then
+            error Error.Record("HeaderMatch.Error",
+                "Source header matches must be one-to-one.",
+                [ExpectedNames = Missing])
+        else Table.RenameColumns(Promoted, Renames)'''
 
 
 def _append_type_step(m_query, columns, prev_step='#"Promoted Headers"'):
@@ -300,7 +358,7 @@ def _gen_m_excel(details, table_name, columns, *, use_original_file_paths=False)
     m_query += f'    // Source Excel: {label}\n'
     m_query += f'    Source = Excel.Workbook({contents}, null, true),\n'
     m_query += f'    {safe_step} = Source{{[Item="{sheet_name}",Kind="Sheet"]}}[Data],\n'
-    m_query += f'    #"Promoted Headers" = Table.PromoteHeaders({safe_step}, [PromoteAllScalars=true]),\n'
+    m_query += f'    #"Promoted Headers" = {_promote_headers_with_schema(safe_step, columns)},\n'
     return _append_type_step(m_query, columns)
 
 
@@ -378,17 +436,15 @@ def _gen_m_csv(details, table_name, columns, *, use_original_file_paths=False):
 {columns_option}        Encoding={encoding_code},
         QuoteStyle=QuoteStyle.None
     ]),
-    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+    #"Promoted Headers" = {_promote_headers_with_schema("Source", columns)},
 '''
     if columns:
         prev_step = '#"Promoted Headers"'
         if use_original_file_paths:
-            # Select raw headers before captions can collide with unmodeled fields.
-            step_name, step_expr = m_transform_select_columns(
-                [col['name'] for col in columns])
-            step_expr = step_expr.replace('{prev}', prev_step, 1)
-            m_query += f'    {step_name} = {step_expr},\n'
-            prev_step = step_name
+            # Reconcile headers before selection; captions are still applied later.
+            names = ', '.join(_m_header_literal(col['name']) for col in columns)
+            m_query += f'    #"Selected Columns" = Table.SelectColumns({prev_step}, {{{names}}}),\n'
+            prev_step = '#"Selected Columns"'
         return _append_type_step(m_query, columns, prev_step=prev_step)
     else:
         m_query += '    Result = #"Promoted Headers"\nin\n    Result'
@@ -635,7 +691,7 @@ def _gen_m_google_sheets(details, table_name, columns):
     m_query += f'    // Source Google Sheets: {spreadsheet_id}\n'
     m_query += f'    Source = Web.Contents("https://docs.google.com/spreadsheets/d/{spreadsheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"),\n'
     m_query += '    Parsed = Csv.Document(Source, [Delimiter=",", Encoding=65001]),\n'
-    m_query += '    #"Promoted Headers" = Table.PromoteHeaders(Parsed, [PromoteAllScalars=true]),\n'
+    m_query += f'    #"Promoted Headers" = {_promote_headers_with_schema("Parsed", columns)},\n'
     return _append_type_step(m_query, columns)
 
 
@@ -651,7 +707,7 @@ def _gen_m_sharepoint(details, table_name, columns):
     m_query += '    FileContent = FileRow{{0}}[Content],\n'
     m_query += '    Workbook = Excel.Workbook(FileContent, null, true),\n'
     m_query += f'    Sheet = Workbook{{[Item="{sheet_name}",Kind="Sheet"]}}[Data],\n'
-    m_query += '    #"Promoted Headers" = Table.PromoteHeaders(Sheet, [PromoteAllScalars=true]),\n'
+    m_query += f'    #"Promoted Headers" = {_promote_headers_with_schema("Sheet", columns)},\n'
     return _append_type_step(m_query, columns)
 
 
@@ -719,7 +775,7 @@ def _gen_m_pdf(details, table_name, columns, *, use_original_file_paths=False):
     else:
         m_query += f'    Source = Pdf.Tables({contents}),\n'
     m_query += f'    Table1 = Source{{{{{table_index}}}}}[Data],\n'
-    m_query += '    #"Promoted Headers" = Table.PromoteHeaders(Table1, [PromoteAllScalars=true]),\n'
+    m_query += f'    #"Promoted Headers" = {_promote_headers_with_schema("Table1", columns)},\n'
     return _append_type_step(m_query, columns)
 
 
@@ -849,7 +905,7 @@ def _gen_m_azure_blob(details, table_name, columns):
     m_query += f'    FileRow = Table.SelectRows(Source, each Text.Contains([Name], "{table_name}")),\n'
     m_query += '    FileContent = FileRow{{0}}[Content],\n'
     m_query += '    Parsed = Csv.Document(FileContent, [Delimiter=",", Encoding=65001]),\n'
-    m_query += '    #"Promoted Headers" = Table.PromoteHeaders(Parsed, [PromoteAllScalars=true]),\n'
+    m_query += f'    #"Promoted Headers" = {_promote_headers_with_schema("Parsed", columns)},\n'
     return _append_type_step(m_query, columns)
 
 

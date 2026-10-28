@@ -92,14 +92,89 @@ uploads no OneLake files.
 
 Running the deployed Data Pipeline is a separate operation via
 `FabricDeployer.run_fabric_pipeline()`. Do not treat local generation success as
-deployment or refresh success. Power BI Desktop is never opened automatically.
+deployment or refresh success. Native applications remain unopened unless
+desktop diagnostics are explicitly requested.
+
+## Migration and native diagnostics in one command
+
+Use the ordinary Python entry point for the whole local workflow. A source
+folder can contain one workbook or many; no second script is required:
+
+```powershell
+$py = ".\.venv\Scripts\python.exe"
+$src = "C:\Client\tableau_sources"
+$output = "C:\Client\migration_output"
+
+# Generation and static checks only; no native application.
+& $py migrate.py batch $src --output-dir $output
+
+# Generation, Power BI opening, verified refresh, then screenshots.
+& $py migrate.py batch $src --output-dir $output --screenshots
+
+# Generation, Tableau + Power BI opening, refresh verification and comparison.
+& $py migrate.py batch $src --output-dir $output --compare-desktop --all-pages `
+  --desktop-timeout 120 --refresh-timeout 300 --page-timeout 90
+
+# Optional local pixel metrics, not semantic or visual parity.
+& $py migrate.py batch $src --output-dir $output --compare-desktop `
+  --all-pages --screen-comparison local
+```
+
+`--screenshots` (also `--desktop-probe`) and `--compare-desktop` are mutually
+exclusive. Both require an interactive Windows session; Power BI must be
+installed, and paired comparison also requires Tableau. Set
+`--powerbi-desktop-path` and, for comparison, `--tableau-desktop-path` when
+automatic discovery is inappropriate. An invalid override is an error, not
+permission to use a different installation.
+
+The opted-in diagnostic runs sequentially after generation and targets only
+successful/resumed workbook outputs from that invocation. Stale output for a
+failed or unrelated workbook cannot satisfy it. Folder, manifest and
+batch-config generation share this contract; incompatible Fabric, shared-model
+and inspection-only requests are rejected. Standalone Prep exports do not
+provide PBIP reports. `--dry-run` never opens applications or writes captures.
+
+Power BI refresh must be independently verified before a capture is considered
+successful. A clear owned UI and complete table checks are required, plus
+either an observed refresh lifecycle or strict advancement of all expected
+M-partition refresh timestamps with ready, error-free partitions. Existing rows,
+process survival and a refresh click are not sufficient. Tableau is opened but
+not refreshed; Power BI may contact its configured sources. The workflow never
+accepts credential, trust or license dialogs and never deploys anything.
+
+By default, the diagnostic captures opening window states, not identified
+pages. Add `--all-pages` to attempt every inventoried page, requiring selected-tab
+checks before and after each screenshot. In Power BI-only mode, no Tableau
+inventory, launch or capture is requested. In comparison mode, missing or
+ambiguous page correspondence remains explicit. Hidden/inaccessible tabs are
+not forcibly exposed. `--screen-comparison local` is valid only for paired
+comparison and adds decoded PNG pixel differences, never a parity verdict.
+
+Opening, refresh and per-page deadlines default to 90, 300 and 30 seconds.
+`--desktop-timeout`, `--refresh-timeout` and `--page-timeout` accept finite
+positive seconds; larger page budgets can help complex reports but cannot make
+an inaccessible tab navigable. A run writes a fresh manifest and linked HTML
+under `desktop_comparisons\<run_id>` and PNGs under each selected project's
+`screenshots\runs\<run_id>`. The command prints those evidence paths.
+Requested diagnostic failure returns exit code `8`
+(`DESKTOP_DIAGNOSTIC_FAILED`) without deleting otherwise successfully generated
+projects; a migration failure retains its own nonzero exit status. Partial
+captures and unavailable refresh evidence stay failures, not substitute successes.
+
+Only applications launched by this run are closed after captures. Existing
+applications are not closed or reused without ownership evidence. The
+diagnostic does not save Desktop changes automatically; saving a local cache
+and proving persistence by reopening remain separate operations. It does not
+rewrite static quality results into native certification. Keep source data,
+captures and manifests outside the repository.
 
 ## Client-side opening validation
 
-Migration and Fabric deployment do not require Power BI Desktop. Use Desktop on
+Ordinary migration and Fabric deployment do not require Power BI Desktop. Use Desktop on
 a Windows validation runner when real opening evidence and screenshots are
-required. Configure the executable explicitly on client machines with a custom
-installation path:
+required. The one-command options above reuse the same probes. The standalone
+probe below remains useful for existing output without rerunning migration.
+Configure the executable explicitly on client machines with a custom installation path:
 
 ```powershell
 $py = ".\.venv\Scripts\python.exe"
@@ -116,8 +191,9 @@ $output = "C:\Client\migration_output"
 
 The probe presses **Home > Refresh > Schema and data** for each report and
 checks owned refresh completion separately from aggregate model rows.
-An observed successful refresh lifecycle and complete table checks are required
-for a *data verified* screenshot; rows alone are not sufficient, and a valid
+An observed successful refresh lifecycle, or strictly advanced M-partition
+timestamps with ready/error-free partitions, plus a clear owned UI and complete
+table checks are required for a *data verified* screenshot. Rows alone are not sufficient, and a valid
 empty table is not itself an error. For PBIP, Hyper data are exported to staged CSV/Parquet
 files and connected to Import partitions. Non-Hyper Import generates the native
 datasource connection, schema and M without row export. An Excel workbook
@@ -147,7 +223,8 @@ and is not evidence that the model contains rows.
 > workbook. A simple single-file load is not a generation mode; this screenshot
 > diagnostic also accepts folders, not a single workbook or `.pbip` argument.
 
-After batch generation, run the separate diagnostic
+For generation plus comparison, use `migrate.py batch ... --compare-desktop`.
+For already generated output, run the standalone diagnostic
 [`compare_desktop_reports.py`](../scripts/compare_desktop_reports.py) explicitly:
 
 ```powershell
@@ -188,7 +265,10 @@ The Tableau probe waits, up to `--timeout`, for transient owned progress windows
 whose title exactly matches English `Opening workbook '<name>'...`; it does not
 dismiss other dialogs. A non-progress owned dialog is captured separately as
 `<workbook-stem>-dialog.png` (`dialog_screenshot`) and leaves the Tableau result as
-`error`. Power BI refreshes and verifies data. After capture, the comparison
+`error`. Power BI refreshes and verifies data. In `--all-pages` reports a page is
+marked ready for visual review only when its Power BI launch also captured with
+a verified refresh and complete data checks; otherwise the page is reported as
+incomplete even when its screenshots exist. After capture, the comparison
 closes only application processes it launched, not unrelated or existing instances.
 Tableau forwarding to an existing
 instance is rejected conservatively when the document cannot be attributed to
@@ -205,10 +285,13 @@ All-page scope:
 - Correspondence uses exact names or explicit `lineage_map.json` page lineage
   beside the PBIP project. Duplicate or conflicting names remain ambiguous;
   unmatched views can be captured individually without being asserted equivalent.
-- `--timeout` controls initial opening (90 seconds by default).
+- `--timeout` controls initial opening in the standalone script (90 seconds by
+  default); the migration command calls this `--desktop-timeout`.
   `--page-timeout` bounds selection, capture, and selection verification per
   page (30 seconds by default). Selection is checked before and after capture.
-  Both timeouts must be finite and positive.
+  Timeouts must be finite and positive. The migration command also exposes
+  `--refresh-timeout` for Power BI's independent refresh deadline (300 seconds
+  by default).
 
 Each run creates fresh evidence:
 
@@ -312,18 +395,19 @@ exit code; inspect these diagnostics separately from capture completeness.
 The comparison step uses no AI endpoint or network access. Desktop applications
 are still needed for new captures: Tableau is not refreshed, while the Power BI
 probe requests refresh and data verification and may contact configured data
-sources. A captured screenshot alone does not prove successful refresh or
-loaded-data correctness.
+sources. A successful Power BI capture requires the independent refresh gate;
+an arbitrary image, opening status or existing rows alone cannot satisfy it.
+Capture success still does not establish semantic or visual parity.
 
-Exit code `0` means all requested captures are available for manual review, `1`
+For the standalone comparison script, exit code `0` means all requested captures are available for manual review, `1`
 means a pairing/capture failure or unavailable application, and `2` means invalid
 CLI arguments. In all-page mode, success also requires nonempty inventories,
 unambiguous correspondence for every entry, and successful captures of every
 inventoried view/page; it does not establish that every Tableau page was
 discoverable or navigable. Missing/blank captures and timeouts remain explicit
-in the report; older screenshots never satisfy a new run. Neither migration nor
-deployment invokes this diagnostic automatically. Keep source workbooks and
-evidence outside the repository.
+in the report; older screenshots never satisfy a new run. Migration invokes
+the diagnostic only with explicit desktop options; deployment never invokes
+it automatically. Keep source workbooks and evidence outside the repository.
 
 ### CI/CD Deployment (GitHub Actions)
 

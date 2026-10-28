@@ -2517,6 +2517,400 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
             self.assertNotIn("#table(", text)
 
 
+class TestPendingHyperCsvExtractionTypes(unittest.TestCase):
+    """Authoritative pending sources must type raw, not renamed, CSV headers."""
+
+    maxDiff = None
+    table = "RenamedSales"
+    filename = "hyper_" + "a" * 64 + ".csv"
+
+    def _fixture(self, root, headers, rows, physical_map, columns,
+                 model_columns, downstream):
+        identity = {
+            "workbook": os.path.join(root, "synthetic.twbx"),
+            "archive_member": "Data/physical.hyper",
+            "schema": "Extract",
+            "table": "PhysicalSales",
+        }
+        source = (
+            "\t\t\t\tlet\n\t\t\t\t\tSource = "
+            + _pending_hyper_error(self.table, identity) + ",\n"
+        )
+        project = _project(
+            root, {self.table: source + downstream},
+            identities={self.table: identity},
+        )
+        tables = os.path.join(
+            project, f"{NAME}.SemanticModel", "definition", "tables",
+        )
+        original_path = os.path.join(tables, self.table + ".tmdl")
+        with open(original_path, encoding="utf-8") as stream:
+            original = stream.read()
+
+        def quote(value):
+            return "'" + value.replace("'", "''") + "'"
+
+        declarations = "".join(
+            f"\tcolumn {quote(caption)}\n\t\tdataType: {datatype}\n"
+            f"\t\tsourceColumn: {quote(source_column)}\n\n"
+            for caption, source_column, datatype in model_columns
+        )
+        declaration = f"table {self.table}\n"
+        self.assertIn(declaration, original)
+        original = original.replace(declaration, declaration + declarations, 1)
+        _write(original_path, original)
+        # Neither the final table name nor this filename matches the extractor
+        # table name; the placeholder's physical identity is authoritative.
+        table_path = os.path.join(tables, "unrelated-artifact.tmdl")
+        os.replace(original_path, table_path)
+
+        data = os.path.join(project, "Data")
+        csv_buffer = io.StringIO(newline="")
+        writer = csv.writer(csv_buffer)
+        writer.writerow(headers)
+        writer.writerows(rows)
+        raw = csv_buffer.getvalue().encode("utf-8")
+        raw_path = _write(os.path.join(data, self.filename), raw)
+        proof = _full_export_record(
+            raw_path, identity, columns=headers, row_count=len(rows),
+        )
+        manifest_path = _write(
+            os.path.join(data, "hyper_exports.json"),
+            json.dumps({"version": 1, "authoritative": True, "exports": [proof]}),
+        )
+        # A foreign table deliberately has the final name and matching headers
+        # but conflicting types. It must not supply metadata for this identity.
+        foreign = {
+            "name": self.table,
+            "hyper_identity": dict(identity, table="ForeignPhysical"),
+            "cols_physical_map": dict(physical_map),
+            "columns": [dict(column, datatype="string") for column in columns],
+        }
+        extraction = {
+            "name": "OriginalTableauSales",
+            "source_table": "PhysicalSales",
+            "hyper_identity": identity,
+            "cols_physical_map": physical_map,
+            "columns": columns,
+        }
+        extract = os.path.join(root, "extract")
+        _write(
+            os.path.join(extract, "datasources.json"),
+            json.dumps([{"tables": [foreign, extraction]}]),
+        )
+        return {
+            "project": project, "data": data, "extract": extract,
+            "table_path": table_path, "original": original,
+            "identity": identity, "headers": headers, "rows": rows,
+            "raw_path": raw_path, "raw": raw, "proof": proof,
+            "manifest_path": manifest_path, "extraction": extraction,
+        }
+
+    def _orders_fixture(self, root, *, partial=False):
+        headers = ["raw_qty", "raw_amount", "raw_date", "raw_updated",
+                   "raw_flag", "Label"]
+        rows = [
+            ["2", "1234.5", "2026-10-15", "2026-10-15 09:30:00", "true", "open"],
+            ["7", "0.25", "2026-10-22", "2026-10-22 13:15:05", "false", "closed"],
+        ]
+        physical_map = {
+            "raw_qty": "Quantity", "raw_amount": "Amount",
+            "raw_date": "Order Date", "raw_updated": "Updated",
+            "raw_flag": "Logical Flag",
+        }
+        columns = [
+            {"name": "Quantity", "remote_name": "raw_qty", "datatype": "integer"},
+            {"name": "Amount", "remote_name": "raw_amount", "datatype": "real"},
+            {"name": "Order Date", "remote_name": "raw_date", "datatype": "date"},
+            {"name": "Updated", "remote_name": "raw_updated", "datatype": "datetime"},
+            {"name": "Logical Flag", "remote_name": "raw_flag", "datatype": "boolean"},
+            {"name": "Label", "remote_name": "Label", "datatype": "string"},
+            {"name": "Derived Year", "datatype": "integer"},
+            {"name": "Derived Date", "datatype": "date"},
+            {"name": "Derived Value", "datatype": "real"},
+        ]
+        if partial:
+            for column in columns:
+                if column["name"] in {"Quantity", "Amount", "Updated", "Logical Flag"}:
+                    column.pop("datatype")
+                    # The physical-to-logical map, not remote_name or the
+                    # display caption, is the remaining binding evidence.
+                    column.pop("remote_name")
+        model_columns = [
+            ("Quantity Caption", "Quantity", "int64"),
+            ("Amount Caption", "Amount", "double"),
+            # Tableau date must win over the model's dateTime fallback.
+            ("Date Caption", "Order Date", "dateTime"),
+            ("Updated Caption", "Updated", "dateTime"),
+            ("Flag Caption", "Logical Flag", "boolean"),
+            ("Visible Label", "Visible Label", "string"),
+            ("Derived Year", "Derived Year", "int64"),
+            ("Derived Date", "Derived Date", "dateTime"),
+            ("Derived Value", "Derived Value", "double"),
+        ]
+        downstream = (
+            '\t\t\t\t\t#"Renamed Hyper Columns" = Table.RenameColumns(Source, '
+            '{{"raw_qty", "Quantity"}, {"raw_amount", "Amount"}, '
+            '{"raw_date", "Order Date"}, {"raw_updated", "Updated"}, '
+            '{"raw_flag", "Logical Flag"}}),\n'
+            '\t\t\t\t\t#"Renamed Columns" = Table.RenameColumns(#"Renamed Hyper Columns", '
+            '{{"Label", "Visible Label"}}),\n'
+            '\t\t\t\t\t#"Added Year" = Table.AddColumn(#"Renamed Columns", '
+            '"Derived Year", each Date.Year([Order Date]), Int64.Type),\n'
+            '\t\t\t\t\t#"Added Date" = Table.AddColumn(#"Added Year", '
+            '"Derived Date", each Date.From([Updated]), type date),\n'
+            '\t\t\t\t\t#"Added Value" = Table.AddColumn(#"Added Date", '
+            '"Derived Value", each if [Logical Flag] then [Amount] / [Quantity] '
+            'else 0, type number),\n'
+            '\t\t\t\t\tResult = #"Added Value"\n'
+            '\t\t\t\tin\n\t\t\t\t\tResult'
+        )
+        return self._fixture(
+            root, headers, rows, physical_map, columns, model_columns, downstream,
+        )
+
+    def _source_line(self, content):
+        lines = [line for line in content.splitlines()
+                 if line.startswith("\t\t\t\t\tSource = ")]
+        self.assertEqual(len(lines), 1)
+        return lines[0]
+
+    def _bound_twice(self, fixture):
+        from powerbi_import.m_validator import validate_m_query
+
+        with mock.patch.object(
+                migrate, "_hyper_to_csv_files",
+                side_effect=AssertionError("verified manifest must not invoke a Hyper reader")):
+            migrate._convert_hyper_to_csv_in_data(
+                fixture["data"], NAME, fixture["project"],
+                extract_dir=fixture["extract"], quiet=True,
+            )
+            with open(fixture["table_path"], encoding="utf-8") as stream:
+                bound = stream.read()
+            self.assertNotIn("Migration.HyperExportRequired", bound)
+            source_line = self._source_line(bound)
+            original_line = self._source_line(fixture["original"])
+            self.assertEqual(
+                bound.replace(source_line, "<SOURCE>", 1),
+                fixture["original"].replace(original_line, "<SOURCE>", 1),
+                "Only the pending Source may change; preserve all later M steps",
+            )
+            expression = bound.split("\n\t\tsource =\n", 1)[1].split(
+                "\n\tannotation", 1,
+            )[0].strip()
+            self.assertEqual(validate_m_query(expression), [], expression)
+
+            with open(fixture["raw_path"], "rb") as stream:
+                self.assertEqual(stream.read(), fixture["raw"])
+            self.assertEqual(
+                _full_export_record(
+                    fixture["raw_path"], fixture["identity"],
+                    columns=fixture["headers"], row_count=len(fixture["rows"]),
+                ),
+                fixture["proof"],
+            )
+            with open(fixture["manifest_path"], "rb") as stream:
+                manifest_bytes = stream.read()
+            self.assertEqual(json.loads(manifest_bytes), {
+                "version": 1, "authoritative": True,
+                "exports": [dict(fixture["proof"], staged_files=[{
+                    "table": self.table, "csv_filename": self.filename,
+                }])],
+            })
+            with open(fixture["table_path"], "rb") as stream:
+                table_bytes = stream.read()
+            migrate._convert_hyper_to_csv_in_data(
+                fixture["data"], NAME, fixture["project"],
+                extract_dir=fixture["extract"], quiet=True,
+            )
+            for path, expected in (
+                (fixture["raw_path"], fixture["raw"]),
+                (fixture["manifest_path"], manifest_bytes),
+                (fixture["table_path"], table_bytes),
+            ):
+                with open(path, "rb") as stream:
+                    self.assertEqual(stream.read(), expected)
+        return bound
+
+    def _assert_source_types(self, bound, entries):
+        expected = (
+            '\t\t\t\t\tSource = Table.TransformColumnTypes('
+            'Table.PromoteHeaders(Csv.Document(File.Contents(DataFolder & "\\'
+            + self.filename + '"), [Delimiter=",", Encoding=65001, '
+            'QuoteStyle=QuoteStyle.Csv]), [PromoteAllScalars=true]), {'
+            + ", ".join(entries) + '}, "en-US"),'
+        )
+        self.assertEqual(
+            self._source_line(bound), expected,
+            "Type only the exact physical CSV headers before any M rename or calculation",
+        )
+
+    def test_pending_renamed_table_uses_identity_metadata_before_preserved_m_steps(self):
+        with tempfile.TemporaryDirectory() as root:
+            fixture = self._orders_fixture(root)
+            bound = self._bound_twice(fixture)
+            for step in (
+                '#"Renamed Hyper Columns" = Table.RenameColumns(Source,',
+                '#"Renamed Columns" = Table.RenameColumns(#"Renamed Hyper Columns",',
+                "Date.Year([Order Date])",
+                "Date.From([Updated])",
+                "if [Logical Flag] then [Amount] / [Quantity] else 0",
+            ):
+                self.assertIn(step, bound)
+            for derived in ("Derived Year", "Derived Date", "Derived Value"):
+                self.assertNotIn(derived, self._source_line(bound))
+            self._assert_source_types(bound, [
+                '{"raw_qty", Int64.Type}', '{"raw_amount", type number}',
+                '{"raw_date", type date}', '{"raw_updated", type datetime}',
+                '{"raw_flag", type logical}', '{"Label", type text}',
+            ])
+
+    def test_pending_partial_types_fall_back_via_physical_to_logical_source_column(self):
+        with tempfile.TemporaryDirectory() as root:
+            fixture = self._orders_fixture(root, partial=True)
+            self.assertEqual(
+                {column["name"] for column in fixture["extraction"]["columns"]
+                 if "datatype" not in column},
+                {"Quantity", "Amount", "Updated", "Logical Flag"},
+            )
+            self.assertEqual(
+                {column["name"] for column in fixture["extraction"]["columns"]
+                 if column["name"] in {"Quantity", "Amount", "Updated", "Logical Flag"}
+                 and "remote_name" not in column},
+                {"Quantity", "Amount", "Updated", "Logical Flag"},
+            )
+            bound = self._bound_twice(fixture)
+            self._assert_source_types(bound, [
+                '{"raw_qty", Int64.Type}', '{"raw_amount", type number}',
+                '{"raw_date", type date}', '{"raw_updated", type datetime}',
+                '{"raw_flag", type logical}', '{"Label", type text}',
+            ])
+
+    def test_pending_partial_alias_collision_uses_mapped_source_column_fallback(self):
+        with tempfile.TemporaryDirectory() as root:
+            headers = ["raw_date", "Alias"]
+            rows = [["2026-10-15", "3.25"]]
+            physical_map = {"raw_date": "Alias", "Alias": "Other"}
+            columns = [
+                {"name": "Alias", "datatype": "date"},
+                {"name": "Other"},
+            ]
+            model_columns = [
+                ("Event Caption", "Alias", "dateTime"),
+                ("Value Caption", "Other", "double"),
+            ]
+            downstream = (
+                '\t\t\t\t\t#"Renamed Hyper Columns" = Table.RenameColumns(Source, '
+                '{{"Alias", "Other"}, {"raw_date", "Alias"}}),\n'
+                '\t\t\t\t\t#"Added Value" = Table.AddColumn(#"Renamed Hyper Columns", '
+                '"Year Plus Value", each Date.Year([Alias]) + [Other], type number),\n'
+                '\t\t\t\t\tResult = #"Added Value"\n'
+                '\t\t\t\tin\n\t\t\t\t\tResult'
+            )
+            fixture = self._fixture(
+                root, headers, rows, physical_map, columns, model_columns, downstream,
+            )
+            bound = self._bound_twice(fixture)
+            self.assertIn("Date.Year([Alias]) + [Other]", bound)
+            self._assert_source_types(bound, [
+                '{"raw_date", type date}', '{"Alias", type number}',
+            ])
+
+    def test_pending_exact_aliases_and_remote_name_are_one_hop_without_guessing(self):
+        with tempfile.TemporaryDirectory() as root:
+            quoted = 'Customer\'s "Amount"'
+            headers = [
+                "raw_date", "Alias", "case_raw", "Case_raw", quoted,
+                "remote_only", "actual_value", "case_sensitive", "Caption Trap",
+            ]
+            rows = [[
+                "2026-10-15", "3.25", "true", "19", "1.5",
+                "false", "42.5", "7", "unused",
+            ]]
+            physical_map = {
+                "raw_date": "Alias", "Alias": "Other",
+                "case_raw": "Lower Logical", "Case_raw": "Upper Logical",
+                quoted: "Quoted Logical", "actual_value": "Actual Logical",
+            }
+            columns = [
+                {"name": "Alias", "datatype": "date"},
+                {"name": "Other", "datatype": "real"},
+                {"name": "Lower Logical", "datatype": "boolean"},
+                {"name": "Upper Logical", "datatype": "integer"},
+                {"name": "Quoted Logical", "datatype": "real"},
+                {"name": "Remote Logical", "remote_name": "remote_only",
+                 "datatype": "boolean"},
+                {"name": "Actual Logical", "datatype": "real"},
+                {"name": "Case Missing", "remote_name": "CASE_SENSITIVE",
+                 "datatype": "integer"},
+            ]
+            model_columns = [
+                ("Alias Caption", "Alias", "dateTime"),
+                ("Other Caption", "Other", "double"),
+                ("Lower Caption", "Lower Logical", "boolean"),
+                ("Upper Caption", "Upper Logical", "int64"),
+                ("Quoted Caption", "Quoted Logical", "double"),
+                ("Remote Caption", "Remote Logical", "boolean"),
+                ("Caption Trap", "Actual Logical", "double"),
+            ]
+            downstream = (
+                '\t\t\t\t\t#"Renamed Hyper Columns" = Table.RenameColumns(Source, '
+                '{{"Alias", "Other"}, {"raw_date", "Alias"}, '
+                '{"case_raw", "Lower Logical"}, {"Case_raw", "Upper Logical"}, '
+                '{"Customer\'s ""Amount""", "Quoted Logical"}, '
+                '{"remote_only", "Remote Logical"}, {"actual_value", "Actual Logical"}}),\n'
+                '\t\t\t\t\tResult = #"Renamed Hyper Columns"\n'
+                '\t\t\t\tin\n\t\t\t\t\tResult'
+            )
+            fixture = self._fixture(
+                root, headers, rows, physical_map, columns, model_columns, downstream,
+            )
+            bound = self._bound_twice(fixture)
+            self._assert_source_types(bound, [
+                '{"raw_date", type date}', '{"Alias", type number}',
+                '{"case_raw", type logical}', '{"Case_raw", Int64.Type}',
+                '{"Customer\'s ""Amount""", type number}',
+                '{"remote_only", type logical}', '{"actual_value", type number}',
+            ])
+
+    def test_foreign_or_duplicate_full_exports_never_bind_even_with_matching_metadata(self):
+        for variant in ("foreign", "duplicate"):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as root:
+                fixture = self._orders_fixture(root)
+                if variant == "foreign":
+                    records = [dict(
+                        fixture["proof"],
+                        identity=dict(fixture["identity"], schema="ForeignSchema"),
+                    )]
+                else:
+                    second = _write(
+                        os.path.join(fixture["data"], "hyper_" + "b" * 64 + ".csv"),
+                        fixture["raw"],
+                    )
+                    records = [
+                        fixture["proof"],
+                        _full_export_record(
+                            second, fixture["identity"],
+                            columns=fixture["headers"], row_count=len(fixture["rows"]),
+                        ),
+                    ]
+                manifest = {"version": 1, "authoritative": True, "exports": records}
+                _write(fixture["manifest_path"], json.dumps(manifest))
+                with mock.patch.object(
+                        migrate, "_hyper_to_csv_files",
+                        side_effect=AssertionError("must not invoke a Hyper reader")):
+                    for _ in range(2):
+                        migrate._convert_hyper_to_csv_in_data(
+                            fixture["data"], NAME, fixture["project"],
+                            extract_dir=fixture["extract"], quiet=True,
+                        )
+                        with open(fixture["table_path"], encoding="utf-8") as stream:
+                            self.assertEqual(stream.read(), fixture["original"])
+                        with open(fixture["manifest_path"], encoding="utf-8") as stream:
+                            self.assertEqual(json.load(stream), manifest)
+                        self.assertTrue(all("staged_files" not in record for record in records))
+
+
 def _geo_partition(filename, columns):
     from tableau_export.m_query_builder import (
         _gen_m_geojson,
