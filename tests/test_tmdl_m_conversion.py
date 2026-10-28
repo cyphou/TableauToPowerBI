@@ -5,10 +5,13 @@ here. It parses the actual converter output and evaluates lazy if branches;
 it never reconstructs a result from the source DAX.
 """
 
+import ast
+import inspect
 import math
 import re
 import unittest
 
+from powerbi_import import tmdl_m_conversion
 from powerbi_import.tmdl_m_conversion import _dax_to_m_expression
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
 
@@ -520,6 +523,116 @@ class TestDivideDaxToMSemantics(unittest.TestCase):
                         self.assertIsNone(actual)
                     else:
                         self.assertAlmostEqual(actual, expected)
+
+
+class TestIfSwitchOperandGroupingDaxToM(unittest.TestCase):
+    """An IF or SWITCH used as an operand keeps its own extent.
+
+    An M ``else`` branch runs as far right as it can, and an ``if`` is not an
+    operand on its own, so ``if c then 1 else 2 + [B]`` reads as
+    ``if c then 1 else (2 + [B])``. The operand has to be parenthesised.
+    """
+
+    def assert_emits(self, dax, expected_text, rows=()):
+        expression = _dax_to_m_expression(dax, table_name="Facts")
+        self.assertEqual(expression, expected_text)
+        emitted = EmittedScalarM(expression)
+        for row, expected in rows:
+            with self.subTest(dax=dax, row=row):
+                self.assertEqual(emitted.evaluate(row), expected)
+
+    def test_if_as_left_arithmetic_operand_is_not_captured_by_its_else(self):
+        self.assert_emits(
+            "IF([A]>0,1,2)+[B]",
+            "((if ([A] > 0) = true then 1 else 2) + [B])",
+            [({"A": 1, "B": 10}, 11), ({"A": 0, "B": 10}, 12),
+             ({"A": None, "B": 10}, 12)])
+        self.assert_emits(
+            "IF([A]>0,1,2)*[B]",
+            "((if ([A] > 0) = true then 1 else 2) * [B])",
+            [({"A": 1, "B": 10}, 10), ({"A": 0, "B": 10}, 20)])
+
+    def test_if_as_right_arithmetic_operand_is_parenthesised(self):
+        # An unparenthesised ``if`` is not valid as an operand in M.
+        self.assert_emits(
+            "[B]+IF([A]>0,1,2)",
+            "([B] + (if ([A] > 0) = true then 1 else 2))",
+            [({"A": 1, "B": 10}, 11), ({"A": 0, "B": 10}, 12)])
+
+    def test_two_if_operands_are_each_parenthesised(self):
+        self.assert_emits(
+            "IF([A]>0,1,2)+IF([B]>0,10,20)",
+            "((if ([A] > 0) = true then 1 else 2) + "
+            "(if ([B] > 0) = true then 10 else 20))",
+            [({"A": 1, "B": 1}, 11), ({"A": 0, "B": 0}, 22),
+             ({"A": 1, "B": 0}, 21)])
+
+    def test_if_in_a_comparison_is_not_captured_by_its_else(self):
+        self.assert_emits(
+            "IF([A]>0,1,2)=1",
+            "(if ([A] > 0) = true then 1 else 2) = 1",
+            [({"A": 1}, True), ({"A": 0}, False)])
+
+    def test_if_in_a_logical_operand_is_not_captured_by_its_else(self):
+        self.assert_emits(
+            "IF([A]>0,1,2)>1 && [B]>0",
+            "(if ([A] > 0) = true then 1 else 2) > 1 and [B] > 0",
+            [({"A": 0, "B": 1}, True), ({"A": 1, "B": 1}, False),
+             ({"A": 0, "B": 0}, False)])
+        self.assert_emits(
+            "[B]>0 || IF([A]>0,1,2)>1",
+            "[B] > 0 or (if ([A] > 0) = true then 1 else 2) > 1",
+            [({"A": 1, "B": 1}, True), ({"A": 1, "B": 0}, False),
+             ({"A": 0, "B": 0}, True)])
+
+    def test_switch_as_an_operand_is_not_captured_by_its_default(self):
+        self.assert_emits(
+            "SWITCH([A],1,10,20)+[B]",
+            "((if [A] = 1 then 10 else 20) + [B])",
+            [({"A": 1, "B": 5}, 15), ({"A": 2, "B": 5}, 25)])
+
+    def test_if_inside_a_function_keeps_its_extent(self):
+        self.assert_emits(
+            "FLOOR(IF([A]>0,17,28),5)",
+            "(Number.RoundDown((if ([A] > 0) = true then 17 else 28) / 5) * 5)",
+            [({"A": 1}, 15), ({"A": 0}, 25)])
+        self.assert_emits(
+            "ISBLANK(IF([A]>0,1,BLANK()))",
+            "((if ([A] > 0) = true then 1 else null) = null)",
+            [({"A": 1}, False), ({"A": 0}, True)])
+        self.assert_emits(
+            'MID("abcdef",IF([A]>0,1,2),2)',
+            'Text.Middle("abcdef", (if ([A] > 0) = true then 1 else 2) - 1, 2)')
+
+    def test_a_bare_if_or_switch_is_not_wrapped(self):
+        self.assert_emits(
+            "IF([A]>0,1,2)", "if ([A] > 0) = true then 1 else 2",
+            [({"A": 1}, 1), ({"A": 0}, 2)])
+        self.assert_emits(
+            "SWITCH([A],1,10,20)", "if [A] = 1 then 10 else 20",
+            [({"A": 1}, 10), ({"A": 3}, 20)])
+
+
+class TestColumnTypesAreForwarded(unittest.TestCase):
+    """Typed date arithmetic reaches every nesting level of a formula."""
+
+    def test_every_recursive_conversion_forwards_the_column_types(self):
+        module = ast.parse(inspect.getsource(tmdl_m_conversion))
+        calls = [
+            node for node in ast.walk(module)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_dax_to_m_expression"
+        ]
+        self.assertGreaterEqual(len(calls), 20)
+        for call in calls:
+            with self.subTest(line=call.lineno):
+                self.assertTrue(
+                    len(call.args) >= 3
+                    or any(keyword.arg == "col_types"
+                           for keyword in call.keywords),
+                    "a recursive call that drops col_types silently reverts "
+                    "its operands to untyped arithmetic")
 
 
 if __name__ == "__main__":

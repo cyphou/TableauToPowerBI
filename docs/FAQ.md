@@ -268,6 +268,31 @@ become M `true` and `false`, without changing strings or field names. Uncertain
 date arithmetic remains in DAX instead of being pushed into invalid M. These
 conversion checks do not replace a native Desktop refresh.
 
+Date arithmetic is converted by operand type, from the declared types of the
+table's columns and of earlier calculated columns. Subtracting two dates, such
+as `[Ship Date] - [Order Date]`, gives a `duration` in Power Query, which a
+numeric column cannot store, so the table could fail to load. A difference of
+two dates is now `Duration.Days(...)`; a difference involving a datetime is
+`Duration.TotalDays(...)`, which keeps the fraction, with a date operand
+promoted by `DateTime.From`. The same typing applies when the difference sits
+inside a larger expression (`([End] - [Start]) * 24`), a comparison
+(`[End] - [Start] > 30`), an `IF` condition, or `YEAR`, `ABS` and `ROUND`. A
+date or datetime plus or minus a whole-number literal (`[Start] + 7`) uses
+`Date.AddDays`, `TODAY()` and `NOW()` follow the same rules, and a date
+compared with a datetime is promoted to a datetime first because M refuses the
+mixed comparison. `DATEDIFF` with a day, month, quarter or year unit stays in
+M; hour, minute, second and week units stay in DAX, because DAX counts interval
+boundaries while an M duration measures elapsed time.
+
+Whatever the declared types do not prove stays in DAX rather than becoming
+invalid M: a fractional offset on a date column, an offset that is not a
+literal, `*`, `/` or `&` on a date, a date plus a date, and `INT(...)` of a
+difference. A column name is never taken as proof of a date. The conversion
+assumes that a column's Power Query type equals its declared Tableau type, so a
+column that the source returns with another type is not covered. Generated-M
+checks do not replace a native Desktop refresh. Regenerate affected projects to
+apply this change.
+
 ### Why did a calculation referencing `Number of Records` produce invalid DAX?
 
 A calculation without an explicit caption may repeat its bracketed Tableau

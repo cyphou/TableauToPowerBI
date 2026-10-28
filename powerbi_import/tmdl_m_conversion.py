@@ -105,15 +105,116 @@ from powerbi_import.calc_column_utils import (
     normalize_m_numeric_literals,
 )
 
+_M_FIELD_REF = re.compile(r'\[#"((?:[^"]|"")+)"\]|\[([^\[\]]+)\]')
+_M_NUMBER_LITERAL = re.compile(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)')
+_M_WHOLE_NUMBER_LITERAL = re.compile(r'[+-]?\d+(?:\.0*)?')
+_M_DATE_KIND_BY_TYPE = {'date': 'date', 'datetime': 'datetime'}
+_M_DATE_CONSTRUCTORS = (
+    ('Date.From', 'date'), ('#date', 'date'),
+    ('DateTime.From', 'datetime'), ('DateTime.LocalNow', 'datetime'),
+    ('#datetime', 'datetime'),
+)
 
-def _is_known_m_date_expression(expr):
-    """Recognize only date/datetime results whose type this bridge proves."""
+
+def _m_field_name(m_expr):
+    """Return the column name of a lone M field reference, else None."""
+    match = _M_FIELD_REF.fullmatch(m_expr)
+    if not match:
+        return None
+    quoted, bare = match.groups()
+    return quoted.replace('""', '"') if quoted is not None else bare
+
+
+def _m_date_kind(m_expr, col_types=None):
+    """Classify an M operand as ``'date'``, ``'datetime'`` or None.
+
+    Only provable kinds are reported: the converter's own date constructors
+    and, when ``col_types`` maps column names to declared Tableau types, a
+    lone reference to a date or datetime column. A suggestive name is never
+    proof, so anything else is unknown.
+    """
+    expr = m_expr.strip()
     inner = _extract_function_body(expr, '')
     if inner is not None:
-        return _is_known_m_date_expression(inner.strip())
-    return any(_extract_function_body(expr, function) is not None for function in (
-        'DateTime.LocalNow', 'Date.From', 'DateTime.From', '#date', 'Date.AddDays',
-    ))
+        return _m_date_kind(inner, col_types)
+    for function, kind in _M_DATE_CONSTRUCTORS:
+        if _extract_function_body(expr, function) is not None:
+            return kind
+    body = _extract_function_body(expr, 'Date.AddDays')
+    if body is not None:
+        return _m_date_kind(_split_dax_args(body)[0], col_types)
+    if col_types:
+        name = _m_field_name(expr)
+        if name is not None:
+            return _M_DATE_KIND_BY_TYPE.get(str(col_types.get(name, '')).lower())
+    return None
+
+
+def _group_if(m_expr):
+    """Parenthesise an ``if`` expression used as an operand.
+
+    The else branch of an M ``if`` extends as far right as it can, so
+    ``if c then a else b - x`` subtracts from ``b`` only. Operators must see
+    the whole conditional as one operand.
+    """
+    return f'({m_expr})' if re.match(r'\s*if\b', m_expr) else m_expr
+
+
+def _m_add_days(date_m, kind, literal, negate=False):
+    """Offset a proven date by a literal number of days, or None.
+
+    A whole-day offset is exact for both kinds. A fractional one has a
+    defined result only for a datetime, so a date stays in DAX rather than
+    relying on how ``Date.AddDays`` rounds a date.
+    """
+    if kind == 'date' and not _M_WHOLE_NUMBER_LITERAL.fullmatch(literal):
+        return None
+    days = f'-({literal})' if negate else literal
+    return f'Date.AddDays({date_m}, {days})'
+
+
+def _m_date_arithmetic(l_m, op, r_m, l_kind, r_kind, typed):
+    """Compose ``l_m op r_m`` when at least one operand is a proven date.
+
+    DAX treats a date as a day number, but in M ``date + number`` is an error
+    and ``date - date`` is a duration rather than a number. Return the M text
+    for the combinations that have a documented M form, or None so that the
+    column stays a DAX calculated column:
+
+    * date/datetime +/- a numeric literal -> ``Date.AddDays``.
+    * date - date, for callers that supply column types -> the whole days
+      (``Duration.Days``) of two dates, or the fractional days
+      (``Duration.TotalDays``) once a datetime is involved, which is how
+      Tableau types the difference. A mixed pair is aligned on datetime
+      first, because M cannot subtract a date from a datetime.
+    """
+    if l_kind and op in ('+', '-') and _M_NUMBER_LITERAL.fullmatch(r_m):
+        return _m_add_days(l_m, l_kind, r_m, negate=(op == '-'))
+    if r_kind and op == '+' and _M_NUMBER_LITERAL.fullmatch(l_m):
+        return _m_add_days(r_m, r_kind, l_m)
+    if typed and op == '-' and l_kind and r_kind:
+        if l_kind == r_kind == 'date':
+            return f'Duration.Days({l_m} - {r_m})'
+        l_dt = l_m if l_kind == 'datetime' else f'DateTime.From({l_m})'
+        r_dt = r_m if r_kind == 'datetime' else f'DateTime.From({r_m})'
+        return f'Duration.TotalDays({l_dt} - {r_dt})'
+    return None
+
+
+def _align_date_kinds(l_m, r_m, col_types):
+    """Give two compared operands one M type.
+
+    M rejects ``<`` between a date and a datetime and answers ``=`` with a
+    silent false, so the date side is promoted to datetime.
+    """
+    l_kind = _m_date_kind(l_m, col_types)
+    r_kind = _m_date_kind(r_m, col_types)
+    if l_kind and r_kind and l_kind != r_kind:
+        if l_kind == 'date':
+            l_m = f'DateTime.From({l_m})'
+        else:
+            r_m = f'DateTime.From({r_m})'
+    return l_m, r_m
 
 
 def _split_top_level_binop(expr, ops):
@@ -185,11 +286,28 @@ def _split_top_level_binop(expr, ops):
     return (expr[:pos].strip(), op, expr[pos + len(op):].strip())
 
 
-def _dax_to_m_expression(dax_expr, table_name=''):
+def _m_as_date(operand, col_types):
+    """Truncate a DATEDIFF operand to an M date.
+
+    Column references are wrapped because CSV sources return text and date
+    arithmetic needs typed dates. A datetime operand such as ``NOW()`` is
+    wrapped as well, since M cannot subtract a date from a datetime.
+    """
+    if operand.strip().startswith('[') or _m_date_kind(operand, col_types) == 'datetime':
+        operand = f'Date.From({operand})'
+    return _group_if(operand)
+
+
+def _dax_to_m_expression(dax_expr, table_name='', col_types=None):
     """Convert a DAX calculated-column expression to Power Query M.
 
     Handles IF, SWITCH, DIVIDE, FLOOR, ISBLANK, IN {}, string/date/math functions,
     simple arithmetic, column references, and boolean operators.
+
+    ``col_types`` optionally maps column names to their declared Tableau type.
+    With it, date arithmetic over date/datetime columns is converted to the
+    numeric M the calculation means (see ``_m_date_arithmetic``); without it
+    only dates the converter itself builds are recognised.
 
     Returns the M expression string on success, or *None* if the expression
     contains cross-table references or DAX constructs with no M equivalent
@@ -235,7 +353,7 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     # their grouping around the recursively converted operand.
     body = _extract_function_body(expr, '')
     if body is not None:
-        inner = _dax_to_m_expression(body, table_name)
+        inner = _dax_to_m_expression(body, table_name, col_types)
         return f'({inner})' if inner is not None else None
 
     # ── IF(cond, true_val [, false_val]) ────────────────────────────
@@ -243,9 +361,10 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     if body is not None:
         args = _split_dax_args(body)
         if len(args) >= 2:
-            cond = _dax_to_m_expression(args[0], table_name)
-            true_v = _dax_to_m_expression(args[1], table_name)
-            false_v = _dax_to_m_expression(args[2], table_name) if len(args) >= 3 else 'null'
+            cond = _dax_to_m_expression(args[0], table_name, col_types)
+            true_v = _dax_to_m_expression(args[1], table_name, col_types)
+            false_v = (_dax_to_m_expression(args[2], table_name, col_types)
+                       if len(args) >= 3 else 'null')
             if cond is not None and true_v is not None and false_v is not None:
                 # M predicates can be null; only true selects the then branch.
                 # Group the whole predicate, including logical/nested IF
@@ -259,19 +378,20 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     if body is not None:
         args = _split_dax_args(body)
         if len(args) >= 3:
-            sw = _dax_to_m_expression(args[0], table_name)
+            sw = _dax_to_m_expression(args[0], table_name, col_types)
             if sw is None:
                 return None
+            sw = _group_if(sw)
             parts = []
             i = 1
             while i + 1 < len(args):
-                v = _dax_to_m_expression(args[i], table_name)
-                r = _dax_to_m_expression(args[i + 1], table_name)
+                v = _dax_to_m_expression(args[i], table_name, col_types)
+                r = _dax_to_m_expression(args[i + 1], table_name, col_types)
                 if v is None or r is None:
                     return None
-                parts.append(f'if {sw} = {v} then {r}')
+                parts.append(f'if {sw} = {_group_if(v)} then {r}')
                 i += 2
-            default_v = (_dax_to_m_expression(args[-1], table_name)
+            default_v = (_dax_to_m_expression(args[-1], table_name, col_types)
                          if len(args) % 2 == 0 else '"Other"')
             if default_v is None:
                 return None
@@ -286,7 +406,7 @@ def _dax_to_m_expression(dax_expr, table_name=''):
         args = _split_dax_args(body)
         if len(args) not in (2, 3):
             return None
-        converted = [_dax_to_m_expression(arg, table_name) for arg in args]
+        converted = [_dax_to_m_expression(arg, table_name, col_types) for arg in args]
         if any(value is None for value in converted):
             return None
         numerator, denominator = converted[:2]
@@ -305,23 +425,24 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     if body is not None:
         args = _split_dax_args(body)
         if len(args) == 2:
-            x = _dax_to_m_expression(args[0], table_name)
-            n = _dax_to_m_expression(args[1], table_name)
+            x = _dax_to_m_expression(args[0], table_name, col_types)
+            n = _dax_to_m_expression(args[1], table_name, col_types)
             if x is None or n is None:
                 return None
+            x, n = _group_if(x), _group_if(n)
             return f'(Number.RoundDown({x} / {n}) * {n})'
         return None
 
     # ── ISBLANK(x) → (x = null) ────────────────────────────────────
     body = _extract_function_body(expr, 'ISBLANK')
     if body is not None:
-        inner = _dax_to_m_expression(body, table_name)
-        return f'({inner} = null)' if inner is not None else None
+        inner = _dax_to_m_expression(body, table_name, col_types)
+        return f'({_group_if(inner)} = null)' if inner is not None else None
 
     # ── NOT(x) → not x ─────────────────────────────────────────────
     body = _extract_function_body(expr, 'NOT')
     if body is not None:
-        inner = _dax_to_m_expression(body, table_name)
+        inner = _dax_to_m_expression(body, table_name, col_types)
         return f'not ({inner})' if inner is not None else None
 
     # ── Single-argument DAX → M function map ────────────────────────
@@ -336,7 +457,7 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     for dax_fn, m_fn in _SINGLE:
         body = _extract_function_body(expr, dax_fn)
         if body is not None:
-            inner = _dax_to_m_expression(body, table_name)
+            inner = _dax_to_m_expression(body, table_name, col_types)
             return f'{m_fn}({inner})' if inner is not None else None
 
     # ── Multi-argument DAX → M function map ─────────────────────────
@@ -349,7 +470,7 @@ def _dax_to_m_expression(dax_expr, table_name=''):
         body = _extract_function_body(expr, dax_fn)
         if body is not None:
             args = _split_dax_args(body)
-            converted = [_dax_to_m_expression(a, table_name) for a in args]
+            converted = [_dax_to_m_expression(a, table_name, col_types) for a in args]
             if any(c is None for c in converted):
                 return None
             return f'{m_fn}({", ".join(converted)})'
@@ -359,17 +480,18 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     if body is not None:
         args = _split_dax_args(body)
         if len(args) >= 3:
-            converted = [_dax_to_m_expression(a, table_name) for a in args]
+            converted = [_dax_to_m_expression(a, table_name, col_types) for a in args]
             if any(c is None for c in converted):
                 return None
-            return f'Text.Middle({converted[0]}, {converted[1]} - 1, {converted[2]})'
+            return (f'Text.Middle({converted[0]}, '
+                    f'{_group_if(converted[1])} - 1, {converted[2]})')
 
     # SUBSTITUTE → Text.Replace (ignore optional 4th arg: instance_num)
     body = _extract_function_body(expr, 'SUBSTITUTE')
     if body is not None:
         args = _split_dax_args(body)
         if len(args) >= 3:
-            converted = [_dax_to_m_expression(a, table_name) for a in args[:3]]
+            converted = [_dax_to_m_expression(a, table_name, col_types) for a in args[:3]]
             if any(c is None for c in converted):
                 return None
             return f'Text.Replace({", ".join(converted)})'
@@ -385,14 +507,12 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     if body is not None:
         args = _split_dax_args(body)
         if len(args) == 3:
-            start_m = _dax_to_m_expression(args[0], table_name)
-            end_m = _dax_to_m_expression(args[1], table_name)
+            start_m = _dax_to_m_expression(args[0], table_name, col_types)
+            end_m = _dax_to_m_expression(args[1], table_name, col_types)
             interval = args[2].strip().upper()
             if start_m is not None and end_m is not None:
-                # Wrap column refs in Date.From() for type safety
-                # (CSV sources return text; date arithmetic needs typed dates)
-                start_d = f'Date.From({start_m})' if start_m.strip().startswith('[') else start_m
-                end_d = f'Date.From({end_m})' if end_m.strip().startswith('[') else end_m
+                start_d = _m_as_date(start_m, col_types)
+                end_d = _m_as_date(end_m, col_types)
                 if interval == 'DAY':
                     return f'Duration.Days({end_d} - {start_d})'
                 elif interval == 'MONTH':
@@ -401,9 +521,9 @@ def _dax_to_m_expression(dax_expr, table_name=''):
                     return f'Date.Year({end_d}) - Date.Year({start_d})'
                 elif interval == 'QUARTER':
                     return f'(Date.Year({end_d})*4 + Date.QuarterOfYear({end_d})) - (Date.Year({start_d})*4 + Date.QuarterOfYear({start_d}))'
-                elif interval in ('HOUR', 'MINUTE', 'SECOND'):
-                    return f'Duration.TotalSeconds({end_d} - {start_d})'
-                # Unsupported interval
+                # HOUR/MINUTE/SECOND count interval boundaries in DAX; a duration
+                # in M measures elapsed time, so they stay in DAX. Any other
+                # interval has no M equivalent either.
                 return None
         return None
 
@@ -412,13 +532,13 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     if body is not None:
         args = _split_dax_args(body)
         if len(args) == 3:
-            y = _dax_to_m_expression(args[0], table_name)
-            mo = _dax_to_m_expression(args[1], table_name)
-            d = _dax_to_m_expression(args[2], table_name)
+            y = _dax_to_m_expression(args[0], table_name, col_types)
+            mo = _dax_to_m_expression(args[1], table_name, col_types)
+            d = _dax_to_m_expression(args[2], table_name, col_types)
             if y is not None and mo is not None and d is not None:
                 return f'#date({y}, {mo}, {d})'
         elif len(args) == 1:
-            inner = _dax_to_m_expression(args[0], table_name)
+            inner = _dax_to_m_expression(args[0], table_name, col_types)
             if inner is not None:
                 return f'Date.From({inner})'
         return None
@@ -436,7 +556,7 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     # ── [expr] IN {val1, val2, …} → List.Contains({…}, expr) ───────
     in_match = re.match(r'^(.+?)\s+IN\s+(\{.+\})\s*$', expr, re.IGNORECASE)
     if in_match:
-        col_m = _dax_to_m_expression(in_match.group(1), table_name)
+        col_m = _dax_to_m_expression(in_match.group(1), table_name, col_types)
         if col_m is not None:
             # M uses double-quoted strings only — convert any DAX/Tableau
             # single-quoted literals like {'High', 'Low'} to {"High", "Low"}
@@ -455,10 +575,10 @@ def _dax_to_m_expression(dax_expr, table_name=''):
         split = _split_top_level_binop(expr, op_set)
         if split:
             left, _op, right = split
-            l_m = _dax_to_m_expression(left, table_name)
-            r_m = _dax_to_m_expression(right, table_name)
+            l_m = _dax_to_m_expression(left, table_name, col_types)
+            r_m = _dax_to_m_expression(right, table_name, col_types)
             if l_m is not None and r_m is not None:
-                return f'{l_m}{m_join}{r_m}'
+                return f'{_group_if(l_m)}{m_join}{_group_if(r_m)}'
             return None
 
     # ── Top-level comparison operators ─────────────────────────────
@@ -467,10 +587,11 @@ def _dax_to_m_expression(dax_expr, table_name=''):
     split = _split_top_level_binop(expr, cmp_ops)
     if split:
         left, op, right = split
-        l_m = _dax_to_m_expression(left, table_name)
-        r_m = _dax_to_m_expression(right, table_name)
+        l_m = _dax_to_m_expression(left, table_name, col_types)
+        r_m = _dax_to_m_expression(right, table_name, col_types)
         if l_m is not None and r_m is not None:
-            return f'{l_m} {op} {r_m}'
+            l_m, r_m = _align_date_kinds(l_m, r_m, col_types)
+            return f'{_group_if(l_m)} {op} {_group_if(r_m)}'
         return None
 
     # ── Arithmetic (lowest precedence first, left-associative) ─────
@@ -481,24 +602,15 @@ def _dax_to_m_expression(dax_expr, table_name=''):
         split = _split_top_level_binop(expr, ops)
         if split:
             left, op, right = split
-            l_m = _dax_to_m_expression(left, table_name)
-            r_m = _dax_to_m_expression(right, table_name)
+            l_m = _dax_to_m_expression(left, table_name, col_types)
+            r_m = _dax_to_m_expression(right, table_name, col_types)
             if l_m is not None and r_m is not None:
-                l_date = _is_known_m_date_expression(l_m)
-                r_date = _is_known_m_date_expression(r_m)
-                if l_date or r_date:
-                    # DAX offsets are numbers of days; M requires a date
-                    # function or duration, never datetime +/- number.
-                    # Without column type metadata, accept only a proven
-                    # date and a numeric literal (including fractional days).
-                    number = r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)'
-                    if l_date and op in ('+', '-') and re.fullmatch(number, r_m):
-                        days = r_m if op == '+' else f'-({r_m})'
-                        return f'Date.AddDays({l_m}, {days})'
-                    if r_date and op == '+' and re.fullmatch(number, l_m):
-                        return f'Date.AddDays({r_m}, {l_m})'
-                    return None
-                return f'({l_m} {op} {r_m})'
+                l_kind = _m_date_kind(l_m, col_types)
+                r_kind = _m_date_kind(r_m, col_types)
+                if l_kind or r_kind:
+                    return _m_date_arithmetic(
+                        l_m, op, r_m, l_kind, r_kind, col_types is not None)
+                return f'({_group_if(l_m)} {op} {_group_if(r_m)})'
             return None
 
     # ── Leaf expression (literals, column refs, operators) ──────────
@@ -522,53 +634,6 @@ def _dax_to_m_expression(dax_expr, table_name=''):
             return None
         parts[i] = _quote_m_identifiers(normalize_m_numeric_literals(result))
     return ''.join(parts)
-
-
-_DATE_DATATYPES = frozenset({
-    'date', 'datetime', 'dateTime', 'Date', 'DateTime',
-})
-
-_RE_COL_SUBTRACTION = re.compile(
-    r'^\s*(\[#?"?[^\]"]+\"?\])\s*-\s*(\[#?"?[^\]"]+\"?\])\s*$'
-)
-
-
-def _wrap_date_subtraction_in_duration_days(m_expr, columns, col_metadata_map):
-    """Wrap bare date-column subtractions in Duration.Days() for M.
-
-    In Power Query M, subtracting two date/datetime values produces a
-    ``duration``, not an integer.  When the target column type is integer
-    or number, the result must be wrapped in ``Duration.Days()`` so that
-    Power BI can store it as a numeric value.
-    """
-    m = _RE_COL_SUBTRACTION.match(m_expr)
-    if not m:
-        return m_expr
-
-    col_type_map = {}
-    for c in (columns or []):
-        cn = c.get('name', '')
-        if cn:
-            col_type_map[cn] = c.get('datatype', '')
-    for cn, meta in (col_metadata_map or {}).items():
-        dt = meta.get('datatype', '')
-        if dt:
-            col_type_map[cn] = dt
-
-    def _extract_col_name(bracket_ref):
-        s = bracket_ref.strip().lstrip('[').rstrip(']')
-        s = s.lstrip('#').strip('"')
-        return s
-
-    left_name = _extract_col_name(m.group(1))
-    right_name = _extract_col_name(m.group(2))
-
-    left_dt = col_type_map.get(left_name, '')
-    right_dt = col_type_map.get(right_name, '')
-
-    if left_dt in _DATE_DATATYPES and right_dt in _DATE_DATATYPES:
-        return f'Duration.Days({m_expr.strip()})'
-    return m_expr
 
 
 def _strip_m_inline_comments(m_expr):

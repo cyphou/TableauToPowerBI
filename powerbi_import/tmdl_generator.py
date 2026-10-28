@@ -213,10 +213,8 @@ from powerbi_import.tmdl_dax_postprocess import (  # noqa: E402,F401
 # DAX -> Power Query M conversion lives in tmdl_m_conversion (owned by @wiring).
 # Re-exported here so existing tmdl_generator callers keep working.
 from powerbi_import.tmdl_m_conversion import (  # noqa: F401
-    _DATE_DATATYPES,
     _DAX_TO_M_TYPE,
     _M_SPECIAL_CHARS,
-    _RE_COL_SUBTRACTION,
     _build_m_transform_steps,
     _dax_to_m_expression,
     _extract_function_body,
@@ -226,7 +224,6 @@ from powerbi_import.tmdl_m_conversion import (  # noqa: F401
     _split_dax_args,
     _split_top_level_binop,
     _strip_m_inline_comments,
-    _wrap_date_subtraction_in_duration_days,
     m_rename_map,
     rename_m_column_refs,
 )
@@ -3134,6 +3131,32 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             if (_c.get('datatype', '') or '').lower() == 'boolean':
                 _bool_table_columns.add(_cn)
 
+    # Declared types behind the row fields an M step can reference, so date
+    # arithmetic is typed instead of guessed. The converter reads raw column
+    # names and calculation captions, hence every spelling is a key. Physical
+    # columns come first and win: their type is the one the partition applies.
+    # A calculated column is added with the M type its declared type maps to,
+    # and every `type datetime` step is coerced with DateTime.From, so a calc
+    # declared `date` is an M datetime for the steps that follow it.
+    col_types = {}
+    for _c in columns:
+        _cn = _c.get('name', '')
+        _dt = _c.get('datatype', '')
+        if _cn and _dt:
+            for _key in (_cn, _cn.strip('[]'), col_metadata_map.get(_cn, {}).get('caption', '')):
+                if _key:
+                    col_types[_key] = _dt
+    for _calc in calculations:
+        _calc_dt = _calc.get('datatype', '')
+        if _calc_dt:
+            _calc_m_type = _DAX_TO_M_TYPE.get(
+                map_tableau_to_powerbi_type(_calc_dt), 'type text')
+            _calc_kind = {'type date': 'date', 'type datetime': 'datetime'}.get(
+                _calc_m_type, _calc_dt)
+            for _key in _calculation_identity(_calc):
+                if _key:
+                    col_types.setdefault(_key, _calc_kind)
+
     for calc in calculations:
         calc_name, caption = _calculation_identity(calc)
         formula = calc.get('formula', '').strip()
@@ -3271,7 +3294,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                     )
 
             # ── Try to push the calculated column into Power Query M ──
-            m_expr = _dax_to_m_expression(dax_formula, table_name)
+            m_expr = _dax_to_m_expression(dax_formula, table_name, col_types)
             # M row fields must exist in the physical source or an earlier
             # accepted M step, never merely in the DAX model/measure namespace.
             if m_expr is not None:
@@ -3282,9 +3305,6 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             if m_expr is not None:
                 m_type = _DAX_TO_M_TYPE.get(
                     map_tableau_to_powerbi_type(datatype), 'type text')
-                if m_type in ('Int64.Type', 'type number'):
-                    m_expr = _wrap_date_subtraction_in_duration_days(
-                        m_expr, columns, col_metadata_map)
                 new_step = m_transform_add_column(caption, f'each {m_expr}', m_type)
                 # Dedup: replace existing M step for the same column name
                 existing_m_idx = m_calc_step_indexes.get(caption.lower())

@@ -33,7 +33,6 @@ from powerbi_import.tmdl_generator import (
     _process_sets_groups_bins,
     _quote_m_identifiers,
     _split_dax_args,
-    _wrap_date_subtraction_in_duration_days,
     _write_culture_tmdl,
     _write_expressions_tmdl,
     _write_perspectives_tmdl,
@@ -1033,6 +1032,239 @@ class TestCalculatedColumnProcessing(unittest.TestCase):
         self.assertEqual(col.get("sourceColumn"), "Upper Name")
         self.assertFalse(col.get("isCalculated", False))
 
+    @staticmethod
+    def _calc_column_m(columns, formula, datatype, col_metadata_map=None):
+        """Partition M of a table holding one calculation over *columns*."""
+        table = {"name": "Orders", "columns": columns}
+        calcs = [{
+            "name": "[Calculation_1]",
+            "caption": "Delai",
+            "formula": formula,
+            "datatype": datatype,
+            "role": "measure",
+        }]
+        datasource = {"type": "csv", "connection": {"filename": "orders.csv"}}
+        result = _build_table(
+            table, datasource, calcs, [], col_metadata_map=col_metadata_map)
+        return result["partitions"][0]["source"]["expression"]
+
+    def test_date_difference_calc_is_numeric_in_m(self):
+        """date - date typed integer must not reach M as a duration."""
+        m = self._calc_column_m(
+            [{"name": "Début", "datatype": "date"},
+             {"name": "Fin", "datatype": "date"}],
+            "[Fin]-[Début]", "integer")
+        self.assertIn(
+            'each Duration.Days([Fin] - [Début]), Int64.Type', m)
+        self.assertNotIn('each ([Fin] - [Début])', m)
+
+    def test_date_difference_calc_resolves_renamed_columns(self):
+        """Metadata keyed by caption and raw name, as generate_tmdl builds it."""
+        debut = {"caption": "Début", "datatype": "date"}
+        fin = {"caption": "Fin", "datatype": "date"}
+        m = self._calc_column_m(
+            [{"name": "debut_dt", "datatype": "date"},
+             {"name": "fin_dt", "datatype": "date"}],
+            "[fin_dt]-[debut_dt]", "integer",
+            col_metadata_map={"debut_dt": debut, "Début": debut,
+                              "fin_dt": fin, "Fin": fin})
+        self.assertIn(
+            'each Duration.Days([Fin] - [Début]), Int64.Type', m)
+
+    def test_datetime_difference_calc_keeps_fraction_in_m(self):
+        """datetime - datetime typed real keeps its fractional days."""
+        m = self._calc_column_m(
+            [{"name": "Début", "datatype": "datetime"},
+             {"name": "Fin", "datatype": "datetime"}],
+            "[Fin]-[Début]", "real")
+        self.assertIn(
+            'each Duration.TotalDays([Fin] - [Début]), type number', m)
+
+    def test_numeric_difference_calc_is_not_wrapped_in_m(self):
+        """A subtraction of non-date columns is left alone."""
+        m = self._calc_column_m(
+            [{"name": "A", "datatype": "integer"},
+             {"name": "B", "datatype": "integer"}],
+            "[A]-[B]", "integer")
+        self.assertIn('each ([A] - [B]), Int64.Type', m)
+        self.assertNotIn("Duration.", m)
+
+    DATE_COLUMNS = (
+        {"name": "Début", "datatype": "date"},
+        {"name": "Fin", "datatype": "date"},
+        {"name": "Délai", "datatype": "integer"},
+    )
+    DATETIME_COLUMNS = (
+        {"name": "Début", "datatype": "datetime"},
+        {"name": "Fin", "datatype": "datetime"},
+        {"name": "Délai", "datatype": "integer"},
+    )
+    MIXED_COLUMNS = (
+        {"name": "Début", "datatype": "date"},
+        {"name": "Fin", "datatype": "datetime"},
+        {"name": "Délai", "datatype": "integer"},
+    )
+
+    @staticmethod
+    def _build_calcs(columns, *calcs):
+        """Built table for ``(caption, formula, datatype)`` calcs over *columns*."""
+        specs = [{
+            "name": f"[Calculation_{index}]",
+            "caption": caption,
+            "formula": formula,
+            "datatype": datatype,
+            "role": "measure",
+        } for index, (caption, formula, datatype) in enumerate(calcs, 1)]
+        datasource = {"type": "csv", "connection": {"filename": "orders.csv"}}
+        return _build_table(
+            {"name": "Orders", "columns": [dict(c) for c in columns]},
+            datasource, specs, [])
+
+    @staticmethod
+    def _step(built, caption):
+        """M step adding the calculated column *caption*, or None."""
+        prefix = f'#"Added {caption}" = '
+        lines = built["partitions"][0]["source"]["expression"].splitlines()
+        return next(
+            (line.strip() for line in lines if line.strip().startswith(prefix)),
+            None)
+
+    @staticmethod
+    def _dax_column(built, caption):
+        return next((c for c in built["columns"]
+                     if c["name"] == caption and c.get("isCalculated")), None)
+
+    def assert_m_column(self, columns, formula, datatype, body, m_type):
+        built = self._build_calcs(columns, ("Delai", formula, datatype))
+        self.assertEqual(
+            self._step(built, "Delai"),
+            f'#"Added Delai" = Table.AddColumn(Source, "Delai", '
+            f'each {body}, {m_type}),')
+        self.assertIsNone(self._dax_column(built, "Delai"))
+
+    def assert_dax_column(self, columns, formula, datatype, dax):
+        built = self._build_calcs(columns, ("Delai", formula, datatype))
+        self.assertIsNone(self._step(built, "Delai"))
+        column = self._dax_column(built, "Delai")
+        self.assertIsNotNone(column)
+        self.assertEqual(column["expression"], dax)
+
+    def test_difference_composed_with_arithmetic_stays_numeric(self):
+        """A duration times a number is still a duration in M."""
+        for columns, formula, datatype, body, m_type in (
+            (self.DATETIME_COLUMNS, "([Fin]-[Début])*24", "real",
+             "((Duration.TotalDays([Fin] - [Début])) * 24)", "type number"),
+            (self.DATE_COLUMNS, "[Fin]-[Début]+1", "integer",
+             "(Duration.Days([Fin] - [Début]) + 1)", "Int64.Type"),
+            (self.DATE_COLUMNS, "[Fin]-[Début]>30", "boolean",
+             "Duration.Days([Fin] - [Début]) > 30", "type logical"),
+            (self.DATE_COLUMNS, "ABS([Fin]-[Début])", "integer",
+             "Number.Abs(Duration.Days([Fin] - [Début]))", "Int64.Type"),
+            (self.DATETIME_COLUMNS, "ROUND(([Fin]-[Début])*24,1)", "real",
+             "Number.Round(((Duration.TotalDays([Fin] - [Début])) * 24), 1)",
+             "type number"),
+            (self.DATE_COLUMNS, "YEAR([Début]+7)", "integer",
+             "Date.Year(Date.AddDays([Début], 7))", "Int64.Type"),
+        ):
+            with self.subTest(formula=formula):
+                self.assert_m_column(columns, formula, datatype, body, m_type)
+
+    def test_condition_over_a_date_difference_is_numeric(self):
+        self.assert_m_column(
+            self.DATE_COLUMNS,
+            'IF [Fin]-[Début]>30 THEN "late" ELSE "ok" END', "string",
+            'if (Duration.Days([Fin] - [Début]) > 30) = true '
+            'then "late" else "ok"', "type text")
+
+    def test_difference_with_today_and_now_is_numeric(self):
+        self.assert_m_column(
+            self.DATE_COLUMNS, "TODAY()-[Début]", "integer",
+            "Duration.Days(Date.From(DateTime.LocalNow()) - [Début])",
+            "Int64.Type")
+        self.assert_m_column(
+            self.DATETIME_COLUMNS, "NOW()-[Début]", "real",
+            "Duration.TotalDays(DateTime.LocalNow() - [Début])",
+            "type number")
+
+    def test_mixed_date_and_datetime_difference_is_aligned(self):
+        """M cannot subtract a date from a datetime."""
+        self.assert_m_column(
+            self.MIXED_COLUMNS, "[Fin]-[Début]", "real",
+            "Duration.TotalDays([Fin] - DateTime.From([Début]))",
+            "type number")
+
+    def test_whole_day_offsets_are_added_with_add_days(self):
+        for formula, offset in (
+            ("[Début]+7", "7"), ("7+[Début]", "7"), ("[Début]-7", "-(7)"),
+        ):
+            with self.subTest(formula=formula):
+                self.assert_m_column(
+                    self.DATE_COLUMNS, formula, "date",
+                    f"DateTime.From(Date.AddDays([Début], {offset}))",
+                    "type datetime")
+
+    def test_offsets_not_provably_whole_days_stay_in_dax(self):
+        for formula, datatype, dax in (
+            ("[Début]+0.5", "date", "'Orders'[Début]+0.5"),
+            ("[Début]+[Délai]", "date", "'Orders'[Début]+'Orders'[Délai]"),
+            ("[Début]*2", "real", "'Orders'[Début]*2"),
+            ('[Début]&"x"', "string", "'Orders'[Début]&\"x\""),
+        ):
+            with self.subTest(formula=formula):
+                self.assert_dax_column(
+                    self.DATE_COLUMNS, formula, datatype, dax)
+
+    def test_fractional_offset_on_a_datetime_is_added_with_add_days(self):
+        self.assert_m_column(
+            self.DATETIME_COLUMNS, "[Début]+0.5", "datetime",
+            "DateTime.From(Date.AddDays([Début], 0.5))", "type datetime")
+
+    def test_datediff_by_day_is_numeric_and_by_hour_stays_in_dax(self):
+        self.assert_m_column(
+            self.DATE_COLUMNS, "DATEDIFF('day',[Début],NOW())", "integer",
+            "Duration.Days(Date.From(DateTime.LocalNow()) - Date.From([Début]))",
+            "Int64.Type")
+        self.assert_dax_column(
+            self.DATETIME_COLUMNS, "DATEDIFF('hour',[Début],[Fin])", "integer",
+            "DATEDIFF('Orders'[Début], 'Orders'[Fin], HOUR)")
+
+    def test_int_of_a_date_difference_stays_in_dax(self):
+        # The Tableau→DAX step wraps INT in IFERROR, which has no M form.
+        self.assert_dax_column(
+            self.DATETIME_COLUMNS, "INT(([Fin]-[Début])*24)", "integer",
+            "IFERROR(INT(('Orders'[Fin]-'Orders'[Début])*24), BLANK())")
+
+    def test_date_comparisons_align_a_date_with_a_datetime(self):
+        self.assert_m_column(
+            self.DATE_COLUMNS, "[Début]<NOW()", "boolean",
+            "DateTime.From([Début]) < DateTime.LocalNow()", "type logical")
+        self.assert_m_column(
+            self.MIXED_COLUMNS, "[Début]=[Fin]", "boolean",
+            "DateTime.From([Début]) = [Fin]", "type logical")
+
+    def test_calc_over_a_date_calc_uses_its_datetime_m_kind(self):
+        """A date calculation is wrapped in DateTime.From, so M holds a datetime."""
+        built = self._build_calcs(
+            self.DATE_COLUMNS,
+            ("Echeance", "[Début]+7", "date"),
+            ("Retard", "[Echeance]-[Début]", "integer"))
+        self.assertEqual(
+            self._step(built, "Echeance"),
+            '#"Added Echeance" = Table.AddColumn(Source, "Echeance", '
+            'each DateTime.From(Date.AddDays([Début], 7)), type datetime),')
+        self.assertEqual(
+            self._step(built, "Retard"),
+            '#"Added Retard" = Table.AddColumn(#"Added Echeance", "Retard", '
+            'each Duration.TotalDays([Echeance] - DateTime.From([Début])), '
+            'Int64.Type),')
+        self.assertIsNone(self._dax_column(built, "Retard"))
+
+    def test_real_difference_is_not_treated_as_a_date(self):
+        self.assert_m_column(
+            [{"name": "Amount", "datatype": "real"},
+             {"name": "Cost", "datatype": "real"}],
+            "[Amount]-[Cost]", "real", "([Amount] - [Cost])", "type number")
+
     def test_calc_col_falls_back_to_dax(self):
         """Dimension calc with unconvertible DAX → stays as DAX calc col (isCalculated=True)."""
         table = {
@@ -1923,57 +2155,208 @@ class TestSplitDaxArgsExtra(unittest.TestCase):
         self.assertEqual(result, [""])
 
 
-class TestWrapDateSubtractionInDurationDays(unittest.TestCase):
-    """Verify that date-column subtractions are wrapped in Duration.Days()."""
+class TestTypedDateArithmeticConversion(unittest.TestCase):
+    """Date arithmetic reaches M as the number the calculation means.
 
-    _DATE_COLS = [
-        {"name": "StartDate", "datatype": "date"},
-        {"name": "EndDate", "datatype": "datetime"},
-        {"name": "Amount", "datatype": "real"},
-        {"name": "Qty", "datatype": "integer"},
-    ]
+    In M, ``date - date`` is a duration, ``duration * number`` stays a
+    duration and ``date + number`` is an error, so composing these operations
+    needs the declared column types. DAX treats a date as a day number and
+    needs none of this.
+    """
 
-    def test_date_subtraction_wrapped(self):
-        result = _wrap_date_subtraction_in_duration_days(
-            "[EndDate] - [StartDate]", self._DATE_COLS, {})
-        self.assertEqual(result, "Duration.Days([EndDate] - [StartDate])")
+    COL_TYPES = {
+        "StartDate": "date",
+        "Due": "date",
+        "EndDate": "datetime",
+        "Closed": "datetime",
+        "Amount": "real",
+        "Qty": "integer",
+        "Order-Date": "date",
+        "Ship-Date": "date",
+    }
 
-    def test_date_subtraction_no_spaces(self):
-        result = _wrap_date_subtraction_in_duration_days(
-            "[EndDate]-[StartDate]", self._DATE_COLS, {})
-        self.assertEqual(result, "Duration.Days([EndDate]-[StartDate])")
+    def convert(self, dax, col_types=None):
+        return _dax_to_m_expression(
+            dax, "Sales", self.COL_TYPES if col_types is None else col_types)
 
-    def test_numeric_subtraction_not_wrapped(self):
-        result = _wrap_date_subtraction_in_duration_days(
-            "[Amount] - [Qty]", self._DATE_COLS, {})
-        self.assertEqual(result, "[Amount] - [Qty]")
+    def assert_converts(self, cases):
+        for dax, expected in cases:
+            with self.subTest(dax=dax):
+                self.assertEqual(self.convert(dax), expected)
 
-    def test_mixed_types_not_wrapped(self):
-        result = _wrap_date_subtraction_in_duration_days(
-            "[EndDate] - [Amount]", self._DATE_COLS, {})
-        self.assertEqual(result, "[EndDate] - [Amount]")
+    def assert_stays_in_dax(self, formulas):
+        for dax in formulas:
+            with self.subTest(dax=dax):
+                self.assertIsNone(self.convert(dax))
 
-    def test_non_subtraction_not_wrapped(self):
-        result = _wrap_date_subtraction_in_duration_days(
-            "[Amount] * [Qty]", self._DATE_COLS, {})
-        self.assertEqual(result, "[Amount] * [Qty]")
+    def test_date_difference_is_whole_days(self):
+        self.assert_converts([
+            ("[Due]-[StartDate]", "Duration.Days([Due] - [StartDate])"),
+            ("[Due] - [StartDate]", "Duration.Days([Due] - [StartDate])"),
+        ])
 
-    def test_complex_expression_not_wrapped(self):
-        result = _wrap_date_subtraction_in_duration_days(
-            "if [A] > 0 then [EndDate] - [StartDate] else 0",
-            self._DATE_COLS, {})
-        self.assertNotIn("Duration.Days", result)
+    def test_datetime_difference_keeps_fractional_days(self):
+        self.assert_converts([
+            ("[Closed]-[EndDate]",
+             "Duration.TotalDays([Closed] - [EndDate])"),
+        ])
 
-    def test_col_metadata_map_provides_types(self):
-        cols = [{"name": "A", "datatype": "string"}, {"name": "B", "datatype": "string"}]
-        meta = {"A": {"datatype": "date"}, "B": {"datatype": "datetime"}}
-        result = _wrap_date_subtraction_in_duration_days("[A] - [B]", cols, meta)
-        self.assertEqual(result, "Duration.Days([A] - [B])")
+    def test_mixed_difference_is_aligned_on_datetime(self):
+        # M cannot subtract a date from a datetime.
+        self.assert_converts([
+            ("[EndDate]-[StartDate]",
+             "Duration.TotalDays([EndDate] - DateTime.From([StartDate]))"),
+            ("[StartDate]-[EndDate]",
+             "Duration.TotalDays(DateTime.From([StartDate]) - [EndDate])"),
+        ])
 
-    def test_datediff_m_not_double_wrapped(self):
-        result = _wrap_date_subtraction_in_duration_days(
-            "Duration.Days([EndDate] - [StartDate])", self._DATE_COLS, {})
-        self.assertNotIn("Duration.Days(Duration.Days", result)
+    def test_difference_composes_with_other_operations(self):
+        self.assert_converts([
+            ("([Closed]-[EndDate])*24",
+             "((Duration.TotalDays([Closed] - [EndDate])) * 24)"),
+            ("[Due]-[StartDate]+1",
+             "(Duration.Days([Due] - [StartDate]) + 1)"),
+            ("[Due]-[StartDate]>30",
+             "Duration.Days([Due] - [StartDate]) > 30"),
+            ("ABS([Due]-[StartDate])",
+             "Number.Abs(Duration.Days([Due] - [StartDate]))"),
+            ("ROUND(([Closed]-[EndDate])*24, 1)",
+             "Number.Round(((Duration.TotalDays([Closed] - [EndDate])) * 24), 1)"),
+            ("IF([Due]-[StartDate]>30, 1, 0)",
+             "if (Duration.Days([Due] - [StartDate]) > 30) = true then 1 else 0"),
+        ])
+
+    def test_difference_is_typed_inside_every_nesting_construct(self):
+        diff = "[Due]-[StartDate]"
+        for dax in (
+            f"IF(1=1, {diff}, 0)", f"SWITCH(1, 1, {diff}, 0)",
+            f"DIVIDE({diff}, 2)", f"FLOOR({diff}, 7)", f"ISBLANK({diff})",
+            f"NOT({diff} > 3)", f"INT({diff})", f"SQRT({diff})",
+            f"ROUND({diff}, 0)", f"MID(\"abc\", {diff}, 1)",
+            f"SUBSTITUTE(\"abc\", \"a\", {diff})", f"DATE({diff})",
+            f"DATE(2024, 1, {diff})", f"({diff}) IN {{1, 2}}",
+            f"{diff} > 3 || [Qty] > 1", f"{diff} > 3 && [Qty] > 1",
+            f"{diff} = 3", f"1 + ({diff})", f"({diff}) * 2",
+        ):
+            with self.subTest(dax=dax):
+                converted = self.convert(dax)
+                self.assertIsNotNone(converted)
+                self.assertIn("Duration.Days([Due] - [StartDate])", converted)
+
+    def test_today_and_now_differences_are_numeric(self):
+        self.assert_converts([
+            ("TODAY()-[StartDate]",
+             "Duration.Days(Date.From(DateTime.LocalNow()) - [StartDate])"),
+            ("NOW()-[EndDate]",
+             "Duration.TotalDays(DateTime.LocalNow() - [EndDate])"),
+            ("NOW()-[StartDate]",
+             "Duration.TotalDays(DateTime.LocalNow() - DateTime.From([StartDate]))"),
+            ("TODAY()-[EndDate]",
+             "Duration.TotalDays(DateTime.From(Date.From(DateTime.LocalNow())) - [EndDate])"),
+            ("NOW()-TODAY()",
+             "Duration.TotalDays(DateTime.LocalNow() - "
+             "DateTime.From(Date.From(DateTime.LocalNow())))"),
+        ])
+
+    def test_whole_day_offsets_use_add_days(self):
+        self.assert_converts([
+            ("[StartDate]+7", "Date.AddDays([StartDate], 7)"),
+            ("[StartDate]-7", "Date.AddDays([StartDate], -(7))"),
+            ("7+[StartDate]", "Date.AddDays([StartDate], 7)"),
+            ("[EndDate]+7", "Date.AddDays([EndDate], 7)"),
+            ("YEAR([StartDate]+7)", "Date.Year(Date.AddDays([StartDate], 7))"),
+            ("[StartDate]+7-[Due]",
+             "Duration.Days(Date.AddDays([StartDate], 7) - [Due])"),
+        ])
+
+    def test_fractional_offset_is_converted_for_a_datetime_only(self):
+        self.assert_converts([
+            ("[EndDate]+0.5", "Date.AddDays([EndDate], 0.5)"),
+            ("0.5+[EndDate]", "Date.AddDays([EndDate], 0.5)"),
+        ])
+        self.assert_stays_in_dax(
+            ["[StartDate]+0.5", "0.5+[StartDate]", "[StartDate]-1.5"])
+
+    def test_unproven_offsets_and_operators_stay_in_dax(self):
+        self.assert_stays_in_dax([
+            "[StartDate]+[Qty]", "[Qty]+[StartDate]", "[StartDate]+[Amount]",
+            "[StartDate]+[Due]", "[StartDate]*2", "2*[StartDate]",
+            "[StartDate]/2", '[StartDate]&"x"', "[EndDate]-[Amount]",
+            "[Qty]-[EndDate]", "7-[StartDate]",
+        ])
+
+    def test_comparisons_align_a_date_with_a_datetime(self):
+        # M rejects < between a date and a datetime; = answers false silently.
+        self.assert_converts([
+            ("[StartDate]<[EndDate]", "DateTime.From([StartDate]) < [EndDate]"),
+            ("[EndDate]=[StartDate]", "[EndDate] = DateTime.From([StartDate])"),
+            ("[StartDate]<NOW()",
+             "DateTime.From([StartDate]) < DateTime.LocalNow()"),
+            ("[StartDate]<[Due]", "[StartDate] < [Due]"),
+            ("[StartDate]=TODAY()",
+             "[StartDate] = Date.From(DateTime.LocalNow())"),
+            ("[Amount]<[Qty]", "[Amount] < [Qty]"),
+        ])
+
+    def test_untyped_comparison_still_aligns_the_dates_it_builds(self):
+        self.assertEqual(
+            _dax_to_m_expression("NOW()>TODAY()", "Sales"),
+            "DateTime.LocalNow() > DateTime.From(Date.From(DateTime.LocalNow()))")
+
+    def test_datediff_counts_days_between_dates(self):
+        self.assert_converts([
+            ("DATEDIFF([StartDate],[Due],DAY)",
+             "Duration.Days(Date.From([Due]) - Date.From([StartDate]))"),
+            ("DATEDIFF([StartDate],NOW(),DAY)",
+             "Duration.Days(Date.From(DateTime.LocalNow()) - Date.From([StartDate]))"),
+            ("DATEDIFF([EndDate],[Closed],DAY)",
+             "Duration.Days(Date.From([Closed]) - Date.From([EndDate]))"),
+        ])
+        for interval in ("MONTH", "YEAR", "QUARTER"):
+            with self.subTest(interval=interval):
+                self.assertIsNotNone(
+                    self.convert(f"DATEDIFF([StartDate],[Due],{interval})"))
+
+    def test_datediff_by_clock_unit_stays_in_dax(self):
+        # DAX counts interval boundaries; a duration measures elapsed time.
+        self.assert_stays_in_dax([
+            f"DATEDIFF([EndDate],[Closed],{interval})"
+            for interval in ("HOUR", "MINUTE", "SECOND", "WEEK")])
+        self.assertIsNone(_dax_to_m_expression(
+            "DATEDIFF([Start],[End],HOUR)", "Sales"))
+
+    def test_special_character_names_resolve_to_their_type(self):
+        self.assert_converts([
+            ("[Ship-Date]-[Order-Date]",
+             'Duration.Days([#"Ship-Date"] - [#"Order-Date"])'),
+            ("[Ship-Date]+7", 'Date.AddDays([#"Ship-Date"], 7)'),
+        ])
+
+    def test_type_names_are_case_insensitive(self):
+        col_types = {"A": "Date", "B": "DateTime", "C": "dateTime"}
+        self.assertEqual(self.convert("[B]-[C]", col_types),
+                         "Duration.TotalDays([B] - [C])")
+        self.assertEqual(self.convert("[A]+1", col_types),
+                         "Date.AddDays([A], 1)")
+
+    def test_numeric_and_unknown_columns_are_not_dates(self):
+        self.assert_converts([
+            ("[Amount]-[Qty]", "([Amount] - [Qty])"),
+            ("[Qty]+7", "([Qty] + 7)"),
+            ("[Missing]-[Other]", "([Missing] - [Other])"),
+        ])
+
+    def test_untyped_conversion_does_not_guess_from_column_names(self):
+        # "a suggestive name is not proof of a date": without declared types
+        # the generic numeric reading is kept, with or without an empty map.
+        for dax, expected in (
+            ("[EndDate]-[StartDate]", "([EndDate] - [StartDate])"),
+            ("[StartDate]+7", "([StartDate] + 7)"),
+        ):
+            for args in ((), ({},)):
+                with self.subTest(dax=dax, col_types=args):
+                    self.assertEqual(
+                        _dax_to_m_expression(dax, "Sales", *args), expected)
 
 
 if __name__ == '__main__':

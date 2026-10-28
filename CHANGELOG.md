@@ -4,6 +4,40 @@
 
 ## Unreleased
 
+- Convert date arithmetic in Power Query M by operand type. Calculations such
+  as `[Fin]-[Début]`, `([Fin]-[Début])*24`, `[Fin]-[Début]>30`, `[Début]+7`,
+  `TODAY()-[Début]` or `[Début]<NOW()` reached M as plain operators, but in M a
+  date minus a date is a `duration`, a date plus a number is an error and a
+  date cannot be compared with a datetime. The step raised an error or the
+  typed column refused the value, so the table failed to load; `DATEDIFF` with
+  an hour, minute or second unit also returned a date-truncated number of
+  seconds. The converter now receives the declared types of the table's
+  columns, physical columns first and then earlier calculated columns, and
+  converts by operand type: a difference of two dates is `Duration.Days(...)`;
+  a difference involving a datetime is `Duration.TotalDays(...)`, with a date
+  operand promoted by `DateTime.From`; a date or datetime plus or minus a
+  whole-number literal is `Date.AddDays`; and a date compared with a datetime
+  is promoted first. The result composes inside larger expressions, `IF`
+  conditions, `YEAR`, `ABS` and `ROUND`. `DATEDIFF` stays in M for day, month,
+  quarter and year; hour, minute, second and week move to DAX, because DAX
+  counts interval boundaries while an M duration measures elapsed time.
+  Whatever the declared types do not prove stays in DAX instead of becoming
+  invalid M: a fractional offset on a date, a non-literal offset, `*`, `/` or
+  `&` on a date, a date plus a date, and `INT(...)` of a difference. A column
+  name is never taken as proof of a date. Evidence is unit tests, including
+  an evaluator of the emitted M, and the CLI output of a public sample compared
+  before and after; it is not a native Desktop refresh, and the conversion
+  assumes that a column's M type equals its declared Tableau type.
+
+- Parenthesise an `IF` or `SWITCH` used as an operand in Power Query M. The
+  `else` branch of an unparenthesised `if` extends as far right as it can, so
+  `IF([A]>0,1,2)+[B]` returned the `IF` value alone and dropped `[B]`. The
+  grouping is now added around an `IF` or `SWITCH` that is an operand of an
+  arithmetic, comparison, `&&` or `||` expression, an argument of `SWITCH`,
+  `FLOOR` or `ISBLANK`, or the start of `MID`; a bare `IF` or `SWITCH` is not
+  wrapped. Value tests evaluate the emitted M; native Desktop refresh is not
+  part of this evidence.
+
 - Reconcile whitespace-only promoted-header mismatches in declared-schema
   Excel, CSV, Google Sheets, SharePoint, PDF and Azure Blob queries. Preserve
   exact physical names first; an otherwise missing declared name requires a
