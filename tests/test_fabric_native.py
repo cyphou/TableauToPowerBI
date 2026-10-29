@@ -58,6 +58,8 @@ def sample_extracted_data():
                             {'name': 'CustomerName', 'datatype': 'string'},
                             {'name': 'OrderDate', 'datatype': 'datetime'},
                             {'name': 'Amount', 'datatype': 'real'},
+                            {'name': 'Profit', 'datatype': 'real'},
+                            {'name': 'Sales', 'datatype': 'real'},
                             {'name': 'Region', 'datatype': 'string'},
                         ],
                     },

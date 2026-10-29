@@ -18,6 +18,9 @@ You are the **Fabric** agent for the Tableau to Power BI migration project. You 
 - `powerbi_import/fabric_semantic_model_generator.py` — DirectLake semantic model wrapper
 
 ### Fabric support modules
+- `powerbi_import/calc_column_plan.py` — shared calculated-column placement, dependency order and materialisation plan
+- `powerbi_import/pyspark_converter.py` — typed Tableau-to-PySpark calculated-column conversion
+- `powerbi_import/pyspark_gate.py` — default-deny validation of generated PySpark statements
 - `powerbi_import/fabric_constants.py` — Spark/PySpark type maps, aggregation detection, artifact list
 - `powerbi_import/fabric_naming.py` — name sanitisation (Lakehouse tables, Spark columns, queries)
 - `powerbi_import/fabric_item.py` — Fabric item manifest helpers

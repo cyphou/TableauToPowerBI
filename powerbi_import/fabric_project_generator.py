@@ -112,7 +112,8 @@ class FabricProjectGenerator:
             lh_stats = lh_gen.generate(extracted_data)
         results['artifacts']['lakehouse'] = lh_stats
         print(f"         Tables: {lh_stats['tables']}, Columns: {lh_stats['columns']}, "
-              f"Calc columns: {lh_stats['calc_columns']}")
+              f"Calc columns: {lh_stats['calc_columns']} "
+              f"(+{lh_stats.get('calc_columns_pending', 0)} not converted)")
 
         # 2. Dataflow Gen2
         print(f"  [2/{artifact_count}] Generating Dataflow Gen2...")

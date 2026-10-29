@@ -4,6 +4,31 @@
 
 ## Unreleased
 
+- Plan Fabric calculated columns consistently across the Lakehouse definition
+  and PySpark transformations notebook. Resolve fields within their datasource,
+  order calculated-column dependencies, deduplicate generated names, inline
+  usable parameter defaults and constant calculations, and report unsupported,
+  unresolved, cyclic or type-incompatible columns with explicit reasons.
+  Aggregates and model-only calculations remain in the semantic model.
+  Pending columns are counted and listed in additive `pending_calc_columns`,
+  `unplaced_calc_columns` and `calc_measures` metadata instead of being declared
+  as materialised columns.
+
+- Replace regex-only Tableau-to-PySpark conversion with a typed parser and a
+  default-deny AST gate for generated `withColumn` statements. Refused formulas
+  become TODO comments or explanatory notebook entries, not executable broken
+  expressions; notebook text and generated statements escape control characters.
+  Preserve calculated-column DDL separators before formula comments, including
+  multiline formulas. Tests cover generated syntax and a documentation-based
+  executable PySpark model, not a real Spark/Fabric run or native Desktop refresh.
+  Physical ingestion-column naming and duplicate DAX calculated columns in the
+  Direct Lake model remain separate limitations; see the [FAQ](docs/FAQ.md#why-are-some-fabric-calculated-columns-not-materialised).
+
+- Add a preventive `DATEDIFF` shape check to the standalone DAX expression
+  validator: require exactly three arguments and a supported bare interval
+  keyword in the third position. Strings and identifiers are not mistaken for
+  function calls. This is static validation, not DAX engine execution.
+
 - Convert date arithmetic in Power Query M by operand type. Calculations such
   as `[Fin]-[Début]`, `([Fin]-[Début])*24`, `[Fin]-[Début]>30`, `[Début]+7`,
   `TODAY()-[Début]` or `[Début]<NOW()` reached M as plain operators, but in M a

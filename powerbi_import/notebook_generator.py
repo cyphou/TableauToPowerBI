@@ -3,22 +3,22 @@ PySpark Notebook Generator for Microsoft Fabric.
 
 Generates Jupyter notebooks (.ipynb) with PySpark code for:
 1. Data ingestion from original sources into Lakehouse Delta tables
-2. Data transformations (calculated columns materialised via withColumn)
+2. Data transformations (calculated columns materialised via withColumn,
+   as decided by ``calc_column_plan``)
 3. Schema validation and data quality checks
 """
 
 import json
 import os
+import re
 from datetime import datetime
 
-from .calc_column_utils import (
-    classify_calculations,
-    tableau_formula_to_pyspark,
-)
+from .calc_column_plan import plan_calculated_columns
 from .fabric_item import logical_id, write_platform
 from .fabric_naming import make_python_var as _make_var_name
 from .fabric_naming import sanitize_table_name as _sanitize_table_name
 from .fabric_sources import is_file_connection, table_connection
+from .pyspark_converter import todo_statement
 
 # Connection type → PySpark read snippet
 _SPARK_READ_TEMPLATES = {
@@ -197,6 +197,45 @@ def _code_cell(source, cell_id=None):
     }
 
 
+def _source_lines(text):
+    """Split ``text`` into notebook source lines (every line but the last ends with a newline)."""
+    lines = text.split('\n')
+    return [line + '\n' for line in lines[:-1]] + ([lines[-1]] if lines[-1] else [])
+
+
+def _one_line(text, limit=None):
+    """Collapse whitespace and non-printable characters so the text fits on one line."""
+    collapsed = ' '.join(''.join(ch if ch.isprintable() else ' ' for ch in str(text or '')).split())
+    if limit and len(collapsed) > limit:
+        collapsed = collapsed[:limit - 1].rstrip() + '…'
+    return collapsed
+
+
+def _md_code(text, limit=None):
+    """Render ``text`` as a Markdown inline code span, whatever backticks it contains."""
+    text = _one_line(text, limit) or ' '
+    longest = max((len(run) for run in re.findall(r'`+', text)), default=0)
+    fence = '`' * (longest + 1)
+    pad = ' ' if text.startswith('`') or text.endswith('`') else ''
+    return f'{fence}{pad}{text}{pad}{fence}'
+
+
+def _md_text(text, limit=None):
+    """Escape Markdown and HTML specials so workbook-controlled text renders literally."""
+    return re.sub(r'([\\`*_\[\]<>&~])', r'\\\1', _one_line(text, limit))
+
+
+_ASSUMPTIONS = [
+    '- Parameters are replaced by the value they had when the workbook was migrated.\n',
+    '- `TODAY()` and `NOW()` are evaluated when the cell runs, not when a report is viewed.\n',
+    '- Spark runs with `spark.sql.ansi.enabled = false` (the setup cell sets it): a failed cast or a division by zero gives NULL.\n',
+    '- String comparisons are case-sensitive (Spark binary collation).\n',
+    '- Results outside a function domain (for example `SQRT` of a negative number) were not compared with Tableau.\n',
+    '- Field references use the Tableau column names: rename the Delta columns, or edit the statements, if the ingestion wrote other names.\n',
+    '- Nothing in this notebook has been executed on Spark: review the output before relying on it.\n',
+]
+
+
 class NotebookGenerator:
     """Generates PySpark notebooks for Fabric ETL pipelines."""
 
@@ -218,13 +257,16 @@ class NotebookGenerator:
 
         Returns:
             Dict with generation stats
-            {'cells': int, 'notebooks': int, 'calc_columns': int}
+            {'cells': int, 'notebooks': int, 'calc_columns': int,
+             'calc_columns_pending': int}
+            ``calc_columns`` counts the columns materialised by the
+            transformations; ``calc_columns_pending`` those left as TODO.
         """
         datasources = extracted_data.get('datasources', [])
         custom_sql = extracted_data.get('custom_sql', [])
         calculations = extracted_data.get('calculations', [])
 
-        calc_columns, measures = classify_calculations(calculations)
+        plan = plan_calculated_columns(extracted_data)
 
         etl_cells = self._generate_etl_cells(datasources, custom_sql)
         etl_nb = _make_notebook(etl_cells, {
@@ -240,9 +282,7 @@ class NotebookGenerator:
         deployable_cells = list(etl_cells)
 
         if calculations:
-            transform_cells = self._generate_transformation_cells(
-                datasources, calc_columns, measures,
-            )
+            transform_cells = self._generate_transformation_cells(plan)
             transform_nb = _make_notebook(transform_cells, {
                 'lakehouse_name': f'{self.project_name}_Lakehouse',
                 'description': f'Data transformations for {self.project_name}',
@@ -276,7 +316,8 @@ class NotebookGenerator:
         return {
             'cells': total_cells,
             'notebooks': 1,
-            'calc_columns': len(calc_columns),
+            'calc_columns': len(plan.materialised),
+            'calc_columns_pending': len(plan.pending),
         }
 
     def _generate_etl_cells(self, datasources, custom_sql):
@@ -408,18 +449,26 @@ class NotebookGenerator:
 
         return cells
 
-    def _generate_transformation_cells(self, datasources, calc_columns, measures):
-        """Generate cells for data transformations."""
+    def _generate_transformation_cells(self, plan):
+        """Generate the transformation cells from a ``CalcColumnPlan``.
+
+        A code cell holds either one validated ``withColumn`` statement or
+        commented lines saying why the column was not converted, so
+        "Run all" cannot stop on a formula the converter refused.
+        """
         cells = []
 
         cells.append(_markdown_cell([
             f'# Data Transformations — {self.project_name}\n',
             '\n',
-            'Materialises calculated columns as physical columns\n',
-            'in the Lakehouse Delta table via PySpark withColumn().\n',
+            'Materialises the row-level calculated columns as physical columns\n',
+            'of the Lakehouse Delta tables via PySpark `withColumn()`.\n',
             '\n',
             f'**Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M")}\n',
-        ]))
+            '\n',
+            '**Assumptions**\n',
+            '\n',
+        ] + _ASSUMPTIONS))
 
         cells.append(_code_cell([
             'from pyspark.sql import SparkSession\n',
@@ -428,79 +477,100 @@ class NotebookGenerator:
             'from pyspark.sql.window import Window\n',
             'from datetime import datetime\n',
             '\n',
+            '# Tableau semantics: a failed cast or a division by zero gives NULL.\n',
+            'spark.conf.set("spark.sql.ansi.enabled", "false")\n',
+            '\n',
             'print(f"Transformations started: {datetime.now()}")\n',
         ]))
 
-        main_table_name = None
-        for ds in datasources:
-            for table in ds.get('tables', []):
-                t_name = table.get('name', '')
-                if t_name:
-                    lh_name = _sanitize_table_name(t_name)
-                    if main_table_name is None:
-                        main_table_name = lh_name
-                    elif len(table.get('columns', [])) > 0:
-                        main_table_name = lh_name
-
-        main_table_name = main_table_name or 'main_table'
-
-        if calc_columns:
+        for delta_table, columns in plan.by_table():
+            done = [column for column in columns if column.materialised]
             cells.append(_markdown_cell([
-                '## Calculated Columns (materialised)\n',
+                f'## Table {_md_code(delta_table)}\n',
                 '\n',
-                f'{len(calc_columns)} calculated column(s) will be added\n',
-                f'to the `{main_table_name}` Delta table.\n',
+                f'{len(done)} of {len(columns)} calculated column(s) are materialised.\n',
             ]))
 
-            cells.append(_code_cell([
-                '# Read the main table from Lakehouse\n',
-                f'df = spark.read.format("delta").table("{main_table_name}")\n',
-                'print(f"Rows: {df.count()}, Columns: {len(df.columns)}")\n',
-            ]))
+            if done:
+                cells.append(_code_cell([
+                    f'df = spark.read.format("delta").table({json.dumps(delta_table)})\n',
+                    'print(f"Rows: {df.count()}, Columns: {len(df.columns)}")\n',
+                ]))
 
-            for cc in calc_columns:
-                col_name = cc.get('caption', cc.get('name', ''))
-                formula = cc.get('formula', '')
+            for column in columns:
+                cells.append(_markdown_cell(self._column_header(column)))
+                if column.materialised:
+                    statement = column.statement
+                else:
+                    statement = todo_statement(
+                        column.caption, column.reason or 'not converted',
+                        column.formula)
+                cells.append(_code_cell(_source_lines(statement)))
 
-                cells.append(_markdown_cell(
-                    f'### `{col_name}` ({cc.get("datatype", "string")})\n\n'
-                    f'**Tableau formula:** `{formula}`'
-                ))
+            if done:
+                cells.append(_code_cell([
+                    '# Overwrite the Delta table with the new columns\n',
+                    'df.write.format("delta").mode("overwrite")'
+                    '.option("overwriteSchema", "true")'
+                    f'.saveAsTable({json.dumps(delta_table)})\n',
+                    f'print(f"Written {{len(df.columns)}} columns to '
+                    f'{delta_table}")\n',
+                ]))
 
-                pyspark_line = tableau_formula_to_pyspark(formula, col_name)
-                cells.append(_code_cell(pyspark_line + '\n'))
-
-            cells.append(_code_cell([
-                '# Overwrite the Delta table with the new columns\n',
-                f'df.write.format("delta").mode("overwrite")'
-                f'.option("overwriteSchema", "true")'
-                f'.saveAsTable("{main_table_name}")\n',
-                f'print(f"Written {{len(df.columns)}} columns to '
-                f'{main_table_name}")\n',
-            ]))
-
-        if measures:
-            cells.append(_markdown_cell([
-                '## Measures (DAX — informational only)\n',
+        unplaced = plan.unplaced()
+        if unplaced:
+            lines = [
+                '## Calculated columns without a Delta table\n',
                 '\n',
-                'The following calculations use aggregation functions\n',
-                'and will remain as DAX measures in the Semantic Model.\n',
-            ]))
-            for m in measures:
-                m_name = m.get('caption', m.get('name', 'Unnamed'))
-                m_formula = m.get('formula', '')
-                cells.append(_markdown_cell(
-                    f'- **`{m_name}`**: `{m_formula}`'
-                ))
+                'This notebook does not materialise these calculations:\n',
+                '\n',
+            ]
+            for column in unplaced:
+                lines.append(
+                    f'- {_md_code(column.caption)}: '
+                    f'{_md_text(column.reason, 240)}\n')
+            cells.append(_markdown_cell(lines))
+
+        if plan.measures:
+            lines = [
+                '## Calculations kept as DAX measures (informational)\n',
+                '\n',
+                'These calculations aggregate, or cannot be computed row by row,\n',
+                'so this notebook does not materialise them.\n',
+                '\n',
+            ]
+            for measure in plan.measures:
+                lines.append(
+                    f'- {_md_code(measure.caption)}: '
+                    f'{_md_text(measure.reason, 120)} — '
+                    f'{_md_code(measure.formula, 160)}\n')
+            cells.append(_markdown_cell(lines))
 
         cells.append(_markdown_cell('## Summary'))
         cells.append(_code_cell([
             'print("\\n" + "=" * 60)\n',
             'print("Transformations Complete")\n',
             'print("=" * 60)\n',
-            f'print("Calculated columns materialised: {len(calc_columns)}")\n',
-            f'print("Measures kept as DAX:            {len(measures)}")\n',
+            f'print("Calculated columns materialised:     {len(plan.materialised)}")\n',
+            f'print("Calculated columns not converted:    {len(plan.pending)}")\n',
+            f'print("Calculations kept as DAX measures:   {len(plan.measures)}")\n',
             'print(f"Completed: {datetime.now()}")\n',
         ]))
 
         return cells
+
+    @staticmethod
+    def _column_header(column):
+        """Markdown cell describing one planned column."""
+        lines = [
+            f'### {_md_code(column.caption)} → {_md_code(column.delta_name)} '
+            f'({column.spark_type})\n',
+            '\n',
+            f'**Tableau formula:** {_md_code(column.formula, 400)}\n',
+        ]
+        for note in column.notes:
+            lines.append(f'- {_md_text(note, 240)}\n')
+        if not column.materialised:
+            lines.append(
+                f'- **Not converted:** {_md_text(column.reason, 240)}\n')
+        return lines

@@ -486,6 +486,43 @@ Use `--output-format fabric` to generate Lakehouse, Dataflow Gen2, PySpark Noteb
 python migrate.py fabric ./one_workbook --output-dir /tmp/fabric_output
 ```
 
+### Why are some Fabric calculated columns not materialised?
+
+The Lakehouse definition and transformations notebook use the same
+[calculated-column planner](../powerbi_import/calc_column_plan.py).
+It resolves datasource-scoped fields, orders dependencies and assigns one
+generated column name in one table. Only supported expressions that pass the
+PySpark AST gate are materialised. Aggregates and model-only calculations stay
+in the semantic model.
+
+An unsupported formula, missing or ambiguous field, circular dependency, type
+conflict or calculation needing several tables is reported with a reason.
+Placed pending columns receive TODO comment cells; unplaced ones are listed in
+the notebook. Neither becomes an executable invalid expression or a declared
+Lakehouse calculated column. `table_metadata.json` records per-table
+`pending_calc_columns`, top-level `unplaced_calc_columns` and `calc_measures`;
+generation statistics count materialised and pending columns separately.
+
+Review the notebook's assumptions before running it:
+
+- Parameter references use migration-time defaults; `TODAY()` and `NOW()`
+  become snapshots when the notebook runs, not dynamic report calculations.
+- The setup cell disables Spark ANSI mode. NULL behaviour for division by zero
+  and invalid operations depends on that setting.
+- Notes identify unknown field types, string collation/case sensitivity,
+  Spark's three-valued AND/OR logic, math-domain NaN behaviour, rounding ties
+  and substring/split assumptions. These are not claims of Tableau parity.
+  Modulo (`%`) and `DATEADD` are refused where semantics remain unverified.
+- Source-field references retain Tableau display names. Physical-column
+  sanitisation in DDL versus ingestion naming is not reconciled by this change;
+  review actual Delta names. The Direct Lake model still carries its DAX
+  calculated columns; notebook materialisation does not remove those duplicates.
+
+Validation uses Python syntax/AST checks and an executable, documentation-based
+PySpark model. No real Spark, Fabric or Desktop execution is established by
+these tests. Successful generation alone does not establish refresh or semantic
+equivalence.
+
 ### How do I optimize the generated DAX formulas?
 
 Use `--optimize-dax` to run an AST-based DAX optimizer pass after conversion. This rewrites verbose formulas for readability and performance:

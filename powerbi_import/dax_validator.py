@@ -213,6 +213,64 @@ def _check_quotes(expr: str) -> List[str]:
     return issues
 
 
+#: DAX DATEDIFF is DATEDIFF(<Date1>, <Date2>, <Interval>) where Interval is a
+#: bare keyword. Tableau's DATEDIFF('unit', start, end[, start_of_week]) has a
+#: different shape and its 4-argument form has no DAX equivalent, so any other
+#: shape reaching the output is a conversion leak that Desktop would reject.
+DATEDIFF_INTERVALS = frozenset({
+    'SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK', 'MONTH', 'QUARTER', 'YEAR',
+})
+_DATEDIFF_CALL = re.compile(r'\bDATEDIFF\s*\(', re.IGNORECASE)
+
+
+def _call_arg_spans(masked: str, start: int):
+    """Spans of the top-level arguments of the call opened just before ``start``.
+
+    ``masked`` must come from ``mask_literal_spans`` so that commas and
+    parentheses inside strings or identifiers are invisible. Returns None for
+    an unterminated call (the balance check reports that case).
+    """
+    depth = 1
+    arg_start = start
+    spans = []
+    for i in range(start, len(masked)):
+        ch = masked[i]
+        if ch in '({':
+            depth += 1
+        elif ch in ')}':
+            depth -= 1
+            if depth == 0:
+                spans.append((arg_start, i))
+                return spans
+        elif ch == ',' and depth == 1:
+            spans.append((arg_start, i))
+            arg_start = i + 1
+    return None
+
+
+def _check_datediff(text: str) -> List[str]:
+    issues: List[str] = []
+    masked = mask_literal_spans(text)
+    for match in _DATEDIFF_CALL.finditer(masked):
+        spans = _call_arg_spans(masked, match.end())
+        if spans is None:
+            continue
+        if len(spans) == 1 and not masked[spans[0][0]:spans[0][1]].strip():
+            spans = []
+        if len(spans) != 3:
+            issues.append(
+                f'DATEDIFF takes 3 arguments (Date1, Date2, Interval), got {len(spans)}'
+            )
+            continue
+        start, end = spans[2]
+        if text[start:end].strip().upper() not in DATEDIFF_INTERVALS:
+            issues.append(
+                'DATEDIFF interval must be a bare keyword: '
+                + ', '.join(sorted(DATEDIFF_INTERVALS))
+            )
+    return issues
+
+
 def validate_dax_expression(expr: str) -> List[str]:
     """Validate a generated DAX expression.
 
@@ -228,6 +286,7 @@ def validate_dax_expression(expr: str) -> List[str]:
         issues.append('unterminated block comment')
     issues.extend(_check_quotes(text))
     issues.extend(_check_balanced(text))
+    issues.extend(_check_datediff(text))
 
     if _TABLEAU_FUNC_LEAK.search(text):
         issues.append('unconverted Tableau function token detected in DAX output')

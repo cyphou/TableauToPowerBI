@@ -135,6 +135,98 @@ class TestStrictEqualityValidatorRegression(unittest.TestCase):
         ), issues)
 
 
+class TestDatediffShape(unittest.TestCase):
+    """DAX DATEDIFF(<Date1>, <Date2>, <Interval>) takes a bare keyword unit.
+
+    Tableau's DATEDIFF('unit', a, b, 'start_of_week') has no DAX equivalent, and
+    the converter leaves a call it cannot rewrite untouched. The validator must
+    flag it so the existing TODO fallback applies instead of emitting DAX that
+    Desktop rejects.
+    """
+
+    def _datediff(self, expr):
+        return [i for i in validate_dax_expression(expr) if 'DATEDIFF' in i]
+
+    def test_every_documented_interval_is_accepted(self):
+        for unit in ('SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK', 'MONTH', 'QUARTER', 'YEAR'):
+            with self.subTest(unit=unit):
+                self.assertEqual(self._datediff(f"DATEDIFF([A], [B], {unit})"), [])
+
+    def test_interval_keyword_is_case_insensitive_and_spaced(self):
+        self.assertEqual(self._datediff("DATEDIFF( [A] ,\n [B] ,\n day )"), [])
+
+    def test_four_argument_tableau_form_is_flagged(self):
+        issues = self._datediff("DATEDIFF('week', [A], [B], 'monday')")
+        self.assertEqual(len(issues), 1)
+        self.assertIn('got 4', issues[0])
+
+    def test_two_arguments_are_flagged(self):
+        self.assertIn('got 2', self._datediff("DATEDIFF([A], [B])")[0])
+
+    def test_no_arguments_are_flagged(self):
+        self.assertIn('got 0', self._datediff("DATEDIFF()")[0])
+
+    def test_unconverted_tableau_three_argument_form_is_flagged(self):
+        issues = self._datediff("DATEDIFF('day', [A], [B])")
+        self.assertEqual(len(issues), 1)
+        self.assertIn('bare keyword', issues[0])
+
+    def test_quoted_interval_is_flagged(self):
+        self.assertTrue(self._datediff('DATEDIFF([A], [B], "DAY")'))
+        self.assertTrue(self._datediff("DATEDIFF([A], [B], 'DAY')"))
+
+    def test_expression_interval_is_flagged(self):
+        self.assertTrue(self._datediff("DATEDIFF([A], [B], [Unit])"))
+
+    def test_commas_inside_nested_calls_and_strings_are_not_arguments(self):
+        expr = 'DATEDIFF(IF([A] > 0, [A], DATE(2020, 1, 1)), [B], DAY)'
+        self.assertEqual(self._datediff(expr), [])
+        self.assertEqual(self._datediff('DATEDIFF([a, b], [c], MONTH)'), [])
+
+    def test_every_nested_call_is_checked(self):
+        expr = 'DATEDIFF(DATEDIFF([A], [B], DAY), [C], MONTH) + DATEDIFF([D], [E])'
+        issues = self._datediff(expr)
+        self.assertEqual(len(issues), 1)
+        self.assertIn('got 2', issues[0])
+
+    def test_text_in_strings_comments_and_names_is_ignored(self):
+        for expr in (
+            '"DATEDIFF(x)"',
+            '[DATEDIFF(a, b)] + 1',
+            "/* DATEDIFF('week', a, b, 'monday') */ SUM([A])",
+            "SUM([A]) // DATEDIFF(x)",
+        ):
+            with self.subTest(expr=expr):
+                self.assertEqual(self._datediff(expr), [])
+
+    def test_unterminated_call_is_left_to_the_balance_check(self):
+        issues = validate_dax_expression("DATEDIFF([A], [B], DAY")
+        self.assertEqual([i for i in issues if 'DATEDIFF' in i], [])
+        self.assertTrue(any('unmatched' in i for i in issues))
+
+    def test_converter_falls_back_to_a_todo_for_the_four_argument_form(self):
+        result = convert_tableau_formula_to_dax(
+            "DATEDIFF('week', [Order Date], [Ship Date], 'monday')",
+            column_name='Lead Weeks',
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+        self.assertIn('TODO: DAX conversion validation failed for Lead Weeks', result)
+        self.assertTrue(result.rstrip().endswith('BLANK()'))
+        self.assertNotIn("'monday'", result.split('*/')[-1])
+
+    def test_converter_still_converts_the_supported_three_argument_form(self):
+        result = convert_tableau_formula_to_dax(
+            "DATEDIFF('day', [Order Date], [Ship Date])",
+            column_name='Lead Days',
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+        self.assertNotIn('TODO', result)
+        self.assertEqual(self._datediff(result), [])
+        self.assertIn('DAY)', result)
+
+
 class TestMaskLiteralSpans(unittest.TestCase):
     """Masking keeps offsets so position-based messages stay accurate."""
 
