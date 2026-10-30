@@ -55,10 +55,10 @@
     "real_world/tableau_prep_book.tfl": {
       "category": "analysis",
       "details": [
-        "Unknown Prep baseType 'superNode'"
+        "actionNode.nodeType 'SimpleJoin' conflicts with wrapper 'SuperJoin'"
       ],
       "blockers": [],
-      "reason": "Real flow from 'Visual Analytics with Tableau' built on SuperUnion/SuperJoin container nodes (baseType superNode). The strict Prep parser does not implement them and refuses instead of guessing. Open product gap, tracked here until container nodes are supported."
+      "reason": "The observed SimpleUnion namespaceFieldMappings dialect is now supported, but this real flow from 'Visual Analytics with Tableau' still rejects the later SimpleJoin action inside SuperJoin. Left/right inputs and equality keys are declared, but result-field selection and duplicate-key/collision semantics are not established; aliasing it to the existing Join parser would invent a projection. Separately, the mapped union inputs declare incompatible string/real fields without an explicit cast. The measured first blocker remains exact, with no fields discarded or types guessed to force success."
     }
   }
 }

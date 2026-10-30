@@ -4,6 +4,51 @@
 
 ## Unreleased
 
+- Decode the observed Prep `SimpleUnion.namespaceFieldMappings` producer form
+  per incoming namespace, applying simultaneous field renames before append.
+  Validate physical inputs, mapping coverage, name collisions and compatible
+  types; preserve unmapped fields and keep schema/M output consistent.
+  Static production-path tests include standalone export and workbook/TMDL
+  binding. Other mapping dialects, unproved clean operations and dynamic pivot
+  schemas remain blocking; native M/value equivalence is not claimed.
+
+- Normalize known Prep `superNode`/`actionNode` envelopes without discarding
+  their operation or ordered actions. Accept column-keyed field dictionaries
+  with checked names; expose unsupported payload/filter diagnostics for
+  inventory while refusing lossy conversion. Collapse only semantically empty,
+  unambiguously routed containers. This does not close the seven unsupported
+  clean dialects or data-dependent rows-to-columns pivot.
+
+- Preserve exact physical `sourceColumn` whitespace and quote characters using
+  TOM-compatible conditional double quoting. Model readers, Hyper CSV typing
+  and projections share the decoding rule. Synthetic CSV/Parquet binding and
+  installed offline TOM tests do not certify native refresh.
+
+- Finalize failed PBIP workbook batches with a withheld entry point,
+  `migration_failure.json`, original stage/rejection details and synchronized
+  openability, quality HTML/JSON and evidence ZIPs. Retain extraction snapshots
+  for diagnosis and remove obsolete failure files on successful retry.
+  Semantic/source integrity guards remain blocking under every quality policy.
+  The public corpus gate distinguishes matching, retracted known-failure
+  diagnostics from published projects; a failed entry may not retain a PBIP.
+  Its existing Prep limitation now records the measured downstream
+  `SimpleJoin` projection gap after implementing the observed manual-union
+  form. Independent incompatible union-input types remain blocking; the
+  five-entry limitation list has not been reduced.
+
+- Add explicit `--calendar-mode fixed` to isolate Calendar from source rereads,
+  using supplied bounds or 2020–2030 defaults. Keep source-derived expansion as
+  the default; disclose range provenance, source dependencies and unverified
+  coverage in TMDL/static diagnostics rather than masking source errors.
+  No external/private corpus recovery rate or native refresh is claimed.
+
+- Document source-recovery requirements for legacy `.tde` extracts: Tableau
+  Desktop 2024.2 is the last version that can upgrade them; missing extracts
+  must be restored/regenerated or rebound to a complete supported source.
+  Empty/sample partitions and file-extension changes are not data recovery.
+  Keep the seven unproved clean dialects and fixed-domain pivot evidence gaps
+  explicit rather than enabling guessed conversions.
+
 - Plan Fabric calculated columns consistently across the Lakehouse definition
   and PySpark transformations notebook. Resolve fields within their datasource,
   order calculated-column dependencies, deduplicate generated names, inline
@@ -165,7 +210,9 @@
   legacy `.tde` files, which the Hyper API refuses with "invalid magic value in
   header", so no complete export exists; re-saving them as `.hyper` in Tableau
   Desktop would make them migratable), the empty flow `SampleFlow.tfl`, and
-  `tableau_prep_book.tfl` (Prep `superNode` containers are not implemented).
+  `tableau_prep_book.tfl` (the gate then rejected Prep `superNode` envelopes).
+  That is historical gate evidence; later envelope normalization does not
+  establish conversion of every inner dialect or a new corpus success rate.
   The match is exact in both directions: an unlisted failure, another error
   category or details, an unrecorded or vanished blocker, and a listed artefact
   that now migrates or no longer exists all fail the gate, so the list can only

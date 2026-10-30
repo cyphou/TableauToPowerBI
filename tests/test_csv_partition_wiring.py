@@ -19,6 +19,7 @@ from unittest import mock
 
 import migrate
 from powerbi_import.errors import GenerationError
+from powerbi_import.tmdl_writers import _serialize_source_column
 from tests.hyper_test_helpers import StreamingHyperApi
 from tests.native_import_test_helpers import forbid_native_payload_io
 
@@ -2155,7 +2156,7 @@ class TestHyperCsvTypeChanges(unittest.TestCase):
     def test_quoted_source_names_are_unescaped_then_escaped_as_m_literals(self):
         content = (
             "\tcolumn 'Customer''s Caption'\n\t\tdataType: double\n"
-            "\t\tsourceColumn: 'Customer''s \"Amount\"'\n"
+            '\t\tsourceColumn: "Customer\'s ""Amount"""\n'
         )
         expected = ['{"Customer\'s ""Amount""", type number}']
         self.assertEqual(migrate._hyper_csv_type_changes(
@@ -2467,7 +2468,7 @@ class TestHyperCsvSourceTyping(unittest.TestCase):
                                 "tables", "Orders.tmdl")
             with open(path, "a", encoding="utf-8") as stream:
                 stream.write("\n\tcolumn 'Display Caption'\n\t\tdataType: double\n"
-                             "\t\tsourceColumn: 'Customer''s \"Amount\"'\n")
+                             "\t\tsourceColumn: Customer's \"Amount\"\n")
             self.legacy_csv = os.path.join(data, "orders_extract.csv")
             self.legacy_bytes = b'"Customer\'s ""Amount"""\n1234.5\n'
             _write(self.legacy_csv, self.legacy_bytes)
@@ -2552,7 +2553,7 @@ class TestPendingHyperCsvExtractionTypes(unittest.TestCase):
 
         declarations = "".join(
             f"\tcolumn {quote(caption)}\n\t\tdataType: {datatype}\n"
-            f"\t\tsourceColumn: {quote(source_column)}\n\n"
+            f"\t\tsourceColumn: {_serialize_source_column(source_column)}\n\n"
             for caption, source_column, datatype in model_columns
         )
         declaration = f"table {self.table}\n"

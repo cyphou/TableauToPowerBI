@@ -223,7 +223,10 @@ batch does not forward `--quality-strict`, so its exit status alone is not a
 quality PASS.
 Use `--quality-policy report|enterprise|production` to control whether static
 semantic diagnostics and unresolved lineage are informational, warnings, or
-blocking findings. Runtime execution still requires an authorized executor.
+blocking findings. This does not bypass semantic/source integrity guards or
+authorize lossy conversions. Failed PBIP workbook batches withhold the entry
+point and retain explicit [failure diagnostics](docs/FAQ.md#why-does-my-project-fail-the-openability-gate).
+Runtime execution still requires an authorized executor.
 Add `--quality-ai` for an optional summary based only on verified findings; AI
 never changes the validation status.
 Run `python migrate.py --help` for the concise command list. Supported
@@ -378,7 +381,10 @@ publishes the file at its actual destination, including accented paths.
 Export completeness and static binding checks do not certify native refresh,
 saved model data or visual parity.
 Legacy `.tde` files must
-be converted in Tableau or exported to CSV; `tableauhyperapi` does not read `.tde`.
+be upgraded with a compatible Tableau Desktop version (2024.2 is the last
+supported version) or replaced by a complete supported source;
+`tableauhyperapi` does not read `.tde`. See the
+[source recovery steps](docs/FAQ.md#what-about-tde-files-legacy-tableau-data-extract).
 
 </td>
 <td width="50%">
@@ -598,7 +604,12 @@ Reliability safeguards in shared-model mode:
 ![Global Assessment — Cross-Workbook Merge Analysis](docs/images/share_assessment.png)
 ### 📋 Tableau Prep Flow Migration
 
-Standalone `.tfl`/`.tflx` Prep flows are migrated **without generating a `.pbip` project** — instead, the tool produces **Power Query M expressions**, **source definitions**, **cross-flow lineage analysis**, and **merge recommendations**.
+Supported standalone `.tfl`/`.tflx` Prep flows are migrated **without generating a `.pbip` project** — instead, the tool produces **Power Query M expressions**, **source definitions**, **cross-flow lineage analysis**, and **merge recommendations**. Unsupported operations block conversion rather than being silently skipped; see the [Prep scope and evidence](docs/TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#parser-scope-and-workbook-binding-contract-reports-8183).
+
+The observed manual `SimpleUnion` form supports per-input field mappings with
+exact namespace validation and simultaneous renames. Arbitrary mapping dialects,
+incompatible types and dynamic pivot schemas remain explicit limitations;
+static conversion tests do not establish native refresh or value equivalence.
 
 ```mermaid
 flowchart LR
@@ -1006,8 +1017,9 @@ Other rows below describe separate routes or retained parser options.
 | `--bundle-refresh` | Trigger dataset refresh after bundle deployment |
 | `--sync` | Retired; does not detect Server changes or auto-deploy batch output |
 | **Semantic Model** | |
-| `--calendar-start YEAR` | Calendar table start year (default: 2020) |
-| `--calendar-end YEAR` | Calendar table end year (default: 2030) |
+| `--calendar-start YEAR` | Explicit Calendar start year; unspecified source-mode bounds can expand beyond the 2020 fallback |
+| `--calendar-end YEAR` | Explicit Calendar end year; unspecified source-mode bounds can expand beyond the 2030 fallback |
+| `--calendar-mode source\|fixed` | Default `source` extends unspecified bounds from sources. Explicit `fixed` avoids Calendar source reads, using supplied bounds or 2020–2030; verify date coverage separately |
 | `--culture LOCALE` | Culture/locale for linguistic metadata (e.g., `fr-FR`) |
 | `--languages LOCALES` | Shared-model culture files (e.g., `fr-FR,de-DE`); not forwarded by batch |
 | `--mode MODE` | Source selection comes first: an eligible original database takes precedence over its Hyper. Default `auto`: retained Hyper/import-only sources use Import, capable native sources use DirectQuery; `import` overrides to Import, not back to Hyper. Native Import generates connection/schema/M without row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Retained Hyper still exports data. Advanced `directquery`/`composite` remain available |

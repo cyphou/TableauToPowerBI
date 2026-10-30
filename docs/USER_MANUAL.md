@@ -191,6 +191,17 @@ python migrate.py batch ./workbooks --output-dir ./output
 
 Batch mode isolates each workbook. A failure in one workbook does not rewrite another workbook's evidence.
 
+Failed PBIP workbooks keep a `migration_failure.json` diagnostic instead of a
+`.pbip` completion marker. Their openability, quality HTML/JSON and evidence ZIP
+are synchronized to failure; intermediate `.migration_extract` snapshots are
+retained for diagnosis and retry.
+
+For Calendar without source rereads, use
+`--calendar-mode fixed --calendar-start 2018 --calendar-end 2035`. Fixed mode
+defaults to 2020–2030 if years are omitted. Source-derived expansion remains the
+default; fixed coverage must be verified, including future dates. This only
+isolates Calendar, not other source queries.
+
 ### Generate Fabric Artifacts
 
 ```bash
@@ -220,6 +231,7 @@ A typical PBIP migration produces:
 | `<Report>.SemanticModel/` | TMDL tables, measures, relationships, roles, cultures, M partitions |
 | `Data/` | Hyper CSV/Parquet exports and unchanged copies of explicitly packaged Excel workbooks; copied Excel sources use absolute paths. Other native sources retain original bindings |
 | `openability_report.json` | Static check that the PBIP structure, JSON, TMDL, DAX, and M are valid |
+| `migration_failure.json` | Failed PBIP workbook only: original stage/rejection, withheld completion marker and retained extraction snapshot path |
 | `migration_metadata.json` | Source, output, and run metadata |
 | `lineage_map.json` | Source-to-target lineage evidence |
 | `credentials_template.json` | Placeholder credential and gateway handoff information |
@@ -257,6 +269,33 @@ reported as proof that the model contains rows. Keep the HTML, JSON, and PNG
 evidence outside the source repository when it contains customer information.
 
 Static validation is intentionally conservative. It must not claim Desktop or Fabric success unless those environments actually supplied evidence.
+
+### Resolving a blocked migration
+
+Start with the item's recorded phase and original error, not only the aggregate
+success count. A failed workbook may retain diagnostic artifacts but no `.pbip`
+entry point; those artifacts are not a completed project.
+
+- **Missing or legacy extract:** restore/package the actual source, or upgrade
+  `.tde` using a compatible Tableau Desktop version before regenerating. See the
+  [source recovery steps](FAQ.md#what-about-tde-files-legacy-tableau-data-extract).
+  Renaming a file extension or substituting sample/empty rows cannot repair it.
+- **Unsupported Prep operation:** use its structured diagnostics to identify the
+  exact node, payload and schema. Obtain a public or authorized minimal producer
+  example with expected results before extending the converter. A recognized
+  wrapper or an available M helper does not prove support for its inner dialect.
+  See the [Prep scope contract](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#parser-scope-and-workbook-binding-contract-reports-8183).
+- **Unstable pivot schema:** provide producer-backed fixed output-domain and
+  aggregation metadata, or explicitly redesign the source to retain long-form
+  data. Do not silently drop categories to force a fixed model.
+- **Refresh failure:** preserve the source/query/relationship error for causal
+  reproduction. A fixed Calendar range isolates Calendar source reads only;
+  it does not repair other queries or prove date coverage.
+
+After repairing the source or converter, rerun the ordinary batch command.
+Keep static validation, authorized native refresh, value comparison and visual
+review as separate evidence; neither a generated file nor a screenshot closes
+all four checks.
 
 ### Power Query source errors
 

@@ -212,6 +212,15 @@ values fall back to text. Column types come from extraction metadata, with model
 `sourceColumn`/`dataType` as a fallback, and use explicit `en-US` culture for
 invariant CSV values.
 
+Physical names remain exact, including leading/trailing whitespace and
+otherwise identical names such as `Count` and `Count `. The TMDL writer uses
+TOM's conditional double-quote syntax for whitespace-edge or enclosing-quote
+`sourceColumn` values; normal binding strings remain unquoted. Model readback,
+CSV typing and projections decode the same syntax without trimming physical
+headers or treating apostrophes as object-name delimiters. Tests include
+synthetic CSV/Parquet bindings and an installed offline TOM roundtrip, not a
+native refresh certification.
+
 Earlier Power BI evidence for World Indicators recorded numeric types,
 successful `AVERAGE` queries, and a populated Business scatter without an
 aggregate error. A separate pre-fix refresh loaded 2,691 rows but reported 345
@@ -233,9 +242,29 @@ Desktop, rendered-output, or parity certification.
 
 ### What about `.tde` files (legacy Tableau Data Extract)?
 
-`.tde` is the **pre-2018 legacy extract format**. It cannot be read by `tableauhyperapi`, SQLite, or the binary scanner. Tables from `.tde`-based workbooks get a placeholder `#table()` partition with a `TODO` comment. To migrate the data, either:
-- Re-save the workbook in Tableau Desktop (which converts `.tde` → `.hyper`)
-- Manually export the data to CSV and update the M expression
+`.tde` is the **pre-2018 legacy extract format**. It cannot be read by
+`tableauhyperapi`, SQLite, or the binary scanner. A required legacy-only
+extract blocks PBIP batch migration: an empty/sample `#table()` or a renamed
+file extension is not a full-data export.
+
+To repair the source before rerunning migration:
+
+1. Use an authorized Tableau Desktop version that can open the legacy extract.
+   **2024.2 is the last supported version for this operation; 2024.3 and later
+   cannot upgrade `.tde`.** Select the datasource, then **Data > Extract >
+   Upgrade**, and save. See Tableau's
+   [extract-upgrade instructions](https://help.tableau.com/current/pro/desktop/en-us/extracting_upgrade.htm).
+2. Save/package the updated workbook with its actual `.hyper` extract and
+   verify that all required extract dependencies are included. Rerun the
+   ordinary batch command against that updated source folder.
+3. If upgrading is unavailable, obtain a complete export and update the
+   workbook's source binding/schema to that supported file, or supply a
+   complete explicit original database binding. Regenerate the project rather
+   than patching only the emitted M. Database selection does not prove that
+   current database values equal the old extract snapshot.
+
+An unpackaged workbook referencing a missing extract first needs that source
+restored or regenerated; no converter can reconstruct the missing rows.
 
 ## Migration
 
@@ -627,6 +656,15 @@ Desktop. If it reports `openable=false`, read the listed blocking issues; the mo
 cause is an invalid generated M partition. Fix the source generator, not the emitted
 `.tmdl`. Re-run with `--no-verify-open` only to bypass the gate deliberately for diagnosis.
 
+After a failed PBIP workbook batch, the `.pbip` completion marker is withheld.
+Read `migration_failure.json` in the project directory for the original stage
+and rejection reason. The stored openability report, quality JSON/HTML and
+evidence ZIP describe that final failed state, not an earlier static pass.
+Partial artifacts and per-workbook `.migration_extract` snapshots remain for
+diagnosis; they are not completed projects. A successful retry removes the old
+failure file. `--quality-policy report` does not relax semantic/source binding
+guards or replace a composite/range predicate with a false equality relationship.
+
 For separate deterministic DAX/M/visual recovery, use the MCP `autoheal` tool
 and review the resulting repair evidence. The parser's legacy `--autoheal` and
 `--llm-autofix` switches are not forwarded by batch generation. Native diagnostics
@@ -636,6 +674,22 @@ The local browser's separately confirmed diagnostics and
 `python scripts\probe_projects.py PROJECTS_DIR` remain alternatives.
 The `--verify-open` verdict applies only to its static checks; it does not
 override a Desktop load or refresh failure.
+
+### How can Calendar avoid rereading a failing source?
+
+Default `--calendar-mode source` retains source-derived expansion for
+unspecified bounds. A source error remains visible; it is not replaced with
+empty date rows. To isolate Calendar itself, choose a fixed, verified range:
+
+```powershell
+python migrate.py batch .\workbooks --calendar-mode fixed --calendar-start 2018 --calendar-end 2035
+```
+
+In fixed mode, omitted bounds use 2020 and 2030. Supplying both explicit years
+also avoids Calendar source copies without the mode option. Fixed bounds do
+not cover new/out-of-range dates automatically and do not repair the failing
+fact source. `Migration_CalendarBounds` and static refresh diagnostics record
+the range, its source dependencies and unverified runtime coverage.
 
 ### Can `openable=true` still fail when data is refreshed?
 

@@ -22,6 +22,50 @@ is parsed. Report **#81 remains partially supported**, not closed. Existing
 #82/#83 behavior is preserved, including recursive-container/DAG handling and
 standalone export validation.
 
+### Envelopes and shape variants (reports 85-87)
+
+The six known `superNode` envelopes (`SuperTransform`, `SuperJoin`,
+`SuperAggregate`, `SuperUnion`, `SuperUnpivotExtended`, `SuperPivot`) normalize
+their real `actionNode`, outer identity/edges and supported before/action/after
+operations. They are never flattened into a transform that ignores the inner
+operation. Supported conversion still depends on that inner dialect and its
+schema; data-dependent rows-to-columns pivot remains unsupported. A wrapper
+requires an object `actionNode`; version prefixes are ignored. The outer
+identity/edges remain authoritative, and conflicting identities, types, edges
+or duplicated payloads reject rather than overwrite one another.
+
+For clean operations, `beforeActionGroup`, `actionGroup` and
+`afterActionGroup` accept objects with an `actions` list, in that execution
+order. A direct clean action or an unambiguous `actionNode.actions` list can
+provide the central action. Conflicting central forms reject. These are action
+**groups**, not arbitrary annotations: only missing, null or empty-list
+before/after annotations allow conversion; nonempty annotations are inventoried
+and block it.
+
+`fields` accepts lists, null/missing collections or dictionaries keyed by
+column name. A missing/null entry name comes from its key; conflicting names,
+invalid values and case-insensitive collisions reject. Filters accept explicit
+string `keep`/`remove` directions, ignoring surrounding whitespace and case.
+Unsupported/missing filter directions and unrecognized envelope payloads are
+retained as structured `_prep_diagnostics`
+and `FlowProfile.diagnostics` for inventory. Diagnostics marked
+`blocks_conversion` prevent successful M export. Empty containers are identity
+only when they contain no schema/operation semantics and have unambiguous
+routing, without discarding edge metadata. No unsupported transformation is
+skipped to manufacture a successful output. The observed `SimpleUnion` inside
+`SuperUnion` now decodes its per-input `namespaceFieldMappings` rather than
+treating it as an automatic union. Recognizing that operation does not prove
+conversion of every later node in the public flow. Synthetic
+normalization/conversion tests do not establish native M execution or recovery
+rates on an external/private corpus.
+
+The full public flow still rejects its `SimpleJoin` inside `SuperJoin`:
+left/right identities and equality keys alone do not establish output-field
+selection, duplicate-key treatment or collision/rename semantics. An alias to
+the existing `Join` dialect would invent a projection. Its union inputs also
+declare a string/real mismatch without an explicit cast. The mapped-union
+implementation does not turn either independent limitation into a success.
+
 ### Schema propagation
 
 The parser tracks fields through each supported operation, rather than copying
@@ -36,8 +80,9 @@ produces only `Amount, Twice` in datasource JSON and the generated TMDL columns.
   incompatible declared types and case-insensitive name collisions are errors.
 - Aggregation retains only grouping keys and named aggregate outputs; references
   must exist. The current aggregate helper requires numeric inputs for non-count
-  aggregates. Automatic unions combine input schemas and accept integer/real
-  widening; incompatible types and manual mapping dialects are rejected.
+  aggregates. Automatic unions and the observed mapped `SimpleUnion` combine
+  input schemas and accept integer/real widening; incompatible types and
+  unproven manual mapping dialects are rejected.
 - Join schemas contain the left fields plus the right non-key fields actually
   expanded by the generated M. Colliding names require an explicit upstream
   rename. The temporary `Joined` column is removed even when no fields expand.
@@ -48,6 +93,30 @@ produces only `Amount, Twice` in datasource JSON and the generated TMDL columns.
   numeric arithmetic have conservative type inference. A typed schema does not
   establish equivalence of arbitrary calculations, script/ML placeholders, or a
   successful Power Query refresh.
+
+### Observed mapped union
+
+The licensed [public Prep source](../examples/real_world/SOURCES.md) contains a
+`SuperUnion` whose `.v1.SimpleUnion` action declares
+`namespaceFieldMappings`: each record names an input namespace and maps
+bracketed physical source fields to output names. Each namespace must match an
+incoming edge's `nextNamespace` exactly. Empty maps retain that input's schema;
+mapped and unmapped fields are validated together.
+
+The parser applies renames separately to each input before appending. Generated
+M uses collision-free temporary names followed by final names, so swaps and
+rename chains do not cascade. The output schema and final type casts agree;
+only supported compatible type widening is accepted. Missing/extra or ambiguous
+namespace records, unknown physical fields, malformed mappings, conflicting
+targets, case-insensitive collisions and incompatible types reject rather than
+discard columns or coerce arbitrary values.
+
+The append uses [Table.Combine](https://learn.microsoft.com/en-us/powerquery-m/table-combine),
+whose documented behavior fills absent columns with null. No deduplication
+step is added. [Production-path tests](../tests/test_prep_union_mapping.py)
+cover static schema/M contracts, escaping and standalone/workbook/TMDL
+preservation. They do not execute the native M engine or prove Tableau
+row/value equivalence; those checks remain `not_run`.
 
 ### Clean-node dialect evidence status
 
@@ -111,6 +180,11 @@ A bounded public-source search did not establish suitable additional fixtures:
 customer-like exports with unclear data-publication permission were excluded,
 and third-party node generators were not treated as Tableau-produced evidence.
 This is a fixture-coverage gap, not a claim that those payloads do not exist.
+The 2026-10-30 follow-up likewise did not add an accepted fixture: two filter
+shapes appeared in a source with unresolved licensing and incomplete value/null
+semantics; a third-party assumed `QuickCalcColumn` format was not producer
+evidence. The other four dialects were not found in that bounded search. No
+source data were copied and none of these candidates enabled a conversion.
 
 ### `--prep` with a workbook
 
@@ -259,15 +333,24 @@ standalone conversion. Static JSON/TMDL checks do not execute M or verify refres
 
 ## 7. Pivot Step
 
+These are M expression-builder examples, not proof that the Prep parser accepts
+the corresponding producer payload. A data-dependent `List.Distinct` pivot
+does not establish the fixed output columns required by the semantic model;
+that parser case remains rejected.
+
 | # | Tableau Prep Operation | Power Query M Function | Status | Example |
 |---|----------------------|----------------------|--------|---------|
 | 1 | Pivot columns to rows (unpivot) | `Table.UnpivotOtherColumns()` | 🆕 | `Table.UnpivotOtherColumns(Source, {"ID", "Name"}, "Attribute", "Value")` |
 | 2 | Pivot specific columns | `Table.Unpivot()` | 🆕 | `Table.Unpivot(Source, {"Q1", "Q2", "Q3", "Q4"}, "Quarter", "Revenue")` |
-| 3 | Pivot rows to columns | `Table.Pivot()` | 🆕 | `Table.Pivot(Source, List.Distinct(Source[Category]), "Category", "Sales", List.Sum)` |
+| 3 | Pivot rows to columns | `Table.Pivot()` | M helper only; dynamic parser schema unsupported | `Table.Pivot(Source, List.Distinct(Source[Category]), "Category", "Sales", List.Sum)` |
 
 ---
 
 ## 8. Join Step
+
+These examples describe M helpers and the supported explicit join contract.
+They do not establish the implicit result projection of the public
+`SuperJoin`/`SimpleJoin` producer variant, which remains rejected.
 
 | # | Tableau Prep Operation | Power Query M Function | Status | Example |
 |---|----------------------|----------------------|--------|---------|
@@ -285,6 +368,10 @@ standalone conversion. Static JSON/TMDL checks do not execute M or verify refres
 ---
 
 ## 9. Union Step
+
+The M helpers below do not, by themselves, decode manual Prep field mappings.
+Parser support depends on the validated producer mapping and propagated input
+schemas described in the scope contract above.
 
 | # | Tableau Prep Operation | Power Query M Function | Status | Example |
 |---|----------------------|----------------------|--------|---------|

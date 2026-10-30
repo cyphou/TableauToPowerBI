@@ -53,7 +53,8 @@ def clean_chain(nested=False):
     """CSV -> container(rename/remove/add/type/filter) -> PublishExtract."""
     # Deliberately not in execution order.
     children = {
-        'filter': operation('FilterOperation', filterExpression='[Twice] > 10'),
+        'filter': operation('FilterOperation', filterExpression='[Twice] > 10',
+                            filterType='keep'),
         'add': operation('AddColumn', 'type', columnName='Twice',
                          expression='[Amount] * 2'),
         'rename': operation('RenameColumn', 'remove', columnName='Raw',

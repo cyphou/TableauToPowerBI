@@ -289,7 +289,7 @@ class TestTMDLParsing:
                      "\t\tdataType: double\n\t\tsourceColumn: 'raw_total'\n")
         result = _parse_tmdl_table(path)
         assert result['columns'][0]['name'] == "Display's Total"
-        assert result['columns'][0]['sourceColumn'] == 'raw_total'
+        assert result['columns'][0]['sourceColumn'] == "'raw_total'"
 
     def test_parse_table_basic(self, tmp_dir):
         path = os.path.join(tmp_dir, 'Orders.tmdl')

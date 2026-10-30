@@ -155,7 +155,7 @@ def _parquet_marker_api(api, *, count=2, payload=b"PAR1synthetic COPY markerPAR1
     return paths
 
 
-def _main_federated_hyper_datasource(member):
+def _main_federated_hyper_datasource(member, *, bindings=None):
     """A named Hyper connection on the main federated connection, no <extract>."""
     import xml.etree.ElementTree as ET
 
@@ -177,27 +177,24 @@ def _main_federated_hyper_datasource(member):
         "type": "table",
     })
     columns = ET.SubElement(relation, "columns")
-    ET.SubElement(columns, "column", {
-        "name": "id", "datatype": "integer", "ordinal": "0",
-    })
-    ET.SubElement(columns, "column", {
-        "name": "label", "datatype": "string", "ordinal": "1",
-    })
+    bindings = bindings or (
+        ("id", "id", "Display Event ID", "integer"),
+        ("label", "label", "Display Event Label", "string"),
+    )
+    for ordinal, (physical, logical, caption, datatype) in enumerate(bindings):
+        ET.SubElement(columns, "column", {
+            "name": physical, "datatype": datatype, "ordinal": str(ordinal),
+        })
     connection_columns = ET.SubElement(federated, "cols")
-    ET.SubElement(connection_columns, "map", {
-        "key": "[id]", "value": "[Logical Events].[id]",
-    })
-    ET.SubElement(connection_columns, "map", {
-        "key": "[label]", "value": "[Logical Events].[label]",
-    })
-    ET.SubElement(datasource, "column", {
-        "name": "[id]", "caption": "Display Event ID",
-        "datatype": "integer", "role": "dimension",
-    })
-    ET.SubElement(datasource, "column", {
-        "name": "[label]", "caption": "Display Event Label",
-        "datatype": "string", "role": "dimension",
-    })
+    for physical, logical, caption, datatype in bindings:
+        ET.SubElement(connection_columns, "map", {
+            "key": f"[{logical}]", "value": f"[Logical Events].[{physical}]",
+        })
+    for physical, logical, caption, datatype in bindings:
+        ET.SubElement(datasource, "column", {
+            "name": f"[{logical}]", "caption": caption,
+            "datatype": datatype, "role": "dimension",
+        })
     return datasource
 
 
@@ -337,8 +334,15 @@ def _build_bound_fixture(root, *, shape="main", export_format="csv",
     from tableau_export.datasource_extractor import extract_datasource
 
     workbook, staged_hyper, package_identity = _write_synthetic_package(root)
-    if shape == "main":
-        xml_datasource = _main_federated_hyper_datasource(HYPER_MEMBER)
+    bindings = None
+    if shape in ("main", "whitespace", "whitespace-caption"):
+        if shape == "whitespace":
+            bindings = (("Count", "Count", "", "integer"),
+                        ("Count ", "Count ", "", "string"))
+        elif shape == "whitespace-caption":
+            bindings = (("Count ", "Metric", "Display Metric ", "integer"),
+                        ("Count", "Label", "Display Label", "string"))
+        xml_datasource = _main_federated_hyper_datasource(HYPER_MEMBER, bindings=bindings)
         schema, physical_table = "Extract", "Physical Events"
     elif shape == "aliases":
         xml_datasource = _alias_hyper_datasource(HYPER_MEMBER)
@@ -362,8 +366,9 @@ def _build_bound_fixture(root, *, shape="main", export_format="csv",
             model_mode="import", parameterize=True,
         )
 
-    api_columns = ("id", "label") if shape == "main" else ("id",)
-    api_rows = list(rows) if shape == "main" else [
+    api_columns = (tuple(binding[0] for binding in bindings) if bindings
+                   else ("id", "label") if shape == "main" else ("id",))
+    api_rows = list(rows) if shape != "aliases" else [
         (row[0],) for row in rows
     ]
     api = StreamingHyperApi(
@@ -1862,6 +1867,37 @@ class TestHyperSourceMetadataClassification(unittest.TestCase):
 
 class TestHyperIdentityExtractionAndBinding(unittest.TestCase):
     """Exact XML identity flows through annotations, exports, and final M."""
+
+    def test_whitespace_bindings_keep_distinct_physical_names_and_caption_aliases(self):
+        from powerbi_import.artifact_diff import _parse_tmdl_table
+        from powerbi_import.migration_quality import build_hyper_import_evidence
+
+        for shape in ("whitespace", "whitespace-caption"):
+            for export_format in ("csv", "parquet"):
+                with self.subTest(shape=shape, format=export_format), \
+                        _temporary_directory("hyper-whitespace-e2e-") as root:
+                    fixture = _build_bound_fixture(
+                        root, shape=shape, export_format=export_format)
+                    record = fixture["manifest"]["exports"][0]
+                    expected_physical = (["Count", "Count "] if shape == "whitespace"
+                                         else ["Count ", "Count"])
+                    self.assertEqual(record["columns"], expected_physical)
+                    files = _all_table_files(fixture["project"])
+                    self.assertEqual(len(files), 1)
+                    model = _parse_tmdl_table(files[0])
+                    expected_sources = (["Count", "Count "] if shape == "whitespace"
+                                        else ["Display Metric ", "Display Label"])
+                    self.assertEqual(
+                        [column["sourceColumn"] for column in model["columns"]],
+                        expected_sources)
+                    if export_format == "csv":
+                        with open(_record_export_path(fixture), encoding="utf-8-sig",
+                                  newline="") as stream:
+                            self.assertEqual(next(csv.reader(stream)), expected_physical)
+                    evidence = build_hyper_import_evidence(
+                        fixture["extracted"], fixture["project"])
+                    self.assertEqual(evidence["status"], "static_verified",
+                                     evidence["diagnostics"])
 
     def test_new_xml_shapes_bind_exact_physical_identity_to_import_partitions(self):
         cases = (

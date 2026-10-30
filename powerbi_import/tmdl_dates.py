@@ -352,6 +352,18 @@ def _add_date_table(model, worksheets=None, hyper_files=None, table_rename_map=N
             start_expr = f'Date.StartOfYear(List.Min(List.Combine({{SourceDates, {{{start_expr}}}}})))'
         if model.get('_calendar_end') is None:
             end_expr = f'Date.EndOfYear(List.Max(List.Combine({{SourceDates, {{{end_expr}}}}})))'
+    calendar_bounds = {
+        'mode': 'source' if runtime_dates else 'fixed',
+        'start_year': cal_start, 'end_year': cal_end,
+        'explicit_start': model.get('_calendar_start') is not None,
+        'explicit_end': model.get('_calendar_end') is not None,
+        'observed_source_years': sorted(source_years),
+        'source_queries': [
+            expression['name'] for expression in model['model'].get('expressions', [])
+            if expression.get('_calendar_source_table')
+        ],
+        'coverage': 'not_runtime_verified',
+    }
     cal_culture = model.get('model', {}).get('culture', 'en-US')
 
     calendar_m = (
@@ -377,6 +389,7 @@ def _add_date_table(model, worksheets=None, hyper_files=None, table_rename_map=N
     date_table = {
         "name": "Calendar",
         "isHidden": False,
+        "_calendar_bounds": calendar_bounds,
         "columns": [
             {
                 "name": "Date",

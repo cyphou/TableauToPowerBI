@@ -201,9 +201,10 @@ class TestOpenability(unittest.TestCase):
             self.assertIn("Desktop loading and refresh were not run",
                           data["limitation"])
             self.assertEqual(set(data["diagnostics"]), {
-                "relationship_endpoints", "partition_risks", "limitation"})
+                "relationship_endpoints", "partition_risks", "calendar_ranges", "limitation"})
             self.assertEqual(data["diagnostics"]["relationship_endpoints"], [])
             self.assertEqual(data["diagnostics"]["partition_risks"], [])
+            self.assertEqual(data["diagnostics"]["calendar_ranges"], [])
             for check in data["checks"]:
                 self.assertEqual(set(check), {"name", "ok", "severity", "issues"})
 

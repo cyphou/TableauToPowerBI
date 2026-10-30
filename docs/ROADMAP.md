@@ -267,6 +267,41 @@ and [known limitations](KNOWN_LIMITATIONS.md) for the supported scope.
 
 ### Next development sequence
 
+Report #85–91 hardening adds bounded envelope/field normalization, explicit
+unsupported-shape inventory, exact TMDL binding strings, final failure evidence
+and an optional source-independent Calendar range. It does not implement the
+seven still-unproven clean dialects listed under N1/N2, close #81, or establish
+new corpus/native acceptance. N3 includes final marker/report consistency and
+retained diagnostic snapshots; its broader resilience gate remains open.
+
+The approved next bounded sequence is: implement the observed per-input
+`namespaceFieldMappings` union semantics, obtain producer evidence for the
+remaining clean/filter dialects before converting them, and add rows-to-columns
+pivot only when explicit producer metadata establishes a fixed output domain and
+aggregation. Acceptance requires production-path schema/M tests and a measured
+public-corpus gate; native refresh/value equivalence remains a separate,
+authorized validation. Missing/legacy extracts and empty flows are source
+prerequisites, not candidates for fabricated fallback data.
+
+The observed mapped-union slice is now implemented and covered by
+`tests/test_prep_union_mapping.py`: mappings resolve exact incoming namespaces
+and physical fields, rename simultaneously, and preserve the checked append
+schema and types. This does not close the public flow: its `SimpleJoin` lacks
+proven projection semantics, and its mapped input metadata also contains an
+undeclared string/real mismatch. The 2026-10-30 public-source search supplied
+no new accepted clean-dialect fixtures; seven dialects remain blocked. No
+producer-backed finite pivot domain was found, so declared fields or aggregation
+alone do not enable rows-to-columns conversion. These remain evidence/source
+prerequisites, not completed functionality or native execution.
+
+Local validation on **2026-10-30**: **24 focused mapped-union tests passed**.
+The ordinary full public-corpus gate passed with **39/44 migrated**, the same
+**five known limitations**, **24 statically openable projects** and **zero
+unexcused blockers**. Its existing Prep entry now records the exact downstream
+`SimpleJoin` refusal, not an excused regression or an additional limitation.
+This is bounded static/regression evidence, not a new full-suite result,
+native M refresh or source/target value equivalence.
+
 Correctness and reproducible evidence take priority over further structural
 refactoring. These work items include a delivered bounded N2 slice; remaining work is not
 completed functionality or runtime evidence.

@@ -110,6 +110,7 @@ class FlowProfile:
     node_graph: Dict[str, List[str]] = field(default_factory=dict)
     m_queries: Dict[str, str] = field(default_factory=dict)
     assessment: Dict[str, Any] = field(default_factory=dict)
+    diagnostics: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def complexity_score(self) -> int:
@@ -149,6 +150,7 @@ class FlowProfile:
             'complexity_label': self.complexity_label,
             'node_graph': self.node_graph,
             'm_queries': self.m_queries,
+            'diagnostics': self.diagnostics,
             'assessment': self.assessment,
         }
 
@@ -256,6 +258,8 @@ _TRANSFORM_TYPES = {
     'SuperUnion': 'Union',
     'Union': 'Union',
     'Pivot': 'Pivot',
+    'SuperPivot': 'Pivot',
+    'SuperUnpivotExtended': 'Pivot',
     'Script': 'Script',
     'RunScript': 'Script',
     'RunCommand': 'Script',
@@ -344,7 +348,7 @@ def _extract_transforms(sorted_ids: list, nodes: dict) -> List[FlowTransform]:
                 details['group_by_columns'] = gnames
             if anames:
                 details['aggregate_columns'] = anames
-        elif sem == 'Pivot':
+        elif sem in ('Pivot', 'SuperPivot', 'SuperUnpivotExtended'):
             details['pivot_type'] = node.get('pivotType', '')
         elif sem in ('Script', 'RunScript', 'TabPy', 'RunCommand'):
             details['script_type'] = node.get('scriptType', node.get('language', 'unknown'))
@@ -485,7 +489,8 @@ def _count_calcs(nodes: dict) -> int:
 
 
 def _assess_flow(inputs, outputs, transforms, join_count, union_count,
-                 script_count, calc_count, dag_depth, node_count) -> Dict[str, Any]:
+                 script_count, calc_count, dag_depth, node_count,
+                 unsupported_diagnostics=None) -> Dict[str, Any]:
     """Produce a readiness assessment for one prep flow.
 
     Returns dict with grade (GREEN/YELLOW/RED), items list, and summary.
@@ -542,6 +547,15 @@ def _assess_flow(inputs, outputs, transforms, join_count, union_count,
         items.append({'category': 'output', 'status': 'pass',
                       'detail': f'{len(outputs)} output(s)'})
 
+    unsupported_diagnostics = list(unsupported_diagnostics or [])
+    if unsupported_diagnostics:
+        items.append({
+            'category': 'conversion',
+            'status': 'fail',
+            'detail': f'{len(unsupported_diagnostics)} unsupported Prep shape(s) '
+                      'block conversion; inspect diagnostics',
+        })
+
     # Grade
     fail_count = sum(1 for it in items if it['status'] == 'fail')
     warn_count = sum(1 for it in items if it['status'] == 'warn')
@@ -581,6 +595,10 @@ def analyze_flow(filepath: str, include_m_queries: bool = False) -> FlowProfile:
     flow = read_prep_flow(filepath)
     nodes = flow.get('nodes', {})
     connections = flow.get('connections', {})
+    diagnostics = [
+        dict(item) for item in (flow.get('_prep_diagnostics') or [])
+        if isinstance(item, dict)
+    ]
 
     sorted_ids = _topological_sort(nodes)
     inputs = _extract_inputs(nodes, connections)
@@ -630,9 +648,13 @@ def analyze_flow(filepath: str, include_m_queries: bool = False) -> FlowProfile:
             logger.warning("Could not extract M queries from %s: %s", filepath, exc)
 
     # Assessment
-    assessment = _assess_flow(inputs, outputs, transforms,
-                              join_count, union_count, script_count,
-                              calc_count, dag_depth, len(nodes))
+    assessment = _assess_flow(
+        inputs, outputs, transforms, join_count, union_count, script_count,
+        calc_count, dag_depth, len(nodes),
+        unsupported_diagnostics=diagnostics if not include_m_queries else [],
+    )
+    if diagnostics:
+        assessment['unsupported_diagnostics'] = diagnostics
     if conversion_error:
         assessment['conversion_error'] = conversion_error
         assessment['grade'] = 'RED'
@@ -658,6 +680,7 @@ def analyze_flow(filepath: str, include_m_queries: bool = False) -> FlowProfile:
         calc_count=calc_count,
         node_graph=node_graph,
         m_queries=m_queries,
+        diagnostics=diagnostics,
         assessment=assessment,
     )
 

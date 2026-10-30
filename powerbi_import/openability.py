@@ -611,6 +611,7 @@ def _refresh_diagnostics(project_dir):
 
     endpoints = []
     risks = []
+    calendars = []
     issues = []
     for model_dir in sorted(glob.glob(os.path.join(project_dir, "*.SemanticModel"))):
         model_name = os.path.basename(model_dir)
@@ -620,8 +621,31 @@ def _refresh_diagnostics(project_dir):
             table = _parse_tmdl_table(path)
             if not table:
                 continue
+            content = _read(path)
+            bounds_match = re.search(
+                r'(?m)^\tannotation Migration_CalendarBounds = (.+)$', content)
+            if bounds_match:
+                try:
+                    bounds = json.loads(bounds_match.group(1))
+                except ValueError as exc:
+                    issues.append(f"{model_name}: invalid Calendar bounds annotation: {exc}")
+                else:
+                    if not isinstance(bounds, dict):
+                        issues.append(f"{model_name}: Calendar bounds annotation must be an object")
+                    else:
+                        calendars.append({'model': model_name, **bounds})
+                        if bounds.get('source_queries'):
+                            issues.append(
+                                f"{model_name}: Calendar range reads independent source M copies; "
+                                "source errors propagate. Use --calendar-mode fixed with verified "
+                                "--calendar-start/--calendar-end bounds to avoid these reads.")
+                        else:
+                            issues.append(
+                                f"{model_name}: Calendar uses fixed bounds "
+                                f"{bounds.get('start_year')}-{bounds.get('end_year')}; "
+                                "coverage of source dates and future dates was not runtime-verified.")
             partitions = []
-            for name, expression in extract_m_partitions(_read(path)):
+            for name, expression in extract_m_partitions(content):
                 selected = _literal_final_projection(expression)
                 partitions.append({
                     "name": name,
@@ -700,6 +724,7 @@ def _refresh_diagnostics(project_dir):
     return {
         "relationship_endpoints": endpoints,
         "partition_risks": risks,
+        "calendar_ranges": calendars,
         "limitation": (
             "Endpoint resolution and literal projections are static evidence only. "
             "Unknown M shapes and calculated columns are not inferred. This does "

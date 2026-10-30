@@ -10,22 +10,20 @@ Tableau Prep flows are JSON files (not XML like .twb) with:
 
 Supported step types:
 - Input: LoadCsv, LoadExcel, LoadSql, LoadJson, LoadHyper, LoadGoogle
-- Clean (SuperTransform): RenameColumn, RemoveColumn, DuplicateColumn,
-  ChangeColumnType, FilterOperation, FilterValues, FilterRange,
-  ReplaceValues, SplitColumn, MergeColumns, AddColumn, CleanOperation,
-  FillValues, ReplaceNulls, ConditionalColumn, GroupReplace, Remap (explicit text map)
+- Clean (SuperTransform): evidence-backed action payloads only; unproven clean
+  and filter dialects remain blocking
 - Aggregate: groupByFields + aggregateFields
 - Join: inner, left, right, full, leftOnly, rightOnly
-- Union: automatic or manual field mapping
-- Pivot: columnsToRows (unpivot), rowsToColumns (pivot)
+- Union: automatic, plus observed SuperUnion/actionNode SimpleUnion
+  namespaceFieldMappings
+- Pivot: columnsToRows (unpivot); rowsToColumns remains blocked until its fixed
+  output domain and aggregation are explicit
 - Output: PublishExtract, SaveToFile, SaveToDatabase
 """
 
 import json
 import logging
 import os
-
-logger = logging.getLogger(__name__)
 import re
 import sys
 import zipfile
@@ -67,6 +65,8 @@ from m_query_builder import (
     m_transform_unpivot,
     m_transform_upper,
 )
+
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TABLEAU PREP TYPE MAPPINGS
@@ -176,6 +176,83 @@ _PREP_JOIN_MAP = {
     'notInner': 'leftanti',  # exclusive left (Tableau "not inner")
 }
 
+_PREP_SUPERNODE_TYPES = frozenset({
+    'SuperTransform', 'SuperJoin', 'SuperAggregate', 'SuperUnion',
+    'SuperUnpivotExtended', 'SuperPivot',
+})
+
+_PREP_SUPERNODE_INNER_TYPES = {
+    'SuperTransform': {'SuperTransform', 'Transform'},
+    'SuperJoin': {'SuperJoin', 'Join'},
+    'SuperAggregate': {'SuperAggregate', 'Aggregate'},
+    'SuperUnion': {'SuperUnion', 'Union', 'SimpleUnion'},
+    'SuperUnpivotExtended': {
+        'SuperUnpivotExtended', 'UnpivotExtended', 'Unpivot', 'Pivot',
+    },
+    'SuperPivot': {'SuperPivot', 'Pivot'},
+}
+
+_PREP_CLEAN_ACTION_TYPES = {
+    'AddColumn', 'RemoveColumn', 'RemoveColumns', 'RenameColumn',
+    'ValueFilter', 'ChangeColumnType', 'FilterOperation', 'DuplicateColumn',
+    'RichRangeFilter', 'RangeFilter', 'Remap', 'RichDiscreteValueFilter',
+    'QuickCalcColumn', 'RichWildcardFilter', 'RichNullFilter',
+    'FilterValues', 'FilterRange', 'ReplaceValues', 'ReplaceNulls',
+    'SplitColumn', 'MergeColumns', 'CleanOperation', 'FillValues',
+    'GroupReplace', 'ConditionalColumn', 'ExtractValues', 'CustomCalculation',
+}
+
+_PREP_FILTER_MODE_ACTIONS = {'FilterOperation', 'FilterValues'}
+
+_PREP_CLEAN_ACTION_FIELDS = {
+    'columnName', 'newColumnName', 'columnNames', 'columns', 'expression',
+    'formula', 'filterExpression', 'filterType', 'values', 'newType', 'type',
+    'operation', 'direction', 'aggregation', 'min', 'max', 'oldValue',
+    'newValue', 'replacement', 'delimiter', 'numParts', 'separator',
+    'pattern', 'rules', 'defaultValue', 'groupings', 'groupMethodProps',
+    'from', 'to',
+}
+
+_PREP_SUPERNODE_COMMON_FIELDS = {
+    'nodeType', 'actionType', 'name', 'id', 'baseType', 'nextNodes',
+    'serialize', 'description', 'fields', 'beforeActionAnnotations',
+    'afterActionAnnotations',
+}
+
+_PREP_SUPERNODE_PAYLOAD_FIELDS = {
+    'SuperTransform': _PREP_SUPERNODE_COMMON_FIELDS | _PREP_CLEAN_ACTION_FIELDS | {
+        'actions', 'beforeActionGroup', 'actionGroup', 'afterActionGroup',
+    },
+    'SuperJoin': _PREP_SUPERNODE_COMMON_FIELDS | {
+        'joinType', 'joinConditions', 'leftNodeId', 'rightNodeId',
+    },
+    'SuperAggregate': _PREP_SUPERNODE_COMMON_FIELDS | {
+        'groupByFields', 'aggregateFields',
+    },
+    'SuperUnion': _PREP_SUPERNODE_COMMON_FIELDS | {
+        'unionType', 'fieldMappings', 'columnMappings', 'fieldMapping',
+        'namespaceFieldMappings',
+    },
+    'SuperUnpivotExtended': _PREP_SUPERNODE_COMMON_FIELDS | {
+        'pivotType', 'pivotFields', 'pivotValuesName', 'pivotNamesName',
+    },
+    'SuperPivot': _PREP_SUPERNODE_COMMON_FIELDS | {
+        'pivotType', 'pivotFields', 'pivotValuesName', 'pivotNamesName',
+        'pivotKeyField', 'pivotValueField', 'aggregation',
+    },
+}
+
+_PREP_MANUAL_UNION_DIALECT = 'simple_namespace_field_mappings'
+
+
+def _canonical_filter_type(value):
+    """Return a known filter direction, or None rather than guessing."""
+    if isinstance(value, str):
+        canonical = value.strip().casefold()
+        if canonical in ('keep', 'remove'):
+            return canonical
+    return None
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  FLOW FILE READER
@@ -251,13 +328,20 @@ def get_prep_node_kind(node):
     """Return input/output/container/transform; explicit baseType takes priority.
 
     Only known input/output semantic suffixes are inferred, never arbitrary
-    ``Load*`` or ``Publish*`` names. Unknown types remain transforms so conversion
-    can report unsupported semantics rather than silently discard them.
+    ``Load*`` or ``Publish*`` names. Known ``superNode`` wrappers are transforms;
+    their actionNode envelopes are explicitly normalized before conversion.
     """
     node = _as_dict(node)
     base = node.get('baseType')
     if base in ('input', 'output', 'container', 'transform'):
         return base
+    if base == 'superNode':
+        sem = _get_node_type(node)
+        if sem not in _PREP_SUPERNODE_TYPES:
+            raise ValueError(f"Unsupported Prep superNode nodeType {sem!r}")
+        if not isinstance(node.get('actionNode'), dict):
+            raise ValueError(f"Prep superNode {sem!r}: actionNode must be an object")
+        return 'transform'
     if base:
         raise ValueError(f"Unknown Prep baseType {base!r}")
     sem = _get_node_type(node)
@@ -272,13 +356,68 @@ def get_prep_node_kind(node):
     return 'container' if node.get('loomContainer') is not None else 'transform'
 
 
+def _normalize_field_collection(value, context):
+    """Normalize Prep field lists and column-keyed field maps to a safe list."""
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        fields = []
+        seen = {}
+        for key, raw_field in value.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError(f'{context}: field-map keys must be nonempty strings')
+            folded = key.casefold()
+            if folded in seen:
+                raise ValueError(f'{context}: field-map keys {seen[folded]!r} and '
+                                 f'{key!r} collide')
+            seen[folded] = key
+            if not isinstance(raw_field, dict):
+                raise ValueError(f'{context}[{key!r}]: expected field object')
+            field = deepcopy(raw_field)
+            if 'name' not in field or field['name'] is None:
+                field['name'] = key
+            elif not isinstance(field['name'], str) or not field['name']:
+                raise ValueError(f'{context}[{key!r}].name: expected nonempty string')
+            elif field['name'] != key:
+                raise ValueError(
+                    f'{context}[{key!r}].name conflicts with its field-map key '
+                    f'{field["name"]!r}'
+                )
+            fields.append(field)
+        return fields
+    if not isinstance(value, list):
+        raise ValueError(f'Prep expected list or column-keyed object, got '
+                         f'{type(value).__name__}')
+
+    fields = deepcopy(value)
+    seen = {}
+    for index, field in enumerate(fields):
+        if not isinstance(field, dict):
+            raise ValueError(f'{context}[{index}]: expected field object')
+        name = field.get('name')
+        if name is None:
+            continue
+        if not isinstance(name, str) or not name:
+            raise ValueError(f'{context}[{index}].name: expected nonempty string')
+        folded = name.casefold()
+        if folded in seen:
+            raise ValueError(
+                f'{context}: field names {seen[folded]!r} and {name!r} collide'
+            )
+        seen[folded] = name
+    return fields
+
+
 def normalize_prep_flow(flow):
     """Copy, validate and flatten a Prep DAG, without inferring execution order.
 
     Top-level IDs are unchanged. Children receive escaped, collision-free scoped
     IDs; edge, join-side and connection references are rewritten. Connections
-    remain datasource definitions, not graph edges. Missing/null optional
-    collections become empty collections; invalid shapes raise ValueError.
+    remain datasource definitions, not graph edges. Column-keyed field maps are
+    normalized to lists. Missing/null optional collections become empty
+    collections; invalid or ambiguous shapes raise ValueError. Non-string or
+    unknown filter directions are retained as structured, conversion-blocking
+    diagnostics in ``_prep_diagnostics`` so inventory remains possible.
 
     Container boundaries may be declared on the container or loomContainer via
     entry/exitNodeId(s), input/outputNodeId(s), entry/exitNodes, input/outputNodes,
@@ -297,10 +436,40 @@ def normalize_prep_flow(flow):
     if any(not isinstance(cid, str) or not cid for cid in connections):
         raise ValueError('Prep flow: connection IDs must be nonempty strings')
     flow['connections'] = connections
+    existing_diagnostics = flow.get('_prep_diagnostics')
+    if existing_diagnostics is None:
+        diagnostics = []
+    elif isinstance(existing_diagnostics, list) and all(
+            isinstance(item, dict) for item in existing_diagnostics):
+        diagnostics = deepcopy(existing_diagnostics)
+    else:
+        raise ValueError('Prep flow _prep_diagnostics must be a list of objects')
+    no_diagnostic_value = object()
+
+    def add_diagnostic(code, node_id, path, message,
+                       value_marker=no_diagnostic_value):
+        item = {
+            'code': code,
+            'severity': 'error',
+            'message': message,
+            'node_id': node_id,
+            'path': path,
+            'blocks_conversion': True,
+        }
+        if value_marker is not no_diagnostic_value:
+            item['value_type'] = type(value_marker).__name__
+        if item not in diagnostics:
+            diagnostics.append(item)
+
+    def nonempty(value):
+        return not (value is None or value is False or value == ''
+                    or value == [] or value == {})
+
     prefix = '__prep_scope__/'
     while any(str(nid).startswith(prefix) for nid in raw_nodes):
         prefix = '_' + prefix
     records, scopes, parents, children = {}, {}, {}, {}
+    empty_containers = set()
     scope_connections = {}
     list_keys = {
         'nextNodes', 'fields', 'actions', 'groupByFields', 'aggregateFields',
@@ -317,23 +486,59 @@ def normalize_prep_flow(flow):
     string_keys = {
         'name', 'nodeType', 'actionType', 'baseType', 'connectionId', 'class',
         'columnName', 'newColumnName', 'expression', 'filterExpression',
-        'filterType', 'newType', 'operation', 'direction', 'aggregation',
+        'newType', 'operation', 'direction', 'aggregation',
         'joinType', 'pivotType', 'leftNodeId', 'rightNodeId',
         'delimiter', 'separator', 'pattern', 'pivotValuesName', 'pivotNamesName',
         'scriptLanguage', 'language', 'publishedDatasourceName', 'datasourceName',
     }
 
-    def optional_shapes(obj, context):
+    def optional_shapes(obj, context, node_id=None):
         kind = obj.get('actionType') or obj.get('nodeType') or ''
-        is_remap = isinstance(kind, str) and kind.rsplit('.', 1)[-1] == 'Remap'
+        sem = kind.rsplit('.', 1)[-1] if isinstance(kind, str) else ''
+        is_remap = sem == 'Remap'
         if is_remap:
             _parse_remap(obj)
+        if sem in _PREP_FILTER_MODE_ACTIONS and 'filterType' not in obj:
+            add_diagnostic(
+                'missing_filter_type', node_id, f'{context}.filterType',
+                'Filter conversion requires an explicit filterType of '
+                '"keep" or "remove"',
+            )
         for key, value in list(obj.items()):
             here = f'{context}.{key}'
             if key == 'values' and is_remap:
                 # Remap uses an encoded target -> encoded sources object,
                 # unlike the value lists used by other clean operations.
                 continue
+            elif key in ('beforeActionAnnotations', 'afterActionAnnotations'):
+                if value is None or value == []:
+                    obj[key] = []
+                else:
+                    add_diagnostic(
+                        'unsupported_action_annotations', node_id, here,
+                        'Nonempty action annotations have unproven execution '
+                        'semantics and cannot be ignored during conversion',
+                        value,
+                    )
+            elif key == 'fields':
+                try:
+                    value = _normalize_field_collection(value, here)
+                except ValueError as exc:
+                    raise ValueError(f'{here}: {exc}') from exc
+                obj[key] = value
+                for item in value:
+                    optional_shapes(item, here, node_id)
+            elif key == 'filterType':
+                canonical = _canonical_filter_type(value)
+                if canonical is None:
+                    add_diagnostic(
+                        'unsupported_filter_type', node_id, here,
+                        'Only string filterType values "keep" and "remove" '
+                        'are supported',
+                        value,
+                    )
+                else:
+                    obj[key] = canonical
             elif key in list_keys:
                 try:
                     value = _as_list(value)
@@ -344,7 +549,7 @@ def normalize_prep_flow(flow):
                     if key in object_lists and not isinstance(item, dict):
                         raise ValueError(f'{here}: expected object elements')
                     if isinstance(item, dict):
-                        optional_shapes(item, here)
+                        optional_shapes(item, here, node_id)
             elif key in dict_keys:
                 try:
                     obj[key] = _as_dict(value)
@@ -355,20 +560,229 @@ def normalize_prep_flow(flow):
                         if attr_value is None:
                             obj[key].pop(attr)
                         elif not isinstance(attr_value, (str, int, float, bool)):
-                            raise ValueError(f'{here}.{attr}: expected scalar connection attribute')
-                optional_shapes(obj[key], here)
+                            raise ValueError(
+                                f'{here}.{attr}: expected scalar connection attribute'
+                            )
+                optional_shapes(obj[key], here, node_id)
             elif key in string_keys:
                 if value is None:
                     obj.pop(key)
                 elif not isinstance(value, str):
                     raise ValueError(f'{here}: expected string')
 
+    def normalize_supernode(node, nid):
+        if node.get('baseType') != 'superNode':
+            return
+        sem = _get_node_type(node)
+        if sem not in _PREP_SUPERNODE_TYPES:
+            raise ValueError(f'Prep superNode {nid!r}: unsupported nodeType {sem!r}')
+        action_node = node.get('actionNode')
+        if not isinstance(action_node, dict):
+            raise ValueError(
+                f'Prep superNode {nid!r} ({sem}): actionNode must be an object'
+            )
+
+        supported_outer = _PREP_SUPERNODE_PAYLOAD_FIELDS[sem] | {'actionNode'}
+        for key, value in node.items():
+            if (key not in supported_outer and not key.startswith('_prep_')
+                    and nonempty(value)):
+                add_diagnostic(
+                    'unsupported_supernode_field', nid,
+                    f'Prep node {nid!r}.{key}',
+                    f'Unrecognized outer field on Prep {sem} envelope is not converted',
+                    value,
+                )
+
+        supported_inner = _PREP_SUPERNODE_PAYLOAD_FIELDS[sem]
+        for key, value in action_node.items():
+            if key not in supported_inner and nonempty(value):
+                add_diagnostic(
+                    'unsupported_action_node_field', nid,
+                    f'Prep node {nid!r}.actionNode.{key}',
+                    f'Unrecognized actionNode field on Prep {sem} is not converted',
+                    value,
+                )
+
+        aliases = _PREP_SUPERNODE_INNER_TYPES[sem]
+
+        def inner_semantic(key):
+            value = action_node.get(key)
+            if value is None:
+                return ''
+            if not isinstance(value, str):
+                raise ValueError(f'Prep superNode {nid!r}.actionNode.{key}: '
+                                 'expected string')
+            return value.rsplit('.', 1)[-1]
+
+        inner_node_type = inner_semantic('nodeType')
+        inner_action_type = inner_semantic('actionType')
+        simple_union_dialect = (
+            sem == 'SuperUnion' and inner_node_type == 'SimpleUnion'
+        )
+        if simple_union_dialect:
+            namespace_mappings = action_node.get('namespaceFieldMappings')
+            if not isinstance(namespace_mappings, list) or not namespace_mappings:
+                raise ValueError(
+                    f'Prep superNode {nid!r} (SimpleUnion): '
+                    'actionNode.namespaceFieldMappings must be a nonempty list'
+                )
+            node['_prep_union_dialect'] = _PREP_MANUAL_UNION_DIALECT
+        direct_action_type = ''
+        if sem == 'SuperTransform':
+            candidates = [
+                candidate for candidate in (inner_node_type, inner_action_type)
+                if candidate and candidate not in aliases
+            ]
+            if len(set(candidates)) > 1:
+                raise ValueError(f'Prep superNode {nid!r}: conflicting actionNode '
+                                 f'semantics {candidates!r}')
+            direct_action_type = candidates[0] if candidates else ''
+        else:
+            for key, candidate in (
+                ('nodeType', inner_node_type), ('actionType', inner_action_type),
+            ):
+                if candidate and candidate not in aliases:
+                    raise ValueError(f'Prep superNode {nid!r}: actionNode.{key} '
+                                     f'{candidate!r} conflicts with wrapper {sem!r}')
+
+        inner_base = action_node.get('baseType')
+        if inner_base is not None and inner_base != 'transform':
+            raise ValueError(f'Prep superNode {nid!r}: actionNode.baseType '
+                             f'{inner_base!r} conflicts with wrapper graph identity')
+
+        for key in ('name', 'id'):
+            if key not in action_node:
+                continue
+            inner_value = action_node[key]
+            if inner_value is not None and not isinstance(inner_value, str):
+                raise ValueError(f'Prep superNode {nid!r}.actionNode.{key}: '
+                                 'expected string')
+            if simple_union_dialect and key == 'id':
+                # SimpleUnion owns an action identity distinct from the
+                # wrapper's graph identity. Preserve it without treating it
+                # as an edge ID.
+                if inner_value is not None:
+                    node['_prep_action_node_id'] = inner_value
+                continue
+            outer_value = node.get(key)
+            if outer_value not in (None, '') and inner_value not in (None, outer_value):
+                raise ValueError(
+                    f'Prep superNode {nid!r}: conflicting wrapper/actionNode '
+                    f'{key} values {outer_value!r} and {inner_value!r}'
+                )
+            if outer_value in (None, '') and inner_value is not None:
+                node[key] = inner_value
+
+        inner_next = action_node.get('nextNodes')
+        if inner_next not in (None, []):
+            if not isinstance(inner_next, list):
+                raise ValueError(f'Prep superNode {nid!r}.actionNode.nextNodes: '
+                                 'expected list')
+            if inner_next != node.get('nextNodes', []):
+                raise ValueError(
+                    f'Prep superNode {nid!r}: actionNode.nextNodes conflict '
+                    'with wrapper graph edges'
+                )
+
+        groups = ('beforeActionGroup', 'actionGroup', 'afterActionGroup')
+        if sem != 'SuperTransform':
+            has_nested_actions = bool(action_node.get('actions')) or any(
+                _as_dict(action_node.get(group)).get('actions') for group in groups
+            )
+            if has_nested_actions:
+                raise ValueError(
+                    f'Prep superNode {nid!r} ({sem}): action groups cannot '
+                    'be ordered against this operation'
+                )
+
+        structural = {
+            'nodeType', 'actionType', 'baseType', 'id', 'name', 'nextNodes',
+            'actions',
+        }
+        for key, value in action_node.items():
+            if key in structural:
+                continue
+            if key in node:
+                outer_value = node[key]
+                if outer_value is None:
+                    node[key] = deepcopy(value)
+                elif value is None:
+                    continue
+                elif outer_value != value:
+                    raise ValueError(
+                        f'Prep superNode {nid!r}: conflicting wrapper/actionNode '
+                        f'field {key!r}'
+                    )
+            else:
+                node[key] = deepcopy(value)
+
+        if sem == 'SuperTransform':
+            inner_actions = _as_list(action_node.get('actions'))
+            if direct_action_type:
+                action_group = _as_dict(node.get('actionGroup'))
+                central_actions = _as_list(action_group.get('actions'))
+                if inner_actions or central_actions:
+                    raise ValueError(
+                        f'Prep superNode {nid!r}: direct actionNode operation '
+                        'conflicts with actionGroup actions'
+                    )
+                action_payload = {
+                    key: deepcopy(value)
+                    for key, value in action_node.items()
+                    if key not in structural | set(groups) | {
+                        'serialize', 'description', 'fields',
+                        'beforeActionAnnotations', 'afterActionAnnotations',
+                    }
+                }
+                action_payload.pop('actionType', None)
+                action_payload.pop('nodeType', None)
+                action_payload['actionType'] = direct_action_type
+                node['actionGroup'] = {'actions': [action_payload]}
+            elif inner_actions:
+                action_group = _as_dict(node.get('actionGroup'))
+                central_actions = _as_list(action_group.get('actions'))
+                if central_actions:
+                    raise ValueError(
+                        f'Prep superNode {nid!r}: actionNode.actions conflicts '
+                        'with actionGroup.actions'
+                    )
+                node['actionGroup'] = {'actions': inner_actions}
+
+        node.pop('actionNode', None)
+        node['baseType'] = 'transform'
+
+        if sem == 'SuperUnpivotExtended':
+            if node.get('pivotType') not in (None, 'columnsToRows'):
+                raise ValueError(
+                    f'Prep superNode {nid!r}: SuperUnpivotExtended conflicts '
+                    f'with pivotType {node.get("pivotType")!r}'
+                )
+            node['pivotType'] = 'columnsToRows'
+        elif sem == 'SuperPivot':
+            pivot_type = node.get('pivotType')
+            if pivot_type is None:
+                has_unpivot_fields = bool(node.get('pivotFields'))
+                has_pivot_fields = bool(node.get('pivotKeyField')
+                                        and node.get('pivotValueField'))
+                if has_unpivot_fields == has_pivot_fields:
+                    raise ValueError(
+                        f'Prep superNode {nid!r}: SuperPivot has ambiguous '
+                        'pivot semantics'
+                    )
+                node['pivotType'] = ('columnsToRows' if has_unpivot_fields
+                                     else 'rowsToColumns')
+            elif pivot_type not in ('columnsToRows', 'rowsToColumns'):
+                raise ValueError(f'Prep superNode {nid!r}: unsupported pivotType '
+                                 f'{pivot_type!r}')
+
     def add_scope(node_map, scope, path, parent, local_connections):
         node_map = _as_dict(node_map)
         ids = {}
         for local_id in node_map:
             if not isinstance(local_id, str) or not local_id:
-                raise ValueError(f'Prep scope {path}: node IDs must be nonempty strings')
+                raise ValueError(
+                    f'Prep scope {path}: node IDs must be nonempty strings'
+                )
             nid = local_id if not path else prefix + '/'.join(
                 quote(part, safe='') for part in (*path, local_id))
             if nid in records:
@@ -383,9 +797,10 @@ def normalize_prep_flow(flow):
         children[parent] = list(ids.values())
         for local_id, nid in ids.items():
             node = records[nid]
+            normalize_supernode(node, nid)
             node.setdefault('_prep_declared_fields',
                             'fields' in node and node['fields'] is not None)
-            optional_shapes(node, f'Prep node {nid!r}')
+            optional_shapes(node, f'Prep node {nid!r}', nid)
             node.setdefault('nextNodes', [])
             node.setdefault('fields', [])
             node.setdefault('connectionAttributes', {})
@@ -404,13 +819,93 @@ def normalize_prep_flow(flow):
                     raise ValueError(f'Prep container {nid!r}: outer transformation '
                                      'semantics cannot be discarded while flattening')
                 loom = _as_dict(node.get('loomContainer'))
-                if not loom.get('nodes'):
-                    raise ValueError(f'Prep container {nid!r}: missing/empty loomContainer.nodes')
+                loom_nodes = loom.get('nodes')
+                if loom_nodes is None or loom_nodes == {}:
+                    allowed_identity = {
+                        'baseType', 'nodeType', 'name', 'id', 'nextNodes',
+                        'serialize', 'description', 'loomContainer',
+                        'beforeActionAnnotations', 'afterActionAnnotations',
+                        'fields', 'connectionAttributes', '_prep_declared_fields',
+                        '_prep_scope',
+                    }
+                    node_type = _get_node_type(node)
+                    if node_type and node_type not in {
+                        'Container', 'LoomContainer', 'SuperContainer',
+                    }:
+                        raise ValueError(f'Prep container {nid!r}: empty container has '
+                                         f'non-container nodeType {node_type!r}')
+                    if node.get('_prep_declared_fields'):
+                        raise ValueError(
+                            f'Prep container {nid!r}: empty container declares '
+                            'a schema and cannot be treated as identity'
+                        )
+                    if node.get('connectionAttributes'):
+                        raise ValueError(f'Prep container {nid!r}: empty container has '
+                                         'connection semantics')
+                    for key in ('actions', 'beforeActionGroup', 'actionGroup',
+                                'afterActionGroup'):
+                        group = node.get(key)
+                        if key == 'actions':
+                            has_actions = bool(group)
+                        else:
+                            group = _as_dict(group)
+                            has_actions = bool(group.get('actions')) or any(
+                                nonempty(value) for attr, value in group.items()
+                                if attr != 'actions'
+                            )
+                        if has_actions:
+                            raise ValueError(
+                                f'Prep container {nid!r}: empty container has '
+                                'transformation semantics'
+                            )
+                    semantic_keys = {
+                        'groupByFields', 'aggregateFields', 'joinConditions',
+                        'pivotType', 'pivotFields', 'pivotKeyField',
+                        'pivotValueField', 'unionType', 'fieldMappings',
+                        'columnMappings', 'fieldMapping', 'connectionId',
+                        'actionNode', 'beforeActionAnnotations',
+                        'afterActionAnnotations',
+                    }
+                    for key in semantic_keys:
+                        if key in node and nonempty(node[key]):
+                            raise ValueError(
+                                f'Prep container {nid!r}: empty container has '
+                                f'transformation semantics in {key!r}'
+                            )
+                    for key, value in node.items():
+                        if (key not in allowed_identity and key not in semantic_keys
+                                and not key.startswith('_prep_') and nonempty(value)):
+                            raise ValueError(
+                                f'Prep container {nid!r}: cannot treat empty '
+                                f'container field {key!r} as identity'
+                            )
+                    for key, value in loom.items():
+                        if key not in {'nodes', 'connections'} and nonempty(value):
+                            raise ValueError(
+                                f'Prep container {nid!r}: cannot treat empty '
+                                f'loomContainer field {key!r} as identity'
+                            )
+                    loom_connections = _as_dict(loom.get('connections'))
+                    if loom_connections:
+                        raise ValueError(f'Prep container {nid!r}: empty container has '
+                                         'connection definitions')
+                    empty_containers.add(nid)
+                    continue
+                if not isinstance(loom_nodes, dict):
+                    raise ValueError(
+                        f'Prep container {nid!r}: loomContainer.nodes must be '
+                        'an object'
+                    )
                 local = dict(local_connections)
                 for cid, definition in _as_dict(loom.get('connections')).items():
                     if not isinstance(cid, str) or not cid:
-                        raise ValueError(f'Prep container {nid!r}: invalid connection ID {cid!r}')
-                    scoped_cid = prefix + 'connection/' + quote(nid, safe='') + '/' + quote(cid, safe='')
+                        raise ValueError(
+                            f'Prep container {nid!r}: invalid connection ID {cid!r}'
+                        )
+                    scoped_cid = (
+                        prefix + 'connection/' + quote(nid, safe='')
+                        + '/' + quote(cid, safe='')
+                    )
                     if scoped_cid in connections:
                         raise ValueError(f'Prep duplicate connection {scoped_cid!r}')
                     connections[scoped_cid] = definition
@@ -418,7 +913,9 @@ def normalize_prep_flow(flow):
                 add_scope(loom['nodes'], nid, (*path, local_id), nid, local)
 
     add_scope(raw_nodes, None, (), None, {cid: cid for cid in connections})
-    containers = {nid for nid, node in records.items() if node['baseType'] == 'container'}
+    containers = {
+        nid for nid, node in records.items() if node['baseType'] == 'container'
+    }
 
     def is_inside(nid, container):
         parent = parents[nid]
@@ -432,7 +929,9 @@ def normalize_prep_flow(flow):
         if isinstance(ref, dict):
             ref = ref.get('nodeId', ref.get('nextNodeId', ref.get('id')))
         if not isinstance(ref, str) or not ref:
-            raise ValueError(f'{context}: expected nonempty node reference, got {ref!r}')
+            raise ValueError(
+                f'{context}: expected nonempty node reference, got {ref!r}'
+            )
         cursor = scope
         while True:
             if ref in scopes[cursor]:
@@ -448,7 +947,9 @@ def normalize_prep_flow(flow):
                    and (scope is None or key == scope or
                         (key is not None and is_inside(key, scope)))]
         if len(matches) != 1:
-            raise ValueError(f'{context}: dangling/ambiguous reference {ref!r} ({matches})')
+            raise ValueError(
+                f'{context}: dangling/ambiguous reference {ref!r} ({matches})'
+            )
         return matches[0]
 
     edges = []
@@ -485,14 +986,23 @@ def normalize_prep_flow(flow):
                 continue
             for owner in (node, _as_dict(node.get('loomContainer'))):
                 for stem in stems:
-                    for key in (stem + 'NodeId', stem + 'NodeIds', stem + 'Node', stem + 'Nodes'):
+                    for key in (
+                        stem + 'NodeId', stem + 'NodeIds',
+                        stem + 'Node', stem + 'Nodes',
+                    ):
                         if owner.get(key) is None:
                             continue
-                        refs = owner[key] if isinstance(owner[key], list) else [owner[key]]
+                        refs = (
+                            owner[key] if isinstance(owner[key], list)
+                            else [owner[key]]
+                        )
                         for ref in refs:
                             target = resolve(ref, nid, f'Prep container {nid!r}.{key}')
                             if not is_inside(target, nid):
-                                raise ValueError(f'Prep container {nid!r}.{key}: not a child: {target!r}')
+                                raise ValueError(
+                                    f'Prep container {nid!r}.{key}: '
+                                    f'not a child: {target!r}'
+                                )
                             declared[nid][direction].append(target)
 
     boundary_cache = {}
@@ -505,6 +1015,26 @@ def normalize_prep_flow(flow):
             return boundary_cache[key]
         if key in active:
             raise ValueError(f'Prep cyclic container boundary {active + (key,)!r}')
+        if nid in empty_containers:
+            if direction == 'entry':
+                neighbors = {target for source, target, _ in edges if source == nid}
+            else:
+                neighbors = {source for source, target, _ in edges if target == nid}
+            touching_edges = [edge for source, target, edge in edges
+                              if source == nid or target == nid]
+            if len(neighbors) != 1:
+                raise ValueError(
+                    f'Prep empty identity container {nid!r}: ambiguous {direction} '
+                    f'routing through neighbors {sorted(neighbors)!r}'
+                )
+            if any(set(edge) - {'nextNodeId'} for edge in touching_edges):
+                raise ValueError(
+                    f'Prep empty identity container {nid!r}: edge metadata '
+                    'cannot be preserved while collapsing the container'
+                )
+            result = boundary(next(iter(neighbors)), direction, active + (key,))
+            boundary_cache[key] = result
+            return result
         candidates = set(declared[nid][direction])
         if not candidates:
             candidates = set(children[nid])
@@ -568,12 +1098,16 @@ def normalize_prep_flow(flow):
                 routed = routed or parent in routed_containers
                 parent = parents[parent]
             if routed or has_explicit_outputs:
-                raise ValueError(f'Prep container child {nid!r}: branch stranded at exit')
+                raise ValueError(
+                    f'Prep container child {nid!r}: branch stranded at exit'
+                )
     for cid, definition in connections.items():
         definition = _as_dict(definition)
         optional_shapes(definition, f'Prep connection {cid!r}')
         connections[cid] = definition
     flow['nodes'] = flat
+    if diagnostics:
+        flow['_prep_diagnostics'] = diagnostics
     _topological_sort(flat)
     return flow
 
@@ -683,7 +1217,9 @@ def _parse_input_node(node, connections):
     try:
         _prep_m_connection_type(conn_type)
     except ValueError as exc:
-        raise ValueError(f"Prep input {node.get('name', '<unnamed>')!r}: {exc}") from exc
+        raise ValueError(
+            f"Prep input {node.get('name', '<unnamed>')!r}: {exc}"
+        ) from exc
 
     # Build table name
     table_name = node.get('name', 'Table')
@@ -801,7 +1337,9 @@ def _parse_remap(action, fields=None):
         try:
             value = json.loads(encoded)
         except ValueError as exc:
-            raise ValueError(f'Prep Remap invalid JSON-encoded string {encoded!r}') from exc
+            raise ValueError(
+                f'Prep Remap invalid JSON-encoded string {encoded!r}'
+            ) from exc
         if not isinstance(value, str):
             raise ValueError('Prep Remap supports only decoded string values')
         return value
@@ -814,13 +1352,17 @@ def _parse_remap(action, fields=None):
         for encoded_source in encoded_sources:
             source = decode(encoded_source)
             if source in mapping and mapping[source] != target:
-                raise ValueError(f'Prep Remap conflicting mappings for source {source!r}')
+                raise ValueError(
+                    f'Prep Remap conflicting mappings for source {source!r}'
+                )
             mapping[source] = target
 
     if fields is not None:
         field = _require_field(fields, column, 'Remap')
         if field.get('type') != 'string':
-            raise ValueError(f'Prep Remap column {column!r} requires upstream string type')
+            raise ValueError(
+                f'Prep Remap column {column!r} requires upstream string type'
+            )
     # groupMethodProps describes how the producer obtained this explicit map;
     # it is provenance, not an instruction to execute fuzzy matching.
     return column, mapping
@@ -842,7 +1384,9 @@ def _parse_clean_actions(node):
         action_group = _as_dict(node.get(key))
         actions.extend(_as_list(action_group.get('actions')))
     if node.get('actions'):
-        raise ValueError('Prep SuperTransform has unscoped actions; action-group order required')
+        raise ValueError(
+            'Prep SuperTransform has unscoped actions; action-group order required'
+        )
 
     # Track step counter for unique step names
     step_counter = {}
@@ -873,7 +1417,10 @@ def _parse_clean_actions(node):
                     flush_renames()
                 pending_renames[old_name] = new_name
             else:
-                raise ValueError(f'Prep RenameColumn requires columnName/newColumnName: {action!r}')
+                raise ValueError(
+                    'Prep RenameColumn requires columnName/newColumnName: '
+                    f'{action!r}'
+                )
             continue
 
         # Flush any pending renames before processing a non-rename action
@@ -886,12 +1433,28 @@ def _parse_clean_actions(node):
             else:
                 steps.append(step)
         else:
-            raise ValueError(f'Prep unsupported or incomplete clean action {sem_type!r}: {action!r}')
+            raise ValueError(
+                f'Prep unsupported or incomplete clean action {sem_type!r}: '
+                f'{action!r}'
+            )
 
     # Flush any trailing renames
     flush_renames()
 
     return steps
+
+
+def _require_filter_type(action, action_type):
+    """Require an explicit, recognized direction for keep/remove filters."""
+    if 'filterType' not in action:
+        raise ValueError(
+            f'Prep {action_type} requires explicit filterType "keep" or "remove"'
+        )
+    filter_type = _canonical_filter_type(action.get('filterType'))
+    if filter_type is None:
+        raise ValueError(f'Prep {action_type} has unsupported filterType '
+                         f'{action.get("filterType")!r}; expected "keep" or "remove"')
+    return filter_type
 
 
 def _convert_action_to_m_step(action_type, action, counter):
@@ -928,7 +1491,9 @@ def _convert_action_to_m_step(action_type, action, counter):
         col = action.get('columnName', '')
         new_type = action.get('newType', 'string')
         if not col or new_type not in _PREP_TYPE_MAP:
-            raise ValueError('Prep ChangeColumnType requires a column and supported newType')
+            raise ValueError(
+                'Prep ChangeColumnType requires a column and supported newType'
+            )
         m_type = _PREP_TYPE_MAP.get(new_type, 'text')
         n = counter.get('type', 0)
         counter['type'] = n + 1
@@ -941,7 +1506,7 @@ def _convert_action_to_m_step(action_type, action, counter):
         expr = action.get('filterExpression', '')
         if not expr:
             raise ValueError('Prep FilterOperation requires filterExpression')
-        filter_type = action.get('filterType', 'keep')
+        filter_type = _require_filter_type(action, action_type)
         m_expr = _convert_prep_expression_to_m(expr)
         n = counter.get('filter', 0)
         counter['filter'] = n + 1
@@ -955,7 +1520,7 @@ def _convert_action_to_m_step(action_type, action, counter):
     elif action_type == 'FilterValues':
         col = action.get('columnName', '')
         values = action.get('values', [])
-        filter_type = action.get('filterType', 'keep')
+        filter_type = _require_filter_type(action, action_type)
         if col and values:
             if filter_type == 'remove':
                 return m_transform_exclude_values(col, values)
@@ -965,6 +1530,11 @@ def _convert_action_to_m_step(action_type, action, counter):
         col = action.get('columnName', '')
         min_val = action.get('min')
         max_val = action.get('max')
+        if (
+            'filterType' in action
+            and _require_filter_type(action, action_type) != 'keep'
+        ):
+            raise ValueError('Prep FilterRange does not support remove semantics')
         if col:
             return m_transform_filter_range(col, min_val, max_val)
 
@@ -995,7 +1565,8 @@ def _convert_action_to_m_step(action_type, action, counter):
                 f'Table.TransformColumns({{prev}}, {{{{{literal(column)}, '
                 f'each if _ = null then null else let position = '
                 f'List.PositionOf({sources}, _, Occurrence.First, Comparer.Ordinal) '
-                f'in if position = -1 then _ else {targets}{{position}}, type text}}}})')
+                f'in if position = -1 then _ else {targets}{{position}}, '
+                'type text}})')
 
     elif action_type == 'ReplaceNulls':
         col = action.get('columnName', '')
@@ -1069,7 +1640,9 @@ def _convert_action_to_m_step(action_type, action, counter):
                 old_val = g.get('from', '')
                 new_val = g.get('to', '')
                 if old_val and new_val:
-                    result_steps.append(m_transform_replace_value(col, old_val, new_val))
+                    result_steps.append(
+                        m_transform_replace_value(col, old_val, new_val)
+                    )
             return result_steps if result_steps else None
 
     elif action_type == 'ConditionalColumn':
@@ -1097,7 +1670,8 @@ def _convert_action_to_m_step(action_type, action, counter):
             # Use Table.AddColumn with a regex-like Text approach
             return (step_name,
                     f'Table.AddColumn({{prev}}, "{new_col}", '
-                    f'each Text.Select([{col}], {{"a".."z", "A".."Z", "0".."9"}}), type text)')
+                    f'each Text.Select([{col}], '
+                    '{"a".."z", "A".."Z", "0".."9"}), type text)')
 
     elif action_type == 'CustomCalculation':
         # Full custom calculation expression in Prep
@@ -1118,11 +1692,17 @@ def _schema(fields, context):
     result = deepcopy(fields)
     seen = set()
     for field in result:
-        if not isinstance(field, dict) or not isinstance(field.get('name'), str) or not field['name']:
+        if (
+            not isinstance(field, dict)
+            or not isinstance(field.get('name'), str)
+            or not field['name']
+        ):
             raise ValueError(f'Prep {context}: each field requires a nonempty name')
         key = field['name'].casefold()
         if key in seen:
-            raise ValueError(f'Prep {context}: duplicate/colliding field {field["name"]!r}')
+            raise ValueError(
+                f'Prep {context}: duplicate/colliding field {field["name"]!r}'
+            )
         seen.add(key)
         dtype = field.get('type', 'string')
         if dtype not in _PREP_TYPE_MAP and dtype != 'unknown':
@@ -1154,7 +1734,10 @@ def _expression_type(expression, fields):
     arithmetic = re.sub(r'\[[^\]]+\]', '1', expr)
     if re.fullmatch(r'[\d\s.+*/()%-]+', arithmetic) and all(
             t in ('integer', 'real') for t in types):
-        return 'real' if '/' in expr or '.' in arithmetic or 'real' in types else 'integer'
+        return (
+            'real' if '/' in expr or '.' in arithmetic or 'real' in types
+            else 'integer'
+        )
     return 'unknown'
 
 
@@ -1164,7 +1747,9 @@ def _clean_schema(node, fields):
     for key in ('beforeActionGroup', 'actionGroup', 'afterActionGroup'):
         actions.extend(_as_list(_as_dict(node.get(key)).get('actions')))
     for action in actions:
-        kind = (action.get('actionType') or action.get('nodeType') or '').rsplit('.', 1)[-1]
+        kind = (action.get('actionType') or action.get('nodeType') or '').rsplit(
+            '.', 1
+        )[-1]
         name = action.get('columnName', '')
         if kind in ('RemoveColumn', 'RemoveColumns'):
             removed = ([name] if kind == 'RemoveColumn' else
@@ -1219,7 +1804,9 @@ def _clean_schema(node, fields):
                 _require_field(fields, col, kind)
             pos = min(i for i, f in enumerate(fields) if f['name'] in columns)
             fields = [f for f in fields if f['name'] not in columns]
-            fields.insert(pos, {'name': action.get('newColumnName', 'Merged'), 'type': 'string'})
+            fields.insert(
+                pos, {'name': action.get('newColumnName', 'Merged'), 'type': 'string'}
+            )
         elif kind == 'FilterOperation':
             _expression_type(action.get('filterExpression'), fields)
         elif kind == 'Remap':
@@ -1241,28 +1828,36 @@ def _declared_schema(node, result, context, project=False):
     if node.get('_prep_declared_fields', 'fields' in node):
         declared = _schema(node['fields'], context + ' declared')
         if not project and {f['name'] for f in fields} != {f['name'] for f in declared}:
-            raise ValueError(f'Prep {context}: declared fields disagree with computed schema')
+            raise ValueError(
+                f'Prep {context}: declared fields disagree with computed schema'
+            )
         for raw, field in zip(node['fields'], declared):
             actual = _require_field(fields, field['name'], context)
             if 'type' not in raw:
                 field['type'] = actual['type']
             if field['type'] == 'unknown':
-                raise ValueError(f'Prep {context}: declared fields require concrete types')
+                raise ValueError(
+                    f'Prep {context}: declared fields require concrete types'
+                )
             if actual['type'] != 'unknown' and actual['type'] != field['type']:
                 raise ValueError(f'Prep {context}: declared type for {field["name"]!r} '
-                                 f'({field["type"]}) disagrees with computed {actual["type"]}')
+                                 f'({field["type"]}) disagrees with computed '
+                                 f'{actual["type"]}')
         if project or [f['name'] for f in declared] != [f['name'] for f in fields]:
             result['m_query'] = inject_m_steps(result['m_query'], [
                 m_transform_select_columns([f['name'] for f in declared])])
         # Resolve unknown calculation types explicitly in M as well as JSON.
         conversions = [(f['name'], f['type']) for f in declared
-                       if _require_field(fields, f['name'], context)['type'] == 'unknown']
+                       if _require_field(fields, f['name'], context)['type']
+                       == 'unknown']
         if conversions:
             pairs = ', '.join(
-                '{"' + name.replace('"', '""') + '", type ' + _PREP_TYPE_MAP[dtype] + '}'
+                '{"' + name.replace('"', '""') + '", type '
+                + _PREP_TYPE_MAP[dtype] + '}'
                 for name, dtype in conversions)
             result['m_query'] = inject_m_steps(result['m_query'], [
-                ('#"Declared Types"', f'Table.TransformColumnTypes({{prev}}, {{{pairs}}})')])
+                ('#"Declared Types"',
+                 f'Table.TransformColumnTypes({{prev}}, {{{pairs}}})')])
         fields = declared
     result['fields'] = fields
     result['table'] = {**result.get('table', {}), 'columns': [
@@ -1286,21 +1881,256 @@ def _aggregate_schema(node, fields):
         operation = agg.get('aggregation', 'SUM').upper()
         if operation not in _PREP_AGG_MAP:
             raise ValueError(f'Prep unsupported aggregation {operation!r}')
-        if operation not in ('COUNT', 'COUNTD') and source['type'] not in ('integer', 'real'):
+        if (
+            operation not in ('COUNT', 'COUNTD')
+            and source['type'] not in ('integer', 'real')
+        ):
             raise ValueError(f'Prep aggregate: {operation} requires numeric input '
                              f'for column {source_name!r}')
-        result.append({'name': agg.get('newColumnName', agg.get('name')),
-                       'type': 'integer' if operation in ('COUNT', 'COUNTD') else 'real'})
+        result.append({
+            'name': agg.get('newColumnName', agg.get('name')),
+            'type': 'integer' if operation in ('COUNT', 'COUNTD') else 'real',
+        })
     return _schema(result, 'aggregate output')
 
 
-def _union_schema(results, node):
-    if (node.get('fieldMappings') or node.get('columnMappings') or node.get('fieldMapping')
-            or node.get('unionType', '').lower() == 'manual'):
-        raise ValueError('Prep union manual field mapping requires an explicit supported dialect')
+def _union_dialect(node):
+    """Validate union metadata and identify the one evidenced manual dialect."""
+    node = _as_dict(node)
+    dialect = node.get('_prep_union_dialect')
+    if dialect not in (None, _PREP_MANUAL_UNION_DIALECT):
+        raise ValueError(f'Prep union: unsupported manual mapping dialect {dialect!r}')
+
+    unsupported_fields = [
+        key for key in ('fieldMappings', 'columnMappings', 'fieldMapping')
+        if key in node
+    ]
+    if unsupported_fields:
+        raise ValueError(
+            'Prep union manual mapping: only the observed '
+            'SimpleUnion.namespaceFieldMappings dialect is supported; '
+            f'unrecognized mapping fields {unsupported_fields!r}'
+        )
+
+    manual = dialect == _PREP_MANUAL_UNION_DIALECT
+    namespace_mappings_present = (
+        'namespaceFieldMappings' in node
+        and node.get('namespaceFieldMappings') is not None
+    )
+    if namespace_mappings_present and not manual:
+        raise ValueError(
+            'Prep union manual mapping: namespaceFieldMappings requires the '
+            'observed SuperUnion/SimpleUnion actionNode dialect'
+        )
+
+    union_type = node.get('unionType')
+    if union_type not in (None, ''):
+        if not isinstance(union_type, str):
+            raise ValueError('Prep union: unionType must be a string')
+        union_type = union_type.strip().casefold()
+        if union_type not in ('automatic', 'manual'):
+            raise ValueError(f'Prep union: unsupported unionType {union_type!r}')
+        if manual and union_type == 'automatic':
+            raise ValueError(
+                'Prep union: automatic unionType conflicts with '
+                'namespaceFieldMappings'
+            )
+        if not manual and union_type == 'manual':
+            raise ValueError(
+                'Prep union manual field mapping requires the observed '
+                'SimpleUnion.namespaceFieldMappings dialect'
+            )
+
+    if manual and not namespace_mappings_present:
+        raise ValueError(
+            'Prep union: normalized SimpleUnion is missing '
+            'namespaceFieldMappings'
+        )
+    return manual
+
+
+def _manual_union_mapping_records(node):
+    """Validate the observed namespaceName -> bracketed-source/output map shape."""
+    raw_records = _as_dict(node).get('namespaceFieldMappings')
+    if not isinstance(raw_records, list) or not raw_records:
+        raise ValueError(
+            'Prep union namespaceFieldMappings must be a nonempty list'
+        )
+
+    records = {}
+    for index, record in enumerate(raw_records):
+        context = f'Prep union namespaceFieldMappings[{index}]'
+        if not isinstance(record, dict):
+            raise ValueError(f'{context}: expected object')
+        required = {'namespaceName', 'fieldMappings'}
+        missing = required - set(record)
+        extra = set(record) - required
+        if missing or extra:
+            raise ValueError(
+                f'{context}: expected exactly namespaceName and fieldMappings; '
+                f'missing={sorted(missing)!r}, extra={sorted(map(str, extra))!r}'
+            )
+
+        namespace = record['namespaceName']
+        if not isinstance(namespace, str) or not namespace.strip():
+            raise ValueError(f'{context}.namespaceName: expected nonempty string')
+        if namespace in records:
+            raise ValueError(
+                f'Prep union namespaceFieldMappings: duplicate namespace '
+                f'{namespace!r}'
+            )
+
+        raw_mappings = record['fieldMappings']
+        if not isinstance(raw_mappings, dict):
+            raise ValueError(f'{context}.fieldMappings: expected object')
+        renames = {}
+        seen_sources = {}
+        seen_targets = {}
+        for field_ref, target_name in raw_mappings.items():
+            mapping_context = f'{context}.fieldMappings[{field_ref!r}]'
+            if (
+                not isinstance(field_ref, str)
+                or len(field_ref) < 3
+                or not field_ref.startswith('[')
+                or not field_ref.endswith(']')
+                or '[' in field_ref[1:-1]
+                or ']' in field_ref[1:-1]
+            ):
+                raise ValueError(
+                    f'{mapping_context}: source must use the observed [Field] '
+                    'reference form'
+                )
+            source_name = field_ref[1:-1]
+            if not source_name:
+                raise ValueError(f'{mapping_context}: source field cannot be empty')
+            if source_name.casefold() in seen_sources:
+                raise ValueError(
+                    f'{context}.fieldMappings: conflicting source references '
+                    f'{seen_sources[source_name.casefold()]!r} and {field_ref!r}'
+                )
+            if not isinstance(target_name, str) or not target_name.strip():
+                raise ValueError(
+                    f'{mapping_context}: target must be a nonempty field name'
+                )
+            target_key = target_name.casefold()
+            if target_key in seen_targets:
+                raise ValueError(
+                    f'{context}.fieldMappings: conflicting targets '
+                    f'{seen_targets[target_key]!r} and {target_name!r}'
+                )
+            seen_sources[source_name.casefold()] = field_ref
+            seen_targets[target_key] = target_name
+            renames[source_name] = target_name
+        records[namespace] = renames
+    return records
+
+
+def _manual_union_inputs(node, nodes, union_id, upstream_ids, node_results):
+    """Bind each manual mapping record to one exact incoming edge and schema."""
+    if not _union_dialect(node):
+        return None
+
+    if len(upstream_ids) < 2:
+        raise ValueError(
+            f'Prep union {union_id!r}: manual union requires at least two inputs'
+        )
+    if len(set(upstream_ids)) != len(upstream_ids):
+        raise ValueError(
+            f'Prep union {union_id!r}: duplicate upstream input identities are '
+            'ambiguous for namespaceFieldMappings'
+        )
+
+    mapping_records = _manual_union_mapping_records(node)
+    nodes = _as_dict(nodes)
+    edge_namespaces = {}
+    for input_id in upstream_ids:
+        input_node = _as_dict(nodes.get(input_id))
+        incoming = [
+            edge for edge in _as_list(input_node.get('nextNodes'))
+            if isinstance(edge, dict) and edge.get('nextNodeId') == union_id
+        ]
+        if len(incoming) != 1:
+            raise ValueError(
+                f'Prep union {union_id!r}: input {input_id!r} requires exactly '
+                f'one edge identity, got {len(incoming)}'
+            )
+        namespace = incoming[0].get('nextNamespace')
+        if not isinstance(namespace, str) or not namespace.strip():
+            raise ValueError(
+                f'Prep union {union_id!r}: input {input_id!r} edge requires an '
+                'explicit nextNamespace'
+            )
+        if namespace in edge_namespaces.values():
+            raise ValueError(
+                f'Prep union {union_id!r}: duplicate input edge namespace '
+                f'{namespace!r}'
+            )
+        edge_namespaces[input_id] = namespace
+
+    edge_namespace_set = set(edge_namespaces.values())
+    mapping_namespace_set = set(mapping_records)
+    if edge_namespace_set != mapping_namespace_set:
+        raise ValueError(
+            f'Prep union {union_id!r}: namespaceFieldMappings must match the '
+            'incoming edge nextNamespace identities exactly; '
+            f'missing={sorted(edge_namespace_set - mapping_namespace_set)!r}, '
+            f'unknown={sorted(mapping_namespace_set - edge_namespace_set)!r}'
+        )
+
+    result = []
+    for input_id in upstream_ids:
+        namespace = edge_namespaces[input_id]
+        input_result = _as_dict(node_results.get(input_id))
+        fields = _schema(
+            _as_list(input_result.get('fields', [])),
+            f'union input {input_id!r}',
+        )
+        if not fields:
+            raise ValueError(
+                f'Prep union {union_id!r}: input {input_id!r} has no physical '
+                'schema for namespace mapping'
+            )
+
+        renames = mapping_records[namespace]
+        for source_name in renames:
+            _require_field(fields, source_name, 'manual union mapping source')
+        mapped_fields = [
+            {**field, 'name': renames.get(field['name'], field['name'])}
+            for field in fields
+        ]
+        mapped_fields = _schema(
+            mapped_fields, f'manual union input {input_id!r} mapped schema'
+        )
+        result.append({
+            'namespace': namespace,
+            'field_mappings': renames,
+            'fields': fields,
+            'mapped_fields': mapped_fields,
+        })
+    return result
+
+
+def _union_schema(results, node, manual_inputs=None):
+    manual = _union_dialect(node)
+    if manual:
+        if manual_inputs is None or len(manual_inputs) != len(results):
+            raise ValueError(
+                'Prep union: exact input namespace/edge identities are required '
+                'to compute a manual mapping schema'
+            )
+        input_fields = [item['mapped_fields'] for item in manual_inputs]
+    else:
+        if manual_inputs is not None:
+            raise ValueError('Prep union: manual input mappings conflict with '
+                             'automatic union metadata')
+        input_fields = [
+            _schema(result.get('fields', []), 'union input')
+            for result in results
+        ]
+
     fields = OrderedDict()
-    for result in results:
-        for field in _schema(result.get('fields', []), 'union input'):
+    for schema in input_fields:
+        for field in schema:
             name, dtype = field['name'], field['type']
             if name in fields and fields[name]['type'] != dtype:
                 previous = fields[name]['type']
@@ -1389,11 +2219,86 @@ def _parse_join_node(node, right_table_name, right_fields):
 #  UNION STEP → M STEP
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _parse_union_node(node, upstream_table_names):
-    """Convert a Union node to an m_transform_union step."""
-    if upstream_table_names:
-        return m_transform_union(upstream_table_names)
-    return None
+def _m_query_identifier(name):
+    """Quote an M query identifier without changing its emitted table name."""
+    return '#"' + str(name).replace('"', '""') + '"'
+
+
+def _manual_union_rename_expression(table_ref, manual_input):
+    """Apply one input's rename map simultaneously via collision-free temporaries."""
+    field_mappings = manual_input['field_mappings']
+    renames = {
+        source: target for source, target in field_mappings.items()
+        if source != target
+    }
+    if not renames:
+        return table_ref
+
+    used_names = {
+        field['name'].casefold() for field in manual_input['fields']
+    }
+    used_names.update(target.casefold() for target in renames.values())
+    temporary_names = {}
+    for index, source in enumerate(renames):
+        temporary = f'__prep_union_rename_{index}__'
+        while temporary.casefold() in used_names:
+            temporary += '_'
+        used_names.add(temporary.casefold())
+        temporary_names[source] = temporary
+
+    first_mapping = m_transform_rename(temporary_names)[1]
+    first_step = first_mapping.replace(
+        '{prev}', table_ref, 1
+    )
+    second_mapping = m_transform_rename({
+        temporary: renames[source]
+        for source, temporary in temporary_names.items()
+    })[1]
+    return second_mapping.replace('{prev}', first_step, 1)
+
+
+def _parse_union_node(node, upstream_table_names, manual_inputs=None,
+                      output_fields=None):
+    """Convert an automatic or evidenced namespace-mapped Union to an M step."""
+    node = _as_dict(node)
+    if not upstream_table_names:
+        return None
+
+    manual = _union_dialect(node)
+    if manual:
+        if manual_inputs is None or len(manual_inputs) != len(upstream_table_names):
+            raise ValueError(
+                'Prep union: exact input namespace/edge identities are required '
+                'to emit manual mapping M'
+            )
+        table_refs = [
+            _manual_union_rename_expression(
+                _m_query_identifier(table_name), manual_input
+            )
+            for table_name, manual_input in zip(
+                upstream_table_names, manual_inputs
+            )
+        ]
+    else:
+        if manual_inputs is not None:
+            raise ValueError('Prep union: manual input mappings conflict with '
+                             'automatic union metadata')
+        table_refs = upstream_table_names
+
+    step_name, expression = m_transform_union(table_refs)
+    if manual:
+        type_changes = [
+            '{' + _m_literal(field['name']) + ', type '
+            + _PREP_TYPE_MAP[field['type']] + '}'
+            for field in _schema(output_fields or [], 'manual union output')
+            if field['type'] != 'unknown'
+        ]
+        if type_changes:
+            expression = (
+                f'Table.TransformColumnTypes({expression}, '
+                f'{{{", ".join(type_changes)}}})'
+            )
+    return step_name, expression
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1449,11 +2354,26 @@ def parse_prep_flow(filepath):
         - calculations: []
     """
     flow = normalize_prep_flow(read_prep_flow(filepath))
+    blocking_diagnostics = [
+        item for item in flow.get('_prep_diagnostics', [])
+        if isinstance(item, dict) and item.get('blocks_conversion', True)
+    ]
+    if blocking_diagnostics:
+        details = '; '.join(
+            f'{item.get("code", "unsupported")} at {item.get("path", "<unknown>")}: '
+            f'{item.get("message", "unsupported Prep structure")}'
+            for item in blocking_diagnostics
+        )
+        raise ValueError(
+            f'Prep conversion blocked by unsupported diagnostics: {details}'
+        )
     nodes = _as_dict(flow.get('nodes', {}))
     connections = _as_dict(flow.get('connections', {}))
 
     if not nodes:
-        raise ValueError(f'Prep flow {filepath!s}: no nodes; no outputs can be produced')
+        raise ValueError(
+            f'Prep flow {filepath!s}: no nodes; no outputs can be produced'
+        )
 
     # Topological sort to process in order
     sorted_ids = _topological_sort(nodes)
@@ -1468,11 +2388,13 @@ def parse_prep_flow(filepath):
         _process_prep_node(nid, nodes, connections, node_results, secondary_branch_ids)
 
     # Collect output nodes into datasources
-    return _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_ids)
+    return _collect_prep_datasources(
+        sorted_ids, nodes, node_results, secondary_branch_ids
+    )
 
 
 def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_ids):
-    """Process a single Prep flow node (input/transform/output) and store result in node_results."""
+    """Process one input/transform/output node and store its result."""
     nodes = _as_dict(nodes)
     connections = _as_dict(connections)
     node = _as_dict(nodes.get(nid, {}))
@@ -1492,8 +2414,10 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
     elif base_type == 'output':
         upstream_ids = _find_upstream_nodes(nodes, nid)
         if len(upstream_ids) != 1 or upstream_ids[0] not in node_results:
-            raise ValueError(f'Prep output {nid!r} ({node_name}): expected one resolved '
-                             f'upstream, got {upstream_ids!r}')
+            raise ValueError(
+                f'Prep output {nid!r} ({node_name}): expected one resolved '
+                f'upstream, got {upstream_ids!r}'
+            )
         node_results[nid] = {
             **node_results[upstream_ids[0]],
             'name': node_name,
@@ -1503,7 +2427,9 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
         _declared_schema(node, node_results[nid], f'output {nid!r}', project=True)
         print(f"    ✓ Output: {node_name}")
     else:
-        raise ValueError(f'Prep node {nid!r}: unnormalized/unsupported kind {base_type!r}')
+        raise ValueError(
+            f'Prep node {nid!r}: unnormalized/unsupported kind {base_type!r}'
+        )
 
 
 def _process_input_node(nid, node, connections, node_results, node_name):
@@ -1563,25 +2489,23 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
     source_types = ('PublishedDataSource', 'LoadPublishedDataSource')
     if sem_type not in source_types:
         if not upstream_ids or any(uid not in node_results for uid in upstream_ids):
-            raise ValueError(f'Prep transform {nid!r} ({sem_type}): unresolved upstream '
-                             f'{upstream_ids!r}')
-        if sem_type not in ('Join', 'CrossJoin', 'Union') and len(upstream_ids) != 1:
-            raise ValueError(f'Prep transform {nid!r} ({sem_type}): expected one upstream, '
-                             f'got {upstream_ids!r}')
+            raise ValueError(
+                f'Prep transform {nid!r} ({sem_type}): unresolved upstream '
+                f'{upstream_ids!r}'
+            )
+        if sem_type not in ('Join', 'SuperJoin', 'CrossJoin', 'Union', 'SuperUnion') \
+                and len(upstream_ids) != 1:
+            raise ValueError(
+                f'Prep transform {nid!r} ({sem_type}): expected one upstream, '
+                f'got {upstream_ids!r}'
+            )
 
-    action_types = {
-        'AddColumn', 'RemoveColumn', 'RemoveColumns', 'RenameColumn',
-        'ValueFilter', 'ChangeColumnType', 'FilterOperation', 'DuplicateColumn',
-        'RichRangeFilter', 'RangeFilter', 'Remap', 'RichDiscreteValueFilter',
-        'QuickCalcColumn', 'RichWildcardFilter', 'RichNullFilter',
-        'FilterValues', 'FilterRange', 'ReplaceValues', 'ReplaceNulls',
-        'SplitColumn', 'MergeColumns', 'CleanOperation', 'FillValues',
-        'GroupReplace', 'ConditionalColumn', 'ExtractValues', 'CustomCalculation',
-    }
-    if sem_type in action_types:
+    if sem_type in _PREP_CLEAN_ACTION_TYPES:
         if any(_as_dict(node.get(key)).get('actions') for key in
                ('beforeActionGroup', 'actionGroup', 'afterActionGroup')):
-            raise ValueError(f'Prep operation {nid!r}: mixed standalone/grouped actions')
+            raise ValueError(
+                f'Prep operation {nid!r}: mixed standalone/grouped actions'
+            )
         action = {**node, 'actionType': sem_type}
         try:
             steps = _parse_clean_actions({'actionGroup': {'actions': [action]}})
@@ -1617,7 +2541,9 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
             upstream = node_results[upstream_ids[0]]
             step = _parse_aggregate_node(node)
             if not step:
-                raise ValueError(f'Prep aggregate {nid!r}: missing grouping/aggregation fields')
+                raise ValueError(
+                    f'Prep aggregate {nid!r}: missing grouping/aggregation fields'
+                )
             m_query = upstream['m_query']
             if step:
                 m_query = inject_m_steps(m_query, [step])
@@ -1629,7 +2555,7 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
             }
             print(f"    ✓ Aggregate: {node_name}")
 
-    elif sem_type == 'Join':
+    elif sem_type in ('Join', 'SuperJoin'):
         # Join needs two upstream sources
         left_id = node.get('leftNodeId')
         right_id = node.get('rightNodeId')
@@ -1644,12 +2570,15 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 left_id = next(uid for uid in upstream_ids if uid != right_id)
         if not left_id or not right_id:
             raise ValueError(f'Prep join {nid!r}: explicit leftNodeId/rightNodeId '
-                             'provenance required; upstream iteration order is ambiguous')
+                             'provenance required; upstream iteration order '
+                             'is ambiguous')
 
         if (len(upstream_ids) != 2 or left_id == right_id
                 or {left_id, right_id} != set(upstream_ids)):
-            raise ValueError(f'Prep join {nid!r}: requires two resolved left/right inputs; '
-                             f'got {upstream_ids!r}')
+            raise ValueError(
+                f'Prep join {nid!r}: requires two resolved left/right inputs; '
+                f'got {upstream_ids!r}'
+            )
         if left_id and left_id in node_results:
             left = node_results[left_id]
             right_name = 'RightTable'
@@ -1668,18 +2597,26 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
             right_fields = _schema(right_fields, 'join right')
             conditions = _as_list(node.get('joinConditions'))
             for condition in conditions:
-                _require_field(left_fields, condition.get('leftColumn'), 'join left key')
-                _require_field(right_fields, condition.get('rightColumn'), 'join right key')
+                _require_field(
+                    left_fields, condition.get('leftColumn'), 'join left key'
+                )
+                _require_field(
+                    right_fields, condition.get('rightColumn'), 'join right key'
+                )
             right_keys = {c.get('rightColumn') for c in conditions}
             expanded = [f for f in right_fields if f['name'] not in right_keys]
             # NestedJoin introduces Joined; expansion removes it only if there
             # are fields to expand. Remove the empty nested column explicitly.
             if any(f['name'].casefold() == 'joined' for f in left_fields):
-                raise ValueError(f'Prep join {nid!r}: reserved nested column Joined collides')
+                raise ValueError(
+                    f'Prep join {nid!r}: reserved nested column Joined collides'
+                )
             joined_fields = _schema(left_fields + expanded, 'join output')
             join_steps = _parse_join_node(node, right_name, right_fields)
             if not join_steps:
-                raise ValueError(f'Prep join {nid!r}: missing supported join conditions')
+                raise ValueError(
+                    f'Prep join {nid!r}: missing supported join conditions'
+                )
             if not expanded:
                 join_steps.append(m_transform_remove_columns(['Joined']))
             m_query = left['m_query']
@@ -1692,50 +2629,71 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 'm_query': m_query,
                 'fields': joined_fields,
                 'prep_dependencies': list(dict.fromkeys(
-                    left.get('prep_dependencies', []) + [_clean_m_table_ref(right_name)])),
+                    left.get('prep_dependencies', [])
+                    + [_clean_m_table_ref(right_name)])),
             }
             print(f"    ✓ Join: {node_name} ({node.get('joinType', 'inner')})")
 
-    elif sem_type == 'Union':
-        upstream_names = []
-        for uid in upstream_ids:
-            if uid in node_results:
-                raw_name = node_results[uid].get('name', uid[:8])
-                upstream_names.append(_clean_m_table_ref(raw_name))
-                # Mark all union inputs as secondary branches
-                secondary_branch_ids.add(uid)
+    elif sem_type in ('Union', 'SuperUnion'):
+        input_results = [node_results[uid] for uid in upstream_ids]
+        manual_inputs = _manual_union_inputs(
+            node, nodes, nid, upstream_ids, node_results
+        )
+        union_fields = _union_schema(input_results, node, manual_inputs)
+        upstream_names = [
+            _clean_m_table_ref(
+                node_results[uid].get('name', uid[:8])
+            )
+            for uid in upstream_ids
+        ]
+        step = _parse_union_node(
+            node, upstream_names, manual_inputs, union_fields
+        )
 
-        # For union, take first upstream as base
+        # For union, take first upstream as base and emit all inputs separately.
+        upstream = node_results[upstream_ids[0]]
+        m_query = inject_m_steps(upstream['m_query'], [step]) if step else \
+            upstream['m_query']
+        secondary_branch_ids.update(upstream_ids)
+        node_results[nid] = {
+            **upstream,
+            'name': node_name,
+            'm_query': m_query,
+            'fields': union_fields,
+            'prep_dependencies': upstream_names,
+        }
+        print(f"    ✓ Union: {node_name} ({len(upstream_names)} inputs)")
+
+    elif sem_type in ('Pivot', 'SuperPivot', 'SuperUnpivotExtended'):
         if upstream_ids and upstream_ids[0] in node_results:
             upstream = node_results[upstream_ids[0]]
-            step = _parse_union_node(node, upstream_names)
-            m_query = upstream['m_query']
-            if step:
-                m_query = inject_m_steps(m_query, [step])
-            node_results[nid] = {
-                **upstream,
-                'name': node_name,
-                'm_query': m_query,
-                'fields': _union_schema([node_results[uid] for uid in upstream_ids], node),
-                'prep_dependencies': upstream_names,
-            }
-            print(f"    ✓ Union: {node_name} ({len(upstream_names)} inputs)")
-
-    elif sem_type == 'Pivot':
-        if upstream_ids and upstream_ids[0] in node_results:
-            upstream = node_results[upstream_ids[0]]
+            if node.get('pivotType') == 'rowsToColumns':
+                missing = ['fixed pivot output domain']
+                aggregation = node.get('aggregation')
+                if not isinstance(aggregation, str) or not aggregation.strip():
+                    missing.append('explicit aggregation')
+                elif aggregation.strip().upper() not in _PREP_AGG_MAP:
+                    missing.append(
+                        f'supported explicit aggregation ({aggregation!r})'
+                    )
+                raise ValueError(
+                    f'Prep pivot {nid!r}: data-dependent rowsToColumns schema; '
+                    f'missing {", ".join(missing)}; static output columns '
+                    'cannot be proven'
+                )
             step = _parse_pivot_node(node)
             if not step:
-                raise ValueError(f'Prep pivot {nid!r}: unsupported/incomplete pivot configuration')
-            if node.get('pivotType') != 'columnsToRows':
-                raise ValueError(f'Prep pivot {nid!r}: data-dependent rowsToColumns schema; '
-                                 'static output columns cannot be proven')
+                raise ValueError(
+                    f'Prep pivot {nid!r}: unsupported/incomplete pivot configuration'
+                )
             pivot_names = [f.get('name') for f in _as_list(node.get('pivotFields'))]
             pivot_fields = [_require_field(upstream.get('fields', []), name, 'unpivot')
                             for name in pivot_names if name]
             types = {f['type'] for f in pivot_fields}
             if len(types) > 1 and not types <= {'integer', 'real'}:
-                raise ValueError(f'Prep pivot {nid!r}: incompatible value types {types!r}')
+                raise ValueError(
+                    f'Prep pivot {nid!r}: incompatible value types {types!r}'
+                )
             fields = [deepcopy(f) for f in upstream.get('fields', [])
                       if f['name'] not in pivot_names]
             fields.extend([
@@ -1773,7 +2731,10 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 'fields': _schema(upstream.get('fields', []) + [
                     {'name': '__script_warning', 'type': 'string'}], 'script warning'),
             }
-            print(f"    ⚠ Script step ({script_lang}): {node_name} — manual migration required")
+            print(
+                f"    ⚠ Script step ({script_lang}): {node_name} "
+                "— manual migration required"
+            )
 
     elif sem_type in ('Prediction', 'TabPy', 'Einstein'):
         # Prediction / ML step — not convertible; pass through with warning
@@ -1791,14 +2752,17 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 'name': node_name,
                 'm_query': m_query,
                 'fields': _schema(upstream.get('fields', []) + [
-                    {'name': '__prediction_warning', 'type': 'string'}], 'prediction warning'),
+                    {'name': '__prediction_warning', 'type': 'string'}],
+                    'prediction warning'),
             }
             print(f"    ⚠ Prediction step: {node_name} — manual migration required")
 
     elif sem_type == 'CrossJoin':
         # Cross join (no key condition) → Table.Join with no key
         if len(upstream_ids) != 2:
-            raise ValueError(f'Prep cross join {nid!r}: expected two inputs, got {upstream_ids!r}')
+            raise ValueError(
+                f'Prep cross join {nid!r}: expected two inputs, got {upstream_ids!r}'
+            )
         if upstream_ids and len(upstream_ids) >= 2:
             left_id = upstream_ids[0]
             right_id = upstream_ids[1]
@@ -1809,7 +2773,8 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 secondary_branch_ids.add(right_id)
                 cross_step = (
                     '#"Cross Join"',
-                    f'Table.Join({{prev}}, {{}}, {right_name}, {{}}, JoinKind.FullOuter)'
+                    f'Table.Join({{prev}}, {{}}, {right_name}, '
+                    '{}, JoinKind.FullOuter)'
                 )
                 m_query = inject_m_steps(left['m_query'], [cross_step])
                 node_results[nid] = {
@@ -1846,12 +2811,14 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
         print(f"    ✓ Published DS Input: {node_name} → {ds_name}")
 
     else:
-        raise ValueError(f'Prep unsupported transform {nid!r} ({node_name}): {sem_type!r}; '
-                         'manual migration required')
+        raise ValueError(
+            f'Prep unsupported transform {nid!r} ({node_name}): {sem_type!r}; '
+            'manual migration required'
+        )
 
 
 def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_ids):
-    """Collect processed node results into datasource definitions for the PBI pipeline."""
+    """Collect node results into datasource definitions for the PBI pipeline."""
     nodes = _as_dict(nodes)
     node_results = _as_dict(node_results)
     secondary_branch_ids = set(secondary_branch_ids or [])
@@ -1862,7 +2829,9 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
     unresolved = [nid for nid in explicit_outputs
                   if not node_results.get(nid, {}).get('is_output')]
     if unresolved:
-        raise ValueError(f'Prep explicit outputs have no resolved result: {unresolved!r}')
+        raise ValueError(
+            f'Prep explicit outputs have no resolved result: {unresolved!r}'
+        )
 
     emitted_names = {}
 
@@ -1877,8 +2846,10 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
         unknown = [f['name'] for f in node_results[nid].get('fields', [])
                    if f.get('type') == 'unknown']
         if unknown:
-            raise ValueError(f'Prep emitted table {table_name!r}: unresolved field types '
-                             f'{unknown!r}; supply validated output fields or ChangeColumnType')
+            raise ValueError(
+                f'Prep emitted table {table_name!r}: unresolved field types '
+                f'{unknown!r}; supply validated output fields or ChangeColumnType'
+            )
 
     # First, emit secondary branch nodes (join right-tables, union extras)
     # so their queries exist in the model for the main query to reference
@@ -1969,9 +2940,14 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
                     'caption': ds_name,
                     'tables': [{
                         'name': table_name,
-                        'columns': [{'name': f.get('name', ''), 'datatype': f.get('type', 'string')}
-                                    for f in _as_list(result.get('fields', []))
-                                    if isinstance(f, dict)],
+                        'columns': [
+                            {
+                                'name': f.get('name', ''),
+                                'datatype': f.get('type', 'string'),
+                            }
+                            for f in _as_list(result.get('fields', []))
+                            if isinstance(f, dict)
+                        ],
                     }],
                     'connection': result.get('connection', {}),
                     'connection_map': {},
@@ -1988,7 +2964,9 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
                 output_count += 1
 
     if not output_count:
-        raise ValueError('Prep flow produced zero outputs (no resolved explicit output or leaf)')
+        raise ValueError(
+            'Prep flow produced zero outputs (no resolved explicit output or leaf)'
+        )
     return datasources
 
 
@@ -2001,7 +2979,9 @@ class PrepBindingError(ValueError):
 
     def __init__(self, message, coverage):
         self.coverage = coverage
-        super().__init__(message + '; coverage=' + json.dumps(coverage, ensure_ascii=False))
+        super().__init__(
+            message + '; coverage=' + json.dumps(coverage, ensure_ascii=False)
+        )
 
 
 def _published_evidence(ds):
@@ -2013,7 +2993,9 @@ def _published_evidence(ds):
                      or ds.get('_published_resolved'))
     names = set()
     for connection in connections:
-        if connection.get('type', '').lower() in ('tableau server', 'sqlproxy', 'published'):
+        if connection.get('type', '').lower() in (
+            'tableau server', 'sqlproxy', 'published',
+        ):
             published = True
             name = _as_dict(connection.get('details')).get('server_ds_name')
             if name:
@@ -2044,10 +3026,13 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources, *, return_report
 
     def reject(message):
         raise PrepBindingError(message + '. Supply exact output names/captions or '
-                               'published datasource identity metadata; no fuzzy binding '
+                               'published datasource identity metadata; '
+                               'no fuzzy binding '
                                'or invented connection is performed', coverage)
 
-    for label, datasources in (('Prep', prep_datasources), ('workbook', twb_datasources)):
+    for label, datasources in (
+        ('Prep', prep_datasources), ('workbook', twb_datasources),
+    ):
         if not isinstance(datasources, list):
             reject(f'{label} datasources must be a list')
         for ds in datasources:
@@ -2101,7 +3086,9 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources, *, return_report
         published, evidence = _published_evidence(ds)
         tables = ds.get('tables', [])
         if published and not tables:
-            coverage['unmatched_published'].append({'datasource': ds.get('name'), 'table': None})
+            coverage['unmatched_published'].append(
+                {'datasource': ds.get('name'), 'table': None}
+            )
         for table_index, table in enumerate(tables):
             name = table.get('name', '')
             identity = {'datasource': ds.get('name'), 'table': name}
@@ -2125,7 +3112,10 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources, *, return_report
                 for alias, index in aliases.items():
                     match = re.fullmatch(r'F_(\d+)_(.+)', alias)
                     target = f'S_F{match[1]}_{match[2]}' if match else None
-                    if target and target in evidence and target in (name, ds.get('caption')):
+                    if (
+                        target and target in evidence
+                        and target in (name, ds.get('caption'))
+                    ):
                         reserved.add(index)
                 if candidate is not None:
                     reserved.add(candidate)
@@ -2135,7 +3125,9 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources, *, return_report
                     candidate = next(iter(reserved))
                     method = 'reserved_prefix_with_published_identity'
             if candidate is None:
-                coverage['unmatched_published' if published else 'unmatched_local'].append(identity)
+                coverage[
+                    'unmatched_published' if published else 'unmatched_local'
+                ].append(identity)
                 continue
             prep_table = prep_datasources[candidate]['tables'][0]
             if 'columns' in prep_table:
@@ -2144,20 +3136,32 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources, *, return_report
                 missing = [c['name'] for c in table.get('columns', [])
                            if c['name'] not in prep_names]
                 if missing:
-                    reject(f'Workbook table {name!r} references absent Prep columns {missing!r}')
+                    reject(
+                        f'Workbook table {name!r} references absent Prep columns '
+                        f'{missing!r}'
+                    )
             plan.append((ds_index, table_index, candidate))
             used.add(candidate)
-            coverage['matched'].append({**identity, 'output': outputs[candidate], 'method': method})
+            coverage['matched'].append(
+                {**identity, 'output': outputs[candidate], 'method': method}
+            )
 
-    coverage['unused_outputs'] = [name for index, name in outputs.items() if index not in used]
+    coverage['unused_outputs'] = [
+        name for index, name in outputs.items() if index not in used
+    ]
     if coverage['unmatched_published']:
-        reject('Incomplete Prep binding: published workbook sources remain unreconnected')
+        reject(
+            'Incomplete Prep binding: published workbook sources remain unreconnected'
+        )
     if not plan:
         reject('No exact Prep bindings found for workbook sources')
     for ds_index, table_index, _ in plan:
         name = twb_datasources[ds_index]['tables'][table_index]['name']
         if len(table_names[name.casefold()]) != 1:
-            reject(f'Ambiguous workbook table name {name!r}; per-table override would collide')
+            reject(
+                f'Ambiguous workbook table name {name!r}; '
+                'per-table override would collide'
+            )
 
     # Resolve only real secondary dependencies, recursively. Never add an
     # unmatched output and call it a successful workbook reconnection.

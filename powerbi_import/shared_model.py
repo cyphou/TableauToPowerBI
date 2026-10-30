@@ -3188,6 +3188,8 @@ def _parse_tmdl_measure(lines: list, start: int) -> tuple:
 
 def _parse_tmdl_column(lines: list, start: int) -> tuple:
     """Parse a column block. Returns (column_dict, next_index)."""
+    from powerbi_import.tmdl_writers import _parse_source_column
+
     header = lines[start].strip()
     rest = header[len("column "):].strip()
 
@@ -3230,7 +3232,7 @@ def _parse_tmdl_column(lines: list, start: int) -> tuple:
         if stripped.startswith("dataType:"):
             column["dataType"] = stripped.split(":", 1)[1].strip()
         elif stripped.startswith("sourceColumn:"):
-            column["sourceColumn"] = _unquote_name(stripped.split(":", 1)[1].strip())
+            column["sourceColumn"] = _parse_source_column(stripped.split(":", 1)[1])
         elif stripped.startswith("formatString:"):
             column["formatString"] = stripped.split(":", 1)[1].strip()
         elif stripped.startswith("summarizeBy:"):

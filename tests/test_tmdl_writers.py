@@ -1,4 +1,4 @@
-"""Physical sourceColumn bindings match Desktop's raw string serialization."""
+"""Physical sourceColumn bindings roundtrip through Desktop's string syntax."""
 
 import base64
 import json
@@ -12,7 +12,11 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from powerbi_import.tmdl_writers import _write_table_tmdl
+from powerbi_import.tmdl_writers import (
+    _parse_source_column,
+    _serialize_source_column,
+    _write_table_tmdl,
+)
 
 
 class TestSourceColumnStringEscaping(unittest.TestCase):
@@ -38,12 +42,58 @@ class TestSourceColumnStringEscaping(unittest.TestCase):
     def test_physical_names_preserve_raw_binding_without_added_quotes(self):
         for source in (
                 'Order Date', "Customer's Date", 'Order "Date"',
-                'Customer\'s "Order Date"', ' Order Date ',
+                'Customer\'s "Order Date"',
                 "'Order Date'", 'Date_123', 'Événement Date'):
             with self.subTest(source=source):
                 text, value = self._emit(source)
                 self.assertEqual(value, source)
                 self.assertIn("\tcolumn 'Display Name'\n", text)
+
+    def test_peripheral_whitespace_and_outer_quotes_are_escaped_exactly(self):
+        for source in (' Order Date ', 'Order Date ', ' Order Date', '\tDate\t',
+                       ' A"B ', '"Quoted"', '"', '\u00a0Date\u00a0'):
+            with self.subTest(source=source):
+                _, value = self._emit(source)
+                self.assertEqual(value, '"' + source.replace('"', '""') + '"')
+                self.assertEqual(_parse_source_column(value), source)
+
+    def test_single_quotes_are_literal_binding_characters(self):
+        self.assertEqual(_parse_source_column("'Order Date'"), "'Order Date'")
+        self.assertEqual(_parse_source_column("Customer''s Date"), "Customer''s Date")
+
+    def test_invalid_multiline_bindings_are_not_written_as_tmdl_properties(self):
+        for source in (None, 42, 'Line\nColumn', 'Line\rColumn'):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(ValueError, 'single-line string'):
+                    _serialize_source_column(source)
+
+    def test_all_binding_readers_preserve_distinct_physical_names(self):
+        import migrate
+        from powerbi_import.artifact_diff import _parse_tmdl_table as parse_artifact
+        from powerbi_import.shared_model import _parse_tmdl_table as parse_shared
+
+        sources = ['Order Date', 'Order Date ', ' Order Date', '"Quoted"',
+                   "'Order Date'", ' A"B ']
+        with tempfile.TemporaryDirectory() as directory:
+            _write_table_tmdl(directory, {
+                'name': 'Orders',
+                'columns': [{'name': f'C{index}', 'sourceColumn': source,
+                             'dataType': 'int64'} for index, source in enumerate(sources)],
+                'partitions': [], 'measures': [],
+            })
+            path = os.path.join(directory, 'Orders.tmdl')
+            with open(path, encoding='utf-8') as stream:
+                content = stream.read()
+            self.assertEqual([col['sourceColumn'] for col in
+                              parse_artifact(path)['columns']], sources)
+            self.assertEqual([col['sourceColumn'] for col in
+                              parse_shared(content)['columns']], sources)
+            expected = [
+                '{"' + source.replace('"', '""') + '", Int64.Type}'
+                for source in sources
+            ]
+            self.assertEqual(migrate._hyper_csv_type_changes(content, sources, {}),
+                             expected)
 
     def test_missing_source_column_defaults_to_exact_column_name(self):
         _, value = self._emit(None, name="Order's Date")
@@ -69,7 +119,10 @@ class TestSourceColumnStringEscaping(unittest.TestCase):
                                 for name in assemblies):
             self.skipTest('PowerShell Core and Desktop TOM parser not installed')
         sources = ['Order Date', "Customer's Date", 'Order "Date"',
-                   'Customer\'s "Order Date"', 'Date_123', 'Événement Date']
+                   'Customer\'s "Order Date"', 'Date_123', 'Événement Date',
+                   'Order Date ', ' Order Date', ' Order Date ', ' A"B ',
+                   '"Quoted"', '"Leading', 'Trailing"', "'Order Date'",
+                   '\tDate\t', '\u00a0Date\u00a0']
         with tempfile.TemporaryDirectory() as directory:
             tables = os.path.join(directory, 'tables')
             os.makedirs(tables)
@@ -88,7 +141,9 @@ class TestSourceColumnStringEscaping(unittest.TestCase):
             def quote(value):
                 return "'" + value.replace("'", "''") + "'"
 
-            script = "$ErrorActionPreference = 'Stop'; "
+            script = (
+                "$ErrorActionPreference = 'Stop'; "
+                '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ')
             for name in assemblies:
                 script += (
                     f'[System.Reflection.Assembly]::LoadFrom('

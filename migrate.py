@@ -44,6 +44,7 @@ from powerbi_import.security_validator import (
     SecurityError,
     get_zip_entry_limit_mb,
     lexical_path_key,
+    redact_credentials,
     safe_zip_copy_member,
     safe_zip_extract_member,
 )
@@ -716,6 +717,8 @@ class MigrationStats:
         # Diagnostics
         self.warnings = []
         self.skipped = []
+        self.phase = 'not_started'
+        self.failure = None
 
     def to_dict(self):
         return {k: v for k, v in self.__dict__.items()}
@@ -749,6 +752,23 @@ class _StatsProxy:
 _stats = _StatsProxy()
 
 
+def _failure_diagnostic(stage, error):
+    """Keep stage and original rejection details without persisting credentials."""
+    if isinstance(error, MigrationError):
+        diagnostic = error.to_dict()
+        diagnostic['stage'] = stage
+    else:
+        diagnostic = {
+            'stage': stage,
+            'error': type(error).__name__ if isinstance(error, BaseException) else 'StageFailure',
+            'message': str(error),
+        }
+    return {
+        key: redact_credentials(value) if isinstance(value, str) else value
+        for key, value in diagnostic.items()
+    }
+
+
 def print_header(text):
     """Print a formatted header"""
     print()
@@ -767,6 +787,8 @@ def print_step(step_num, total_steps, text):
 def run_extraction(tableau_file, hyper_max_rows=None, output_dir=None,
                    max_zip_entry_mb=None):
     """Run Tableau extraction with path validation."""
+    _stats.phase = 'extraction'
+    _stats.failure = None
     max_zip_entry_mb = get_zip_entry_limit_mb(max_zip_entry_mb)
     if _upload_root():
         _confine_upload_path(tableau_file, _upload_root())
@@ -867,6 +889,7 @@ def run_extraction(tableau_file, hyper_max_rows=None, output_dir=None,
     except ConfigurationError:
         raise
     except Exception as e:
+        _stats.failure = _failure_diagnostic('extraction', e)
         logger.error(f"Extraction failed: {e}", exc_info=True)
         print(f"\nError during extraction: {str(e)}")
         return False
@@ -965,6 +988,8 @@ def _run_fabric_generation(report_name=None, output_dir=None, source_dir=None,
 
     Returns True on success, False on failure.
     """
+    _stats.phase = 'generation'
+    _stats.failure = None
     try:
         from powerbi_import.fabric_project_generator import FabricProjectGenerator
         from powerbi_import.import_to_powerbi import PowerBIImporter
@@ -1010,6 +1035,7 @@ def _run_fabric_generation(report_name=None, output_dir=None, source_dir=None,
         return True
 
     except Exception as e:
+        _stats.failure = _failure_diagnostic('generation', e)
         logger.error(f"Fabric generation failed: {e}", exc_info=True)
         print(f"\nError during Fabric generation: {str(e)}")
         return False
@@ -1025,6 +1051,23 @@ def _desktop_project_name(basename, output_dir=None, output_format='pbip'):
     if name != basename:
         print(f"  Path budget: project name shortened: {basename} → {name}")
     return name
+
+
+def _resolve_calendar_bounds(start, end, mode='source'):
+    """Fixed mode is explicit; never hide a source error by changing defaults."""
+    if mode not in ('source', 'fixed'):
+        raise ConfigurationError("calendar_mode must be 'source' or 'fixed'")
+    if mode == 'fixed':
+        start = 2020 if start is None else start
+        end = 2030 if end is None else end
+    for bound in (start, end):
+        if bound is not None and (
+                isinstance(bound, bool) or not isinstance(bound, int)
+                or not 1 <= bound <= 9999):
+            raise ConfigurationError('Calendar bounds must be integer years from 1 to 9999')
+    if start is not None and end is not None and start > end:
+        raise ConfigurationError('Calendar start year must not exceed its end year')
+    return start, end
 
 
 def run_generation(report_name=None, output_dir=None, calendar_start=None,
@@ -1048,6 +1091,8 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
         incremental_refresh_months: Rolling window in months (default: 12)
         parameterize: If True, inject RangeStart/RangeEnd M parameters (default: True)
     """
+    _stats.phase = 'generation'
+    _stats.failure = None
     model_mode = _resolve_model_mode(model_mode)
     print_step(2, 2, "POWER BI PROJECT GENERATION")
 
@@ -1120,6 +1165,7 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
         return True
 
     except Exception as e:
+        _stats.failure = _failure_diagnostic('generation', e)
         logger.error(f"Generation failed: {e}", exc_info=True)
         print(f"\nError during generation: {str(e)}")
         return False
@@ -1512,9 +1558,14 @@ def run_prep_flow(prep_file, datasources_json=None):
     """
     import json as _json
 
+    _stats.phase = 'prep'
+    _stats.failure = None
     print_step("1b", 2, "TABLEAU PREP FLOW PARSING")
 
     if not os.path.exists(prep_file):
+        error = FileNotFoundError(f"Prep flow file not found: {prep_file}")
+        _stats.failure = _failure_diagnostic('prep', error)
+        logger.error("%s", error)
         print(f"Error: Prep flow file not found: {prep_file}")
         return False
 
@@ -1573,6 +1624,7 @@ def run_prep_flow(prep_file, datasources_json=None):
         return True
 
     except (ImportError, OSError, ValueError) as e:
+        _stats.failure = _failure_diagnostic('prep', e)
         logger.error("Prep flow parsing failed: %s", e, exc_info=True)
         print(f"\nError during Prep flow parsing: {str(e)}")
         return False
@@ -1873,7 +1925,7 @@ def _run_batch_config(args, desktop_options=None):
 
     Supported keys per entry:
         file (required), prep, output_dir, culture, calendar_start,
-        calendar_end, mode/model_mode, hyper_export_format,
+        calendar_end, calendar_mode, mode/model_mode, hyper_export_format,
         hyper_export_max_rows, max_zip_entry_mb, paginated, skip_extraction
     """
     if desktop_options is None:
@@ -1941,11 +1993,13 @@ def _run_batch_config(args, desktop_options=None):
         skip = entry.get('skip_extraction', args.skip_extraction)
         prep = entry.get('prep', args.prep)
         out_dir = entry.get('output_dir', args.output_dir)
-        cal_start = entry.get('calendar_start', args.calendar_start)
-        cal_end = entry.get('calendar_end', args.calendar_end)
         culture = entry.get('culture', args.culture)
         paginated = entry.get('paginated', getattr(args, 'paginated', False))
         try:
+            cal_start, cal_end = _resolve_calendar_bounds(
+                entry.get('calendar_start', args.calendar_start),
+                entry.get('calendar_end', args.calendar_end),
+                entry.get('calendar_mode', getattr(args, 'calendar_mode', 'source')))
             model_value = entry.get('model_mode')
             if model_value is None:
                 model_value = entry.get('mode')
@@ -1996,74 +2050,75 @@ def _run_batch_config(args, desktop_options=None):
             # Never keep an earlier source paired to that entry's stale PBIP.
             desktop_outputs[desktop_target] = None
 
-        # Extract
-        if not skip:
-            file_results['extraction'] = run_extraction(
-                tableau_file,
-                hyper_max_rows=getattr(args, 'hyper_rows', None),
-                max_zip_entry_mb=hyper_options['max_zip_entry_mb'])
-            if not file_results['extraction']:
-                results[basename] = {'success': False, 'error': 'extraction'}
-                continue
-        else:
-            file_results['extraction'] = True
-
-        # Prep flow
-        if prep:
-            ppath = prep if os.path.isabs(prep) else os.path.join(config_dir, prep)
-            file_results['prep'] = run_prep_flow(ppath)
-            if not file_results['prep']:
-                results[basename] = {'success': False, 'error': 'prep'}
-                continue
-
         output_is_fabric = getattr(args, 'output_format', 'pbip') == 'fabric'
+        project_root = out_dir or os.path.join(
+            'artifacts', 'fabric_projects' if output_is_fabric else 'powerbi_projects',
+            'migrated')
+        project_dir = os.path.join(project_root, basename)
+        previous_extract_dir = getattr(_extract_dir_local, 'path', None)
+        task = {
+            'tableau_file': tableau_file, 'basename': basename,
+            'workbook_output_dir': project_root,
+            'output_format': getattr(args, 'output_format', 'pbip'),
+            'extract_dir': (_get_extract_dir() if skip else os.path.join(
+                project_root, '.migration_extract',
+                basename + os.path.splitext(tableau_file)[1])),
+        }
+        result = {'success': False}
+        results[basename] = result
         try:
+            _stats.phase = 'extraction'
+            if not skip:
+                os.makedirs(task['extract_dir'], exist_ok=True)
+                _extract_dir_local.path = task['extract_dir']
+                file_results['extraction'] = run_extraction(
+                    tableau_file, output_dir=task['extract_dir'],
+                    hyper_max_rows=getattr(args, 'hyper_rows', None),
+                    max_zip_entry_mb=hyper_options['max_zip_entry_mb'])
+                if not file_results['extraction']:
+                    continue
+            else:
+                file_results['extraction'] = True
+
+            if prep:
+                _stats.phase = 'prep'
+                ppath = prep if os.path.isabs(prep) else os.path.join(config_dir, prep)
+                file_results['prep'] = run_prep_flow(ppath)
+                if not file_results['prep']:
+                    continue
+
+            _stats.phase = 'source_staging'
             _stage_declared_local_sources(
-                tableau_file,
-                os.path.join(out_dir or os.path.join(
-                    'artifacts', 'powerbi_projects', 'migrated'), basename),
+                tableau_file, project_dir,
                 copy_files=output_is_fabric,
                 packaged_excel=not output_is_fabric,
                 max_zip_entry_mb=hyper_options['max_zip_entry_mb'])
-        except (GenerationError, ConfigurationError, SecurityError, OSError,
-                ValueError, zipfile.BadZipFile) as exc:
-            if output_is_fabric or _upload_root():
-                raise
-            logger.error("Packaged source staging failed for %s: %s",
-                         basename, exc)
-            results[basename] = {
-                'success': False, 'error': 'source_staging',
-                'error_details': str(exc)}
-            continue
 
-        # Generate
-        file_results['generation'] = run_generation(
-            report_name=basename,
-            output_dir=out_dir,
-            calendar_start=cal_start,
-            calendar_end=cal_end,
-            culture=culture,
-            model_mode=model_mode,
-            output_format=getattr(args, 'output_format', 'pbip'),
-            paginated=paginated,
-            composite_threshold=getattr(args, 'composite_threshold', None),
-            agg_tables=getattr(args, 'agg_tables', 'none'),
-            optimize_dax=getattr(args, 'optimize_dax', False),
-            time_intelligence=getattr(args, 'time_intelligence', 'none'),
-        )
+            _stats.phase = 'generation'
+            file_results['generation'] = run_generation(
+                report_name=basename,
+                output_dir=out_dir,
+                calendar_start=cal_start,
+                calendar_end=cal_end,
+                culture=culture,
+                model_mode=model_mode,
+                output_format=getattr(args, 'output_format', 'pbip'),
+                paginated=paginated,
+                composite_threshold=getattr(args, 'composite_threshold', None),
+                agg_tables=getattr(args, 'agg_tables', 'none'),
+                optimize_dax=getattr(args, 'optimize_dax', False),
+                time_intelligence=getattr(args, 'time_intelligence', 'none'),
+                source_dir=_get_extract_dir(),
+            )
+            if not file_results['generation']:
+                continue
 
-        # Migration report
-        report_summary = None
-        if file_results.get('generation'):
-            report_summary = run_migration_report(report_name=basename, output_dir=out_dir)
+            _stats.phase = 'migration_report'
+            report_summary = run_migration_report(
+                report_name=basename, output_dir=out_dir)
 
-        if file_results.get('generation'):
-            project_root = out_dir or (
-                os.path.join('artifacts', 'fabric_projects', 'migrated')
-                if getattr(args, 'output_format', 'pbip') == 'fabric'
-                else os.path.join('artifacts', 'powerbi_projects', 'migrated'))
-            project_dir = os.path.join(project_root, basename)
-            try:
+            _stats.phase = 'postprocessing'
+            if file_results.get('generation'):
                 if tableau_file.lower().endswith('.twbx'):
                     _process_twbx_post_generation(
                         tableau_file, project_dir, basename,
@@ -2099,47 +2154,80 @@ def _run_batch_config(args, desktop_options=None):
                     _sync_final_calendar_source_expressions(project_dir, basename)
                     _export_power_query_files(project_dir, basename)
                     _shorten_report_artifact_path(project_dir, basename)
+                    _stats.phase = 'hyper_import'
                     _require_hyper_import(
                         project_dir, extract_dir=_get_extract_dir())
-            except Exception as exc:
-                logger.exception(
-                    "Postprocessing failed for batch-config workbook %s",
-                    basename)
-                results[basename] = {
-                    'success': False,
-                    'error': ('hyper_import' if isinstance(exc, GenerationError)
-                              and exc.source == 'hyper_import'
-                              else 'postprocessing'),
-                    'error_details': str(exc),
-                    'quality_status': 'FAIL',
-                }
-                continue
 
-        if file_results.get('generation') and getattr(args, 'verify_open', True):
-            project_root = out_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
-            project_dir = os.path.join(project_root, basename)
-            file_results['openability'] = _run_openability_gate(project_dir)
+            if getattr(args, 'verify_open', True):
+                _stats.phase = 'validation'
+                file_results['openability'] = _run_openability_gate(project_dir)
 
-        all_ok = all(v for v in file_results.values() if v is not None)
-        dashboard_dir = out_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
-        results[basename] = {
-            'success': all_ok,
-            'stats': _stats.to_dict(),
-            'fidelity': report_summary.get('overall_score', report_summary.get('fidelity_score')) if report_summary else None,
-            'metadata_path': os.path.join(dashboard_dir, basename, 'migration_metadata.json'),
-        }
-        if (desktop_options is not None and all_ok
-                and desktop_target is not None and desktop_pbip is not None
-                and os.path.splitext(tableau_file)[1].lower() in ('.twb', '.twbx')):
-            source_root = config_dir
-            try:
-                if os.path.commonpath((os.path.abspath(tableau_file), config_dir)) != config_dir:
+            all_ok = all(v for v in file_results.values() if v is not None)
+            result.update({
+                'success': all_ok,
+                'fidelity': report_summary.get('overall_score', report_summary.get('fidelity_score')) if report_summary else None,
+                'metadata_path': os.path.join(project_dir, 'migration_metadata.json'),
+            })
+            if (desktop_options is not None and all_ok
+                    and desktop_target is not None and desktop_pbip is not None
+                    and os.path.splitext(tableau_file)[1].lower() in ('.twb', '.twbx')):
+                source_root = config_dir
+                try:
+                    if os.path.commonpath((os.path.abspath(tableau_file), config_dir)) != config_dir:
+                        source_root = os.path.dirname(os.path.abspath(tableau_file))
+                except ValueError:  # Absolute entries may be on another Windows drive.
                     source_root = os.path.dirname(os.path.abspath(tableau_file))
-            except ValueError:  # Absolute entries may be on another Windows drive.
-                source_root = os.path.dirname(os.path.abspath(tableau_file))
-            desktop_outputs[desktop_target] = (
-                source_root, os.path.abspath(dashboard_dir),
-                _desktop_workbook_pair(tableau_file, source_root, desktop_pbip))
+                desktop_outputs[desktop_target] = (
+                    source_root, os.path.abspath(project_root),
+                    _desktop_workbook_pair(tableau_file, source_root, desktop_pbip))
+        except Exception as exc:
+            result.update({
+                'success': False, 'error': _stats.phase,
+                'failure': _failure_diagnostic(_stats.phase, exc),
+            })
+            logger.exception("Batch-config migration failed for %s", basename)
+            if _stats.phase == 'source_staging' and (output_is_fabric or _upload_root()):
+                raise
+        except (KeyboardInterrupt, SystemExit) as exc:
+            result.update({
+                'success': False, 'error': 'interrupted',
+                'failure': _failure_diagnostic(_stats.phase, exc),
+            })
+            raise
+        finally:
+            try:
+                result['stats'] = _stats.to_dict()
+                result['stages'] = {
+                    'validation' if stage == 'openability' else stage:
+                    'completed' if ok else 'failed'
+                    for stage, ok in file_results.items() if ok is not None
+                }
+                if result['success']:
+                    failure_path = os.path.join(project_dir, 'migration_failure.json')
+                    if os.path.isfile(failure_path):
+                        os.remove(failure_path)
+                else:
+                    failed_stage = next(
+                        (stage for stage, status in result['stages'].items()
+                         if status == 'failed'), _stats.phase)
+                    failure = result.get('failure') or _stats.failure or _failure_diagnostic(
+                        failed_stage, f'{failed_stage} did not complete successfully.')
+                    result.update({
+                        'failure': failure, 'error_details': failure['message'],
+                    })
+                    result['stages'][failure['stage']] = 'failed'
+                    try:
+                        _finalize_failed_workbook(task, result)
+                    except (OSError, ValueError) as report_exc:
+                        logger.exception("Could not finalize failure diagnostics for %s",
+                                         basename)
+                        result['failure_report_error'] = str(report_exc)
+            finally:
+                if previous_extract_dir is None:
+                    if hasattr(_extract_dir_local, 'path'):
+                        del _extract_dir_local.path
+                else:
+                    _extract_dir_local.path = previous_extract_dir
 
     # Summary
     batch_duration = datetime.now() - batch_start
@@ -2384,6 +2472,11 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         if not file_results['extraction']:
             logger.warning("Extraction failed for %s, skipping", display_name)
             return {'success': False, 'error': 'extraction', 'report_name': basename,
+                    'error_details': (_stats.failure or {}).get(
+                        'message', 'Extraction did not complete; see the migration log.'),
+                    'failure': _stats.failure or _failure_diagnostic(
+                        'extraction', 'Extraction did not complete; see the migration log.'),
+                    'stages': {'extraction': 'failed', 'generation': 'not_run'},
                     'output_dir': workbook_output_dir,
                     'metadata_path': os.path.join(workbook_output_dir, basename, 'migration_metadata.json')}
         try:
@@ -2402,9 +2495,15 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
             logger.error("Prep flow failed for %s; migration aborted", display_name)
             return {'success': False, 'error': 'prep', 'report_name': basename,
                     'output_dir': workbook_output_dir,
-                    'error_details': f"Prep flow parsing or merge failed: {wb_prep}"}
+                    'error_details': (_stats.failure or {}).get(
+                        'message', f"Prep flow parsing or merge failed: {wb_prep}"),
+                    'failure': _stats.failure or _failure_diagnostic(
+                        'prep', f"Prep flow parsing or merge failed: {wb_prep}"),
+                    'stages': {'extraction': 'completed', 'prep': 'failed',
+                               'generation': 'not_run'}}
 
     # Uploaded PBIP remains validation-only; local PBIP copies packaged Excel.
+    _stats.phase = 'source_staging'
     _stage_declared_local_sources(
         tableau_file, os.path.join(workbook_output_dir, basename),
         copy_files=output_format == 'fabric',
@@ -2426,6 +2525,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     # Step 3: Migration report
     report_summary = None
     if file_results.get('generation'):
+        _stats.phase = 'migration_report'
         report_summary = run_migration_report(
             report_name=basename,
             output_dir=workbook_output_dir,
@@ -2433,6 +2533,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
 
     # Step 4: Extract embedded data files and Power Query M expressions from TWBX
     if file_results.get('generation'):
+        _stats.phase = 'source_staging'
         project_dir = os.path.join(workbook_output_dir, basename)
         if tableau_file.lower().endswith('.twbx'):
             _process_twbx_post_generation(
@@ -2470,6 +2571,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         if output_format != 'fabric':
             _shorten_report_artifact_path(project_dir, basename)
             try:
+                _stats.phase = 'hyper_import'
                 _require_hyper_import(
                     project_dir, extracted=extracted_objects or None,
                     extract_dir=_get_extract_dir(), output_format=output_format)
@@ -2481,12 +2583,14 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                              display_name, exc)
 
     if file_results.get('generation') and verify_open:
+        _stats.phase = 'validation'
         project_dir = os.path.join(workbook_output_dir, basename)
         file_results['openability'] = _run_openability_gate(project_dir)
 
     quality_status = 'FAIL' if hyper_import_error else None
     quality_json = None
     if file_results.get('generation') and extracted_objects:
+        _stats.phase = 'quality'
         try:
             from powerbi_import.migration_quality import build_quality_report
             project_dir = os.path.join(workbook_output_dir, basename)
@@ -2527,6 +2631,11 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         stage_results['validation'] = (
             'completed' if file_results['hyper_import']
             and file_results.get('openability', True) else 'failed')
+    failure = None
+    if not all_ok:
+        failed_stage = next(key for key, value in file_results.items() if value is False)
+        failure = _stats.failure or _failure_diagnostic(
+            failed_stage, hyper_import_error or f'{failed_stage} did not complete successfully.')
     return {
         'success': all_ok,
         'stages': stage_results,
@@ -2537,9 +2646,85 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         'metadata_path': os.path.join(workbook_output_dir, basename, 'migration_metadata.json'),
         'quality_status': quality_status,
         'quality_json': quality_json,
-        **({'error': 'hyper_import', 'error_details': hyper_import_error}
-           if hyper_import_error else {}),
+        **({'error': failure['stage'], 'error_details': failure['message'],
+            'failure': failure} if failure else {}),
     }
+
+
+def _finalize_failed_workbook(task, result):
+    """Publish diagnostic artifacts for the final failed state, never a PBIP."""
+    if (task['output_format'] == 'fabric'
+            or os.path.splitext(task['tableau_file'])[1].lower() in ('.tfl', '.tflx')):
+        return
+    from powerbi_import.evidence_package import write_evidence_package
+    from powerbi_import.healing import check_openability
+    from powerbi_import.migration_quality import (
+        MigrationQualityReport,
+        apply_pipeline_failure,
+    )
+    from powerbi_import.openability import CheckResult
+
+    name = task['basename']
+    project_dir = os.path.join(task['workbook_output_dir'], name)
+    marker = os.path.join(project_dir, f'{name}.pbip')
+    if os.path.isfile(marker):
+        os.remove(marker)
+    os.makedirs(project_dir, exist_ok=True)
+    failed_stage = next(
+        (stage for stage, status in (result.get('stages') or {}).items() if status == 'failed'),
+        result.get('error_category') or (
+            _stats.phase if _stats.phase != 'not_started' else 'migration'))
+    failure = result.get('failure') or _failure_diagnostic(
+        failed_stage,
+        result.get('error_details') or result.get('error') or 'Migration did not complete.')
+    failure = {**failure, 'stages': dict(result.get('stages') or {})}
+    result.update({
+        'report_name': name, 'output_dir': task['workbook_output_dir'],
+        'failure': failure, 'error_details': failure['message'],
+    })
+    report = check_openability(project_dir)
+    report.checks.append(CheckResult(
+        'pipeline_completion', False, 'error',
+        [f"{failure['stage']}: {failure['message']}"]))
+    report.diagnostics['pipeline_failure'] = failure
+    openability = report.to_dict()
+    openability_path = os.path.join(project_dir, 'openability_report.json')
+    _atomic_write_json(openability_path, openability)
+    failure_path = os.path.join(project_dir, 'migration_failure.json')
+    _atomic_write_json(failure_path, {
+        'schema_version': '1.0', 'status': 'failed',
+        'report_name': name, 'completion_marker': 'withheld',
+        'failure': failure,
+        'extraction_snapshot': {
+            'status': 'retained_for_diagnostics',
+            'path': task.get('extract_dir'),
+        },
+        'openability_report': openability_path,
+    })
+    result['failure_report'] = failure_path
+    quality_path = os.path.join(
+        task['workbook_output_dir'], f'migration_quality_{name}.json')
+    if os.path.isfile(quality_path):
+        with open(quality_path, encoding='utf-8') as stream:
+            quality = MigrationQualityReport.from_dict(json.load(stream))
+    else:
+        from powerbi_import.evidence_manifest import build_evidence_manifest
+
+        not_run = {'status': 'not_run'}
+        quality = MigrationQualityReport(
+            name, dict(not_run), dict(not_run), dict(not_run), dict(not_run),
+            openability, 'FAIL')
+        quality.evidence_manifest = build_evidence_manifest(
+            source_path=task['tableau_file'], target_path=project_dir)
+    apply_pipeline_failure(quality, failure, openability)
+    quality.save_json(quality_path)
+    quality_html = os.path.splitext(quality_path)[0] + '.html'
+    quality.save_html(quality_html)
+    write_evidence_package(
+        quality, os.path.join(task['workbook_output_dir'], f'evidence_package_{name}.zip'),
+        extra_files=[quality_path, quality_html, openability_path, failure_path])
+    result.update({'quality_status': 'FAIL', 'quality_json': quality_path})
+    task['_failure_finalized'] = True
 
 
 def _run_batch_prep_lineage(batch_results, migrated_root):
@@ -2844,7 +3029,8 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                         quality_policy='report', dry_run=False, model_mode='auto',
                         hyper_export_format='auto', hyper_export_max_rows=None,
                         max_zip_entry_mb=None, quiet=False,
-                        desktop_options: Optional[DesktopDiagnosticOptions] = None):
+                        desktop_options: Optional[DesktopDiagnosticOptions] = None,
+                        calendar_mode='source'):
     """Batch migrate all .twb/.twbx files in a directory (recursive).
 
     Searches the directory tree recursively for Tableau workbooks and
@@ -2990,10 +3176,14 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         wb_zip_limit = entry.get('max_zip_entry_mb')
         if wb_zip_limit is None:
             wb_zip_limit = batch_hyper_options['max_zip_entry_mb']
+        wb_cal_start, wb_cal_end = _resolve_calendar_bounds(
+            entry.get('calendar_start', calendar_start),
+            entry.get('calendar_end', calendar_end),
+            entry.get('calendar_mode', calendar_mode))
         return {
             'wb_culture': entry.get('culture', culture),
-            'wb_cal_start': entry.get('calendar_start', calendar_start),
-            'wb_cal_end': entry.get('calendar_end', calendar_end),
+            'wb_cal_start': wb_cal_start,
+            'wb_cal_end': wb_cal_end,
             'wb_prep': entry.get('prep', prep_file),
             'output_format': output_format,
             'model_mode': _resolve_model_mode(wb_mode),
@@ -3457,7 +3647,11 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 quiet=quiet,
             )
         except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
-            wb_result = {'success': False, 'error': str(exc), 'error_category': 'exception'}
+            wb_result = {
+                'success': False, 'error': redact_credentials(str(exc)),
+                'error_category': 'exception',
+                'failure': _failure_diagnostic(_stats.phase, exc),
+            }
             logger.exception("Migration failed for %s", task['display_name'])
         if wb_result.get('success'):
             input_failure = _check_task_inputs(task)
@@ -3470,6 +3664,18 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                         'input_validation': 'failed',
                     },
                 }
+        if wb_result.get('success'):
+            failure_path = os.path.join(
+                task['workbook_output_dir'], task['basename'], 'migration_failure.json')
+            if os.path.isfile(failure_path):
+                os.remove(failure_path)
+        else:
+            try:
+                _finalize_failed_workbook(task, wb_result)
+            except (OSError, ValueError) as report_exc:
+                logger.exception("Could not finalize failure diagnostics for %s",
+                                 task['display_name'])
+                wb_result['failure_report_error'] = str(report_exc)
         wb_duration = (datetime.now() - wb_start_time).total_seconds()
         status = 'success' if wb_result.get('success', False) else 'failed'
         _set_checkpoint(task, status, wb_result, wb_duration, wb_result.get('error', ''))
@@ -3480,6 +3686,9 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'fidelity': wb_result.get('fidelity'),
             'stats': wb_result.get('stats', {}),
             'checkpoint_status': status,
+            **({'failure': wb_result['failure'],
+                'failure_report': wb_result.get('failure_report')}
+               if wb_result.get('failure') else {}),
         })
         if task.get('extract_dir'):
             wb_result.setdefault('extraction_dir', task['extract_dir'])
@@ -3489,6 +3698,10 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         """Isolate setup and migration failures to this workbook."""
         extract_dir = task.get('extract_dir')
         task_succeeded = False
+        result = {
+            'success': False, 'error': 'Migration interrupted before completion.',
+            'error_category': 'interrupted',
+        }
         try:
             # Plan before extraction as well: its per-workbook directory used
             # to repeat the full source filename under .migration_extract.
@@ -3512,9 +3725,16 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             logger.exception("Could not prepare or record migration for %s", display_name)
             result = {
                 'success': False,
-                'error': str(exc),
+                'error': redact_credentials(str(exc)),
                 'error_category': 'exception',
+                'failure': _failure_diagnostic(_stats.phase, exc),
             }
+            task.pop('_failure_finalized', None)
+            try:
+                _finalize_failed_workbook(task, result)
+            except (OSError, ValueError) as report_exc:
+                logger.exception("Could not finalize failure diagnostics for %s", display_name)
+                result['failure_report_error'] = str(report_exc)
             try:
                 _set_checkpoint(task, 'failed', result, error=str(exc))
             except Exception:  # noqa: BLE001 - retain the original task failure
@@ -3547,6 +3767,13 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 except OSError:
                     logger.warning("Could not retract incomplete PBIP marker: %s",
                                    marker, exc_info=True)
+                if not task.get('_failure_finalized'):
+                    try:
+                        _finalize_failed_workbook(task, result)
+                    except (OSError, ValueError) as report_exc:
+                        logger.exception("Could not finalize failure diagnostics for %s",
+                                         task['display_name'])
+                        result['failure_report_error'] = str(report_exc)
             if hasattr(_extract_dir_local, 'path'):
                 del _extract_dir_local.path
 
@@ -3724,6 +3951,13 @@ def _add_migration_args(parser):
         type=int,
         default=None,
         help='End year for the auto-generated Calendar table (default: 2030)'
+    )
+
+    parser.add_argument(
+        '--calendar-mode', choices=('source', 'fixed'), default='source',
+        help='Calendar range: source expands unspecified bounds from sources (default); '
+             'fixed avoids source reads with explicit bounds, defaulting to 2020-2030. '
+             'Fixed-range date coverage must be verified separately.'
     )
 
     parser.add_argument(
@@ -7481,6 +7715,9 @@ def main():
 
     try:
         args.mode = _resolve_model_mode(getattr(args, 'mode', None))
+        args.calendar_start, args.calendar_end = _resolve_calendar_bounds(
+            args.calendar_start, args.calendar_end,
+            getattr(args, 'calendar_mode', 'source'))
     except ConfigurationError as exc:
         parser.error(str(exc))
     if getattr(args, 'hyper_export_format', None) is None:
@@ -7732,6 +7969,7 @@ def main():
             max_zip_entry_mb=getattr(args, 'max_zip_entry_mb', None),
             quiet=getattr(args, 'quiet', False),
             desktop_options=desktop_options,
+            calendar_mode=getattr(args, 'calendar_mode', 'source'),
         )
 
     # ── Single-file diagnostics only (never project generation) ──
@@ -8305,7 +8543,8 @@ def _run_openability_gate(project_dir):
         pq = next((c for c in report.checks if c.name == 'power_query'), None)
         pq_note = f", {len(pq.issues)} Power Query issues" if pq and pq.issues else ""
         warn = f" ({len(report.warnings)} warnings)" if report.warnings else ""
-        print(f"\n  Openability: ✓ project will open in PBI Desktop{pq_note}{warn}")
+        print(f"\n  Openability: ✓ no blocking static issues{pq_note}{warn}; "
+              "Desktop loading and refresh were not run")
         # A counted warning tells nobody which file is missing.
         for issue in report.warnings[:5]:
             print(f"      • {issue}")
@@ -10049,6 +10288,7 @@ def _hyper_csv_type_changes(content, physical_columns, source_types, *,
     """
     import re
 
+    from powerbi_import.tmdl_writers import _parse_source_column
     from tableau_export.m_query_builder import _m_literal, map_tableau_to_m_type
 
     model_types = {}
@@ -10068,9 +10308,7 @@ def _hyper_csv_type_changes(content, physical_columns, source_types, *,
         dtype = re.search(r'(?m)^\s*dataType:\s*(\w+)', body)
         source = re.search(r'(?m)^\s*sourceColumn:\s*(.*?)\s*$', body)
         if dtype and source:
-            name = source.group(1)
-            if name.startswith("'") and name.endswith("'"):
-                name = name[1:-1].replace("''", "'")
+            name = _parse_source_column(source.group(1))
             model_types[name] = scalar_types.get(dtype.group(1).lower())
     entries = []
     for name in physical_columns:
@@ -11623,6 +11861,8 @@ def _restrict_file_partitions_to_model(project_dir, source_basename):
     """
     import glob as _glob
     import re as _re
+
+    from powerbi_import.tmdl_writers import _parse_source_column
     updated = 0
     tables_dir = os.path.join(project_dir, f'{source_basename}.SemanticModel',
                               'definition', 'tables')
@@ -11635,7 +11875,7 @@ def _restrict_file_partitions_to_model(project_dir, source_basename):
             continue
         if 'File.Contents(DataFolder' not in content or '#"Model Columns"' in content:
             continue
-        columns = [c.strip().strip("'").replace("''", "'") for c in
+        columns = [_parse_source_column(c) for c in
                    _re.findall(r'^\t\tsourceColumn:\s*(.+?)\s*$', content, _re.MULTILINE)]
         start = content.find('partition ')
         ends = list(tail.finditer(content, start)) if start >= 0 and columns else []

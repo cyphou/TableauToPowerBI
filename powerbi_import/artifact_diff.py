@@ -28,6 +28,8 @@ import re
 import shutil
 from datetime import datetime
 
+from powerbi_import.tmdl_writers import _parse_source_column
+
 try:
     from powerbi_import.report_localization import render, text
 except ImportError:
@@ -236,10 +238,8 @@ def _parse_tmdl_table(filepath):
                 if prop.startswith('dataType:'):
                     col_info['dataType'] = prop.split(':', 1)[1].strip()
                 elif prop.startswith('sourceColumn:'):
-                    source = prop.split(':', 1)[1].strip()
-                    col_info['sourceColumn'] = (source[1:-1].replace("''", "'")
-                                                if source.startswith("'") and source.endswith("'")
-                                                else source)
+                    col_info['sourceColumn'] = _parse_source_column(
+                        prop.split(':', 1)[1])
                 elif prop.startswith('dataCategory:'):
                     col_info['dataCategory'] = prop.split(':', 1)[1].strip()
                 elif prop.startswith('isHidden'):

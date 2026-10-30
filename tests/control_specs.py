@@ -457,8 +457,8 @@ CONTROLS = [
     {
         "name": "the gate stops failing a project that will not open",
         "file": "scripts/check_corpus_gate.py",
-        "old": "    for project, issues in evidence['not_openable']:\n",
-        "new": "    for project, issues in []:\n",
+        "old": "        for project, issues in evidence['not_openable']\n",
+        "new": "        for project, issues in []\n",
         "test": "tests/test_corpus_gate.py",
     },
     {

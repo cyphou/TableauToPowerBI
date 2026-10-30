@@ -107,6 +107,7 @@ class MigrationQualityReport:
     priorities: list[Dict[str, Any]] = field(default_factory=list)
     ai_summary: str = ""
     ai_source: str = "none"
+    pipeline_failure: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -145,6 +146,7 @@ class MigrationQualityReport:
             "lineage": self.lineage,
             "review": self.review,
             "handoff_status": self.handoff_status,
+            "pipeline_failure": self.pipeline_failure,
         }
 
     def save_json(self, path: str) -> str:
@@ -314,6 +316,7 @@ class MigrationQualityReport:
             "data": self.data,
             "interface": self.interface,
             "openability": self.openability,
+            "pipeline_failure": self.pipeline_failure,
             "fabric": self.fabric,
             "hyper_import": self.hyper_import,
             "strategy": self.strategy,
@@ -4481,6 +4484,47 @@ def apply_desktop_probe(report: MigrationQualityReport, probe: Any) -> Migration
     report.desktop = evidence
     report.openability_confidence = _openability_confidence(
         report.openability, report.fabric, evidence)
+    return report
+
+
+def apply_pipeline_failure(report: MigrationQualityReport, failure: Dict[str, Any],
+                           openability: Dict[str, Any]) -> MigrationQualityReport:
+    """Invalidate a prior verdict after final publication has been retracted."""
+    report.pipeline_failure = failure
+    report.openability = openability
+    report.status = "FAIL"
+    report.handoff_status = "BLOCKED"
+    message = (f"Migration failed during {failure.get('stage', 'migration')}: "
+               f"{failure.get('message', 'pipeline did not complete')}")
+    if not report.blockers:
+        report.blockers.append(message)
+    report.openability_confidence = _openability_confidence(
+        openability, report.fabric, report.desktop)
+    report.roundtrip_validation = build_roundtrip_validation(
+        openability, report.visual_recovery, report.visual_parity)
+    action = {
+        "priority": "P0",
+        "action_kind": "repair",
+        "action": "Repair the failed migration stage and regenerate the project",
+        "owner": "Orchestrator / domain owner",
+        "severity": "error",
+        "finding": "pipeline_completion",
+    }
+    report.priorities = [action] + [
+        item for item in report.priorities
+        if item.get("finding") != "pipeline_completion"
+    ]
+    manifest = report.evidence_manifest
+    manifest.setdefault("validation", {}).update({
+        "status": "FAIL", "handoff_status": "BLOCKED",
+        "blockers": list(report.blockers), "next_action": action["action"],
+    })
+    manifest["environment"] = report.openability_confidence
+    manifest["handoff"] = {"status": "BLOCKED", "next_action": action["action"]}
+    manifest["checkpoints"] = {"status": "failed", "stages": failure.get("stages", {})}
+    project_dir = openability.get("project_dir")
+    if project_dir:
+        manifest.setdefault("artifacts", {}).update(_artifact_evidence(project_dir))
     return report
 
 

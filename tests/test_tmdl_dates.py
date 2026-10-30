@@ -1,6 +1,7 @@
 """Synthetic source-to-serialized-output Calendar lexical-scope regressions."""
 
 import io
+import json
 import re
 import tempfile
 import unittest
@@ -168,6 +169,55 @@ class TestCalendarNestedSourceScope(unittest.TestCase):
         self.assertEqual(shared["Calendar Source Second.Event Date"], failure)
         self.assertIn('Table.Column(#"Calendar Source Second.Event Date", "Event Date")', calendar)
         self.assertNotRegex(calendar, r"otherwise\s*\{\s*\}")
+
+
+class TestExplicitCalendarIsolation(unittest.TestCase):
+    def test_fixed_bounds_do_not_copy_or_reference_a_failing_source(self):
+        from powerbi_import.openability import _refresh_diagnostics
+
+        model = _model()
+        model['_calendar_start'] = 2018
+        model['_calendar_end'] = 2035
+        failing = 'error Error.Record("Synthetic.SourceUnavailable", "missing source", [])'
+        model['model']['tables'][0]['partitions'][0]['source']['expression'] = failing
+        with redirect_stdout(io.StringIO()):
+            _add_date_table(model)
+        calendar = next(t for t in model['model']['tables'] if t['name'] == 'Calendar')
+        expression = calendar['partitions'][0]['source']['expression']
+        self.assertIn('StartDate = #date(2018, 1, 1)', expression)
+        self.assertIn('EndDate = #date(2035, 12, 31)', expression)
+        self.assertNotIn('SourceDates', expression)
+        self.assertNotIn('Table.Column', expression)
+        self.assertNotIn('otherwise', expression)
+        self.assertEqual(model['model']['tables'][0]['partitions'][0]['source']['expression'],
+                         failing)
+        self.assertFalse(any(e.get('_calendar_source_table')
+                             for e in model['model']['expressions']))
+        with tempfile.TemporaryDirectory() as output:
+            model_path = Path(output, 'Synthetic.SemanticModel')
+            _write_tmdl_files(model, str(model_path))
+            content = (model_path / 'definition' / 'tables' / 'Calendar.tmdl').read_text(
+                encoding='utf-8')
+            annotation = re.search(
+                r'(?m)^\tannotation Migration_CalendarBounds = (.+)$', content)
+            provenance = json.loads(annotation.group(1))
+            self.assertEqual(provenance['mode'], 'fixed')
+            self.assertEqual(provenance['source_queries'], [])
+            self.assertEqual(provenance['coverage'], 'not_runtime_verified')
+            diagnostics, check = _refresh_diagnostics(output)
+            self.assertEqual(diagnostics['calendar_ranges'][0]['start_year'], 2018)
+            self.assertIn('fixed bounds 2018-2035', '\n'.join(check.issues))
+
+    def test_default_source_mode_and_one_sided_bounds_still_expand(self):
+        for start, end in ((None, None), (2018, None), (None, 2035)):
+            with self.subTest(start=start, end=end):
+                model = _model()
+                model.update(_calendar_start=start, _calendar_end=end)
+                with redirect_stdout(io.StringIO()):
+                    _add_date_table(model)
+                calendar = next(t for t in model['model']['tables'] if t['name'] == 'Calendar')
+                self.assertEqual(calendar['_calendar_bounds']['mode'], 'source')
+                self.assertEqual(len(calendar['_calendar_bounds']['source_queries']), 2)
 
 
 if __name__ == "__main__":

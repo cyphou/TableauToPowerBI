@@ -205,6 +205,12 @@ report-validation procedure neither accepts them nor connects to a model.
 
 `.tmdl` files use a declarative language to define the model.
 
+`sourceColumn` is a binding string, not an apostrophe-quoted object identifier.
+The generator follows TOM's conditional double quoting for names with edge
+whitespace or enclosing quotes, preserving exact physical CSV/Parquet names
+and caption aliases. Ordinary names remain unquoted. Offline TOM roundtrip
+tests establish serialization only, not Desktop loading or successful refresh.
+
 ### Example: Table
 
 ```tmdl

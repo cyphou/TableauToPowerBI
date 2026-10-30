@@ -885,9 +885,11 @@ class TestCleanActionsExtended(unittest.TestCase):
     def test_filter_operation_counter_increments(self):
         counter = {}
         s1 = _convert_action_to_m_step('FilterOperation',
-                                        {'filterExpression': '[X]>1'}, counter)
+                                        {'filterExpression': '[X]>1',
+                                         'filterType': 'keep'}, counter)
         s2 = _convert_action_to_m_step('FilterOperation',
-                                        {'filterExpression': '[Y]>2'}, counter)
+                                        {'filterExpression': '[Y]>2',
+                                         'filterType': 'keep'}, counter)
         self.assertIsNotNone(s1)
         self.assertIsNotNone(s2)
         self.assertNotEqual(s1[0], s2[0])  # distinct step names
@@ -1969,7 +1971,7 @@ class TestPrepContainerReports81To83(unittest.TestCase):
 
     def test_malformed_shapes_fail_instead_of_passthrough(self):
         cases = [
-            ('fields', {}), ('connectionAttributes', []), ('nextNodes', 'out'),
+            ('fields', 'bad'), ('connectionAttributes', []), ('nextNodes', 'out'),
             ('beforeActionGroup', []), ('actions', {}),
             ('fields', [None]), ('nodeType', 17),
         ]

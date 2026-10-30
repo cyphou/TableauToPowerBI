@@ -356,6 +356,13 @@ The static openability gate runs automatically after every PBIP generation, and
 after closed-loop autoheal when autoheal is enabled. A blocking result fails the
 migration and writes `openability_report.json`; `--no-verify-open` is the explicit
 escape hatch. Without explicit desktop options, batch launches no native apps.
+
+Failed PBIP workbook finalization retracts the entry marker and writes
+`migration_failure.json`; stored openability, quality HTML/JSON and evidence ZIP
+are synchronized after retraction. Original stage/rejection details and
+per-workbook `.migration_extract` snapshots remain available for diagnosis.
+Reporting policy does not bypass source or semantic-integrity guards.
+
 `--screenshots` (also `--desktop-probe`) adds Power BI opening, verified refresh
 and captures; `--compare-desktop` also opens Tableau for paired comparison.
 These diagnostics run after generation using only the current successful/resumed
@@ -492,7 +499,11 @@ The semantic model is built in 14 sequential phases:
 3. **Tables with columns** — emit table/column/measure/M-query TMDL
 4. **Relationships** — cross-datasource dedup, validation, type mismatch fixing
 5. **Sets/Groups/Bins** — calculated columns for set membership, grouping, binning
-6. **Auto date table** — M-partition calendar with Date Hierarchy
+6. **Auto date table** — M-partition calendar with Date Hierarchy. Default source
+   mode expands unspecified bounds through independent source M copies, with
+   visible source failures. Explicit `--calendar-mode fixed` avoids those reads
+   using supplied years or 2020–2030 defaults. `Migration_CalendarBounds` and
+   static diagnostics disclose provenance and unverified date coverage.
 7. **Hierarchies** — drill-paths from Tableau
 8. **What-If parameters** — GENERATESERIES/DATATABLE parameter tables
 9. **RLS roles** — user filters → USERPRINCIPALNAME-based role expressions

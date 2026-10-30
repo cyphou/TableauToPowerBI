@@ -16,6 +16,9 @@ lists them, each with the reason. The list is an exact match in both
 directions: an unlisted failure or blocker fails the gate, and so does a listed
 artefact that now migrates, fails differently or reports other blockers. It can
 only shrink towards empty and is never a place to park a regression.
+Retracted outputs of exact known failures remain diagnostics, not published
+projects; their failure records must agree with the batch state and no PBIP
+entry point may remain.
 
 Hyper extracts are exported through the Hyper API, so ``tableauhyperapi`` must
 be installed. Without it every packaged extract would read as a corpus failure
@@ -243,6 +246,27 @@ def _mismatches(limitation: dict, category: str, details: str,
     return problems
 
 
+def _is_retracted_failure(out_dir: str, name: str, result: dict) -> bool:
+    project_dir = os.path.join(out_dir, name)
+    if glob.glob(os.path.join(project_dir, '*.pbip')):
+        return False
+    failure = result.get('failure')
+    record = _load(os.path.join(project_dir, 'migration_failure.json'))
+    verdict = _load(os.path.join(project_dir, 'openability_report.json'))
+    diagnostics = verdict.get('diagnostics') if isinstance(verdict, dict) else None
+    return (
+        isinstance(failure, dict) and bool(failure)
+        and failure.get('message') == result.get('error_details')
+        and isinstance(record, dict) and record.get('schema_version') == '1.0'
+        and record.get('status') == 'failed' and record.get('report_name') == name
+        and record.get('completion_marker') == 'withheld'
+        and record.get('failure') == failure
+        and verdict.get('openable') is False
+        and isinstance(diagnostics, dict)
+        and diagnostics.get('pipeline_failure') == failure
+    )
+
+
 class Verdict(NamedTuple):
     failures: list[str]
     acknowledged: list[str]
@@ -260,10 +284,11 @@ def _account(label: str, source_dir: str, out_dir: str, exit_code: int,
     failures: list[str] = []
     acknowledged: list[str] = []
 
-    # These floors never depend on the batch state, and no limitation excuses them.
-    for project, issues in evidence['not_openable']:
-        failures.append(f'{label}/{project}: will not open — '
-                        f'{len(issues)} blocking issue(s): {issues[:3]}')
+    openability_failures = {
+        project: (f'{label}/{project}: will not open — '
+                  f'{len(issues)} blocking issue(s): {issues[:3]}')
+        for project, issues in evidence['not_openable']
+    }
     for project in evidence['missing_gate']:
         failures.append(f'{label}/{project}: no openability verdict written')
 
@@ -279,7 +304,8 @@ def _account(label: str, source_dir: str, out_dir: str, exit_code: int,
             failures.append(f'{label}: migration exited {exit_code}')
         failures.extend(f'{label}/{name}: blocker — {text}'
                         for name, text in evidence['blockers'])
-        return Verdict(failures, acknowledged, 0, 0, len(evidence['blockers']))
+        return Verdict(list(openability_failures.values()) + failures,
+                       acknowledged, 0, 0, len(evidence['blockers']))
 
     for artefact in expected:
         if artefact not in state:
@@ -307,6 +333,7 @@ def _account(label: str, source_dir: str, out_dir: str, exit_code: int,
             observed.setdefault(owner[name], Counter())[text] += 1
 
     judged = set()
+    accepted = set()
     unsuccessful = 0
     for artefact in sorted(state):
         entry = state[artefact]
@@ -333,7 +360,22 @@ def _account(label: str, source_dir: str, out_dir: str, exit_code: int,
             failures.append(f'{subject}: no longer matches its known limitation — '
                             + '; '.join(problems))
         else:
+            accepted.add(artefact)
             acknowledged.append(f'{subject}: {category} — {limitation["reason"]}')
+
+    # Only matching, reviewed failures with no entry point are diagnostic output.
+    # A published PBIP must always pass the independent openability floor.
+    for project in list(openability_failures):
+        artefact = owner.get(project)
+        if (artefact in accepted
+                and _is_retracted_failure(out_dir, project, _result_of(state[artefact]))):
+            del openability_failures[project]
+
+    for project, artefact in owner.items():
+        if (state[artefact].get('status') == 'failed'
+                and project not in openability_failures
+                and glob.glob(os.path.join(out_dir, project, '*.pbip'))):
+            failures.append(f'{label}/{artefact}: failed artefact published a PBIP entry point')
 
     blockers = 0
     for name, text in evidence['blockers']:
@@ -347,7 +389,8 @@ def _account(label: str, source_dir: str, out_dir: str, exit_code: int,
                         f'for {unsuccessful} unsuccessful artefact(s)')
 
     migrated = sum(1 for entry in state.values() if entry.get('status') == 'success')
-    return Verdict(failures, acknowledged, len(state), migrated, blockers)
+    return Verdict(list(openability_failures.values()) + failures,
+                   acknowledged, len(state), migrated, blockers)
 
 
 def main(argv=None) -> int:

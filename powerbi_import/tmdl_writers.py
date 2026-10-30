@@ -43,6 +43,24 @@ def _quote_name(name):
     return f"'{escaped}'"
 
 
+def _serialize_source_column(value):
+    """Preserve binding strings using TOM's conditional double-quote syntax."""
+    if not isinstance(value, str) or '\r' in value or '\n' in value:
+        raise ValueError('TMDL sourceColumn must be a single-line string')
+    if not value or value != value.strip() or (
+            value.startswith('"') and value.endswith('"')):
+        return '"' + value.replace('"', '""') + '"'
+    return value
+
+
+def _parse_source_column(value):
+    """Decode a TMDL binding value, not an apostrophe-quoted object name."""
+    value = value.strip()
+    if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+        return value[1:-1].replace('""', '"')
+    return value
+
+
 def _tmdl_datatype(bim_type):
     """Convert a type to TMDL type."""
     mapping = {
@@ -1192,6 +1210,9 @@ def _write_table_tmdl(tables_dir, table):
     merge_action = table.get('_merge_action', '')
     if merge_action:
         lines.append(f'\tannotation MergeAction = {merge_action}')
+    if table.get('_calendar_bounds'):
+        lines.append('\tannotation Migration_CalendarBounds = '
+                     + json.dumps(table['_calendar_bounds'], ensure_ascii=True))
     lines.append("")
 
     content = '\n'.join(lines) + '\n'
@@ -1327,11 +1348,7 @@ def _write_column(lines, column):
         _write_column_properties(lines, column)
 
         source_col = column.get('sourceColumn', col_name)
-        # This is a source binding string, not an object identifier. Match
-        # Desktop's own serializer: `sourceColumn: Order Date`. Added single
-        # OR double quotes can survive Desktop schema refresh as literal
-        # source-column characters, renaming columns and dropping relationships.
-        lines.append(f"\t\tsourceColumn: {source_col}")
+        lines.append(f"\t\tsourceColumn: {_serialize_source_column(source_col)}")
         _write_column_flags(lines, column)
 
 

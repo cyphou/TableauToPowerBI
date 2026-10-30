@@ -29,6 +29,7 @@ def build_evidence_package(report: Any) -> Dict[str, Any]:
         "report_name": payload.get("report_name"),
         "status": payload.get("status", "UNVERIFIED"),
         "handoff_status": payload.get("handoff_status", "UNVERIFIED"),
+        "pipeline_failure": payload.get("pipeline_failure", {}),
         "summary": summary,
         "certification": certification,
         "release_readiness": release_readiness,

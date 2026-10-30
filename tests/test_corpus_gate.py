@@ -399,6 +399,75 @@ class TestKnownLimitations(_Batch):
                      'Required Hyper checks failed: C:\\somewhere\\Cache.twbx',
                      blockers=blockers)
 
+    def _retracted(self):
+        self._legacy()
+        self._project('Cache', openable=False, with_pbip=False,
+                      issues=['completion marker withheld'])
+        failure = {
+            'stage': 'hyper_import', 'error': 'GenerationError',
+            'message': self.state['Cache.twbx']['result']['error_details'],
+        }
+        self.state['Cache.twbx']['result']['failure'] = failure
+        project = os.path.join(self.dir, 'Cache')
+        with open(os.path.join(project, 'migration_failure.json'), 'w',
+                  encoding='utf-8') as stream:
+            json.dump({
+                'schema_version': '1.0', 'status': 'failed',
+                'report_name': 'Cache', 'completion_marker': 'withheld',
+                'failure': failure,
+            }, stream)
+        with open(os.path.join(project, 'openability_report.json'), 'w',
+                  encoding='utf-8') as stream:
+            json.dump({
+                'openable': False, 'blocking_issues': ['completion marker withheld'],
+                'diagnostics': {'pipeline_failure': failure},
+            }, stream)
+
+    def test_exact_known_failure_diagnostics_are_not_published_projects(self):
+        self._retracted()
+        verdict = self._judge(EXIT_BATCH_PARTIAL_FAIL, self.CACHE)
+        self.assertEqual(verdict.failures, [])
+        self.assertEqual(verdict.migrated, 0)
+        self.assertEqual(len(verdict.acknowledged), 1)
+
+    def test_failure_diagnostics_never_excuse_a_published_pbip(self):
+        self._retracted()
+        open(os.path.join(self.dir, 'Cache', 'Cache.pbip'), 'w').close()
+        failures = self._judge(EXIT_BATCH_PARTIAL_FAIL, self.CACHE).failures
+        self.assertTrue(any('will not open' in item for item in failures), failures)
+
+    def test_failed_state_never_publishes_a_statically_openable_pbip(self):
+        self._legacy()
+        self._project('Cache', openable=True)
+        failures = self._judge(EXIT_BATCH_PARTIAL_FAIL, self.CACHE).failures
+        self.assertTrue(any('published a PBIP' in item for item in failures), failures)
+
+    def test_failure_diagnostics_never_excuse_unlisted_failures(self):
+        self._retracted()
+        failures = self._judge(EXIT_BATCH_PARTIAL_FAIL).failures
+        self.assertTrue(any('failed (hyper_import)' in item for item in failures), failures)
+        self.assertTrue(any('will not open' in item for item in failures), failures)
+
+    def test_failure_diagnostics_must_match_the_recorded_failure(self):
+        self._retracted()
+        self.state['Cache.twbx']['result']['failure']['message'] = 'another failure'
+        failures = self._judge(EXIT_BATCH_PARTIAL_FAIL, self.CACHE).failures
+        self.assertTrue(any('will not open' in item for item in failures), failures)
+
+    def test_failure_diagnostics_never_excuse_successful_state(self):
+        self._retracted()
+        self.state['Cache.twbx']['status'] = 'success'
+        failures = self._judge(0, self.CACHE).failures
+        self.assertTrue(any('will not open' in item for item in failures), failures)
+        self.assertTrue(any('now migrates' in item for item in failures), failures)
+
+    def test_failure_diagnostics_do_not_excuse_changed_root_blockers(self):
+        self._retracted()
+        self._quality('Cache', status='FAIL', blockers=['needs Hyper', 'new blocker'])
+        failures = self._judge(EXIT_BATCH_PARTIAL_FAIL, self.CACHE).failures
+        self.assertTrue(any('unrecorded blocker' in item for item in failures), failures)
+        self.assertTrue(any('will not open' in item for item in failures), failures)
+
     def test_a_listed_limitation_is_acknowledged_with_its_reason(self):
         self._healthy('Sales')
         self._legacy()
