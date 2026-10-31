@@ -2084,7 +2084,8 @@ class PowerBIProjectGenerator:
                 literal['Value'] = "'bookmarks'"
 
     def _create_action_visuals(self, visuals_dir, actions, scale_x, scale_y,
-                                visual_count, page_display_name):
+                                visual_count, page_display_name, *,
+                                page_name_map=None):
         """Create action button visuals from Tableau actions.
 
         Generates:
@@ -2138,39 +2139,9 @@ class PowerBIProjectGenerator:
                 created += 1
 
             elif action_type == 'sheet-navigate':
-                visual_id = uuid.uuid4().hex[:8]
-                visual_dir = os.path.join(visuals_dir, visual_id)
-
-                target_ws = action.get('target_worksheet', '')
-                action_name = action.get('name', target_ws or 'Navigate')
-
-                btn_json = {
-                    "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
-                    "name": visual_id,
-                    "position": {
-                        "x": 10, "y": 10 + created * 50,
-                        "z": (visual_count + created) * 1000,
-                        "height": 40, "width": 200,
-                        "tabOrder": (visual_count + created) * 1000
-                    },
-                    "visual": {
-                        "visualType": "actionButton",
-                        "objects": {
-                            "icon": [{"properties": {"shapeType": _L("'ArrowRight'")}}],
-                            "outline": [{"properties": {"show": _L("false")}}],
-                            "text": [{"properties": {
-                                "show": _L("true"),
-                                "text": _L(f"'{action_name}'")
-                            }}],
-                            "action": [{"properties": {
-                                "type": _L("'PageNavigation'")
-                            }}]
-                        }
-                    }
-                }
-                self._normalize_action_visual(btn_json)
-                _write_json(os.path.join(visual_dir, 'visual.json'), btn_json, ensure_ascii=False)
-                created += 1
+                created += self._generate_navigation_buttons(
+                    visuals_dir, [action], visual_count + created,
+                    page_name_map or {}, button_offset=created)
 
         return created
 
@@ -2313,22 +2284,22 @@ class PowerBIProjectGenerator:
         return created, bookmarks
 
     def _generate_navigation_buttons(self, visuals_dir, actions, visual_count,
-                                      page_name_map):
+                                      page_name_map, *, button_offset=0):
         """Create navigation action buttons with drill-through filter support.
 
-        *page_name_map* maps Tableau worksheet names → PBI page display names so
-        that the ``destinationPage`` property can be set correctly.
+        *page_name_map* maps Tableau view names to PBIR page IDs. Unmapped
+        targets must not emit a destination that names a nonexistent page.
 
         Returns the number of visuals created.
         """
         created = 0
         nav_actions = [a for a in actions if a.get('type') == 'sheet-navigate']
         for action in nav_actions:
-            target_ws = action.get('target_sheet', '')
+            target_ws = action.get('target_sheet') or action.get('target_worksheet', '')
             if not target_ws and action.get('target_worksheets'):
                 target_ws = action['target_worksheets'][0]
             action_name = action.get('name', target_ws or 'Navigate')
-            dest_page = page_name_map.get(target_ws, target_ws) if target_ws else ''
+            dest_page = page_name_map.get(target_ws, '') if target_ws else ''
 
             visual_id = uuid.uuid4().hex[:8]
             visual_dir = os.path.join(visuals_dir, visual_id)
@@ -2341,7 +2312,7 @@ class PowerBIProjectGenerator:
                 "$schema": SCHEMA_VISUAL,
                 "name": visual_id,
                 "position": {
-                    "x": 10, "y": 10 + created * 50,
+                    "x": 10, "y": 10 + (button_offset + created) * 50,
                     "z": (visual_count + created) * 1000,
                     "height": 40, "width": 200,
                     "tabOrder": (visual_count + created) * 1000
@@ -2640,6 +2611,7 @@ class PowerBIProjectGenerator:
         worksheets = converted_objects.get('worksheets', [])
 
         page_names = []
+        page_name_map = {}
 
         # Pre-build tooltip page mapping for viz-in-tooltip binding
         # tooltip_page_map: worksheet_name â†’ tooltip_page_name
@@ -2647,13 +2619,16 @@ class PowerBIProjectGenerator:
 
         if dashboards:
             page_names = self._create_dashboard_pages(
-                pages_dir, dashboards, worksheets, converted_objects, tooltip_page_map)
+                pages_dir, dashboards, worksheets, converted_objects, tooltip_page_map,
+                standalone_worksheets=self._get_standalone_worksheets(dashboards, worksheets),
+                page_name_map=page_name_map)
 
         # Collect bookmarks: from stories + from dynamic zone visibility (sheet-swap)
         all_bookmarks = []
         stories = converted_objects.get('stories', [])
         if stories:
-            all_bookmarks.extend(self._create_bookmarks(stories, page_names))
+            all_bookmarks.extend(self._create_bookmarks(
+                stories, page_names, page_name_map=page_name_map))
         # Dynamic zone visibility â†’ swap bookmarks (per dashboard)
         if dashboards:
             for db_idx, db in enumerate(dashboards):
@@ -2670,8 +2645,8 @@ class PowerBIProjectGenerator:
         if all_bookmarks:
             self._write_bookmark_files(def_dir, all_bookmarks)
 
-        # Fallback: default page
-        if not page_names or (dashboards and all(len(d.get('objects', [])) == 0 for d in dashboards)):
+        # Dashboard creation already includes standalone sheets and their mappings.
+        if not page_names:
             page_names = self._create_fallback_page(pages_dir, worksheets, converted_objects)
 
         # 5b. Tooltip pages
@@ -2833,19 +2808,23 @@ class PowerBIProjectGenerator:
         os.makedirs(pages_dir, exist_ok=True)
         worksheets = converted_objects.get('worksheets', [])
         page_names = []
+        page_name_map = {}
         tooltip_page_map = {}
 
         self._motion_chart_bookmarks = []
         self._set_action_bookmarks = []
         if dashboards:
             page_names = self._create_dashboard_pages(
-                pages_dir, dashboards, worksheets, converted_objects, tooltip_page_map)
+                pages_dir, dashboards, worksheets, converted_objects, tooltip_page_map,
+                standalone_worksheets=self._get_standalone_worksheets(dashboards, worksheets),
+                page_name_map=page_name_map)
 
         # Bookmarks
         all_bookmarks = []
         stories = converted_objects.get('stories', [])
         if stories:
-            all_bookmarks.extend(self._create_bookmarks(stories, page_names))
+            all_bookmarks.extend(self._create_bookmarks(
+                stories, page_names, page_name_map=page_name_map))
         if dashboards:
             for db_idx, db in enumerate(dashboards):
                 dz_vis = db.get('dynamic_zone_visibility', [])
@@ -2861,7 +2840,7 @@ class PowerBIProjectGenerator:
         if all_bookmarks:
             self._write_bookmark_files(def_dir, all_bookmarks)
 
-        if not page_names or (dashboards and all(len(d.get('objects', [])) == 0 for d in dashboards)):
+        if not page_names:
             page_names = self._create_fallback_page(pages_dir, worksheets, converted_objects)
 
         self._create_tooltip_pages(pages_dir, page_names, worksheets, converted_objects)
@@ -2886,16 +2865,41 @@ class PowerBIProjectGenerator:
     # â”€â”€ Report page sub-methods (extracted from create_report_structure) â”€â”€
 
     def _create_dashboard_pages(self, pages_dir, dashboards, worksheets, converted_objects,
-                                tooltip_page_map):
-        """Creates report pages from Tableau dashboards. Returns list of page_names."""
+                                tooltip_page_map, *, standalone_worksheets=None,
+                                page_name_map=None):
+        """Create dashboard/standalone pages with complete navigation bindings."""
         page_names = []
+        if page_name_map is None:
+            page_name_map = {}
+        # Reserve dashboard IDs first so worksheet append mode cannot reuse them.
         for db_idx, db in enumerate(dashboards):
             page_name = f"ReportSection{uuid.uuid4().hex[:6]}" if db_idx > 0 else "ReportSection"
+            page_names.append(page_name)
+            for obj in db.get('objects', []):
+                ws_name = obj.get('worksheetName')
+                if (obj.get('type') == 'worksheetReference'
+                        and isinstance(ws_name, str) and ws_name):
+                    page_name_map.setdefault(ws_name, page_name)
+            db_name = db.get('name')
+            if isinstance(db_name, str) and db_name:
+                page_name_map[db_name] = page_name
+
+        # Complete the destination map before emitting dashboard actions/bookmarks.
+        if standalone_worksheets:
+            standalone_pages = self._create_fallback_page(
+                pages_dir, standalone_worksheets, converted_objects,
+                existing_page_names=page_names)
+            page_names.extend(standalone_pages)
+            page_name_map.update(
+                (ws['name'], page_name)
+                for ws, page_name in zip(standalone_worksheets, standalone_pages)
+                if isinstance(ws.get('name'), str) and ws['name'])
+
+        for db_idx, db in enumerate(dashboards):
+            page_name = page_names[db_idx]
             page_display_name = db.get('name')
             if not isinstance(page_display_name, str) or not page_display_name.strip():
                 page_display_name = f'Page {db_idx + 1}'
-            page_names.append(page_name)
-
             # Create the page folder
             page_dir = os.path.join(pages_dir, page_name)
             os.makedirs(page_dir, exist_ok=True)
@@ -3064,7 +3068,8 @@ class PowerBIProjectGenerator:
                 if db_actions:
                     created = self._create_action_visuals(visuals_dir, db_actions,
                                                            scale_x, scale_y, visual_count,
-                                                           page_display_name)
+                                                           page_display_name,
+                                                           page_name_map=page_name_map)
                     visual_count += created
 
                 # Sprint 122: Set-value actions → hidden slicer + bookmarks + button
@@ -3106,11 +3111,55 @@ class PowerBIProjectGenerator:
 
         return page_names
 
-    def _create_fallback_page(self, pages_dir, worksheets, converted_objects):
-        """Creates pages when no dashboards exist â€” one page per worksheet. Returns page_names list."""
+    @staticmethod
+    def _get_standalone_worksheets(dashboards, worksheets):
+        """Return non-hidden worksheets absent from typed dashboard worksheet zones."""
+        referenced_worksheets = set()
+        for db in dashboards:
+            for obj in db.get('objects', []):
+                if obj.get('type') == 'worksheetReference':
+                    ws_name = obj.get('worksheetName')
+                    if isinstance(ws_name, str) and ws_name:
+                        referenced_worksheets.add(ws_name)
+
+            # The hierarchy can retain worksheet zones absent from the flat list.
+            zones = [db.get('zone_hierarchy', {})]
+            while zones:
+                zone = zones.pop()
+                if not isinstance(zone, dict):
+                    continue
+                if zone.get('zone_type') == 'worksheet':
+                    ws_name = zone.get('name')
+                    if isinstance(ws_name, str) and ws_name:
+                        referenced_worksheets.add(ws_name)
+                zones.extend(zone.get('children', []))
+
+        # Missing visibility metadata is unknown, not evidence that a sheet is
+        # hidden. In particular, do not infer visibility from names or fields.
+        return [
+            ws for ws in worksheets
+            if ws.get('name') not in referenced_worksheets
+            and not any(
+                hidden is True
+                or (isinstance(hidden, str) and hidden.strip().lower() == 'true')
+                for hidden in (ws.get('hidden'), ws.get('is_hidden'))
+            )
+        ]
+
+    def _create_fallback_page(self, pages_dir, worksheets, converted_objects,
+                              *, existing_page_names=None):
+        """Create one page per worksheet and return only the new page names.
+
+        ``existing_page_names`` enables append mode without replacing any page.
+        Omitting it retains the worksheet-only fallback, including an empty
+        default page when there are no worksheets.
+        """
         page_names = []
+        used_page_names = set(existing_page_names or [])
 
         if not worksheets:
+            if existing_page_names is not None:
+                return page_names
             # No worksheets either â€” create a single empty page
             page_name = "ReportSection"
             page_names.append(page_name)
@@ -3130,7 +3179,13 @@ class PowerBIProjectGenerator:
             return page_names
 
         for idx, ws in enumerate(worksheets):
-            page_name = "ReportSection" if idx == 0 else f"ReportSection{uuid.uuid4().hex[:6]}"
+            page_name = ("ReportSection" if idx == 0 and existing_page_names is None
+                         else f"ReportSection{uuid.uuid4().hex[:6]}")
+            if page_name != "ReportSection":
+                while (page_name in used_page_names
+                       or os.path.exists(os.path.join(pages_dir, page_name))):
+                    page_name = f"ReportSection{uuid.uuid4().hex[:6]}"
+            used_page_names.add(page_name)
             page_names.append(page_name)
 
             ws_name = ws.get('name')
@@ -4883,18 +4938,19 @@ class PowerBIProjectGenerator:
             "active": True
         }
 
-    def _create_bookmarks(self, stories, page_names=None):
+    def _create_bookmarks(self, stories, page_names=None, *, page_name_map=None):
         """Converts Tableau stories to Power BI bookmarks (PBIR format)."""
         bookmarks = []
         pages = list(page_names or [])
         # A bookmark whose section names no real page makes Power BI refuse
-        # the project. Tableau stores a worksheet name, which is not a page.
+        # the project. Resolve source view names, then validate the PBIR ID.
         fallback = pages[0] if pages else 'ReportSection'
         for story in stories:
             story_name = story.get('name', 'Story')
             for sp_idx, sp in enumerate(story.get('story_points', [])):
                 caption = sp.get('caption', f'{story_name} - Point {sp_idx + 1}')
                 captured = (sp.get('captured_sheet') or '').strip()
+                captured = (page_name_map or {}).get(captured, captured)
                 active_section = captured if captured in pages else fallback
                 bookmark = {
                     "name": f"Bookmark_{uuid.uuid4().hex[:8]}",

@@ -13,7 +13,9 @@ problem can never break a migration.
 from __future__ import annotations
 
 import binascii
+import math
 import os
+import re
 import struct
 import sys
 import time
@@ -27,6 +29,16 @@ from typing import (
     Optional,
     Tuple,
     Union,
+)
+
+from powerbi_import.desktop_accessibility import (
+    DESKTOP_DIALOG_OBSERVER_SCRIPT,
+    DIALOG_ATTENTION_PATTERN,
+    DIALOG_BUSY_TEXT_PATTERN,
+    DIALOG_BUSY_TITLE_PATTERN,
+    NATIVE_ACCESSIBILITY_SCRIPT,
+    is_powershell_failure,
+    run_accessibility_script,
 )
 
 IS_WINDOWS = sys.platform == "win32"
@@ -115,6 +127,162 @@ class WindowInfo(NamedTuple):
     width: int
     height: int
     owned: bool
+
+
+# A progress window is a reason to keep waiting, never evidence of loading
+# success and never permission to press Cancel. These are application messages,
+# not document names. Unknown languages/dialogs remain manual-attention cases.
+_OPENING_TITLE = re.compile(
+    r"""^(?:Opening workbook|Ouverture du classeur)\s+['"“«].+['"”»]\s*(?:\.\.\.|…)$""",
+    re.IGNORECASE)
+_BUSY_TITLE = re.compile(
+    DIALOG_BUSY_TITLE_PATTERN, re.IGNORECASE)
+_ATTENTION_TEXT = re.compile(
+    DIALOG_ATTENTION_PATTERN, re.IGNORECASE)
+_BUSY_TEXT = re.compile(
+    DIALOG_BUSY_TEXT_PATTERN, re.IGNORECASE)
+
+_DIALOG_SCRIPT = NATIVE_ACCESSIBILITY_SCRIPT + DESKTOP_DIALOG_OBSERVER_SCRIPT + r"""
+$clock = [Diagnostics.Stopwatch]::StartNew()
+$q = [Console]::In.ReadToEnd() | ConvertFrom-Json
+if (-not [NativeDesktopAccessibility]::Owned([long]$q.hwnd, [int]$q.pid)) {
+    @{status='ownership_changed'} | ConvertTo-Json -Compress
+    exit
+}
+$native = [NativeDesktopAccessibility]::Read([long]$q.hwnd, [int]$q.pid, $true)
+$remaining = [double]$q.seconds - $clock.Elapsed.TotalSeconds
+Read-DesktopDialogMetadata ([long]$q.hwnd) ([int]$q.pid) $remaining $null $native |
+    ConvertTo-Json -Depth 7 -Compress
+"""
+
+
+def _dialog_metadata(hwnd: int, pid: int, timeout: float) -> dict:
+    """Read-only accessibility snapshot in a killable, deadline-bound child."""
+    return run_accessibility_script(
+        _DIALOG_SCRIPT, {"hwnd": hwnd, "pid": pid, "seconds": timeout}, timeout)
+
+
+def _classify_dialog_metadata(title: str, metadata: dict, *,
+                              require_progress: bool = False) -> str:
+    """busy|attention; cancellation alone is NOT a progress signal.
+
+    ProgressBar and native IDCANCEL (2) are locale-independent. Text/title
+    fallbacks explicitly support EN/FR only. Incomplete painting of a known
+    transient title may delay opening, but can never permit a document capture.
+    Strict observations require complete native/UIA progress structure: a bar
+    or the observed Tableau layout/timer form, never title/cancellation alone.
+    """
+    if require_progress:
+        # Consume the shared PS decision; never reproduce its criteria here.
+        strict = metadata.get("strict_classification")
+        return "busy" if (
+            isinstance(strict, dict) and strict.get("basis") in {
+                "shared_strict_uia", "tableau_layout_timer"}
+            and strict.get("progress_required") is True and strict.get("complete") is True
+            and strict.get("status") == "busy") else "attention"
+    if (metadata.get("status") != "observed"
+            or not metadata.get("native_complete", True)):
+        return "attention"
+    text = "\n".join([title] + [
+        value for value in metadata.get("texts", []) if isinstance(value, str)])
+    if _ATTENTION_TEXT.search(text):
+        return "attention"
+    buttons = metadata.get("buttons", [])
+    cancel_only = all(
+        isinstance(button, dict) and (
+            button.get("control_id") == 2
+            or str(button.get("name", "")).strip().casefold() in {"cancel", "annuler"})
+        for button in buttons)
+    if (metadata.get("interactive", 0) or metadata.get("truncated")
+            or not cancel_only):
+        return "attention"
+    if _OPENING_TITLE.fullmatch(title.strip()) or _BUSY_TITLE.fullmatch(title.strip()):
+        return "busy"
+    if (metadata.get("status") == "observed"
+            and metadata.get("native_complete", True) and (
+            metadata.get("progress", 0) > 0
+            or (buttons and _BUSY_TEXT.search(text)))):
+        return "busy"
+    return "attention"
+
+
+def dialog_state(dialog: WindowInfo, pid: int, *, timeout: float = 3.0,
+                 require_progress: bool = False) -> dict:
+    """Read-only classification; strict mode never treats title-only as BUSY."""
+    try:
+        timeout = float(timeout)
+        valid = math.isfinite(timeout) and timeout > 0
+    except (TypeError, ValueError, OverflowError):
+        valid = False
+    if not IS_WINDOWS or not valid:
+        return {"status": "attention", "basis": "inspection_unavailable"}
+    actual_pid = window_process_id(dialog.hwnd)
+    if actual_pid is not None and actual_pid != pid:
+        return {"status": "attention", "basis": "ownership_changed",
+                "cause": "window_ownership_changed", "retryable": False,
+                "owner_pid_before": actual_pid, "explicit_attention": True}
+    if _ATTENTION_TEXT.search(dialog.title):
+        return {"status": "attention", "basis": "attention_title",
+                "explicit_attention": True}
+    if actual_pid is None:
+        return {"status": "vanished", "basis": "ownership_recheck",
+                "cause": "dialog_disappeared", "retryable": True,
+                "owner_pid_before": None, "explicit_attention": False}
+    metadata = _dialog_metadata(dialog.hwnd, pid, min(timeout, 3.0))
+    if is_powershell_failure(metadata):
+        return {**metadata, "basis": "native_helper_failure", "metadata": metadata}
+    texts = "\n".join(str(text) for text in metadata.get("texts", []))
+    after_pid = window_process_id(dialog.hwnd)
+    ownership = {"owner_pid_before": actual_pid, "owner_pid_after": after_pid}
+    if metadata.get("status") == "ownership_changed" or after_pid != pid:
+        # A popup destroyed while the child starts/reads is not a live ownership
+        # violation. Never discard an observed error/auth/trust message, though.
+        if after_pid is None and not _ATTENTION_TEXT.search(texts):
+            return {"status": "vanished", "basis": "ownership_recheck",
+                    "cause": "dialog_disappeared", "retryable": True,
+                    "metadata": metadata, "explicit_attention": False, **ownership}
+        # Any still-live handle (even back in the expected PID) is ambiguous or
+        # reused after a failed ownership check. It cannot authorize readiness.
+        return {"status": "attention", "basis": "ownership_changed",
+                "cause": "window_ownership_changed", "retryable": False,
+                "metadata": metadata, "explicit_attention": True, **ownership}
+    if require_progress and any(
+            not isinstance(metadata.get(key), dict)
+            or metadata[key].get("hwnd") != dialog.hwnd
+            or metadata[key].get("title") != dialog.title
+            or metadata[key].get("class_name") != dialog.class_name
+            for key in ("native_before", "native_after")):
+        return {"status": "attention", "basis": "dialog_identity_recheck",
+                "cause": "dialog_identity_unverified", "retryable": False,
+                "metadata": metadata, "explicit_attention": True, **ownership}
+    classification = _classify_dialog_metadata(
+        dialog.title, metadata, require_progress=require_progress)
+    strict = metadata.get("strict_classification")
+    partial = (metadata.get("status") != "observed"
+               or not metadata.get("native_complete", True)
+               or (require_progress and (
+                   not isinstance(strict, dict) or strict.get("complete") is not True)))
+    # A recognized opening/layout title can precede its painted accessibility
+    # children. This is WAIT-ONLY, explicitly partial evidence, never readiness.
+    # Actual helper timeouts/tooling errors were returned above, not retried.
+    if (not require_progress and partial
+            and metadata.get("status") in {"observed", "unavailable", "timed_out"}
+            and not metadata.get("truncated")
+            and not metadata.get("interactive", 0)
+            and not _ATTENTION_TEXT.search(texts)
+            and (_OPENING_TITLE.fullmatch(dialog.title.strip())
+                 or _BUSY_TITLE.fullmatch(dialog.title.strip()))
+            and all(isinstance(button, dict) and (
+                button.get("control_id") == 2
+                or str(button.get("name", "")).strip().casefold() in {"cancel", "annuler"})
+                for button in metadata.get("buttons", []))):
+        classification = "busy"
+    return {"status": classification,
+            "basis": "native_progress_metadata", "metadata": metadata,
+            **ownership,
+            "cause": ("partial_provider_observation"
+                      if partial or metadata.get("truncated") else None),
+            "explicit_attention": bool(_ATTENTION_TEXT.search(texts))}
 
 
 #: Per-monitor v2, the context that makes GetWindowRect report real pixels.
@@ -230,15 +398,18 @@ def windows_for_pid(pid: int) -> List[WindowInfo]:
     return found
 
 
-def is_responsive(hwnd: int, timeout_ms: int = 2000) -> bool:
-    """True when the window pumps messages, i.e. is not busy loading."""
+def is_responsive(hwnd: int, timeout_ms: float = 2000) -> bool:
+    """Check message pumping; fractional milliseconds are truncated for Win32."""
     if not IS_WINDOWS:
         return False
-    result = ctypes.c_size_t()
-    ok = _user32.SendMessageTimeoutW(
-        hwnd, _WM_NULL, 0, 0, _SMTO_ABORTIFHUNG, timeout_ms,
-        ctypes.byref(result))
-    return bool(ok)
+    try:
+        result = ctypes.c_size_t()
+        ok = _user32.SendMessageTimeoutW(
+            hwnd, _WM_NULL, 0, 0, _SMTO_ABORTIFHUNG, max(1, int(timeout_ms)),
+            ctypes.byref(result))
+        return bool(ok)
+    except (OSError, ValueError, TypeError, ctypes.ArgumentError):
+        return False
 
 
 def main_window(pid: int, min_width: int = 400,
@@ -291,47 +462,154 @@ def wait_for_window(
         poll: float = 1.0) -> Tuple[Optional[WindowInfo], List[str]]:
     """Wait until one of *pids* shows a responsive report window.
 
-    Returns ``(window, signals)``. An error dialog ends the wait immediately:
-    a popup is what makes a project unusable, and waiting out the timeout only
-    delays the verdict. Waiting for the title to match and for the window to
-    answer a message is a real load signal, unlike a fixed sleep.
+    Returns ``(window, signals)``. Recognized transient progress consumes the
+    SAME finite deadline and resets stability. Unknown/actionable dialogs stop
+    the wait; none are dismissed. Signals are observations, not crash verdicts.
     """
     signals: List[str] = []
     if not IS_WINDOWS:
         return None, ["window inspection is Windows-only"]
+    try:
+        timeout, stable_for, poll = map(float, (timeout, stable_for, poll))
+        valid = (all(math.isfinite(v) for v in (timeout, stable_for, poll))
+                 and timeout > 0 and stable_for >= 0 and poll > 0)
+    except (TypeError, ValueError, OverflowError):
+        valid = False
+    if not valid:
+        return None, ["invalid window wait timeout/stability/poll"]
     if isinstance(pids, int):
         pids = [pids]
-    deadline = time.time() + timeout
+    elif not callable(pids):
+        pids = tuple(pids)
+    deadline = time.monotonic() + timeout
     matched_since: Optional[float] = None
+    matched_identity = None
     seen_titles = set()
 
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         live = list(pids() if callable(pids) else pids)
-
-        for dialog in (d for pid in live for d in dialog_windows(pid)):
-            signals.append(f"error dialog: {dialog.title!r}")
-            return None, signals
+        busy = False
+        for pid in live:
+            for dialog in dialog_windows(pid):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                state = dialog_state(dialog, pid, timeout=remaining)
+                if is_powershell_failure(state):
+                    signals.append(f"native helper failure: {state['cause']}")
+                    return None, signals
+                if state.get("cause") == "partial_provider_observation":
+                    signal = f"partial provider observation: {dialog.title!r}"
+                    if signal not in signals:
+                        signals.append(signal)
+                signal = (f"busy dialog: {dialog.title!r}" if state["status"] == "busy"
+                          else f"error dialog: {dialog.title!r}")
+                if state["status"] != "busy":
+                    if (not state.get("explicit_attention")
+                            and window_process_id(dialog.hwnd) is None):
+                        signal = f"transient dialog disappeared: {dialog.title!r}"
+                        if signal not in signals:
+                            signals.append(signal)
+                        busy = True
+                        continue
+                    if signal not in signals:
+                        signals.append(signal)
+                    return None, signals
+                if signal not in signals:
+                    signals.append(signal)
+                busy = True
+        if busy:
+            matched_since = matched_identity = None
+            time.sleep(min(poll, max(0.0, deadline - time.monotonic())))
+            continue
 
         win = report_window(live, title_fragment)
-        if win is not None and is_responsive(win.hwnd):
-            matched_since = matched_since or time.time()
-            if time.time() - matched_since >= stable_for:
+        if win is not None and win.title:
+            seen_titles.add(win.title)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if win is not None and is_responsive(win.hwnd, min(2000, remaining * 1000)):
+            now = time.monotonic()
+            identity = (win.hwnd, win.title)
+            if matched_since is None or matched_identity != identity:
+                matched_since = now
+                matched_identity = identity
+            if now < deadline and now - matched_since >= stable_for:
                 return win, signals
         else:
-            matched_since = None
+            matched_since = matched_identity = None
             for pid in live:
                 other = main_window(pid)
                 if other is not None and other.title:
                     seen_titles.add(other.title)
-        time.sleep(poll)
+        time.sleep(min(poll, max(0.0, deadline - time.monotonic())))
 
     if not seen_titles:
-        signals.append("no Power BI window appeared before the timeout")
+        signals.append("no document window appeared before the timeout")
     else:
         signals.append(
-            f"no window titled {title_fragment!r} before the timeout "
+            f"no stable responsive window titled {title_fragment!r} before the timeout "
             f"(saw: {', '.join(sorted(seen_titles)[:3])})")
     return None, signals
+
+
+def wait_for_document_ready(hwnd: int, pid: int, *, timeout: float,
+                            stable_for: float = 0.2, poll: float = 0.1) -> dict:
+    """Bounded readiness for an EXACT owned handle, not a substitute document."""
+    if not IS_WINDOWS:
+        return {"status": "unavailable", "note": "Window inspection requires Windows"}
+    try:
+        timeout, stable_for, poll = map(float, (timeout, stable_for, poll))
+        valid = (all(math.isfinite(v) for v in (timeout, stable_for, poll))
+                 and timeout > 0 and stable_for >= 0 and poll > 0)
+    except (TypeError, ValueError, OverflowError):
+        valid = False
+    if not valid:
+        return {"status": "error", "note": "Invalid document wait budget"}
+    deadline = time.monotonic() + timeout
+    stable_since = None
+    signals = []
+    while time.monotonic() < deadline:
+        if window_process_id(hwnd) != pid:
+            return {"status": "error", "note": "Document window ownership changed"}
+        dialogs = dialog_windows(pid)
+        for dialog in dialogs:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            state = dialog_state(dialog, pid, timeout=remaining)
+            if dialog.title not in signals:
+                signals.append(dialog.title)
+            if is_powershell_failure(state):
+                return {**state, "signals": signals}
+            if state.get("cause") == "partial_provider_observation":
+                signal = f"partial provider observation: {dialog.title!r}"
+                if signal not in signals:
+                    signals.append(signal)
+            if state["status"] != "busy":
+                if (not state.get("explicit_attention")
+                        and window_process_id(dialog.hwnd) is None):
+                    signal = f"transient dialog disappeared: {dialog.title!r}"
+                    if signal not in signals:
+                        signals.append(signal)
+                    continue
+                return {"status": "inaccessible", "note": "Owned dialog requires manual attention",
+                        "signals": signals, "dialog": state}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if not dialogs and is_responsive(hwnd, min(2000, remaining * 1000)):
+            now = time.monotonic()
+            if stable_since is None:
+                stable_since = now
+            if now < deadline and now - stable_since >= stable_for:
+                return {"status": "ready", "signals": signals}
+        else:
+            stable_since = None
+        time.sleep(min(poll, max(0.0, deadline - time.monotonic())))
+    return {"status": "timed_out", "note": "Document remained busy or unresponsive before deadline",
+            "signals": signals}
 
 
 def _png_bytes(width: int, height: int, bgra: bytes) -> bytes:
@@ -392,9 +670,10 @@ def capture_window(hwnd: int, path: str) -> Optional[str]:
             return None
         _gdi32.SelectObject(mem_dc, bitmap)
 
-        if not _user32.PrintWindow(hwnd, mem_dc, _PW_RENDERFULLCONTENT):
-            _gdi32.BitBlt(mem_dc, 0, 0, width, height,
-                          window_dc, 0, 0, _SRCCOPY)
+        if (not _user32.PrintWindow(hwnd, mem_dc, _PW_RENDERFULLCONTENT)
+                and not _gdi32.BitBlt(mem_dc, 0, 0, width, height,
+                                      window_dc, 0, 0, _SRCCOPY)):
+            return None
 
         buf = ctypes.string_at(bits, width * height * 4)
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
@@ -414,43 +693,71 @@ def capture_window(hwnd: int, path: str) -> Optional[str]:
             _user32.ReleaseDC(hwnd, window_dc)
 
 
-def is_blank(png_path: str, sample_stride: int = 97) -> Optional[bool]:
-    """True when the capture holds a single colour, i.e. it caught nothing.
+def inspect_capture_png(png_path: str, sample_stride: int = 97) -> Optional[dict]:
+    """Validate a complete native-writer PNG; uniform pixels are not data proof.
 
-    A blank capture means the screenshot failed, not that the report is empty,
-    so callers should report it as an unknown rather than a pass.
-
-    Samples across the whole image. Reading only the first few thousand bytes
-    would cover barely half the top row -- uniform window chrome on any real
-    capture, so every screenshot read as blank.
+    Check chunk boundaries/CRCs, the complete deflate stream, IEND, dimensions
+    and our RGB/filter-0 format. A partial write must not become page evidence.
     """
     try:
         with open(png_path, "rb") as handle:
             data = handle.read()
-    except OSError:
-        return None
-    idat = data.find(b"IDAT")
-    if idat < 0 or len(data) < 24:
-        return None
-    width, height = struct.unpack(">II", data[16:24])
-    if width <= 0 or height <= 0:
-        return None
-    size = struct.unpack(">I", data[idat - 4:idat])[0]
-    try:
-        raw = zlib.decompress(data[idat + 4:idat + 4 + size])
-    except zlib.error:
-        return None
-
-    row_len = 1 + width * 3                    # our writer always filters 0
-    if len(raw) < row_len * height:
+        if data[:8] != b"\x89PNG\r\n\x1a\n":
+            return None
+        offset, width, height = 8, 0, 0
+        compressed = bytearray()
+        ended = False
+        while offset < len(data):
+            size, tag = struct.unpack(">I4s", data[offset:offset + 8])
+            end = offset + size + 12
+            if end > len(data):
+                return None
+            payload = data[offset + 8:end - 4]
+            crc = struct.unpack(">I", data[end - 4:end])[0]
+            if binascii.crc32(tag + payload) & 0xFFFFFFFF != crc:
+                return None
+            if offset == 8:
+                if tag != b"IHDR" or size != 13:
+                    return None
+                width, height, depth, colour, compression, filtering, interlace = (
+                    struct.unpack(">IIBBBBB", payload))
+                if (width <= 0 or height <= 0 or width * height > 100_000_000
+                        or (depth, colour, compression, filtering, interlace)
+                        != (8, 2, 0, 0, 0)):
+                    return None
+            elif tag == b"IDAT":
+                compressed.extend(payload)
+            elif tag == b"IEND":
+                if size or end != len(data):
+                    return None
+                ended = True
+            else:
+                return None
+            offset = end
+        if not ended or not compressed:
+            return None
+        row_len = 1 + width * 3
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(bytes(compressed), row_len * height + 1)
+        if (not decoder.eof or decoder.unused_data or decoder.unconsumed_tail
+                or len(raw) != row_len * height
+                or any(raw[y * row_len] != 0 for y in range(height))):
+            return None
+        step = min(max(1, int(sample_stride)), max(1, width * height // 256))
+    except (OSError, ValueError, TypeError, OverflowError, struct.error, zlib.error):
         return None
     total = width * height
-    step = min(sample_stride, max(1, total // 256))
     seen = set()
     for index in range(0, total, step):
         row, col = divmod(index, width)
         start = row * row_len + 1 + col * 3
         seen.add(raw[start:start + 3])
         if len(seen) > 1:
-            return False
-    return True
+            return {"width": width, "height": height, "blank": False}
+    return {"width": width, "height": height, "blank": True}
+
+
+def is_blank(png_path: str, sample_stride: int = 97) -> Optional[bool]:
+    """Uniform capture -> unknown/failed capture, never proof of an empty report."""
+    info = inspect_capture_png(png_path, sample_stride)
+    return info["blank"] if info else None

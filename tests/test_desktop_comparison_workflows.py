@@ -82,6 +82,9 @@ class DesktopEvidenceFixture(unittest.TestCase):
         self.overrides = {}
         self.events = []
         forbid_network(self)
+        self.preflight = self.enterContext(mock.patch.object(
+            comparison, "powershell_preflight",
+            return_value={"status": "ready", "executable": "SyntheticPowerShell.exe"}))
         self.enterContext(redirect_stdout(io.StringIO()))
         self.enterContext(mock.patch.object(desktop_window, "IS_WINDOWS", True))
         self.enterContext(mock.patch.object(
@@ -274,6 +277,144 @@ class TestExactCurrentDesktopPairs(DesktopEvidenceFixture):
         self.probe.assert_not_called()
         self.assert_no_tableau()
         self.assertFalse((self.output / "desktop_comparisons").exists())
+
+
+class TestExternalDesktopEvidenceLayout(DesktopEvidenceFixture):
+    def snapshot(self, directory):
+        return {p.relative_to(directory): p.read_bytes()
+                for p in directory.rglob("*") if p.is_file()}
+
+    def assert_layout(self, manifest, *, external, comparison_root):
+        self.assertEqual(manifest["status"], "captured")
+        self.assertEqual(manifest["schema_version"], 3)
+        run = Path(manifest["run_dir"])
+        self.assertEqual(run.parent, comparison_root)
+        self.assertEqual(manifest["evidence_location"], {
+            "layout_version": 1, "comparison_root": str(comparison_root),
+            "screenshot_root": str(run / "screenshots"),
+            "external_to_output_root": external,
+        })
+        self.assertEqual(json.loads((run / "manifest.json").read_text("utf-8")), manifest)
+        for row in manifest["workbooks"]:
+            shots = run / "screenshots" / row["evidence_id"]
+            self.assertEqual(Path(row["screenshot_dir"]), shots)
+            self.assertRegex(row["evidence_id"], r"^[0-9a-f]{64}$")
+            for label, subdir in (("tableau", "source"), ("powerbi", "output")):
+                captures = [row[label], *[
+                    page["capture"] for page in row[
+                        "source_inventory" if label == "tableau" else "target_inventory"]]]
+                for capture in captures:
+                    path = Path(capture["screenshot"])
+                    self.assertTrue(path.is_file())
+                    self.assertTrue(path.is_relative_to(shots / subdir))
+                    self.assertFalse(path.is_relative_to(Path(row["pbip"]).parent))
+        return run
+
+    def test_batch_initial_and_page_evidence_never_modify_the_pbip_project(self):
+        before = self.snapshot(self.pbip.parent)
+        legacy = self.write(
+            self.pbip.parent / "screenshots" / "legacy.txt", "keep legacy evidence")
+        before[legacy.relative_to(self.pbip.parent)] = legacy.read_bytes()
+        manifest = self.compare(all_pages=True)
+        self.assert_layout(
+            manifest, external=False, comparison_root=self.output / "desktop_comparisons")
+        self.assertEqual(self.snapshot(self.pbip.parent), before)
+
+    def test_standalone_pbip_root_uses_sibling_tree_and_preserves_legacy_evidence(self):
+        standalone = self.pbip.parent
+        self.write(standalone / "desktop_comparisons" / "old-run" / "manifest.json",
+                   '{"schema_version":2,"status":"captured"}')
+        self.write(standalone / "desktop_comparisons" / "old-run" / "comparison.html",
+                   "<html>Legacy evidence</html>")
+        before = self.snapshot(standalone)
+        manifest = comparison.compare_desktop_reports(
+            str(self.source_dir), str(standalone), all_pages=True,
+            workbook_pairs=[copy.deepcopy(self.pair)])
+        self.assert_layout(
+            manifest, external=True,
+            comparison_root=standalone.with_name(
+                standalone.name + ".desktop_comparisons"))
+        self.assertEqual(self.snapshot(standalone), before)
+
+    def test_equal_display_names_use_distinct_stable_pair_directories_across_runs(self):
+        second_source = self.write(
+            self.source_dir / "other" / "Sales.twb", self.source.read_text("utf-8"))
+        second_pbip = self.write(
+            self.output / "other" / "Current" / "Current.pbip",
+            self.pbip.read_text("utf-8"))
+        # A second valid report tree is needed; identical names are deliberate.
+        original_pages = self.pbip.parent / "Current.Report"
+        for path in original_pages.rglob("*"):
+            if path.is_file():
+                self.write(second_pbip.parent / path.relative_to(self.pbip.parent),
+                           path.read_text("utf-8"))
+        second_pair = dict(
+            self.pair, source=str(second_source.resolve()), pbip=str(second_pbip.resolve()),
+            candidates=[str(second_pbip.resolve())], relative_source="region/Sales.twb")
+        pairs = [copy.deepcopy(self.pair), second_pair]
+        first = comparison.compare_desktop_reports(
+            str(self.source_dir), str(self.output), all_pages=True, workbook_pairs=pairs)
+        first_run = self.assert_layout(
+            first, external=False, comparison_root=self.output / "desktop_comparisons")
+        before = self.snapshot(first_run)
+        second = comparison.compare_desktop_reports(
+            str(self.source_dir), str(self.output), all_pages=True,
+            workbook_pairs=list(reversed(pairs)))
+        self.assert_layout(
+            second, external=False, comparison_root=self.output / "desktop_comparisons")
+        self.assertNotEqual(first["run_dir"], second["run_dir"])
+        self.assertEqual(self.snapshot(first_run), before)
+        self.assertEqual(
+            {row["source"]: row["evidence_id"] for row in first["workbooks"]},
+            {row["source"]: row["evidence_id"] for row in second["workbooks"]})
+        self.assertEqual(len({row["screenshot_dir"] for row in first["workbooks"]}), 2)
+
+    def test_fixed_run_identity_collision_never_overwrites_or_recaptures(self):
+        from datetime import datetime, timezone
+        with mock.patch.object(comparison, "datetime") as clock, \
+                mock.patch.object(comparison.uuid, "uuid4",
+                                  return_value=mock.Mock(hex="synthetic-run")):
+            clock.now.return_value = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            first = self.compare(all_pages=True)
+            run = Path(first["run_dir"])
+            before = self.snapshot(run)
+            self.probe.reset_mock()
+            self.tableau.reset_mock()
+            self.tabs.reset_mock()
+            with self.assertRaises(FileExistsError):
+                self.compare(all_pages=True)
+        self.assertEqual(self.snapshot(run), before)
+        self.probe.assert_not_called()
+        self.tableau.assert_not_called()
+        self.tabs.assert_not_called()
+
+    def test_missing_tooling_preflight_writes_failed_reports_without_any_native_work(self):
+        failure = {
+            "status": "tooling_unavailable", "cause": "powershell_not_found",
+            "note": "powershell_not_found", "retryable": False}
+        self.preflight.return_value = failure
+        manifest = self.compare(all_pages=True)
+        self.assertEqual(manifest["status"], "failed")
+        self.assertEqual(manifest["preflight"], failure)
+        row, = manifest["workbooks"]
+        for label in ("tableau", "powerbi"):
+            self.assertEqual(row[label]["status"], "tooling_unavailable")
+            self.assertEqual(row[label]["native_error"], failure)
+            self.assertIsNone(row[label]["screenshot"])
+        self.assertEqual(row["powerbi"]["refresh"]["status"], "not_run")
+        self.assertEqual(row["powerbi"]["data_load"]["status"], "not_run")
+        run = Path(manifest["run_dir"])
+        self.assertTrue((run / "comparison.html").is_file())
+        self.assertEqual(json.loads((run / "manifest.json").read_text("utf-8")), manifest)
+        self.assertIn("powershell_not_found", (run / "comparison.html").read_text("utf-8"))
+        self.assertFalse(Path(row["screenshot_dir"]).exists())
+        self.preflight.assert_called_once()
+        self.tableau.assert_not_called()
+        self.probe.assert_not_called()
+        self.tabs.assert_not_called()
+        self.tableau_inventory.assert_not_called()
+        self.tableau_cleanup.assert_not_called()
+        self.powerbi_cleanup.assert_not_called()
 
 
 class TestPowerBIOnlyDesktopEvidence(DesktopEvidenceFixture):

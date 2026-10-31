@@ -27,6 +27,7 @@ degrade a valid artifact.
 - `powerbi_import/desktop_feedback_healing.py` — deterministic visual-role repairs driven by private Desktop evidence
 - `powerbi_import/desktop_paths.py` — pre-generation Desktop path budgeting and validation
 - `powerbi_import/desktop_navigation.py` — verified Desktop tab selection through UI Automation
+- `powerbi_import/desktop_accessibility.py` — bounded native accessibility and Desktop tooling bridge
 - `powerbi_import/tableau_desktop_probe.py` — explicit Tableau process-owned window diagnostics
 
 ### Pre/post-write repair passes

@@ -92,6 +92,147 @@ class TestFind(unittest.TestCase):
             self.assertEqual(find_pbi_desktop(path), os.path.abspath(path))
 
 
+class TestNativeToolingFailures(unittest.TestCase):
+    def setUp(self):
+        from powerbi_import import desktop_probe as dp
+        self.dp = dp
+        self.enterContext(mock.patch.object(dp.desktop_window, "IS_WINDOWS", True))
+        self.enterContext(mock.patch.object(dp.time, "monotonic", return_value=0))
+        self.enterContext(mock.patch.object(dp.desktop_window, "dialog_windows",
+                                           return_value=[]))
+        self.failure = {
+            "status": "tooling_unavailable", "cause": "powershell_launch_failed",
+            "note": "powershell_launch_failed", "retryable": False}
+
+    def test_native_preflight_failure_never_launches_desktop(self):
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.object(self.dp, "find_pbi_desktop",
+                                  return_value="PBIDesktop.exe"), \
+                mock.patch.object(self.dp, "powershell_preflight",
+                                  return_value=self.failure), \
+                mock.patch.object(self.dp.subprocess, "Popen") as launch:
+            report = self.dp.probe_desktop_open(_pbip(root), refresh=True,
+                                                 verify_data=True)
+        self.assertEqual(report.status, "tooling_unavailable")
+        self.assertEqual(report.native_error, self.failure)
+        self.assertEqual(report.note, "powershell_launch_failed")
+        self.assertIsNone(report.screenshot)
+        self.assertFalse(report.screenshot_data_verified)
+        launch.assert_not_called()
+
+    def test_uia_wrapper_uses_the_shared_json_runner_and_fractional_budget(self):
+        with mock.patch.object(self.dp, "run_powershell_json",
+                               return_value=self.failure) as run:
+            result = self.dp._run_uia("synthetic script", {"hwnd": 11}, timeout=.025)
+        self.assertEqual(result, self.failure)
+        run.assert_called_once_with(
+            "synthetic script", {"hwnd": 11}, timeout=.025, base64_input=True)
+
+    def test_invoke_click_schema_and_read_only_wrappers_raise_instead_of_returning_zero(self):
+        wrappers = [
+            lambda: self.dp._invoke_button(11, ["Refresh"], timeout=.1),
+            lambda: self.dp._click_button(11, ["Refresh"], timeout=.1),
+            lambda: self.dp._invoke_schema_refresh(11, timeout=.1),
+            lambda: self.dp._button_present(11, ["Refresh"]),
+            lambda: self.dp._text_present(11, ["Pending changes"]),
+        ]
+        failures = [
+            self.failure,
+            {"status": "error", "cause": "powershell_nonzero_exit",
+             "note": "powershell_nonzero_exit", "retryable": False},
+            {"status": "timed_out", "cause": "powershell_timeout",
+             "note": "powershell_timeout", "retryable": False},
+            {"status": "error", "cause": "powershell_malformed_json",
+             "note": "powershell_malformed_json", "retryable": False},
+            {"status": "unavailable", "cause": "ui_unreadable", "retryable": True},
+        ]
+        for failure in failures:
+            for index, wrapper in enumerate(wrappers):
+                with self.subTest(failure=failure, wrapper=index), \
+                        mock.patch.object(self.dp, "_run_uia", return_value=failure), \
+                        self.assertRaises(self.dp.PowerShellFailure) as raised:
+                    wrapper()
+                self.assertEqual(raised.exception.observation, failure)
+        with mock.patch.object(self.dp, "_run_uia", return_value={"invoked": 0}):
+            self.assertEqual(self.dp._invoke_button(11, ["Refresh"]), 0)
+        for invalid in ({}, {"invoked": True}, {"invoked": -1}, {"invoked": "1"}):
+            with self.subTest(invalid=invalid), \
+                    mock.patch.object(self.dp, "_run_uia", return_value=invalid), \
+                    self.assertRaises(self.dp.PowerShellFailure) as raised:
+                self.dp._invoke_button(11, ["Refresh"])
+            self.assertEqual(raised.exception.observation["cause"], "uia_result_invalid")
+
+    def test_refresh_retains_pre_observation_and_mid_click_tool_failures_without_retry(self):
+        for stage in ("observe", "click"):
+            with self.subTest(stage=stage):
+                with mock.patch.object(
+                        self.dp, "_run_uia",
+                        return_value=self.failure) as runner, \
+                        mock.patch.object(
+                            self.dp, "observe_desktop_partitions",
+                            return_value={"status": "unavailable", "partitions": []}) as baseline, \
+                        mock.patch.object(self.dp, "verify_desktop_data") as counts, \
+                        mock.patch.object(self.dp.time, "sleep") as sleep:
+                    if stage == "click":
+                        readiness = self.enterContext(mock.patch.object(
+                            self.dp, "_refresh_ui_state", return_value="clear"))
+                    result = self.dp.refresh_report(11, "Synthetic.pbip", 42, timeout=1)
+                    if stage == "click":
+                        self.assertTrue(readiness.called)
+                self.assertEqual(result["status"], self.failure["status"])
+                self.assertEqual(result["cause"], self.failure["cause"])
+                self.assertEqual(result["native_error"], self.failure)
+                self.assertEqual(result["completion_basis"], "none")
+                self.assertEqual(result["clicks"], 0)
+                self.assertFalse(result["data_load"]["status"] == "verified")
+                self.assertEqual(runner.call_count, 1)
+                self.assertEqual(baseline.call_count, 1 if stage == "click" else 0)
+                counts.assert_not_called()
+                sleep.assert_not_called()
+
+    def test_valid_provider_unavailable_is_retryable_ui_not_a_tool_failure(self):
+        provider = {"status": "unavailable"}
+        with mock.patch.object(self.dp, "_run_uia", return_value=provider):
+            state = self.dp._refresh_ui_state(11, 42, timeout=.1)
+        self.assertEqual(state, "unavailable")
+        self.assertFalse(self.dp.is_powershell_failure(provider))
+
+    def test_public_probe_preserves_a_mid_click_failure_without_capturing_stale_data(self):
+        with tempfile.TemporaryDirectory() as root:
+            window = SimpleNamespace(hwnd=11, title="P - Power BI Desktop")
+            with mock.patch.object(self.dp, "find_pbi_desktop", return_value="PBIDesktop.exe"), \
+                    mock.patch.object(self.dp, "powershell_preflight",
+                                      return_value={"status": "ready"}), \
+                    mock.patch.object(self.dp, "desktop_pids", return_value=[]), \
+                    mock.patch.object(self.dp, "_DESKTOP_PIDS_QUERY_FAILED", False), \
+                    mock.patch.object(self.dp, "_recent_matches", return_value=[]), \
+                    mock.patch.object(self.dp, "_scan_trace_errors", return_value=[]), \
+                    mock.patch.object(self.dp.subprocess, "Popen",
+                                      return_value=_FakeProc()) as launch, \
+                    mock.patch.dict(self.dp._OPEN_PROBE_PROCESSES, clear=True), \
+                    mock.patch.object(self.dp.desktop_window, "wait_for_window",
+                                      return_value=(window, [])), \
+                    mock.patch.object(self.dp.desktop_window, "window_process_id",
+                                      return_value=4242), \
+                    mock.patch.object(self.dp, "_refresh_ui_state", return_value="clear"), \
+                    mock.patch.object(self.dp, "observe_desktop_partitions",
+                                      return_value={"status": "unavailable", "partitions": []}), \
+                    mock.patch.object(self.dp, "_run_uia", return_value=self.failure), \
+                    mock.patch.object(self.dp.desktop_window, "capture_window") as capture:
+                report = self.dp.probe_desktop_open(
+                    _pbip(root), timeout=1, close_after=False, refresh=True,
+                    verify_data=True, screenshot_path=os.path.join(root, "page.png"))
+            self.assertEqual(report.status, "tooling_unavailable")
+            self.assertEqual(report.refresh["native_error"], self.failure)
+            self.assertEqual(report.native_error["cause"], self.failure["cause"])
+            self.assertEqual(report.to_dict()["native_error"]["cause"], self.failure["cause"])
+            self.assertIs(report.screenshot_data_verified, False)
+            self.assertIsNone(report.screenshot)
+            self.assertFalse(report.opened)
+            launch.assert_called_once()
+            capture.assert_not_called()
+
+
 class TestProbe(unittest.TestCase):
     def test_missing_pbip_errors(self):
         r = probe_desktop_open(os.path.join(tempfile.gettempdir(), "nope.pbip"))
@@ -170,8 +311,10 @@ class TestProbe(unittest.TestCase):
                  mock.patch("powerbi_import.desktop_probe.time.sleep"):
                 r = probe_desktop_open(_pbip(d), settle=0, timeout=5,
                                        wait_for_window=False)
-        self.assertEqual(r.status, "crashed")
+        self.assertEqual(r.status, "error")
         self.assertFalse(r.opened)
+        self.assertIn("no process crash established", r.note)
+        self.assertIn("error tokens in trace Desktop.log", r.signals)
 
     def test_launch_failure_is_error(self):
         with tempfile.TemporaryDirectory() as d:
@@ -209,6 +352,11 @@ class TestReportDefinitionLaunchOption(unittest.TestCase):
 
     def test_default_and_explicit_launch_keep_distinct_targets_and_evidence(self):
         from powerbi_import import desktop_probe as dp
+
+        def survived_settle_window(report, *args):
+            report.status = "opened"
+            return False
+
         with tempfile.TemporaryDirectory() as root:
             pbip = _pbip(root)
             report_dir = os.path.join(root, "Synthetic.Report")
@@ -224,7 +372,8 @@ class TestReportDefinitionLaunchOption(unittest.TestCase):
                         mock.patch.object(dp, "desktop_pids", return_value=[]), \
                         mock.patch.object(dp.subprocess, "Popen",
                                           return_value=_FakeProc()) as launch, \
-                        mock.patch.object(dp, "_watch_process", return_value=False), \
+                        mock.patch.object(dp, "_watch_process",
+                                          side_effect=survived_settle_window), \
                         mock.patch.object(dp, "_scan_trace_errors", return_value=[]):
                     report = dp.probe_desktop_open(
                         pbip, wait_for_window=False, close_after=False,
@@ -780,13 +929,17 @@ foreach ($e in $elements) {
         invoke.assert_not_called()
         click.assert_not_called()
 
-    def test_missing_owner_or_failed_observation_is_unavailable(self):
+    def test_missing_owner_is_unavailable_but_invalid_provider_result_raises(self):
         from powerbi_import import desktop_probe as dp
         with mock.patch.object(dp, "_run_uia", return_value={}) as read, \
              mock.patch.object(dp.desktop_window, "dialog_windows", return_value=[]):
             self.assertEqual(dp._refresh_ui_state(101, None), "unavailable")
             read.assert_not_called()
-            self.assertEqual(dp._refresh_ui_state(101, 4242), "unavailable")
+            with self.assertRaises(dp.PowerShellFailure) as raised:
+                dp._refresh_ui_state(101, 4242)
+            self.assertEqual(raised.exception.observation, {
+                "status": "error", "cause": "uia_result_invalid",
+                "note": "uia_result_invalid", "retryable": False})
 
     def test_owned_dialog_error_dominates_other_refresh_states(self):
         from powerbi_import import desktop_probe as dp

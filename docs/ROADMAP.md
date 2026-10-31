@@ -73,7 +73,10 @@ is not a production or multiuser web server.
 Probe and Tableau/Power BI comparison are separately confirmed native actions,
 never automatic post-migration diagnostics. They may launch apps, request
 Power BI refresh/network-source access and save private screenshots; unavailable
-native prerequisites produce `not_run`. These entry points do **not** complete
+Windows/app prerequisites produce `not_run` at the local browser preflight.
+Missing Windows PowerShell produces `tooling_unavailable` in the native
+diagnostic, with dependent refresh/capture evidence remaining `not_run`.
+These entry points do **not** complete
 N5: refresh, save/reopen, value comparison and visual evidence still require an
 authorized environment. Owners: Web Designer / Orchestrator for the local UI,
 Tester / Reviewer / Evidence for further operational acceptance. See the
@@ -313,6 +316,59 @@ completed functionality or runtime evidence.
 | N3 — Batch resilience (In progress; bounded slice delivered) | Harden batch resume for unusable checkpoints, roll back failed checkpoint updates under the lock, retract an incomplete PBIP entry marker after failed/interrupted postprocessing, bind each resume signature to that workbook's effective configuration, and preflight candidate destination collisions; exercise atomic Prep update failures | Orchestrator / Extractor / Tester | Focused tests cover malformed/empty/non-object/invalid-UTF-8 checkpoint handling, absent-checkpoint legacy behavior, retry and second resume using the planned identity, five checkpoint-write fault scenarios (partial write, persistent/transient replacement lock, interrupted save, two concurrent workers), ten effective-config signature regressions, injected Prep dump/replace failures, and Windows-normalized output collision preflight. Signatures cover resolved per-workbook culture/calendar/Prep path and content, quality policy, `verify_open`, output format, model mode, and extraction mode; unchanged effective settings and unrelated manifest entries do not invalidate another completion, missing requested Prep cannot match success, and old signatures regenerate once. Collision preflight checks all candidates before resume/dry-run or output writes; conflicting normalized targets fail with `VALIDATION_FAILED` (5), while distinct subdirectories remain valid. Prep fault tests verify existing atomic-write behavior, not a new production fix. Full N3 acceptance remains open: interrupted or failed runs must retain prior valid datasource JSON, avoid publishing a successful partial project, and resume without duplicate outputs; one-workbook folders and mixed workbook/Prep batches must preserve their contracts |
 | N4 — Refresh reproduction (#84) | Capture the exact minimal failing model, relationship and source prerequisites in an authorized local environment; distinguish a source error from a relationship-triggered failure | Semantic / Wiring / Healing / Tester | A reproducible negative control and causal fix with regression coverage; do not remove relationships or substitute empty tables merely to obtain a pass |
 | N5 — Operational validation (Open) | Refresh and save/reopen representative generated projects; compare source/target values and Tableau/Power BI screenshots where authorized | Reviewer / Evidence / Deployer | Attach refresh, value-comparison and visual evidence with environment/prerequisite status; static success and the bounded local browser diagnostic entry points alone never become `OPERATIONAL_100` |
+
+The Desktop reliability slice distinguishes missing tooling from an unreadable
+UI, waits for recognized owned progress, bounds page-capture retries and keeps
+new screenshot evidence outside generated projects. Mixed reports also retain
+standalone worksheet pages. Tableau navigation can use a qualified document's
+Window menu with an exact sheet name and fresh, uniquely checked active-page
+state when named tabs are unavailable. Capture-local identity hints reduce
+repeated menu discovery without replacing fresh qualification; failed PRE
+observations remain available even before the first image attempt.
+Post-invoke navigation waits can recognize complete owned progress, including
+the observed English layout-caption/timer dialog without a ProgressBar, under
+the existing page deadline. First-guard/wait provenance and fresh page identity
+are retained without reinvocation or dialog dismissal; unknown/protected states
+remain terminal. After initial qualification, only the same approved dialog's
+fresh complete known layout body may continue despite mutable native/UIA window
+captions; incomplete content and changed immutable identity remain terminal.
+Observed disappearance or identity-qualified hiding ends that retained lifetime,
+and same-handle reappearance cannot reuse approval. This is not general support
+for a new progress phase based on its title.
+These are prerequisites for repeatable diagnostics,
+not N5 closure: synthetic regressions and selected-page captures do not establish
+saved/reopened state, source-value equivalence or visual parity.
+
+**Scoped Desktop validation (2026-10-31, Windows, Python 3.14.2):**
+
+- The publication candidate passed **910 tests across 14 affected Desktop,
+  quality and full/thin report test files** in **57.98 seconds**. The changed
+  files passed the CI Ruff/Flake8 rules; Pyright reported **0 errors and
+  0 warnings** for eight producer files. This is not a new full-suite or live
+  CI result.
+- An authorized ordinary four-workbook batch invocation and its strict local
+  acceptance check both exited **0**. All **18 source and 18 target pages**
+  had verified correspondence and PRE/POST page identity. The **36 unique PNGs**
+  were stored outside generated projects, and all **18 decoded pixel-comparison
+  payloads** were independently recalculated against the manifest.
+- Power BI refresh and data checks were verified for all four projects:
+  **12 nonempty tables, 36,207 rows, no empty or failed tables**. Generated
+  tables are included; this count is not source/target value equivalence.
+  Static quality remained **2 PASS / 2 WARN / 0 FAIL**.
+- One owned layout-timer progress wait became ready in **1,928 ms**, with one
+  observation and a single sheet invocation. The replay recorded **zero caption
+  changes and zero post-approved layout reads**: caption continuation was not
+  exercised natively in this run. Its causal producer regression and disabled-fix
+  negative control remain separate evidence, not a resampled native transition.
+- The replay used explicit desktop/refresh/page timeout ceilings of
+  **180/300/180 seconds**; defaults remain **90/300/30 seconds**. Four source
+  copies matched their originals, original/recovery files remained unchanged,
+  and all owned application launches were closed without closing unrelated
+  processes. Paths, source data and screenshots remain local.
+
+This bounded refresh/capture evidence does not establish saved/reopened state,
+semantic or visual parity, deployment or general operational certification.
+**N5 remains Open.**
 
 **N1 is partial; N2's first bounded Remap conversion slice is delivered.**
 `.v2018_3_3.Remap` is the one dialect with observed producer structure and

@@ -404,32 +404,77 @@ class MigrationQualityReport:
 
 _COMPARISON_LINKS_START = "<!-- desktop-comparison-links:start -->"
 _COMPARISON_LINKS_END = "<!-- desktop-comparison-links:end -->"
+_STANDALONE_COMPARISON_SUFFIX = ".desktop_comparisons"
+
+
+def _desktop_comparison_root(output_root: Path) -> Path:
+    """Keep standalone-project diagnostics in a deterministic sibling tree."""
+    if any(p.is_file() for p in output_root.glob("*.pbip", case_sensitive=False)):
+        return output_root.with_name(output_root.name + _STANDALONE_COMPARISON_SUFFIX)
+    return output_root / "desktop_comparisons"
 
 
 def _desktop_comparison_links(html_path: str) -> str:
     """Discover existing run reports, using paths rather than manifest locations.
 
-    The nearest comparison directory belongs to this output tree. Manifest
-    paths may describe the original machine and are intentionally not followed.
+    Retain legacy project-local runs alongside sibling standalone diagnostics
+    and the nearest batch comparison directory. Manifest paths may describe the
+    original machine and are intentionally not followed.
     """
     parent = Path(html_path).resolve().parent
-    comparison_root = next(
-        (p / "desktop_comparisons" for p in (parent, *parent.parents)
-         if (p / "desktop_comparisons").is_dir()), None)
-    if comparison_root is None:
-        return ""
-    # Do not follow comparison directories/reports outside their output tree.
-    output_root = comparison_root.parent
-    if not comparison_root.resolve().is_relative_to(output_root):
-        return ""
+    comparison_roots = []
+    for ancestor in (parent, *parent.parents):
+        legacy = ancestor / "desktop_comparisons"
+        sibling = (ancestor.with_name(ancestor.name + _STANDALONE_COMPARISON_SUFFIX)
+                   if ancestor.name else None)
+        # Per-workbook quality HTML can sit beside, not inside, its project.
+        # Recognize only our exact sibling layout with a matching PBIP directory.
+        adjacent = []
+        if ancestor == parent:
+            for candidate in parent.glob("*" + _STANDALONE_COMPARISON_SUFFIX):
+                name = candidate.name[:-len(_STANDALONE_COMPARISON_SUFFIX)]
+                if not name:
+                    continue
+                project = candidate.with_name(name)
+                try:
+                    if (project.is_dir()
+                            and not any(p.is_symlink() or p.is_junction()
+                                        for p in (project, *project.parents))
+                            and _desktop_comparison_root(project) == candidate):
+                        adjacent.append(candidate)
+                except (OSError, ValueError):
+                    continue
+        if not legacy.is_dir() and (sibling is None or not sibling.is_dir()) and not adjacent:
+            continue
+        local_roots = []
+        try:
+            canonical = _desktop_comparison_root(ancestor)
+            for candidate in dict.fromkeys((canonical, legacy, *adjacent)):
+                if (candidate.is_dir()
+                        and not any(p.is_symlink() or p.is_junction()
+                                    for p in (candidate, *candidate.parents))
+                        and candidate.resolve().is_relative_to(candidate.parent)):
+                    local_roots.append(candidate)
+        except (OSError, ValueError):
+            continue
+        comparison_roots = list(dict.fromkeys((*comparison_roots, *local_roots)))
+        # A project-local legacy directory must not hide external new runs.
+        # Otherwise retain the existing nearest-batch discovery boundary.
+        if canonical == legacy and local_roots:
+            break
     rows = []
-    for report in sorted(comparison_root.glob("*/comparison.html"), reverse=True):
+    reports = [(root, report) for root in comparison_roots
+               for report in root.glob("*/comparison.html")]
+    for comparison_root, report in sorted(reports, key=lambda item: str(item[1]), reverse=True):
         if not report.is_file() or not report.resolve().is_relative_to(comparison_root.resolve()):
+            continue
+        if any(p.is_symlink() or p.is_junction() for p in (report, *report.parents)):
             continue
         status = text("not_run — capture status unavailable", "not_run — état des captures indisponible")
         manifest_path = report.parent / "manifest.json"
         try:
-            if manifest_path.resolve().is_relative_to(comparison_root.resolve()):
+            if (not manifest_path.is_symlink() and not manifest_path.is_junction()
+                    and manifest_path.resolve().is_relative_to(comparison_root.resolve())):
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 recorded = manifest.get("status") if isinstance(manifest, dict) else ""
                 if not isinstance(recorded, str):

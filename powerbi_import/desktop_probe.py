@@ -16,9 +16,9 @@ What it does:
 Verdicts (DesktopProbeReport.status):
     unavailable   Desktop not installed → cannot probe (not a failure)
     opened        process stayed alive past the settle window, no crash/error signal
-    crashed       process exited early / crash dump / error trace after launch
+    crashed       observed nonzero process exit or crash dump after launch
     timed_out     never reached a stable state within the timeout
-    error         probe itself failed (bad path, launch error)
+    error         actionable native error, trace error, or probe/launch failure
 
 Public API:
     probe_desktop_open(pbip_path, *, settle=20, timeout=90, close_after=True)
@@ -27,7 +27,6 @@ Public API:
 
 from __future__ import annotations
 
-import base64
 import glob
 import json
 import math
@@ -41,6 +40,12 @@ from datetime import datetime
 from typing import List, Optional
 
 from powerbi_import import desktop_window
+from powerbi_import.desktop_accessibility import (
+    PowerShellFailure,
+    is_powershell_failure,
+    powershell_preflight,
+    run_powershell_json,
+)
 
 # Power BI Desktop trace + crash-dump locations (Windows).
 _TRACE_GLOBS = (
@@ -304,7 +309,7 @@ catch {
 @dataclass
 class DesktopProbeReport:
     pbip_path: str
-    status: str = "error"          # unavailable|opened|crashed|timed_out|error
+    status: str = "error"          # unavailable|tooling_unavailable|opened|crashed|timed_out|error
     executable: Optional[str] = None
     pid: Optional[int] = None
     duration_s: float = 0.0
@@ -317,6 +322,7 @@ class DesktopProbeReport:
     dialog_screenshot: Optional[str] = None
     screenshot_data_verified: Optional[bool] = None
     dialogs: List[str] = field(default_factory=list)
+    native_error: dict = field(default_factory=dict)
     data_load: dict = field(default_factory=lambda: {
         "status": "not_requested", "tables_checked": 0,
         "tables_nonempty": 0, "tables_empty": 0, "tables_failed": 0,
@@ -430,7 +436,7 @@ def _report_definition_launch_path(pbip_path: str) -> str:
     return definition
 
 
-def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: float = 90,
+def probe_desktop_open(pbip_path: str, *, settle: float = 20, timeout: float = 90,
                        close_after: bool = True,
                        screenshot_path: Optional[str] = None,
                        wait_for_window: bool = True,
@@ -454,6 +460,16 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: float = 90,
     Best-effort: returns a DesktopProbeReport; never raises.
     """
     report = DesktopProbeReport(pbip_path=pbip_path)
+    try:
+        timeout = _positive_timeout(timeout)
+        settle = float(settle)
+        if not math.isfinite(settle) or settle < 0:
+            raise ValueError("settle must be finite and nonnegative")
+        if refresh:
+            refresh_timeout = _positive_timeout(refresh_timeout)
+    except (TypeError, ValueError, OverflowError) as exc:
+        report.note = f"invalid Desktop wait budget: {exc}"
+        return report
     if screenshot_path and not _safe_output_path(screenshot_path):
         report.status = "error"
         report.note = "screenshot path contains a symbolic-link component"
@@ -482,6 +498,13 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: float = 90,
                        "authoritative check.")
         return report
     report.executable = exe
+    if desktop_window.IS_WINDOWS and (wait_for_window or verify_data or refresh):
+        tooling = powershell_preflight()
+        if tooling["status"] != "ready":
+            report.status = tooling["status"]
+            report.native_error = tooling
+            report.note = tooling["note"]
+            return report
     pre_existing = set(desktop_pids())
     if os.name == "nt" and wait_for_window and _DESKTOP_PIDS_QUERY_FAILED:
         report.status = "error"
@@ -492,7 +515,8 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: float = 90,
             f"{len(pre_existing)} Power BI Desktop instance(s) already running; "
             "close them for an unambiguous probe")
 
-    start = time.time()
+    start = time.time()  # Trace file timestamps, not the wait clock.
+    started = time.monotonic()
     proc = None
     try:
         if launch_report_definition:
@@ -506,12 +530,15 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: float = 90,
         return report
     report.pid = proc.pid
 
-    deadline = start + timeout
-    settle_until = start + settle
+    deadline = started + timeout
+    settle_until = started + settle
+    window_mode = wait_for_window and desktop_window.IS_WINDOWS
+    report.status = "timed_out"
     crashed = False
     try:
-        if wait_for_window and desktop_window.IS_WINDOWS:
-            crashed = _watch_window(report, proc, pbip_path, start, timeout,
+        if window_mode:
+            crashed = _watch_window(report, proc, pbip_path, start,
+                                    max(0.0, deadline - time.monotonic()),
                                     screenshot_path, verify_data, pre_existing,
                                     refresh, refresh_timeout, capture_unverified)
         else:
@@ -519,12 +546,27 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: float = 90,
             if verify_data:
                 report.data_load = _data_load_result("unavailable")
 
-        report.signals.extend(_scan_trace_errors(start))
-        alive = proc.poll() is None
+        trace_errors = _scan_trace_errors(start)
+        report.signals.extend(trace_errors)
+        rc = proc.poll()
+        alive = rc is None
 
-        if crashed or report.signals:
+        # Diagnostics such as "no matching title before timeout" and transient
+        # progress are NOT evidence of a process crash. Preserve their text.
+        if crashed or (rc is not None and rc != 0):
+            if not crashed:
+                report.signals.append(f"process exited rc={rc}")
             report.status = "crashed"
-        elif alive:
+        elif trace_errors:
+            report.status = "error"
+            report.note = "Desktop trace reported errors; no process crash established."
+        elif report.status == "error":
+            pass
+        elif report.native_error:
+            report.status = report.native_error["status"]
+            report.note = report.native_error.get("note", "native_observation_failed")
+        elif alive and (report.window_loaded if window_mode
+                        else report.status == "opened"):
             report.status = "opened"
             if refresh and report.refresh["status"] != "verified":
                 report.note = REFRESH_LIMITATION
@@ -536,8 +578,17 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: float = 90,
                                else "Desktop launched and stayed alive past the "
                                     "settle window with no crash/error signal. "
                                     + OPENED_LIMITATION)
+        elif not alive:
+            report.status = "error"
+            report.note = ("Desktop launcher exited without a verified live document "
+                           f"(rc={rc}); no process crash established.")
         else:
             report.status = "timed_out"
+            if not report.note:
+                report.note = "Desktop did not reach the requested stable state before timeout."
+    except Exception as exc:
+        report.status = "error"
+        report.note = f"{type(exc).__name__}: {exc}"
     finally:
         if close_after:
             if proc.poll() is None:
@@ -551,7 +602,7 @@ def probe_desktop_open(pbip_path: str, *, settle: int = 20, timeout: float = 90,
                     pass
         elif proc is not None:
             _OPEN_PROBE_PROCESSES[proc.pid] = proc
-    report.duration_s = round(time.time() - start, 1)
+    report.duration_s = round(time.monotonic() - started, 1)
     return report
 
 
@@ -575,21 +626,23 @@ def close_probe_process(pid: int) -> dict:
 
 
 def _watch_process(report, proc, start, deadline, settle_until) -> bool:
-    """Original behaviour: watch the process only. Returns True when crashed."""
-    while time.time() < deadline:
+    """Process-only scope; monotonic deadlines, explicit crash evidence only."""
+    report.status = "timed_out"
+    while time.monotonic() < deadline:
         rc = proc.poll()
         if rc is not None:
-            # Exited before settling → almost certainly a load failure.
-            if time.time() < settle_until:
+            if time.monotonic() < settle_until or rc != 0:
                 report.signals.append(f"process exited early rc={rc}")
-                return True
-            break
+            report.status = "error"
+            report.note = f"Desktop exited rc={rc} before verified process survival."
+            return rc != 0
         if _recent_matches(_FROWN_GLOBS, start):
             report.signals.append("FrownDump crash dump created")
             return True
-        if time.time() >= settle_until:
+        if time.monotonic() >= settle_until:
+            report.status = "opened"
             break
-        time.sleep(1.0)
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
     return False
 
 
@@ -666,47 +719,84 @@ def _watch_window(report, proc, pbip_path, start, timeout,
                   screenshot_path, verify_data=False, pre_existing=None,
                   refresh=False, refresh_timeout: float = 300.0,
                   capture_unverified=False) -> bool:
-    """Wait for the report window, then capture it. Returns True when crashed."""
-    pre_existing = pre_existing or set()
-    allowed_pids = set(desktop_pids()) - set(pre_existing)
-    allowed_pids.add(proc.pid)
+    """Wait on the launched PID; return True only for actual crash evidence."""
+    deadline = time.monotonic() + timeout
+    # A newly appearing, unrelated Desktop instance is not probe-owned. An
+    # existing-instance handoff cannot establish this launched document's PID.
+    allowed_pids = {proc.pid}
     if verify_data:
         report.data_load = _data_load_result("unavailable")
     expected = os.path.splitext(os.path.basename(pbip_path))[0]
 
-    def launched_pids():
-        return [pid for pid in desktop_pids() if pid not in pre_existing]
-
-    window, signals = desktop_window.wait_for_window(
-        launched_pids, expected, timeout=timeout)
+    remaining = deadline - time.monotonic()
+    window, signals = (
+        desktop_window.wait_for_window(
+            lambda: [proc.pid], expected, timeout=remaining)
+        if remaining > 0 else (None, ["opening deadline exhausted before window wait"]))
 
     if window is None:
-        # Power BI hands the file to an existing instance and the launcher
-        # exits, so an exited process is only a crash when no window appeared.
-        if proc.poll() is not None:
+        rc = proc.poll()
+        if rc is not None:
             report.signals.append(
                 f"process exited and no report window appeared "
-                f"rc={proc.returncode}")
+                f"rc={rc}")
         report.signals.extend(signals)
+        helper_error = next((signal.partition(": ")[2] for signal in signals
+                             if signal.startswith("native helper failure: ")), None)
+        if helper_error:
+            report.native_error = {
+                "status": ("tooling_unavailable" if helper_error in {
+                    "windows_required", "powershell_not_found", "powershell_launch_failed"}
+                           else "timed_out" if helper_error == "powershell_timeout"
+                           else "error"),
+                "cause": helper_error, "note": helper_error, "retryable": False,
+            }
+            report.status = report.native_error["status"]
+            report.note = helper_error
+            return rc is not None and rc != 0
         if _recent_matches(_FROWN_GLOBS, start):
             report.signals.append("FrownDump crash dump created")
+            return True
         # An error popup is what makes a project unusable, so keep its own
         # picture: it carries the message, and it is a separate window that a
         # capture of the main window would not show.
         _capture_dialogs(report, screenshot_path, allowed_pids)
         _capture_any(report, screenshot_path, allowed_pids)
-        return True
+        if any(signal.startswith("error dialog:") for signal in signals):
+            report.status = "error"
+            report.note = "Owned dialog requires manual attention; no process crash established."
+        else:
+            report.status = "timed_out"
+            report.note = "No stable responsive document-titled window before opening deadline."
+        return rc is not None and rc != 0
 
     if _recent_matches(_FROWN_GLOBS, start):
         report.signals.append("FrownDump crash dump created")
         return True
 
-    report.window_title = window.title
-    _capture_dialogs(report, screenshot_path, allowed_pids)
-    for title in report.dialogs:
-        report.signals.append(f"error dialog: {title!r}")
-
     owner_pid = desktop_window.window_process_id(window.hwnd)
+    if owner_pid != proc.pid:
+        report.status = "error"
+        report.note = "Document window is not owned by the launched Desktop PID."
+        return False
+    report.signals.extend(signals)
+    _capture_dialogs(report, screenshot_path, allowed_pids)
+    if report.dialogs:
+        remaining = deadline - time.monotonic()
+        ready = desktop_window.wait_for_document_ready(
+            window.hwnd, proc.pid, timeout=remaining) if remaining > 0 else {
+                "status": "timed_out"}
+        if ready["status"] != "ready":
+            if is_powershell_failure(ready):
+                report.native_error = ready
+            report.status = "timed_out" if ready["status"] == "timed_out" else "error"
+            kind = "busy dialog" if ready["status"] == "timed_out" else "error dialog"
+            report.signals.extend(f"{kind}: {title!r}" for title in report.dialogs)
+            report.note = ready.get("note", "Owned document did not become ready before deadline.")
+            return False
+        report.dialogs = []
+    report.window_title = window.title
+
     if refresh:
         report.refresh = refresh_report(window.hwnd, pbip_path, owner_pid,
                                         timeout=refresh_timeout)
@@ -716,6 +806,14 @@ def _watch_window(report, proc, pbip_path, start, timeout,
 
     if verify_data and not refresh and report.data_load["status"] != "verified":
         report.data_load = verify_desktop_data(pbip_path, owner_pid)
+    failure = next((item for item in (report.refresh, report.data_load)
+                    if is_powershell_failure(item) or item.get("native_error")), None)
+    if failure:
+        report.native_error = failure
+        report.status = failure["status"]
+        report.note = failure.get("note", failure["cause"])
+        report.screenshot_data_verified = False
+        return False
     if verify_data:
         report.screenshot_data_verified = (
             report.refresh["status"] == "verified" if refresh
@@ -734,7 +832,13 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         if refresh and report.refresh.get("clicks"):
             _wait_for_render(window.hwnd, screenshot_path)
             # Rendering can take long enough for a late refresh failure to surface.
-            state = _refresh_ui_state(window.hwnd, owner_pid)
+            try:
+                state = _refresh_ui_state(window.hwnd, owner_pid)
+            except PowerShellFailure as exc:
+                report.native_error = exc.observation
+                report.refresh.update(exc.observation, completion_basis="none")
+                report.screenshot_data_verified = False
+                return False
             report.refresh.setdefault("ui_state", {})["after_render"] = state
             if state not in {"clear", "completed"}:
                 report.refresh["status"] = state
@@ -799,7 +903,10 @@ try {
             }
         }
     }
-} catch { }
+} catch {
+    $out.status = 'unavailable'; $out.cause = 'ui_unreadable'
+    $out.note = 'ui_provider_unreadable'; $out.retryable = $true
+}
 [Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
 '''
 
@@ -818,13 +925,16 @@ try {
     foreach ($e in $root.FindAll([Windows.Automation.TreeScope]::Descendants, $cond)) {
         if ($names -notcontains $e.Current.Name) { continue }
         $out.found++
-        if ($out.invoked -gt 0 -or -not $e.Current.IsEnabled) { continue }
+        if ($request.inspect_only -or $out.invoked -gt 0 -or -not $e.Current.IsEnabled) { continue }
         $pattern = $null
         if ($e.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
             $pattern.Invoke(); $out.invoked++
         }
     }
-} catch { }
+} catch {
+    $out.status = 'unavailable'; $out.cause = 'ui_unreadable'
+    $out.note = 'ui_provider_unreadable'; $out.retryable = $true
+}
 [Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
 '''
 
@@ -863,7 +973,10 @@ try {
         $out.invoked++
         break
     }
-} catch { }
+} catch {
+    $out.status = 'unavailable'; $out.cause = 'ui_unreadable'
+    $out.note = 'ui_provider_unreadable'; $out.retryable = $true
+}
 [Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
 '''
 
@@ -883,7 +996,10 @@ try {
         }
         if ($out.found -gt 0) { break }
     }
-} catch { }
+} catch {
+    $out.status = 'unavailable'; $out.cause = 'ui_unreadable'
+    $out.note = 'ui_provider_unreadable'; $out.retryable = $true
+}
 [Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
 '''
 
@@ -894,8 +1010,19 @@ $ErrorActionPreference = 'Stop'
 $request = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString(
     [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())))
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+try {
 $root = [Windows.Automation.AutomationElement]::FromHandle([IntPtr][long]$request.hwnd)
-if ($root.Current.ProcessId -ne [int]$request.owner_pid) { exit 1 }
+if ($null -eq $root) { throw 'UI provider unavailable' }
+if ($root.Current.ProcessId -ne [int]$request.owner_pid) {
+    @{status='error'; cause='window_ownership_changed'; retryable=$false} |
+        ConvertTo-Json -Compress
+    exit
+}
+} catch {
+    @{status='unavailable'; cause='ui_unreadable'; note='ui_provider_unreadable';
+      retryable=$true} | ConvertTo-Json -Compress
+    exit
+}
 # WebView2 provides Desktop's refresh dialog from a child process. Anchor the
 # UI tree to the owned HWND, then admit only providers in its process tree.
 $processes = @(Get-CimInstance Win32_Process `
@@ -914,6 +1041,7 @@ while ($pending.Count -gt 0) {
 }
 $out = [ordered]@{ status = 'clear' }
 $completed = $false
+try {
 $elements = @($root) + @($root.FindAll(
     [Windows.Automation.TreeScope]::Descendants,
     [Windows.Automation.Condition]::TrueCondition))
@@ -925,19 +1053,25 @@ foreach ($e in $elements) {
     if ($r.Width -le 0 -or $r.Height -le 0) { continue }
     $name = $e.Current.Name
     if ($name -match $request.error_pattern) { $out.status = 'refresh_error'; break }
+    if ($request.owned_dialog -and $name -match $request.attention_pattern) {
+        $out.status = 'manual_attention'; break
+    }
     if ($name -match $request.completed_pattern) { $completed = $true }
     if ($name -match $request.pending_pattern) {
         $out.status = 'pending_changes'
     } elseif ($out.status -eq 'clear' -and (
         $name -match $request.busy_pattern -or
-        $e.Current.ControlType -eq [Windows.Automation.ControlType]::ProgressBar -or
-        ($request.refresh_dialog -and $e.Current.IsEnabled -and
-         $e.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
-         $name -match '^(Cancel|Annuler)$'))) {
+        $e.Current.ControlType -eq [Windows.Automation.ControlType]::ProgressBar)) {
         $out.status = 'busy'
     }
-    if ($out.status -eq 'clear' -and $completed) { $out.status = 'completed' }
 }
+} catch {
+    if ($out.status -ne 'refresh_error') {
+        $out.status = 'unavailable'; $out.cause = 'ui_unreadable'
+        $out.note = 'ui_provider_unreadable'; $out.retryable = $true
+    }
+}
+if ($out.status -eq 'clear' -and $completed) { $out.status = 'completed' }
 [Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
 '''
 
@@ -968,7 +1102,9 @@ _REFRESH_ERROR_PATTERN = (
 _REFRESH_BUSY_PATTERN = (
     r"(?i)^(?:(?:Loading|Refreshing|Evaluating|Connecting|Waiting for)"
     r"(?:\b|[.…])|(?:Chargement|Actualisation|Évaluation|Connexion)"
-    r"(?:[.…]|$|\s+(?:en cours|des données))|En attente de\b)"
+    r"(?:[.…]|$|\s+(?:en cours|des données))|En attente de\b|"
+    r"Processing Request\b|Computing View Layout\b|Opening workbook\b|"
+    r"Ouverture du classeur\b|Traitement (?:de la demande|de la requête|en cours)\b)"
 )
 _REFRESH_COMPLETED_PATTERN = (
     r"(?i)(?:\b\d[\d,.\s\u00a0\u202f]*\s+(?:rows? loaded|lignes? chargées?)\b|"
@@ -1005,14 +1141,24 @@ def _refresh_ui_state(hwnd: int, owner_pid: Optional[int], *,
         observation = _run_uia(_UIA_REFRESH_STATE_SCRIPT, {
             "hwnd": handle, "owner_pid": int(owner_pid),
             "refresh_dialog": refresh_dialog,
+            "owned_dialog": handle != int(hwnd),
+            "attention_pattern": "(?i)" + desktop_window._ATTENTION_TEXT.pattern,
             "error_pattern": _REFRESH_ERROR_PATTERN,
             "pending_pattern": "(?i)" + "|".join(
                 re.escape(text) for text in _PENDING_CHANGES_TEXT),
             "busy_pattern": _REFRESH_BUSY_PATTERN,
             "completed_pattern": _REFRESH_COMPLETED_PATTERN,
         }, timeout=max(0.0, deadline - time.monotonic()))
+        if is_powershell_failure(observation) or observation.get("status") == "error":
+            raise PowerShellFailure(observation)
+        if observation.get("status") not in {
+                "clear", "completed", "refresh_error", "manual_attention",
+                "pending_changes", "busy", "unavailable"}:
+            raise PowerShellFailure({
+                "status": "error", "cause": "uia_result_invalid",
+                "note": "uia_result_invalid", "retryable": False})
         states.append(observation.get("status", "unavailable"))
-    for state in ("refresh_error", "pending_changes", "busy", "unavailable"):
+    for state in ("refresh_error", "manual_attention", "pending_changes", "busy", "unavailable"):
         if state in states:
             return state
     if all(state in {"clear", "completed"} for state in states):
@@ -1022,44 +1168,57 @@ def _refresh_ui_state(hwnd: int, owner_pid: Optional[int], *,
 
 def _run_uia(script: str, payload: dict, *, timeout: float = 120.0) -> dict:
     if not desktop_window.IS_WINDOWS:
-        return {}
-    request = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+        return {"status": "tooling_unavailable", "cause": "windows_required",
+                "note": "windows_required", "retryable": False}
     try:
         bounded_timeout = min(_positive_timeout(timeout), 120.0)
-        completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-             script],
-            input=request, capture_output=True, text=True, timeout=bounded_timeout)
-        result = json.loads(completed.stdout.strip().splitlines()[-1])
-        return result if isinstance(result, dict) else {}
-    except (OSError, TypeError, ValueError, OverflowError, IndexError,
-            subprocess.SubprocessError):
-        return {}
+    except (TypeError, ValueError, OverflowError):
+        return {"status": "error", "cause": "invalid_powershell_request",
+                "note": "invalid_powershell_request", "retryable": False}
+    return run_powershell_json(
+        script, payload, timeout=bounded_timeout, base64_input=True)
+
+
+def _uia_clicks(result: dict, key: str = "invoked") -> int:
+    if (is_powershell_failure(result)
+            or result.get("status") in {
+                "tooling_unavailable", "unavailable", "error", "timed_out"}):
+        raise PowerShellFailure(result)
+    try:
+        clicks = result[key]
+        if type(clicks) is not int or clicks < 0:
+            raise ValueError
+        return clicks
+    except (KeyError, TypeError, ValueError):
+        raise PowerShellFailure({
+            "status": "error", "cause": "uia_result_invalid",
+            "note": "uia_result_invalid", "retryable": False}) from None
 
 
 def _invoke_button(hwnd: int, names, *, timeout: float = 120.0) -> int:
     """Invoke the first enabled button named in *names*. Returns clicks made."""
     result = _run_uia(
         _UIA_INVOKE_SCRIPT, {"hwnd": int(hwnd), "names": list(names)}, timeout=timeout)
-    return int(result.get("invoked", 0) or 0)
+    return _uia_clicks(result)
 
 
 def _button_present(hwnd: int, names) -> bool:
     """Return whether an enabled button is still visible without invoking it."""
-    result = _run_uia(_UIA_INVOKE_SCRIPT, {"hwnd": int(hwnd), "names": list(names)})
-    return bool(result.get("found", 0))
+    result = _run_uia(_UIA_INVOKE_SCRIPT, {
+        "hwnd": int(hwnd), "names": list(names), "inspect_only": True})
+    return bool(_uia_clicks(result, "found"))
 
 
 def _text_present(hwnd: int, names) -> bool:
     result = _run_uia(_UIA_TEXT_SCRIPT, {"hwnd": int(hwnd), "names": list(names)})
-    return bool(result.get("found", 0))
+    return bool(_uia_clicks(result, "found"))
 
 
 def _click_button(hwnd: int, names, *, timeout: float = 120.0) -> int:
     """Mouse-click the first enabled button named in *names*. Returns clicks made."""
     result = _run_uia(
         _UIA_CLICK_SCRIPT, {"hwnd": int(hwnd), "names": list(names)}, timeout=timeout)
-    return int(result.get("invoked", 0) or 0)
+    return _uia_clicks(result)
 
 
 def _invoke_schema_refresh(hwnd: int, *, timeout: float = 120.0) -> int:
@@ -1067,7 +1226,7 @@ def _invoke_schema_refresh(hwnd: int, *, timeout: float = 120.0) -> int:
     result = _run_uia(_UIA_MENU_SCRIPT, {
         "hwnd": int(hwnd), "ribbon": list(_RIBBON_REFRESH_NAMES),
         "names": list(_SCHEMA_REFRESH_NAMES)}, timeout=timeout)
-    return int(result.get("invoked", 0) or 0)
+    return _uia_clicks(result)
 
 
 def _wait_for_render(hwnd: int, screenshot_path: str, *, timeout: float = 60.0,
@@ -1107,6 +1266,26 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
                   unobserved, unobserved)}
     started = time.monotonic()
     try:
+        return _refresh_report_impl(
+            hwnd, pbip_path, owner_pid, timeout=timeout, poll=poll,
+            result=result, started=started)
+    except PowerShellFailure as exc:
+        invoked = exc.observation.get("invoked", 0)
+        if type(invoked) is int and invoked > 0:
+            result["clicks"] += invoked
+        result.update(exc.observation, completion_basis="none")
+        result["native_error"] = exc.observation
+        result.setdefault("ui_state", {
+            "initial": exc.observation["status"], "readiness": exc.observation["status"],
+            "readiness_checks": 1, "observed_progress": False,
+        })["failure"] = exc.observation
+        result["waited_s"] = round(max(0.0, time.monotonic() - started), 1)
+        return result
+
+
+def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, started):
+    unobserved = _partition_observation_result("not_observed", "refresh_not_requested")
+    try:
         timeout = _positive_timeout(timeout)
         poll = float(poll)
         if not math.isfinite(poll) or poll < 0:
@@ -1140,7 +1319,9 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
     # Readiness progress predates this request and is not refresh completion.
     while ready_state not in {"clear", "completed"}:
         result["status"] = ready_state
-        if ready_state == "refresh_error" or remaining() <= 0:
+        if ready_state == "unavailable":
+            result.update(cause="ui_unreadable", retryable=True)
+        if ready_state in {"refresh_error", "manual_attention"} or remaining() <= 0:
             return finish()
         time.sleep(min(poll, 1.0, remaining()))
         if remaining() <= 0:
@@ -1154,6 +1335,10 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
     # timestamps. Never infer freshness without a safe pre-request observation.
     baseline = observe_desktop_partitions(
         pbip_path, owner_pid, timeout=min(30.0, remaining()))
+    if is_powershell_failure(baseline):
+        raise PowerShellFailure(baseline)
+    result.pop("cause", None)
+    result.pop("retryable", None)
     result["partition_freshness"] = _compare_partition_freshness(
         baseline, unobserved)
     for _attempt in range(3):
@@ -1185,12 +1370,12 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
         observed_progress = observed_progress or before == "busy"
         result["ui_state"].update(
             before=before, observed_progress=observed_progress)
-        if before == "refresh_error":
+        if before in {"refresh_error", "manual_attention"}:
             result["status"] = before
             break
         if remaining() <= 0:
             break
-        if not applied:
+        if not applied and before != "unavailable":
             applied_clicks = _click_button(
                 hwnd, _APPLY_CHANGES_NAMES, timeout=remaining())
             if not applied_clicks and remaining() > 0:
@@ -1201,7 +1386,7 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
                 result["applied_changes"] = True
                 applied = True
                 apply_attempted_at = time.monotonic()
-        elif (result["data_load"].get("status") != "verified"
+        elif (before != "unavailable" and result["data_load"].get("status") != "verified"
               and apply_attempted_at is not None
               and time.monotonic() - apply_attempted_at >= 10):
             # Desktop occasionally leaves the banner visible after a click.
@@ -1216,6 +1401,8 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
         data = verify_desktop_data(
             pbip_path, owner_pid, timeout=min(60.0, remaining()))
         result["data_load"] = data
+        if is_powershell_failure(data):
+            raise PowerShellFailure(data)
         if remaining() <= 0:
             break
         partitions = (
@@ -1223,6 +1410,8 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
                 pbip_path, owner_pid, timeout=min(30.0, remaining()))
             if before in {"clear", "completed"}
             else _partition_observation_result("not_observed", "ui_not_clear"))
+        if is_powershell_failure(partitions):
+            raise PowerShellFailure(partitions)
         freshness = _compare_partition_freshness(baseline, partitions)
         result["partition_freshness"] = freshness
         if remaining() <= 0:
@@ -1231,7 +1420,7 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
         observed_progress = observed_progress or after == "busy"
         result["ui_state"].update(
             after=after, observed_progress=observed_progress)
-        if after == "refresh_error":
+        if after in {"refresh_error", "manual_attention"}:
             result["status"] = after
             break
         result["status"] = (
@@ -1381,30 +1570,16 @@ def observe_desktop_partitions(pbip_path: str, owner_pid: Optional[int], *,
         "tables": list(dict.fromkeys(item["table"] for item in expected)),
         "partitions": expected,
     }
-    encoded = base64.b64encode(json.dumps(request).encode("utf-8")).decode("ascii")
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         observation["note"] = "observer_timeout"
         return observation
-    try:
-        completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-             _ADOMD_VERIFY_SCRIPT],
-            input=encoded, capture_output=True, text=True, timeout=remaining)
-    except subprocess.TimeoutExpired:
-        observation["note"] = "observer_timeout"
-        return observation
-    except (OSError, ValueError, subprocess.SubprocessError):
-        observation["note"] = "observer_process_failed"
-        return observation
-    if time.monotonic() >= deadline:
-        observation["note"] = "observer_timeout"
-        return observation
-    if completed.returncode != 0:
-        observation["note"] = "observer_process_failed"
+    raw = run_powershell_json(
+        _ADOMD_VERIFY_SCRIPT, request, timeout=remaining, base64_input=True)
+    if is_powershell_failure(raw):
+        observation.update(raw)
         return observation
     try:
-        raw = json.loads(completed.stdout.strip().splitlines()[-1])
         status = raw["status"]
         allowed_notes = {
             "invalid_request", "process_query_failed", "owner_unavailable",
@@ -1513,6 +1688,11 @@ def _compare_partition_freshness(before: dict, after: dict) -> dict:
             key(item) for item in snapshot["partitions"]
             if item["state"] != 1 or item["has_error"]})
     statuses = {before["status"], after["status"]}
+    failure = next((item for item in (before, after) if is_powershell_failure(item)), None)
+    if failure:
+        result.update({key: failure[key] for key in
+                       ("status", "cause", "note", "retryable")})
+        return result
     comparable = statuses <= {"observed", "mismatch"}
     duplicate_or_renamed = False
     old = {}
@@ -1585,31 +1765,21 @@ def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
     except (TypeError, ValueError, OverflowError):
         return _data_load_result("unavailable")
     tables = _m_backed_tables(pbip_path)
-    if tables is None or not owner_pid or not desktop_window.IS_WINDOWS:
+    if (tables is None or type(owner_pid) is not int or owner_pid <= 0
+            or not desktop_window.IS_WINDOWS):
         return _data_load_result("unavailable")
     if not tables:
         return _data_load_result("no_m_tables")
 
-    request = json.dumps({"owner_pid": int(owner_pid), "tables": tables},
-                         ensure_ascii=True).encode("utf-8")
-    encoded = base64.b64encode(request).decode("ascii")
+    request = {"owner_pid": int(owner_pid), "tables": tables}
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return _data_load_result("unavailable")
+    result = run_powershell_json(
+        _ADOMD_VERIFY_SCRIPT, request, timeout=remaining, base64_input=True)
+    if is_powershell_failure(result):
+        return {**_data_load_result(result["status"]), **result}
     try:
-        completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-             _ADOMD_VERIFY_SCRIPT],
-            input=encoded, capture_output=True, text=True,
-            timeout=remaining)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return _data_load_result("unavailable")
-    if time.monotonic() >= deadline:
-        return _data_load_result("unavailable")
-    if completed.returncode != 0:
-        return _data_load_result("unavailable")
-    try:
-        result = json.loads(completed.stdout.strip().splitlines()[-1])
         if not isinstance(result, dict):
             raise ValueError
         values = {key: result[key] for key in _DATA_LOAD_KEYS}
@@ -1641,7 +1811,8 @@ def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
             raise ValueError
         return values
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return _data_load_result("unavailable")
+        return {**_data_load_result("unavailable"), "cause": "data_result_invalid",
+                "note": "data_result_invalid", "retryable": False}
 
 
 def probe_desktop_reopen(pbip_path: str, *, settle: int = 20, timeout: int = 90,

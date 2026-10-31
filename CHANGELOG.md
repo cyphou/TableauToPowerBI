@@ -4,6 +4,50 @@
 
 ## Unreleased
 
+- Distinguish missing native automation tooling from an unreadable UI and
+  resolve installed Windows PowerShell when it is absent from `PATH`.
+  Keep refresh blocked on unsafe UI without spending the entire refresh budget
+  retrying a missing executable. Retain child-process error provenance.
+
+- Wait for recognized owned Tableau opening/query/layout progress, including
+  English and French messages, without dismissing credential, trust or license
+  dialogs. Use verified native page-tab accessibility or the document-scoped
+  Window menu's exact named sheet entry and fresh checked state where
+  UI Automation omits Tableau tabs. Menu navigation never selects unnamed
+  list items or static commands; unsupported or ambiguous providers fail.
+  Observe asynchronous menu closure within the shared page deadline before capture.
+  Reuse only capture-local document/menu identities for PRE/POST checks,
+  requalifying the fresh Window popup without rediscovering unrelated menus.
+  Retain failed PRE observations and their failure phase even before the first
+  image attempt, without replacing successful initial-selection evidence.
+  Preserve the first non-ready native document guard decision, including enabled
+  state and bounded owned-dialog HWND/PID/class/title evidence, before cleanup.
+  Wait after a single sheet invocation for fully qualified owned progress within
+  the same page deadline, including the observed English layout-caption/timer
+  dialog without a ProgressBar. After initial qualification, requalify that
+  same dialog's complete known layout body independently of mutable window
+  captions; unknown content and changed immutable identity remain terminal.
+  Observed disappearance or identity-qualified hiding ends its retained
+  lifetime, so a same-handle reappearance cannot reuse approval.
+  Recheck document/menu identity and fresh checked page state before capture;
+  never reinvoke a sheet or dismiss a dialog.
+  Distinguish a document-opening timeout from an observed process exit.
+  Re-observe popups that disappear during inspection while retaining raw
+  dialog evidence and keeping observed errors or foreign ownership terminal.
+
+- Retry transient blank/failed page captures within one shared page deadline,
+  retaining attempt diagnostics and page-identity/ownership checks. Keep the
+  30-second default: a larger ceiling alone does not establish render completion.
+  Store new comparison screenshots beside their diagnostic manifest outside
+  generated PBIP projects; leave legacy captures and report links readable.
+  These diagnostics do not establish visual or semantic parity.
+
+- Preserve standalone worksheet pages alongside dashboards in mixed workbooks,
+  reusing worksheet visual generation without duplicating embedded sheets or
+  overwriting dashboard page identities. Keep normal and shared-report
+  generation consistent, including navigation actions and story bookmarks
+  targeting those sheets; page correspondence is not a visual-parity verdict.
+
 - Decode the observed Prep `SimpleUnion.namespaceFieldMappings` producer form
   per incoming namespace, applying simultaneous field renames before append.
   Validate physical inputs, mapping coverage, name collisions and compatible

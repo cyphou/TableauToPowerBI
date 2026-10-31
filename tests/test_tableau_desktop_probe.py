@@ -87,6 +87,19 @@ class TestDocumentTitle(unittest.TestCase):
         self.assertFalse(probe.document_title_matches("Sales - East - Tableau", "Sales"))
 
 
+class _PopupWaitClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        if seconds < 0:
+            raise AssertionError("Negative popup wait")
+        self.now += seconds
+
+
 class TestTableauCapture(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -101,11 +114,21 @@ class TestTableauCapture(unittest.TestCase):
             probe.subprocess, "Popen", return_value=self.proc))
         self.find = self.enterContext(mock.patch.object(
             probe, "find_tableau_desktop", return_value="C:/Tableau/tableau.exe"))
+        self.preflight = self.enterContext(mock.patch.object(
+            probe, "powershell_preflight", return_value={"status": "ready"}))
+        self.enterContext(mock.patch.dict(probe._OPEN_PROBE_PROCESSES, clear=True))
         self.enterContext(mock.patch.object(desktop_window, "IS_WINDOWS", True))
         self.windows = self.enterContext(mock.patch.object(
             desktop_window, "windows_for_pid", return_value=[window()]))
         self.dialogs = self.enterContext(mock.patch.object(
             desktop_window, "dialog_windows", return_value=[]))
+        self.owner = self.enterContext(mock.patch.object(
+            desktop_window, "window_process_id", return_value=4242))
+        self.metadata = self.enterContext(mock.patch.object(
+            desktop_window, "_dialog_metadata",
+            return_value={"status": "observed", "native_complete": True,
+                          "texts": [], "buttons": [], "progress": 0,
+                          "interactive": 0, "truncated": False}))
         self.responsive = self.enterContext(mock.patch.object(
             desktop_window, "is_responsive", return_value=True))
         self.capture = self.enterContext(mock.patch.object(
@@ -195,6 +218,34 @@ class TestTableauCapture(unittest.TestCase):
             self.assertEqual(self.run_probe().status, "unavailable")
         self.launch.assert_not_called()
 
+    def test_missing_native_tooling_fails_before_launch_or_capture(self):
+        failure = {
+            "status": "tooling_unavailable", "cause": "powershell_not_found",
+            "note": "powershell_not_found", "retryable": False}
+        self.preflight.return_value = failure
+        result = self.run_probe()
+        self.assertEqual(result.status, "tooling_unavailable")
+        self.assertEqual(result.native_error, failure)
+        self.assertEqual(result.note, "powershell_not_found")
+        self.assertIsNone(result.screenshot)
+        self.launch.assert_not_called()
+        self.capture.assert_not_called()
+
+    def test_tool_failure_during_dialog_observation_is_not_progress_or_manual_attention(self):
+        failure = {
+            "status": "error", "cause": "powershell_nonzero_exit",
+            "note": "powershell_nonzero_exit", "retryable": False}
+        self.dialogs.return_value = [
+            window("Computing View Layout", hwnd=31, owned=True)]
+        self.metadata.return_value = failure
+        result = self.run_probe()
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.native_error["cause"], "powershell_nonzero_exit")
+        self.assertEqual(result.note, "powershell_nonzero_exit")
+        self.assertIsNone(result.screenshot)
+        self.assertIsNone(result.dialog_screenshot)
+        self.capture.assert_not_called()
+
     def test_forwarding_to_existing_instance_is_not_success(self):
         self.windows.return_value = []
         self.proc.poll.return_value = 0
@@ -237,6 +288,178 @@ class TestTableauCapture(unittest.TestCase):
         self.assertIn(loading.title, result.signals)
         self.capture.assert_called_once_with(11, str(self.shot))
 
+    def closing_popup(self, phase, *, metadata=None, remaining_owner=None,
+                      title="Opening workbook 'Sales.twb'...", label=None):
+        clock = _PopupWaitClock()
+        self.enterContext(mock.patch.object(
+            probe.time, "monotonic", side_effect=clock.monotonic))
+        self.enterContext(mock.patch.object(
+            probe.time, "sleep", side_effect=clock.sleep))
+        for observed in (self.capture, self.metadata, self.windows, self.responsive):
+            observed.reset_mock()
+        self.shot = self.root / "captures" / f"{label or phase}.png"
+        popup = window(title, hwnd=31, owned=True)
+        observation = {"delivered": False, "queried": False}
+        if metadata is None:
+            metadata = {
+                "status": "ownership_changed" if phase == "during" else "observed",
+                "native_complete": phase != "during", "texts": [],
+                "buttons": [], "progress": 1, "interactive": 0, "truncated": False}
+
+        def popups(pid):
+            self.assertEqual(pid, 4242)
+            if clock.now >= .1 and not observation["delivered"]:
+                observation["delivered"] = True
+                return [popup]
+            return []
+
+        def owner(hwnd):
+            if hwnd == 11:
+                return 4242
+            self.assertEqual(hwnd, popup.hwnd)
+            if phase == "before" or observation["queried"]:
+                return remaining_owner
+            return 4242
+
+        def inspect(hwnd, pid, timeout):
+            self.assertNotEqual(phase, "before")
+            self.assertEqual((hwnd, pid), (popup.hwnd, 4242))
+            self.assertGreater(timeout, 0)
+            observation["queried"] = True
+            clock.now += .025
+            return metadata
+
+        self.dialogs.side_effect = popups
+        self.owner.side_effect = owner
+        self.metadata.side_effect = inspect
+        return clock, popup, metadata
+
+    def test_destroyed_opening_popup_requires_a_fresh_stable_document(self):
+        for phase in ("before", "during", "after"):
+            with self.subTest(phase=phase):
+                clock, popup, _ = self.closing_popup(phase)
+                result = self.run_probe(timeout=1, stable_for=.2)
+                self.assertEqual(result.status, "captured")
+                self.assertGreaterEqual(clock.now, .3)
+                self.assertGreaterEqual(self.windows.call_count, 4)
+                self.assertIn(popup.title, result.signals)
+                self.assertEqual(result.screenshot, str(self.shot))
+                self.assertIsNone(result.dialog_screenshot)
+                self.capture.assert_called_once_with(11, str(self.shot))
+                if phase == "before":
+                    self.metadata.assert_not_called()
+                else:
+                    self.metadata.assert_called_once()
+
+    def test_destroyed_opening_popup_is_not_success_and_does_not_extend_deadline(self):
+        clock, popup, _ = self.closing_popup("during")
+        result = self.run_probe(timeout=.3, stable_for=.25)
+        self.assertEqual(result.status, "timed_out")
+        self.assertAlmostEqual(clock.now, .3)
+        self.assertIn(popup.title, result.signals)
+        self.assertIsNone(result.screenshot)
+        self.assertIsNone(result.dialog_screenshot)
+        self.assertFalse(self.shot.exists())
+        self.capture.assert_not_called()
+
+    def test_partial_busy_then_destroyed_popup_keeps_both_observations_before_capture(self):
+        clock, popup, _ = self.closing_popup("during")
+        partial = {
+            "status": "observed", "native_complete": False, "texts": [],
+            "buttons": [{"name": "Cancel", "control_id": 2}],
+            "progress": 1, "interactive": 0, "truncated": False}
+        vanished = {"status": "ownership_changed"}
+        snapshots = iter((partial, vanished))
+
+        def inspect(hwnd, pid, timeout):
+            self.assertEqual((hwnd, pid), (popup.hwnd, 4242))
+            self.assertGreater(timeout, 0)
+            clock.now += .025
+            return next(snapshots)
+
+        self.metadata.side_effect = inspect
+        self.dialogs.side_effect = lambda pid: (
+            [popup] if clock.now >= .1 and self.metadata.call_count < 2 else [])
+        self.owner.side_effect = lambda hwnd: (
+            None if hwnd == popup.hwnd and self.metadata.call_count >= 2 else 4242)
+        result = self.run_probe(timeout=1, stable_for=.2)
+        self.assertEqual(result.status, "captured")
+        self.assertGreaterEqual(clock.now, .5)
+        self.assertEqual(result.screenshot, str(self.shot))
+        self.assertIsNone(result.dialog_screenshot)
+        self.capture.assert_called_once_with(11, str(self.shot))
+        first, last = result.to_dict()["dialog_observations"]
+        self.assertEqual(first["state"]["status"], "busy")
+        self.assertEqual(first["state"]["cause"], "partial_provider_observation")
+        self.assertEqual(first["state"]["metadata"], partial)
+        self.assertEqual(last["state"]["status"], "vanished")
+        self.assertEqual(last["state"]["cause"], "dialog_disappeared")
+        self.assertEqual(last["state"]["metadata"], vanished)
+        self.assertEqual(last["state"]["owner_pid_before"], 4242)
+        self.assertIsNone(last["state"]["owner_pid_after"])
+
+    def test_live_foreign_popup_never_becomes_a_captured_document(self):
+        for phase in ("before", "during", "after"):
+            with self.subTest(phase=phase):
+                clock, popup, snapshot = self.closing_popup(phase, remaining_owner=9999)
+                result = self.run_probe(timeout=1, stable_for=.2)
+                self.assertEqual(result.status, "error")
+                self.assertLess(clock.now, .2)
+                self.assertIn(popup.title, result.signals)
+                self.assertIsNone(result.screenshot)
+                self.assertFalse(self.shot.exists())
+                self.assertEqual(self.windows.call_count, 1)
+                self.assertTrue(all(call.args[0] != 11
+                                    for call in self.capture.call_args_list))
+                observation, = result.to_dict()["dialog_observations"]
+                self.assertEqual(observation["hwnd"], popup.hwnd)
+                self.assertEqual(observation["pid"], 4242)
+                self.assertEqual(observation["title"], popup.title)
+                state = observation["state"]
+                self.assertEqual(state["basis"], "ownership_changed")
+                self.assertEqual(state["cause"], "window_ownership_changed")
+                self.assertIs(state["explicit_attention"], True)
+                self.assertIs(state["retryable"], False)
+                self.assertEqual(state["owner_pid_at_decision"], 9999)
+                if phase != "before":
+                    self.assertEqual(state["metadata"], snapshot)
+                    self.assertEqual(state["owner_pid_before"], 4242)
+                    self.assertEqual(state["owner_pid_after"], 9999)
+
+    def test_disappeared_error_auth_and_trust_keep_observed_error_provenance(self):
+        for text in ("Error loading data", "Authentication required",
+                     "Trust certificate"):
+            for evidence in ("title", "metadata"):
+                with self.subTest(text=text, evidence=evidence):
+                    snapshot = {
+                        "status": "observed", "native_complete": False,
+                        "progress": 1, "texts": [text], "buttons": [],
+                        "interactive": 0, "truncated": False}
+                    clock, popup, _ = self.closing_popup(
+                        "before" if evidence == "title" else "after",
+                        title=text if evidence == "title"
+                        else "Opening workbook 'Sales.twb'...",
+                        metadata=snapshot, label=f"{evidence}-{text}")
+                    result = self.run_probe(timeout=1, stable_for=.2)
+                    self.assertEqual(result.status, "error")
+                    self.assertLess(clock.now, .2)
+                    self.assertIn(popup.title, result.signals)
+                    self.assertIn(text, result.to_dict()["signals"])
+                    self.assertIsNone(result.screenshot)
+                    self.assertFalse(self.shot.exists())
+                    self.assertEqual(self.windows.call_count, 1)
+                    self.assertTrue(all(call.args[0] != 11
+                                        for call in self.capture.call_args_list))
+                    observation, = result.to_dict()["dialog_observations"]
+                    self.assertEqual(observation["hwnd"], popup.hwnd)
+                    self.assertEqual(observation["pid"], 4242)
+                    self.assertEqual(observation["title"], popup.title)
+                    self.assertEqual(observation["state"]["status"], "attention")
+                    self.assertIs(observation["state"]["explicit_attention"], True)
+                    self.assertIsNone(observation["state"]["owner_pid_at_decision"])
+                    if evidence == "metadata":
+                        self.assertEqual(observation["state"]["metadata"], snapshot)
+
     def test_persistent_owned_loading_dialog_times_out_without_capture(self):
         self.dialogs.return_value = [
             window("Opening workbook 'Sales.twb'...", owned=True)]
@@ -248,6 +471,81 @@ class TestTableauCapture(unittest.TestCase):
         self.assertIsNone(result.dialog_screenshot)
         self.assertIn("Opening workbook 'Sales.twb'...", result.signals)
         self.capture.assert_not_called()
+        self.windows.assert_not_called()
+
+    def test_french_opening_processing_and_view_layout_wait_then_capture(self):
+        titles = ["Ouverture du classeur «Sales.twb»…",
+                  "Processing Request", "Computing View Layout",
+                  "Traitement de la demande…"]
+        phases = iter([[window(title, hwnd=30 + index, owned=True)]
+                       for index, title in enumerate(titles)])
+        self.dialogs.side_effect = lambda pid: next(phases, [])
+
+        result = self.run_probe(timeout=6)
+
+        self.assertEqual(result.status, "captured")
+        self.assertEqual(result.screenshot, str(self.shot))
+        self.assertIsNone(result.dialog_screenshot)
+        self.assertTrue(all(title in result.signals for title in titles))
+        self.windows.assert_called_once_with(4242)
+        self.capture.assert_called_once_with(11, str(self.shot))
+        self.assertTrue(all(call.args[1] == 4242
+                            for call in self.metadata.call_args_list))
+
+    def test_incomplete_view_layout_painting_times_out_without_document_capture(self):
+        self.dialogs.return_value = [
+            window("Computing View Layout", hwnd=31, owned=True)]
+        self.metadata.return_value = {
+            "status": "timed_out", "native_complete": False}
+
+        result = self.run_probe(timeout=1.5)
+
+        self.assertEqual(result.status, "timed_out")
+        self.assertIsNone(result.screenshot)
+        self.assertIsNone(result.dialog_screenshot)
+        self.assertIn("Computing View Layout", result.signals)
+        self.assertTrue(self.metadata.called)
+        budgets = [call.args[2] for call in self.metadata.call_args_list]
+        self.assertTrue(all(0 < budget <= 1.5 for budget in budgets))
+        self.capture.assert_not_called()
+        self.windows.assert_not_called()
+
+    def test_mixed_progress_and_authentication_capture_only_the_attention_dialog(self):
+        busy = window("Processing Request", hwnd=31, owned=True)
+        attention = window("Computing View Layout", hwnd=32, owned=True)
+        self.dialogs.return_value = [busy, attention]
+        self.metadata.side_effect = lambda hwnd, pid, timeout: {
+            "status": "observed", "native_complete": True,
+            "progress": 1, "buttons": [{"name": "Annuler", "control_id": 2}],
+            "texts": ["Authentification requise"] if hwnd == 32 else [],
+        }
+
+        result = self.run_probe()
+
+        self.assertEqual(result.status, "error")
+        self.assertIsNone(result.screenshot)
+        self.assertIn("Authentification requise", result.signals)
+        self.assertIn("manual attention", result.note)
+        self.assertEqual(result.dialog_screenshot,
+                         str(self.shot.with_name("Sales-dialog.png")))
+        self.capture.assert_called_once_with(
+            32, str(self.shot.with_name("Sales-dialog.png")))
+        self.windows.assert_not_called()
+
+    def test_cancel_only_unknown_dialog_is_not_treated_as_opening_progress(self):
+        self.dialogs.return_value = [
+            window("Synthetic Activity", hwnd=31, owned=True)]
+        self.metadata.return_value = {
+            "status": "observed", "native_complete": True,
+            "buttons": [{"name": "Cancel", "control_id": 2}]}
+
+        result = self.run_probe()
+
+        self.assertEqual(result.status, "error")
+        self.assertIsNone(result.screenshot)
+        self.assertIn("manual attention", result.note)
+        self.capture.assert_called_once_with(
+            31, str(self.shot.with_name("Sales-dialog.png")))
         self.windows.assert_not_called()
 
     def test_loading_dialog_disappearance_resets_stability_period(self):

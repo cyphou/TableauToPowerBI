@@ -162,8 +162,11 @@ Native diagnostics are separate actions and require explicit confirmation:
 | Tableau/Power BI comparison | `scripts/compare_desktop_reports.py` pairs source/output folders, launches both apps and captures comparison evidence under `desktop_comparisons/`; supports all-pages requests and manual or local screen comparison |
 
 Neither diagnostic runs automatically after migration. They require an
-interactive Windows session and installed apps; the backend records `not_run`
-when native prerequisites are unavailable. `POWERBI_DESKTOP_PATH` and
+interactive Windows session and installed apps; the local browser preflight
+records `not_run` when those prerequisites are unavailable. Missing Windows
+PowerShell is reported by the native diagnostic as `tooling_unavailable`;
+dependent refresh and capture evidence remains `not_run`.
+`POWERBI_DESKTOP_PATH` and
 `TABLEAU_DESKTOP_PATH` support executable overrides. Power BI refresh may access
 configured network sources; Tableau is not refreshed by the comparison.
 Screenshots, manifests, logs and reports may contain confidential data and
@@ -335,6 +338,23 @@ commands; dry-run never launches apps. Requested diagnostic failures return
 nonzero without deleting valid generated projects. No project save or
 credential/license acceptance is automated.
 
+Windows PowerShell is resolved from its installed system location or `PATH`.
+If unavailable, native diagnostics report `tooling_unavailable` promptly rather
+than spending the refresh timeout retrying an unreadable UI. Tableau progress
+windows are waited for within the opening deadline; credential, trust and
+license prompts still require manual attention. Tableau File Recovery also
+remains a manual-attention condition; the probe does not open, delete or save
+recovered copies.
+
+For a self-contained packaged `.twbx`, a non-destructive diagnostic alternative
+is to use a binary-identical local copy in a new folder, one folder per workbook.
+Verify the original/copy SHA-256 hashes, preserve any required companion files
+and relative paths, then pass the copy folder to the ordinary batch command.
+Keep the original recovery files and settings untouched. This is source-file
+isolation, not a recovery-dialog bypass: any prompt shown by the copied workbook
+still remains a failure requiring manual attention. Do not assume a plain `.twb`
+or a workbook with external dependencies is self-contained.
+
 For existing batch output without regeneration, the standalone script remains
 available. Prerequisites: an interactive Windows session and installed requested
 applications. Run from the repository root:
@@ -359,14 +379,55 @@ source/project pairs and inaccessible tabs remain explicit failures. Initial
 captures do not establish page identity; `--all-pages` does not guarantee that
 every view can be selected or captured.
 
+Transient blank/failed page captures can be retried within the single
+`--page-timeout` budget. The default remains 30 seconds; a higher ceiling is not
+proof that a page finished rendering, and failed attempts remain recorded.
+When Tableau tabs have no accessible names, a document-scoped Window-menu
+fallback requires an exact sheet name and a fresh, uniquely checked active-page state.
+The menu is closed before capture; unnamed list entries are never selected.
+Accessibility observations and verified menu closure share the page budget;
+invoking a collapse is not itself proof that the popup has disappeared.
+PRE/POST checks reuse only capture-local document/menu-bar/top-item identities,
+requalifying ownership, ancestry, the fresh Window popup and checked page each
+time. Missing or changed identities fail closed, without rediscovering unrelated
+menus. Failed PRE observations remain in the manifest even when no image attempt
+was reached; successful initial-selection evidence is retained separately.
+Menu navigation also retains the first non-ready native document guard decision,
+including ownership, enabled state and bounded owned-dialog identifiers, classes
+and titles. This evidence does not itself establish progress: unknown or protected
+dialogs and unclassified disabled documents remain failures.
+After one sheet invocation, fully qualified owned progress may be waited for
+within that same page deadline. The observed English `Processing Request` dialog
+initially qualifies without a ProgressBar only with that exact title, an exact
+`Computing View Layout` caption, valid elapsed timer, cancel-only controls and
+complete stable ownership. Once approved, only that same dialog may continue
+from a fresh complete known layout body despite a mutable native/UIA window
+caption. HWND/PID/owner/class/runtime identity and visibility are rechecked;
+unknown, protected or incomplete content still stops the diagnostic.
+An observed disappearance or identity-qualified hidden state ends the retained
+dialog lifetime; reappearance returns `tableau_progress_dialog_reappeared`.
+The sheet is never reinvoked and the dialog is never dismissed. After progress
+ends, the document must be enabled and visible with unchanged document/menu
+identities; fresh checked-page verification still precedes capture. Persistent
+progress returns `tableau_document_progress_timeout`, not a successful screenshot.
+
+Mixed workbooks retain standalone worksheet pages alongside dashboard pages;
+worksheets embedded in a dashboard are not duplicated as standalone pages.
+Navigation actions and story bookmarks targeting standalone sheets use their
+generated page identities. This preserves page correspondence without asserting
+rendering or data parity.
+
 Tableau is not refreshed. Power BI requests refresh and data verification,
 which may contact configured data sources. The pixel-comparison step itself
 uses no AI service or network and does not prove data correctness or parity.
 The diagnostic closes only application processes it launched.
 
-Each run writes `desktop_comparisons\<run_id>\manifest.json` and
-`comparison.html` beneath the output folder; the reports reference the captured
-PNG evidence. Keep screenshots, source data and manifests outside Git when
+Each run prints the paths to its manifest and `comparison.html`. For batch
+outputs they share `desktop_comparisons\<run_id>` with the captured PNGs,
+outside the individual generated projects. Direct-project diagnostics use a
+sibling `<project>.desktop_comparisons\<run_id>` location. Old per-project
+captures are retained, not migrated.
+Keep screenshots, source data and manifests outside Git when
 they contain personal, customer or confidential information.
 See [paired Desktop screenshots](DEPLOYMENT_GUIDE.md#paired-tableau--power-bi-desktop-screenshots)
 for executable overrides, capture scope and failure states.

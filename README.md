@@ -48,7 +48,21 @@
 
 ### Verification evidence
 
-Latest local publication-candidate checks (2026-10-23, Python 3.14.2):
+Scoped Desktop publication checks (2026-10-31, Windows, Python 3.14.2):
+
+- **910 tests passed across 14 affected test files**; this is a focused
+  Desktop, quality and full/thin report regression run, not a new full-suite result.
+- The changed files passed the CI Ruff/Flake8 rules. Pyright reported
+  **0 errors and 0 warnings** for the eight changed producer files.
+- An authorized four-workbook native batch replay completed **18/18 Tableau
+  and 18/18 Power BI page captures**, with verified refresh/data checks and
+  **18 local pixel comparisons independently recalculated**. See the
+  [bounded Desktop evidence](docs/ROADMAP.md).
+- Caption continuation was not exercised in this replay; its causal regression
+  coverage is separate. Captured pixels do not establish parity, save/reopen
+  or deployment. N5 remains Open.
+
+Earlier full-suite publication-candidate baseline (2026-10-23, Python 3.14.2):
 
 - Full regression suite: **11,826 passed, 66 skipped, 1 xfailed**
   (**11,893 collected**), with one expected duplicate-ZIP-name fixture warning.

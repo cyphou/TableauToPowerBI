@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from powerbi_import import desktop_accessibility as accessibility
 from powerbi_import import desktop_probe as probe
 
 OLD = "2026-10-28T10:00:00.1234567Z"
@@ -58,7 +59,8 @@ def _complete_counts():
 
 
 def _powershell_code(script):
-    """Inspect emitted requests without executing PowerShell or querying Windows."""
+    """Decode emitted EncodedCommand without executing it or querying Windows."""
+    script = base64.b64decode(script).decode("utf-16le")
     code = "\n".join(
         line for line in script.splitlines() if not line.lstrip().startswith("#"))
     return re.sub(r"`[ \t]*\r?\n[ \t]*", " ", code)
@@ -104,6 +106,9 @@ table Calendar
         self.process = SimpleNamespace(
             returncode=0, stdout=json.dumps(_raw_observation()), stderr="")
         self.enterContext(mock.patch.object(probe.desktop_window, "IS_WINDOWS", True))
+        self.enterContext(mock.patch.object(
+            accessibility, "powershell_preflight",
+            return_value={"status": "ready", "executable": "powershell.exe"}))
         self.enterContext(mock.patch.object(probe.time, "monotonic", return_value=100.0))
         self.enterContext(mock.patch.object(
             probe.subprocess, "Popen",
@@ -203,12 +208,20 @@ class TestOwnedPartitionObservation(PartitionObserverFixture):
                 self.assertNotIn(secret, json.dumps(result))
 
     def test_bad_json_and_nonobject_results_cannot_be_observations(self):
-        for text in ("", "not JSON", "[]", "null", '{"status": "observed"}'):
+        for text in ("", "not JSON", "[]", "null"):
             with self.subTest(text=text):
                 self.process.stdout = text
                 result = self.observe()
-                self.assertEqual(result["status"], "invalid")
-                self.assertEqual(result["note"], "observer_result_invalid")
+                self.assertEqual(result["status"], "error")
+                self.assertEqual(result["cause"], "powershell_malformed_json")
+                self.assertEqual(result["note"], "powershell_malformed_json")
+                self.assertIs(result["retryable"], False)
+                self.assertEqual(result["partitions"], [])
+        self.process.stdout = '{"status": "observed"}'
+        result = self.observe()
+        self.assertEqual(result["status"], "invalid")
+        self.assertEqual(result["note"], "observer_result_invalid")
+        self.assertEqual(result["partitions"], [])
 
     def test_error_text_and_unrequested_source_metadata_are_never_returned(self):
         raw = _raw_observation()
@@ -239,24 +252,32 @@ class TestOwnedPartitionObservation(PartitionObserverFixture):
                 self.assertEqual(result["expected_partitions"], 3)
                 self.assertEqual(result["partitions"], [])
 
-    def test_process_failure_timeout_and_nonzero_exit_are_redacted_unavailable_results(self):
-        for exception, note in (
-                (OSError("PUBLIC_TEST_ONLY_OS_DETAIL"), "observer_process_failed"),
+    def test_process_failure_timeout_and_nonzero_exit_keep_distinct_redacted_native_failures(self):
+        for exception, status, cause in (
+                (OSError("PUBLIC_TEST_ONLY_OS_DETAIL"),
+                 "tooling_unavailable", "powershell_launch_failed"),
                 (subprocess.TimeoutExpired("PUBLIC_TEST_ONLY_COMMAND", 12),
-                 "observer_timeout"),
+                 "timed_out", "powershell_timeout"),
         ):
             with self.subTest(exception=exception):
                 self.run.side_effect = exception
                 result = self.observe()
-                self.assertEqual(result["status"], "unavailable")
-                self.assertEqual(result["note"], note)
+                self.assertEqual(result["status"], status)
+                self.assertEqual(result["cause"], cause)
+                self.assertEqual(result["note"], cause)
+                self.assertIs(result["retryable"], False)
+                self.assertEqual(result["partitions"], [])
                 self.assertNotIn("PUBLIC_TEST_ONLY", json.dumps(result))
         self.run.side_effect = None
         self.process.returncode = 1
         self.process.stderr = "PUBLIC_TEST_ONLY_STDERR"
         result = self.observe()
-        self.assertEqual(result["status"], "unavailable")
-        self.assertEqual(result["note"], "observer_process_failed")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["cause"], "powershell_nonzero_exit")
+        self.assertEqual(result["note"], "powershell_nonzero_exit")
+        self.assertIs(result["retryable"], False)
+        self.assertEqual(result["returncode"], 1)
+        self.assertEqual(result["partitions"], [])
         self.assertNotIn("PUBLIC_TEST_ONLY", json.dumps(result))
 
     def test_invalid_missing_owner_and_nonwindows_never_start_the_observer(self):
@@ -304,8 +325,10 @@ class TestOwnedPartitionObservation(PartitionObserverFixture):
         self.run.side_effect = delayed
         with mock.patch.object(probe.time, "monotonic", side_effect=clock.time):
             result = self.observe(timeout=0.25)
-        self.assertEqual(result["status"], "unavailable")
-        self.assertEqual(result["note"], "observer_timeout")
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(result["cause"], "powershell_timeout")
+        self.assertEqual(result["note"], "powershell_timeout")
+        self.assertIs(result["retryable"], False)
         self.assertEqual(result["partitions"], [])
 
 
@@ -327,6 +350,7 @@ class TestOwnedTableCheckCoverage(PartitionObserverFixture):
         })
         result = probe.verify_desktop_data(str(self.pbip), 4242)
         self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["tables_checked"], 0)
 
     def test_late_row_counts_cannot_be_returned_as_a_successful_check(self):
         clock = _Clock()
@@ -339,7 +363,10 @@ class TestOwnedTableCheckCoverage(PartitionObserverFixture):
         self.run.side_effect = delayed
         with mock.patch.object(probe.time, "monotonic", side_effect=clock.time):
             result = probe.verify_desktop_data(str(self.pbip), 4242, timeout=0.25)
-        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(result["cause"], "powershell_timeout")
+        self.assertIs(result["retryable"], False)
+        self.assertEqual(result["tables_checked"], 0)
 
 
 class TestProjectedObserverBindingRequests(PartitionObserverFixture):
@@ -540,6 +567,9 @@ class TestRefreshSnapshotRequestBudgets(unittest.TestCase):
             returncode=0, stdout=json.dumps({"status": "clear"}), stderr="")
         self.enterContext(mock.patch.object(probe.desktop_window, "IS_WINDOWS", True))
         self.enterContext(mock.patch.object(
+            accessibility, "powershell_preflight",
+            return_value={"status": "ready", "executable": "powershell.exe"}))
+        self.enterContext(mock.patch.object(
             probe.time, "monotonic", side_effect=self.clock.time))
         self.dialogs = self.enterContext(mock.patch.object(
             probe.desktop_window, "dialog_windows", return_value=[]))
@@ -619,8 +649,11 @@ class TestRefreshSnapshotRequestBudgets(unittest.TestCase):
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
         self.run.side_effect = timeout
-        self.assertEqual(
-            probe._refresh_ui_state(101, 4242, timeout=0.25), "unavailable")
+        with self.assertRaises(probe.PowerShellFailure) as raised:
+            probe._refresh_ui_state(101, 4242, timeout=0.25)
+        self.assertEqual(raised.exception.observation, {
+            "status": "timed_out", "cause": "powershell_timeout",
+            "note": "powershell_timeout", "retryable": False})
         self.run.assert_called_once()
         self.assertEqual(self.run.call_args.kwargs["timeout"], 0.25)
         self.assertEqual(self.clock.now, 0.25)

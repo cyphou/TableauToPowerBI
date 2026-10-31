@@ -38,6 +38,9 @@ class AllPagesFixture(unittest.TestCase):
         self.output_root = self.root / "converted"
         self.source_dir.mkdir()
         self.output_root.mkdir()
+        self.enterContext(mock.patch.object(
+            comparison, "powershell_preflight",
+            return_value={"status": "ready", "executable": "SyntheticPowerShell.exe"}))
 
     def write(self, path, content):
         path = Path(path)
@@ -1060,39 +1063,53 @@ class TestVerifiedTabCapture(unittest.TestCase):
         self.assertFalse(self.shot.exists())
 
     def test_capture_requires_post_capture_selection_verification(self):
-        verification = {"status": "verified", "selected": {"name": "Dashboard"}}
-        select = mock.Mock(side_effect=[verification, {"status": "inaccessible"}])
+        verification = {"status": "verified", "selected": {
+            "name": "Dashboard", "runtime_id": "10:page:1",
+            "automation_id": "page-1", "provider": "uia"}}
+        select = mock.Mock(side_effect=[
+            verification, verification, {"status": "inaccessible"}])
 
         def save(_hwnd, _pid, path, _timeout):
-            Path(path).write_bytes(b"fresh mocked capture")
+            Path(path).write_bytes(tiny_png(
+                ((10, 20, 30, 40, 50, 60),), channels=3))
             return {"status": "captured", "screenshot_blank": False}
 
         with mock.patch.object(desktop_navigation, "select_document_tab", select), \
              mock.patch.object(desktop_navigation.time, "sleep"), \
+             mock.patch.object(desktop_window, "window_process_id", return_value=20), \
              mock.patch.object(desktop_navigation, "_bounded_capture", side_effect=save):
             result = desktop_navigation.capture_document_tab(
                 10, 20, "Dashboard", str(self.shot), timeout=5)
-        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["status"], "inaccessible")
         self.assertIsNone(result["screenshot"])
-        self.assertEqual(select.call_count, 2)
-        self.assertTrue(select.call_args_list[1].kwargs["verify_only"])
+        self.assertEqual(select.call_count, 3)
+        self.assertTrue(all(call.kwargs["verify_only"]
+                            for call in select.call_args_list[1:]))
+        self.assertFalse(self.shot.exists())
+        self.assertEqual(list(self.root.iterdir()), [])
 
     def test_blank_capture_is_not_accepted_as_page_evidence(self):
-        verified = {"status": "verified", "selected": {"name": "Dashboard"}}
+        verified = {"status": "verified", "selected": {
+            "name": "Dashboard", "runtime_id": "10:page:1",
+            "automation_id": "page-1", "provider": "uia"}}
 
         def save(_hwnd, _pid, path, _timeout):
-            Path(path).write_bytes(b"blank image")
+            Path(path).write_bytes(tiny_png(((9, 9, 9),), channels=3))
             return {"status": "error", "screenshot_blank": True, "note": "Blank capture"}
 
         with mock.patch.object(desktop_navigation, "select_document_tab",
                                return_value=verified), \
              mock.patch.object(desktop_navigation.time, "sleep"), \
+             mock.patch.object(desktop_window, "window_process_id", return_value=20), \
              mock.patch.object(desktop_navigation, "_bounded_capture", side_effect=save):
             result = desktop_navigation.capture_document_tab(
                 10, 20, "Dashboard", str(self.shot), timeout=5)
         self.assertEqual(result["status"], "error")
         self.assertIsNone(result["screenshot"])
         self.assertTrue(result["screenshot_blank"])
+        self.assertEqual(result["attempt_count"], 1)
+        self.assertFalse(self.shot.exists())
+        self.assertEqual(list(self.root.iterdir()), [])
 
 
 class TestAllPagesWorkflow(AllPagesFixture):
@@ -1314,6 +1331,50 @@ class TestAllPagesWorkflow(AllPagesFixture):
         self.assertIn("Solo", html)
         self.assertIn("Story", html)
         self.assertIn("No SSIM, data parity or fidelity score", html)
+
+    def test_menu_sheet_superset_never_expands_the_authorized_workbook_inventory(self):
+        from tests.test_desktop_navigation import _menu_verified
+
+        embedded = ("Embedded View", "Hidden View", "Tooltip View",
+                    "Detail View", "Second Detail")
+        self.source.write_text(
+            "<workbook><worksheets>" + "".join(
+                (f'<worksheet name="{name}" hidden="true"/>' if name == "Hidden View"
+                 else f'<worksheet name="{name}"/>') for name in embedded)
+            + '</worksheets><dashboards><dashboard name="Dashboard"><zones>'
+            + "".join(f'<zone name="{name}"/>' for name in embedded)
+            + "</zones></dashboard></dashboards></workbook>", encoding="utf-8")
+        before = self.source.read_bytes()
+        inventory = comparison.inventory_tableau_pages(str(self.source))
+        self.assertEqual([(page["kind"], page["name"]) for page in inventory],
+                         [("dashboard", "Dashboard")])
+
+        def capture(hwnd, pid, name, path, *, timeout):
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_bytes(tiny_png())
+            selection = (_menu_verified(name, hwnd=hwnd, pid=pid) if pid == 111
+                         else {"status": "verified"})
+            if pid == 111:
+                self.assertEqual(name, "Dashboard")
+                self.assertTrue(desktop_navigation._verified_tableau_menu(
+                    selection, hwnd, pid, name))
+                self.assertEqual(len(selection["discovered"]), 6)
+            return {
+                "status": "captured", "screenshot": path, "screenshot_blank": False,
+                "selection": selection, "post_capture_selection": copy.deepcopy(selection)}
+
+        with mock.patch.object(comparison, "capture_document_tab", side_effect=capture) as tabs:
+            manifest = self.run_comparison(all_pages=True)
+        row, = manifest["workbooks"]
+        self.assertEqual([p["name"] for p in row["source_inventory"]], ["Dashboard"])
+        self.assertEqual(row["source_inventory"][0]["id"], inventory[0]["id"])
+        self.assertEqual(row["source_inventory"][0]["capture"]["status"], "captured")
+        self.assertEqual(manifest["totals"]["source"]["inventory"], 1)
+        self.assertEqual(manifest["totals"]["source"]["captured"], 1)
+        self.assertEqual([call.args[2] for call in tabs.call_args_list
+                          if call.args[1] == 111], ["Dashboard"])
+        self.assertEqual(self.source.read_bytes(), before)
+        self.assertIsNone(manifest["parity_score"])
 
     def test_page_failures_are_isolated_and_initial_success_is_not_coverage(self):
         statuses = iter(("error", "timed_out", "captured",

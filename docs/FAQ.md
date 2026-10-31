@@ -730,6 +730,44 @@ Desktop save, credential/license acceptance or deployment.
 See the [one-command guide](DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command)
 for timeouts, executable overrides and evidence locations.
 
+If native automation reports `tooling_unavailable`, check Windows PowerShell
+availability first. The diagnostic checks its installed system location as
+well as `PATH`; a genuinely absent executable is a prerequisite failure, not a
+slow report. An unreadable provider is a separate condition and remains bounded
+by the configured deadline. Increasing `--page-timeout` does not repair missing
+tooling or inaccessible tabs. Transient failed captures may be retried within
+that one deadline, with page identity verified again before accepting an image.
+
+Some Tableau providers expose the sheet strip only as unnamed `ListItem`
+controls. The diagnostic can instead use the exact named sheet entry in the
+document's Window menu, verifying its uniquely checked active-page state
+before and after capture. If neither a named tab nor that qualified menu path
+can establish identity, page captures remain `inaccessible` even when the
+opening screenshot succeeds. A longer timeout cannot supply missing identity;
+the diagnostic does not click list positions or guess page names.
+
+Tableau can show `Processing Request` while computing a page layout without a
+ProgressBar. After one sheet invocation, the diagnostic can wait for the observed
+exact English title, `Computing View Layout` caption, elapsed timer and
+cancel-only controls only with complete stable ownership and no protected or
+interactive content. That exact title is required for initial qualification;
+only the already-approved dialog may later continue from a fresh complete known
+layout body despite a mutable native/UIA window caption. Its immutable identity
+and visibility must still be rechecked. This does not qualify an unknown
+`Constructing` phase or title alone. A title, Cancel button or disabled document
+alone is insufficient. Observed disappearance or identity-qualified hiding
+ends the retained lifetime; reappearance is terminal with
+`tableau_progress_dialog_reappeared`.
+Waiting shares the page deadline, never reinvokes the sheet and still requires
+fresh checked-page identity before capture. Persistent recognized progress
+returns `tableau_document_progress_timeout`; unknown dialogs remain failures.
+
+Tableau File Recovery is not opening progress. Resolve it manually or, for a
+self-contained packaged workbook, use a verified binary-identical copy in a new
+local folder as described in the [user manual](USER_MANUAL.md#tableau-and-power-bi-screenshots-optional-local-diagnostic).
+The diagnostic does not open, delete or save backup copies. Increasing a timeout
+does not bypass this dialog, and prompts on copied workbooks remain failures.
+
 For already generated output, the standalone batch probe avoids rerunning migration:
 
 ```powershell

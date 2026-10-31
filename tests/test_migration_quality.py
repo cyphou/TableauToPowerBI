@@ -141,6 +141,42 @@ class TestMigrationQualityDesktopComparisonLinks(unittest.TestCase):
             self.assert_links(path, [moved / comparison.relative_to(self.output)])
         self.assertEqual(refresh_desktop_comparison_links(str(moved)), [])
 
+    def test_sibling_and_legacy_runs_without_new_manifest_fields_remain_discoverable(self):
+        (self.output / "Synthetic.pbip").write_text("{}", encoding="utf-8")
+        legacy = self.comparison("legacy-run")
+        sibling = self.output.with_name(self.output.name + ".desktop_comparisons")
+        external = sibling / "external-run" / "comparison.html"
+        external.parent.mkdir(parents=True)
+        external.write_text("<html>Separate external evidence</html>", encoding="utf-8")
+        (external.parent / "manifest.json").write_text(
+            '{"schema_version":3,"status":"captured",'
+            '"run_dir":"Z:/synthetic-original-location"}', encoding="utf-8")
+        original_artifacts = {
+            p: p.read_bytes() for p in (legacy, legacy.parent / "manifest.json",
+                                       external, external.parent / "manifest.json")}
+        self.render_quality()
+        for path in (self.single, self.consolidated):
+            self.assert_links(path, [legacy, external])
+            self.assertNotIn("Z:/synthetic", self.document(path))
+        for path, content in original_artifacts.items():
+            self.assertEqual(path.read_bytes(), content)
+
+        # Move the project and its sibling together. Old recorded machine
+        # locations must not override discovery from the actual artifact tree.
+        relocated = self.root / "relocated"
+        relocated.mkdir()
+        moved_output = relocated / self.output.name
+        moved_sibling = relocated / sibling.name
+        shutil.copytree(self.output, moved_output)
+        shutil.copytree(sibling, moved_sibling)
+        for original in (self.single, self.consolidated):
+            moved = moved_output / original.relative_to(self.output)
+            self.assert_links(moved, [
+                moved_output / legacy.relative_to(self.output),
+                moved_sibling / external.relative_to(sibling),
+            ])
+        self.assertEqual(refresh_desktop_comparison_links(str(moved_output)), [])
+
     def test_failed_and_successful_captures_are_not_parity_verdicts(self):
         failed = self.comparison("run-failed", status="failed")
         captured = self.comparison("run-captured")

@@ -127,6 +127,13 @@ installed, and paired comparison also requires Tableau. Set
 automatic discovery is inappropriate. An invalid override is an error, not
 permission to use a different installation.
 
+Native automation also needs Windows PowerShell. Its installed system location
+is checked as well as `PATH`, so a reduced shell `PATH` does not by itself
+disable UI Automation. A genuinely missing tool is reported as
+`tooling_unavailable`, not retried as an unreadable interface for the whole
+refresh budget. Generated projects remain available when this prerequisite
+fails; refresh and capture are not declared successful.
+
 The opted-in diagnostic runs sequentially after generation and targets only
 successful/resumed workbook outputs from that invocation. Stale output for a
 failed or unrelated workbook cannot satisfy it. Folder, manifest and
@@ -143,7 +150,7 @@ not refreshed; Power BI may contact its configured sources. The workflow never
 accepts credential, trust or license dialogs and never deploys anything.
 
 By default, the diagnostic captures opening window states, not identified
-pages. Add `--all-pages` to attempt every inventoried page, requiring selected-tab
+pages. Add `--all-pages` to attempt every inventoried page, requiring page-selection
 checks before and after each screenshot. In Power BI-only mode, no Tableau
 inventory, launch or capture is requested. In comparison mode, missing or
 ambiguous page correspondence remains explicit. Hidden/inaccessible tabs are
@@ -153,9 +160,16 @@ comparison and adds decoded PNG pixel differences, never a parity verdict.
 Opening, refresh and per-page deadlines default to 90, 300 and 30 seconds.
 `--desktop-timeout`, `--refresh-timeout` and `--page-timeout` accept finite
 positive seconds; larger page budgets can help complex reports but cannot make
-an inaccessible tab navigable. A run writes a fresh manifest and linked HTML
-under `desktop_comparisons\<run_id>` and PNGs under each selected project's
-`screenshots\runs\<run_id>`. The command prints those evidence paths.
+an inaccessible tab navigable. Transient blank/failed page captures are retried
+within that same page budget, not given a fresh deadline per attempt. Selection
+and ownership must still be verified, and exhausted attempts remain failures.
+A run writes a fresh manifest, linked HTML and PNGs together under its printed
+diagnostic run directory, outside the selected PBIP project directories.
+For a batch output root this is `desktop_comparisons\<run_id>`; copying an
+individual generated project no longer includes new diagnostic screenshots.
+When the selected output root is the PBIP project itself, diagnostics use
+the sibling `<project>.desktop_comparisons\<run_id>` instead.
+Older per-project screenshot evidence is not moved or deleted.
 Requested diagnostic failure returns exit code `8`
 (`DESKTOP_DIAGNOSTIC_FAILED`) without deleting otherwise successfully generated
 projects; a migration failure retains its own nonzero exit status. Partial
@@ -257,13 +271,52 @@ window without navigating pages. With `--all-pages`, it inventories individual
 source views and target pages and attempts to select each through Windows UI
 Automation. A page screenshot requires verified selection; an inaccessible tab,
 ambiguous correspondence, or failed capture is reported explicitly rather than
-counted as complete coverage. Tableau page navigation requires a uniquely named
-selectable tab; unnamed tabs remain inaccessible and block per-page capture.
+counted as complete coverage. Tableau page navigation requires either a uniquely
+named selectable page tab or an exact named sheet entry in the document-scoped
+Window menu. The menu path uses only its dynamic sheet section and requires a
+fresh, uniquely checked active-page name; the menu is closed before capture.
+PRE/POST checks may reuse capture-local document/menu identities, but each
+check requalifies the owned document, menu ancestry, fresh Window popup and
+checked page. Missing or changed identities fail closed without rediscovering
+unrelated menus. Failed PRE observations and their phase remain in the manifest
+even before the first image attempt, alongside the initial-selection evidence.
+The first non-ready native document guard also retains enabled/ownership state and
+bounded owned-dialog HWND/PID/class/title evidence; cleanup cannot replace that
+decision. An unclassified disabled document or unknown dialog is not progress.
+After a single sheet invocation, complete owned progress observations can
+authorize a read-only wait under the unchanged page deadline. The observed
+English layout dialog initially requires the exact `Processing Request` title,
+`Computing View Layout` caption, an elapsed timer and cancel-only controls when
+no ProgressBar exists. Only that already-approved dialog may continue from a
+fresh complete known layout body despite mutable native/UIA window captions,
+with unchanged HWND/PID/owner/class/runtime identity and rechecked visibility.
+Observed disappearance or identity-qualified hiding ends its retained lifetime;
+same-handle reappearance returns `tableau_progress_dialog_reappeared`.
+Bounded wait observations are retained; no sheet reinvocation or dialog
+dismissal occurs. Enabled/visible
+document readiness and unchanged document/menu identities must be requalified,
+then the normal fresh checked-page test still runs. Persistent progress times
+out as `tableau_document_progress_timeout`; unknown/protected/incomplete content
+or changed immutable identity remains terminal.
+Native accessibility can supply page tabs when UI Automation omits them.
+Arbitrary list items, ribbon controls and unnamed tabs are not substituted
+as proof of page identity.
 An inventory or successful run does not prove that every Tableau page was
 captured. Neither mode refreshes Tableau or changes filters.
-The Tableau probe waits, up to `--timeout`, for transient owned progress windows
-whose title exactly matches English `Opening workbook '<name>'...`; it does not
-dismiss other dialogs. A non-progress owned dialog is captured separately as
+The Tableau probe waits, up to the same `--timeout` deadline, for recognized
+owned opening/query/layout progress windows, including English and French
+opening messages. Progress-control and interaction evidence distinguishes
+waiting from dialogs requiring attention; a Cancel button alone is not
+permission to treat an unknown dialog as progress. It never dismisses dialogs.
+File Recovery requires manual handling; backup copies are not opened, deleted
+or saved by the probe. A self-contained `.twbx` may instead be diagnosed from a
+SHA-256-verified local copy in a new folder, preserving required companions and
+relative paths. Keep original recovery files and settings unchanged; this does
+not dismiss or permit any prompt encountered on the copy.
+A popup that disappears during inspection triggers re-observation within the
+same deadline, not a blocking-dialog verdict. Observed errors or foreign
+ownership remain terminal, and classified dialog evidence is retained.
+A non-progress owned dialog is captured separately as
 `<workbook-stem>-dialog.png` (`dialog_screenshot`) and leaves the Tableau result as
 `error`. Power BI refreshes and verifies data. In `--all-pages` reports a page is
 marked ready for visual review only when its Power BI launch also captured with
@@ -295,10 +348,18 @@ All-page scope:
 
 Each run creates fresh evidence:
 
-- `<project>\screenshots\runs\<run_id>\source\<workbook-stem>.png`
-- `<project>\screenshots\runs\<run_id>\output\<workbook-stem>.png`
-- `<output>\desktop_comparisons\<run_id>\manifest.json`
-- `<output>\desktop_comparisons\<run_id>\comparison.html`
+- `<run-dir>\screenshots\<pair-id>\source\<workbook-stem>.png`
+- `<run-dir>\screenshots\<pair-id>\output\<workbook-stem>.png`
+- `<run-dir>\manifest.json`
+- `<run-dir>\comparison.html`
+
+`<run-dir>` is printed by the command. Batch roots use
+`<output>\desktop_comparisons\<run_id>`; direct-project diagnostics use an
+external sibling `<project>.desktop_comparisons\<run_id>` so their evidence
+does not enter the PBIP project. Each workbook pair has a distinct evidence
+directory, including pairs with the same workbook name in different folders.
+The report keeps relative image links, and existing reports referring to older
+per-project screenshots remain readable.
 
 After a comparison run, existing migration quality HTML (including
 `MIGRATION_QUALITY_CONSOLIDATED.html`) is refreshed with relative links to

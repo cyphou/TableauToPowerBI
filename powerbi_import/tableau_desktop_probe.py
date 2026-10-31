@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Optional
 
 from powerbi_import import desktop_window
+from powerbi_import.desktop_accessibility import (
+    is_powershell_failure,
+    powershell_preflight,
+)
 
 CAPTURE_LIMITATION = (
     "A responsive document-titled window and nonblank full-window screenshot "
@@ -43,7 +47,11 @@ class TableauProbeReport:
     dialog_screenshot: Optional[str] = None
     duration_s: float = 0.0
     signals: list[str] = field(default_factory=list)
+    # Distinct classifications, bounded to the first and latest 63 records.
+    # Raw provider metadata is private diagnostic evidence, not proof of loading.
+    dialog_observations: list[dict] = field(default_factory=list)
     note: str = ""
+    native_error: dict = field(default_factory=dict)
     limitation: str = CAPTURE_LIMITATION
 
     def to_dict(self) -> dict:
@@ -165,6 +173,12 @@ def probe_tableau_open(workbook_path: str, *, screenshot_path: str,
             report.note = ("Tableau Desktop not found or invalid override; set "
                            "TABLEAU_DESKTOP_PATH or --tableau-desktop-path")
             return report
+        tooling = powershell_preflight()
+        if tooling["status"] != "ready":
+            report.status = tooling["status"]
+            report.native_error = tooling
+            report.note = tooling["note"]
+            return report
         shot.parent.mkdir(parents=True, exist_ok=True)
         proc = subprocess.Popen([report.executable, str(source)], shell=False)
         report.pid = proc.pid
@@ -174,14 +188,42 @@ def probe_tableau_open(workbook_path: str, *, screenshot_path: str,
         while time.monotonic() < deadline:
             dialogs = desktop_window.dialog_windows(proc.pid)
             if dialogs:
-                # Opening a workbook creates a transient owned progress window.
-                # Wait for it to disappear, but never dismiss a real error dialog.
-                loading = all(re.fullmatch(
-                    r"Opening workbook '.+'\.\.\.", w.title) for w in dialogs)
+                # Qt uses several owned progress windows, sometimes with only
+                # their title painted. Classify them read-only; a Cancel button
+                # is never pressed and is not, by itself, proof of progress.
+                states = []
                 for dialog in dialogs:
                     if dialog.title not in report.signals:
                         report.signals.append(dialog.title)
-                if loading:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    state = desktop_window.dialog_state(
+                        dialog, proc.pid, timeout=remaining)
+                    states.append(state)
+                    observation = {"hwnd": dialog.hwnd, "pid": proc.pid,
+                                   "title": dialog.title, "state": state}
+                    if (not report.dialog_observations
+                            or report.dialog_observations[-1] != observation):
+                        if len(report.dialog_observations) >= 64:
+                            del report.dialog_observations[1]
+                        report.dialog_observations.append(observation)
+                failure = next((state for state in states
+                                if is_powershell_failure(state)), None)
+                if failure:
+                    report.status = failure["status"]
+                    report.native_error = failure
+                    report.note = failure["note"]
+                    return report
+                for dialog, state in zip(dialogs, states):
+                    if state.get("cause") == "partial_provider_observation":
+                        signal = f"partial provider observation: {dialog.title!r}"
+                        if signal not in report.signals:
+                            report.signals.append(signal)
+                if time.monotonic() >= deadline:
+                    break
+                if len(states) == len(dialogs) and all(
+                        state["status"] == "busy" for state in states):
                     matched_since = None
                     previous_hwnd = None
                     if proc.poll() is not None:
@@ -189,12 +231,36 @@ def probe_tableau_open(workbook_path: str, *, screenshot_path: str,
                         return report
                     time.sleep(min(poll, max(0, deadline - time.monotonic())))
                     continue
+                # The popup may disappear while its accessibility provider is
+                # being queried. Re-observe rather than diagnosing a stale HWND.
+                attention = []
+                for dialog, state in zip(dialogs, states):
+                    if state["status"] == "busy":
+                        continue
+                    current_pid = desktop_window.window_process_id(dialog.hwnd)
+                    state["owner_pid_at_decision"] = current_pid
+                    if not state.get("explicit_attention") and current_pid is None:
+                        signal = f"transient dialog disappeared: {dialog.title!r}"
+                        if signal not in report.signals:
+                            report.signals.append(signal)
+                        continue
+                    attention.append((dialog, state))
+                if not attention:
+                    matched_since = previous_hwnd = None
+                    time.sleep(min(poll, max(0, deadline - time.monotonic())))
+                    continue
+                dialog, state = attention[0]
+                for text in state.get("metadata", {}).get("texts", []):
+                    if text and text not in report.signals:
+                        report.signals.append(text)
                 report.note = "Owned dialog requires manual attention"
                 dialog_shot = shot.with_name(shot.stem + "-dialog.png")
                 if dialog_shot.exists() or dialog_shot.is_symlink():
                     raise ValueError("dialog screenshot destination must not already exist")
-                if (desktop_window.capture_window(dialogs[0].hwnd, str(dialog_shot))
+                if (desktop_window.window_process_id(dialog.hwnd) == proc.pid
+                        and desktop_window.capture_window(dialog.hwnd, str(dialog_shot))
                         and dialog_shot.is_file()
+                        and desktop_window.window_process_id(dialog.hwnd) == proc.pid
                         and desktop_window.is_blank(str(dialog_shot)) is False):
                     report.dialog_screenshot = str(dialog_shot)
                 return report
@@ -205,11 +271,16 @@ def probe_tableau_open(workbook_path: str, *, screenshot_path: str,
                 report.note = "Ambiguous document windows in launched PID"
                 return report
             win = matches[0] if matches else None
-            if win and desktop_window.is_responsive(win.hwnd):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if win and desktop_window.is_responsive(
+                    win.hwnd, min(2000, remaining * 1000)):
+                now = time.monotonic()
                 if matched_since is None or previous_hwnd != win.hwnd:
-                    matched_since = time.monotonic()
+                    matched_since = now
                     previous_hwnd = win.hwnd
-                if time.monotonic() - matched_since >= stable_for:
+                if now < deadline and now - matched_since >= stable_for:
                     report.window_title = win.title
                     captured = desktop_window.capture_window(win.hwnd, str(shot))
                     report.screenshot_blank = (

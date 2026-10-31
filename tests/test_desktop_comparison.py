@@ -23,6 +23,9 @@ class FolderFixture(unittest.TestCase):
         self.output = self.root / "output"
         self.source.mkdir()
         self.output.mkdir()
+        self.enterContext(mock.patch.object(
+            comparison, "powershell_preflight",
+            return_value={"status": "ready", "executable": "SyntheticPowerShell.exe"}))
 
     def file(self, root, name, text="{}"):
         path = root / name
@@ -597,3 +600,33 @@ class TestComparisonWorkflow(FolderFixture):
         self.assertEqual(json.loads((run_dir / "manifest.json").read_text("utf-8")),
                          manifest)
         self.assertEqual(document.count("<img "), 2)
+
+    def test_schema2_legacy_screenshot_paths_render_without_new_evidence_fields(self):
+        manifest = self.run_comparison()
+        run_dir = Path(manifest["run_dir"])
+        manifest.pop("evidence_location")
+        manifest.pop("preflight")
+        row, = manifest["workbooks"]
+        row.pop("evidence_id")
+        row.pop("screenshot_dir")
+        legacy = Path(row["pbip"]).parent / "screenshots"
+        legacy.mkdir()
+        originals = {}
+        for side in ("tableau", "powerbi"):
+            path = legacy / f"{side}.png"
+            payload = Path(row[side]["screenshot"]).read_bytes()
+            path.write_bytes(payload)
+            originals[path] = payload
+            row[side]["screenshot"] = str(path)
+        comparison.write_comparison_reports(manifest, run_dir)
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertNotIn("evidence_location", manifest)
+        self.assertEqual(json.loads((run_dir / "manifest.json").read_text("utf-8")),
+                         manifest)
+        document = (run_dir / "comparison.html").read_text("utf-8")
+        self.assertEqual(document.count("<img "), 2)
+        for path, payload in originals.items():
+            self.assertEqual(path.read_bytes(), payload)
+            asset = f"assets/{hashlib.sha256(payload).hexdigest()}.png"
+            self.assertIn(f'src="{asset}"', document)
+            self.assertEqual((run_dir / asset).read_bytes(), payload)

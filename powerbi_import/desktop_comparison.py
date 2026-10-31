@@ -17,6 +17,10 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from powerbi_import import desktop_probe, desktop_window, tableau_desktop_probe
+from powerbi_import.desktop_accessibility import (
+    is_powershell_failure,
+    powershell_preflight,
+)
 from powerbi_import.desktop_navigation import capture_document_tab
 from powerbi_import.html_template import badge, data_table, html_close, html_open
 from powerbi_import.local_pixel_comparison import (
@@ -254,6 +258,40 @@ def _complete_data_checks(data: Any) -> bool:
     return True
 
 
+def _native_failure(evidence: dict) -> dict | None:
+    """Find a current provider/tooling failure, not historical retry attempts."""
+    pending = [evidence]
+    seen = set()
+    while pending:
+        item = pending.pop()
+        if not isinstance(item, dict) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        native = item.get("native_error")
+        if isinstance(native, dict) and is_powershell_failure(native):
+            return native
+        if is_powershell_failure(item):
+            return item
+        for key in (
+                "post_capture_selection", "selection", "data_load", "refresh", "native_error"):
+            observation = item.get(key)
+            if isinstance(observation, dict):
+                pending.append(observation)
+    return None
+
+
+def _native_failure_note(failure: dict) -> str:
+    """Put the actionable cause first, including in bounded CLI summaries."""
+    cause = str(failure.get("cause", "native_observation_failed"))
+    details = [cause]
+    for key in ("returncode", "executable"):
+        if failure.get(key) is not None:
+            details.append(f"{key}={failure[key]}")
+    if failure.get("note") and failure["note"] != cause:
+        details.append(str(failure["note"]))
+    return "; ".join(details)
+
+
 def _powerbi_data_gate(evidence: dict) -> dict:
     """Do not infer refresh/data success from a loaded window or a PNG."""
     refresh = evidence.get("refresh")
@@ -286,7 +324,10 @@ def _powerbi_data_gate(evidence: dict) -> dict:
         failures.append("refresh.data_load checks are incomplete or unsuccessful")
     if checks.get("consistent_data_checks") is False:
         failures.append("refresh.data_load and data_load disagree")
-    return {
+    native = _native_failure(evidence)
+    if native is not None:
+        failures.insert(0, _native_failure_note(native))
+    result = {
         "status": "failed" if failures else "verified",
         "scope": "initial_launch_refresh_and_aggregate_data_checks",
         "refresh_status": refresh_status,
@@ -298,10 +339,13 @@ def _powerbi_data_gate(evidence: dict) -> dict:
                  "Explicit refresh verified and all table checks completed successfully; "
                  "empty tables are permitted. No semantic parity verdict."),
     }
+    if native is not None:
+        result.update(cause=native["cause"], native_error=deepcopy(native))
+    return result
 
 
 def _verified_page_capture(capture: dict, expected: Path | None = None) -> bool:
-    """Require the existing exact-tab checks before and after a fresh capture."""
+    """Require the existing exact page identity checks before and after a fresh capture."""
     if (capture.get("status") != "captured" or not capture.get("screenshot")
             or capture.get("screenshot_blank") is not False
             or any(not isinstance(capture.get(key), dict)
@@ -333,7 +377,7 @@ def _local_capture_pixels(source: dict, target: dict,
                          or capture[key].get("status") != "verified"
                          for key in ("selection", "post_capture_selection")):
             return unavailable_pixels("capture_unverified",
-                                      f"{side}: selected tab not verified before and after capture")
+                                      f"{side}: exact page identity not verified before and after capture")
         try:
             path = Path(capture["screenshot"])
             _safe_destination(path.absolute())
@@ -438,12 +482,20 @@ def _capture_all_pages(row: dict, shots: Path, page_timeout: float,
                         or not isinstance(page["capture"].get("status"), str)):
                     raise ValueError("Page capture returned no valid status")
                 page["capture"].setdefault("note", "")
+                native = _native_failure(page["capture"])
+                if native is not None:
+                    failure = deepcopy(native)
+                    if page["capture"]["status"] == "captured":
+                        page["capture"]["probe_screenshot"] = page["capture"].get("screenshot")
+                    page["capture"].update(
+                        status=failure["status"], screenshot=None, cause=failure["cause"],
+                        native_error=failure, note=_native_failure_note(failure))
                 if (page["capture"].get("status") == "captured"
                         and not _verified_page_capture(page["capture"], requested)):
                     page["capture"].update(
                         probe_status="captured", probe_screenshot=page["capture"].get("screenshot"),
                         status="error", screenshot=None,
-                        note="Page capture gate failed: current PNG and exact selected tab "
+                        note="Page capture gate failed: current PNG and exact page identity "
                              "must be verified before and after capture")
             except Exception as exc:
                 page["capture"] = {"status": "error", "screenshot": None,
@@ -549,6 +601,13 @@ def _file_identity(path: str) -> tuple:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
+def _comparison_pair_identity(row: dict, source: Path, output: Path) -> str:
+    """Stable, filename-safe identity, independent of display labels and order."""
+    paths = [Path(row["source"]).relative_to(source).as_posix(),
+             Path(row["pbip"]).relative_to(output).as_posix() if row.get("pbip") else None]
+    return hashlib.sha256(json.dumps(paths, ensure_ascii=True).encode("utf-8")).hexdigest()
+
+
 def _explicit_workbook_pairs(pairs: Any, source: Path, output: Path) -> list[dict]:
     """Validate the caller's current selection, without discovering other files."""
     if not isinstance(pairs, list) or not pairs:
@@ -612,6 +671,7 @@ def pair_workbooks(source_dir: str, output_root: str) -> list[dict]:
     Batch uses relative parent / workbook stem / stem.pbip. Server-download
     sanitization (non word/dot/hyphen -> underscore) is also accepted at that
     exact relative location, never by a fuzzy/global basename search.
+    A standalone project root also accepts its exact workbook-stem.pbip.
     All candidates are retained: conflicts and many-to-one matches are errors.
     """
     source = Path(source_dir).resolve()
@@ -647,6 +707,11 @@ def pair_workbooks(source_dir: str, output_root: str) -> list[dict]:
             expected = output / relative.parent / name / (name + ".pbip")
             if expected.resolve() in pbips:
                 candidates.add(expected.resolve())
+            # A caller may supply one PBIP project's directory instead of its
+            # batch parent. Retain exact naming and many-to-one conflict checks.
+            direct = output / (name + ".pbip")
+            if direct in pbips:
+                candidates.add(direct)
         key = relative.with_suffix("").as_posix()
         for summary, mapping, error in summaries:
             if error:
@@ -722,7 +787,7 @@ def _pbi_capture(pbip: str, shot: Path, timeout: float,
             screenshot_path=str(shot), desktop_path=desktop_path,
             verify_data=True, refresh=True, refresh_timeout=refresh_timeout)
         # Retain ownership and raw diagnostics even if conversion/gating fails.
-        for key in ("pid", "pbip_path", "refresh", "data_load",
+        for key in ("pid", "pbip_path", "refresh", "data_load", "native_error", "executable",
                     "screenshot_data_verified", "window_title", "screenshot_blank"):
             evidence[key] = getattr(report, key, None)
         evidence.update(probe_status=report.status, probe_note=report.note,
@@ -740,7 +805,7 @@ def _pbi_capture(pbip: str, shot: Path, timeout: float,
                     and shot.is_file() and report.screenshot_blank is False
                     and gate["status"] == "verified")
         evidence["status"] = "captured" if captured else (
-            report.status if report.status in ("unavailable", "timed_out", "error")
+            report.status if report.status in ("unavailable", "tooling_unavailable", "timed_out", "error")
             else "error")
         evidence["screenshot"] = str(shot) if captured else None
         if not captured:
@@ -748,7 +813,14 @@ def _pbi_capture(pbip: str, shot: Path, timeout: float,
                          "Power BI capture gate failed: no verified current document-window "
                          "nonblank capture for the selected PBIP")
             evidence["capture_gate"] = {**gate, "status": "failed", "note": gate_note}
-            evidence["note"] = gate_note + (". " + report.note if report.note else "")
+            native = _native_failure(evidence)
+            if native is not None:
+                failure = deepcopy(native)
+                evidence.update(
+                    status=failure["status"], cause=failure["cause"], native_error=failure,
+                    note=_native_failure_note(failure) + ". " + gate_note)
+            else:
+                evidence["note"] = gate_note + (". " + report.note if report.note else "")
         return evidence
     except Exception as exc:
         note = f"Power BI capture gate failed: {type(exc).__name__}: {exc}"
@@ -832,7 +904,7 @@ def _capture_scope_html(manifest: dict) -> str:
         ("data_checks", text("Aggregate data checks", "Contrôles agrégés des données")),
         ("capture", text("Initial full-window capture", "Capture initiale de la fenêtre complète")),
         ("inventory", text("Page inventory", "Inventaire des pages")),
-        ("selected_tabs", text("Verified selected-tab captures", "Captures des onglets sélectionnés vérifiés")),
+        ("selected_tabs", text("Verified page-selection captures", "Captures avec sélection de page vérifiée")),
     )
     rows = []
     for key, label in labels:
@@ -867,9 +939,36 @@ def _capture_scope_html(manifest: dict) -> str:
                  "Diagnostic Power BI uniquement : ouverture, actualisation, contrôles des données et captures. "
                  "Le lancement, l’inventaire et les opérations de fenêtre Tableau, ainsi que la correspondance "
                  "des pages, n’ont pas été demandés. Il ne s’agit pas d’une comparaison associée."))
+    location = manifest.get("evidence_location")
+    preflight = manifest.get("preflight")
+    tooling = ""
+    if isinstance(preflight, dict):
+        tooling = (
+            '<h3>' + _ui("PowerShell preflight (executable discovery only)",
+                          "Précontrôle PowerShell (recherche de l’exécutable uniquement)") + '</h3>'
+            + data_table(
+                [text("Field", "Champ"), text("Value", "Valeur")],
+                [[render(label, "fr"), html.escape(str(preflight[key]))]
+                 for key, label in (
+                     ("status", text("Status", "État")), ("cause", text("Cause", "Cause")),
+                     ("executable", text("Executable", "Exécutable")), ("note", text("Note", "Note")))
+                 if key in preflight],
+                table_id="desktop-tooling-preflight"))
+    storage = ""
+    if isinstance(location, dict) and location.get("external_to_output_root") is True:
+        storage = (
+            '<p>' + _ui(
+                "Evidence is stored in a sibling diagnostics tree outside the PBIP project. "
+                "Copying the project alone does not include this evidence.",
+                "Les preuves sont stockées dans une arborescence de diagnostic voisine, hors du projet PBIP. "
+                "La copie du projet seul n’inclut pas ces preuves.")
+            + '</p><p>' + _ui("Evidence directory:", "Répertoire des preuves :")
+            + f' <code>{html.escape(str(manifest.get("run_dir", "")))}</code></p>')
     return (
         '<section><h2>' + _ui("Requested capture scope", "Périmètre des captures demandé") + '</h2>'
         f'<p>{scope}</p>'
+        + storage
+        + tooling
         + data_table([text("Stage", "Étape"), "Tableau", "Power BI"], rows,
                      table_id="requested-capture-stages")
         + '<p>' + "; ".join(shared) + '</p>'
@@ -1168,6 +1267,7 @@ def _capture_html(capture: dict, run_dir: Path, alt: str, *,
             "captured": text("Image file unavailable", "Fichier image indisponible"),
             "inaccessible": text("Page inaccessible", "Page inaccessible"),
             "unavailable": text("Capture unavailable", "Capture indisponible"),
+            "tooling_unavailable": text("Required tooling unavailable", "Outils nécessaires indisponibles"),
             "not_requested": text("Capture not requested", "Capture non demandée"),
             "not_run": text("Capture not run", "Capture non exécutée"),
             "timed_out": text("Capture timed out", "Délai dépassé"),
@@ -1657,8 +1757,11 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                             workbook_pairs: list[dict] | None = None) -> dict:
     """Explicit native Desktop diagnostic, shared by migration and standalone CLI.
 
-    Fresh per-project screenshots/runs/<run_id>/{source,output}/<stem>.png,
-    plus output_root/desktop_comparisons/<run_id>/{manifest.json,comparison.html}.
+    New captures and reports share output_root/desktop_comparisons/<run_id>/,
+    with screenshots/<stable pair identity>/{source,output}/ for initial/pages.
+    If output_root itself contains a PBIP, its sibling
+    <output_root.name>.desktop_comparisons/<run_id>/ holds all new evidence.
+    Existing project-local evidence is never moved, rewritten or deleted.
     Returns manifest with status 'captured' or 'failed', never a parity score.
     By default pair_workbooks discovers pairs and both applications are captured.
     workbook_pairs instead selects only the caller's successfully generated or
@@ -1673,6 +1776,8 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
     initial workbook pair, or each page_mappings entry when all_pages=True.
     It is invalid without requested Tableau captures.
     Pixel differences/errors do not change capture status or process cleanup.
+    PowerShell executable discovery runs once before any native comparison work.
+    Missing tooling yields failed JSON/HTML evidence without launching either app.
     Raises ValueError/OSError for invalid folders/options or report write failures.
     """
     if screen_comparison not in ("manual", "local"):
@@ -1698,11 +1803,23 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                    for row in rows] if workbook_pairs is not None else [])
     capture_fields = (("tableau", "source"), ("powerbi", "output")) if capture_tableau else (
         ("powerbi", "output"),)
+    from powerbi_import.migration_quality import (
+        _desktop_comparison_root,
+        refresh_desktop_comparison_links,
+    )
+    comparison_root = _desktop_comparison_root(output)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex
-    run_dir = output / "desktop_comparisons" / run_id
+    run_dir = comparison_root / run_id
     _safe_destination(run_dir)
+    if (any(row.get("pbip") and _inside(run_dir, Path(row["pbip"]).parent) for row in rows)
+            or any(p.is_file() for p in comparison_root.glob("*.pbip", case_sensitive=False))):
+        raise ValueError("Comparison evidence directory would be inside a PBIP project")
     run_dir.mkdir(parents=True, exist_ok=False)
+    preflight = powershell_preflight()
     for index, row in enumerate(rows):
+        row["evidence_id"] = _comparison_pair_identity(row, source, output)
+        shots = run_dir / "screenshots" / row["evidence_id"]
+        row["screenshot_dir"] = str(shots)
         requested_initial = {}
         absent = {"status": "not_requested", "screenshot": None,
                   "note": "Capture not attempted because workbook pair is unresolved"}
@@ -1716,9 +1833,21 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                        page_mapping_status="not_run" if capture_tableau else "not_requested")
         if not capture_tableau:
             row["tableau"]["note"] = "Tableau capture not requested (Power BI-only diagnostic)"
-        inventory_allowed = True
+        inventory_allowed = preflight["status"] == "ready"
         try:
-            if row["pair_status"] == "paired":
+            if not inventory_allowed:
+                note = "Desktop tooling preflight failed: " + _native_failure_note(preflight)
+                row["issues"].append(note)
+                for field, _ in capture_fields:
+                    row[field].update(deepcopy(preflight))
+                    row[field].update(
+                        screenshot=None, native_error=deepcopy(preflight), note=note)
+                row["powerbi"].update(
+                    refresh={"status": "not_run", "cause": preflight["cause"], "note": note},
+                    data_load={"status": "not_run", "cause": preflight["cause"], "note": note},
+                    screenshot_data_verified=None,
+                    capture_gate={"status": "failed", "cause": preflight["cause"], "note": note})
+            elif row["pair_status"] == "paired":
                 try:
                     if identities:
                         for key in ("source", "pbip"):
@@ -1726,8 +1855,6 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                             if (path.resolve(strict=True) != path
                                     or _file_identity(str(path)) != identities[index][key]):
                                 raise ValueError(f"Selected {key} file identity changed before capture")
-                    project = Path(row["pbip"]).parent
-                    shots = project / "screenshots" / "runs" / run_id
                     _safe_destination(shots)
                     # New directory, not canonical paths that may contain stale evidence.
                     shots.mkdir(parents=True, exist_ok=False)
@@ -1757,6 +1884,13 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                                     desktop_path=tableau_desktop_path, timeout=timeout)
                                 row[field]["pid"] = getattr(report, "pid", None)
                                 row[field].update(report.to_dict())
+                                native = _native_failure(row[field])
+                                if native is not None:
+                                    failure = deepcopy(native)
+                                    row[field].update(
+                                        status=failure["status"], screenshot=None,
+                                        cause=failure["cause"], native_error=failure,
+                                        note=_native_failure_note(failure))
                             else:
                                 refresh_options = ({"refresh_timeout": refresh_timeout}
                                                    if refresh_timeout != 300 else {})
@@ -1788,14 +1922,12 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
             if all_pages and inventory_allowed:
                 # Initial screenshots never substitute for verified page captures.
                 try:
-                    page_shots = (Path(row["pbip"]).parent / "screenshots" / "runs" / run_id
-                                  if row.get("pbip") else run_dir / "unpaired")
                     page_options = {}
                     if screen_comparison == "local":
                         page_options["screen_comparison"] = screen_comparison
                     if not capture_tableau:
                         page_options["capture_tableau"] = False
-                    _capture_all_pages(row, page_shots, page_timeout, **page_options)
+                    _capture_all_pages(row, shots, page_timeout, **page_options)
                 except Exception as exc:
                     row["status"] = "failed"
                     row["issues"].append(f"All-page workflow failed: {type(exc).__name__}: {exc}")
@@ -1835,10 +1967,16 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_dir": str(source), "output_root": str(output),
         "run_dir": str(run_dir), "limitation": CAPTURE_LIMITATION,
+        "evidence_location": {
+            "layout_version": 1, "comparison_root": str(comparison_root),
+            "screenshot_root": str(run_dir / "screenshots"),
+            "external_to_output_root": not _inside(run_dir, output),
+        },
         "capture_mode": "paired" if capture_tableau else "powerbi_only",
         "capture_tableau": capture_tableau,
         "pairing_mode": "pair_workbooks" if workbook_pairs is None else "explicit",
         "timeout": timeout, "refresh_timeout": refresh_timeout,
+        "preflight": preflight,
         "requested_stages": _requested_capture_stages(
             capture_tableau, all_pages, screen_comparison),
         "initial_capture_totals": _initial_capture_totals(rows, capture_tableau),
@@ -1854,6 +1992,6 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
         manifest.update(screen_comparison="local",
                         screen_comparison_limitations=PIXEL_LIMITATION)
     write_comparison_reports(manifest, run_dir)
-    from powerbi_import.migration_quality import refresh_desktop_comparison_links
-    refresh_desktop_comparison_links(str(output))
+    refresh_desktop_comparison_links(str(
+        comparison_root.parent if not _inside(run_dir, output) else output))
     return manifest
