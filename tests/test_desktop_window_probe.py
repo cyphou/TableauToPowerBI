@@ -5,14 +5,17 @@ Waiting for the report window and capturing it gives a verdict that can be
 wrong in the useful direction. These tests drive that logic with doubles --
 they never launch Power BI.
 """
+import base64
 import json
 import os
 import struct
 import tempfile
 import unittest
 import zlib
+from types import SimpleNamespace
 from unittest import mock
 
+from powerbi_import import desktop_accessibility as accessibility
 from powerbi_import import desktop_window
 from powerbi_import.desktop_probe import (
     WINDOW_VERIFIED_SCOPE,
@@ -189,14 +192,21 @@ class TestDesktopPids(unittest.TestCase):
 
 class TestWindowAwareProbe(unittest.TestCase):
 
+    def setUp(self):
+        # Module-local tooling doubles work on every CI host without changing
+        # global sys.platform/os.name or loading Windows native providers.
+        self.enterContext(mock.patch.object(
+            accessibility, 'sys', SimpleNamespace(platform='win32')))
+        self.enterContext(mock.patch.object(
+            accessibility, 'resolve_powershell_executable',
+            return_value='/__synthetic_native_tooling__/powershell.exe'))
+
     def _probe(self, window, signals, shot=True, rc=None, fallback=None,
                verify_data=False, data_load=None):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'shot.png') if shot else None
             with mock.patch('powerbi_import.desktop_probe.find_pbi_desktop',
                             return_value='pbi.exe'), \
-                 mock.patch('powerbi_import.desktop_probe.powershell_preflight',
-                            return_value={'status': 'ready'}), \
                  mock.patch('powerbi_import.desktop_probe.subprocess.Popen',
                             return_value=_FakeProc(rc)), \
                  mock.patch('powerbi_import.desktop_probe.desktop_pids',
@@ -851,14 +861,31 @@ class TestReportShape(unittest.TestCase):
 
 class TestDataVerificationFailsClosed(unittest.TestCase):
 
-    def _verify(self, payload):
+    def setUp(self):
+        self.enterContext(mock.patch.object(
+            accessibility, 'sys', SimpleNamespace(platform='win32')))
+        self.resolver = self.enterContext(mock.patch.object(
+            accessibility, 'resolve_powershell_executable',
+            return_value='/__synthetic_native_tooling__/powershell.exe'))
+
+    def _verify(self, payload, tables=('Customers',)):
         completed = mock.Mock(returncode=0, stdout=json.dumps(payload))
         with mock.patch('powerbi_import.desktop_probe._m_backed_tables',
-                        return_value=['Customers']), \
+                        return_value=list(tables)), \
              mock.patch.object(desktop_window, 'IS_WINDOWS', True), \
-             mock.patch('powerbi_import.desktop_probe.subprocess.run',
-                        return_value=completed):
-            return verify_desktop_data('Report.pbip', 4242)
+             mock.patch.object(accessibility.subprocess, 'run',
+                               return_value=completed) as child:
+            result = verify_desktop_data('Report.pbip', 4242)
+        child.assert_called_once()
+        command = child.call_args.args[0]
+        self.assertEqual(command[:3], [
+            '/__synthetic_native_tooling__/powershell.exe', '-NoProfile', '-NonInteractive'])
+        self.assertEqual(
+            json.loads(base64.b64decode(child.call_args.kwargs['input']).decode('utf-8')),
+            {'owner_pid': 4242, 'tables': list(tables)})
+        self.assertGreater(child.call_args.kwargs['timeout'], 0)
+        self.assertLessEqual(child.call_args.kwargs['timeout'], 60)
+        return result
 
     def test_malformed_or_failed_results_are_not_verified(self):
         malformed = {
@@ -881,13 +908,7 @@ class TestDataVerificationFailsClosed(unittest.TestCase):
         self.assertNotIn('exception detail', json.dumps(result))
 
     def _verify_two(self, payload):
-        completed = mock.Mock(returncode=0, stdout=json.dumps(payload))
-        with mock.patch('powerbi_import.desktop_probe._m_backed_tables',
-                        return_value=['Customers', 'Orders']), \
-             mock.patch.object(desktop_window, 'IS_WINDOWS', True), \
-             mock.patch('powerbi_import.desktop_probe.subprocess.run',
-                        return_value=completed):
-            return verify_desktop_data('Report.pbip', 4242)
+        return self._verify(payload, tables=('Customers', 'Orders'))
 
     def test_one_empty_table_is_partial_not_verified(self):
         partial = {'status': 'partial', 'tables_checked': 2,
@@ -902,6 +923,32 @@ class TestDataVerificationFailsClosed(unittest.TestCase):
                 'tables_nonempty': 2, 'tables_empty': 0,
                 'tables_failed': 0, 'total_rows': 9}
         self.assertEqual(self._verify_two(full)['status'], 'verified')
+
+    def test_missing_or_nonwindows_tooling_is_terminal_without_running_a_query(self):
+        for platform, executable, cause in (
+                ('win32', None, 'powershell_not_found'),
+                ('linux', None, 'windows_required'),
+                ('linux', '/__synthetic_native_tooling__/powershell.exe', 'windows_required')):
+            with self.subTest(platform=platform, executable=executable):
+                self.resolver.reset_mock()
+                self.resolver.return_value = executable
+                with mock.patch.object(accessibility, 'sys', SimpleNamespace(platform=platform)), \
+                        mock.patch('powerbi_import.desktop_probe._m_backed_tables',
+                                   return_value=['Customers']), \
+                        mock.patch.object(desktop_window, 'IS_WINDOWS', True), \
+                        mock.patch.object(accessibility.subprocess, 'run') as child:
+                    result = verify_desktop_data('Report.pbip', 4242)
+                self.assertEqual((result['status'], result['cause']), ('tooling_unavailable', cause))
+                self.assertEqual(result['note'], cause)
+                self.assertIs(result['retryable'], False)
+                for key in ('tables_checked', 'tables_nonempty', 'tables_empty',
+                            'tables_failed', 'total_rows'):
+                    self.assertEqual(result[key], 0)
+                child.assert_not_called()
+                if platform == 'win32':
+                    self.resolver.assert_called_once_with()
+                else:
+                    self.resolver.assert_not_called()
 
 
 if __name__ == '__main__':

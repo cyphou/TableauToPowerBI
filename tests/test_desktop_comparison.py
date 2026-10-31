@@ -5,8 +5,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
+from powerbi_import import desktop_accessibility as accessibility
 from powerbi_import import desktop_comparison as comparison
 from powerbi_import import desktop_window
 from powerbi_import.desktop_probe import DesktopProbeReport
@@ -355,6 +357,13 @@ class TestPowerBIProcessSafety(FolderFixture):
         _, self.pbip = self.pair()
         self.shot = self.root / "fresh.png"
         self.enterContext(mock.patch.object(desktop_window, "IS_WINDOWS", True))
+        # Only the provider prerequisite is synthetic, not the host's os.name.
+        # Exercise the actual shared preflight without resolving a real tool.
+        self.enterContext(mock.patch.object(
+            accessibility, "sys", SimpleNamespace(platform="win32")))
+        self.resolver = self.enterContext(mock.patch.object(
+            accessibility, "resolve_powershell_executable",
+            return_value="/__synthetic_native_tooling__/powershell.exe"))
         # Healthy mocked PID enumeration must not inherit a failed real query
         # from an earlier test; the probe intentionally fails closed on it.
         self.enterContext(mock.patch.object(
@@ -400,6 +409,41 @@ class TestPowerBIProcessSafety(FolderFixture):
         self.assertTrue(all(call.args == (4242,) for call in dialogs.call_args_list))
         self.assertTrue(all(call.args == (4242,) for call in main.call_args_list))
         capture.assert_not_called()
+        self.proc.terminate.assert_not_called()
+        self.proc.kill.assert_not_called()
+        self.proc.wait.assert_not_called()
+        self.resolver.assert_called_once_with()
+
+    def test_missing_or_nonwindows_native_tooling_stops_before_launch_or_borrowing(self):
+        for platform, executable, cause in (
+                ("win32", None, "powershell_not_found"),
+                ("linux", None, "windows_required"),
+                ("linux", "/__synthetic_native_tooling__/powershell.exe", "windows_required")):
+            with self.subTest(platform=platform, executable=executable):
+                self.resolver.reset_mock()
+                self.resolver.return_value = executable
+                with mock.patch.object(accessibility, "sys", SimpleNamespace(platform=platform)), \
+                        mock.patch.object(comparison.desktop_probe, "find_pbi_desktop",
+                                          return_value="PBIDesktop.exe"), \
+                        mock.patch.object(comparison.desktop_probe, "desktop_pids") as pids, \
+                        mock.patch.object(desktop_window, "wait_for_window") as wait, \
+                        mock.patch.object(desktop_window, "dialog_windows") as dialogs, \
+                        mock.patch.object(desktop_window, "capture_window") as capture:
+                    result = self.capture()
+                self.assertEqual((result["status"], result["cause"]), ("tooling_unavailable", cause))
+                self.assertEqual(result["native_error"]["cause"], cause)
+                self.assertIs(result["native_error"]["retryable"], False)
+                self.assertIsNone(result["pid"])
+                self.assertIsNone(result["screenshot"])
+                pids.assert_not_called()
+                wait.assert_not_called()
+                dialogs.assert_not_called()
+                capture.assert_not_called()
+                if platform == "win32":
+                    self.resolver.assert_called_once_with()
+                else:
+                    self.resolver.assert_not_called()
+        self.launch.assert_not_called()
         self.proc.terminate.assert_not_called()
         self.proc.kill.assert_not_called()
         self.proc.wait.assert_not_called()

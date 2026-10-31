@@ -22,6 +22,7 @@ only after confirming the change is intentional.
 import os
 import sys
 import unittest
+import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -35,6 +36,38 @@ from tests.fixture_corpus import (  # noqa: E402
     golden_workbooks,
 )
 
+_STANDALONE_GOLDEN_IDS = frozenset({'wb_501a11ab', 'wb_7af02205'})
+
+
+def _assert_standalone_inventory(test, twb_path, snapshot):
+    """Pin these public samples' append shape independently of the golden."""
+    root = ET.parse(twb_path).getroot()
+    worksheets = root.findall('./worksheets/worksheet')
+    dashboards = root.findall('./dashboards/dashboard')
+    references = {
+        zone.attrib['name'] for dashboard in dashboards
+        for zone in dashboard.findall('.//zone')
+        if zone.get('type') in {'worksheet-ref', 'worksheet'}
+    }
+    standalone = [
+        worksheet.attrib['name'] for worksheet in worksheets
+        if worksheet.attrib['name'] not in references
+        and not any(worksheet.get(key, '').strip().lower() == 'true'
+                    for key in ('hidden', 'is_hidden'))
+    ]
+    test.assertEqual(len(worksheets), 5)
+    test.assertEqual(len(dashboards), 1)
+    test.assertEqual(len(references), 4)
+    test.assertEqual(len(standalone), 1)
+    # Regenerating a snapshot must not hide lost standalone pages or turn
+    # already-embedded sheets into additional report pages.
+    test.assertEqual(
+        {visual['page'] for visual in snapshot['visuals']},
+        {dashboard.attrib['name'] for dashboard in dashboards} | set(standalone))
+    added = [visual for visual in snapshot['visuals'] if visual['page'] == standalone[0]]
+    test.assertEqual(len(added), 1)
+    test.assertGreater(added[0]['fields'], 0)
+
 
 def _make_case(fid, twb_path):
     def _test(self):
@@ -44,6 +77,8 @@ def _make_case(fid, twb_path):
         golden = _load_json(golden_path(fid))
         self.assertIsNotNone(golden, f"missing golden fixture for {twb}")
         snapshot = build_snapshot_for_workbook(twb)
+        if fid in _STANDALONE_GOLDEN_IDS:
+            _assert_standalone_inventory(self, twb_path, snapshot)
         self.assertEqual(
             snapshot.get("visual_count"), golden.get("visual_count"),
             f"{twb} ({fid}): visual count drifted",

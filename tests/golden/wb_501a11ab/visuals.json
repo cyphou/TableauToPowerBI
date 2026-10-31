@@ -1,5 +1,5 @@
 {
- "visual_count": 5,
+ "visual_count": 6,
  "visuals": [
   {
    "fields": 3,
@@ -64,6 +64,19 @@
    "width": 960,
    "x": 0,
    "y": 108,
+   "z": 0
+  },
+  {
+   "fields": 2,
+   "has_format": false,
+   "height": 700,
+   "page": "Sales Map",
+   "title_font": "",
+   "title_size": "",
+   "type": "azureMap",
+   "width": 1260,
+   "x": 10,
+   "y": 10,
    "z": 0
   }
  ]
