@@ -185,6 +185,21 @@ minimal Markdown publisher, not a complete GitHub Flavored Markdown renderer;
 Mermaid blocks remain code in these pages. GitHub renders the Markdown sources
 and Mermaid separately.
 
+### Publish the documentation to GitHub Pages
+
+In the repository's **Settings → Pages → Build and deployment**, set
+**Source** to **GitHub Actions**. The
+[documentation workflow](../.github/workflows/gh-pages.yml) builds and uploads
+the static site, then deploys it separately. Changes under `docs/` trigger the
+workflow on `main`; it can also be run manually.
+
+If the build succeeds but deployment fails with HTTP **404**, check that Pages
+is enabled with that source setting and inspect the deployment URL and logs.
+After deployment succeeds, verify the
+[published documentation](https://cyphou.github.io/TableauToPowerBI/) and its
+guide links, not just the uploaded artifact. This publishes static documentation,
+not migration data or Fabric/Power BI artifacts.
+
 > [!NOTE]
 > Static quality, native refresh, saved/reopened state, value/visual comparison
 > and deployment each need their own evidence. Unexecuted runtime checks remain

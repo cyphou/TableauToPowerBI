@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Make the non-call AST guard explicit in the static PySpark statement
+  validator, preserving its existing rejection behavior and accepted syntax.
+  This type-checking correction does not establish native Spark execution.
+
 - Distinguish missing native automation tooling from an unreadable UI and
   resolve installed Windows PowerShell when it is absent from `PATH`.
   Keep refresh blocked on unsafe UI without spending the entire refresh budget

@@ -351,7 +351,9 @@ def _validate(statement, available_columns):
             and isinstance(node.targets[0], ast.Name) and node.targets[0].id == 'df'):
         raise _Reject("expected 'df = df.withColumn(...)'")
     call = node.value
-    func = call.func if isinstance(call, ast.Call) else None
+    if not isinstance(call, ast.Call):
+        raise _Reject("expected 'df = df.withColumn(...)'")
+    func = call.func
     if not (isinstance(func, ast.Attribute) and func.attr == 'withColumn'
             and isinstance(func.value, ast.Name) and func.value.id == 'df'):
         raise _Reject("expected 'df = df.withColumn(...)'")
