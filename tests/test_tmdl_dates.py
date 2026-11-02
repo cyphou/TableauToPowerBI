@@ -7,10 +7,12 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from powerbi_import.tmdl_dates import (
     _add_date_table,
     _refresh_calendar_source_expressions,
+    _worksheet_date_usage,
 )
 from powerbi_import.tmdl_writers import _write_tmdl_files
 
@@ -79,6 +81,136 @@ def _read_shared_expressions(content):
         expressions[name.strip("'")] = "\n".join(
             line for line in lines if line and line != "```").strip()
     return expressions
+
+
+class TestCalendarMonthStart(unittest.TestCase):
+    def test_calendar_exposes_month_start_for_continuous_axes(self):
+        model = _model()
+        with redirect_stdout(io.StringIO()):
+            _add_date_table(model)
+        calendar = next(
+            table for table in model['model']['tables']
+            if table['name'] == 'Calendar')
+        month_start = next(
+            column for column in calendar['columns']
+            if column['name'] == 'MonthStart')
+        self.assertEqual(month_start['sourceColumn'], 'MonthStart')
+        self.assertEqual(month_start['dataType'], 'DateTime')
+        self.assertIn(
+            'Date.StartOfMonth([Date])',
+            calendar['partitions'][0]['source']['expression'])
+
+    def test_calendar_bounds_read_physical_source_column_not_display_name(self):
+        model = _model()
+        model['model']['tables'][0]['columns'][0]['sourceColumn'] = ' Date\'s "physical" '
+        with redirect_stdout(io.StringIO()):
+            _add_date_table(model)
+        calendar = next(t for t in model['model']['tables'] if t['name'] == 'Calendar')
+        expression = calendar['partitions'][0]['source']['expression']
+        self.assertIn(
+            'Table.Column(#"Calendar Source First.Event Date", '
+            '" Date\'s ""physical"" ")', expression)
+
+
+class TestCalendarGenerationIntegration(unittest.TestCase):
+    @staticmethod
+    def datasource():
+        return {
+            'name': 'source',
+            'connection': {'type': 'CSV', 'details': {'filename': 'facts.csv'}},
+            'tables': [{
+                'name': 'Facts', 'source_table': '[facts#csv]',
+                'columns': [
+                    {'name': 'Order Date', 'datatype': 'date'},
+                    {'name': 'Refresh Date', 'datatype': 'date'},
+                ],
+            }],
+            'calculations': [], 'columns': [], 'relationships': [],
+        }
+
+    def test_model_uses_worksheet_date_and_extracted_hyper_bounds(self):
+        from powerbi_import.tmdl_generator import _build_semantic_model
+
+        extra = {
+            '_worksheets': [{
+                'name': 'Timeline', 'fields': [{
+                    'name': 'Refresh Date', 'datasource': 'source',
+                    'shelf': 'columns', 'date_part': 'month',
+                }],
+            }],
+            'hyper_files': [{
+                'hyper_reader_tables': [{
+                    'table': 'Facts',
+                    'columns': [{'name': 'Refresh Date', 'datatype': 'date'}],
+                    'column_stats': {
+                        'Refresh Date': {'min': '1901-02-01', 'max': '2098-12-01'},
+                    },
+                }],
+            }],
+        }
+        with redirect_stdout(io.StringIO()):
+            model = _build_semantic_model([self.datasource()], extra_objects=extra)
+        calendar = next(t for t in model['model']['tables'] if t['name'] == 'Calendar')
+        self.assertEqual(calendar['_calendar_bounds']['start_year'], 1901)
+        self.assertEqual(calendar['_calendar_bounds']['end_year'], 2098)
+        relationship = next(
+            r for r in model['model']['relationships'] if r['toTable'] == 'Calendar')
+        self.assertEqual(relationship['fromColumn'], 'Refresh Date')
+
+    def test_public_generation_refreshes_calendar_copy_after_partition_repair(self):
+        from powerbi_import.tmdl_generator import generate_tmdl
+
+        datasource = self.datasource()
+        datasource['m_query_override'] = (
+            'let Source = #table({"Order Date", "Refresh Date"}, '
+            '{{#date(2020, 1, 1), #date(2020, 1, 1)}}) in Source')
+        repaired = (
+            'let Source = #table({"Order Date", "Refresh Date"}, '
+            '{{#date(1980, 1, 1), #date(1980, 1, 1)}}) in Source')
+
+        def repair(model, recovery=None):
+            fact = next(t for t in model['model']['tables'] if t['name'] == 'Facts')
+            fact['partitions'][0]['source']['expression'] = repaired
+            return 1
+
+        with tempfile.TemporaryDirectory() as output:
+            with patch('powerbi_import.tmdl_generator._self_heal_model', side_effect=repair), \
+                    redirect_stdout(io.StringIO()):
+                generate_tmdl([datasource], 'Synthetic', {}, output)
+            expressions = Path(
+                output, 'definition', 'expressions.tmdl').read_text(encoding='utf-8')
+        self.assertIn(repaired, expressions)
+
+    def test_merged_source_resolves_a_unique_original_datasource_field(self):
+        source = {
+            'name': 'Facts', '_source_workbooks': ['Workbook'],
+            'columns': [{'name': 'Order Date'}],
+        }
+        model = {
+            'model': {'tables': [{
+                'name': 'Facts', 'columns': [{
+                    'name': 'Order Date', 'dataType': 'DateTime',
+                }],
+            }]},
+            '_datasources': [{'name': 'SharedModel', 'tables': [source]}],
+        }
+        worksheets = [{'fields': [{
+            'name': 'Order Date', 'datasource': 'original-source',
+            'shelf': 'columns', 'date_part': 'month',
+        }]}]
+        self.assertIn(('Facts', 'Order Date'),
+                      _worksheet_date_usage(model, worksheets, {}))
+
+        model['_datasources'][0]['tables'].append({
+            'name': 'Other', '_source_workbooks': ['Other Workbook'],
+            'columns': [{'name': 'Order Date'}],
+        })
+        self.assertEqual(_worksheet_date_usage(model, worksheets, {}), {})
+
+        model['_datasources'][0]['tables'] = [{
+            'name': 'Facts', 'columns': [{'name': 'Order Date'}],
+        }]
+        self.assertEqual(_worksheet_date_usage(model, worksheets, {}), {})
 
 
 class TestCalendarNestedSourceScope(unittest.TestCase):

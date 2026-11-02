@@ -36,15 +36,18 @@ from prep_flow_parser import (
     _PREP_JOIN_MAP,
     _PREP_TYPE_MAP,
     _clean_m_table_ref,
+    _clean_schema,
     _collect_prep_datasources,
     _convert_action_to_m_step,
     _convert_prep_expression_to_m,
+    _expression_type,
     _get_node_type,
     _parse_aggregate_node,
     _parse_clean_actions,
     _parse_input_node,
     _parse_join_node,
     _parse_pivot_node,
+    _parse_remap,
     _parse_union_node,
     _process_prep_node,
     _process_transform_node,
@@ -55,6 +58,8 @@ from prep_flow_parser import (
     parse_prep_flow,
     read_prep_flow,
 )
+
+from powerbi_import.m_validator import validate_m_query
 
 # ═══════════════════════════════════════════════════════════════════
 # Helper — build minimal flow JSON
@@ -283,6 +288,73 @@ class TestConvertPrepExpression(unittest.TestCase):
         result = _convert_prep_expression_to_m('CONTAINS([Name], "test")')
         self.assertIn('Text.Contains', result)
 
+    def test_positive_split_nested_in_trim_generates_guarded_m(self):
+        result = _convert_prep_expression_to_m(
+            'TRIM( SPLIT( [Notes], "-", 2 ) )'
+        )
+        self.assertIn('Text.Trim(', result)
+        self.assertIn('Text.Split(__tableau_prep_split_source, "-")', result)
+        self.assertIn('__tableau_prep_split_tokens{1}', result)
+        self.assertIn('List.Count(__tableau_prep_split_tokens) < 2', result)
+        self.assertIn('__tableau_prep_split_source = null then error', result)
+        self.assertIn('Value.Is(__tableau_prep_split_source, type text)', result)
+        self.assertIn('token 2 is unavailable', result)
+        step_name, step_expression = _convert_action_to_m_step(
+            'AddColumn',
+            {
+                'columnName': 'Notes - Split 2',
+                'expression': 'TRIM( SPLIT( [Notes], "-", 2 ) )',
+            },
+            {},
+        )
+        query = (
+            'let Source = #table({"Notes"}, {{"first-second"}}),\n'
+            f'    {step_name} = {step_expression.replace("{prev}", "Source")}\n'
+            f'in {step_name}'
+        )
+        self.assertEqual(validate_m_query(query), [])
+
+    def test_split_token_numbers_translate_from_one_based_to_zero_based(self):
+        for token_number, m_index in [(1, 0), (2, 1), (12, 11)]:
+            with self.subTest(token_number=token_number):
+                result = _convert_prep_expression_to_m(
+                    f'SPLIT([Notes], " - ", {token_number})'
+                )
+                self.assertIn(f'__tableau_prep_split_tokens{{{m_index}}}', result)
+
+    def test_split_preserves_exact_multicharacter_delimiter(self):
+        result = _convert_prep_expression_to_m(
+            'SPLIT([Notes], "::", 1)'
+        )
+        self.assertIn('Text.Split(__tableau_prep_split_source, "::")', result)
+
+    def test_split_rejects_negative_and_nonliteral_token_numbers(self):
+        for expression in [
+            'SPLIT([Notes], "-", -2)',
+            'SPLIT([Notes], "-", 1 + 1)',
+            'TRIM(SPLIT([Notes], "-", [Token]))',
+        ]:
+            with self.subTest(expression=expression), self.assertRaisesRegex(
+                ValueError, 'SPLIT'
+            ):
+                _convert_prep_expression_to_m(expression)
+
+    def test_split_type_is_string_only_for_string_field_operand(self):
+        self.assertEqual(
+            _expression_type(
+                'TRIM(SPLIT([Notes], "-", 2))',
+                [{'name': 'Notes', 'type': 'string'}],
+            ),
+            'string',
+        )
+        self.assertEqual(
+            _expression_type(
+                'SPLIT([Count], "-", 2)',
+                [{'name': 'Count', 'type': 'integer'}],
+            ),
+            'unknown',
+        )
+
     def test_len_function(self):
         result = _convert_prep_expression_to_m('LEN([Name])')
         self.assertIn('Text.Length', result)
@@ -321,6 +393,90 @@ class TestCleanActions(unittest.TestCase):
         self.assertIn('RenameColumns', step_expr)
         self.assertIn('OldName', step_expr)
         self.assertIn('NewName', step_expr)
+
+    def test_rename_column_observed_public_target_alias(self):
+        node = _clean_node(actions=[{
+            'actionType': '.v1.RenameColumn',
+            'columnName': 'Notes - Split 1',
+            'rename': 'Notes (clean)',
+        }])
+        steps = _parse_clean_actions(node)
+        self.assertEqual(len(steps), 1)
+        self.assertIn('"Notes - Split 1", "Notes (clean)"', steps[0][1])
+        fields = _clean_schema(node, [
+            {'name': 'Notes - Split 1', 'type': 'string'},
+        ])
+        self.assertEqual(fields, [{'name': 'Notes (clean)', 'type': 'string'}])
+
+    def test_rename_column_canonical_target_precedes_public_alias(self):
+        node = _clean_node(actions=[{
+            'actionType': '.v1.RenameColumn',
+            'columnName': 'OldName',
+            'newColumnName': 'CanonicalName',
+            'rename': 'AliasName',
+        }])
+        steps = _parse_clean_actions(node)
+        self.assertIn('"OldName", "CanonicalName"', steps[0][1])
+        self.assertNotIn('AliasName', steps[0][1])
+
+    def test_rename_column_rejects_missing_or_invalid_names(self):
+        invalid_actions = [
+            {'columnName': 'OldName'},
+            {'columnName': 'OldName', 'newColumnName': ''},
+            {'columnName': 'OldName', 'rename': '   '},
+            {'columnName': 'OldName', 'rename': 7},
+            {'columnName': '', 'rename': 'NewName'},
+            {'columnName': '   ', 'rename': 'NewName'},
+            {'columnName': None, 'rename': 'NewName'},
+        ]
+        for action in invalid_actions:
+            with self.subTest(action=action), self.assertRaisesRegex(
+                ValueError, 'RenameColumn requires nonempty string'
+            ):
+                _parse_clean_actions(_clean_node(actions=[{
+                    'actionType': '.v1.RenameColumn',
+                    **action,
+                }]))
+
+    def test_rename_column_rejects_case_insensitive_target_collision(self):
+        node = _clean_node(actions=[{
+            'actionType': '.v1.RenameColumn',
+            'columnName': 'Raw',
+            'rename': 'existing',
+        }])
+        with self.assertRaisesRegex(ValueError, 'duplicate/colliding field'):
+            _clean_schema(node, [
+                {'name': 'Raw', 'type': 'string'},
+                {'name': 'Existing', 'type': 'integer'},
+            ])
+
+    def test_split_string_type_flows_through_rename_to_remap(self):
+        node = _clean_node(actions=[
+            {
+                'actionType': '.v1.AddColumn',
+                'columnName': 'Notes - Split 2',
+                'expression': 'TRIM( SPLIT( [Notes], "-", 2 ) )',
+            },
+            {
+                'actionType': '.v1.RenameColumn',
+                'columnName': 'Notes - Split 2',
+                'newColumnName': 'Approver',
+            },
+        ])
+        fields = _clean_schema(node, [
+            {'name': 'Notes', 'type': 'string'},
+        ])
+        self.assertEqual(
+            next(field for field in fields if field['name'] == 'Approver')['type'],
+            'string',
+        )
+        self.assertEqual(
+            _parse_remap({
+                'columnName': 'Approver',
+                'values': {'"A"': ['"A"']},
+            }, fields),
+            ('Approver', {'A': 'A'}),
+        )
 
     def test_batched_renames(self):
         node = _clean_node(actions=[

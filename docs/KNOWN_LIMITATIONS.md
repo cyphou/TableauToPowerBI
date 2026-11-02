@@ -32,6 +32,21 @@ local generation is not proof of native refresh or runtime parity.
 | **OAuth credentials** | Credential metadata is stripped by design | Data source connections need re-authentication in Power BI |
 | **Nested layout containers** | ✅ IMPROVED — Grid-snapping engine handles 3-level nesting; 4+ levels may lose precision | Very deeply nested containers may need manual adjustment |
 | **Rich tooltips** | HTML/custom layout tooltips are converted to run-level text (bold, color, font_size extracted) | Complex HTML tooltip layouts are not preserved |
+| **Relevant-value filters** | Inclusive member lists do not reliably distinguish a partial selection from dynamic **All**. Explicit all-members markers are handled separately. | Ambiguous lists are retained as snapshots with a warning; new members may remain excluded. |
+
+Generated filter controls use Power BI's default slicer interactions, which may
+affect other page visuals and intersect saved worksheet-level filters. Their
+scope and interactive selection behavior require manual comparison with Tableau.
+Unknown or ambiguous datasource bindings are warned and omitted rather than
+attached to an arbitrary field.
+
+Resolved `COUNTD` columns exclude blank values. An unresolved ordinary visual
+binding can fall back to a distinct count that includes blank; unresolved quick
+calculations are omitted. A `RUNNING_*` formula over `COUNTD` is emitted as
+a warned `TODO`/`BLANK`, not a cumulative distinct-count approximation.
+Percent-of-total and other quick calculations are not guaranteed to preserve
+Tableau's mark partitions or distinct-count semantics. Review warnings and
+validate values in the source and target.
 
 Strict Hyper Import evidence requires a persistent exact source identity.
 Loose Hyper inputs without that identity and legacy caption-staged CSV aliases
@@ -214,16 +229,94 @@ unambiguous active, source-defined to-one relationship path to each referenced
 table. Canonical column names follow the owning table's exact rename metadata.
 An inferred edge, a many-to-many edge, or multiple possible row paths does not
 establish scalar lookup semantics. These cases stop generation rather than
-selecting an arbitrary match or creating blank placeholder columns. Resolve the
-source grain and relationship metadata before regenerating.
+selecting an arbitrary match or creating blank placeholder columns. When all
+fields belong to one table, the group is materialized on that table rather than
+on the widest table. A declared but missing/ambiguous datasource, absent
+source fields, or a caption/raw-identifier collision with a column, measure or
+source binding in the same datasource blocks generation. Without a declared
+datasource, the collision check covers all model tables.
+References in calculations and visuals are resolved to the generated group;
+the same generated group can be processed again without creating a duplicate.
+New extractions retain component derivation references alongside normalized
+field names. Year-, quarter- and month-truncated components use calendar-period
+starts in M and DAX; other unsupported date truncations, aggregations and table
+calculations stop generation. These mappings do not establish fiscal-calendar
+or display-label equivalence. Older extraction JSON without raw references
+retains a caption-based date-function fallback; re-extract the workbook to
+preserve the source derivations.
+
+The resulting value is **approximate**, not a proven Tableau tuple: it joins
+text values with ` | `. For example, `("A | B", "C")` and `("A", "B | C")`
+can produce the same label. Null handling, culture-dependent text conversion
+and Tableau display labels may also differ, including between the M and DAX
+paths. Validate these semantics and values against each source before use.
+Generated columns carry an approximation annotation, and parity and migration
+reports classify combined groups separately from value groups. Unified quality
+reports warn under `report` and block under `enterprise`/`production`; this is
+a quality finding with no automatic evidence-based waiver, not a native
+validation or an automatic repair.
 
 ### Composite and range logical relationships
 
 Logical relationships with multiple comparisons or inequalities cannot be
 represented by a single Power BI model equality relationship. Extraction retains
-their predicates and table aliases. A constrained conversion path supports
-`SUM` over pair-level calculated expressions, including supported `FIXED`
-dependencies, without duplicating unrelated single-table measures.
+their predicates and table aliases. An opt-in Import path now supports a
+conjunctive composite equality between two source aliases by encoding every
+typed key component with an unambiguous length prefix. It creates a hidden key
+on each table, keeps the original row tables intact, and checks uniqueness on
+the declared one-side during each Power Query refresh.
+
+Enable the composite-equality path through
+`extra_objects['composite_relationship_policies']` or the JSON environment
+variable `TTPBI_COMPOSITE_RELATIONSHIP_POLICIES`. The outer object is keyed by
+the exact extracted datasource name; each inner key is the zero-based index of
+that datasource's extracted logical relationship. A policy must contain exactly
+these fields:
+
+- `one_side`: `left` or `right`; that endpoint's complete tuple must be unique.
+- `comparison_case_sensitive` and `comparison_exact`: both must be `true`;
+  source case, accent and trailing-space comparison rules are not inferred or
+  normalized.
+- `nulls_match`: explicit boolean. When false, tuples containing null never
+  match; when true, null components are encoded individually while the other
+  components remain part of the key. Both cases are covered by the one-side
+  uniqueness check.
+- `filter_direction`: currently only `oneDirection`.
+
+Example policy value:
+
+```json
+{
+  "Synthetic": {
+    "0": {
+      "one_side": "right",
+      "comparison_case_sensitive": true,
+      "comparison_exact": true,
+      "nulls_match": false,
+      "filter_direction": "oneDirection"
+    }
+  }
+}
+```
+
+Only matching string, integer, and boolean tuple components bound to M source
+columns are supported; DAX-only columns are rejected. Literal M escape
+sequences in source headers are preserved as header text.
+Ranges, OR predicates, opaque operands, self-relationships, DirectQuery
+partitions, repeated composite relationships between the same model tables and
+unverified cardinality/collation remain blocked. Each participating table must
+have one Import M partition. Multiple distinct composite pairs may share a
+table. Environment policies for other datasources are ignored for the current
+batch item, but a matching datasource name and index applies in every workbook:
+verify that the evidence is valid for each one. The uniqueness assertion runs
+on refresh, not during static generation; its distinct-key scan can add refresh
+cost and may affect query folding. A failed uniqueness assertion fails the
+refresh rather than silently demoting the relationship to many-to-many.
+
+A separate constrained DAX path supports `SUM` over pair-level calculated
+expressions for some equality/range predicates, including supported `FIXED`
+dependencies, without duplicating unrelated single-table measures. It does not
+create a general model relationship or materialize arbitrary interval matches.
 
 This path requires an explicit policy keyed by the extracted datasource name,
 provided through `extra_objects['logical_relationship_policies']` or the JSON
@@ -282,6 +375,22 @@ Generated expressions still require runtime and source-value checks.
 | Violin plot | ✅ `boxAndWhisker` + custom visual (`ViolinPlot1.0.0`) | Maps to Box & Whisker; AppSource custom visual GUID available |
 | Parallel coordinates | ✅ `lineChart` + custom visual (`ParallelCoordinates1.0.0`) | Maps to Line Chart; AppSource custom visual GUID available |
 
+`equivalence_report_v2.json` reports `visual_coverage` as `not_run`: it does
+not have verified worksheet-to-PBIR projection provenance. The separate
+`model_name_presence` check searches unqualified names across the whole model,
+not the target visual or a proven datasource binding. Unambiguous calculation
+IDs are resolved to captions; ambiguous IDs are not scored. The historical
+`fidelity_percent` field covers these offline name checks only and does not
+establish value, rendering, or visual parity.
+
+The separate visual-diff report selects candidate visuals heuristically by
+type, title and unqualified field names. Its historical `exact` and
+`field_coverage` fields describe candidate type and name overlap, not verified
+worksheet-to-visual provenance or rendered parity. With dashboards, that report
+compares dashboard-placed worksheets and lists the others as excluded. The
+source-fidelity audit keeps such results in `needs_review` even when Desktop
+data loading was verified.
+
 ## Power Query M Limitations
 
 | Area | Limitation |
@@ -289,6 +398,7 @@ Generated expressions still require runtime and source-value checks.
 | **Prep graph and export validation** | Ambiguous container boundaries, dangling references, cycles and invalid collection shapes are rejected. Missing/null optional collections normalize to empty collections. Requested M conversion failures set `conversion_error`; standalone batch rejects missing outputs or M queries. Leaf-node output fallback remains supported when no explicit outputs exist. Generated M does not prove successful refresh or semantic equivalence. |
 | **Prep envelope/shape variants** | Known `superNode` envelopes normalize their `actionNode`, graph identity and ordered actions; this is not support for arbitrary inner operations. Column-keyed `fields` maps normalize with conflict checks. Unsupported filter directions/payloads and nonempty action annotations stay visible in inventory diagnostics and block conversion, rather than silently defaulting to `keep`. Only semantically empty, unambiguously routed containers collapse to identity. Data-dependent rows-to-columns pivot remains unsupported. See the [normalization contract](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#envelopes-and-shape-variants-reports-85-87). |
 | **Prep schema and workbook coverage** | Supported operations propagate field names/types, with checked output declarations. The observed `SimpleUnion.namespaceFieldMappings` form renames physical fields per exact incoming namespace before append; collisions, unknown mappings and incompatible types still reject. This does not support arbitrary manual mapping dialects. Missing columns, unresolved output types, colliding join names and dynamic pivot schemas fail explicitly. Workbook `--prep` requires at least one binding and complete coverage of published workbook tables; unused auxiliary outputs are reported, not appended. The reserved `F_<n>_<subject>` → `S_F<n>_<subject>` rule additionally requires exact published identity metadata. See the [binding contract](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#parser-scope-and-workbook-binding-contract-reports-8183) and [mapped union scope](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#observed-mapped-union). |
+| **Prep SimpleJoin** | Conversion requires explicit input namespaces, equality keys, an unambiguous declared output projection and a per-node comparison/null/duplicate evidence policy. An environment policy is keyed by node ID, not flow: reused IDs share the attestation and produce a warning, so verify every matching flow. The public flow's observed `RenameColumn.rename` alias and bounded positive `SPLIT` path are supported, but full conversion still stops at the mapped `Discount` union's real/string mismatch without a cast. Its missing join projection is separately reproduced in a reduced producer-backed test and remains blocked. Native M refresh and value parity have not been established. `notInner` combines both unmatched sides only on this guarded path; a legacy payload without a proven projection is rejected. See the [SimpleJoin contract](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#envelopes-and-shape-variants-reports-85-87). |
 | **Prep #81 incomplete clean dialect coverage** | N2's first bounded `.v2018_3_3.Remap` slice supports observed explicit JSON-encoded TEXT maps standalone and in grouped clean actions: simultaneous exact case-sensitive lookup preserves unmatched values/nulls. Missing/non-string upstream fields and invalid/ambiguous maps reject. `groupMethodProps` is provenance for the materialized map, not fuzzy execution. Static source-to-TMDL tests cover conversion and M/schema preservation; native refresh/value execution remains `not_run`. N1 is partial (one observed dialect of eight). The other seven dialects (`ValueFilter`, `RichRangeFilter`, `RangeFilter`, `RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter`, `RichNullFilter`) remain unsupported and lack demonstrated producer payloads. M helper availability/analyzer classification is not parser support. Existing #82/#83 safeguards are preserved. See the [Prep dialect evidence](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#clean-node-dialect-evidence-status). |
 | **M identifier quoting** | ✅ FIXED — Column names with special characters (hyphens, slashes, parentheses, etc.) are now auto-quoted as `[#"Name"]` in M expressions. Previously, names like `Sub-Category` caused "Invalid identifier" errors |
 | **Custom SQL params** | ✅ IMPLEMENTED — `Value.NativeQuery()` with parameter record binding and `[EnableFolding=true]` |

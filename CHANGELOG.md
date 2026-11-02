@@ -4,6 +4,112 @@
 
 ## Unreleased
 
+- Guard opt-in Import composite equalities with source-bound typed keys and
+  refresh-time one-side uniqueness. Route combined groups and their visual/DAX
+  references to their proven owners, rejecting missing or ambiguous bindings
+  and conflicting names. Record text-concatenated combined values as
+  approximations: `report` warns, `enterprise`/`production` block. Native
+  refresh and source-value parity remain unverified.
+- Preserve combined-field derivation references during extraction and use
+  calendar-period starts for supported truncated dates. Reject unsupported
+  component derivations instead of silently treating them as raw columns.
+
+- Support the observed Prep `SimpleJoin` envelope only with an explicit output
+  projection and operator attestations for comparison, null and duplicate
+  behavior. Environment policies are node-scoped rather than flow-scoped;
+  applying one logs a warning for each matching flow. The public sample without
+  a declared projection remains blocked.
+
+- Accept the observed Prep `RenameColumn.rename` target alias while preserving
+  canonical `newColumnName` precedence. Convert only positive-literal
+  `SPLIT([string field], "delimiter", n)` expressions, optionally wrapped in
+  `TRIM`, to guarded M with Tableau's one-based token selection. Unsupported
+  expressions are rejected; null inputs and unavailable tokens raise explicit
+  M errors. This does not claim runtime parity, and the public flow still fails
+  on its mapped `Discount` union's real/string type mismatch.
+
+- Refresh four existing public-corpus failure signatures for the earlier
+  Hyper physical-identity guard and the public Prep flow's unsupported
+  `RenameColumn` target alias. The Prep baseline was then advanced to the
+  measured `Discount` union type mismatch; the same five limitations remain,
+  with no new entry. Blocked artifacts are not claimed as successful
+  migrations.
+
+- Map recognized Tableau internal `Number of Records` / `COUNT(*)` fields to
+  `COUNTROWS`. Reduce `SUM` of an explicitly constant-one measure to
+  `COUNTROWS` only when that identity is proven; arbitrary sums are unchanged.
+
+- Preserve value-group defaults in emitted M: an absent default uses `Other`;
+  explicit text, empty-string, and null defaults are retained, including in the
+  large-group path. Static extraction and generated-M tests do not establish
+  Power Query runtime or value equivalence.
+
+- Preserve DateTime fact timestamps while using separate date-grain keys for
+  generated Calendar relationships. Bind discrete Year only through a unique
+  active exact date-table relationship and sort it ascending; do not substitute
+  raw timestamps for missing/ambiguous bindings or truncated-year fields.
+  Desktop behavior is not established by static generation tests.
+
+- Emit uniquely resolved constant X-axis reference lines as
+  `xAxisReferenceLine`; omit unresolved or ambiguous bindings with a migration
+  note. Dynamic X-axis reference lines remain unsupported; Desktop rendering
+  is not claimed.
+
+- Publish the PBIP completion marker atomically only after generation and
+  Desktop path checks; invalidate a previous marker before preprocessing and
+  leave no marker if the `.gitignore` or manifest publication fails. Restore
+  proven same-grain FIXED dimension columns and legacy empty-axis handling
+  without accepting ambiguous dependencies or unsupported axis structures.
+
+- Stop Power BI opening, refresh and capture when the launched process is
+  observed to have exited. Recheck window ownership before automation and
+  capture, and check the foreground window, cursor position and window under
+  a physical click immediately before sending it. Preserve dump observations
+  without attributing them to a PID. These are process-ownership safeguards, not
+  proof of a particular Desktop failure; an in-flight native operation
+  cannot be retroactively canceled. Revoke screenshot-data verification after
+  an observed exit, ownership change or failed/blank/unreadable capture, and
+  make the standalone probe gate honor final process and refresh statuses
+  rather than old row counts.
+
+- Atomically checkpoint Desktop diagnostic manifests before capture and after
+  each completed workbook. Preserve interrupted attempts as incomplete when
+  possible, expose a partial HTML report on Ctrl+C, and distinguish title,
+  responsiveness and stability observations without accepting foreign windows
+  or changing the launched-process ownership rule. Print the checkpoint path
+  before Desktop launches and flush optional batch JSONL progress events after
+  their corresponding checkpoints.
+
+- Preserve differing Prep wrapper/action display names without replacing the
+  wrapper's graph identity. Collapse an empty, semantics-free container when
+  its observed empty parameter envelope and identical `Default` edges prove
+  unambiguous routing; unknown operations and ambiguous metadata still block.
+
+- Preserve worksheet filter scope, qualified filter controls and sort bindings,
+  Tableau titles, monthly date truncation and supported non-blank `COUNTD`
+  measures. Improve selected automatic visual mappings and flag safe
+  card-overlap adjustments. Deduplicate identical field projections in the
+  table fallback for maps without dropping different aggregations.
+  Ambiguous relevant-value lists, unresolved
+  aggregations, default slicer interactions and quick-table-calculation scope
+  still require review; static tests do not establish native visual parity.
+
+- Separate worksheet model-name presence from unverified PBIR visual coverage
+  in the equivalence report. Resolve unambiguous calculation captions, report
+  ambiguous identifiers as `not_run`, and keep visual projections and runtime
+  values explicitly outside the offline name-check score. Label visual-diff
+  and comparison-report matches as heuristic and require review when visual
+  coverage is unverified. Source visual inventory entries in the migration
+  report are `unverified` and excluded from classification scores; a report
+  with only unverified items has no numeric score.
+
+- Reject false semantic-execution passes from empty or budget-truncated query
+  suites, nonterminal provider responses, malformed observations and incomplete
+  contract evidence. Compare explicit null expectations, distinguish booleans
+  from numbers and enforce finite non-negative tolerances without losing numeric
+  precision or valid provider provenance. Inert regression checks are an N5
+  prerequisite, not Desktop save/reopen or source-value equivalence evidence.
+
 - Make the non-call AST guard explicit in the static PySpark statement
   validator, preserving its existing rejection behavior and accepted syntax.
   This type-checking correction does not establish native Spark execution.
@@ -79,10 +185,11 @@
   Semantic/source integrity guards remain blocking under every quality policy.
   The public corpus gate distinguishes matching, retracted known-failure
   diagnostics from published projects; a failed entry may not retain a PBIP.
-  Its existing Prep limitation now records the measured downstream
-  `SimpleJoin` projection gap after implementing the observed manual-union
-  form. Independent incompatible union-input types remain blocking; the
-  five-entry limitation list has not been reduced.
+  The previously recorded Prep failure was a `SimpleJoin`/`SuperJoin`
+  normalization conflict; the current full-flow failure is the `RenameColumn`
+  target alias above. Its missing join projection and incompatible union-input
+  types remain independently blocking; the five-entry limitation list has not
+  been reduced.
 
 - Add explicit `--calendar-mode fixed` to isolate Calendar from source rereads,
   using supplied bounds or 2020–2030 defaults. Keep source-derived expansion as

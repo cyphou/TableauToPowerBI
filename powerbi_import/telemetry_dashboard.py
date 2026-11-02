@@ -18,6 +18,8 @@ import logging
 import os
 from datetime import datetime
 
+from powerbi_import.report_scoring import migration_classification_score
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -130,10 +132,10 @@ def _analyze_bottlenecks(reports, telemetry_entries):
     # From reports: items with partial/skipped/failed status
     for r in reports:
         for item in r.get('items', []):
-            notes = item.get('notes', '')
+            notes = item.get('notes') or item.get('note') or ''
             status = item.get('status', 'unknown')
-            if status in ('partial', 'skipped', 'failed'):
-                kind = item.get('type', item.get('kind', 'unknown'))
+            if status in ('partial', 'skipped', 'failed', 'unsupported', 'unverified', 'placeholder'):
+                kind = item.get('type', item.get('kind', item.get('category', 'unknown')))
                 key = f'{kind}:{status}'
                 if key not in bottlenecks:
                     bottlenecks[key] = {
@@ -175,13 +177,12 @@ def _compute_portfolio_progress(reports):
     total = len(reports)
     completed = 0
     partial = 0
+    unscored = 0
     for r in reports:
-        fid = r.get('fidelity_score', r.get('overall_fidelity', 0))
-        try:
-            fid = float(fid)
-        except (TypeError, ValueError):
-            fid = 0
-        if fid >= 80:
+        fid = migration_classification_score(r)
+        if fid is None:
+            unscored += 1
+        elif fid >= 80:
             completed += 1
         elif fid > 0:
             partial += 1
@@ -192,8 +193,14 @@ def _compute_portfolio_progress(reports):
         'completed': completed,
         'partial': partial,
         'pending': pending,
+        'unscored': unscored,
         'pct_complete': pct,
     }
+
+
+def _format_score(score):
+    """Display an optional classification percentage without fabricating zero."""
+    return f'{score:g}%' if score is not None else 'not_run'
 
 
 def generate_dashboard(artifacts_dir, output_path=None, telemetry_log=None):
@@ -215,11 +222,11 @@ def generate_dashboard(artifacts_dir, output_path=None, telemetry_log=None):
 
     # Aggregate stats
     total_runs = len(reports)
-    fidelities = [r.get('fidelity_score', r.get('overall_fidelity', 0))
-                  for r in reports if r.get('fidelity_score') or r.get('overall_fidelity')]
-    avg_fidelity = round(sum(fidelities) / len(fidelities), 1) if fidelities else 0
-    max_fidelity = max(fidelities) if fidelities else 0
-    min_fidelity = min(fidelities) if fidelities else 0
+    report_scores = [migration_classification_score(r) for r in reports]
+    fidelities = [score for score in report_scores if score is not None]
+    avg_fidelity = round(sum(fidelities) / len(fidelities), 1) if fidelities else None
+    max_fidelity = max(fidelities) if fidelities else None
+    min_fidelity = min(fidelities) if fidelities else None
 
     # Items aggregation
     all_items = []
@@ -271,6 +278,8 @@ def generate_dashboard(artifacts_dir, output_path=None, telemetry_log=None):
 <p>Tableau &rarr; Power BI &mdash; {tel_sessions} telemetry sessions, {total_runs} migration reports</p>
 </div>
 <div class="container">
+<p>Classification scores are static heuristics, not evidence of visual rendering,
+data-value parity, semantic execution, refresh, or deployment.</p>
 """]
 
     # Tabs
@@ -289,8 +298,12 @@ def generate_dashboard(artifacts_dir, output_path=None, telemetry_log=None):
     parts.append('<div class="grid">')
     parts.append(f'<div class="card"><h3>Total Migrations</h3><div class="val">{total_runs}</div>'
                  f'<div class="sub">{len(wbs)} unique workbooks</div></div>')
-    parts.append(f'<div class="card"><h3>Avg Fidelity</h3><div class="val">{avg_fidelity}%</div>'
-                 f'<div class="sub">min {min_fidelity}% / max {max_fidelity}%</div></div>')
+    limits = (f'min {_format_score(min_fidelity)} / max {_format_score(max_fidelity)}'
+              if fidelities else 'No scored reports')
+    parts.append(f'<div class="card"><h3>Avg classification score</h3>'
+                 f'<div class="val">{_format_score(avg_fidelity)}</div>'
+                 f'<div class="sub">{len(fidelities)}/{total_runs} scored; '
+                 f'{portfolio["unscored"]} unscored; {limits}</div></div>')
     migrated = status_counts.get('migrated', 0) + status_counts.get('converted', 0)
     partial_ct = status_counts.get('partial', 0)
     skipped = status_counts.get('skipped', 0) + status_counts.get('failed', 0)
@@ -302,14 +315,14 @@ def generate_dashboard(artifacts_dir, output_path=None, telemetry_log=None):
 
     # Fidelity history
     if fidelities:
-        parts.append('<h2>Fidelity History</h2>')
+        parts.append('<h2>Classification Score History (scored reports)</h2>')
         parts.append('<div class="card">')
         max_bar = max(fidelities) or 1
         for i, f in enumerate(fidelities[-30:]):
             w = int(f / max_bar * 300)
             color = '#4caf50' if f >= 80 else '#ff9800' if f >= 50 else '#f44336'
             parts.append(f'<div style="margin:2px 0"><span class="chart-bar" '
-                         f'style="width:{w}px;background:{color}"></span> {f}%</div>')
+                         f'style="width:{w}px;background:{color}"></span> {_format_score(f)}</div>')
         parts.append('</div>')
 
     # Per-workbook table with search + sort
@@ -323,22 +336,19 @@ def generate_dashboard(artifacts_dir, output_path=None, telemetry_log=None):
         parts.append('</div>')
         parts.append('<table id="tbl-runs"><thead><tr>'
                      '<th onclick="sortTable(\'tbl-runs\',0)">Workbook</th>'
-                     '<th onclick="sortTable(\'tbl-runs\',1)">Fidelity</th>'
+                     '<th onclick="sortTable(\'tbl-runs\',1)">Classification score</th>'
                      '<th onclick="sortTable(\'tbl-runs\',2)">Items</th>'
                      '<th onclick="sortTable(\'tbl-runs\',3)">Timestamp</th>'
                      '</tr></thead><tbody>')
         for r in reports[-50:]:
             name = r.get('workbook_name', r.get('report_name', ''))
-            fid = r.get('fidelity_score', r.get('overall_fidelity', ''))
+            fid = migration_classification_score(r)
             items_count = len(r.get('items', []))
             ts = r.get('timestamp', r.get('generated_at', ''))
-            try:
-                fid_val = float(fid) if fid else 0
-            except (TypeError, ValueError):
-                fid_val = 0
-            cls = 'pass' if fid_val >= 80 else 'warn' if fid_val >= 50 else 'fail'
+            cls = ('' if fid is None else
+                   'pass' if fid >= 80 else 'warn' if fid >= 50 else 'fail')
             parts.append(f'<tr><td>{_esc(name)}</td>'
-                         f'<td class="{cls}">{_esc(str(fid))}%</td>'
+                         f'<td class="{cls}">{_format_score(fid)}</td>'
                          f'<td>{items_count}</td>'
                          f'<td>{_esc(ts)}</td></tr>')
         parts.append('</tbody></table>')
@@ -357,22 +367,28 @@ def generate_dashboard(artifacts_dir, output_path=None, telemetry_log=None):
     parts.append('<div class="tab-content" data-tabcontent="main" data-tab="portfolio">')
     parts.append('<h2>Portfolio Progress</h2>')
     parts.append('<div class="grid">')
-    parts.append(f'<div class="card"><h3>Completed (&#8805;80%)</h3>'
+    parts.append(f'<div class="card"><h3>Scores &#8805;80%</h3>'
                  f'<div class="val pass">{portfolio["completed"]}</div></div>')
-    parts.append(f'<div class="card"><h3>Partial (&lt;80%)</h3>'
+    parts.append(f'<div class="card"><h3>Scores above 0 and below 80%</h3>'
                  f'<div class="val warn">{portfolio["partial"]}</div></div>')
-    parts.append(f'<div class="card"><h3>Pending</h3>'
+    parts.append(f'<div class="card"><h3>Zero or unscored</h3>'
                  f'<div class="val">{portfolio["pending"]}</div></div>')
-    parts.append(f'<div class="card"><h3>Completion Rate</h3>'
-                 f'<div class="val">{portfolio["pct_complete"]}%</div></div>')
+    parts.append(f'<div class="card"><h3>Unscored reports</h3>'
+                 f'<div class="val">{portfolio["unscored"]}</div></div>')
+    threshold_share = (f'{portfolio["pct_complete"]}%' if fidelities else 'not_run')
+    parts.append(f'<div class="card"><h3>Share of all reports scoring &#8805;80%</h3>'
+                 f'<div class="val">{threshold_share}</div></div>')
     parts.append('</div>')
-    # Progress bar
-    pct = portfolio['pct_complete']
-    color = '#4caf50' if pct >= 75 else '#ff9800' if pct >= 40 else '#f44336'
-    parts.append(f'<div class="progress-track"><div class="progress-fill" '
-                 f'style="width:{pct}%;background:{color}"></div></div>')
-    parts.append(f'<div class="sub" style="text-align:center">'
-                 f'{portfolio["completed"]}/{portfolio["total"]} workbooks fully migrated</div>')
+    if fidelities:
+        pct = portfolio['pct_complete']
+        color = '#4caf50' if pct >= 75 else '#ff9800' if pct >= 40 else '#f44336'
+        parts.append(f'<div class="progress-track"><div class="progress-fill" '
+                     f'style="width:{pct}%;background:{color}"></div></div>')
+        parts.append(f'<div class="sub" style="text-align:center">'
+                     f'{portfolio["completed"]}/{portfolio["total"]} reports scored &#8805;80%; '
+                     f'{portfolio["unscored"]} reports were not scored</div>')
+    else:
+        parts.append('<p>No reports have a classification score.</p>')
     parts.append('</div>')  # end portfolio tab
 
     # ── Tab: Bottlenecks ───────────────────────────────────────
@@ -389,7 +405,8 @@ def generate_dashboard(artifacts_dir, output_path=None, telemetry_log=None):
                          f'<td>{_esc(samples)}</td></tr>')
         parts.append('</tbody></table>')
     else:
-        parts.append('<p>No bottlenecks detected — all items migrated successfully.</p>')
+        parts.append('<p>No bottlenecks were recorded in the supplied evidence; '
+                     'unrecorded issues remain unverified.</p>')
 
     # Common issues
     if issue_counts:

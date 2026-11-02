@@ -57,6 +57,14 @@ Discrete month-of-year pills bind to `Calendar[MonthName]`, sorted by
 `Calendar[Month]`, only when an active relationship connects Calendar to the
 exact source date column. A daily date binding is not equivalent to this grouping.
 
+Discrete Year binds to a date table's `Year` column only when a unique active
+relationship resolves the exact source date; it sorts ascending. With no
+binding, an ambiguous binding, or a truncated-year (`tyr`) field, the raw
+timestamp is not substituted. For relationships to generated `Calendar[Date]`,
+a DateTime fact column uses a separate date-grain key while retaining the
+original timestamp. These are static generation behaviors, not Desktop
+rendering or refresh evidence.
+
 An independent Text measure is retained in Tooltips with an approximation
 annotation, not substituted for the Y measure. Native Y labels are suppressed
 when they would misrepresent that separate Text encoding.
@@ -143,6 +151,12 @@ compatibility adjustment, not a change to the visual mapping inventory.
 | Multi-row KPI | multiRowCard | Multiple values |
 | Image | image | |
 
+**Reference lines:** A constant X-axis line is emitted as PBIR
+`xAxisReferenceLine` only when its axis field resolves uniquely to the Columns
+shelf. Unresolved or ambiguous bindings are omitted with a migration note;
+dynamic X-axis lines remain unsupported. Static generation does not verify
+Desktop rendering.
+
 ## 🔢 Calculation Functions
 
 ### Basic Aggregations
@@ -153,8 +167,9 @@ compatibility adjustment, not a change to the visual mapping inventory.
 | `AVG([Price])` | `AVERAGE([Price])` | Average price |
 | `MIN([Date])` | `MIN([Date])` | Minimum date |
 | `MAX([Quantity])` | `MAX([Quantity])` | Maximum quantity |
-| `COUNT([Orders])` | `COUNT([Orders])` | Number of orders |
-| `COUNTD([Customer ID])` | `DISTINCTCOUNT([Customer ID])` | Unique customers |
+| `COUNT([Orders])` | `COUNT([Orders])` | Number of nonblank values |
+| Tableau internal `Number of Records` (`COUNT(*)`) | `COUNTROWS('Table')` | Row count when the source binding is recognized |
+| `COUNTD([Customer ID])` | `DISTINCTCOUNTNOBLANK('Orders'[Customer ID])` with empty-table handling | Unique non-null customers; unresolved bindings require review |
 | `MEDIAN([Value])` | `MEDIAN([Value])` | Median |
 | `STDEV([Amount])` | `STDEV.S([Amount])` | Standard deviation |
 | `VAR([Sales])` | `VAR.S([Sales])` | Variance |

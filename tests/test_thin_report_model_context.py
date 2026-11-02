@@ -168,6 +168,7 @@ class TestModelContextAccessors(unittest.TestCase):
     def _context(self):
         return {
             'actual_bim_measures': {'Total Sales'},
+            'actual_bim_measure_symbols': {('Orders', 'Total Sales')},
             'actual_bim_symbols': {('Orders', 'Sales'), ('Orders', 'Total Sales')},
             'actual_bim_column_types': {('Orders', 'Sales'): 'double'},
             'actual_bim_column_categories': {('Orders', 'City'): 'city'},
@@ -175,8 +176,22 @@ class TestModelContextAccessors(unittest.TestCase):
             'measure_rename_map': {'Calculation_1': 'Total Sales'},
             'table_rename_map': {('federated.1', 'Orders'): 'Orders'},
             'column_rename_map': {'Orders': {'Calculation_2': 'Total Profit'}},
+            'countd_measure_bindings': {
+                ('Orders', 'Sales'): 'COUNTD Sales (Orders)',
+            },
+            'quick_table_calc_bindings': {
+                ('Orders', 'Sales', 'pcto', 'countd'):
+                    ('Orders', '% of Total Sales (COUNTD Orders)'),
+            },
+            'unsupported_quick_table_calcs': {
+                ('federated.1', 'Sales', 'running_sum', 'sum'):
+                    'DirectLake has no Calendar[Date] column',
+            },
             'related_month_bindings': {
                 ('Orders', 'Order Date'): ('Calendar', 'MonthName', 'Month'),
+            },
+            'related_continuous_month_bindings': {
+                ('Orders', 'Order Date'): ('Calendar', 'MonthStart'),
             },
         }
 
@@ -199,6 +214,10 @@ class TestModelContextAccessors(unittest.TestCase):
         generator.apply_model_context(context)
         context['actual_bim_symbols'].add(('Orders', 'Injected'))
         context['measure_rename_map']['x'] = 'y'
+        context['column_rename_map']['Orders']['Calculation_2'] = 'changed'
+        context['countd_measure_bindings'].clear()
+        context['quick_table_calc_bindings'].clear()
+        context['unsupported_quick_table_calcs'].clear()
         self.assertEqual(self._context(), generator.export_model_context())
 
     def test_exporting_copies_the_state(self):
@@ -271,6 +290,64 @@ class TestSharedModelThinReports(_BindingAssertions, unittest.TestCase):
                 )
             cls.projects[output_format] = result
 
+    def test_countd_tooltip_binds_to_nonblank_shared_measure(self):
+        for output_format in ('pbip', 'fabric'):
+            with self.subTest(output_format=output_format):
+                converted = [_importer(name)._load_converted_objects() for name in _SAMPLES]
+                worksheet = next(
+                    ws for ws in converted[0]['worksheets']
+                    if ws['name'] == 'Profit by Category')
+                worksheet['fields'].append({
+                    'name': 'Customer Name', 'shelf': 'tooltip',
+                    'datasource': 'federated.1', 'aggregation': 'countd',
+                })
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = _importer(_SAMPLES[0]).import_shared_model(
+                        model_name='CountdShared',
+                        all_converted_objects=converted,
+                        output_dir=_new_output_dir('countd_' + output_format),
+                        workbook_names=list(_SAMPLES),
+                        output_format=output_format,
+                        force_merge=True,
+                    )
+                sales_report = next(
+                    path for path in result['report_paths']
+                    if path.endswith('Superstore_Sales.Report'))
+                refs = self.assert_report_binds_to_model(sales_report, result['model_path'])
+                measure = 'COUNTD Customer Name (Orders)'
+                self.assertIn(('Measure', 'Orders', measure, False),
+                              [ref[1:] for ref in refs])
+                with open(os.path.join(
+                        result['model_path'], 'definition', 'tables', 'Orders.tmdl'),
+                        encoding='utf-8') as stream:
+                    model = stream.read()
+                self.assertIn("DISTINCTCOUNTNOBLANK('Orders'[Customer Name])", model)
+                self.assertIn("ISEMPTY('Orders')", model)
+
+    def test_countd_tooltip_binds_in_regular_pbip_generation(self):
+        converted = _importer(_SAMPLES[0])._load_converted_objects()
+        worksheet = next(ws for ws in converted['worksheets']
+                         if ws['name'] == 'Profit by Category')
+        worksheet['fields'].append({
+            'name': 'Customer Name', 'shelf': 'tooltip',
+            'datasource': 'federated.1', 'aggregation': 'ctd',
+        })
+        generator = PowerBIProjectGenerator(
+            output_dir=_new_output_dir('countd_regular'))
+        with contextlib.redirect_stdout(io.StringIO()):
+            project = generator.generate_project('CountdRegular', converted)
+        semantic_model = os.path.join(project, 'CountdRegular.SemanticModel')
+        report = os.path.join(project, 'CountdRegular.Report')
+        refs = self.assert_report_binds_to_model(report, semantic_model)
+        self.assertIn(
+            ('Measure', 'Orders', 'COUNTD Customer Name (Orders)', False),
+            [ref[1:] for ref in refs],
+        )
+        with open(os.path.join(semantic_model, 'definition', 'tables', 'Orders.tmdl'),
+                  encoding='utf-8') as stream:
+            model = stream.read()
+        self.assertIn("DISTINCTCOUNTNOBLANK('Orders'[Customer Name])", model)
+
     def _model_and_reports(self, output_format):
         result = self.projects[output_format]
         reports = {os.path.basename(path)[:-len('.Report')]: path
@@ -301,6 +378,12 @@ class TestSharedModelThinReports(_BindingAssertions, unittest.TestCase):
                  _visual_refs(reports['Superstore_Sales'])}
         self.assertIn(('Measure', 'Orders', 'Total Sales'), sales)
         self.assertFalse([ref for ref in sales if ref[1] == 'federated.1'])
+
+    def test_continuous_month_uses_shared_calendar_month_start(self):
+        _, reports, _ = self._model_and_reports('pbip')
+        refs = {(kind, entity, prop) for _, kind, entity, prop, _ in
+                _visual_refs(reports['Superstore_Sales'])}
+        self.assertIn(('Column', 'Calendar', 'MonthStart'), refs)
 
     def test_the_shared_project_is_openable(self):
         _, _, root = self._model_and_reports('pbip')

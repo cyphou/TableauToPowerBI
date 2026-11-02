@@ -451,6 +451,34 @@ class TestExtractWorksheetFields(unittest.TestCase):
         self.assertEqual(fields[0]['name'], 'Sales')
         self.assertEqual(fields[0]['table_calc'], 'pcto')
 
+    def test_distinct_count_aggregation_is_preserved(self):
+        ws = ET.fromstring('''
+        <worksheet>
+            <table><cols>[ds].[ctd:Id:qk]</cols><rows></rows></table>
+        </worksheet>''')
+        fields = self.ext.extract_worksheet_fields(ws)
+        self.assertEqual(len(fields), 1)
+        self.assertEqual(fields[0]['name'], 'Id')
+        self.assertEqual(fields[0]['aggregation'], 'ctd')
+
+    def test_countd_is_preserved_on_encodings_and_quick_table_calcs(self):
+        ws = ET.fromstring('''
+        <worksheet>
+            <table><cols>[ds].[pcto:countd:Id:qk]</cols></table>
+            <encodings>
+                <color column="[ds].[ctd:Category:qk]"/>
+                <tooltip column="[ds].[countd:Customer:qk]"/>
+            </encodings>
+        </worksheet>''')
+        fields = self.ext.extract_worksheet_fields(ws)
+        self.assertEqual(
+            (fields[0]['name'], fields[0]['table_calc_agg']), ('Id', 'countd'))
+        self.assertEqual(
+            [(field['shelf'], field['name'], field.get('aggregation'))
+             for field in fields[1:]],
+            [('color', 'Category', 'ctd'), ('tooltip', 'Customer', 'countd')],
+        )
+
     def test_encoding_fields(self):
         ws = ET.fromstring('''
         <worksheet>
@@ -847,6 +875,15 @@ class TestExtractReferenceLines(unittest.TestCase):
         self.assertEqual(lines[0]['label'], 'Target')
         self.assertFalse(lines[0]['is_band'])
 
+    def test_reference_line_axis_column_is_preserved(self):
+        ws = ET.fromstring('''
+        <worksheet>
+            <reference-line value="100" axis="y"
+                            axis-column="[Sales Axis]"/>
+        </worksheet>''')
+        lines = self.ext.extract_reference_lines(ws)
+        self.assertEqual(lines[0]['axis_column'], '[Sales Axis]')
+
     def test_band_with_two_values(self):
         ws = ET.fromstring('''
         <worksheet>
@@ -1073,6 +1110,26 @@ class TestExtractGroups(unittest.TestCase):
         self.assertEqual(len(g), 1)
         self.assertEqual(g[0]['group_type'], 'combined')
         self.assertIn('City', g[0]['source_fields'])
+        self.assertEqual(g[0]['raw_name'], 'CombinedField')
+        self.assertEqual(g[0]['datasource'], 'ds1')
+        self.assertEqual(
+            g[0]['source_field_refs'], ['none:City:nk', 'none:State:nk'])
+
+    def test_public_combined_group_retains_derived_field_references(self):
+        sample = os.path.join(ROOT, 'examples', 'real_world', 'RESTAPISample.twb')
+        root = ET.parse(sample).getroot()
+
+        self.ext.extract_groups(root)
+
+        group = next(
+            item for item in self.ext.workbook_data['groups']
+            if item['name'] == 'Exclusions (Country Name,YEAR(Date (year)))'
+        )
+        self.assertEqual(group['source_fields'], ['Country / Region', 'Date'])
+        self.assertEqual(
+            group['source_field_refs'],
+            ['none:Country / Region:nk', 'tyr:Date:qk'],
+        )
 
     def test_values_group(self):
         root = ET.fromstring('''
@@ -1135,6 +1192,23 @@ class TestExtractBins(unittest.TestCase):
         self.assertEqual(len(b), 1)
         self.assertEqual(b[0]['source_field'], 'Age')
         self.assertEqual(b[0]['size'], '5')
+
+    def test_categorical_bin_default_decodes_xml_and_tableau_escapes(self):
+        root = ET.fromstring(r'''
+        <workbook>
+            <datasource name="ds1">
+                <column name="[Status Group]">
+                    <calculation class="categorical-bin" column="[Status]"
+                                 default="&quot;Other \&quot;and\&quot; More &amp; All&quot;">
+                        <bin value="&quot;Known&quot;"><value>&quot;Known&quot;</value></bin>
+                    </calculation>
+                </column>
+            </datasource>
+        </workbook>''')
+        self.ext.extract_groups(root)
+        group = self.ext.workbook_data['groups'][0]
+        self.assertEqual(group['name'], 'Status Group')
+        self.assertEqual(group['default'], 'Other "and" More & All')
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1208,6 +1282,42 @@ class TestExtractSortOrders(unittest.TestCase):
         self.ext.extract_sort_orders(root)
         s = self.ext.workbook_data['sort_orders']
         self.assertEqual(s[0]['sort_using'], '[sum:Sales]')
+
+    def test_shelf_computed_sort(self):
+        ws = ET.fromstring('''
+        <worksheet>
+          <shelf-sorts>
+            <shelf-sort-v2 shelf="rows" direction="DESC"
+                dimension-to-sort="[none:Zone:nk]"
+                measure-to-sort-by="[ctd:Id:qk]"
+                is-on-innermost-dimension="true"/>
+          </shelf-sorts>
+        </worksheet>
+        ''')
+        sorts = self.ext.extract_worksheet_sort_orders(ws)
+        self.assertEqual(len(sorts), 1)
+        self.assertEqual(sorts[0]['field'], 'none:Zone:nk')
+        self.assertEqual(sorts[0]['direction'], 'DESC')
+        self.assertEqual(sorts[0]['sort_by'], 'ctd:Id:qk')
+        self.assertEqual(sorts[0]['sort_type'], 'computed')
+
+    def test_computed_alphabetic_and_natural_sort_elements(self):
+        ws = ET.fromstring('''
+        <worksheet>
+            <computed-sort column="[Category]" direction="DESC"
+                           using="[sum:Sales]"/>
+            <alphabetic-sort column="[Region]" direction="ASC"/>
+            <natural-sort column="[Product]" direction="DESC"/>
+        </worksheet>''')
+        sorts = self.ext.extract_worksheet_sort_orders(ws)
+        self.assertEqual(
+            [(item['field'], item['direction'], item['sort_type'])
+             for item in sorts],
+            [('Category', 'DESC', 'computed'),
+             ('Region', 'ASC', 'alphabetic'),
+             ('Product', 'DESC', 'natural')],
+        )
+        self.assertEqual(sorts[0]['sort_by'], 'sum:Sales')
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1485,6 +1595,20 @@ class TestExtractClustering(unittest.TestCase):
         self.assertEqual(len(cl), 1)
         self.assertEqual(cl[0]['num_clusters'], '4')
         self.assertEqual(len(cl[0]['variables']), 2)
+
+    def test_adhoc_cluster_metadata_is_retained_without_assignments(self):
+        ws = ET.fromstring('''
+        <worksheet>
+            <adhoc-cluster seed="17" num-clusters="3"/>
+        </worksheet>''')
+        clusters = self.ext.extract_clustering(ws)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]['source_element'], 'adhoc-cluster')
+        self.assertTrue(clusters[0]['adhoc'])
+        self.assertEqual(clusters[0]['seed'], '17')
+        self.assertEqual(clusters[0]['num_clusters'], '3')
+        self.assertEqual(clusters[0]['variables'], [])
+        self.assertEqual(clusters[0]['status'], 'metadata_only_not_calculated')
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2054,6 +2178,28 @@ class TestWorksheetPillContract(unittest.TestCase):
             ['E', 'F'])
         self.assertNotIn('Filter Only', [f['name'] for f in worksheet['fields']])
 
+    def test_worksheet_aggregation_false_evidence_overrides_workbook_true(self):
+        root = ET.fromstring("""
+            <workbook>
+              <preferences><aggregation value="true"/></preferences>
+              <worksheets>
+                <worksheet name="No Aggregation">
+                  <aggregation value="false"/>
+                  <table><cols>[ds].[sum:Sales:qk]</cols></table>
+                </worksheet>
+              </worksheets>
+            </workbook>
+        """)
+        self.ext.extract_worksheets(root)
+        aggregation = self.ext.workbook_data['worksheets'][0]['aggregation']
+        self.assertIs(aggregation['enabled'], False)
+        self.assertEqual(aggregation['status'], 'explicit')
+        self.assertEqual(aggregation['source_scope'], 'worksheet')
+        self.assertEqual(aggregation['worksheet_evidence'][0]['source_attributes'],
+                         {'value': 'false'})
+        self.assertEqual(aggregation['workbook_evidence'][0]['source_attributes'],
+                         {'value': 'true'})
+
     def test_text_aggregation_is_independent_of_same_column_on_axis(self):
         fields = self.ext.extract_worksheet_fields(self._scatter_xml())
         self.assertEqual([f for f in fields if f['name'] == 'A'], [
@@ -2215,6 +2361,48 @@ class TestAuthoritativeWorkbookDefinitions(unittest.TestCase):
         self.assertEqual(calculations[0]['formula'], '1 + 2')
         self.assertEqual(
             self.ext.workbook_data['datasources'][0]['calculations'], calculations)
+
+    def test_sheet_link_action_pseudo_field_is_filtered_but_action_caption_calc_remains(self):
+        root = ET.fromstring("""
+            <workbook>
+              <datasources><datasource name="ds">
+                <group name="[Generated Link]" auto-column="sheet_link"/>
+              </datasource></datasources>
+              <worksheets><worksheet name="Action fields">
+                <table>
+                  <cols>[ds].[Generated Link] [ds].[Regular Calc]</cols>
+                  <datasource-dependencies datasource="ds">
+                    <column name="[Generated Link]" caption="Action Link">
+                      <calculation formula="'generated'"/>
+                    </column>
+                    <column name="[Regular Calc]" caption="Action (Details)">
+                      <calculation formula="1 + 2"/>
+                    </column>
+                  </datasource-dependencies>
+                  <filters><filter column="[ds].[Generated Link]">
+                    <groupfilter ui-action-filter="select-action"/>
+                  </filter></filters>
+                </table>
+              </worksheet></worksheets>
+            </workbook>
+        """)
+        self.ext.workbook_data['datasources'] = [
+            {'name': 'ds', 'calculations': []},
+        ]
+        self.ext.extract_worksheets(root)
+        self.ext.extract_calculations(root)
+        calculations = self.ext.workbook_data['calculations']
+        self.assertEqual([calc['name'] for calc in calculations], ['[Regular Calc]'])
+        self.assertEqual(calculations[0]['caption'], 'Action (Details)')
+        self.assertEqual(calculations[0]['formula'], '1 + 2')
+
+        worksheet = self.ext.workbook_data['worksheets'][0]
+        self.assertEqual([field['name'] for field in worksheet['fields']],
+                         ['Regular Calc'])
+        self.assertEqual(
+            [(item['field'], item['kind']) for item in worksheet['action_pseudo_filters']],
+            [('Generated Link', 'action_pseudo_field')],
+        )
 
 
 if __name__ == '__main__':

@@ -31,7 +31,8 @@ class TestYearDateParsingRegression(unittest.TestCase):
         result = convert_tableau_formula_to_dax(
             'DATE(DATEPARSE("yyyy", RIGHT([Lot], 4)))',
             table_name="Facts", is_calc_column=True)
-        self.assertIn("DATE(VALUE(RIGHT(", result)
+        self.assertIn("DATE(VALUE(IF(ISBLANK('Facts'[Lot])", result)
+        self.assertIn("RIGHT('Facts'[Lot], IF(4 < 0, 0, 4))", result)
         self.assertIn(", 1, 1)", result)
         self.assertNotIn("DATEVALUE(", result)
         from powerbi_import.dax_validator import validate_dax_expression
@@ -538,6 +539,138 @@ class TestSafeScalarDivisionRegression(unittest.TestCase):
             "DIVIDE(8, 2)")
 
 
+class TestCountdNullSemantics(unittest.TestCase):
+    def test_column_excludes_blanks_without_inventing_empty_groups(self):
+        result = convert_tableau_formula_to_dax(
+            "COUNTD([Customer])", table_name="Orders")
+        self.assertEqual(
+            result,
+            "IF(ISEMPTY('Orders'), BLANK(), "
+            "COALESCE(DISTINCTCOUNTNOBLANK('Orders'[Customer]), 0))",
+        )
+
+    def test_conditional_countd_keeps_nonblank_else_values(self):
+        result = convert_tableau_formula_to_dax(
+            'COUNTD(IF [Value] > 0 THEN [Customer] ELSE "other)" END)',
+            table_name="Orders",
+        )
+        self.assertIn("SELECTCOLUMNS('Orders'", result)
+        self.assertIn('IF(', result)
+        self.assertIn('"other)"', result)
+        self.assertIn("NOT(ISBLANK([__TableauCountD]))", result)
+
+    def test_cross_table_expression_is_explicitly_unresolved(self):
+        with self.assertLogs(convert_tableau_formula_to_dax.__module__, level="WARNING"):
+            result = convert_tableau_formula_to_dax(
+                "COUNTD([Left] + [Right])", table_name="Orders",
+                column_table_map={"Left": "Orders", "Right": "Customers"},
+            )
+        self.assertIn("TODO", result)
+        self.assertIn("BLANK()", result)
+
+    def test_explicit_dax_distinctcount_is_not_rewritten(self):
+        result = convert_tableau_formula_to_dax(
+            "DISTINCTCOUNT([Customer])", table_name="Orders")
+        self.assertEqual(result, "DISTINCTCOUNT('Orders'[Customer])")
+
+    def test_table_identifier_is_escaped(self):
+        result = convert_tableau_formula_to_dax(
+            "COUNTD([Customer])", table_name="O'Brien")
+        self.assertIn("ISEMPTY('O''Brien')", result)
+        self.assertIn("DISTINCTCOUNTNOBLANK('O''Brien'[Customer])", result)
+
+    def test_function_name_in_literal_is_not_converted(self):
+        self.assertEqual(
+            convert_tableau_formula_to_dax('"COUNTD(example)"'),
+            '"COUNTD(example)"',
+        )
+
+    def test_running_countd_requires_tableau_mark_scope(self):
+        for running in ('RUNNING_SUM', 'RUNNING_COUNT', 'RUNNING_AVG'):
+            with self.subTest(running=running):
+                with self.assertLogs(convert_tableau_formula_to_dax.__module__,
+                                     level="WARNING"):
+                    result = convert_tableau_formula_to_dax(
+                        f'{running}(COUNTD([Customer]))', table_name="Orders")
+                self.assertIn('TODO', result)
+                self.assertIn('mark ordering plus partitioning', result)
+                self.assertIn('BLANK()', result)
+                self.assertNotIn('DISTINCTCOUNTNOBLANK', result)
+
+    def test_countd_text_inside_running_formula_is_not_treated_as_a_call(self):
+        result = convert_tableau_formula_to_dax(
+            'RUNNING_SUM(IF [Caption] = "COUNTD(example)" THEN 1 ELSE 0 END)',
+            table_name="Orders",
+        )
+        self.assertIn('"COUNTD(example)"', result)
+        self.assertNotIn('mark ordering plus partitioning', result)
+
+
+class TestLeftRightNullAndLengthSemantics(unittest.TestCase):
+    def test_blank_text_preserves_tableau_null_result(self):
+        result = convert_tableau_formula_to_dax(
+            "RIGHT(NULL, 3)", table_name="Facts")
+        self.assertIn(
+            "IF(ISBLANK(BLANK()), BLANK(), "
+            "IF(3 < 0, BLANK(), RIGHT(BLANK(), IF(3 < 0, 0, 3))))",
+            result,
+        )
+
+    def test_negative_length_returns_blank_without_iferror(self):
+        result = convert_tableau_formula_to_dax(
+            "RIGHT([Name], LEN([Name]) - 8)", table_name="Facts")
+        self.assertIn(
+            "IF(LEN('Facts'[Name]) - 8 < 0, BLANK()", result)
+        self.assertIn(
+            "RIGHT('Facts'[Name], IF(LEN('Facts'[Name]) - 8 < 0, 0, "
+            "LEN('Facts'[Name]) - 8))",
+            result,
+        )
+        self.assertNotIn("IFERROR", result.upper())
+
+    def test_zero_length_is_safe_and_keeps_empty_text_result(self):
+        result = convert_tableau_formula_to_dax(
+            "LEFT([Name], 0)", table_name="Facts")
+        self.assertIn("IF(0 < 0, BLANK()", result)
+        self.assertIn("LEFT('Facts'[Name], IF(0 < 0, 0, 0))", result)
+
+    def test_positive_length_keeps_normal_left_right_result(self):
+        for function_name in ("LEFT", "RIGHT"):
+            with self.subTest(function_name=function_name):
+                result = convert_tableau_formula_to_dax(
+                    f"{function_name}([Name], 4)", table_name="Facts")
+                self.assertIn(
+                    f"{function_name}('Facts'[Name], IF(4 < 0, 0, 4))",
+                    result,
+                )
+
+    def test_nested_lookupvalue_input_is_guarded(self):
+        result = convert_tableau_formula_to_dax(
+            "RIGHT(LOOKUPVALUE([Name], [Key], [Customer ID]), "
+            "LEN([Suffix]) - 5)",
+            table_name="Orders",
+            column_table_map={
+                "Name": "Customers",
+                "Key": "Customers",
+                "Customer ID": "Orders",
+                "Suffix": "Orders",
+            },
+        )
+        self.assertIn(
+            "ISBLANK(LOOKUPVALUE('Customers'[Name], 'Customers'[Key], "
+            "'Orders'[Customer ID]))",
+            result,
+        )
+        self.assertIn("LEN('Orders'[Suffix]) - 5 < 0", result)
+        self.assertIn("RIGHT(LOOKUPVALUE(", result)
+
+    def test_function_like_text_literal_is_unchanged(self):
+        self.assertEqual(
+            convert_tableau_formula_to_dax('"RIGHT(example, 2)"'),
+            '"RIGHT(example, 2)"',
+        )
+
+
 class TestSimpleFunctionConversions(unittest.TestCase):
     """Test direct Tableau → DAX function name mappings."""
 
@@ -556,7 +689,7 @@ class TestSimpleFunctionConversions(unittest.TestCase):
 
     def test_countd_to_distinctcount(self):
         result = convert_tableau_formula_to_dax("COUNTD([Customer ID])")
-        self.assertIn("DISTINCTCOUNT", result)
+        self.assertIn("DISTINCTCOUNTNOBLANK", result)
         self.assertNotIn("COUNTD", result)
 
     def test_username_to_userprincipalname(self):

@@ -540,7 +540,8 @@ class TestDashboardActionRouting(unittest.TestCase):
                                             ('Second', 'SecondSheet'))
                     ]
                     with (
-                        patch.object(generator, '_create_visual_worksheet'),
+                        patch.object(generator, '_create_visual_worksheet',
+                                     return_value=None),
                         patch.object(generator, '_generate_set_action_artifacts',
                                      return_value=(0, [])) as sets,
                         patch.object(generator, '_generate_parameter_action_slicers',

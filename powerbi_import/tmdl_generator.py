@@ -30,39 +30,52 @@ import logging
 import os
 import re
 import sys
-import xml.etree.ElementTree as ET
-import zipfile
 
-from powerbi_import.errors import ConfigurationError
+from powerbi_import.tableau_identity import (
+    calculation_identity as _calculation_identity,
+)
 
 logger = logging.getLogger(__name__)
 
-# Accept the public CLI spelling and the canonical TMDL spelling, but keep
-# emitted partition modes in their canonical form.
+# Add path to import from tableau_export
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
+from datasource_extractor import (
+    _extract_formula_references,
+    convert_tableau_formula_to_dax,
+    generate_power_query_m,
+    map_tableau_to_powerbi_type,
+    sanitize_param_brackets,
+)
+from dax_converter import tableau_countd_column
+from m_query_builder import (  # noqa: F401
+    generate_m_from_hyper,
+    inject_m_steps,
+    m_transform_add_column,
+    m_transform_filter_nulls,
+    m_transform_filter_values,
+    m_transform_remove_columns,
+    m_transform_rename,
+    wrap_source_with_try_otherwise,
+)
+
+
+def _has_exact_hyper_identity(identity):
+    """Recognize the extractor's complete packaged physical identity."""
+    fields = ('workbook', 'archive_member', 'schema', 'table')
+    return (
+        isinstance(identity, dict)
+        and set(identity) == set(fields)
+        and all(isinstance(identity.get(key), str) and identity[key]
+                for key in fields)
+    )
+
+
 _MODEL_MODE_ALIASES = {
-    'auto': 'auto',
-    'import': 'import',
-    'directquery': 'directQuery',
-    'composite': 'composite',
-    'directlake': 'directLake',
+    'auto': 'auto', 'import': 'import', 'directquery': 'directQuery',
+    'composite': 'composite', 'directlake': 'directLake',
 }
-_CANONICAL_MODEL_MODES = frozenset(_MODEL_MODE_ALIASES.values())
-
-# Tableau Hyper/extract sources are snapshots, not DirectQuery-capable live
-# bindings. Their connection labels and exact physical identities are positive
-# evidence for Import mode in auto mode.
-_HYPER_SOURCE_CONNECTORS = frozenset({
-    'dataengine', 'extract', 'hyper',
-})
-
-# The native Power Query MySQL connector supports Import, not DirectQuery.
-_IMPORT_ONLY_CONNECTORS = frozenset({
-    'mysql',
-})
-
-# Keep auto selection to connector types with established native relational
-# DirectQuery paths in the generated model. This is intentionally a small
-# operational allowlist, not a full capability catalog.
+_HYPER_SOURCE_CONNECTORS = frozenset({'dataengine', 'extract', 'hyper'})
+_IMPORT_ONLY_CONNECTORS = frozenset({'mysql'})
 _AUTO_DIRECTQUERY_CONNECTORS = frozenset({
     'amazon redshift', 'azure sql', 'azure sql database', 'azure synapse',
     'bigquery', 'databricks', 'ibm db2', 'ibm db2 deep',
@@ -70,10 +83,6 @@ _AUTO_DIRECTQUERY_CONNECTORS = frozenset({
     'redshift', 'sap bw', 'sap hana', 'snowflake', 'sql server', 'sqlserver',
     'synapse', 'teradata', 'teradata deep',
 })
-
-# These connectors resolve to local/file-backed M sources and cannot be used
-# by a DirectQuery partition. This is intentionally a narrow safety check, not
-# a certification list for every connector's DirectQuery capabilities.
 _NON_DIRECTQUERY_FILE_CONNECTORS = frozenset({
     'csv', 'dataengine', 'excel', 'extract', 'file', 'filesystem',
     'geojson', 'hyper', 'json', 'parquet', 'pdf', 'text', 'textscan', 'xml',
@@ -81,93 +90,32 @@ _NON_DIRECTQUERY_FILE_CONNECTORS = frozenset({
 
 
 def _normalize_model_mode(model_mode):
-    """Return the canonical storage-mode spelling or reject invalid input."""
-    if model_mode is None or (
-            isinstance(model_mode, str) and not model_mode.strip()):
+    """Canonicalize supported storage modes rather than silently defaulting."""
+    if model_mode is None or (isinstance(model_mode, str) and not model_mode.strip()):
         return 'auto'
     if isinstance(model_mode, str):
-        if model_mode in _CANONICAL_MODEL_MODES:
-            return model_mode
         normalized = _MODEL_MODE_ALIASES.get(model_mode.strip().casefold())
         if normalized:
             return normalized
+    from powerbi_import.errors import ConfigurationError
     raise ConfigurationError(
         "Invalid model_mode; expected auto, import, directquery, composite, or directLake",
-        item=repr(model_mode),
-        source='tmdl_generator',
-    )
-
-
-def _validate_directquery_partition_source(
-        partition_mode, connection, table, m_query_override):
-    """Reject obvious local-file sources before emitting an invalid DQ partition."""
-    if partition_mode != 'directQuery':
-        return
-
-    connection_type = connection.get('type', '')
-    connector = (
-        connection_type.strip().casefold()
-        if isinstance(connection_type, str) else ''
-    )
-    hyper_identity = table.get('hyper_identity')
-    has_pending_hyper_source = (
-        _has_exact_hyper_identity(hyper_identity)
-        and (
-            not m_query_override
-            or (
-                isinstance(m_query_override, str)
-                and 'Migration.HyperExportRequired' in m_query_override
-            )
-        )
-    )
-    if connector in _IMPORT_ONLY_CONNECTORS:
-        raise ConfigurationError(
-            "DirectQuery is not supported for the native MySQL connector; "
-            "Power Query's MySQL connector supports Import mode only. Use Import "
-            "mode, or raise the composite threshold so this table stays in Import.",
-            item=table.get('name', 'Table1'),
-            source=connection_type or 'MySQL',
-        )
-    if connector not in _NON_DIRECTQUERY_FILE_CONNECTORS and not has_pending_hyper_source:
-        return
-
-    if has_pending_hyper_source:
-        source_label = 'a packaged Hyper snapshot'
-        source_type = connection_type or 'Hyper extract'
-    else:
-        source_label = f'a file-based {connection_type or "unknown"} source'
-        source_type = connection_type or 'file'
-    raise ConfigurationError(
-        f"DirectQuery cannot be used with {source_label}; a live DirectQuery-capable "
-        "source is required. Use Import mode or provide an explicit live-source "
-        "binding, or raise the composite threshold to keep this table in Import.",
-        item=table.get('name', 'Table1'),
-        source=source_type,
+        item=repr(model_mode), source='tmdl_generator',
     )
 
 
 def _auto_partition_mode(connection, table):
-    """Choose per-table mode from explicit source identity and connector support."""
     connection_type = connection.get('type', '')
-    connector = (
-        connection_type.strip().casefold()
-        if isinstance(connection_type, str) else ''
-    )
+    connector = connection_type.strip().casefold() if isinstance(connection_type, str) else ''
     if (_has_exact_hyper_identity(table.get('hyper_identity'))
             or connector in _HYPER_SOURCE_CONNECTORS):
         return 'import'
-    if connector in _IMPORT_ONLY_CONNECTORS:
-        logger.warning(
-            "Auto storage mode selected Import for table %r: the native MySQL "
-            "connector supports Import mode only, not DirectQuery.",
-            table.get('name', 'Table1'),
-        )
-        return 'import'
     if connector in _AUTO_DIRECTQUERY_CONNECTORS:
         return 'directQuery'
-
-    if connector in _NON_DIRECTQUERY_FILE_CONNECTORS:
-        reason = 'is file-backed and cannot be used by a DirectQuery partition'
+    if connector in _IMPORT_ONLY_CONNECTORS:
+        reason = 'supports Import mode only, not DirectQuery'
+    elif connector in _NON_DIRECTQUERY_FILE_CONNECTORS:
+        reason = 'is file-backed and cannot use a DirectQuery partition'
     else:
         reason = 'has no supported native DirectQuery binding'
     logger.warning(
@@ -177,38 +125,37 @@ def _auto_partition_mode(connection, table):
     return 'import'
 
 
-# Add path to import from tableau_export
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
-from datasource_extractor import (
-    convert_tableau_formula_to_dax,
-    generate_power_query_m,
-    map_tableau_to_powerbi_type,
-    sanitize_param_brackets,
-)
-from m_query_builder import (
-    generate_m_from_hyper,
-    inject_m_steps,
-    m_transform_add_column,
-    m_transform_rename,
-    map_tableau_to_m_type,
-)
+def _validate_directquery_partition_source(partition_mode, connection, table, m_query_override):
+    if partition_mode != 'directQuery':
+        return
+    connection_type = connection.get('type', '')
+    connector = connection_type.strip().casefold() if isinstance(connection_type, str) else ''
+    pending_hyper = (
+        _has_exact_hyper_identity(table.get('hyper_identity'))
+        and (not m_query_override or (
+            isinstance(m_query_override, str)
+            and 'Migration.HyperExportRequired' in m_query_override))
+    )
+    from powerbi_import.errors import ConfigurationError
+    if connector in _IMPORT_ONLY_CONNECTORS:
+        raise ConfigurationError(
+            "DirectQuery is not supported for the native MySQL connector; "
+            "Power Query's MySQL connector supports Import mode only. Use Import "
+            "mode, or raise the composite threshold so this table stays in Import.",
+            item=table.get('name', 'Table1'), source=connection_type or 'MySQL',
+        )
+    if connector in _NON_DIRECTQUERY_FILE_CONNECTORS or pending_hyper:
+        source_label = ('a packaged Hyper snapshot' if pending_hyper
+                        else f'a file-based {connection_type or "unknown"} source')
+        raise ConfigurationError(
+            f"DirectQuery cannot be used with {source_label}; a live DirectQuery-capable "
+            "source is required. Use Import mode or provide an explicit live-source "
+            "binding, or raise the composite threshold to keep this table in Import.",
+            item=table.get('name', 'Table1'), source=connection_type or 'file',
+        )
 
-# DAX post-processing lives in tmdl_dax_postprocess (owned by @dax);
-# re-exported here so existing imports keep working.
-from powerbi_import.tmdl_dax_postprocess import (  # noqa: E402,F401
-    _BARE_COL_REF_RE,
-    _fix_related_for_many_to_many,
-    _promote_measure_dependent_calc_columns,
-    _replace_related_in_aggx_context,
-    _replace_related_with_lookupvalue,
-    _unwrap_aggregations_of_measures,
-    _validate_measures_after_rewrites,
-    _wrap_bare_cross_table_refs,
-    _wrap_bare_ref_expression,
-    resolve_table_for_column,
-    resolve_table_for_formula,
-    retarget_dax_column_refs,
-)
+
+
 
 # DAX -> Power Query M conversion lives in tmdl_m_conversion (owned by @wiring).
 # Re-exported here so existing tmdl_generator callers keep working.
@@ -226,6 +173,24 @@ from powerbi_import.tmdl_m_conversion import (  # noqa: F401
     _strip_m_inline_comments,
     m_rename_map,
     rename_m_column_refs,
+)
+
+# ruff: isort: split
+# DAX post-processing lives in tmdl_dax_postprocess (owned by @dax);
+# re-exported here so existing imports keep working.
+from powerbi_import.tmdl_dax_postprocess import (  # noqa: E402,F401
+    _BARE_COL_REF_RE,
+    _fix_related_for_many_to_many,
+    _promote_measure_dependent_calc_columns,
+    _replace_related_in_aggx_context,
+    _replace_related_with_lookupvalue,
+    _unwrap_aggregations_of_measures,
+    _validate_measures_after_rewrites,
+    _wrap_bare_cross_table_refs,
+    _wrap_bare_ref_expression,
+    resolve_table_for_column,
+    resolve_table_for_formula,
+    retarget_dax_column_refs,
 )
 
 # Pre-write TMDL self-healing lives in tmdl_self_heal (owned by @healing).
@@ -339,11 +304,8 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         calendar_start: Start year for Calendar table (default: 2020)
         calendar_end: End year for Calendar table (default: 2030)
         culture: Override culture/locale (default: en-US)
-        model_mode: 'auto' (default) chooses Import for Hyper/file-backed
-                    sources and DirectQuery otherwise, per table. Explicit
-                    'import', 'directquery'/'directQuery', and 'composite'
-                    retain their existing behavior; internal Fabric callers
-                    may also use 'directLake'.
+        model_mode: 'import', 'directquery', or 'composite'
+                    Controls partition mode for all tables
         languages: Comma-separated additional locales (e.g. 'fr-FR,de-DE')
         composite_threshold: Column count threshold for composite mode.
                     Tables with more columns than this → directQuery, fewer → import.
@@ -375,6 +337,18 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
                                   model_mode=model_mode,
                                   composite_threshold=composite_threshold,
                                   agg_tables=agg_tables)
+
+    for table in model.get('model', {}).get('tables', []):
+        for partition in table.get('partitions', []):
+            expression = (partition.get('source') or {}).get('expression', '')
+            if isinstance(expression, str) and 'Migration.HyperIdentityRequired' in expression:
+                from powerbi_import.errors import GenerationError
+                raise GenerationError(
+                    "Hyper source lacks an exact physical identity; full-data "
+                    "import cannot be bound safely.",
+                    item=table.get('name', ''), source='Hyper extract',
+                )
+
     source_issues = _audit_local_partition_sources(model, output_dir, datasources)
     _fail_unavailable_local_sources(model, source_issues)
 
@@ -391,10 +365,6 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
     recovery = RecoveryReport(report_name)
     repair_count = _self_heal_model(model, recovery=recovery)
 
-    # Materialize only provenance-checked FIXED classifiers, after generic
-    # healing (which intentionally promotes arbitrary measure-dependent columns).
-    # Do this before collecting symbols so report grouping binds to a Column,
-    # never a category-valued aggregate measure.
     dimension_columns = _materialize_fixed_dimension_columns(model)
 
     # Step 1b2: Incremental refresh detection & wiring (Sprint 120)
@@ -411,11 +381,12 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
                         len(ir_result['tables_configured']),
                         ', '.join(ir_result['tables_configured']))
 
+    _refresh_calendar_source_expressions(model)
+
     # Step 1c: M-partition validation gate (Sprint 129.2). Every generated
     # M expression is parsed before write; issues are logged to the recovery
     # report so operators can triage without blocking the migration.
     m_validation_issues = _validate_m_partitions(model, recovery=recovery)
-    _refresh_calendar_source_expressions(model)
 
     # Attach languages metadata for _write_tmdl_files
     if languages:
@@ -432,7 +403,9 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
     rels = model.get('model', {}).get('relationships', [])
 
     actual_bim_measures = set()
+    actual_bim_measure_symbols = set()
     actual_bim_symbols = set()
+    actual_bim_group_symbols = set()
     actual_bim_column_types = {}  # (tname, cname) -> normalized dataType (lowercase)
     actual_bim_column_categories = {}  # (tname, cname) -> dataCategory (lowercase)
     actual_bim_measure_types = {}  # (tname, mname) -> inferred return type
@@ -446,6 +419,8 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
             cname = c.get('name', '')
             if cname:
                 actual_bim_symbols.add((tname, cname))
+                if c.get('displayFolder') == 'Groups':
+                    actual_bim_group_symbols.add((tname, cname))
                 ct = (c.get('dataType') or '').strip().lower()
                 if ct:
                     actual_bim_column_types[(tname, cname)] = ct
@@ -466,7 +441,7 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
     _str_literal_re = re.compile(r'^"[^"]*"\s*$')
     _numeric_func_re = re.compile(
         r"\b(?:SUM|SUMX|AVERAGE|AVERAGEX|COUNT|COUNTA|COUNTAX|COUNTX|COUNTROWS|"
-        r"DISTINCTCOUNT|MIN|MINX|MAX|MAXX|DIVIDE|RANKX|CALCULATE|"
+        r"DISTINCTCOUNT|DISTINCTCOUNTNOBLANK|MIN|MINX|MAX|MAXX|DIVIDE|RANKX|CALCULATE|"
         r"ROUND|CEILING|FLOOR|ABS|POWER|SQRT|LOG|LN|EXP|"
         r"YEAR|MONTH|DAY|HOUR|MINUTE|SECOND|WEEKDAY|WEEKNUM|QUARTER|DATEDIFF|"
         r"VAR\.S|VAR\.P|STDEV\.S|STDEV\.P|MEDIAN|PERCENTILE\.INC|PERCENTILE\.EXC)\b",
@@ -540,6 +515,7 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
             if not mname:
                 continue
             actual_bim_measures.add(mname)
+            actual_bim_measure_symbols.add((tname, mname))
             actual_bim_symbols.add((tname, mname))
             expr = (m.get('expression') or '').strip()
             if not expr:
@@ -575,7 +551,9 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         'hierarchies': total_hierarchies,
         'roles': len(model.get('model', {}).get('roles', [])),
         'actual_bim_measures': actual_bim_measures,
+        'actual_bim_measure_symbols': actual_bim_measure_symbols,
         'actual_bim_symbols': actual_bim_symbols,
+        'actual_bim_group_symbols': actual_bim_group_symbols,
         'actual_bim_column_types': actual_bim_column_types,
         'actual_bim_column_categories': actual_bim_column_categories,
         'actual_bim_measure_types': actual_bim_measure_types,
@@ -585,18 +563,17 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         'm_validation_issues': m_validation_issues,
         'source_issues': source_issues,
         'lineage': lineage,
-        # Final generated table name → exact extractor-provided identity.
-        # Kept separate from TMDL annotations; staging must join identity to
-        # its authoritative export manifest, never infer it from names/columns.
         'hyper_identities': {
             table.get('name', ''): dict(table['hyper_identity'])
             for table in tables
-            if table.get('name') and _has_exact_hyper_identity(
-                table.get('hyper_identity'))
+            if table.get('name') and _has_exact_hyper_identity(table.get('hyper_identity'))
         },
         'table_rename_map': model.get('_table_rename_map', {}),
         'measure_rename_map': model.get('_measure_rename_map', {}),
         'column_rename_map': model.get('_column_rename_map', {}),
+        'countd_measure_bindings': model.get('_countd_measure_bindings', {}),
+        'quick_table_calc_bindings': model.get('_quick_table_calc_bindings', {}),
+        'unsupported_quick_table_calcs': model.get('_unsupported_quick_table_calcs', {}),
     }
     if ir_result:
         stats['incremental_refresh'] = ir_result
@@ -604,15 +581,9 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
 
 
 def _audit_local_partition_sources(model, output_dir, datasources=None):
-    """Report file-source references that cannot resolve in the PBIP.
-
-    Audit concrete ``DataFolder`` file references before writing so callers
-    receive a deterministic warning/report without guessing alternate files or
-    worksheets. Source failures must remain visible, not become empty refreshes.
-    For authored overrides these are static diagnostics only: neither stale
-    connection metadata nor a missing optional input proves the query fails
-    (or succeeds) at refresh.
-    """
+    """Audit staged DataFolder bindings without substituting another source."""
+    import xml.etree.ElementTree as ET
+    import zipfile
     from pathlib import Path
 
     output_path = Path(output_dir)
@@ -631,12 +602,11 @@ def _audit_local_partition_sources(model, output_dir, datasources=None):
     )
     namespace = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
     issues = []
+    tables = model.get('model', {}).get('tables', [])
 
-    for table in model.get('model', {}).get('tables', []):
+    for table in tables:
         table_name = table.get('name', '')
         if _has_exact_hyper_identity(table.get('hyper_identity')):
-            # Its source expression is temporary: authoritative staging
-            # will route the exact packaged Hyper identity after TMDL.
             continue
         for partition in table.get('partitions', []):
             expression = (partition.get('source') or {}).get('expression', '')
@@ -645,14 +615,17 @@ def _audit_local_partition_sources(model, output_dir, datasources=None):
             file_matches = list(file_ref_re.finditer(expression))
             sheet_matches = list(sheet_ref_re.finditer(expression))
             for match in file_matches:
-                # M uses doubled backslashes in the file literal.  Windows
-                # accepts either form, but normalize before checking the path.
                 relative_name = match.group(1).replace('""', '"')
                 relative_name = relative_name.replace('\\\\', '\\').lstrip('\\/')
-                source_path = (
-                    data_dir.joinpath(*relative_name.replace('/', '\\').split('\\'))
-                    if data_dir is not None else None
-                )
+                parts = relative_name.replace('/', '\\').split('\\')
+                if any(part == '..' or ':' in part for part in parts):
+                    issues.append({
+                        'table': table_name,
+                        'source': relative_name,
+                        'issue': 'source_provenance_unverified',
+                    })
+                    continue
+                source_path = data_dir.joinpath(*parts) if data_dir is not None else None
                 if source_path is None or not source_path.is_file():
                     issues.append({
                         'table': table_name,
@@ -660,16 +633,10 @@ def _audit_local_partition_sources(model, output_dir, datasources=None):
                         'issue': 'file_not_found',
                     })
                     continue
-
-                if source_path.suffix.lower() != '.xlsx':
+                if (source_path.suffix.lower() != '.xlsx'
+                        or len(file_matches) != 1 or len(sheet_matches) != 1):
                     continue
-                # Generated single-source Excel partitions have one relevant
-                # navigation.  Avoid attributing a navigation to the wrong
-                # workbook in custom multi-source M expressions.
-                if len(file_matches) != 1 or len(sheet_matches) != 1:
-                    continue
-                sheet_match = sheet_matches[0]
-                requested_sheet = sheet_match.group(1).replace('""', '"')
+                requested_sheet = sheet_matches[0].group(1).replace('""', '"')
                 try:
                     with zipfile.ZipFile(source_path) as workbook:
                         workbook_xml = ET.fromstring(workbook.read('xl/workbook.xml'))
@@ -694,20 +661,10 @@ def _audit_local_partition_sources(model, output_dir, datasources=None):
                         'available_worksheets': sorted(available_sheets),
                     })
 
-    # Source-table identities are part of the binding contract too.  A
-    # generated query that happens to find a same-named sheet/file is still
-    # not trustworthy when Tableau supplied no connection for that relation,
-    # or when the relation names a different CSV than the connection does.
     rename_map = model.get('_table_rename_map', {})
-    existing_tables = {
-        table.get('name', '') for table in model.get('model', {}).get('tables', [])
-    }
-    # The authoritative post-generation Hyper router rewrites these exact
-    # identities to staged CSVs. The original relation source can be absent
-    # before that staging pass, so do not turn its temporary M into a terminal
-    # source error here. The router must fail closed if no exact export exists.
-    hyper_identity_tables = {
-        table.get('name', '') for table in model.get('model', {}).get('tables', [])
+    existing_tables = {table.get('name', '') for table in tables}
+    hyper_tables = {
+        table.get('name', '') for table in tables
         if _has_exact_hyper_identity(table.get('hyper_identity'))
     }
     for datasource in datasources or []:
@@ -719,7 +676,7 @@ def _audit_local_partition_sources(model, output_dir, datasources=None):
             if not table_name:
                 continue
             model_table_name = rename_map.get((ds_name, table_name), table_name)
-            if model_table_name in hyper_identity_tables:
+            if model_table_name in hyper_tables:
                 continue
             connection_ref = source_table.get('connection', '')
             binding = (
@@ -731,7 +688,6 @@ def _audit_local_partition_sources(model, output_dir, datasources=None):
             binding_type = (binding.get('type') or '').casefold()
             details = binding.get('details') or {}
             issue = None
-
             if not relation and binding_type in {
                     'excel', 'csv', 'textscan', 'geojson', 'shapefile'}:
                 issue = {
@@ -739,11 +695,8 @@ def _audit_local_partition_sources(model, output_dir, datasources=None):
                     'source': '',
                     'detail': 'File-backed table has no explicit source_table identity',
                 }
-            elif (
-                '].[' in relation
-                and not connection_ref
-                and not source_table.get('connection_details')
-            ):
+            elif ('].[' in relation and not connection_ref
+                  and not source_table.get('connection_details')):
                 issue = {
                     'issue': 'source_provenance_unverified',
                     'source': relation,
@@ -753,7 +706,7 @@ def _audit_local_partition_sources(model, output_dir, datasources=None):
                 relation_name = relation.rsplit('].[', 1)[-1].strip().strip('[]')
                 if relation_name.casefold().endswith('#csv'):
                     relation_name = relation_name[:-4] + '.csv'
-                connection_name = str(details.get('filename')).replace('\\', '/').rsplit('/', 1)[-1]
+                connection_name = str(details['filename']).replace('\\', '/').rsplit('/', 1)[-1]
                 if relation_name and relation_name.casefold() != connection_name.casefold():
                     issue = {
                         'issue': 'source_relation_mismatch',
@@ -763,15 +716,9 @@ def _audit_local_partition_sources(model, output_dir, datasources=None):
                             f"connection is bound to {connection_name!r}"
                         ),
                     }
+            if issue and model_table_name in existing_tables:
+                issues.append({'table': model_table_name, **issue})
 
-            if issue:
-                model_table = model_table_name
-                if model_table not in existing_tables:
-                    continue
-                issues.append({'table': model_table, **issue})
-
-    # Keep the first concrete issue per table.  Later issues are redundant for
-    # the refresh guard and can obscure the primary binding failure.
     deduplicated = []
     seen_tables = set()
     for issue in issues:
@@ -780,37 +727,19 @@ def _audit_local_partition_sources(model, output_dir, datasources=None):
             continue
         seen_tables.add(table_name)
         deduplicated.append(issue)
-
-    for issue in deduplicated:
         logger.warning(
             "Local partition source unavailable or unverifiable for table %r: %s",
-            issue.get('table'), issue,
+            table_name, issue,
         )
     return deduplicated
 
 
-def _has_exact_hyper_identity(identity):
-    """True only for the extractor's complete, explicit physical identity."""
-    fields = ('workbook', 'archive_member', 'schema', 'table')
-    return (
-        isinstance(identity, dict)
-        and all(isinstance(identity.get(key), str) and identity[key]
-                for key in fields)
-    )
-
-
 def _fail_unavailable_local_sources(model, source_issues):
-    """Make known-bad local file partitions fail refresh instead of loading empty.
-
-    The check is deliberately limited to tables with a concrete file/worksheet
-    issue found by ``_audit_local_partition_sources``.  It does not infer a
-    replacement source, and valid empty files/tables are left alone.
-    """
+    """Keep known-invalid generated file bindings from refreshing as empty."""
     issues_by_table = {}
     for issue in source_issues or []:
-        table_name = issue.get('table')
-        if table_name:
-            issues_by_table.setdefault(table_name, []).append(issue)
+        if issue.get('table'):
+            issues_by_table.setdefault(issue['table'], issue)
 
     def m_text(value):
         return '"' + str(value).replace('"', '""') + '"'
@@ -818,37 +747,28 @@ def _fail_unavailable_local_sources(model, source_issues):
     for table in model.get('model', {}).get('tables', []):
         if _has_exact_hyper_identity(table.get('hyper_identity')):
             continue
-        table_issues = issues_by_table.get(table.get('name', ''))
-        if not table_issues:
+        issue = issues_by_table.get(table.get('name', ''))
+        if not issue:
             continue
-        issue = table_issues[0]
         reason = issue.get('issue', 'source_unverifiable')
-        detail = (
-            f"Local source check failed ({reason}) for "
-            f"{issue.get('source', '<unknown source>')}"
-        )
+        detail = f"Local source check failed ({reason}) for {issue.get('source', '<unknown source>')}"
         if issue.get('worksheet'):
             detail += f"; worksheet={issue['worksheet']}"
-        record_fields = [
+        fields = [
             f"Table = {m_text(table.get('name', ''))}",
             f"Source = {m_text(issue.get('source', ''))}",
             f"Reason = {m_text(reason)}",
         ]
         if issue.get('worksheet'):
-            record_fields.append(f"Worksheet = {m_text(issue['worksheet'])}")
+            fields.append(f"Worksheet = {m_text(issue['worksheet'])}")
         error_expression = (
             'error Error.Record("Migration.SourceUnavailable", '
-            f'{m_text(detail)}, [{", ".join(record_fields)}])'
+            f'{m_text(detail)}, [{", ".join(fields)}])'
         )
         for partition in table.get('partitions', []):
             source = partition.get('source') or {}
-            if source.get('type') != 'm':
-                continue
-            if partition.get('_expression_origin') == 'authored_override':
-                # The caller supplied the complete query. It may intentionally
-                # handle an unavailable input, or not use the old connection at
-                # all. Keep audit diagnostics, but never replace its semantics.
-                # This is provenance-based, not a blanket exemption for `try`.
+            if (source.get('type') != 'm'
+                    or partition.get('_expression_origin') == 'authored_override'):
                 continue
             source['expression'] = error_expression
             logger.warning(
@@ -920,26 +840,27 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
     # Phase 1-2c: Collect tables, build context mappings
     ctx = _collect_semantic_context(datasources, extra_objects)
     _prepare_logical_relationship_measures(ctx, datasources, extra_objects, model)
+    model['_table_rename_map'] = ctx.get('table_rename_map', {})
 
     # Phase 3: Create tables
     _create_semantic_tables(model, ctx, datasources, extra_objects)
-    # Date selection and report bindings must use the same datasource rename map.
-    model['_table_rename_map'] = ctx.get('table_rename_map', {})
 
     # A captioned column is named after what its partition produces, so every
     # expression written against the Tableau name has to follow it.
     retarget_dax_column_refs(model)
 
     # Phase 4: Create and validate relationships
+    _materialize_composite_logical_relationships(model, extra_objects)
     _create_and_validate_relationships(model, datasources)
 
     # Phases 5-12: Enrichments (sets, date table, hierarchies, params, RLS, etc.)
     _apply_semantic_enrichments(model, extra_objects, ctx['main_table_name'],
                                 ctx['column_table_map'], datasources)
+    _materialize_calendar_date_keys(model)
     _apply_source_measure_formats(model, datasources, extra_objects, ctx)
 
     # Phase 13: Composite model post-processing
-    if model_mode in ('composite', 'auto'):
+    if (model_mode or 'import') == 'composite':
         _enforce_hybrid_relationship_constraints(model)
         if (agg_tables or 'none') == 'auto':
             _generate_aggregation_tables(model)
@@ -1095,6 +1016,15 @@ def _prepare_logical_relationship_measures(ctx, datasources, extra_objects, mode
                     raise ValueError(f"Logical SUM {ident} requires several relationship domains")
                 compiled[ident] = dict(by_id[ident], table=result['home_table'],
                                       _logical_expression=result['expression'])
+                if _is_complete_equality_conjunction(
+                        rel.get('predicate', {}), {left, right}):
+                    # Preserve the full predicate in the pair-grain measure,
+                    # not as a lossy one-column model relationship. The
+                    # verified filter scopes and encoding policy above prove
+                    # this measure representation; no relationship
+                    # cardinality is asserted or inferred.
+                    model.setdefault(
+                        '_logical_equality_compiled_pairs', []).append(hosts)
                 consumed.update(result['consumed_calculations'])
                 model.setdefault('_logical_relationship_compilations', []).append({
                     'datasource': dsn, 'root': ident, 'relationship_index': index,
@@ -1176,9 +1106,8 @@ def _prepare_logical_relationship_measures(ctx, datasources, extra_objects, mode
                     hosts.add(ctx['table_rename_map'].get((dsn, alias), alias))
             return hosts
 
-        # The compiled root is an aggregate boundary. Dependents such as
-        # TC success rate belong with that measure, not with its hidden
-        # previous-row dependencies.
+        # The compiled root is an aggregate boundary. Dependents belong with
+        # that measure, not with its hidden previous-row dependencies.
         for ident, calc in by_id.items():
             if ident in consumed:
                 continue
@@ -1240,7 +1169,99 @@ from powerbi_import.tmdl_relationships import (  # noqa: E402,F401
     _fix_relationship_type_mismatches,
     _infer_cross_table_relationships,
     _is_parameter_table,
+    _materialize_composite_logical_relationships,
 )
+
+
+def _is_complete_equality_conjunction(predicate, endpoint_aliases):
+    """Prove a logical predicate contains only resolved cross-alias equalities."""
+    terms = [predicate]
+    if str(predicate.get('operator', '')).upper() == 'AND':
+        terms = predicate.get('arguments', [])
+        if len(terms) < 2:
+            return False
+    if not terms:
+        return False
+    expected = set(endpoint_aliases)
+    for term in terms:
+        if str(term.get('operator', '')).upper() not in ('=', '=='):
+            return False
+        left, right = term.get('left', {}), term.get('right', {})
+        if (not left.get('table') or not left.get('column')
+                or not right.get('table') or not right.get('column')
+                or left.get('table') == right.get('table')
+                or {left.get('table'), right.get('table')} != expected):
+            return False
+    return True
+
+
+def _materialize_calendar_date_keys(model):
+    """Use a date-grain key for Calendar links while retaining source timestamps."""
+    tables = {table.get('name', ''): table
+              for table in model.get('model', {}).get('tables', [])}
+    date_grain_sources = set()
+    table_renames = model.get('_table_rename_map', {})
+    column_renames = model.get('_column_rename_map', {})
+    for datasource in model.get('_datasources', []):
+        ds_name = datasource.get('name', '')
+        for source_table in datasource.get('tables', []):
+            source_table_name = source_table.get('name', '')
+            model_table_name = table_renames.get(
+                (ds_name, source_table_name), source_table_name)
+            for source_column in source_table.get('columns', []):
+                if str(source_column.get('datatype', '')).casefold() != 'date':
+                    continue
+                raw_name = source_column.get('name', '').strip('[]')
+                produced_name = column_renames.get(
+                    (model_table_name, raw_name),
+                    source_column.get('caption') or raw_name)
+                date_grain_sources.add((model_table_name, produced_name))
+    for relationship in model.get('model', {}).get('relationships', []):
+        if (relationship.get('toTable') != 'Calendar'
+                or relationship.get('toColumn') != 'Date'):
+            continue
+        table = tables.get(relationship.get('fromTable', ''))
+        if table is None:
+            continue
+        source_name = relationship.get('fromColumn', '')
+        source = next((column for column in table.get('columns', [])
+                       if column.get('name') == source_name), None)
+        if (source is None or source.get('dataType') != 'DateTime'
+                or source.get('expression') or not source.get('sourceColumn')):
+            continue
+        if (table.get('name', ''), source_name) in date_grain_sources:
+            continue
+        existing_names = {column.get('name', '').casefold()
+                          for column in table.get('columns', [])}
+        base_name = f'{source_name} (Date)'
+        key_name = base_name
+        suffix = 2
+        while key_name.casefold() in existing_names:
+            key_name = f'{base_name} {suffix}'
+            suffix += 1
+        safe_table_name = table.get('name', '').replace("'", "''")
+        reference = f"'{safe_table_name}'[{source_name}]"
+        expression = (
+            f'IF(ISBLANK({reference}), BLANK(), '
+            f'DATE(YEAR({reference}), MONTH({reference}), DAY({reference})))'
+        )
+        table['columns'].append({
+            'name': key_name,
+            'dataType': 'DateTime',
+            'dataCategory': 'DateTime',
+            'expression': expression,
+            'isCalculated': True,
+            'summarizeBy': 'none',
+            'description': (
+                f'Date-grain key derived from {source_name} for the Calendar '
+                'relationship; the original timestamp is preserved.'
+            ),
+            'annotations': [{
+                'name': 'Migration_DateGrainKey',
+                'value': f'source={source_name}; target=Calendar[Date]',
+            }],
+        })
+        relationship['fromColumn'] = key_name
 
 
 def _generate_aggregation_tables(model):
@@ -1300,20 +1321,60 @@ def _generate_aggregation_tables(model):
     model['model']['tables'].extend(new_tables)
 
 
-def _calculation_identity(calc):
-    """Return the raw key and caption without mistaking fallback delimiters for text.
-
-    Extracted captions can repeat the bracketed Tableau identifier when no
-    display caption exists. Only that exact repetition is a fallback; an
-    explicit caption with different text (including brackets) is preserved.
-    Remove one outer pair, not every bracket, so literal name text survives.
-    """
-    name = calc.get('name', '')
-    raw = name[1:-1] if name.startswith('[') and name.endswith(']') else name
-    caption = calc.get('caption') or raw
-    if caption == name:
-        caption = raw
-    return raw, caption
+def _register_combined_group_calculation_bindings(
+        datasources, extra_objects, best_tables, table_rename_map,
+        main_table_name, calculations, calc_map, column_table_map, ds_column_table_map):
+    """Resolve referenced combined fields before converting dependent DAX."""
+    source_model = {
+        'model': {'tables': [
+            dict(table, name=name) for name, (table, _) in best_tables.items()
+        ]},
+        '_datasources': datasources,
+        '_table_rename_map': table_rename_map,
+    }
+    referenced_fields = {
+        parts[-1]
+        for calc in calculations
+        for parts in _extract_formula_references(calc.get('formula', ''))
+    }
+    group_columns = set()
+    for group in extra_objects.get('groups', []):
+        if group.get('group_type') != 'combined' or not group.get('source_fields'):
+            continue
+        name = group.get('name', '')
+        raw_name = group.get('raw_name') or name
+        aliases = {name, raw_name} - {''}
+        if not aliases.intersection(referenced_fields):
+            continue
+        owners = _combined_field_owners(
+            source_model, {'_datasources': datasources}, group, column_table_map,
+            allow_unresolved=True, register_aliases=False)
+        if not owners:
+            raise ValueError(
+                f"Combined group {name!r}: dependent calculations require "
+                "unambiguous source-field ownership before DAX conversion")
+        hosts = set(owners.values())
+        host = next(iter(hosts)) if len(hosts) == 1 else main_table_name
+        for alias in aliases:
+            previous = column_table_map.get(alias)
+            if previous and previous != host:
+                raise ValueError(
+                    f"Combined group {name!r}: calculation field {alias!r} "
+                    "has ambiguous table ownership")
+            column_table_map[alias] = host
+        group_columns.update(aliases)
+        if raw_name != name:
+            previous = calc_map.get(raw_name)
+            if previous and previous != name:
+                raise ValueError(
+                    f"Combined group {name!r}: calculation identifier "
+                    f"{raw_name!r} is ambiguous")
+            calc_map[raw_name] = name
+        datasource = group.get('datasource', '')
+        if datasource in ds_column_table_map:
+            for alias in aliases:
+                ds_column_table_map[datasource][alias] = host
+    return group_columns
 
 
 def _collect_semantic_context(datasources, extra_objects):
@@ -1384,6 +1445,25 @@ def _collect_semantic_context(datasources, extra_objects):
                 best_tables[table_name] = (table, table_conn)
                 table_ds_origin[table_name] = ds_name
             elif table_ds_origin.get(table_name) == ds_name:
+                existing_table, _ = best_tables[table_name]
+                existing_identity = existing_table.get('hyper_identity')
+                new_identity = table.get('hyper_identity')
+                is_hyper_alias = any(
+                    str(conn.get('type', '')).strip().casefold()
+                    in _HYPER_SOURCE_CONNECTORS
+                    for conn in (best_tables[table_name][1], table_conn)
+                    if isinstance(conn, dict))
+                if (existing_identity is not None or new_identity is not None
+                        or is_hyper_alias):
+                    if (not _has_exact_hyper_identity(existing_identity)
+                            or not _has_exact_hyper_identity(new_identity)
+                            or existing_identity != new_identity):
+                        raise ValueError(
+                            f"Cannot merge same-named Hyper table aliases "
+                            f"{ds_name}.{table_name}: both declarations must "
+                            "carry the same exact workbook/archive/schema/table "
+                            "identity; ambiguous or missing identities are not "
+                            "deduplicated.")
                 # Same datasource — merge columns (existing behavior)
                 existing_cols = best_tables[table_name][0].get('columns', [])
                 existing_names = {c.get('name', '') for c in existing_cols}
@@ -1400,10 +1480,18 @@ def _collect_semantic_context(datasources, extra_objects):
                 ds_label = ds_caption.replace('[', '').replace(']', '')
                 if ds_label == ds_name and ds_label.startswith('federated.'):
                     ds_label = ds_label.replace('federated.', '', 1)[:8]
-                unique_name = f"{table_name} ({ds_label})"
+                caption_includes_table = (
+                    ds_label.casefold().startswith(f"{table_name} (".casefold())
+                    and ds_label.endswith(')')
+                )
+                unique_name = (ds_label if caption_includes_table
+                               else f"{table_name} ({ds_label})")
                 counter = 2
                 while unique_name in best_tables:
-                    unique_name = f"{table_name} ({ds_label} {counter})"
+                    unique_name = (
+                        f"{ds_label} {counter}" if caption_includes_table
+                        else f"{table_name} ({ds_label} {counter})"
+                    )
                     counter += 1
                 table_copy = dict(table)
                 table_copy['name'] = unique_name
@@ -1645,6 +1733,11 @@ def _collect_semantic_context(datasources, extra_objects):
                 if current_cols > existing_cols:
                     ds_main_table[ds_name] = tname
 
+    dax_context['_combined_group_column_names'] = _register_combined_group_calculation_bindings(
+        datasources, extra_objects, best_tables, table_rename_map,
+        main_table_name, all_calculations, calc_map, column_table_map,
+        ds_column_table_map)
+
     # Register dimension-role calculations (calculated columns) in the
     # column_table_map so that cross-table references resolve correctly.
     # Without this, SUMX('OtherTable', IF([CalcCol], ...)) leaves [CalcCol]
@@ -1700,35 +1793,17 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
     m_query_overrides = ctx['m_query_overrides']
     datasource_table_map = ctx['datasource_table_map']
 
-    # Build hyper table lookup from extracted hyper_files metadata
-    hyper_table_data = {}  # table_name_lower -> hyper_reader_tables list
-    if extra_objects:
-        for hf in extra_objects.get('hyper_files', []):
-            hrt = hf.get('hyper_reader_tables', [])
-            if hrt:
-                for ht in hrt:
-                    tname = ht.get('table', '')
-                    if tname:
-                        hyper_table_data[tname.lower()] = hrt
-
     for table_name, (table, table_conn) in best_tables.items():
         owner = next((ds for ds in datasources
                       if ds.get('name') == table_ds_origin.get(table_name)), None)
         table_metadata = {}
         if owner is not None:
-            caption_metadata = {}
             for column in table.get('columns', []):
                 name = column.get('name', '').strip('[]')
                 if not name:
                     continue
-                # Hyper can contain distinct case-sensitive fields (e.g.
-                # Siren and siren).  Type matching must not select metadata
-                # from the other exact field merely because it casefolds alike.
                 matches = [meta for meta in owner.get('columns', [])
-                           if meta.get('name', '').strip('[]') == name]
-                if not matches:
-                    matches = [meta for meta in owner.get('columns', [])
-                               if meta.get('name', '').strip('[]').casefold() == name.casefold()]
+                           if meta.get('name', '').strip('[]').casefold() == name.casefold()]
                 declared = column.get('datatype')
                 matching_type = next((meta for meta in matches
                                       if meta.get('datatype') == declared), None)
@@ -1747,10 +1822,7 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
                 table_metadata[name] = metadata
                 caption = metadata.get('caption')
                 if caption:
-                    caption_metadata[caption] = metadata
-            # Caption aliases must never overwrite another field's raw name.
-            for caption, metadata in caption_metadata.items():
-                table_metadata.setdefault(caption, metadata)
+                    table_metadata[caption] = metadata
         # An explicit table attribution wins: a merged model records which
         # table each calculation came from, and datasource routing alone would
         # send them all to the widest table in the merged datasource.
@@ -1797,22 +1869,17 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
         identity_fields = ('workbook', 'archive_member', 'schema', 'table')
         m_query_override = m_query_overrides.get(table_name, '')
         if _has_exact_hyper_identity(hyper_identity) and not m_query_override:
-            # Seed the pending source BEFORE building the table.  Staging
-            # replaces only this Error.Record expression, leaving physical
-            # renames, captions, calculated columns and later sets/bins intact.
-            staged_identity = json.dumps(
+            identity_json = json.dumps(
                 {key: hyper_identity[key] for key in identity_fields},
-                ensure_ascii=False, separators=(',', ':')
+                ensure_ascii=False, separators=(',', ':'),
             ).replace('"', '""')
             table_literal = str(table_name).replace('"', '""')
             pending_error = (
                 'error Error.Record("Migration.HyperExportRequired", '
                 '"Packaged Hyper export has not been staged to CSV or Parquet", '
-                f'[Table = "{table_literal}", Identity = "{staged_identity}"])'
+                f'[Table = "{table_literal}", Identity = "{identity_json}"])'
             )
             m_query_override = f'let\n    Source = {pending_error}\nin\n    Source'
-            # Only the extractor's explicit physical -> logical binding is
-            # authoritative.  Apply it before caption renames/calculations.
             physical_renames = {
                 physical: logical
                 for physical, logical in (table.get('cols_physical_map') or {}).items()
@@ -1823,6 +1890,15 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
                 m_query_override = inject_m_steps(m_query_override, [
                     ('#"Renamed Hyper Columns"', rename_expression),
                 ])
+        elif (str(table_conn.get('type', '')).lower() in ('hyper', 'extract', 'dataengine')
+              and not m_query_override
+              and str(model.get('_model_mode', '')).lower() != 'directlake'):
+            table_literal = str(table_name).replace('"', '""')
+            m_query_override = (
+                'error Error.Record("Migration.HyperIdentityRequired", '
+                '"Full-data import requires an exact physical Hyper identity", '
+                f'[Table = "{table_literal}"])'
+            )
 
         tbl = _build_table(
             table=table,
@@ -1837,33 +1913,12 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
             composite_threshold=model.get('_composite_threshold'),
         )
 
-        # Preserve packaged Hyper provenance on the semantic table.  Do not
-        # infer it from the datasource caption, source_table, or columns: only
-        # the extractor's exact four-part identity is authoritative.
         if _has_exact_hyper_identity(hyper_identity):
-            tbl['hyper_identity'] = {
-                key: hyper_identity[key] for key in identity_fields
-            }
+            tbl['hyper_identity'] = {key: hyper_identity[key] for key in identity_fields}
             if not m_query_overrides.get(table_name):
                 for partition in tbl.get('partitions', []):
                     if partition.get('source', {}).get('type') == 'm':
                         partition['_expression_origin'] = 'generated_hyper'
-
-        # Sprint 109: If this is a hyper/extract table with no Prep override,
-        # try to inject inline data from extracted .hyper files
-        conn_type = table_conn.get('type', '')
-        if (conn_type.lower() in ('hyper', 'extract', 'dataengine')
-                and not _has_exact_hyper_identity(table.get('hyper_identity'))) \
-                and not m_query_overrides.get(table_name):
-            hrt = hyper_table_data.get(table_name.lower())
-            if hrt:
-                hyper_m = generate_m_from_hyper(hrt, table_name=table_name)
-                if hyper_m:
-                    # Replace the partition's M expression with hyper-inlined data
-                    partitions = tbl.get('partitions', [])
-                    if partitions:
-                        partitions[0]['source']['expression'] = hyper_m
-                        logger.debug("Hyper data inlined for table '%s'", table_name)
 
         column_renames = tbl.pop('_column_renames', None)
         if column_renames:
@@ -1877,12 +1932,7 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
 
 
 def _validate_combined_group_relationships(model, extra_objects):
-    """Require a unique to-one row path for cross-table combined group fields.
-
-    A concatenated row key cannot choose one of several remote rows. In
-    particular, name-based relationship inference and a many-to-many
-    LOOKUPVALUE substitution are not evidence of a scalar source field.
-    """
+    """Require one explicit to-one row path for a cross-table combined key."""
     combined = {
         group.get('name') for group in extra_objects.get('groups', [])
         if group.get('group_type') == 'combined'
@@ -1890,13 +1940,19 @@ def _validate_combined_group_relationships(model, extra_objects):
     if not combined:
         return
     tables = {table['name']: table for table in model['model']['tables']}
+    group_columns = {
+        (table['name'], column.get('name'))
+        for table in tables.values() for column in table.get('columns', [])
+        if column.get('name') in combined and column.get('displayFolder') == 'Groups'
+    }
     graph = {}
     for rel in model['model'].get('relationships', []):
         if (not rel.get('isActive', True) or rel.get('joinType') == 'full'
                 or rel.get('name', '').startswith('inferred_')):
             continue
         left, right = rel.get('fromTable'), rel.get('toTable')
-        if rel.get('toCardinality', 'one') == 'one':
+        if (rel.get('toCardinality') == 'one'
+                or rel.get('_source_cardinality_verified') is True):
             graph.setdefault(left, []).append(right)
         if rel.get('fromCardinality') == 'one':
             graph.setdefault(right, []).append(left)
@@ -1912,21 +1968,22 @@ def _validate_combined_group_relationships(model, extra_objects):
                     return 2
         return count
 
-    # Tokenize literals as well as RELATED so labels cannot become dependencies.
     refs = re.compile(
         r'"(?:[^"]|"")*"|'
         r"\bRELATED\s*\(\s*'(?P<table>(?:[^']|'')+)'\s*"
         r"\[(?P<column>(?:[^\]]|\]\])*)\]\s*\)",
-        re.IGNORECASE)
+        re.IGNORECASE,
+    )
     for home, table in tables.items():
         for column in table.get('columns', []):
-            if column.get('name') not in combined or column.get('displayFolder') != 'Groups':
-                continue
+            is_group = (home, column.get('name')) in group_columns
             for match in refs.finditer(column.get('expression', '')):
                 if match['table'] is None:
                     continue
                 target = match['table'].replace("''", "'")
                 field = match['column'].replace(']]', ']')
+                if not is_group and (target, field) not in group_columns:
+                    continue
                 available = {col['name'] for col in tables.get(target, {}).get('columns', [])}
                 if field not in available or path_count(home, target, {home}) != 1:
                     raise ValueError(
@@ -1944,10 +2001,7 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
     # Phase 5: Add sets, groups, bins as calculated columns
     if not is_direct_lake:
         _process_sets_groups_bins(model, extra_objects, main_table_name, column_table_map)
-        # Groups are created after the initial retarget pass. Follow the exact
-        # table-scoped partition rename ledger before inspecting their refs.
         retarget_dax_column_refs(model)
-        # Check before inference can fabricate a row path for a combined key.
         _validate_combined_group_relationships(model, extra_objects)
 
     # Phase 6: Automatic date table if date columns detected
@@ -2005,6 +2059,9 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
     _create_number_of_records_measure(model, extra_objects.get('_worksheets', []),
                                       main_table_name)
 
+    _create_countd_measures(
+        model, extra_objects.get('_worksheets', extra_objects.get('worksheets', [])))
+
     # Phase 9d: Guard against Number of Records name collision
     # (measure + column with same name in same table), which Power BI rejects.
     _remove_conflicting_number_of_records_measures(model)
@@ -2014,7 +2071,6 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
 
     # Phase 10b: Detect cardinality (runs AFTER Phase 10 so inferred rels are included)
     _detect_many_to_many(model, datasources)
-    # Cardinality detection can demote a previously to-one source edge.
     _validate_combined_group_relationships(model, extra_objects)
 
     # Phase 10c: Replace RELATED() with LOOKUPVALUE() for manyToMany
@@ -2022,6 +2078,7 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
 
     # Phase 11: Deactivate relationships that create ambiguous paths
     _deactivate_ambiguous_paths(model)
+    _validate_combined_group_relationships(model, extra_objects)
 
     # Deduplicate measures globally with case-insensitive uniqueness.
     # PBI measure names must be globally unique and are compared
@@ -2352,7 +2409,8 @@ def _inject_r_squared_measures(model, worksheets, main_table_name, column_table_
 #: Tableau aggregation prefixes in a field reference, and their DAX function.
 _ALIAS_AGG_DAX = {
     'sum': 'SUM', 'avg': 'AVERAGE', 'min': 'MIN', 'max': 'MAX',
-    'cnt': 'COUNT', 'ctd': 'DISTINCTCOUNT', 'median': 'MEDIAN',
+    'cnt': 'COUNT', 'ctd': 'DISTINCTCOUNTNOBLANK',
+    'countd': 'DISTINCTCOUNTNOBLANK', 'median': 'MEDIAN',
     'stdev': 'STDEV.S', 'stdevp': 'STDEV.P', 'var': 'VAR.S', 'varp': 'VAR.P',
 }
 
@@ -2427,7 +2485,9 @@ def _inject_alias_measures(model, aliases, column_table_map):
             continue
 
         safe_table = table_name.replace("'", "''")
-        expression = f"{_ALIAS_AGG_DAX[aggregation]}('{safe_table}'[{field}])"
+        expression = (tableau_countd_column(table_name, field)
+                      if aggregation in ('ctd', 'countd')
+                      else f"{_ALIAS_AGG_DAX[aggregation]}('{safe_table}'[{field}])")
         summary = f'{aggregation.upper()} of {field}'
         if any(a in _ALIAS_RANK_PREFIXES for a in aggregations):
             expression = f"RANKX(ALL('{safe_table}'), {expression})"
@@ -2549,12 +2609,7 @@ def _inject_dynamic_format_measures(model):
 
 
 def _m_row_dependencies_available(expression, available_columns):
-    """Accept only row fields available before this calculated M step.
-
-    Tokenize field selectors before strings so escaped quoted identifiers are
-    decoded as single fields, while "[not a field]" is ignored. Unsupported
-    bracket syntax fails closed to the existing DAX fallback.
-    """
+    """Accept only M row fields available before this calculated step."""
     tokens = re.finditer(
         r'//[^\r\n]*|/\*[\s\S]*?\*/'
         r'|\[(?:#"((?:[^"]|"")*)"|([^\[\]"]+))\]'
@@ -2577,13 +2632,7 @@ def _m_row_dependencies_available(expression, available_columns):
 
 
 def _plan_fixed_dimension_columns(calculations):
-    """Find categorical dimensions driven only by explicit, same-grain FIXEDs.
-
-    This is source classification, not formula conversion. Be conservative:
-    no parameters, arbitrary aggregate dependencies, nested LODs, or dynamic
-    functions. Keep unsupported cases as measures rather than inventing a
-    grouping grain. Final local-column/measure checks happen after healing.
-    """
+    """Find categorical dimensions driven only by explicit, same-grain FIXEDs."""
     from dax_converter import _strip_tableau_comments
 
     def code(calc):
@@ -2597,12 +2646,11 @@ def _plan_fixed_dimension_columns(calculations):
 
     by_alias = {}
     for calc in calculations:
-        for alias in (calc.get('name', '').strip('[]'), calc.get('caption', '')):
+        for alias in _calculation_identity(calc):
             if alias:
                 by_alias.setdefault(alias, []).append(calc)
     fixed = {}
     for alias, matches in by_alias.items():
-        # Repeated name/caption for the very same object is not ambiguity.
         unique = {id(calc): calc for calc in matches}
         if len(unique) != 1:
             continue
@@ -2616,7 +2664,7 @@ def _plan_fixed_dimension_columns(calculations):
         if re.search(r'\b(?:USERNAME|FULLNAME|ISMEMBEROF|TODAY|NOW|LOOKUP|'
                      r'WINDOW_\w+|RUNNING_\w+|RANK\w*)\s*\(', body, re.I):
             continue
-        fixed[alias] = (calc.get('caption') or calc.get('name', '').strip('[]'), keys)
+        fixed[alias] = (_calculation_identity(calc)[1], keys)
 
     plans = []
     for calc in calculations:
@@ -2638,14 +2686,13 @@ def _plan_fixed_dimension_columns(calculations):
         grains = {fixed[alias][1] for alias in dependencies}
         if len(grains) != 1:
             continue
-        aliases = {calc.get('name', '').strip('[]'), calc.get('caption', '')} - {''}
-        # Other formulas have already been converted as measure consumers.
-        # Do not silently reinterpret their references as scalar columns.
+        aliases = set(_calculation_identity(calc)) - {''}
         if any(other is not calc and refs(code(other)) & aliases for other in calculations):
             continue
+        raw_name, caption = _calculation_identity(calc)
         plans.append({
-            'name': calc.get('caption') or calc.get('name', '').strip('[]'),
-            'source_field': calc.get('name', '').strip('[]'),
+            'name': caption,
+            'source_field': raw_name,
             'data_type': map_tableau_to_powerbi_type(calc['datatype']),
             'grain_columns': list(next(iter(grains))),
             'fixed_measures': sorted({fixed[alias][0] for alias in dependencies}),
@@ -2654,18 +2701,7 @@ def _plan_fixed_dimension_columns(calculations):
 
 
 def _materialize_fixed_dimension_columns(model):
-    """Finalize supported refresh-time grouping columns with constrained context.
-
-    An explicit ALLEXCEPT limits context transition to the source FIXED keys,
-    avoiding dependencies on every column of the fact table (and on sibling
-    calculated columns). No DAX is reconverted here: use the validated scalar
-    classifier and inline its verified FIXED dependency closure. The emitted
-    column must not call measures: even an explicitly constrained measure call
-    is rejected by the calculated-column dependency gate.
-
-    Returns the Visual contract keyed by (table, caption). These names occur
-    in actual_bim_symbols/actual_bim_column_types, not actual_bim_measures.
-    """
+    """Inline verified FIXED expressions into refresh-time grouping columns."""
     contract = {}
     renames = model.get('_column_rename_map', {})
     for table in model.get('model', {}).get('tables', []):
@@ -2691,15 +2727,12 @@ def _materialize_fixed_dimension_columns(model):
             fixed_expressions = {}
             for dependency in plan['fixed_measures']:
                 expression = measures.get(dependency, {}).get('expression', '')
-                # Verify the outer context modifier, not merely a matching
-                # substring somewhere inside a different aggregation context.
                 body = _extract_function_body(expression.strip(), 'CALCULATE')
                 args = _split_dax_args(body) if body is not None else []
                 if (len(args) != 2 or 'TODO:' in expression
                         or re.sub(r'\s+', '', args[1]) != re.sub(r'\s+', '', grain)):
                     supported = False
                     break
-                # No cross-table, measure, or DAX-column dependencies at refresh.
                 code = re.sub(r'"(?:[^"]|"")*"', '""', expression)
                 for ref in re.finditer(
                         r"(?P<owner>'(?:[^']|'')+'|\b[A-Za-z_]\w*)?\[(?P<col>[^\]]+)\]",
@@ -2715,7 +2748,6 @@ def _materialize_fixed_dimension_columns(model):
             expression = measure.get('expression', '')
             if not expression or 'TODO:' in expression:
                 continue
-            # The converted classifier must still call only its planned FIXEDs.
             scalar = re.sub(r'"(?:[^"]|"")*"', '""', expression)
             refs = re.findall(
                 r"(?P<owner>'(?:[^']|'')+'|\b[A-Za-z_]\w*)?\[(?P<col>[^\]]+)\]",
@@ -2723,12 +2755,8 @@ def _materialize_fixed_dimension_columns(model):
             if (not refs or any(ref_owner or col not in plan['fixed_measures']
                                 for ref_owner, col in refs)):
                 continue
-            # This supported closure has physical local-column leaves only;
-            # the checks above reject further measures, calculated columns,
-            # cross-table references and mismatched FIXED grains. Parentheses
-            # preserve scalar precedence without relying on implicit measure
-            # context transition. Match strings as tokens so a label such as
-            # "[Entity ratio]" is never rewritten as a dependency.
+            # Match string literals as tokens so labels containing brackets
+            # cannot be mistaken for FIXED measure references.
             tokens = re.compile(
                 r'(?P<literal>"(?:[^"]|"")*")|'
                 r"(?P<owner>'(?:[^']|'')+'|\b[A-Za-z_]\w*)?\[(?P<col>[^\]]+)\]")
@@ -2778,8 +2806,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         dax_context: Dict with calc_map, param_map, column_table_map, measure_names
         col_metadata_map: Dict {col_name: {hidden, semantic_role, description, ...}}
         extra_objects: Dict with sets, groups, bins, aliases
-        model_mode: 'auto' selects storage mode from this table's source;
-                    explicit import/directQuery/composite remain supported.
+        model_mode: 'import', 'directquery', or 'composite'
 
     Returns:
         dict: Complete table definition
@@ -2795,8 +2822,6 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     table_name = table.get('name', 'Table1')
     columns = table.get('columns', [])
 
-    # Determine the final storage mode once, retaining the TMDL casing for
-    # DirectQuery and the existing per-table composite threshold.
     partition_mode = 'import'
     if model_mode == 'auto':
         partition_mode = _auto_partition_mode(connection, table)
@@ -2819,76 +2844,6 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             col['datatype'] = ds_dt
 
     is_direct_lake = model_mode == 'directLake'
-    m_query = ''
-    if not is_direct_lake:
-        # Generate M query: use Prep flow override if available, else generate from connection
-        if m_query_override:
-            m_query = m_query_override
-        else:
-            connection_type = connection.get('type', '')
-            is_hyper_source = (
-                _has_exact_hyper_identity(table.get('hyper_identity'))
-                or (
-                    isinstance(connection_type, str)
-                    and connection_type.strip().casefold() in _HYPER_SOURCE_CONNECTORS
-                )
-            )
-            use_original_file_paths = (
-                partition_mode == 'import' and not is_hyper_source
-            )
-            if use_original_file_paths:
-                # Native Import sources keep their declared source binding.
-                # Do not copy or inspect their local data during generation;
-                # Power Query resolves the original path at refresh. Hyper is
-                # deliberately excluded because its exact identity is staged
-                # separately by the Hyper export path.
-                m_query = generate_power_query_m(
-                    connection, table, use_original_file_paths=True)
-            else:
-                m_query = generate_power_query_m(connection, table)
-
-        # Inject TWB-embedded transformation steps from column metadata
-        m_steps = _build_m_transform_steps(columns, col_metadata_map)
-        if m_steps:
-            m_query = inject_m_steps(m_query, m_steps)
-
-        if (not m_query_override
-                and connection.get('type', '').lower() in ('hyper', 'extract', 'dataengine')):
-            # The legacy Hyper metadata-only fallback (and its otherwise
-            # branch) declares names but no types. Type only an exact empty
-            # literal with this source schema; do not replace unavailable-source
-            # errors, populated extracts, overrides with a different schema, or
-            # introduce a synthetic row. Exact staged identities keep their
-            # fail-closed source expression unchanged.
-            source_columns = [col for col in columns if col.get('name')]
-            if source_columns and not _has_exact_hyper_identity(table.get('hyper_identity')):
-                source_names = [col['name'] for col in source_columns]
-                schema = ', '.join(
-                    '#"' + col['name'].replace('"', '""') + '" = '
-                    + map_tableau_to_m_type(col.get('datatype', 'string'))
-                    for col in source_columns
-                )
-
-                def type_empty_hyper(match):
-                    names = [
-                        value.replace('""', '"')
-                        for value in re.findall(r'"((?:[^"]|"")*)"', match['names'])
-                    ]
-                    if names != source_names:
-                        return match.group(0)
-                    return match['prefix'] + '#table(type table [' + schema + '], {})'
-
-                m_query = re.sub(
-                    r'(?P<prefix>^\s*(?:Source\s*=\s*(?:try\s*)?|otherwise\s*))'
-                    r'#table\s*\(\s*\{(?P<names>\s*"(?:[^"]|"")*"'
-                    r'(?:\s*,\s*"(?:[^"]|"")*")*\s*)\}\s*,\s*\{\s*\}\s*\)',
-                    type_empty_hyper, m_query, flags=re.MULTILINE,
-                )
-
-    # Whatever the partition renames, the model must ask for the produced
-    # name; deriving both from one map stops the two sides drifting apart.
-    rename_map = m_rename_map(columns, col_metadata_map)
-
     if is_direct_lake:
         from .fabric_naming import sanitize_table_name
         partition = {
@@ -2902,20 +2857,38 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             },
         }
     else:
+        # Generate M query: use Prep flow override if available, else generate from connection
+        if m_query_override:
+            m_query = m_query_override
+        else:
+            connector = str(connection.get('type', '')).strip().casefold()
+            is_hyper_source = (
+                _has_exact_hyper_identity(table.get('hyper_identity'))
+                or connector in _HYPER_SOURCE_CONNECTORS
+            )
+            if partition_mode == 'import' and not is_hyper_source:
+                m_query = generate_power_query_m(
+                    connection, table, use_original_file_paths=True)
+            else:
+                m_query = generate_power_query_m(connection, table)
+
+        # Inject TWB-embedded transformation steps from column metadata
+        m_steps = _build_m_transform_steps(columns, col_metadata_map)
+        if m_steps:
+            m_query = inject_m_steps(m_query, m_steps)
         partition = {
             "name": f"Partition-{table_name}",
             "mode": partition_mode,
-            # Internal provenance only; writers serialize known TMDL properties.
-            # Preserve this through transformations so source auditing cannot
-            # mistake an authored query for a generated connection expression.
-            "_expression_origin": (
-                "authored_override" if m_query_override else "generated"
-            ),
+            "_expression_origin": "authored_override" if m_query_override else "generated",
             "source": {
                 "type": "m",
                 "expression": m_query,
             },
         }
+
+    # Whatever the partition renames, the model must ask for the produced
+    # name; deriving both from one map stops the two sides drifting apart.
+    rename_map = m_rename_map(columns, col_metadata_map)
 
     result_table = {
         "name": table_name,
@@ -3010,8 +2983,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     param_values = dax_context.get('param_values', {})
     measure_names_ctx = dax_context.get('measure_names', set())
 
-    # Pair-grain measures are already compiled from source provenance. Do not
-    # pass them (or consumed row intermediates) through generic conversion.
+    # Pair-grain measures are already compiled from source provenance.
     generic_calculations = []
     for calc in calculations:
         if '_logical_expression' not in calc:
@@ -3025,6 +2997,14 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             '_logical_relationship_pair_measure': True,
         })
     calculations = generic_calculations
+    constant_one_aliases = {}
+    for candidate in calculations:
+        candidate_formula = candidate.get('formula', '').strip()
+        if not re.fullmatch(r'1(?:\.0+)?', candidate_formula):
+            continue
+        candidate_name, candidate_caption = _calculation_identity(candidate)
+        for alias in {candidate_name, candidate_caption} - {''}:
+            constant_one_aliases.setdefault(alias, set()).add(candidate_name)
 
     # Pre-compiled aggregation pattern (reused in pre-classification and main loop)
     _agg_pattern = re.compile(
@@ -3052,8 +3032,9 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     # dimension-role calc that concatenates other calc-columns (e.g.
     # Filière = Nucléaire_vrai & Réseaux_vrai & NSE_vrai) is incorrectly
     # demoted to a measure because the refs appear in calc_map/measure_names.
-    prelim_calc_col_captions = set()
-    prelim_calc_col_raws = set()
+    group_column_names = dax_context.get('_combined_group_column_names', set())
+    prelim_calc_col_captions = set(group_column_names)
+    prelim_calc_col_raws = set(group_column_names)
     for _pc in calculations:
         _pc_name, _pc_caption = _calculation_identity(_pc)
         _pc_formula = _pc.get('formula', '').strip()
@@ -3066,7 +3047,9 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         for _r in _pc_refs:
             if _r == _pc_caption or _r.startswith('Parameters'):
                 continue
-            if not (_r in measure_names_ctx or _r in calc_map_ctx.values() or _r in calc_map_ctx):
+            if (_r in group_column_names
+                    or not (_r in measure_names_ctx or _r in calc_map_ctx.values()
+                            or _r in calc_map_ctx)):
                 _pc_has_col = True
                 break
         # A formula without aggregation that has physical column refs is a
@@ -3114,10 +3097,9 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 _fixup_changed = True
 
     m_calc_steps = []  # Accumulated M Table.AddColumn steps (replaces DAX calc cols)
-    # Keep M row availability separate from _this_table_columns, which also
-    # grows to include DAX-only calculated columns for DAX name resolution.
-    m_available_cols = {c["sourceColumn"] for c in result_table["columns"]}
-    m_calc_step_indexes = {}
+    dax_only_calc_cols = set()  # Names of calc columns that stayed as DAX (not converted to M)
+    m_available_cols = {c['sourceColumn'] for c in result_table['columns']
+                        if c.get('sourceColumn')}
 
     # Build column name sets in a single pass — _this_table_columns for
     # same-table ref resolution, _bool_table_columns for type-aware wrapping
@@ -3131,31 +3113,25 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             if (_c.get('datatype', '') or '').lower() == 'boolean':
                 _bool_table_columns.add(_cn)
 
-    # Declared types behind the row fields an M step can reference, so date
-    # arithmetic is typed instead of guessed. The converter reads raw column
-    # names and calculation captions, hence every spelling is a key. Physical
-    # columns come first and win: their type is the one the partition applies.
-    # A calculated column is added with the M type its declared type maps to,
-    # and every `type datetime` step is coerced with DateTime.From, so a calc
-    # declared `date` is an M datetime for the steps that follow it.
     col_types = {}
-    for _c in columns:
-        _cn = _c.get('name', '')
-        _dt = _c.get('datatype', '')
-        if _cn and _dt:
-            for _key in (_cn, _cn.strip('[]'), col_metadata_map.get(_cn, {}).get('caption', '')):
-                if _key:
-                    col_types[_key] = _dt
-    for _calc in calculations:
-        _calc_dt = _calc.get('datatype', '')
-        if _calc_dt:
-            _calc_m_type = _DAX_TO_M_TYPE.get(
-                map_tableau_to_powerbi_type(_calc_dt), 'type text')
-            _calc_kind = {'type date': 'date', 'type datetime': 'datetime'}.get(
-                _calc_m_type, _calc_dt)
-            for _key in _calculation_identity(_calc):
-                if _key:
-                    col_types.setdefault(_key, _calc_kind)
+    for column in columns:
+        name = column.get('name', '')
+        datatype = column.get('datatype', '')
+        if name and datatype:
+            for key in (name, name.strip('[]'),
+                        col_metadata_map.get(name, {}).get('caption', '')):
+                if key:
+                    col_types[key] = datatype
+    for calc in calculations:
+        datatype = calc.get('datatype', '')
+        if datatype:
+            m_type = _DAX_TO_M_TYPE.get(
+                map_tableau_to_powerbi_type(datatype), 'type text')
+            calc_type = {'type date': 'date', 'type datetime': 'datetime'}.get(
+                m_type, datatype)
+            for key in _calculation_identity(calc):
+                if key:
+                    col_types.setdefault(key, calc_type)
 
     for calc in calculations:
         calc_name, caption = _calculation_identity(calc)
@@ -3273,6 +3249,16 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             validate_output=True,
             fallback_on_invalid=True,
         )
+        constant_sum = re.fullmatch(
+            r'\s*SUM\s*\(\s*\[([^\]]+)\]\s*\)\s*', formula, re.IGNORECASE)
+        if constant_sum:
+            one_calculations = constant_one_aliases.get(constant_sum.group(1), set())
+            if len(one_calculations) == 1:
+                # Tableau SUM of an explicit row-level constant 1 is a row
+                # count, not the scalar constant measure produced by ordinary
+                # reference substitution (SUM(1) => 1 in DAX).
+                safe_table_name = table_name.replace("'", "''")
+                dax_formula = f"COUNTROWS('{safe_table_name}')"
 
         # Phase 3: record conversion guard fallback to recovery
         if dax_formula and 'TODO: DAX conversion validation failed' in dax_formula:
@@ -3294,26 +3280,30 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                     )
 
             # ── Try to push the calculated column into Power Query M ──
-            m_expr = _dax_to_m_expression(dax_formula, table_name, col_types)
-            # M row fields must exist in the physical source or an earlier
-            # accepted M step, never merely in the DAX model/measure namespace.
+            m_expr = (None if is_direct_lake else
+                      _dax_to_m_expression(dax_formula, table_name, col_types))
             if m_expr is not None:
                 m_expr = rename_m_column_refs(m_expr, rename_map)
-                if (is_direct_lake
-                        or not _m_row_dependencies_available(m_expr, m_available_cols)):
+                if not _m_row_dependencies_available(
+                        m_expr, m_available_cols - dax_only_calc_cols):
                     m_expr = None
             if m_expr is not None:
                 m_type = _DAX_TO_M_TYPE.get(
                     map_tableau_to_powerbi_type(datatype), 'type text')
                 new_step = m_transform_add_column(caption, f'each {m_expr}', m_type)
                 # Dedup: replace existing M step for the same column name
-                existing_m_idx = m_calc_step_indexes.get(caption.lower())
+                existing_m_idx = None
+                for mi, (sn, _) in enumerate(m_calc_steps):
+                    sm2 = re.match(r'#"Added (.+?)"', sn)
+                    if sm2 and sm2.group(1).lower() == caption.lower():
+                        existing_m_idx = mi
+                        break
                 if existing_m_idx is not None:
                     m_calc_steps[existing_m_idx] = new_step
                 else:
-                    m_calc_step_indexes[caption.lower()] = len(m_calc_steps)
                     m_calc_steps.append(new_step)
                 m_available_cols.add(caption)
+                dax_only_calc_cols.discard(caption)
                 bim_calc_col = {
                     "name": caption,
                     "dataType": map_tableau_to_powerbi_type(datatype),
@@ -3322,6 +3312,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 }
             else:
                 # Fallback: keep as DAX calculated column
+                dax_only_calc_cols.add(caption)
                 bim_calc_col = {
                     "name": caption,
                     "dataType": map_tableau_to_powerbi_type(datatype),
@@ -3501,20 +3492,22 @@ def _get_display_folder(datatype, role):
     return 'Calculations'
 
 
-# Hierarchies live in tmdl_hierarchies; re-exported here so existing
-# imports keep working.
-from powerbi_import.tmdl_hierarchies import (  # noqa: E402,F401
-    _apply_hierarchies,
-    _auto_date_hierarchies,
-)
-
 # Sets, groups and bins live in tmdl_sets; re-exported here so existing
 # imports keep working.
 from powerbi_import.tmdl_sets import (  # noqa: E402,F401
     _RE_TMDL_DERIVATION_PREFIX,
     _RE_TMDL_TYPE_SUFFIX,
     _clean_tableau_field_ref,
+    _combined_field_owners,
     _process_sets_groups_bins,
+)
+
+# ruff: isort: split
+# Hierarchies live in tmdl_hierarchies; re-exported here so existing
+# imports keep working.
+from powerbi_import.tmdl_hierarchies import (  # noqa: E402,F401
+    _apply_hierarchies,
+    _auto_date_hierarchies,
 )
 
 
@@ -3561,15 +3554,7 @@ from powerbi_import.tmdl_rls import (  # noqa: E402,F401
 
 
 def _apply_source_measure_formats(model, datasources, extra_objects, ctx):
-    """Carry source-declared percentage masks onto actual bound measures.
-
-    Tableau's Multiple Values is a shelf, not a model field. Its mask applies
-    only to the worksheet's explicit measure_value bindings. Do not infer
-    percentages from captions, formulas, values, or unscoped cell formatting.
-    Axis declarations take precedence over table/card display precision;
-    conflicting equally authoritative masks retain the existing model format.
-    This changes formatting metadata only, never the underlying fractions.
-    """
+    """Apply explicit source percentage masks to uniquely bound measures."""
     tables = {t['name']: t for t in model['model']['tables']}
     declarations = {}
     aliases = {}
@@ -3577,10 +3562,10 @@ def _apply_source_measure_formats(model, datasources, extra_objects, ctx):
     for ds in datasources:
         dsn = ds.get('name', '')
         for calc in ds.get('calculations', []):
-            caption = calc.get('caption') or calc.get('name', '').strip('[]')
+            ident, caption = _calculation_identity(calc)
             if calc.get('datatype', '').lower() in ('date', 'datetime', 'string', 'boolean'):
                 nonnumeric.add((dsn, caption))
-            for alias in {caption, calc.get('name', '').strip('[]')} - {''}:
+            for alias in {caption, ident} - {''}:
                 aliases.setdefault((dsn, alias), set()).add(caption)
 
     def field_identity(raw, default_ds=''):
@@ -3591,8 +3576,6 @@ def _apply_source_measure_formats(model, datasources, extra_objects, ctx):
     def percent_mask(raw):
         if not isinstance(raw, str):
             return ''
-        # Require placeholders and a percentage suffix. Numeric widths such
-        # as "7", font names and date masks in old field_formats are not masks.
         if not re.fullmatch(r'p?[0#][0#.,]*%', raw.strip()):
             return ''
         return _convert_tableau_format_to_pbi(raw)
@@ -3615,10 +3598,9 @@ def _apply_source_measure_formats(model, datasources, extra_objects, ctx):
         if pair and mask:
             declarations.setdefault(pair, []).append((rank, mask))
 
-    # A measure default is more authoritative than a worksheet override.
     for ds in datasources:
         for calc in ds.get('calculations', []):
-            declare(resolve(ds.get('name', ''), calc.get('name', '').strip('[]')),
+            declare(resolve(ds.get('name', ''), _calculation_identity(calc)[0]),
                     40, percent_mask(calc.get('default_format', '')))
         for col in ds.get('columns', []):
             declare(resolve(ds.get('name', ''), col.get('name', '').strip('[]')),
@@ -3631,9 +3613,7 @@ def _apply_source_measure_formats(model, datasources, extra_objects, ctx):
         cell = formatting.get('cell', {})
         if isinstance(cell, dict) and cell.get('field') and cell.get('text-format'):
             formats.append((cell['field'], cell['text-format']))
-        # Typed cell metadata repairs field_formats entries overwritten by
-        # unrelated style attributes (for example font-size "7"). Resolve
-        # duplicate declarations before applying the synthetic shelf default.
+        # Typed cell metadata can repair field formats overwritten by style attributes.
         individual_masks = {}
         for raw_field, raw_mask in formats:
             mask = percent_mask(raw_mask)
@@ -3656,8 +3636,6 @@ def _apply_source_measure_formats(model, datasources, extra_objects, ctx):
                 if multiple:
                     if field.get('shelf') != 'measure_value':
                         continue
-                    # A shelf is a default, never an override of an explicitly
-                    # formatted constituent measure in this worksheet.
                     if ((source, field_name) in individual_masks
                             or ('', field_name) in individual_masks):
                         continue
@@ -3669,7 +3647,6 @@ def _apply_source_measure_formats(model, datasources, extra_objects, ctx):
                     if field_name != name:
                         continue
                     axis = field.get('shelf') in ('rows', 'columns')
-                # A table's row headers are not a quantitative chart axis.
                 chart = worksheet.get('chart_type', '').lower()
                 axis = axis and chart not in ('table', 'tableex', 'matrix', 'pivottable')
                 declare(resolve(source, field_name), 30 if axis else 20, mask)
@@ -3712,8 +3689,6 @@ def _convert_tableau_format_to_pbi(tableau_format):
         return ''
 
     fmt = tableau_format.strip()
-    # Tableau's compact percentage token is a format-kind prefix, not a
-    # literal "p" in Power BI's format string.
     if re.fullmatch(r'p[0#][0#.,]*%', fmt):
         fmt = fmt[1:]
 
@@ -3829,6 +3804,157 @@ def _agg_for_column(model, table_name, column_name, agg_func):
     return agg_func
 
 
+def _parse_countd_reference(value):
+    """Return datasource and field from an aggregated Tableau sort reference."""
+    raw = str(value or '').strip().replace('[', '').replace(']', '')
+    match = re.search(r'(?:^|\.)(?:ctd|countd):', raw, re.IGNORECASE)
+    if not match:
+        return None
+    datasource = raw[:match.start()].rstrip('.')
+    field = re.sub(r':(?:qk|nk|ok|fn|tn)(?::\d+)?$', '', raw[match.end():],
+                   flags=re.IGNORECASE)
+    return (datasource, field) if field else None
+
+
+def _create_countd_measures(model, worksheets):
+    """Create qualified helpers for physical columns used by Tableau COUNTD."""
+    requested = set()
+    for worksheet in worksheets or []:
+        for field in worksheet.get('fields', []):
+            if field.get('table_calc'):
+                continue
+            name = field.get('name', '')
+            parsed = _parse_countd_reference(name)
+            if parsed:
+                requested.add(parsed[1].casefold())
+            elif str(field.get('aggregation', '')).lower() in ('ctd', 'countd') and name:
+                requested.add(name.casefold())
+        for sort in worksheet.get('sort_orders', []):
+            parsed = _parse_countd_reference(sort.get('sort_by', ''))
+            if parsed:
+                requested.add(parsed[1].casefold())
+
+    bindings = model.setdefault('_countd_measure_bindings', {})
+    if not requested:
+        return
+
+    requested_by_alias = {name: {name} for name in requested}
+    for datasource in model.get('_datasources', []):
+        for calculation in datasource.get('calculations', []):
+            raw = str(calculation.get('name') or '').strip('[]').casefold()
+            caption = str(calculation.get('caption') or '').casefold()
+            names = {name for name in (raw, caption) if name}
+            for requested_name in requested.intersection(names):
+                for alias in names:
+                    requested_by_alias.setdefault(alias, set()).add(requested_name)
+
+    tables = model.get('model', {}).get('tables', [])
+    taken = {
+        item.get('name', '').casefold()
+        for table in tables
+        for item in table.get('columns', []) + table.get('measures', [])
+        if item.get('name')
+    }
+    renames = model.get('_column_rename_map', {})
+    found = set()
+    for table in tables:
+        table_name = table.get('name', '')
+        for column in table.get('columns', []):
+            column_name = column.get('name', '')
+            if not table_name or not column_name:
+                continue
+            aliases = {column_name}
+            source_column = column.get('sourceColumn')
+            if source_column:
+                aliases.add(source_column)
+            aliases.update(
+                raw for (owner, raw), produced in renames.items()
+                if owner == table_name and produced == column_name
+            )
+            matching = set()
+            for alias in aliases:
+                matching.update(requested_by_alias.get(alias.casefold(), ()))
+            if not matching:
+                continue
+            found.update(matching)
+            pair = (table_name, column_name)
+            if pair in bindings:
+                continue
+            base = f"COUNTD {column_name} ({table_name})"
+            name = base
+            suffix = 2
+            while name.casefold() in taken:
+                name = f"{base} {suffix}"
+                suffix += 1
+            taken.add(name.casefold())
+            table.setdefault('measures', []).append({
+                'name': name,
+                'expression': tableau_countd_column(table_name, column_name),
+                'isHidden': True,
+                'formatString': '#,0',
+                'description': f'Tableau COUNTD of {table_name}[{column_name}], excluding nulls',
+            })
+            bindings[pair] = name
+
+    for name in sorted(requested - found):
+        logger.warning("COUNTD field %r has no matching model column", name)
+
+
+def _resolve_quick_countd_column(model, field):
+    """Resolve a quick COUNTD to one physical column in its datasource."""
+    name = str(field.get('name') or '').strip('[]')
+    datasource = field.get('datasource', '')
+    explicit_table = field.get('table', '')
+    sources = model.get('_datasources', [])
+    source_names = {source.get('name') for source in sources}
+    known_source = datasource in source_names
+    merged = any(
+        table.get('_source_workbooks')
+        for source in sources for table in source.get('tables', [])
+    )
+    if datasource and not known_source and not merged:
+        return None
+
+    rename_tables = model.get('_table_rename_map', {})
+    permitted_tables = set()
+    if sources:
+        for source in sources:
+            if known_source and source.get('name') != datasource:
+                continue
+            for table in source.get('tables', []):
+                original = table.get('name', '')
+                produced = rename_tables.get((source.get('name', ''), original), original)
+                if not explicit_table or explicit_table in (original, produced):
+                    permitted_tables.add(produced)
+    rename_columns = model.get('_column_rename_map', {})
+    field_names = {name}
+    for source in sources:
+        if known_source and source.get('name') != datasource:
+            continue
+        for calculation in source.get('calculations', []):
+            raw = str(calculation.get('name') or '').strip('[]')
+            caption = str(calculation.get('caption') or '')
+            if name in (raw, caption):
+                field_names.update(value for value in (raw, caption) if value)
+    matches = set()
+    for table in model.get('model', {}).get('tables', []):
+        table_name = table.get('name', '')
+        if sources and table_name not in permitted_tables:
+            continue
+        if not sources and explicit_table and table_name != explicit_table:
+            continue
+        for column in table.get('columns', []):
+            column_name = column.get('name', '')
+            aliases = {column_name, column.get('sourceColumn', '')}
+            aliases.update(
+                raw for (owner, raw), produced in rename_columns.items()
+                if owner == table_name and produced == column_name
+            )
+            if field_names.intersection(aliases) and column_name:
+                matches.add((table_name, column_name))
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
 def _create_quick_table_calc_measures(model, worksheets, main_table_name, column_table_map):
     """Auto-generate DAX measures for Tableau quick table calculations.
 
@@ -3857,8 +3983,22 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
 
     _AGG_MAP = {
         'sum': 'SUM', 'avg': 'AVERAGE', 'count': 'COUNT',
-        'min': 'MIN', 'max': 'MAX', 'countd': 'DISTINCTCOUNT',
+        'min': 'MIN', 'max': 'MAX', 'countd': 'DISTINCTCOUNTNOBLANK',
+        'ctd': 'DISTINCTCOUNTNOBLANK', 'cnt': 'COUNT',
     }
+    bindings = model.setdefault('_quick_table_calc_bindings', {})
+    unsupported = model.setdefault('_unsupported_quick_table_calcs', {})
+    all_names = {
+        item.get('name', '').casefold()
+        for table in model['model']['tables']
+        for item in table.get('columns', []) + table.get('measures', [])
+        if item.get('name')
+    }
+    has_calendar_date = any(
+        table.get('name') == 'Calendar'
+        and any(col.get('name') == 'Date' for col in table.get('columns', []))
+        for table in model['model']['tables']
+    )
 
     for ws in worksheets:
         for field in ws.get('fields', []):
@@ -3867,85 +4007,111 @@ def _create_quick_table_calc_measures(model, worksheets, main_table_name, column
                 continue
 
             field_name = field.get('name', '')
-            tc_agg = field.get('table_calc_agg', 'sum')
+            tc_agg = str(field.get('table_calc_agg', 'sum')).lower()
             agg_func = _AGG_MAP.get(tc_agg, 'SUM')
             tbl = column_table_map.get(field_name, main_table_name)
-            agg_func = _agg_for_column(model, tbl, field_name, agg_func)
+            model_field = field_name
+            is_countd = tc_agg in ('ctd', 'countd')
+            binding_key = None
+            if is_countd:
+                resolved = _resolve_quick_countd_column(model, field)
+                if resolved is None:
+                    logger.warning(
+                        "Quick COUNTD %r in datasource %r has no unique model column; "
+                        "the calculation is not generated.",
+                        field_name, field.get('datasource', ''),
+                    )
+                    continue
+                tbl, model_field = resolved
+                binding_key = (tbl, model_field, tc_type, 'countd')
+                if binding_key in bindings:
+                    continue
+                if tc_type.startswith('running_'):
+                    logger.warning(
+                        "Quick %s over COUNTD %s.%s requires Tableau's mark "
+                        "partition and is not generated.", tc_type, tbl, model_field,
+                    )
+                    continue
+            if (model.get('_model_mode', '').lower() == 'directlake'
+                    and not has_calendar_date
+                    and (tc_type in ('pctd', 'diff') or tc_type.startswith('running_'))):
+                unsupported[(field.get('datasource', ''), field_name, tc_type, tc_agg)] = (
+                    'DirectLake has no Calendar[Date] column')
+                logger.warning(
+                    "Quick %s for %s is not generated in DirectLake: "
+                    "the model has no Calendar[Date] column.",
+                    tc_type, field_name,
+                )
+                continue
+            agg_func = _agg_for_column(model, tbl, model_field, agg_func)
+            table_ref = "'" + tbl.replace("'", "''") + "'"
+            base = (f"COUNTROWS({table_ref})" if field_name == 'Number of Records'
+                    else tableau_countd_column(tbl, model_field)
+                    if is_countd
+                    else f"{agg_func}({table_ref}[{model_field}])")
+
+            def add_measure(name, expression, format_string):
+                nonlocal added
+                if is_countd:
+                    stem = f"{name} (COUNTD {tbl})"
+                    name = stem
+                    suffix = 2
+                    while name.casefold() in all_names:
+                        name = f"{stem} {suffix}"
+                        suffix += 1
+                elif name in existing_measures:
+                    return
+                measure = {
+                    "name": name,
+                    "expression": expression,
+                    "formatString": format_string,
+                    "displayFolder": "Table Calculations",
+                }
+                if binding_key:
+                    measure['annotations'] = [{
+                        'name': 'MigrationNote',
+                        'value': (
+                            'COUNTD excludes nulls; quick table calculation scope '
+                            'is approximated and may differ from Tableau mark partitioning.'
+                        ),
+                    }]
+                target_table.setdefault("measures", []).append(measure)
+                existing_measures.add(name)
+                all_names.add(name.casefold())
+                if binding_key:
+                    bindings[binding_key] = (target_table['name'], name)
+                added += 1
 
             if tc_type == 'pcto':
                 measure_name = f"% of Total {field_name}"
-                if measure_name not in existing_measures:
-                    base = (f"COUNTROWS('{tbl}')" if field_name == 'Number of Records'
-                        else f"{agg_func}('{tbl}'[{field_name}])")
-                    expr = f"DIVIDE({base}, CALCULATE({base}, ALL('{tbl}')))"
-                    target_table.setdefault("measures", []).append({
-                        "name": measure_name,
-                        "expression": expr,
-                        "formatString": "0.00%",
-                        "displayFolder": "Table Calculations"
-                    })
-                    existing_measures.add(measure_name)
-                    added += 1
+                expr = f"DIVIDE({base}, CALCULATE({base}, ALL({table_ref})))"
+                add_measure(measure_name, expr, "0.00%")
 
             elif tc_type == 'pctd':
                 measure_name = f"% Difference {field_name}"
-                if measure_name not in existing_measures:
-                    base = f"{agg_func}('{tbl}'[{field_name}])"
-                    prev = f"CALCULATE({base}, PREVIOUSDAY('Calendar'[Date]))"
-                    expr = f"VAR _Current = {base} VAR _Previous = {prev} RETURN DIVIDE(_Current - _Previous, _Previous)"
-                    target_table.setdefault("measures", []).append({
-                        "name": measure_name,
-                        "expression": expr,
-                        "formatString": "0.00%",
-                        "displayFolder": "Table Calculations"
-                    })
-                    existing_measures.add(measure_name)
-                    added += 1
+                prev = f"CALCULATE({base}, PREVIOUSDAY('Calendar'[Date]))"
+                expr = f"VAR _Current = {base} VAR _Previous = {prev} RETURN DIVIDE(_Current - _Previous, _Previous)"
+                add_measure(measure_name, expr, "0.00%")
 
             elif tc_type.startswith('running_'):
                 running_agg = tc_type.replace('running_', '')
                 running_func = _AGG_MAP.get(running_agg, 'SUM')
                 measure_name = f"Running {running_agg.title()} {field_name}"
-                if measure_name not in existing_measures:
-                    expr = (f"CALCULATE({running_func}('{tbl}'[{field_name}]), "
-                            f"FILTER(ALL('Calendar'[Date]), 'Calendar'[Date] <= MAX('Calendar'[Date])))")
-                    target_table.setdefault("measures", []).append({
-                        "name": measure_name,
-                        "expression": expr,
-                        "formatString": "#,0.00",
-                        "displayFolder": "Table Calculations"
-                    })
-                    existing_measures.add(measure_name)
-                    added += 1
+                expr = (f"CALCULATE({running_func}({table_ref}[{model_field}]), "
+                        f"FILTER(ALL('Calendar'[Date]), 'Calendar'[Date] <= MAX('Calendar'[Date])))")
+                add_measure(measure_name, expr, "#,0.00")
 
             elif tc_type in ('rank', 'rank_unique', 'rank_dense'):
-                dense = ", DENSE" if tc_type == 'rank_dense' else ""
+                dense = ", , DESC, DENSE" if tc_type == 'rank_dense' else ""
                 measure_name = f"Rank {field_name}"
-                if measure_name not in existing_measures:
-                    expr = f"RANKX(ALL('{tbl}'), {agg_func}('{tbl}'[{field_name}]){dense})"
-                    target_table.setdefault("measures", []).append({
-                        "name": measure_name,
-                        "expression": expr,
-                        "formatString": "#,0",
-                        "displayFolder": "Table Calculations"
-                    })
-                    existing_measures.add(measure_name)
-                    added += 1
+                expr = f"RANKX(ALL({table_ref}), {base}{dense})"
+                add_measure(measure_name, expr, "#,0")
 
             elif tc_type == 'diff':
                 measure_name = f"Difference {field_name}"
-                if measure_name not in existing_measures:
-                    base = f"{agg_func}('{tbl}'[{field_name}])"
-                    prev = f"CALCULATE({base}, PREVIOUSDAY('Calendar'[Date]))"
-                    expr = f"{base} - {prev}"
-                    target_table.setdefault("measures", []).append({
-                        "name": measure_name,
-                        "expression": expr,
-                        "formatString": "#,0.00",
-                        "displayFolder": "Table Calculations"
-                    })
-                    existing_measures.add(measure_name)
-                    added += 1
+                prev = f"CALCULATE({base}, PREVIOUSDAY('Calendar'[Date]))"
+                expr = f"{base} - {prev}"
+                add_measure(measure_name, expr, "#,0.00")
 
     if added:
         print(f"  ✓ {added} quick table calc measures generated")
@@ -3964,6 +4130,9 @@ from powerbi_import.tmdl_dates import (  # noqa: E402,F401
 # ════════════════════════════════════════════════════════════════════
 #  TMDL FILE WRITERS
 # ════════════════════════════════════════════════════════════════════
+
+
+# ruff: isort: split
 # TMDL serialization lives in tmdl_writers; re-exported here so existing
 # imports of these names keep working.
 from powerbi_import.tmdl_writers import (  # noqa: E402,F401

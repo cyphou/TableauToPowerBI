@@ -1466,6 +1466,29 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
         self.assertNotIn("999", expression)
         inline.assert_not_called()
 
+    def test_missing_or_inexact_identity_cannot_import_diagnostic_rows(self):
+        from powerbi_import import tmdl_generator
+        from powerbi_import.errors import GenerationError
+
+        extra = {"hyper_files": [{"hyper_reader_tables": [{
+            "table": self.table, "columns": [{"name": "id", "type": "integer"}],
+            "sample_rows": [[999]],
+        }]}]}
+        for identity in ({}, dict(self.identity, unexpected="not-an-exact-identity")):
+            with self.subTest(identity=identity):
+                datasource = self._datasource(identity=identity)
+                with mock.patch.object(
+                        tmdl_generator, "generate_m_from_hyper",
+                        return_value='#table({"id"}, {{999}})') as inline:
+                    model = self._model([datasource], extra)
+                    expression = model["model"]["tables"][0]["partitions"][0]["source"]["expression"]
+                    self.assertIn("Migration.HyperIdentityRequired", expression)
+                    self.assertNotIn("999", expression)
+                    with self.assertRaisesRegex(GenerationError, "exact physical identity"):
+                        tmdl_generator.generate_tmdl(
+                            [datasource], NAME, extra, os.path.join(self.root, "output"))
+                    inline.assert_not_called()
+
     def test_extracted_identity_survives_datasource_json_model_and_csv_staging(self):
         import xml.etree.ElementTree as ET
 

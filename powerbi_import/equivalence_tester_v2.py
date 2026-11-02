@@ -15,6 +15,8 @@ import hashlib
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
+from powerbi_import.tableau_identity import calculation_identity, unbracket_identifier
+
 
 class EquivalenceTester:
     """Main equivalence testing orchestrator."""
@@ -101,15 +103,18 @@ class EquivalenceTester:
             return False, "Invalid DAX formula"
         return True, None  # Syntax valid
 
-    def test_visual_field_coverage(self, tableau_fields: set, pbi_fields: set,
-                                  visual_name: str) -> Tuple[bool, float]:
+    def test_visual_field_coverage(
+            self, tableau_fields: set, pbi_fields: set,
+            visual_name: str) -> Tuple[Optional[bool], Optional[float]]:
         """Compare visual field coverage.
 
         Returns:
             (passed, coverage_percent)
         """
         if not tableau_fields:
-            return True, 100.0
+            # Empty source field lists provide no denominator. Returning 100%
+            # here made empty/skipped visuals look completely covered.
+            return None, None
 
         common = tableau_fields & pbi_fields
         coverage = len(common) / len(tableau_fields) * 100 if tableau_fields else 100.0
@@ -334,15 +339,53 @@ def _read_generated_model(pbi_artifact: Dict) -> Optional[Dict]:
     return {'tables': tables, 'columns': columns, 'measures': measures}
 
 
+def _read_generated_visual_artifacts(pbi_artifact: Dict) -> List[str]:
+    """Return paths of PBIR visual.json files actually present in the project."""
+    import glob
+    import os
+
+    project_dir = (pbi_artifact or {}).get('project_dir')
+    if not project_dir or not os.path.isdir(project_dir):
+        return []
+    pattern = os.path.join(
+        project_dir, "**", "definition", "pages", "**", "visuals", "**",
+        "visual.json"
+    )
+    return sorted(set(glob.glob(pattern, recursive=True)))
+
+
+def _calculation_aliases(tableau_export):
+    """Index source-scoped calculation identifiers and their emitted captions."""
+    aliases = {}
+
+    def add(calc, datasource=''):
+        if not isinstance(calc, dict):
+            return
+        raw, caption = calculation_identity(calc)
+        if raw and caption:
+            scope = calc.get('datasource_name') or calc.get('datasource') or datasource
+            aliases.setdefault(raw, set()).add((scope or '', caption))
+
+    for calc in tableau_export.get('calculations', []):
+        add(calc)
+    for datasource in tableau_export.get('datasources', []):
+        if not isinstance(datasource, dict):
+            continue
+        for calc in datasource.get('calculations', []):
+            add(calc, datasource.get('name', ''))
+    return aliases
+
+
 def run_full_equivalence_suite(tableau_export: Dict, pbi_artifact: Dict,
                                verbose: bool = False) -> Dict:
-    """Run comprehensive equivalence test suite.
+    """Run offline model-name checks and report unavailable comparisons.
 
     Every test used to pass unconditionally: row count was a hardcoded
     ``True``, the calculation test only checked that the *Tableau* formula was
     non-empty, and field coverage compared the Tableau fields against
     themselves. An empty or entirely wrong project reported 100% fidelity.
-    Tests now read the generated model, and say so when they cannot.
+    A model-name match does not establish a visual projection, data values,
+    rendered parity, or a uniquely qualified datasource binding.
 
     Args:
         tableau_export: Extracted Tableau metadata (from extract_tableau_data)
@@ -356,6 +399,11 @@ def run_full_equivalence_suite(tableau_export: Dict, pbi_artifact: Dict,
     results = []
     model = _read_generated_model(pbi_artifact)
     model_names = (model['measures'] | model['columns']) if model else set()
+    calculation_aliases = _calculation_aliases(tableau_export)
+    generated_visuals = _read_generated_visual_artifacts(pbi_artifact)
+    worksheets = tableau_export.get('worksheets', [])
+    if isinstance(worksheets, dict):
+        worksheets = worksheets.get('worksheets', [])
 
     # Test 1: Row counts need a live query against the deployed model.
     for ds in tableau_export.get('datasources', []):
@@ -371,8 +419,8 @@ def run_full_equivalence_suite(tableau_export: Dict, pbi_artifact: Dict,
 
     # Test 2: every Tableau calculation should exist in the model
     for calc in tableau_export.get('calculations', []):
-        calc_name = calc.get('caption') or calc.get('name', 'Unknown')
-        clean = str(calc_name).strip('[]')
+        _, clean = calculation_identity(calc)
+        clean = clean or 'Unknown'
         if model is None:
             results.append({
                 'test': f'calc:{clean}',
@@ -391,38 +439,111 @@ def run_full_equivalence_suite(tableau_export: Dict, pbi_artifact: Dict,
                         else f'{clean}: missing from the generated model'),
         })
 
-    # Test 3: fields a worksheet uses should exist in the model
-    for ws in tableau_export.get('worksheets', []):
+    # Model-name presence is diagnostic only; it is not visual coverage.
+    for ws in worksheets:
         ws_name = ws.get('name', 'Unknown')
         tableau_fields = set()
         for field in ws.get('fields', []):
             if isinstance(field, dict):
                 name = field.get('name')
+                datasource = field.get('datasource') or ''
                 if name:
-                    tableau_fields.add(str(name).strip('[]'))
+                    tableau_fields.add((datasource, unbracket_identifier(str(name))))
             elif field:
-                tableau_fields.add(str(field).strip('[]'))
-        tableau_fields -= _PSEUDO_FIELDS
+                tableau_fields.add(('', unbracket_identifier(str(field))))
+        tableau_fields = {(source, name) for source, name in tableau_fields
+                          if name not in _PSEUDO_FIELDS}
         if not tableau_fields:
             continue
+
+        results.append({
+            'test': f'visual_coverage:{ws_name}',
+            'passed': False,
+            'status': 'not_run',
+            'severity': 'info',
+            'generated_visual_artifact_count': len(generated_visuals),
+            'message': (
+                f'{ws_name}: worksheet-to-PBIR projection coverage not_run; '
+                + ('no generated PBIR visual artifact was found'
+                   if not generated_visuals else
+                   f'{len(generated_visuals)} PBIR visual artifact(s) exist, '
+                   'but source worksheet provenance is not verified')
+            ),
+        })
+
         if model is None:
             results.append({
-                'test': f'visual_coverage:{ws_name}',
+                'test': f'model_name_presence:{ws_name}',
                 'passed': False,
                 'status': 'not_run',
                 'severity': 'info',
+                'scope': 'unqualified_model_names',
                 'message': f'{ws_name}: no generated model to compare against',
             })
             continue
-        passed, coverage = tester.test_visual_field_coverage(
-            tableau_fields, model_names, ws_name
-        )
+
+        resolved_names = []
+        ambiguous = 0
+        for datasource, name in sorted(tableau_fields):
+            candidates = calculation_aliases.get(name, set())
+            captions = {caption for scope, caption in candidates
+                        if not datasource or not scope or scope == datasource}
+            if len(captions) > 1:
+                ambiguous += 1
+            else:
+                resolved_names.append(next(iter(captions)) if captions else name)
+
+        if ambiguous:
+            results.append({
+                'test': f'model_name_presence:{ws_name}',
+                'passed': False,
+                'status': 'not_run',
+                'severity': 'info',
+                'scope': 'unqualified_model_names',
+                'ambiguous_fields': ambiguous,
+                'message': (
+                    f'{ws_name}: some calculation identifiers have ambiguous '
+                    'captions; model-name presence not scored'
+                ),
+            })
+            continue
+
+        present = sorted(name for name in resolved_names if name in model_names)
+        absent = sorted(name for name in resolved_names if name not in model_names)
         results.append({
-            'test': f'visual_coverage:{ws_name}',
-            'passed': passed,
-            'severity': 'pass' if passed else 'warning',
-            'coverage_percent': coverage,
-            'message': f'{ws_name}: {coverage:.1f}% field coverage',
+            'test': f'model_name_presence:{ws_name}',
+            'passed': False,
+            'status': 'not_run',
+            'severity': 'info',
+            'scope': 'unqualified_model_names',
+            'matched_model_names': present,
+            'unmatched_model_names': absent,
+            'message': (
+                f'{ws_name}: model-name presence is diagnostic only; '
+                'this is not visual field coverage'
+            ),
         })
 
-    return tester.generate_report(results)
+    report = tester.generate_report(results)
+    # Model-name diagnostics and calculated-item presence do not validate
+    # worksheet projection. Do not let those checks create a success-shaped
+    # overall equivalence score while source worksheets remain unverified.
+    report['source_worksheet_count'] = len(worksheets)
+    report['generated_visual_artifact_count'] = len(generated_visuals)
+    report['visual_artifact_reconciliation'] = {
+        'source_worksheet_count': len(worksheets),
+        'generated_visual_artifact_count': len(generated_visuals),
+        'artifact_count_delta': len(generated_visuals) - len(worksheets),
+        'status': 'not_run',
+        'reason': 'PBIR artifacts are counted, but worksheet-to-visual provenance is not verified.',
+    }
+    if worksheets:
+        report['fidelity_percent'] = None
+        report['status'] = 'not_run'
+    report['fidelity_percent_scope'] = 'not_run_visual_projection_equivalence'
+    report['limitations'] = [
+        'Unqualified model-name matches are diagnostic only and do not establish '
+        'the correct datasource or a visual binding.',
+        'Visual projection coverage and runtime value equivalence are not checked.',
+    ]
+    return report

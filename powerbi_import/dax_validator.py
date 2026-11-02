@@ -288,10 +288,11 @@ def validate_dax_expression(expr: str) -> List[str]:
     issues.extend(_check_balanced(text))
     issues.extend(_check_datediff(text))
 
-    if _TABLEAU_FUNC_LEAK.search(text):
+    unquoted = mask_literal_spans(text)
+    if _TABLEAU_FUNC_LEAK.search(unquoted):
         issues.append('unconverted Tableau function token detected in DAX output')
 
-    if re.search(r'\b(None|undefined)\b', text, re.IGNORECASE):
+    if re.search(r'\b(None|undefined)\b', unquoted, re.IGNORECASE):
         issues.append('invalid literal token detected in DAX output')
 
     return issues

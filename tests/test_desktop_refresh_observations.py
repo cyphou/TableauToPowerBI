@@ -580,10 +580,12 @@ class TestRefreshSnapshotRequestBudgets(unittest.TestCase):
             probe.subprocess, "run", return_value=self.completed))
 
     def test_read_only_snapshot_caps_default_and_large_budgets_at_thirty_seconds(self):
-        for options in ({}, {"timeout": 300}, {"timeout": 120}, {"timeout": 30}):
-            with self.subTest(options=options):
+        for timeout in (None, 300, 120, 30):
+            with self.subTest(timeout=timeout):
                 self.run.reset_mock()
-                self.assertEqual(probe._refresh_ui_state(101, 4242, **options), "clear")
+                state = (probe._refresh_ui_state(101, 4242) if timeout is None
+                         else probe._refresh_ui_state(101, 4242, timeout=timeout))
+                self.assertEqual(state, "clear")
                 self.run.assert_called_once()
                 self.assertEqual(self.run.call_args.kwargs["timeout"], 30.0)
         self.assertTrue(all(call.args == (4242,) for call in self.dialogs.call_args_list))
@@ -660,6 +662,10 @@ class TestRefreshSnapshotRequestBudgets(unittest.TestCase):
 
 
 class TestRefreshPartitionCompletion(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch.object(
+            probe.desktop_window, "window_process_id", return_value=4242))
+
     def refresh(self, *, before=None, after=None, states=None, data=None,
                 timeout=1, poll=0.1, observer_time=0, verification_time=0):
         before = _observation() if before is None else before
@@ -939,6 +945,10 @@ class TestRefreshPartitionCompletion(unittest.TestCase):
 
 
 class TestRefreshInitialReadiness(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch.object(
+            probe.desktop_window, "window_process_id", return_value=4242))
+
     """Startup UI retries must precede, not replace, refresh verification."""
 
     def run_refresh(self, initial_states, *, before=None, after=None, data=None,

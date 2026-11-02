@@ -90,6 +90,17 @@ class TestInjectAliasMeasures(unittest.TestCase):
         self.assertEqual(_measures(model)['Life Expectancy'],
                          "AVERAGE('Extract'[H: Life exp (years)])")
 
+    def test_countd_alias_ignores_null_and_preserves_empty_groups(self):
+        model = _model()
+        _inject_alias_measures(model, {':Measure Names': {
+            '"[DS].[ctd:Region:qk]"': 'Distinct Regions',
+        }}, _COLUMN_TABLE_MAP)
+        self.assertEqual(
+            _measures(model)['Distinct Regions'],
+            "IF(ISEMPTY('Extract'), BLANK(), "
+            "COALESCE(DISTINCTCOUNTNOBLANK('Extract'[Region]), 0))",
+        )
+
     def test_rank_alias_wraps_the_aggregation(self):
         model = _model()
         _inject_alias_measures(model, {':Measure Names': {

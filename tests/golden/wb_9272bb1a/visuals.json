@@ -2,7 +2,7 @@
  "visual_count": 3,
  "visuals": [
   {
-   "fields": 2,
+   "fields": 3,
    "has_format": true,
    "height": 280,
    "page": "Sales Overview",
@@ -15,7 +15,7 @@
    "z": 0
   },
   {
-   "fields": 2,
+   "fields": 3,
    "has_format": true,
    "height": 280,
    "page": "Sales Overview",

@@ -40,6 +40,10 @@ def _slug(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def _window_opened(item: dict) -> bool:
+    return item.get('status') == 'opened' and item.get('window_loaded') is True
+
+
 def _write_private(path: str, text: str) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     fd = os.open(path, flags | getattr(os, 'O_NOFOLLOW', 0), 0o600)
@@ -53,9 +57,12 @@ def _html_report(results, html_path: str) -> str:
     rows = []
     for item in results:
         name = html.escape(_slug(item.get('pbip_path') or ''))
-        opened = bool(item.get('window_loaded'))
+        opened = _window_opened(item)
+        failure_status = str(item.get('status') or 'error')
+        if failure_status == 'opened':
+            failure_status = 'incomplete'
         card = ('<span class="card ok">OPENED</span>' if opened
-                else '<span class="card ko">CRASHED</span>')
+                else f'<span class="card ko">{html.escape(failure_status.upper().replace("_", " "))}</span>')
         data = item.get('data_load') or {}
         refresh = item.get('refresh') or {}
         contract = item.get('visual_contract') or {}
@@ -67,8 +74,8 @@ def _html_report(results, html_path: str) -> str:
                 cells.append(f'<a href="{html.escape(rel)}"><img src="{html.escape(rel)}" '
                              'alt="screenshot" loading="lazy"></a>')
         verified = item.get('screenshot_data_verified')
-        label = ('data verified' if verified else
-                 'data not verified' if verified is False else 'window only')
+        label = ('data verified' if verified is True and opened else
+                 'data not verified' if verified is not None else 'window only')
         rows.append(
             f'<tr><td>{name}</td><td>{card}</td>'
             f'<td>{html.escape(str(refresh.get("mode", "none")))} / '
@@ -78,9 +85,11 @@ def _html_report(results, html_path: str) -> str:
             f'<td>{int(data.get("total_rows", 0))}</td>'
             f'<td>{int(contract.get("needs_review", 0))}</td>'
             f'<td>{"".join(cells) or "none"}<div class="lbl">{label}</div></td></tr>')
-    opened_count = sum(1 for r in results if r.get('window_loaded'))
+    opened_count = sum(1 for r in results if _window_opened(r))
     verified_count = sum(1 for r in results
-                         if (r.get('data_load') or {}).get('status') == 'verified')
+                         if _window_opened(r)
+                         and (r.get('data_load') or {}).get('status') == 'verified'
+                         and (r.get('refresh') or {}).get('status') == 'verified')
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
         '<title>Power BI Desktop opening validation</title><style>'
@@ -197,13 +206,27 @@ def main(argv=None) -> int:
         data_status_counts[data_status] = data_status_counts.get(data_status, 0) + 1
         for key in data_totals:
             data_totals[key] += data_load.get(key, 0)
-        successful = (loaded and data['visual_contract'].get('needs_review', 0) == 0
-                      and (args.skip_data_check or data_status == 'verified'))
+        data_verified = (
+            data_status == 'verified'
+            and data.get('screenshot_data_verified') is True
+            and (args.no_refresh
+                 or (data.get('refresh') or {}).get('status') == 'verified'))
+        successful = (_window_opened(data)
+                      and data['visual_contract'].get('needs_review', 0) == 0
+                      and (args.skip_data_check or data_verified))
         if not successful:
             failed += 1
         mark = 'OK  ' if successful else 'FAIL'
         print(f'{mark} {name[:44]:<44} {data["duration_s"]:>6.1f}s '
               f'{"shot" if data["screenshot"] else "no shot"}')
+        if not successful:
+            refresh_status = (data.get('refresh') or {}).get('status', 'not_requested')
+            print(f'     status={data.get("status", "error")}; '
+                  f'refresh={refresh_status}; data={data_status}; '
+                  f'screenshot_data_verified={data.get("screenshot_data_verified")}; '
+                  f'visual_issues={data["visual_contract"].get("needs_review", 0)}')
+            if data.get('note'):
+                print(f'     {data["note"]}')
 
     status_summary = ', '.join(
         f'{status}={count}' for status, count in sorted(data_status_counts.items()))

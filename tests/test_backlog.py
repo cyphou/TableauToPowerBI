@@ -748,7 +748,7 @@ class TestValidateProjectRelationshipWarnings(unittest.TestCase):
 
 
 class TestDistinctcountIfConversion(unittest.TestCase):
-    """DISTINCTCOUNT(IF(...)) must use CALCULATE+FILTER, not AGGX."""
+    """COUNTD(IF(...)) must exclude blanks and retain its filter."""
 
     def test_simple_condition(self):
         from tableau_export.dax_converter import convert_tableau_formula_to_dax
@@ -757,7 +757,7 @@ class TestDistinctcountIfConversion(unittest.TestCase):
             table_name='Opportunities',
         )
         self.assertNotIn('DISTINCTCOUNT(IF', result)
-        self.assertIn('CALCULATE(DISTINCTCOUNT(', result)
+        self.assertIn('CALCULATE(DISTINCTCOUNTNOBLANK(', result)
         self.assertIn("FILTER('Opportunities'", result)
 
     def test_not_condition(self):
@@ -767,7 +767,7 @@ class TestDistinctcountIfConversion(unittest.TestCase):
             table_name='Facts',
         )
         self.assertNotIn('DISTINCTCOUNT(IF', result)
-        self.assertIn('DISTINCTCOUNT(', result)
+        self.assertIn('DISTINCTCOUNTNOBLANK(', result)
         self.assertIn("FILTER('Facts'", result)
 
     def test_complex_condition(self):
@@ -777,17 +777,16 @@ class TestDistinctcountIfConversion(unittest.TestCase):
             table_name='Data',
         )
         self.assertNotIn('DISTINCTCOUNT(IF', result)
-        self.assertIn('DISTINCTCOUNT(', result)
+        self.assertIn('DISTINCTCOUNTNOBLANK(', result)
         self.assertIn("FILTER('Data'", result)
 
-    def test_plain_distinctcount_unchanged(self):
-        """DISTINCTCOUNT([Column]) without IF should remain unchanged."""
+    def test_plain_countd_uses_nonblank_count(self):
         from tableau_export.dax_converter import convert_tableau_formula_to_dax
         result = convert_tableau_formula_to_dax(
             'COUNTD([Opportunity Id])',
             table_name='Data',
         )
-        self.assertIn('DISTINCTCOUNT(', result)
+        self.assertIn('DISTINCTCOUNTNOBLANK(', result)
         self.assertNotIn('FILTER', result)
         self.assertNotIn('CALCULATE', result)
 

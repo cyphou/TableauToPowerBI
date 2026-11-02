@@ -586,7 +586,7 @@ def _print_desktop_statuses(record, label):
 
 def _run_batch_desktop_diagnostics(source_dir, output_root, workbook_pairs,
                                    desktop_options, migration_exit=ExitCode.SUCCESS,
-                                   *, dry_run=False):
+                                   *, dry_run=False, progress_callback=None):
     """Run opt-in diagnostics after migration; never retract successful PBIPs."""
     if desktop_options is None:
         return migration_exit
@@ -606,6 +606,16 @@ def _run_batch_desktop_diagnostics(source_dir, output_root, workbook_pairs,
         return migration_exit
 
     failure_exit = migration_exit if migration_exit != ExitCode.SUCCESS else ExitCode.DESKTOP_DIAGNOSTIC_FAILED
+
+    def report_failure_event(details):
+        if progress_callback is None:
+            return
+        try:
+            progress_callback('desktop_end', details)
+        except Exception as log_exc:  # noqa: BLE001 - report the sink failure without retrying it
+            logger.exception("Could not write Desktop failure event: %s", log_exc)
+            print(f"  Could not write Desktop failure event: {log_exc}")
+
     if not workbook_pairs:
         message = (
             f"{mode}: no successful/resumed .twb/.twbx PBIP pairs from this migration. "
@@ -613,7 +623,28 @@ def _run_batch_desktop_diagnostics(source_dir, output_root, workbook_pairs,
             "no native apps were launched.")
         logger.error("%s", message)
         print(f"  Desktop diagnostics failed: {message}")
+        report_failure_event({
+            'status': 'not_run', 'cause': 'no_eligible_workbooks',
+            'workbooks_total': 0,
+        })
         return failure_exit
+
+    last_manifest_path = None
+    progress_ended = False
+    progress_sink_failed = False
+
+    def report_progress(event, details):
+        nonlocal last_manifest_path, progress_ended, progress_sink_failed
+        if event == 'desktop_start':
+            last_manifest_path = details['manifest_path']
+            print(f"  Desktop evidence checkpoint: {details['manifest_path']}", flush=True)
+        if progress_callback is not None:
+            progress_sink_failed = True
+            progress_callback(event, details)
+            progress_sink_failed = False
+        if event == 'desktop_end':
+            progress_ended = True
+
     try:
         from powerbi_import.desktop_comparison import compare_desktop_reports
         manifest = compare_desktop_reports(
@@ -625,7 +656,8 @@ def _run_batch_desktop_diagnostics(source_dir, output_root, workbook_pairs,
             powerbi_desktop_path=desktop_options.powerbi_desktop_path,
             refresh_timeout=desktop_options.refresh_timeout,
             capture_tableau=desktop_options.capture_tableau,
-            workbook_pairs=workbook_pairs)
+            workbook_pairs=workbook_pairs,
+            progress_callback=report_progress)
         if not isinstance(manifest, dict):
             raise ValueError("Desktop diagnostics returned no evidence manifest object")
         run_dir = manifest.get('run_dir')
@@ -644,6 +676,13 @@ def _run_batch_desktop_diagnostics(source_dir, output_root, workbook_pairs,
     except Exception as exc:  # noqa: BLE001 - a diagnostic failure must retain the migration exit
         logger.exception("Desktop diagnostics failed (%s): %s", type(exc).__name__, exc)
         print(f"  Desktop diagnostics failed ({type(exc).__name__}): {exc}. Generated PBIPs are retained.")
+        if progress_callback is not None and not progress_ended and not progress_sink_failed:
+            report_failure_event({
+                'status': 'error', 'cause': 'diagnostic_exception',
+                'error_type': type(exc).__name__, 'error': str(exc),
+                'manifest_path': last_manifest_path,
+                'workbooks_total': len(workbook_pairs),
+            })
         return failure_exit
     if manifest.get('status') != 'captured':
         logger.error("Desktop diagnostics status is %s; generated PBIPs are retained",
@@ -1287,6 +1326,8 @@ def run_migration_report(report_name, output_dir=None):
         completeness = report.get_completeness_score()
         summary['overall_score'] = completeness['overall_score']
         summary['grade'] = completeness['grade']
+        summary['overall_score_scope'] = completeness['score_scope']
+        summary['overall_score_status'] = completeness['status']
         return summary
 
     except Exception as e:
@@ -2166,6 +2207,8 @@ def _run_batch_config(args, desktop_options=None):
             result.update({
                 'success': all_ok,
                 'fidelity': report_summary.get('overall_score', report_summary.get('fidelity_score')) if report_summary else None,
+                'fidelity_scope': report_summary.get('overall_score_scope') if report_summary else None,
+                'fidelity_status': report_summary.get('overall_score_status') if report_summary else 'not_run',
                 'metadata_path': os.path.join(project_dir, 'migration_metadata.json'),
             })
             if (desktop_options is not None and all_ok
@@ -2641,6 +2684,8 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         'stages': stage_results,
         'stats': _stats.to_dict(),
         'fidelity': report_summary.get('overall_score', report_summary.get('fidelity_score')) if report_summary else None,
+        'fidelity_scope': report_summary.get('overall_score_scope') if report_summary else None,
+        'fidelity_status': report_summary.get('overall_score_status') if report_summary else 'not_run',
         'report_name': basename,
         'output_dir': workbook_output_dir,
         'metadata_path': os.path.join(workbook_output_dir, basename, 'migration_metadata.json'),
@@ -3542,9 +3587,13 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             print("  All workbooks already completed — nothing to do.")
             if jsonl_fh:
                 _write_jsonl('batch_end', {'status': 'all_completed', 'skipped': skipped})
-                jsonl_fh.close()
-            return _run_batch_desktop_diagnostics(
-                batch_dir, migrated_root, desktop_pairs, desktop_options)
+            try:
+                return _run_batch_desktop_diagnostics(
+                    batch_dir, migrated_root, desktop_pairs, desktop_options,
+                    progress_callback=_write_jsonl)
+            finally:
+                if jsonl_fh:
+                    jsonl_fh.close()
 
     batch_start = datetime.now()
     batch_results = {}
@@ -3810,22 +3859,24 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         'duration_sec': batch_duration.total_seconds(),
         'avg_fidelity': round(sum(fidelities) / len(fidelities), 1) if fidelities else None,
     })
-    if jsonl_fh:
-        jsonl_fh.close()
-
-    exit_code = ExitCode.SUCCESS if failed == 0 else ExitCode.BATCH_PARTIAL_FAIL
-    if desktop_options is not None:
-        for task in tasks:
-            result = batch_results.get(task['display_name'], {})
-            if (result.get('success') and
-                    os.path.splitext(task['tableau_file'])[1].lower() in ('.twb', '.twbx')):
-                name = result.get('report_name') or task['basename']
-                out = result.get('output_dir') or task['workbook_output_dir']
-                desktop_pairs.append(_desktop_workbook_pair(
-                    task['tableau_file'], batch_dir,
-                    os.path.join(out, name, f'{name}.pbip')))
-    return _run_batch_desktop_diagnostics(
-        batch_dir, migrated_root, desktop_pairs, desktop_options, exit_code)
+    try:
+        exit_code = ExitCode.SUCCESS if failed == 0 else ExitCode.BATCH_PARTIAL_FAIL
+        if desktop_options is not None:
+            for task in tasks:
+                result = batch_results.get(task['display_name'], {})
+                if (result.get('success') and
+                        os.path.splitext(task['tableau_file'])[1].lower() in ('.twb', '.twbx')):
+                    name = result.get('report_name') or task['basename']
+                    out = result.get('output_dir') or task['workbook_output_dir']
+                    desktop_pairs.append(_desktop_workbook_pair(
+                        task['tableau_file'], batch_dir,
+                        os.path.join(out, name, f'{name}.pbip')))
+        return _run_batch_desktop_diagnostics(
+            batch_dir, migrated_root, desktop_pairs, desktop_options, exit_code,
+            progress_callback=_write_jsonl)
+    finally:
+        if jsonl_fh:
+            jsonl_fh.close()
 
 
 # ── Argument parser ──────────────────────────────────────────────────────────
@@ -5915,18 +5966,22 @@ def _print_migration_summary(results, report_summary, start_time):
 
     # Fidelity score from migration report
     if report_summary:
-        fidelity = report_summary.get('fidelity_score', 0)
+        fidelity = report_summary.get('fidelity_score')
         total = report_summary.get('total_items', 0)
         exact = report_summary.get('exact', 0)
         approx = report_summary.get('approximate', 0)
         unsup = report_summary.get('unsupported', 0)
-        print("\n  Migration Fidelity:")
-        print(f"    {'Fidelity Score':<30} {fidelity}%")
+        unverified = report_summary.get('unverified', 0)
+        score = f'{fidelity}%' if fidelity is not None else 'not run'
+        print("\n  Migration Classification (not rendered parity):")
+        print(f"    {'Classification Score':<30} {score}")
         print(f"    {'Exact Conversions':<30} {exact}/{total}")
         if approx:
             print(f"    {'Approximate':<30} {approx}")
         if unsup:
             print(f"    {'Unsupported':<30} {unsup}")
+        if unverified:
+            print(f"    {'Unverified':<30} {unverified}")
 
     # Warnings
     if _stats.warnings:
@@ -6072,8 +6127,8 @@ def _run_data_validation(args, source_basename):
 
         print(f"\n  Data validation: {report['status']} — "
               f"{report['passed']}/{report['compared']} checks passed "
-              f"({report['fidelity_percent']:.0f}% fidelity, "
-              f"{report['not_run']} need a deployed model)")
+              f"({report['fidelity_percent']:.0f}% offline model-name checks, "
+              f"{report['not_run']} checks not run)")
         for detail in report['details']:
             if not detail.get('passed') and detail.get('status') != 'not_run':
                 print(f"    • {detail['message']}")
@@ -8972,27 +9027,8 @@ def _hyper_binding_identity_key(identity):
 
 def _atomic_write_text(path, content, encoding='utf-8'):
     """Publish text through a sibling temporary file, preserving old bytes on error."""
-    directory = os.path.dirname(os.path.abspath(path))
-    os.makedirs(directory, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(
-        prefix='.' + os.path.basename(path) + '.', suffix='.tmp',
-        dir=directory)
-    try:
-        with os.fdopen(fd, 'w', encoding=encoding) as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
+    from powerbi_import.atomic_file import atomic_write_text
+    atomic_write_text(path, content, encoding=encoding)
 
 
 def _atomic_write_json(path, value):
@@ -14022,8 +14058,9 @@ def _run_single_migration_impl(args):
             report_name=source_basename,
             output_dir=args.output_dir,
         )
-    fid = report_summary.get('fidelity_score', '?') if report_summary else '?'
-    progress.complete(f"Fidelity: {fid}%")
+    fid = report_summary.get('fidelity_score') if report_summary else None
+    score = f'{fid}%' if fid is not None else 'not run'
+    progress.complete(f"Classification score: {score}")
 
     # Step 4b: HTML migration dashboard
     if results.get('generation') and not args.dry_run:
@@ -14060,6 +14097,8 @@ def _run_single_migration_impl(args):
                 sla_cfg = json.load(f)
             tracker = SLATracker(config=sla_cfg)
             elapsed = (datetime.now() - start_time).total_seconds()
+            if report_summary and report_summary.get('fidelity_score') is None:
+                raise ValueError('classification score was not evaluated; SLA tracking skipped')
             fid_val = float(report_summary.get('fidelity_score', 0)) if report_summary else 0.0
             val_pass = results.get('generation', False)
             tracker.start(source_basename)
@@ -14086,6 +14125,8 @@ def _run_single_migration_impl(args):
             from powerbi_import.monitoring import MigrationMonitor
             monitor = MigrationMonitor(backend=args.monitor)
             elapsed = (datetime.now() - start_time).total_seconds()
+            if report_summary and report_summary.get('fidelity_score') is None:
+                raise ValueError('classification score was not evaluated; monitoring skipped')
             fid_val = float(report_summary.get('fidelity_score', 0)) if report_summary else 0.0
             tables_count = results.get('stats', {}).get('tables', 0) if isinstance(results.get('stats'), dict) else 0
             monitor.record_migration(

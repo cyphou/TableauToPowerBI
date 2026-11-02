@@ -70,6 +70,7 @@ class FabricSemanticModelGenerator:
             'sort_orders': extracted.get('sort_orders', []),
             'aliases': extracted.get('aliases', {}),
             'data_blending': extracted.get('data_blending', []),
+            '_worksheets': extracted.get('worksheets', []),
             '_direct_lake': {
                 'workspace_id': self.workspace_id,
                 'lakehouse_id': self.lakehouse_id,

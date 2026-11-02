@@ -30,6 +30,8 @@ import warnings
 from extract_tableau_data import TableauExtractor
 from import_to_powerbi import PowerBIImporter
 
+from powerbi_import.dax_validator import _strip_comments
+
 SAMPLES_DIR = os.path.join(ROOT, 'examples', 'tableau_samples')
 
 # All available sample workbooks
@@ -197,16 +199,34 @@ def _assert_no_tableau_leakage(test_case, project_dir, report_name):
                     stripped = line.strip()
                     if stripped.startswith('annotation'):
                         continue
-                    expr_part = line.split('=', 1)[-1]
-                    # Skip comments (lines starting with //)
-                    if expr_part.strip().startswith('//'):
-                        continue
+                    expr_part = _strip_comments(line.split('=', 1)[-1])
                     match = re.search(pattern, expr_part, re.IGNORECASE)
                     if match:
                         test_case.fail(
                             f"Tableau syntax leaked in {rel}: "
                             f"{desc} found in: {line.strip()[:80]}"
                         )
+
+
+class TestTableauLeakageAssertion(unittest.TestCase):
+    def test_block_comments_are_not_executable_but_real_tokens_still_fail(self):
+        with tempfile.TemporaryDirectory() as root:
+            tables = os.path.join(
+                root, "Synthetic.SemanticModel", "definition", "tables")
+            os.makedirs(tables)
+            path = os.path.join(tables, "Facts.tmdl")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "table Facts\n"
+                    "\tmeasure Safe = /* TODO: RUNNING_COUNT of COUNTD */ BLANK()\n")
+            _assert_no_tableau_leakage(self, root, "Synthetic")
+
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "table Facts\n"
+                    "\tmeasure Unsafe = /* explanation */ COUNTD('Facts'[Id])\n")
+            with self.assertRaisesRegex(AssertionError, "COUNTD function"):
+                _assert_no_tableau_leakage(self, root, "Synthetic")
 
 
 def _assert_pages_present(test_case, project_dir, report_name, min_pages=1):

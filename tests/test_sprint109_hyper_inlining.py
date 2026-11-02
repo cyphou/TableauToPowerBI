@@ -1,7 +1,6 @@
-"""Sprint 109 — TDSX Hyper data inlining tests.
+"""Hyper metadata and legacy diagnostic M generation tests.
 
-Validates that .hyper extract data from .twbx/.tdsx archives is inlined
-into TMDL partition M expressions via generate_m_from_hyper().
+Sample rows are diagnostic only and cannot satisfy a full-data Import binding.
 """
 
 import json
@@ -41,8 +40,8 @@ class TestHyperFilesLoadedInPipeline(unittest.TestCase):
             self.assertEqual(data['hyper_files'][0]['filename'], 'Extract.hyper')
 
 
-class TestHyperInliningInTMDL(unittest.TestCase):
-    """TMDL generator inlines hyper data into partition M expressions."""
+class TestHyperImportBindingInTMDL(unittest.TestCase):
+    """Unbound or sample-only extracts cannot produce a TMDL model."""
 
     def _make_datasource(self, table_name='Extract', conn_type='hyper'):
         return {
@@ -90,58 +89,35 @@ class TestHyperInliningInTMDL(unittest.TestCase):
                         content += f.read()
         return content
 
-    def test_hyper_data_inlined_into_partition(self):
+    def _assert_unbound_hyper_rejected(self, ds, hyper_files):
         import tempfile
 
         from tmdl_generator import generate_tmdl
 
-        ds = self._make_datasource()
+        from powerbi_import.errors import GenerationError
+
         extra = {
             'hierarchies': [], 'sets': [], 'groups': [], 'bins': [],
             'aliases': {}, 'parameters': [], 'user_filters': [],
             '_datasources': [ds], '_worksheets': [],
-            'hyper_files': self._make_hyper_files(),
+            'hyper_files': hyper_files,
         }
-
         with tempfile.TemporaryDirectory() as tmpdir:
-            stats = generate_tmdl(
-                datasources=[ds],
-                report_name='TestReport',
-                extra_objects=extra,
-                output_dir=tmpdir,
-            )
-            self.assertEqual(stats['tables'], 1)
-            content = self._read_all_tmdl(tmpdir)
-            self.assertIn('Alice', content, "Hyper inline data should contain 'Alice'")
-            self.assertIn('Bob', content, "Hyper inline data should contain 'Bob'")
+            with self.assertRaisesRegex(GenerationError, 'exact physical identity'):
+                generate_tmdl(
+                    datasources=[ds],
+                    report_name='TestReport',
+                    extra_objects=extra,
+                    output_dir=tmpdir,
+                )
+            self.assertEqual(self._read_all_tmdl(tmpdir), '')
 
-    def test_no_hyper_files_uses_fallback(self):
-        import tempfile
-
-        from tmdl_generator import generate_tmdl
-
+    def test_sample_hyper_rows_are_not_full_import_data(self):
         ds = self._make_datasource()
-        extra = {
-            'hierarchies': [], 'sets': [], 'groups': [], 'bins': [],
-            'aliases': {}, 'parameters': [], 'user_filters': [],
-            '_datasources': [ds], '_worksheets': [],
-            'hyper_files': [],
-        }
+        self._assert_unbound_hyper_rejected(ds, self._make_hyper_files())
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            stats = generate_tmdl(
-                datasources=[ds],
-                report_name='TestReport',
-                extra_objects=extra,
-                output_dir=tmpdir,
-            )
-            self.assertEqual(stats['tables'], 1)
-            content = self._read_all_tmdl(tmpdir)
-            # Without hyper files we fall back to an empty #table literal
-            # ("schema-only" partition) rather than the inline data path.
-            self.assertIn('#table', content)
-            self.assertNotIn('Alice', content)
-            self.assertNotIn('Bob', content)
+    def test_missing_hyper_files_are_rejected_instead_of_empty_table(self):
+        self._assert_unbound_hyper_rejected(self._make_datasource(), [])
 
     def test_hyper_inlining_skipped_when_prep_override_exists(self):
         import tempfile
@@ -170,51 +146,13 @@ class TestHyperInliningInTMDL(unittest.TestCase):
             self.assertIn('Sql.Database', content)
             self.assertNotIn('Alice', content)
 
-    def test_hyper_inlining_with_extract_connection_type(self):
-        import tempfile
-
-        from tmdl_generator import generate_tmdl
-
+    def test_unbound_extract_connection_is_rejected(self):
         ds = self._make_datasource(conn_type='extract')
-        extra = {
-            'hierarchies': [], 'sets': [], 'groups': [], 'bins': [],
-            'aliases': {}, 'parameters': [], 'user_filters': [],
-            '_datasources': [ds], '_worksheets': [],
-            'hyper_files': self._make_hyper_files(),
-        }
+        self._assert_unbound_hyper_rejected(ds, self._make_hyper_files())
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            generate_tmdl(
-                datasources=[ds],
-                report_name='TestReport',
-                extra_objects=extra,
-                output_dir=tmpdir,
-            )
-            content = self._read_all_tmdl(tmpdir)
-            self.assertIn('Alice', content)
-
-    def test_hyper_inlining_with_dataengine_type(self):
-        import tempfile
-
-        from tmdl_generator import generate_tmdl
-
+    def test_unbound_dataengine_connection_is_rejected(self):
         ds = self._make_datasource(conn_type='dataengine')
-        extra = {
-            'hierarchies': [], 'sets': [], 'groups': [], 'bins': [],
-            'aliases': {}, 'parameters': [], 'user_filters': [],
-            '_datasources': [ds], '_worksheets': [],
-            'hyper_files': self._make_hyper_files(),
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            generate_tmdl(
-                datasources=[ds],
-                report_name='TestReport',
-                extra_objects=extra,
-                output_dir=tmpdir,
-            )
-            content = self._read_all_tmdl(tmpdir)
-            self.assertIn('Alice', content)
+        self._assert_unbound_hyper_rejected(ds, self._make_hyper_files())
 
     def test_non_hyper_connection_untouched(self):
         import tempfile
@@ -244,36 +182,12 @@ class TestHyperInliningInTMDL(unittest.TestCase):
             # SQL Server connection should NOT have inline hyper data
             self.assertNotIn('Alice', content)
 
-    def test_case_insensitive_table_matching(self):
-        import tempfile
-
-        from tmdl_generator import generate_tmdl
-
+    def test_case_insensitive_table_name_does_not_replace_physical_identity(self):
         ds = self._make_datasource(table_name='extract')  # lowercase
         hyper_files = self._make_hyper_files(table_name='Extract')  # PascalCase
-        extra = {
-            'hierarchies': [], 'sets': [], 'groups': [], 'bins': [],
-            'aliases': {}, 'parameters': [], 'user_filters': [],
-            '_datasources': [ds], '_worksheets': [],
-            'hyper_files': hyper_files,
-        }
+        self._assert_unbound_hyper_rejected(ds, hyper_files)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            generate_tmdl(
-                datasources=[ds],
-                report_name='TestReport',
-                extra_objects=extra,
-                output_dir=tmpdir,
-            )
-            content = self._read_all_tmdl(tmpdir)
-            self.assertIn('Alice', content)
-
-    def test_multiple_tables_matched(self):
-        """Multiple tables in one hyper file should all be inlined."""
-        import tempfile
-
-        from tmdl_generator import generate_tmdl
-
+    def test_multiple_sample_tables_are_not_a_full_import(self):
         ds = {
             'name': 'MultiDS',
             'connection': {'type': 'hyper', 'details': {}},
@@ -304,24 +218,7 @@ class TestHyperInliningInTMDL(unittest.TestCase):
                 },
             ],
         }]
-        extra = {
-            'hierarchies': [], 'sets': [], 'groups': [], 'bins': [],
-            'aliases': {}, 'parameters': [], 'user_filters': [],
-            '_datasources': [ds], '_worksheets': [],
-            'hyper_files': hyper_files,
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            stats = generate_tmdl(
-                datasources=[ds],
-                report_name='TestReport',
-                extra_objects=extra,
-                output_dir=tmpdir,
-            )
-            self.assertEqual(stats['tables'], 2)
-            content = self._read_all_tmdl(tmpdir)
-            self.assertIn('100', content)
-            self.assertIn('Widget', content)
+        self._assert_unbound_hyper_rejected(ds, hyper_files)
 
 
 class TestGenerateMFromHyper(unittest.TestCase):
@@ -342,7 +239,7 @@ class TestGenerateMFromHyper(unittest.TestCase):
             'row_count': 2,
         }]
         result = generate_m_from_hyper(tables, table_name='Orders')
-        self.assertIsNotNone(result)
+        assert result is not None
         self.assertIn('Widget', result)
         self.assertIn('Gadget', result)
 
@@ -360,7 +257,7 @@ class TestGenerateMFromHyper(unittest.TestCase):
              'sample_rows': [{'y': 'bbb'}], 'row_count': 1},
         ]
         result = generate_m_from_hyper(tables, table_name='B')
-        self.assertIsNotNone(result)
+        assert result is not None
         self.assertIn('bbb', result)
 
     def test_uses_first_table_when_no_match(self):
@@ -370,7 +267,7 @@ class TestGenerateMFromHyper(unittest.TestCase):
              'sample_rows': [{'z': 'zzz'}], 'row_count': 1},
         ]
         result = generate_m_from_hyper(tables, table_name='NonExistent')
-        self.assertIsNotNone(result)
+        assert result is not None
         self.assertIn('zzz', result)
 
     def test_no_sample_rows_produces_empty_table(self):
@@ -382,7 +279,7 @@ class TestGenerateMFromHyper(unittest.TestCase):
             'row_count': 0,
         }]
         result = generate_m_from_hyper(tables)
-        self.assertIsNotNone(result)
+        assert result is not None
         self.assertIn('#table', result)
 
 

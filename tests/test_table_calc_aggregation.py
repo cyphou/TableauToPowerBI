@@ -81,6 +81,15 @@ class TestAggregationMatchesColumnType(unittest.TestCase):
         self.assertIsNotNone(measure)
         self.assertIn("SUM('Sales'[Amount])", measure['expression'])
 
+    def test_percent_of_total_countd_ignores_blank(self):
+        model = _model('string')
+        _create_quick_table_calc_measures(
+            model, _worksheets('siret', 'countd'), 'Sales', {'siret': 'Sales'})
+        expression = _measure_named(model, '% of Total siret')['expression']
+        self.assertIn("DISTINCTCOUNTNOBLANK('Sales'[siret])", expression)
+        self.assertIn("ISEMPTY('Sales')", expression)
+        self.assertIn('DIVIDE(', expression)
+
 
 if __name__ == '__main__':
     unittest.main()

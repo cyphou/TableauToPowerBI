@@ -175,11 +175,12 @@ class TestDaxToMExpression(unittest.TestCase):
         self.assertIn('"Active"', result)
         self.assertIn('"Other"', result)
 
-    def test_switch_no_default_odd_args(self):
+    def test_switch_without_default_returns_blank(self):
         result = _dax_to_m_expression('SWITCH([Status], "A", "Active", "I", "Inactive")', 'T')
-        self.assertIsNotNone(result)
-        # odd number of args after expr → auto "Other" default
-        self.assertIn('"Other"', result)
+        self.assertEqual(
+            result,
+            'if [Status] = "A" then "Active" else if [Status] = "I" then "Inactive" else null',
+        )
 
     def test_switch_unconvertible_returns_none(self):
         result = _dax_to_m_expression("SWITCH(CALCULATE([X]), 1, 2)", 'T')

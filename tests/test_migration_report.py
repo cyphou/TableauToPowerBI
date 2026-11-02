@@ -64,6 +64,19 @@ class TestClassifyDax(unittest.TestCase):
         dax = '/* SCRIPT_REAL: analytics extension — manual conversion needed */ 0 + ( /*'
         self.assertEqual(MigrationReport._classify_dax(dax), 'unsupported')
 
+    def test_unsupported_countd_fallbacks(self):
+        for dax in (
+            '/* TODO: COUNTD row context spans tables */ BLANK()',
+            '1 + /* TODO: RUNNING_COUNT of COUNTD requires Tableau mark ordering '
+            'plus partitioning */ BLANK()',
+        ):
+            with self.subTest(dax=dax):
+                self.assertEqual(MigrationReport._classify_dax(dax), 'unsupported')
+
+    def test_countd_diagnostic_text_in_literal_is_not_a_fallback(self):
+        dax = '"/* TODO: COUNTD row context spans tables */"'
+        self.assertEqual(MigrationReport._classify_dax(dax), 'exact')
+
     def test_approximate_comment(self):
         dax = 'DIVIDE(RANKX(ALL(T), X) - 1, COUNTROWS(ALL(T)) - 1) /* RANK_PERCENTILE: approximate */'
         self.assertEqual(MigrationReport._classify_dax(dax), 'approximate')
@@ -125,6 +138,9 @@ class TestSummary(unittest.TestCase):
         self.assertIn('calculation', s['by_category'])
         self.assertIn('visual', s['by_category'])
         self.assertEqual(s['by_category']['visual']['total'], 2)
+        self.assertEqual(r.items[1]['status'], 'unverified')
+        self.assertIsNone(s['fidelity_score'])
+        self.assertEqual(s['visual_artifact_reconciliation']['status'], 'not_run')
 
     def test_summary_cached(self):
         r = MigrationReport("T")
@@ -160,10 +176,51 @@ class TestBulkMethods(unittest.TestCase):
         r = MigrationReport("T")
         r.add_visuals([
             {'name': 'ProfitChart', 'mark_type': 'Bar'},
-            {'name': 'Table1', 'mark_type': 'Text'},
-        ])
+            {'name': 'Table1', 'chart_type': 'tableEx'},
+        ], visual_type_map={'bar': 'clusteredBarChart'})
         self.assertEqual(len(r.items), 2)
         self.assertTrue(all(i['category'] == 'visual' for i in r.items))
+        self.assertTrue(all(i['status'] == 'unverified' for i in r.items))
+        self.assertTrue(all('not verified' in i['note'] for i in r.items))
+        self.assertIn('clusteredBarChart', r.items[0]['note'])
+        self.assertIn('tableEx', r.items[1]['note'])
+
+        summary = r.get_summary()
+        self.assertEqual(summary['exact'], 0)
+        self.assertEqual(summary['unverified'], 2)
+        self.assertIsNone(summary['fidelity_score'])
+        self.assertEqual(summary['visual_coverage']['status'], 'not_run')
+        completeness = r.get_completeness_score()
+        self.assertIsNone(completeness['categories']['visual']['fidelity_pct'])
+        self.assertIsNone(completeness['overall_score'])
+        self.assertEqual(completeness['status'], 'not_run')
+        r.print_summary()
+
+    def test_unverified_visuals_are_excluded_from_other_category_scores(self):
+        r = MigrationReport("T")
+        r.add_calculations([{'name': 'Profit'}], {'Profit': 'SUM([Profit])'})
+        r.add_visuals([{'name': 'Chart', 'chart_type': 'lineChart'}])
+        summary = r.get_summary()
+        self.assertIsNone(summary['fidelity_score'])
+        self.assertIn('excludes_unverified', summary['fidelity_score_scope'])
+        completeness = r.get_completeness_score()
+        self.assertEqual(completeness['categories']['calculation']['fidelity_pct'], 100.0)
+        self.assertIsNone(completeness['categories']['visual']['fidelity_pct'])
+        self.assertIsNone(completeness['overall_score'])
+        self.assertEqual(completeness['status'], 'partial')
+        r.print_summary()
+
+    def test_no_numeric_score_when_every_item_is_skipped_or_unverified(self):
+        r = MigrationReport("T")
+        r.add_calculations([{'name': 'Missing'}], {})
+        r.add_visuals([{'name': 'Chart', 'chart_type': 'lineChart'}])
+        self.assertIsNone(r.get_summary()['fidelity_score'])
+        completeness = r.get_completeness_score()
+        self.assertIsNone(completeness['categories']['calculation']['fidelity_pct'])
+        self.assertIsNone(completeness['categories']['visual']['fidelity_pct'])
+        self.assertIsNone(completeness['overall_score'])
+        self.assertIsNone(completeness['grade'])
+        self.assertEqual(completeness['status'], 'not_run')
 
     def test_add_parameters(self):
         r = MigrationReport("T")
@@ -185,6 +242,13 @@ class TestBulkMethods(unittest.TestCase):
         r = MigrationReport("T")
         r.add_groups([{'name': 'Region Group'}])
         self.assertEqual(r.items[0]['category'], 'group')
+
+    def test_combined_group_is_reported_as_approximate(self):
+        r = MigrationReport("T")
+        r.add_groups([{'name': 'Combined', 'group_type': 'combined'}])
+        self.assertEqual(r.items[0]['status'], r.APPROXIMATE)
+        self.assertIn('delimiter', r.items[0]['note'])
+        self.assertIn('null', r.items[0]['note'])
 
     def test_add_bins(self):
         r = MigrationReport("T")

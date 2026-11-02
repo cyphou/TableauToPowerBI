@@ -32,6 +32,7 @@ from powerbi_import.html_template import (
     tab_bar,
     tab_content,
 )
+from powerbi_import.report_scoring import migration_classification_score
 
 BASE = "artifacts/powerbi_projects"
 ASSESSMENTS_DIR = os.path.join(BASE, "assessments")
@@ -50,6 +51,18 @@ EXCLUDED_NON_ANALYTIC_VISUALS = {
     "navigator",
     "blank",
 }
+
+
+def _report_summary(report):
+    """Return a report summary when present, without treating null as a score."""
+    summary = report.get("summary")
+    return summary if isinstance(summary, dict) else {}
+
+
+def _known_count(summary, key):
+    """Use only supplied non-negative integer item counts in portfolio totals."""
+    value = summary.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def _is_real_visual(item):
@@ -133,7 +146,7 @@ def _build_report_summary_rows(reports, metadata):
             pages = objects.get("dashboards", 0) or objects.get("worksheets", 0)
         visuals = generated.get("visuals", 0)
         if not visuals:
-            visuals = rep.get("summary", {}).get("by_category", {}).get("visual", {}).get("total", 0)
+            visuals = (_report_summary(rep).get("by_category") or {}).get("visual", {}).get("total", 0)
         visuals_with_values = _count_visuals_with_values(meta)
         if visuals:
             visuals_with_values = min(visuals_with_values, visuals)
@@ -255,19 +268,27 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
         tool_version = "12.0.0"
 
     # Compute aggregate stats
-    total_workbooks = len(set(list(assessments.keys()) + list(reports.keys())))
+    all_names = sorted(set(assessments) | set(reports) | set(metadata))
+    total_workbooks = len(all_names)
     sum(1 for a in assessments.values() if a.get("overall_score") == "GREEN")
     sum(1 for a in assessments.values() if a.get("overall_score") == "YELLOW")
     sum(1 for a in assessments.values() if a.get("overall_score") == "RED")
-    avg_fidelity = 0
-    fidelity_scores = [r.get("summary", {}).get("fidelity_score", 0) for r in reports.values()]
-    if fidelity_scores:
-        avg_fidelity = sum(fidelity_scores) / len(fidelity_scores)
+    workbook_scores = {
+        name: migration_classification_score(reports.get(name))
+        for name in all_names
+    }
+    fidelity_scores = [score for score in workbook_scores.values() if score is not None]
+    avg_fidelity = sum(fidelity_scores) / len(fidelity_scores) if fidelity_scores else None
+    unscored_workbooks = total_workbooks - len(fidelity_scores)
 
-    total_items = sum(r.get("summary", {}).get("total_items", 0) for r in reports.values())
-    total_exact = sum(r.get("summary", {}).get("exact", 0) for r in reports.values())
-    total_approx = sum(r.get("summary", {}).get("approximate", 0) for r in reports.values())
-    total_unsupported = sum(r.get("summary", {}).get("unsupported", 0) for r in reports.values())
+    summaries = [_report_summary(r) for r in reports.values()]
+    total_items = sum(_known_count(s, "total_items") for s in summaries)
+    total_exact = sum(_known_count(s, "exact") for s in summaries)
+    total_approx = sum(_known_count(s, "approximate") for s in summaries)
+    total_placeholder = sum(_known_count(s, "placeholder") for s in summaries)
+    total_unsupported = sum(_known_count(s, "unsupported") for s in summaries)
+    total_skipped = sum(_known_count(s, "skipped") for s in summaries)
+    total_unverified = sum(_known_count(s, "unverified") for s in summaries)
 
     total_tables = sum(m.get("tmdl_stats", {}).get("tables", 0) for m in metadata.values())
     total_measures = sum(m.get("tmdl_stats", {}).get("measures", 0) for m in metadata.values())
@@ -284,13 +305,15 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
     # Aggregate by-category breakdown
     cat_totals = {}
     for r in reports.values():
-        by_cat = r.get("summary", {}).get("by_category", {})
+        by_cat = _report_summary(r).get("by_category") or {}
         for cat, vals in by_cat.items():
+            if not isinstance(vals, dict):
+                continue
             if cat not in cat_totals:
                 cat_totals[cat] = {"total": 0, "exact": 0, "approx": 0}
-            cat_totals[cat]["total"] += vals.get("total", 0)
-            cat_totals[cat]["exact"] += vals.get("exact", 0)
-            cat_totals[cat]["approx"] += vals.get("approximate", 0)
+            cat_totals[cat]["total"] += _known_count(vals, "total")
+            cat_totals[cat]["exact"] += _known_count(vals, "exact")
+            cat_totals[cat]["approx"] += _known_count(vals, "approximate")
 
     # Connector distribution
     connector_counts = {}
@@ -301,7 +324,6 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
 
     # Per-workbook complexity data for chart
     wb_complexity = {}
-    all_names = sorted(set(list(assessments.keys()) + list(reports.keys())))
     for name in all_names:
         m = metadata.get(name, {})
         tmdl = m.get("tmdl_stats", {})
@@ -347,12 +369,22 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
     html += section_open("exec", "Executive Summary", "&#128200;")
     html += stat_grid([
         stat_card(total_workbooks, "Workbooks", accent="blue"),
-        stat_card(f"{avg_fidelity:.1f}%", "Avg. Fidelity", accent="success"),
-        stat_card(total_items, "Items Converted"),
-        stat_card(total_exact, "Exact", accent="success"),
-        stat_card(total_approx, "Approximate", accent="warn"),
+        stat_card(f"{avg_fidelity:.1f}%" if avg_fidelity is not None else "not_run",
+                  "Avg. classification score (scored workbooks)", accent="blue" if fidelity_scores else ""),
+        stat_card(f"{len(fidelity_scores)}/{total_workbooks}", "Workbooks scored"),
+        stat_card(unscored_workbooks, "Workbooks not scored"),
+        stat_card(total_items, "Known items inventoried"),
+        stat_card(total_exact, "Exact classifications", accent="success"),
+        stat_card(total_approx, "Approximated", accent="warn"),
         stat_card(total_unsupported, "Unsupported", accent="fail"),
     ])
+    html += (
+        '<p class="text-muted fs-sm">Scores are static classification heuristics; '
+        f'{len(fidelity_scores)} of {total_workbooks} workbooks were scored and '
+        f'{unscored_workbooks} were excluded from the average. They do not verify '
+        'visual rendering, data-value parity, semantic execution, refresh, or deployment. '
+        'Item counts include only the supplied summaries.</p>'
+    )
 
     # Charts row
     html += '<div class="chart-row">'
@@ -361,9 +393,12 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
     html += '<div class="chart-card"><h4>&#127919; Conversion Status</h4>'
     html += donut_chart([
         ("Exact", total_exact, SUCCESS),
-        ("Approximate", total_approx, "#c19c00"),
+        ("Approximated", total_approx, "#c19c00"),
+        ("Placeholder", total_placeholder, ORANGE),
         ("Unsupported", total_unsupported, FAIL),
-    ], center_text=f"{avg_fidelity:.0f}%")
+        ("Skipped", total_skipped, PBI_GRAY),
+        ("Unverified", total_unverified, PBI_BLUE),
+    ], center_text=str(total_items))
     html += '</div>'
 
     # Bar chart: By Category
@@ -465,13 +500,15 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
     for name in all_names:
         r = reports.get(name, {})
         m = metadata.get(name, {})
-        s = r.get("summary", {})
-        fid = s.get("fidelity_score", 0)
+        s = _report_summary(r)
+        fid = workbook_scores[name]
         tmdl = m.get("tmdl_stats", {})
         gen = m.get("generated_output", {})
 
-        approx_val = s.get('approximate', 0)
-        unsup_val = s.get('unsupported', 0)
+        approx_val = _known_count(s, 'approximate')
+        unsup_val = _known_count(s, 'unsupported')
+        skipped_val = _known_count(s, 'skipped')
+        unverified_val = _known_count(s, 'unverified')
         _em = "\u2014"
         visuals_with_measure = _count_visuals_with_dax_measures(m)
         total_visuals = int(gen.get('visuals', 0) or 0)
@@ -480,10 +517,12 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
         mig_rows.append([
             f'<strong>{esc(name)}</strong>',
             fidelity_bar(fid),
-            str(s.get('total_items', '\u2014')),
-            f'<span class="text-success fw-bold">{s.get("exact", _em)}</span>',
+            esc(s.get('total_items') if s.get('total_items') is not None else _em),
+            f'<span class="text-success fw-bold">{esc(s.get("exact") if s.get("exact") is not None else _em)}</span>',
             str(approx_val) if approx_val > 0 else '\u2014',
             str(unsup_val) if unsup_val > 0 else '\u2014',
+            str(skipped_val) if skipped_val > 0 else '\u2014',
+            str(unverified_val) if unverified_val > 0 else '\u2014',
             str(tmdl.get('tables', '\u2014')),
             str(tmdl.get('measures', '\u2014')),
             str(gen.get('pages', '\u2014')),
@@ -492,7 +531,8 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
         ])
     html += '<div class="card">'
     html += data_table(
-        ["Workbook", "Fidelity", "Total", "Exact", "Approx.", "Unsupported",
+        ["Workbook", "Classification score", "Total", "Exact", "Approx.", "Unsupported",
+         "Skipped", "Unverified",
          "Tables", "Measures", "Pages", "Visuals", "Visuals With DAX Measure"],
         mig_rows, "mig-tbl", sortable=True, searchable=True,
     )
@@ -691,15 +731,15 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
             continue
 
         score = a.get("overall_score", "N/A")
-        s = r.get("summary", {})
-        fid = s.get("fidelity_score", 0)
+        s = _report_summary(r)
+        fid = workbook_scores[name]
         by_cat = s.get("by_category", {})
 
         safe_name = name.replace(" ", "_").replace("'", "")
 
         # Workbook card with collapsible detail
         badge_html = badge(score) if score != "N/A" else ""
-        fid_html = fidelity_bar(fid) if fid else ""
+        fid_html = fidelity_bar(fid)
         html += f"""
 <div class="card">
 <div class="section-header" onclick="toggleSection('wb-{safe_name}')" style="margin-top:0;border-bottom:none">
@@ -719,9 +759,10 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
         # By-category mini bar chart
         if by_cat:
             cat_bar_items = []
-            for cat_name, vals in sorted(by_cat.items(), key=lambda x: -x[1].get("total", 0)):
-                total = vals.get("total", 0)
-                vals.get("exact", 0)
+            valid_categories = [(cat_name, vals) for cat_name, vals in by_cat.items()
+                                if isinstance(vals, dict)]
+            for cat_name, vals in sorted(valid_categories, key=lambda x: -_known_count(x[1], "total")):
+                total = _known_count(vals, "total")
                 color = cat_colors.get(cat_name, PBI_BLUE)
                 cat_bar_items.append((cat_name.title(), total, color))
             html += bar_chart(cat_bar_items)
@@ -872,50 +913,59 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
 
     html += section_close()
 
-    # ── PBI Desktop Validation ─────────────────────────────────────
+    # ── Static artifact validation (not a Desktop execution) ──────
     if pbi_validation:
         total_errors = sum(len(v.get('errors', [])) for v in pbi_validation.values())
         total_warnings = sum(len(v.get('warnings', [])) for v in pbi_validation.values())
-        all(v.get('passed', True) for v in pbi_validation.values())
+        any_failed = any(v.get('passed') is False for v in pbi_validation.values())
+        all_passed = all(v.get('passed') is True for v in pbi_validation.values())
+        if total_errors or any_failed:
+            status_label, status_accent = 'Failed', 'fail'
+        elif not all_passed:
+            status_label, status_accent = 'not_run', ''
+        elif total_warnings:
+            status_label, status_accent = 'Warnings', 'warn'
+        else:
+            status_label, status_accent = 'Passed', 'success'
 
-        if total_errors > 0 or total_warnings > 0:
-            html += section_open('pbi-validation', 'PBI Desktop Validation', '&#128270;')
+        html += section_open('pbi-validation', 'Static Artifact Validation', '&#128270;')
+        html += (
+            '<p class="text-muted fs-sm">These are offline artifact checks, not a '
+            'Power BI Desktop execution. Desktop rendering and visual/value parity '
+            'are not verified by these checks.</p>'
+        )
+        html += stat_grid([
+            stat_card(status_label, 'Static check status', accent=status_accent),
+            stat_card(total_errors, 'Errors', accent='fail' if total_errors > 0 else ''),
+            stat_card(total_warnings, 'Warnings', accent='warn' if total_warnings > 0 else ''),
+        ])
 
-            status_accent = 'fail' if total_errors > 0 else ('warn' if total_warnings > 0 else 'success')
-            status_label = 'Failed' if total_errors > 0 else ('Warnings' if total_warnings > 0 else 'Passed')
-            html += stat_grid([
-                stat_card(status_label, 'Status', accent=status_accent),
-                stat_card(total_errors, 'Errors', accent='fail' if total_errors > 0 else 'success'),
-                stat_card(total_warnings, 'Warnings', accent='warn' if total_warnings > 0 else 'success'),
-            ])
+        for wb_name, result in pbi_validation.items():
+            wb_errors = result.get('errors', [])
+            wb_warnings = result.get('warnings', [])
+            wb_passed = result.get('passed')
+            wb_status = ('FAIL' if wb_errors or wb_passed is False else
+                         'not_run' if wb_passed is not True else
+                         'WARN' if wb_warnings else 'PASS')
+            html += f'<div class="card"><h4>{esc(wb_name)} &nbsp; {badge(wb_status)}</h4>'
 
-            for wb_name, result in pbi_validation.items():
-                wb_errors = result.get('errors', [])
-                wb_warnings = result.get('warnings', [])
-                if not wb_errors and not wb_warnings:
-                    continue
+            if wb_errors:
+                html += '<h5 class="text-fail">&#10060; Static errors</h5>'
+                html += '<ul class="fs-sm">'
+                for e in wb_errors:
+                    html += f'<li class="text-fail">{esc(e)}</li>'
+                html += '</ul>'
 
-                wb_passed = result.get('passed', True)
-                wb_badge = badge('GREEN') if wb_passed and not wb_warnings else (badge('RED') if not wb_passed else badge('YELLOW'))
-                html += f'<div class="card"><h4>{esc(wb_name)} &nbsp; {wb_badge}</h4>'
+            if wb_warnings:
+                html += '<h5 class="text-warn">&#9888; Warnings &mdash; may cause issues at runtime</h5>'
+                html += '<ul class="fs-sm">'
+                for w in wb_warnings:
+                    html += f'<li class="text-warn">{esc(w)}</li>'
+                html += '</ul>'
 
-                if wb_errors:
-                    html += '<h5 class="text-fail">&#10060; Errors &mdash; will cause failures in PBI Desktop</h5>'
-                    html += '<ul class="fs-sm">'
-                    for e in wb_errors:
-                        html += f'<li class="text-fail">{esc(e)}</li>'
-                    html += '</ul>'
+            html += '</div>'
 
-                if wb_warnings:
-                    html += '<h5 class="text-warn">&#9888; Warnings &mdash; may cause issues at runtime</h5>'
-                    html += '<ul class="fs-sm">'
-                    for w in wb_warnings:
-                        html += f'<li class="text-warn">{esc(w)}</li>'
-                    html += '</ul>'
-
-                html += '</div>'
-
-            html += section_close()
+        html += section_close()
 
     # ── Close HTML ─────────────────────────────────────────────────
     html += html_close(version=tool_version, timestamp=now)
@@ -994,7 +1044,7 @@ def generate_dashboard(report_name, output_dir, migration_report_path=None, meta
     if not reports and not metadata:
         return None
 
-    # ── Run PBI Desktop validation ────────────────────────────────
+    # ── Run offline artifact validation ───────────────────────────
     pbi_validation = {}
     pbip_dir = os.path.join(output_dir, report_name)
     if os.path.isdir(pbip_dir):
@@ -1063,7 +1113,7 @@ def generate_batch_dashboard(output_dir, workbook_results):
     if not reports and not metadata:
         return None
 
-    # ── Run PBI Desktop validation per workbook ───────────────────
+    # ── Run offline artifact validation per workbook ──────────────
     pbi_validation = {}
     for name in workbook_results:
         pbip_dir = os.path.join(output_dir, name)

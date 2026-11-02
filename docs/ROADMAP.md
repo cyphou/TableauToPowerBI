@@ -101,10 +101,11 @@ Local acceptance for this follow-up: **12,324 passed, 66 skipped, 1 xfailed**
 across **12,391 collected tests**, with **3,765 passing subtests**, on Python
 **3.14.2**. The full run includes exact physical-to-local-to-caption M lineage,
 captioned PBIP projections, collision-safe renames, explicit invalid-binding
-errors, retained-Hyper export gates and stale-artifact rejection. The corpus
-gate remains **39/44 migrated**, with the same **five known limitations**,
-**27 statically openable projects** and **zero unexcused blockers**. Ruff,
-source Flake8 and Pyright pass. The two updated documentation decks were
+errors, retained-Hyper export gates and stale-artifact rejection. At that
+acceptance the corpus gate reported **39/44 migrated**, the same **five known
+limitations**, **27 statically openable projects** and **zero unexcused
+blockers**. A later corpus recheck is recorded below. Ruff, source Flake8 and
+Pyright passed. The two updated documentation decks were
 regenerated and their source-policy slides rendered without text overflow.
 These are local static/regression results, not native database refresh or
 snapshot-parity evidence; skipped environment-dependent checks remain unrun.
@@ -268,6 +269,17 @@ refresh, saved/reopened-state or value/visual-parity certification.
 See the [Prep parser and binding contract](TABLEAU_PREP_TO_POWERQUERY_REFERENCE.md#parser-scope-and-workbook-binding-contract-reports-8183)
 and [known limitations](KNOWN_LIMITATIONS.md) for the supported scope.
 
+### Report-driven generation fixes — 2026-11-02
+
+Focused synthetic regressions cover logical-predicate evaluation, row-count
+conversion, Calendar date keys and discrete-Year binding, X-axis reference-line
+binding/fail-closed behavior, standalone pages, report scoring, and exact
+Hyper-binding evidence. Group-default extraction and emitted-M tests cover
+implicit `Other` and explicit text, empty-string, and null defaults, including
+large groups. These are targeted static checks, not a full-suite result or
+native Desktop refresh, rendering, or value-parity evidence; those remain
+`not_run` unless separately verified.
+
 ### Next development sequence
 
 Report #85–91 hardening adds bounded envelope/field normalization, explicit
@@ -297,13 +309,61 @@ producer-backed finite pivot domain was found, so declared fields or aggregation
 alone do not enable rows-to-columns conversion. These remain evidence/source
 prerequisites, not completed functionality or native execution.
 
+The observed `SimpleJoin` envelope now has a guarded conversion path when a
+source-declared output projection and per-node comparison/null/duplicate
+evidence are available. It preserves projected right keys and unmatched rows
+from both sides of `notInner`; ambiguous projections and legacy unproven
+`notInner` shapes still stop. The public sample above still lacks the required
+projection; this guarded path does not close that flow or establish native M
+refresh/value parity.
+
+The bounded composite-relationship path now materializes explicitly attested
+Import equalities using typed hidden keys, with one-side uniqueness enforced
+at refresh. Ambiguous source bindings, unsupported component types and
+non-Import partitions remain blocked. Combined fields are routed to their
+proven owning table; references in calculations and PBIR use the generated
+column, and unsafe or inactive cross-table paths stop generation. Repeated
+processing is idempotent while distinct same-name groups are rejected.
+Fresh extraction retains component derivation references: supported year,
+quarter and month truncations use calendar-period starts, while unsupported
+derivations stop generation. Older extraction JSON retains its caption-based
+fallback; re-extraction is recommended. Fiscal and display-label equivalence
+remain unverified.
+
+Combined values still use text concatenation and can collide on ` | `; nulls,
+culture and Tableau labels require source comparison. Their column annotation,
+parity classification and quality finding disclose this approximation.
+`report` warns, while `enterprise` and `production` block it. A Prep environment
+policy is keyed by node ID rather than flow; repeated IDs reuse the attestation
+and emit warnings. These are bounded safeguards, not proof of native refresh,
+source-value equivalence or successful conversion of the blocked public flow.
+
 Local validation on **2026-10-30**: **24 focused mapped-union tests passed**.
 The ordinary full public-corpus gate passed with **39/44 migrated**, the same
 **five known limitations**, **24 statically openable projects** and **zero
-unexcused blockers**. Its existing Prep entry now records the exact downstream
-`SimpleJoin` refusal, not an excused regression or an additional limitation.
-This is bounded static/regression evidence, not a new full-suite result,
-native M refresh or source/target value equivalence.
+unexcused blockers**. That run's Prep entry recorded a
+`SimpleJoin`/`SuperJoin` normalization conflict; the latest recheck below uses
+updated signatures.
+
+The latest expanded targeted regression campaign passed **2,819 tests across
+35 files**, including the RenameColumn/SPLIT additions. The public-corpus gate
+passed against revised signatures for four of the same five existing
+limitations: **39/44 artifacts migrated**, **24 statically openable projects**,
+and **zero unexcused blockers**. The three Hyper entries stop at the
+exact-physical-identity generation guard.
+
+The observed `RenameColumn.rename` target alias is now accepted when
+`newColumnName` is absent. A bounded positive-integer `SPLIT` conversion covers
+the public `TRIM(SPLIT([Notes], "-", n))` expressions when the source is typed
+string; other SPLIT forms remain rejected. Null inputs and unavailable tokens
+raise explicit M errors because their Tableau behavior is not established.
+The public flow now reaches the mapped `Discount` union and rejects its
+real/string type mismatch without publishing M. Its absent `SimpleJoin`
+projection remains an independent limitation reproduced by a reduced
+producer-backed test. The five known limitations remain unchanged in count;
+three diagnostic quality reports still show `FAIL` for the Hyper failures.
+These are bounded static/regression results, not native M refresh or
+source/target value-equivalence evidence.
 
 Correctness and reproducible evidence take priority over further structural
 refactoring. These work items include a delivered bounded N2 slice; remaining work is not
@@ -316,6 +376,16 @@ completed functionality or runtime evidence.
 | N3 — Batch resilience (In progress; bounded slice delivered) | Harden batch resume for unusable checkpoints, roll back failed checkpoint updates under the lock, retract an incomplete PBIP entry marker after failed/interrupted postprocessing, bind each resume signature to that workbook's effective configuration, and preflight candidate destination collisions; exercise atomic Prep update failures | Orchestrator / Extractor / Tester | Focused tests cover malformed/empty/non-object/invalid-UTF-8 checkpoint handling, absent-checkpoint legacy behavior, retry and second resume using the planned identity, five checkpoint-write fault scenarios (partial write, persistent/transient replacement lock, interrupted save, two concurrent workers), ten effective-config signature regressions, injected Prep dump/replace failures, and Windows-normalized output collision preflight. Signatures cover resolved per-workbook culture/calendar/Prep path and content, quality policy, `verify_open`, output format, model mode, and extraction mode; unchanged effective settings and unrelated manifest entries do not invalidate another completion, missing requested Prep cannot match success, and old signatures regenerate once. Collision preflight checks all candidates before resume/dry-run or output writes; conflicting normalized targets fail with `VALIDATION_FAILED` (5), while distinct subdirectories remain valid. Prep fault tests verify existing atomic-write behavior, not a new production fix. Full N3 acceptance remains open: interrupted or failed runs must retain prior valid datasource JSON, avoid publishing a successful partial project, and resume without duplicate outputs; one-workbook folders and mixed workbook/Prep batches must preserve their contracts |
 | N4 — Refresh reproduction (#84) | Capture the exact minimal failing model, relationship and source prerequisites in an authorized local environment; distinguish a source error from a relationship-triggered failure | Semantic / Wiring / Healing / Tester | A reproducible negative control and causal fix with regression coverage; do not remove relationships or substitute empty tables merely to obtain a pass |
 | N5 — Operational validation (Open) | Refresh and save/reopen representative generated projects; compare source/target values and Tableau/Power BI screenshots where authorized | Reviewer / Evidence / Deployer | Attach refresh, value-comparison and visual evidence with environment/prerequisite status; static success and the bounded local browser diagnostic entry points alone never become `OPERATIONAL_100` |
+
+The bounded offline [semantic-evidence prerequisite](ARCHITECTURE.md#optional-semantic-runtime-evidence)
+rejects empty/incomplete query suites, unavailable or nonterminal provider
+responses, invalid observations and contradictory alleged passes. Explicit null
+expectations, boolean/numeric distinctions, finite tolerances, exact numeric
+comparison and retained provider provenance prevent fabricated comparison
+success. Requested-suite coverage, attempted executor calls and skipped-query
+diagnostics remain explicit. These are inert regression controls, not an
+authorized source/target execution, refresh, save/reopen or visual-parity
+result. **N5 remains Open**, and the R5 operational gate is unchanged.
 
 The Desktop reliability slice distinguishes missing tooling from an unreadable
 UI, waits for recognized owned progress, bounds page-capture retries and keeps

@@ -18,9 +18,11 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
+from powerbi_import.errors import GenerationError
 from powerbi_import.import_to_powerbi import PowerBIImporter
 from powerbi_import.validator import ArtifactValidator
 from tableau_export.extract_tableau_data import TableauExtractor
+from tests.fixture_corpus import fixture_id
 
 # ── Workbook catalogs ──────────────────────────────────────────────────
 
@@ -45,6 +47,9 @@ ALL_WORKBOOKS = REAL_WORLD_WORKBOOKS + SAMPLE_WORKBOOKS
 
 # Workbooks known to have no datasources or to fail extraction cleanly
 KNOWN_EXTRACTION_FAILURES = {'TABLEAU_10_TWB'}
+
+# These public examples reference legacy .tde data, not complete Hyper exports.
+LEGACY_EXTRACT_FIXTURE_IDS = {'wb_a76ce82a', 'wb_19d86624', 'wb_6608c43e'}
 
 # Datasource-only workbooks (no worksheets/dashboards) produce
 # SemanticModel only — no Report folder or pages.
@@ -161,6 +166,10 @@ class _BaseE2ETest(unittest.TestCase):
         basename = os.path.splitext(os.path.basename(cls.workbook_path))[0]
         if basename in KNOWN_EXTRACTION_FAILURES:
             raise unittest.SkipTest(f'{basename} is a known extraction-failure workbook')
+        if fixture_id(cls.workbook_path) in LEGACY_EXTRACT_FIXTURE_IDS:
+            raise unittest.SkipTest(
+                'Legacy .tde extract has no verified full-data Hyper binding; '
+                'fail-closed behavior is tested separately')
         cls.temp_dir = tempfile.mkdtemp(prefix='e2e_out_')
         cls.project_dir, cls.report_name = _migrate_workbook(
             cls.workbook_path, cls.temp_dir)
@@ -356,6 +365,20 @@ class TestE2E_WorkbookCoverage(unittest.TestCase):
         twbx_files = [w for w in ALL_WORKBOOKS if w.endswith('.twbx')]
         self.assertGreaterEqual(len(twbx_files), 3,
                                 'Expected at least 3 .twbx files in test set')
+
+    def test_legacy_extract_examples_fail_closed_without_publishing_pbip(self):
+        workbooks = [path for path in REAL_WORLD_WORKBOOKS
+                     if fixture_id(path) in LEGACY_EXTRACT_FIXTURE_IDS]
+        self.assertEqual({fixture_id(path) for path in workbooks},
+                         LEGACY_EXTRACT_FIXTURE_IDS)
+        for path in workbooks:
+            with self.subTest(fixture=fixture_id(path)), \
+                    tempfile.TemporaryDirectory(prefix='legacy_extract_') as output:
+                with self.assertRaisesRegex(GenerationError, 'exact physical identity'):
+                    _migrate_workbook(path, output)
+                name = os.path.splitext(os.path.basename(path))[0]
+                self.assertFalse(os.path.exists(
+                    os.path.join(output, name, f'{name}.pbip')))
 
 
 if __name__ == '__main__':

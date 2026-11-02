@@ -191,6 +191,16 @@ class TestMigrationQualityDesktopComparisonLinks(unittest.TestCase):
         self.assertEqual(json.loads(self.quality_json.read_text("utf-8")),
                          self.report.to_dict())
 
+    def test_partial_and_interrupted_diagnostics_are_not_reported_as_success(self):
+        partial = self.comparison("run-partial", status="in_progress")
+        interrupted = self.comparison("run-interrupted", status="interrupted")
+        self.render_quality()
+        for path in (self.single, self.consolidated):
+            document = self.assert_links(path, [partial, interrupted])
+            self.assertIn("Partial diagnostic — completion not established", document)
+            self.assertIn("Interrupted diagnostic — incomplete", document)
+            self.assertNotIn("Captures recorded — manual review required", document)
+
     def test_missing_malformed_or_unknown_manifest_status_is_unverified(self):
         for payload in (None, "{broken", "[]", '{"status": "PASS"}',
                         '{"status": ["captured"]}'):
@@ -446,6 +456,19 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertTrue(any('Visual mapping contains 1 explicit approximation' in item
                             for item in report.blockers))
 
+    def test_combined_group_approximation_warns_and_strict_policy_blocks(self):
+        extracted = {'groups': [{
+            'name': 'Combined', 'group_type': 'combined',
+            'source_fields': ['A', 'B'],
+        }]}
+        report = self._build(extracted=extracted)
+        self.assertEqual(report.status, 'WARN')
+        self.assertTrue(any('Combined group' in item and 'delimiter' in item
+                            for item in report.warnings))
+        strict = self._build(extracted=extracted, quality_policy='production')
+        self.assertEqual(strict.status, 'FAIL')
+        self.assertTrue(any('Combined group' in item for item in strict.blockers))
+
     def test_m_fallback_is_visible_when_source_uses_it(self):
         extracted = {
             'datasources': [{'connection': {'type': 'UnknownConnector'}}],
@@ -505,6 +528,300 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(execution['status'], 'passed')
         self.assertEqual(execution['passed'], 1)
         self.assertEqual(report.status, 'PASS')
+
+    def test_quality_report_propagates_complete_semantic_contract_without_desktop_roundtrip(self):
+        queries = [
+            {
+                'name': 'Sales_total',
+                'dax': 'EVALUATE ROW("Value", 12)',
+                'expected_rows': [{'Value': 12}],
+            },
+            {
+                'name': 'Order_count',
+                'dax': 'EVALUATE ROW("Value", 7)',
+                'expected_rows': [{'Value': 7}],
+            },
+        ]
+        observed_rows = {
+            query['dax']: query['expected_rows'] for query in queries
+        }
+        calls = []
+
+        def execute(query):
+            calls.append(query)
+            return {'rows': observed_rows[query]}
+
+        report = self._build(
+            semantic_queries=queries,
+            semantic_executor=execute,
+        )
+
+        execution = report.semantic_context['execution']
+        self.assertEqual(calls, [query['dax'] for query in queries])
+        self.assertEqual(execution['status'], 'passed')
+        self.assertEqual(execution['queries_requested'], 2)
+        self.assertEqual(execution['queries_run'], 2)
+        self.assertEqual(execution['passed'], 2)
+        self.assertEqual(execution['failed'], 0)
+        self.assertEqual(execution['queries_not_run'], 0)
+        self.assertEqual(len(execution['results']), 2)
+        for result, query in zip(execution['results'], queries):
+            with self.subTest(query=query['name']):
+                self.assertEqual(result['name'], query['name'])
+                self.assertEqual(result['status'], 'passed')
+                self.assertEqual(result['rows'], query['expected_rows'])
+                self.assertTrue(result['evidence']['comparison']['matched'])
+
+        contract = report.validation_contract
+        self.assertEqual(contract['status'], 'static_evidence')
+        self.assertEqual(contract['semantic']['static_status'], 'passed')
+        self.assertEqual(contract['semantic']['execution_status'], 'passed')
+        self.assertEqual(contract['semantic']['runtime'], 'evidence_recorded')
+        self.assertEqual(contract['m']['status'], 'passed')
+        self.assertEqual(contract['recovery']['status'], 'complete')
+        # This is the semantic/M/recovery sub-contract, not the full
+        # OPERATIONAL_100 gate: no Desktop round-trip was performed.
+        self.assertTrue(contract['release_ready'])
+        self.assertEqual(
+            report.evidence_manifest['artifacts']['validation']['semantic_execution'],
+            'passed',
+        )
+        self.assertTrue(
+            report.evidence_manifest['artifacts']['validation']['release_ready']
+        )
+        self.assertEqual(report.openability_confidence['semantic_execution'], 'not_run')
+        self.assertEqual(report.roundtrip_validation['status'], 'static_evidence')
+        self.assertEqual(report.roundtrip_validation['desktop']['status'], 'not_run')
+        self.assertEqual(report.roundtrip_validation['desktop']['reopen'], 'not_run')
+
+        serialized = json.loads(json.dumps(report.to_dict(), default=str))
+        self.assertEqual(
+            serialized['semantic_context']['execution']['status'], 'passed'
+        )
+        self.assertEqual(
+            serialized['validation_contract']['semantic']['execution_status'],
+            'passed',
+        )
+        self.assertTrue(serialized['validation_contract']['release_ready'])
+        self.assertEqual(
+            serialized['roundtrip_validation']['desktop']['status'], 'not_run'
+        )
+
+    def test_missing_semantic_executor_keeps_default_report_quality_behavior(self):
+        report = self._build(
+            semantic_queries=[{
+                'name': 'Sales_total',
+                'dax': 'EVALUATE ROW("Value", 12)',
+                'expected_rows': [{'Value': 12}],
+            }],
+        )
+
+        execution = report.semantic_context['execution']
+        self.assertEqual(execution['status'], 'not_run')
+        self.assertEqual(execution['executor']['status'], 'not_run')
+        self.assertEqual(execution['queries_requested'], 1)
+        self.assertEqual(execution['queries_run'], 0)
+        self.assertEqual(execution['results'][0]['status'], 'not_run')
+        self.assertFalse(execution['results'][0]['evidence']['executor_called'])
+        self.assertEqual(
+            report.validation_contract['semantic']['execution_status'], 'not_run'
+        )
+        self.assertEqual(report.validation_contract['semantic']['runtime'], 'not_run')
+        self.assertFalse(report.validation_contract['release_ready'])
+        self.assertEqual(report.status, 'PASS')
+        self.assertEqual(report.evidence_manifest['validation']['status'], 'PASS')
+        self.assertEqual(report.roundtrip_validation['desktop']['status'], 'not_run')
+
+    def test_provider_not_run_with_rows_does_not_pass_semantic_contract(self):
+        query = {
+            'name': 'Sales_total',
+            'dax': 'EVALUATE ROW("Value", 12)',
+            'expected_rows': [{'Value': 12}],
+        }
+        calls = []
+
+        def execute(dax):
+            calls.append(dax)
+            return {'status': 'not_run', 'rows': [{'Value': 12}]}
+
+        report = self._build(
+            semantic_queries=[query],
+            semantic_executor=execute,
+        )
+
+        execution = report.semantic_context['execution']
+        result = execution['results'][0]
+        self.assertEqual(calls, [query['dax']])
+        self.assertEqual(execution['status'], 'not_run')
+        self.assertEqual(execution['queries_run'], 1)
+        self.assertEqual(execution['queries_not_run'], 1)
+        self.assertEqual(result['status'], 'not_run')
+        self.assertIsNone(result['rows'])
+        self.assertEqual(result['evidence']['observation'], 'not_received')
+        self.assertEqual(result['evidence']['provider_status'], 'not_run')
+        self.assertNotIn('comparison', result['evidence'])
+        self.assertEqual(
+            report.validation_contract['semantic']['execution_status'], 'not_run'
+        )
+        self.assertFalse(report.validation_contract['release_ready'])
+        self.assertEqual(report.status, 'PASS')
+
+    def test_malformed_semantic_wrappers_fail_contract_without_fabricated_nulls(self):
+        query = {
+            'name': 'Sales_total',
+            'dax': 'EVALUATE ROW("Value", 12)',
+            'expected_rows': [{'Value': 12}],
+        }
+        cases = (
+            (
+                'unknown provider status',
+                {'status': 'future_state', 'rows': [{'Value': 12}]},
+                'unknown executor response status',
+            ),
+            (
+                'successful wrapper without rows',
+                {'status': 'passed'},
+                'missing rows/data',
+            ),
+        )
+        for label, response, expected_error in cases:
+            with self.subTest(case=label):
+                calls = []
+
+                def execute(dax, response=response):
+                    calls.append(dax)
+                    return response
+
+                report = self._build(
+                    semantic_queries=[query],
+                    semantic_executor=execute,
+                )
+                execution = report.semantic_context['execution']
+                result = execution['results'][0]
+
+                self.assertEqual(calls, [query['dax']])
+                self.assertEqual(execution['status'], 'failed')
+                self.assertEqual(execution['failed'], 1)
+                self.assertEqual(result['status'], 'failed')
+                self.assertIn(expected_error, result['error'])
+                self.assertIsNone(result['rows'])
+                self.assertEqual(result['evidence']['observation'], 'not_received')
+                self.assertNotIn('comparison', result['evidence'])
+                self.assertEqual(
+                    report.validation_contract['semantic']['execution_status'],
+                    'failed',
+                )
+                self.assertFalse(report.validation_contract['release_ready'])
+
+    def test_invalid_semantic_tolerance_fails_contract_before_runtime_call(self):
+        calls = []
+
+        def execute(dax):
+            calls.append(dax)
+            return {'rows': [{'Value': 12}]}
+
+        report = self._build(
+            semantic_queries=[{
+                'name': 'Sales_total',
+                'dax': 'EVALUATE ROW("Value", 12)',
+                'expected_rows': [{'Value': 12}],
+                'tolerance': float('nan'),
+            }],
+            semantic_executor=execute,
+        )
+
+        execution = report.semantic_context['execution']
+        result = execution['results'][0]
+        self.assertEqual(calls, [])
+        self.assertEqual(execution['status'], 'failed')
+        self.assertEqual(execution['failed'], 1)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('finite non-negative number', result['error'])
+        self.assertIsNone(result['rows'])
+        self.assertEqual(result['evidence']['observation'], 'not_received')
+        self.assertFalse(result['evidence']['executor_called'])
+        self.assertNotIn('comparison', result['evidence'])
+        self.assertEqual(
+            report.validation_contract['semantic']['execution_status'], 'failed'
+        )
+        self.assertFalse(report.validation_contract['release_ready'])
+
+    def test_semantic_query_budget_preserves_requested_count_and_blocks_incomplete_contract(self):
+        queries = [
+            {
+                'name': f'query-{index}',
+                'dax': f'EVALUATE ROW("Value", {index})',
+            }
+            for index in range(26)
+        ]
+        calls = []
+
+        def execute(dax):
+            calls.append(dax)
+            return {'rows': []}
+
+        report = self._build(
+            semantic_queries=queries,
+            semantic_executor=execute,
+        )
+
+        execution = report.semantic_context['execution']
+        self.assertEqual(calls, [query['dax'] for query in queries[:25]])
+        self.assertEqual(len(calls), 25)
+        self.assertEqual(execution['status'], 'not_run')
+        self.assertEqual(execution['queries_requested'], 26)
+        self.assertEqual(execution['queries_run'], 25)
+        self.assertEqual(execution['passed'], 25)
+        self.assertEqual(execution['failed'], 0)
+        self.assertEqual(execution['queries_not_run'], 1)
+        self.assertEqual(len(execution['results']), 26)
+        self.assertEqual(execution['results'][-1]['status'], 'not_run')
+        self.assertTrue(any('budget' in item.lower() for item in execution['diagnostics']))
+        self.assertEqual(
+            report.validation_contract['semantic']['execution_status'], 'not_run'
+        )
+        self.assertFalse(report.validation_contract['release_ready'])
+        self.assertEqual(report.status, 'PASS')
+
+    def test_explicit_null_expectation_fails_while_missing_expectation_is_smoke_only(self):
+        dax = 'EVALUATE ROW("Value", 12)'
+        null_report = self._build(
+            semantic_queries=[{
+                'name': 'Explicit_null',
+                'dax': dax,
+                'expected_rows': None,
+            }],
+            semantic_executor=lambda query: {'rows': [{'Value': 12}]},
+        )
+        null_execution = null_report.semantic_context['execution']
+        null_result = null_execution['results'][0]
+        self.assertEqual(null_execution['status'], 'failed')
+        self.assertEqual(null_execution['failed'], 1)
+        self.assertEqual(null_result['status'], 'failed')
+        self.assertEqual(null_result['error'], 'semantic result mismatch')
+        self.assertFalse(null_result['evidence']['comparison']['matched'])
+        self.assertTrue(null_result['evidence']['comparison']['mismatches'])
+        self.assertEqual(
+            null_report.validation_contract['semantic']['execution_status'], 'failed'
+        )
+        self.assertFalse(null_report.validation_contract['release_ready'])
+
+        smoke_report = self._build(
+            semantic_queries=[{
+                'name': 'Smoke_only',
+                'dax': dax,
+            }],
+            semantic_executor=lambda query: {'rows': [{'Value': 12}]},
+        )
+        smoke_execution = smoke_report.semantic_context['execution']
+        smoke_result = smoke_execution['results'][0]
+        self.assertEqual(smoke_execution['status'], 'passed')
+        self.assertEqual(smoke_result['status'], 'passed')
+        self.assertNotIn('expected_rows', smoke_result)
+        self.assertNotIn('comparison', smoke_result['evidence'])
+        self.assertEqual(
+            smoke_report.validation_contract['semantic']['execution_status'], 'passed'
+        )
 
     def test_semantic_runtime_tolerance_accepts_numeric_difference(self):
         report = self._build(
@@ -694,6 +1011,27 @@ class TestMigrationQuality(unittest.TestCase):
         context = report.semantic_context['measure_context']
         self.assertEqual(context['fallback_count'], 1)
         self.assertEqual(len(context['fallbacks']), 1)
+
+    def test_countd_fallbacks_are_reported_without_counting_quoted_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tables = os.path.join(tmp, 'Demo.SemanticModel', 'definition', 'tables')
+            os.makedirs(tables)
+            note = '/* TODO: RUNNING_COUNT of COUNTD requires Tableau mark ordering plus partitioning */'
+            with open(os.path.join(tables, 'Sales.tmdl'), 'w', encoding='utf-8') as handle:
+                handle.write(
+                    "table Sales\n"
+                    f"\tmeasure 'Broken' = {note} BLANK()\n"
+                    f'\tmeasure "Quoted" = "{note}"\n'
+                    f'\tannotation Copilot_Description = {note}\n'
+                )
+            report = self._build(project_dir=tmp)
+            production = self._build(project_dir=tmp, quality_policy='production')
+        context = report.semantic_context['measure_context']
+        self.assertEqual(context['fallback_count'], 1)
+        self.assertEqual(report.status, 'WARN')
+        self.assertTrue(any('COUNTD calculation(s) could not be converted' in warning
+                            for warning in report.warnings))
+        self.assertEqual(production.status, 'FAIL')
 
     def test_generated_filter_context_diagnostics_are_reported(self):
         with tempfile.TemporaryDirectory() as tmp:

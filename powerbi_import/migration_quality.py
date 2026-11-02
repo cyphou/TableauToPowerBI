@@ -43,9 +43,10 @@ from powerbi_import.m_emitter_matrix import (
     summarize_m_emitter_matrix,
 )
 from powerbi_import.migration_ledger import build_migration_ledger
+from powerbi_import.migration_report import has_unsupported_countd_marker
 from powerbi_import.openability import check_openability, extract_m_partitions
 from powerbi_import.page_composition import build_page_composition_contract
-from powerbi_import.parity_registry import scan_project
+from powerbi_import.parity_registry import _count_combined_groups, scan_project
 from powerbi_import.pbir_visual_recovery import scan_pbir_visual_recovery
 from powerbi_import.powerquery_diff import compare_report_tables
 from powerbi_import.quality_grades import color as grade_color
@@ -164,11 +165,13 @@ class MigrationQualityReport:
 
     def render_body(self) -> str:
         """Return the readable report body (sections only, no page wrapper)."""
+        parity_score = self.parity.get("parity_score")
         html = stat_grid([
             stat_card(self.status, text("Overall status", "État global"),
                       accent={"PASS": "success", "WARN": "warn", "FAIL": "fail"}.get(
                           self.status, "")),
-            stat_card(self.parity.get("parity_score", "n/a"), text("Parity score", "Score de parité")),
+            stat_card(parity_score if parity_score is not None else "not_run",
+                      text("Feature mapping score (static)", "Score de correspondance des fonctionnalités (statique)")),
             stat_card(len(self.blockers), text("Blockers", "Blocages"), accent="fail"),
             stat_card(len(self.warnings), text("Warnings", "Avertissements"), accent="warn"),
         ])
@@ -482,6 +485,8 @@ def _desktop_comparison_links(html_path: str) -> str:
                 status = {
                     "captured": text("Captures recorded — manual review required", "Captures enregistrées — revue manuelle nécessaire"),
                     "failed": text("Capture failure / incomplete — not parity success", "Captures en échec / incomplètes — parité non validée"),
+                    "in_progress": text("Partial diagnostic — completion not established", "Diagnostic partiel — fin non établie"),
+                    "interrupted": text("Interrupted diagnostic — incomplete", "Diagnostic interrompu — incomplet"),
                 }.get(recorded, status)
         except (OSError, ValueError):
             pass
@@ -579,7 +584,8 @@ def build_consolidated_quality_html(quality_json_paths: list,
         [
             esc(rep.report_name),
             badge(rep.status),
-            esc(str(rep.parity.get("parity_score", "n/a"))),
+            esc(str(rep.parity["parity_score"])
+                if rep.parity.get("parity_score") is not None else "not_run"),
             str(len(rep.blockers)),
             str(len(rep.warnings)),
             str(len(rep.priorities)),
@@ -588,7 +594,8 @@ def build_consolidated_quality_html(quality_json_paths: list,
     ]
     overview = section_open("consolidated-overview", text("Overview", "Vue d’ensemble"), "i")
     overview += data_table(
-        [text("Workbook", "Classeur"), text("Status", "État"), text("Parity", "Parité"),
+        [text("Workbook", "Classeur"), text("Status", "État"),
+         text("Feature mapping (static)", "Correspondance des fonctionnalités (statique)"),
          text("Blockers", "Blocages"), text("Warnings", "Avertissements"), text("Priorities", "Priorités")],
         overview_rows, table_id="consolidated-overview-table",
         sortable=True, searchable=True)
@@ -740,6 +747,7 @@ _FINDING_ACTIONS = {
     "parameter_coverage": ("repair", "Semantic"),
     "semantic_static": ("repair", "Semantic / DAX"),
     "semantic_runtime": ("repair", "Semantic / DAX"),
+    "countd_fallback": ("repair", "DAX"),
     "assessment_failures": ("decide", "Assessor"),
     "assessment_red": ("decide", "Assessor"),
     "assessment_warnings": ("decide", "Assessor"),
@@ -764,6 +772,7 @@ _FINDING_ACTIONS = {
     "filter_coverage": ("verify", "Visual"),
     "m_fallback": ("verify", "Wiring"),
     "visual_approximation": ("verify", "Visual"),
+    "combined_group_approximation": ("verify", "Semantic"),
     "parity_untracked": ("note", "Evidence"),
     "unresolved_lineage": ("note", "Evidence"),
     # Preceptorship review. Coaching items are the only findings that say *how*
@@ -1011,7 +1020,9 @@ def _measure_context_validation(project_dir: str) -> Dict[str, Any]:
             path = os.path.join(model_root, filename)
             with open(path, encoding="utf-8") as handle:
                 for line_number, line in enumerate(handle, 1):
-                    if "TODO: DAX conversion validation failed" in line:
+                    if ("TODO: DAX conversion validation failed" in line
+                            or (line.lstrip().startswith("measure ")
+                                and has_unsupported_countd_marker(line))):
                         fallback_issues.append({
                             "file": filename,
                             "line": line_number,
@@ -3946,9 +3957,33 @@ def build_hyper_import_evidence(extracted: Dict[str, Any],
 
 
 _QUALITY_POLICIES = {
-    "report": {"unresolved_lineage": "warning", "semantic_diagnostics": "ignore", "m_fallback": "warning", "fabric_bundle": "warning", "fabric_runtime": "ignore", "visual_approximation": "warning"},
-    "enterprise": {"unresolved_lineage": "warning", "semantic_diagnostics": "blocker", "m_fallback": "blocker", "fabric_bundle": "blocker", "fabric_runtime": "ignore", "visual_approximation": "blocker"},
-    "production": {"unresolved_lineage": "blocker", "semantic_diagnostics": "blocker", "m_fallback": "blocker", "fabric_bundle": "blocker", "fabric_runtime": "blocker", "visual_approximation": "blocker"},
+    "report": {
+        "unresolved_lineage": "warning",
+        "semantic_diagnostics": "ignore",
+        "m_fallback": "warning",
+        "fabric_bundle": "warning",
+        "fabric_runtime": "ignore",
+        "visual_approximation": "warning",
+        "combined_group_approximation": "warning",
+    },
+    "enterprise": {
+        "unresolved_lineage": "warning",
+        "semantic_diagnostics": "blocker",
+        "m_fallback": "blocker",
+        "fabric_bundle": "blocker",
+        "fabric_runtime": "ignore",
+        "visual_approximation": "blocker",
+        "combined_group_approximation": "blocker",
+    },
+    "production": {
+        "unresolved_lineage": "blocker",
+        "semantic_diagnostics": "blocker",
+        "m_fallback": "blocker",
+        "fabric_bundle": "blocker",
+        "fabric_runtime": "blocker",
+        "visual_approximation": "blocker",
+        "combined_group_approximation": "blocker",
+    },
 }
 
 
@@ -4340,6 +4375,19 @@ def build_quality_report(extracted: Dict, project_dir: str,
             "context issue(s).",
             policy["semantic_diagnostics"],
         )
+    countd_fallbacks = [
+        item for item in measure_context.get("fallbacks", [])
+        if has_unsupported_countd_marker(item["issue"])
+    ]
+    if countd_fallbacks:
+        findings.add(
+            "countd_fallback",
+            f"{len(countd_fallbacks)} COUNTD calculation(s) could not be "
+            "converted and use BLANK pending manual repair.",
+            blocker=policy["semantic_diagnostics"] == "blocker",
+            fix="Rebuild the calculation using the Tableau row or mark scope.",
+            evidence=[f'{item["file"]}:{item["line"]}' for item in countd_fallbacks],
+        )
     if semantic_runtime_failures:
         findings.by_policy(
             "semantic_runtime",
@@ -4361,6 +4409,14 @@ def build_quality_report(extracted: Dict, project_dir: str,
             "visual_approximation",
             f"Visual mapping contains {len(visual_approximations)} explicit approximation(s).",
             policy["visual_approximation"],
+        )
+    combined_groups = _count_combined_groups(extracted or {})
+    if combined_groups:
+        findings.by_policy(
+            "combined_group_approximation",
+            f"Combined group conversion includes {combined_groups} approximation(s); "
+            "verify delimiter collisions, nulls, culture and Tableau labels.",
+            policy["combined_group_approximation"],
         )
 
     review = _review_evidence(project_dir)

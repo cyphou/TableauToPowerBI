@@ -100,6 +100,8 @@ class TestNativeToolingFailures(unittest.TestCase):
         self.enterContext(mock.patch.object(dp.time, "monotonic", return_value=0))
         self.enterContext(mock.patch.object(dp.desktop_window, "dialog_windows",
                                            return_value=[]))
+        self.enterContext(mock.patch.object(dp.desktop_window, "window_process_id",
+                                           return_value=42))
         self.failure = {
             "status": "tooling_unavailable", "cause": "powershell_launch_failed",
             "note": "powershell_launch_failed", "retryable": False}
@@ -144,6 +146,14 @@ class TestNativeToolingFailures(unittest.TestCase):
              "note": "powershell_timeout", "retryable": False},
             {"status": "error", "cause": "powershell_malformed_json",
              "note": "powershell_malformed_json", "retryable": False},
+            {"status": "error", "cause": "window_ownership_changed",
+             "note": "window_ownership_changed", "retryable": False},
+            {"status": "error", "cause": "window_not_foreground",
+             "note": "window_not_foreground", "retryable": False},
+            {"status": "error", "cause": "window_point_not_owned",
+             "note": "window_point_not_owned", "retryable": False},
+            {"status": "error", "cause": "cursor_position_changed",
+             "note": "cursor_position_changed", "retryable": False},
             {"status": "unavailable", "cause": "ui_unreadable", "retryable": True},
         ]
         for failure in failures:
@@ -162,6 +172,19 @@ class TestNativeToolingFailures(unittest.TestCase):
                 self.dp._invoke_button(11, ["Refresh"])
             self.assertEqual(raised.exception.observation["cause"], "uia_result_invalid")
 
+    def test_native_refresh_actions_carry_the_expected_window_owner(self):
+        actions = (
+            lambda: self.dp._invoke_button(11, ["Refresh"], owner_pid=42),
+            lambda: self.dp._click_button(11, ["Refresh"], owner_pid=42),
+            lambda: self.dp._invoke_schema_refresh(11, owner_pid=42),
+        )
+        for action in actions:
+            with self.subTest(action=action), \
+                    mock.patch.object(self.dp, "_run_uia",
+                                      return_value={"invoked": 0}) as runner:
+                self.assertEqual(action(), 0)
+                self.assertEqual(runner.call_args.args[1]["owner_pid"], 42)
+
     def test_refresh_retains_pre_observation_and_mid_click_tool_failures_without_retry(self):
         for stage in ("observe", "click"):
             with self.subTest(stage=stage):
@@ -173,11 +196,13 @@ class TestNativeToolingFailures(unittest.TestCase):
                             return_value={"status": "unavailable", "partitions": []}) as baseline, \
                         mock.patch.object(self.dp, "verify_desktop_data") as counts, \
                         mock.patch.object(self.dp.time, "sleep") as sleep:
+                    readiness = None
                     if stage == "click":
                         readiness = self.enterContext(mock.patch.object(
                             self.dp, "_refresh_ui_state", return_value="clear"))
                     result = self.dp.refresh_report(11, "Synthetic.pbip", 42, timeout=1)
                     if stage == "click":
+                        assert readiness is not None
                         self.assertTrue(readiness.called)
                 self.assertEqual(result["status"], self.failure["status"])
                 self.assertEqual(result["cause"], self.failure["cause"])
@@ -231,6 +256,90 @@ class TestNativeToolingFailures(unittest.TestCase):
             self.assertFalse(report.opened)
             launch.assert_called_once()
             capture.assert_not_called()
+
+
+@unittest.skipUnless(os.name == "nt", "Isolated Windows PowerShell functions")
+class TestOwnedPhysicalClickGuards(unittest.TestCase):
+    """Run the production guards against inert native-window observations."""
+
+    @classmethod
+    def setUpClass(cls):
+        from powerbi_import import desktop_accessibility as accessibility
+        from powerbi_import import desktop_probe
+
+        powershell = accessibility.resolve_powershell_executable()
+        if not powershell:
+            raise unittest.SkipTest("Windows PowerShell not installed")
+        cls.powershell = powershell
+        source = desktop_probe._UIA_CLICK_SCRIPT
+        start = source.index("    function Stop-UnsafeClick(")
+        end = source.index("\n    Require-OwnedWindow", start)
+        cls.guards = source[start:end]
+
+    def test_refuses_foreign_windows_and_changed_cursor(self):
+        cases = (
+            ({}, "allowed"),
+            ({"pid": 99}, "window_ownership_changed"),
+            ({"thread": 0}, "window_ownership_changed"),
+            ({"foreground": 2}, "window_not_foreground"),
+            ({"x": 13}, "cursor_position_changed"),
+            ({"cursor_ok": False}, "cursor_position_changed"),
+            ({"hit": 0}, "window_point_not_owned"),
+            ({"ancestor": 2}, "window_point_not_owned"),
+        )
+        fake_native = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+namespace TtPbi {
+    public class Mouse {
+        public struct POINT { public int X; public int Y; }
+        public static uint Pid, Thread;
+        public static long Foreground, Hit, Ancestor;
+        public static int X, Y;
+        public static bool CursorOk;
+        public static uint GetWindowThreadProcessId(IntPtr h, out uint pid) {
+            pid = Pid; return Thread;
+        }
+        public static IntPtr GetForegroundWindow() { return new IntPtr(Foreground); }
+        public static bool GetCursorPos(out POINT point) {
+            point = new POINT { X = X, Y = Y }; return CursorOk;
+        }
+        public static IntPtr WindowFromPoint(POINT point) { return new IntPtr(Hit); }
+        public static IntPtr GetAncestor(IntPtr h, uint flags) { return new IntPtr(Ancestor); }
+    }
+}
+'@
+$case = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
+[TtPbi.Mouse]::Pid = [uint32]$case.pid
+[TtPbi.Mouse]::Thread = [uint32]$case.thread
+[TtPbi.Mouse]::Foreground = [long]$case.foreground
+[TtPbi.Mouse]::Hit = [long]$case.hit
+[TtPbi.Mouse]::Ancestor = [long]$case.ancestor
+[TtPbi.Mouse]::X = [int]$case.x
+[TtPbi.Mouse]::Y = [int]$case.y
+[TtPbi.Mouse]::CursorOk = [bool]$case.cursor_ok
+$request = [pscustomobject]@{owner_pid=42}
+$root = [pscustomobject]@{Current=[pscustomobject]@{ProcessId=42}}
+$hwnd = [IntPtr]::new(1)
+$out = [ordered]@{invoked=0}
+"""
+        script = (fake_native + self.guards + """
+Require-OwnedWindow
+Require-ForegroundWindow
+Require-OwnedClickPoint 12 34
+[Console]::Out.WriteLine('{"status":"allowed"}')
+""")
+        baseline = {"pid": 42, "thread": 1, "foreground": 1, "hit": 1,
+                    "ancestor": 1, "x": 12, "y": 34, "cursor_ok": True}
+        for overrides, expected in cases:
+            with self.subTest(expected=expected, overrides=overrides):
+                result = subprocess.run(
+                    [self.powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    input=json.dumps({**baseline, **overrides}),
+                    capture_output=True, text=True, timeout=20, check=True)
+                observation = json.loads(result.stdout)
+                self.assertEqual(observation.get("cause", observation["status"]), expected)
 
 
 class TestProbe(unittest.TestCase):
@@ -417,6 +526,12 @@ class TestReportDefinitionLaunchOption(unittest.TestCase):
 
 
 class TestRefreshReport(unittest.TestCase):
+    def setUp(self):
+        from powerbi_import import desktop_probe as dp
+        self.enterContext(mock.patch.object(
+            dp.desktop_window, "window_process_id",
+            side_effect=lambda hwnd: 1 if hwnd == 1 else 4242))
+
     def test_applies_pending_changes_after_schema_refresh(self):
         from powerbi_import import desktop_probe as dp
         clicked = []
@@ -647,7 +762,8 @@ class TestRefreshReport(unittest.TestCase):
 
 
 class TestRefreshWindowVerification(unittest.TestCase):
-    def watch(self, status, late_state="clear", capture_unverified=False, data=None):
+    def watch(self, status, late_state="clear", capture_unverified=False, data=None,
+              screenshot="synthetic.png", blank=False):
         from powerbi_import import desktop_probe as dp
         report = DesktopProbeReport("P.pbip")
         if data is None:
@@ -668,8 +784,8 @@ class TestRefreshWindowVerification(unittest.TestCase):
                  mock.patch.object(dp, "_refresh_ui_state",
                                    return_value=late_state) as state, \
                  mock.patch.object(dp.desktop_window, "capture_window",
-                                   return_value="synthetic.png") as capture, \
-                 mock.patch.object(dp.desktop_window, "is_blank", return_value=False):
+                                   return_value=screenshot) as capture, \
+                 mock.patch.object(dp.desktop_window, "is_blank", return_value=blank):
                 crashed = dp._watch_window(
                     report, _FakeProc(), "P.pbip", 0, 1,
                     os.path.join(root, "capture.png"), verify_data=True,
@@ -711,7 +827,7 @@ class TestRefreshWindowVerification(unittest.TestCase):
         report, data, capture, render, state = self.watch(
             "verified", late_state="refresh_error")
         render.assert_called_once()
-        state.assert_called_once_with(101, 4242)
+        state.assert_called_once_with(101, 4242, stop_when=mock.ANY)
         capture.assert_called_once()
         self.assertEqual(report.refresh["status"], "refresh_error")
         self.assertEqual(report.data_load, data)
@@ -734,7 +850,7 @@ class TestRefreshWindowVerification(unittest.TestCase):
                 self.assertIs(report.screenshot_data_verified, False)
                 self.assertEqual(report.note, dp.REFRESH_LIMITATION)
                 render.assert_called_once()
-                state.assert_called_once_with(101, 4242)
+                state.assert_called_once_with(101, 4242, stop_when=mock.ANY)
                 # Retain diagnostic imagery, never certify it as refreshed data.
                 capture.assert_called_once()
                 self.assertEqual(report.screenshot, "synthetic.png")
@@ -745,6 +861,17 @@ class TestRefreshWindowVerification(unittest.TestCase):
         self.assertEqual(report.data_load, data)
         self.assertTrue(report.screenshot_data_verified)
         capture.assert_called_once()
+
+    def test_failed_blank_or_unreadable_capture_is_not_verified_by_old_row_counts(self):
+        for screenshot, blank in (
+                (None, False), ("synthetic.png", True), ("synthetic.png", None)):
+            with self.subTest(screenshot=screenshot, blank=blank):
+                report, data, capture, _, _ = self.watch(
+                    "verified", screenshot=screenshot, blank=blank)
+                self.assertEqual(data["status"], "verified")
+                self.assertIs(report.screenshot_data_verified, False)
+                self.assertEqual(report.screenshot, screenshot)
+                capture.assert_called_once()
 
     def test_saved_blocked_query_banner_after_settle_revokes_complete_empty_refresh(self):
         from powerbi_import import desktop_probe as dp
@@ -757,7 +884,7 @@ class TestRefreshWindowVerification(unittest.TestCase):
         self.assertFalse(report.screenshot_data_verified)
         self.assertEqual(report.data_load, data)
         render.assert_called_once()
-        observation.assert_called_once_with(101, 4242)
+        observation.assert_called_once_with(101, 4242, stop_when=mock.ANY)
         capture.assert_called_once()
 
 

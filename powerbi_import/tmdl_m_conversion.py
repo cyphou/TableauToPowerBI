@@ -391,8 +391,11 @@ def _dax_to_m_expression(dax_expr, table_name='', col_types=None):
                     return None
                 parts.append(f'if {sw} = {_group_if(v)} then {r}')
                 i += 2
+            # DAX SWITCH without an explicit else returns BLANK(). Do not
+            # invent a category label when the source expression has no
+            # default branch.
             default_v = (_dax_to_m_expression(args[-1], table_name, col_types)
-                         if len(args) % 2 == 0 else '"Other"')
+                         if len(args) % 2 == 0 else 'null')
             if default_v is None:
                 return None
             return ' else '.join(parts) + f' else {default_v}'

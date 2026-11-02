@@ -160,6 +160,39 @@ workflows are outside this exception.
 For reproducible repairs, fix the extractor/generator and regenerate; manual
 project edits are local adjustments and may be overwritten by the next run.
 
+#### Filters, counts and layout to review
+
+- Worksheet filters remain on their visual rather than becoming report-wide
+  restrictions. Shared-view filters are attached only to worksheets using the
+  declared datasource. Filter controls bind to their qualified source; unknown,
+  ambiguous or measure-valued control bindings are omitted with a warning.
+- A relevant-domain inclusive member list can be either a partial selection or
+  Tableau's dynamic **All**. When the XML does not distinguish them, migration
+  warns and keeps the listed members as a snapshot; new members are not
+  automatically included. An explicitly encoded all-members selection is not
+  frozen.
+- Power BI's default slicer interactions can affect other visuals and intersect
+  saved worksheet filters. Controls include a migration note; review their
+  interactions and selection behavior in Desktop before treating them as
+  equivalent to Tableau's interactive scope.
+- Resolved `COUNTD` fields use source-qualified non-blank distinct counts. When
+  a non-blank binding cannot be established, the ordinary visual fallback may
+  count blank values; unresolved quick calculations are omitted and warned.
+  A `RUNNING_*` formula over `COUNTD` becomes a warned `TODO`/`BLANK` unless
+  its Tableau mark ordering and partitioning can be established.
+  Percent-of-total and other quick-table-calculation scopes can differ across
+  Tableau marks. Compare actual values and partitions, not just formulas.
+- Month-truncated dates preserve their year and can use `Calendar[MonthStart]`
+  when the source binding is unambiguous. Automatic line/stacked mappings and
+  the card-overlap adjustment are heuristics, not proof of rendered parity;
+  inspect their migration notes and compare the actual pages.
+- Visual-diff candidate type and field-name overlap are heuristic, unqualified
+  diagnostics, not verified worksheet-to-visual coverage. The source-fidelity
+  audit retains `needs_review` until that visual evidence is verified. The
+  migration report lists worksheet visuals as `unverified`; its partial
+  classification score excludes them and is not rendered parity. With no
+  classifiable items, the score and grade are `null`.
+
 #### Optional Microsoft PBIR validation
 
 The [Microsoft skills-for-fabric authoring workflows](https://github.com/microsoft/skills-for-fabric)
@@ -259,6 +292,20 @@ relationship 12345678-1234-1234-1234-123456789abc
     crossFilteringBehavior: oneDirection
     isActive: true
 ```
+
+Generated Calendar relationships use one-way filtering from Calendar to the
+related table. This avoids implicitly propagating filters between otherwise
+independent fact tables; model any required cross-fact behavior explicitly.
+Discrete month axes use a related calendar's month label only when the model
+proves its active date relationship and month-name sort. Explicit continuous
+`tmn` axes use the calendar's `MonthStart`; missing or ambiguous calendar
+evidence keeps the source date and adds a migration note.
+
+For eligible independent Import partitions, Calendar bounds can be derived
+from copied source queries at refresh. This may read the source more than once.
+DirectQuery and dependent or otherwise ineligible queries are not used for
+these runtime bounds. Check observed dates and configure `--calendar-start`
+and `--calendar-end` where needed; generation alone does not verify coverage.
 
 ## 🔧 Common Modifications
 

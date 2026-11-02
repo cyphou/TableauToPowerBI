@@ -3318,8 +3318,14 @@ class TestBuildAnalyticsObjects(unittest.TestCase):
                 self.gen._build_analytics_objects(
                     objects, ws, 'clusteredColumnChart', {})
                 self.assertEqual(objects, {})
-                self.assertEqual(ws['_unresolved_reference_lines'],
-                                 [reference_line])
+                unresolved = ws['_unresolved_reference_lines']
+                self.assertEqual(len(unresolved), 1)
+                self.assertEqual(
+                    {key: unresolved[0][key] for key in reference_line},
+                    reference_line)
+                self.assertEqual(
+                    unresolved[0]['_unresolved_reason'],
+                    'reference-line value is missing or ambiguous; line was omitted')
 
     def test_constant_reference_line_currency_and_apostrophe_labels(self):
         for label, literal in (
@@ -4523,7 +4529,8 @@ class TestWorksheetContainerObjects(unittest.TestCase):
         payload = self._create_worksheet_visual()
         self.assertIn({
             'name': 'MigrationNote',
-            'value': '2 reference line(s) have no numeric value; review required.',
+            'value': ('2 reference line(s) could not be represented: '
+                      'reference-line value is missing or ambiguous; line was omitted.'),
         }, payload.get('annotations', []))
         objects = payload['visual']['objects']
         self.assertNotIn('y1AxisReferenceLine', objects)

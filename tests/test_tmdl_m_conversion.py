@@ -635,5 +635,96 @@ class TestColumnTypesAreForwarded(unittest.TestCase):
                     "its operands to untyped arithmetic")
 
 
+class TestTableauGroupAndDatePartMConversion(unittest.TestCase):
+
+    @staticmethod
+    def _model(columns):
+        table = {
+            'name': 'Facts',
+            'columns': columns,
+            'partitions': [{'source': {
+                'type': 'm',
+                'expression': 'let\n    Source = #table({}, {})\nin\n    Source',
+            }}],
+        }
+        return {'model': {'tables': [table]}}, table
+
+    def test_year_date_part_uses_date_year_before_text_conversion(self):
+        from powerbi_import.tmdl_sets import _process_sets_groups_bins
+
+        model, table = self._model([{'name': 'DateTime', 'sourceColumn': 'DateTime'}])
+        _process_sets_groups_bins(model, {'groups': [{
+            'name': 'Year key',
+            'group_type': 'combined',
+            'source_fields': ['yr:DateTime'],
+        }]}, 'Facts', {'DateTime': 'Facts'})
+
+        expression = table['partitions'][0]['source']['expression']
+        self.assertIn('Text.From(Date.Year([#"DateTime"]))', expression)
+        self.assertNotIn('Text.From([#"DateTime"])', expression)
+        self.assertEqual(_dax_to_m_expression('YEAR([DateTime])', 'Facts'),
+                         'Date.Year([DateTime])')
+
+    def test_unsupported_date_part_prefix_fails_instead_of_stringifying_datetime(self):
+        from powerbi_import.tmdl_sets import _process_sets_groups_bins
+
+        model, _ = self._model([{'name': 'DateTime', 'sourceColumn': 'DateTime'}])
+        with self.assertRaisesRegex(ValueError, "unsupported date-part.*trunc"):
+            _process_sets_groups_bins(model, {'groups': [{
+                'name': 'Truncated key',
+                'group_type': 'combined',
+                'source_fields': ['trunc:DateTime'],
+            }]}, 'Facts', {'DateTime': 'Facts'})
+
+    def test_group_defaults_to_other_but_preserves_explicit_blank_and_null(self):
+        from powerbi_import.tmdl_sets import _process_sets_groups_bins
+
+        for supplied_default, default_value, expected in (
+                (False, None, 'else "Other"'),
+                (True, 'Autre', 'else "Autre"'),
+                (True, '', 'else ""'),
+                (True, None, 'else null')):
+            with self.subTest(supplied_default=supplied_default,
+                              default_value=default_value):
+                group = {
+                    'name': 'Category group',
+                    'group_type': 'values',
+                    'source_field': 'Category',
+                    'members': {'Known': ['A']},
+                }
+                if supplied_default:
+                    group['default'] = default_value
+                model, table = self._model([
+                    {'name': 'Category', 'sourceColumn': 'Category'},
+                ])
+                _process_sets_groups_bins(
+                    model, {'groups': [group]}, 'Facts', {'Category': 'Facts'})
+                expression = table['partitions'][0]['source']['expression']
+                self.assertIn(expected, expression)
+
+    def test_large_group_uses_implicit_other_but_not_for_explicit_null(self):
+        from powerbi_import.tmdl_sets import _process_sets_groups_bins
+
+        for explicit_null, expects_fill in ((False, True), (True, False)):
+            with self.subTest(explicit_null=explicit_null):
+                group = {
+                    'name': 'Large group',
+                    'group_type': 'values',
+                    'source_field': 'Category',
+                    'members': {'Known': [str(i) for i in range(101)]},
+                }
+                if explicit_null:
+                    group['default'] = None
+                model, table = self._model([
+                    {'name': 'Category', 'sourceColumn': 'Category'},
+                ])
+                _process_sets_groups_bins(
+                    model, {'groups': [group]}, 'Facts', {'Category': 'Facts'})
+                expression = table['partitions'][0]['source']['expression']
+                self.assertEqual('Fill_Large_group' in expression, expects_fill)
+                if expects_fill:
+                    self.assertIn('"Other"', expression)
+
+
 if __name__ == "__main__":
     unittest.main()

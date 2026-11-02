@@ -47,7 +47,7 @@ class TestComparisonCLI(unittest.TestCase):
         self.compare.assert_called_once_with(
             str(self.source), str(self.output), timeout=12.5,
             tableau_desktop_path="tableau.exe", powerbi_desktop_path="PBIDesktop.exe",
-            all_pages=False, page_timeout=30)
+            all_pages=False, page_timeout=30, progress_callback=mock.ANY)
         self.assertIn("manual review only; no parity score", self.stdout.getvalue())
         self.assertIn("manifest.json", self.stdout.getvalue())
         self.assertIn("comparison.html", self.stdout.getvalue())
@@ -60,7 +60,7 @@ class TestComparisonCLI(unittest.TestCase):
         self.compare.assert_called_once_with(
             str(self.source), str(self.output), timeout=90,
             tableau_desktop_path=None, powerbi_desktop_path=None,
-            all_pages=True, page_timeout=4.5)
+            all_pages=True, page_timeout=4.5, progress_callback=mock.ANY)
         self.assertIn("All-page totals", self.stdout.getvalue())
 
     def test_invalid_page_timeout_exits_two_without_comparison(self):
@@ -86,6 +86,21 @@ class TestComparisonCLI(unittest.TestCase):
                 self.assertEqual(cli.main(self.args), 1)
                 self.assertIn(str(exception), self.stderr.getvalue())
 
+    def test_checkpoint_path_is_flushed_before_interruption(self):
+        checkpoint = str(self.root / "run" / "manifest.json")
+
+        def interrupt(*args, **kwargs):
+            kwargs["progress_callback"](
+                "desktop_start", {"manifest_path": checkpoint})
+            raise KeyboardInterrupt("interrupted during capture")
+
+        self.compare.side_effect = interrupt
+        with mock.patch.object(self.stdout, "flush", wraps=self.stdout.flush) as flush, \
+                self.assertRaisesRegex(KeyboardInterrupt, "interrupted during capture"):
+            cli.main(self.args)
+        self.assertIn(checkpoint, self.stdout.getvalue())
+        flush.assert_called()
+
     def test_help_is_explicit_optional_and_does_not_capture(self):
         with self.assertRaises(SystemExit) as raised:
             cli.main(["--help"])
@@ -109,7 +124,8 @@ class TestComparisonCLI(unittest.TestCase):
                 self.compare.assert_called_once_with(
                     str(self.source), str(self.output), timeout=90,
                     tableau_desktop_path=None, powerbi_desktop_path=None,
-                    all_pages=True, page_timeout=2.5, screen_comparison="local")
+                    all_pages=True, page_timeout=2.5, screen_comparison="local",
+                    progress_callback=mock.ANY)
                 self.assertIn("local non-semantic pixels; no parity score",
                               self.stdout.getvalue())
 
@@ -120,7 +136,7 @@ class TestComparisonCLI(unittest.TestCase):
         self.compare.assert_called_once_with(
             str(self.source), str(self.output), timeout=90,
             tableau_desktop_path=None, powerbi_desktop_path=None,
-            all_pages=False, page_timeout=30)
+            all_pages=False, page_timeout=30, progress_callback=mock.ANY)
 
     def test_invalid_screen_mode_is_rejected_before_comparison(self):
         for value in ("ai", "ssim", "LOCAL", ""):

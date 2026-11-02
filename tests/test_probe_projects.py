@@ -9,7 +9,8 @@ from unittest import mock
 from scripts import probe_projects
 
 
-def _report(*, window_loaded, data_status, screenshot="shot.png", **totals):
+def _report(*, window_loaded, data_status, screenshot="shot.png", status=None,
+            refresh_status=None, screenshot_data_verified=None, **totals):
     data_load = {
         "status": data_status,
         "tables_checked": totals.get("tables_checked", 0),
@@ -19,9 +20,14 @@ def _report(*, window_loaded, data_status, screenshot="shot.png", **totals):
         "total_rows": totals.get("total_rows", 0),
     }
     return mock.Mock(to_dict=mock.Mock(return_value={
+        "status": status or ("opened" if window_loaded else "error"),
         "window_loaded": window_loaded,
         "duration_s": 0.1,
         "screenshot": screenshot,
+        "screenshot_data_verified": (
+            data_status == "verified" if screenshot_data_verified is None
+            else screenshot_data_verified),
+        "refresh": {"status": refresh_status or data_status},
         "data_load": data_load,
     }))
 
@@ -84,6 +90,37 @@ class TestProbeProjects(unittest.TestCase):
                                 "--no-refresh")
         self.assertFalse(probe.call_args.kwargs["refresh"])
 
+    def test_exited_process_cannot_pass_even_after_window_and_data_observations(self):
+        for status in ("error", "crashed", "timed_out"):
+            for arguments in ((), ("--skip-data-check",)):
+                with self.subTest(status=status, arguments=arguments):
+                    report = _report(window_loaded=True, data_status="verified",
+                                     status=status, total_rows=10)
+                    result, _, _ = self._run([report], *arguments)
+                    self.assertEqual(result, 1)
+
+    def test_failed_refresh_or_uncertified_capture_cannot_pass_on_old_row_counts(self):
+        cases = (
+            {"refresh_status": "refresh_error"},
+            {"screenshot_data_verified": False},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                report = _report(window_loaded=True, data_status="verified",
+                                 total_rows=10, **overrides)
+                result, _, _ = self._run([report])
+                self.assertEqual(result, 1)
+
+    def test_failed_result_prints_status_and_data_evidence(self):
+        report = _report(window_loaded=True, data_status="verified",
+                         status="crashed", total_rows=10)
+        with mock.patch("builtins.print") as printed:
+            result, _, _ = self._run([report])
+        self.assertEqual(result, 1)
+        output = "\n".join(str(call.args[0]) for call in printed.call_args_list)
+        self.assertIn("status=crashed", output)
+        self.assertIn("data=verified", output)
+
     def test_html_report_has_status_cards_and_relative_screenshots(self):
         with tempfile.TemporaryDirectory() as tmp:
             shot = os.path.join(tmp, "shots", "A.png")
@@ -91,15 +128,21 @@ class TestProbeProjects(unittest.TestCase):
             open(shot, "wb").close()
             html_path = os.path.join(tmp, "DESKTOP_OPENING_VALIDATION.html")
             text = probe_projects._html_report([
-                {"pbip_path": "C:/p/A.pbip", "window_loaded": True, "screenshot": shot,
+                {"pbip_path": "C:/p/A.pbip", "status": "opened",
+                 "window_loaded": True, "screenshot": shot,
                  "screenshot_data_verified": True,
                  "refresh": {"mode": "schema_and_data", "status": "verified"},
                  "data_load": {"status": "verified", "tables_checked": 2,
                                "tables_nonempty": 2, "total_rows": 9}},
-                {"pbip_path": "C:/p/B.pbip", "window_loaded": False},
+                {"pbip_path": "C:/p/B.pbip", "status": "error",
+                 "window_loaded": True},
+                {"pbip_path": "C:/p/C.pbip", "status": "crashed",
+                 "window_loaded": False},
             ], html_path)
         self.assertIn('class="card ok">OPENED', text)
+        self.assertIn('class="card ko">ERROR', text)
         self.assertIn('class="card ko">CRASHED', text)
+        self.assertIn('1/3 opened', text)
         self.assertIn('src="shots/A.png"', text)
         self.assertIn("schema_and_data", text)
         self.assertNotIn(tmp, text)

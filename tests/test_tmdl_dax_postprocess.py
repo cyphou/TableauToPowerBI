@@ -1,8 +1,13 @@
 """Synthetic regressions for explicit logical-relationship SUM compilation."""
 
 import copy
+import os
+import sys
 import unittest
 from datetime import datetime, timedelta
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 
 from powerbi_import.tmdl_dax_postprocess import compile_logical_relationship_sum
 from tests.logical_relationship_fixtures import (
@@ -113,6 +118,23 @@ class TestCompileLogicalRelationshipSum(unittest.TestCase):
         self.assertIn(
             "CALCULATETABLE('Prior', REMOVEFILTERS('Prior'), "
             "KEEPFILTERS(TREATAS({__lrGroup1}, 'Prior'[Entity]))", expression)
+
+    def test_strict_and_inclusive_range_boundaries_preserve_pair_multiplicity(self):
+        expected = {">": 1, ">=": 2, "<": 1, "<=": 1}
+        rows = bag_rows()
+        visible = dict(rows, Current=[rows["Current"][2]])
+        for operator, value in expected.items():
+            with self.subTest(operator=operator):
+                args = compiler_arguments()
+                args["relation_metadata"]["logical_relationships"][0][
+                    "predicate"]["arguments"][2]["operator"] = operator
+                args["row_scopes"]["fixed_left"] = "'Current'"
+                result = compile_logical_relationship_sum(**args)
+                self.assertEqual(result["status"], "supported", result)
+                self.assertEqual(
+                    EmittedDax(result["expression"]).evaluate(rows, visible),
+                    value,
+                )
 
     def test_datetime_timestamp_ties_do_not_imply_one_candidate(self):
         args = compiler_arguments()

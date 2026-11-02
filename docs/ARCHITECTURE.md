@@ -304,7 +304,7 @@ and Fabric's separate staging behavior are not full PBIP imports. See the
 | `prep_lineage_report.py` | Lineage HTML report & merge advisor: 7-section interactive HTML, Mermaid diagram, merge recommendations |
 | `assessment.py` | Pre-migration readiness assessment: 9 categories (datasource, calculation, visual, filter, data model, interactivity, extract, scope, connection audit), pass/warn/fail scoring |
 | `migration_quality.py` | Unified deterministic quality report: assessment, parity, data/interface coverage, openability, Fabric validation, lineage, policy escalation, and handoff evidence |
-| `semantic_runtime.py` | Optional injected semantic executor boundary: bounded DAX execution evidence with explicit `not_run`, `passed`, or `failed` status |
+| `semantic_runtime.py` | Optional injected semantic executor boundary: bounded, complete-suite DAX evidence with finite-value and response-state checks and explicit `not_run`, `passed`, or `failed` status |
 | `semantic_fixtures.py` | Versioned sanitized semantic reference fixtures with expected rows, schema checks, and credential-like field rejection |
 | `m_emitter_matrix.py` | Offline coverage matrix for all registered M connector aliases plus the explicit unknown-connector fallback |
 | `visual_mapping_matrix.py` | Machine-readable visual coverage inventory: native mappings, approximations, and custom visual GUID mappings |
@@ -312,6 +312,63 @@ and Fabric's separate staging behavior are not full PBIP imports. See the
 | `semantic_execution_validator.py` | Static semantic-context checks for LOD grain, table-calculation partitions, and generated filter modifiers; never claims runtime equivalence |
 | `server_assessment.py` | Server-level portfolio assessment: per-workbook GREEN/YELLOW/RED grading, 8-axis complexity, effort estimation, migration wave planning, HTML dashboard |
 | `global_assessment.py` | Cross-workbook global assessment: pairwise merge scoring, BFS clustering, HTML heatmap report |
+
+### Optional semantic runtime evidence
+
+The [semantic runtime boundary](../powerbi_import/semantic_runtime.py) does not
+discover or connect to a runtime. An operator must explicitly supply an
+authorized executor. Local regression tests use inert executors; their results
+are not evidence of native DAX execution or N5 completion.
+
+Each query requires a nonempty string `name` and `dax`. Optional `expected_rows`
+or `expected` values are compared exactly by structure, with an absolute
+numeric `tolerance` (default `0.0`) that must be finite and non-negative.
+An explicitly supplied null is an expectation, not a request to skip comparison.
+Booleans do not match numbers; finite integer/float comparisons preserve numeric
+precision. Missing expectation keys mean a smoke execution only.
+
+Query text and reference values are copied into an in-memory plan before
+executor callbacks. Observed rows and provider provenance are copied when
+received, so a reused client cache or later caller mutation cannot rewrite
+an earlier query's recorded evidence. These copies are not source-data snapshots.
+
+An executor may return JSON-like raw rows or a wrapper declaring `rows` or
+`data`. Empty rows and an explicitly declared null result are valid observations;
+a missing result is not a null observation. Unknown statuses or malformed
+observations fail explicitly. Nonterminal or unavailable provider responses
+remain `not_run`, even when they contain plausible rows. Valid provider
+provenance is retained separately from library-owned observation and comparison
+markers. Invalid or cyclic values are rejected without inventing replacement
+data; nesting beyond 128 levels is also rejected.
+
+Valid wrappers are retained under `evidence.provider_response`, including
+provider provenance and error context. Rejected values have an
+`expected_diagnostic` or `response_diagnostic` with `error`, `type` and bounded
+`repr`; safe wrapper fields remain under `provider_response_fields`. An invalid
+observation is marked `invalid` and its unserializable `rows` is omitted, not
+reported as an observed null. Blocked comparisons explicitly stay `not_run`.
+When a valid provider duration is supplied, `duration_ms` retains it with
+`evidence.duration_ms_source="provider"`; `adapter_duration_ms` separately
+records boundary elapsed time. Provider-reported timing is not execution proof.
+
+`max_queries` defaults to 25 executor calls. The evidence records:
+
+- `queries_requested`: the entire requested suite, including skipped entries;
+- `queries_run`: attempted executor calls, not proof of native execution;
+- `passed`, `failed` and `queries_not_run`: per-query dispositions;
+- per-query results and explicit input, provider and budget diagnostics.
+
+A suite passes only when it is nonempty and every requested query succeeds.
+Missing executors, empty suites and incomplete budget-limited coverage cannot
+pass. The [validation contract](../powerbi_import/validation_contract.py)
+requires complete, consistent adapter evidence before releasing its semantic
+sub-contract, alongside the existing static, M and recovery checks.
+Its `release_ready` flag is not `OPERATIONAL_100`.
+
+Caller-supplied reference values still require independent source provenance
+and matching snapshot, grain and filter context. These checks do not establish
+Desktop refresh, saved/reopened state, source/target or visual parity,
+deployment, or post-deployment verification.
 
 ### `powerbi_import/deploy/` — Fabric Deployment
 

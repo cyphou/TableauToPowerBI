@@ -7,10 +7,430 @@ the relationship surface is one concern in one place; tmdl_generator re-exports
 these names for backward compatibility.
 """
 
+import hashlib
+import json
 import logging
+import os
 import re
+import uuid
+
+from tableau_export.m_query_builder import _m_header_literal
 
 logger = logging.getLogger(__name__)
+
+
+def _composite_equality_terms(predicate, left_alias, right_alias):
+    """Return ordered alias-to-column equality pairs, or None if not proven."""
+    terms = predicate.get('arguments', []) if str(
+        predicate.get('operator', '')).upper() == 'AND' else [predicate]
+    if len(terms) < 2:
+        return None
+    result = []
+    seen = set()
+    for term in terms:
+        if str(term.get('operator', '')).upper() not in ('=', '=='):
+            return None
+        left, right = term.get('left'), term.get('right')
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return None
+        if (left.get('table'), right.get('table')) == (left_alias, right_alias):
+            pair = (left.get('column'), right.get('column'))
+        elif (left.get('table'), right.get('table')) == (right_alias, left_alias):
+            pair = (right.get('column'), left.get('column'))
+        else:
+            return None
+        if not all(isinstance(value, str) and value for value in pair) or pair in seen:
+            return None
+        seen.add(pair)
+        result.append(pair)
+    return result
+
+
+def _composite_key_m_expression(terms, *, side, nulls_match, row_name):
+    """Build a type-tagged, length-prefixed key with collision-free text encoding."""
+    encoded = []
+    for index, (column, data_type) in enumerate(terms):
+        if '\0' in column:
+            raise ValueError("Composite relationship column contains a null character")
+        reference = '[#' + _m_header_literal(column) + ']'
+        normalized = str(data_type or '').casefold().replace(' ', '')
+        if normalized in ('string', 'text', 'varchar', 'nvarchar'):
+            value = (
+                f'Binary.ToText(Text.ToBinary({reference}, TextEncoding.Utf8), '
+                'BinaryEncoding.Hex)'
+            )
+            type_tag = 'S'
+        elif normalized in ('integer', 'int64', 'wholenumber', 'whole'):
+            value = f'Number.ToText({reference}, "0", "en-US")'
+            type_tag = 'I'
+        elif normalized in ('boolean', 'bool', 'logical'):
+            value = f'if {reference} then "1" else "0"'
+            type_tag = 'B'
+        else:
+            raise ValueError(
+                f"Composite equality key type {data_type!r} is unsupported; "
+                "use matching string, integer, or boolean columns.")
+        name = f'__ttpbi_value_{index}'
+        encoded.append((name, value, type_tag, reference))
+
+    declarations = []
+    segments = []
+    for name, value, type_tag, _ in encoded:
+        declarations.append(f'{name} = {value}')
+        segments.append(
+            f'"{type_tag}" & Text.From(Text.Length({name}), "en-US") '
+            f'& ":" & {name}'
+        )
+    serialized = ' & '.join(segments)
+    null_test = ' or '.join(f'{reference} = null'
+                            for _, _, _, reference in encoded)
+    if nulls_match:
+        serialized = ' & '.join(
+            f'(if {reference} = null then "N0:" else {segment})'
+            for (_, _, _, reference), segment in zip(encoded, segments)
+        )
+        result = serialized
+    else:
+        null_value = f'"N:{side}:" & Text.From([#"{row_name}"], "en-US")'
+        result = f'if {null_test} then {null_value} else {serialized}'
+    return (
+        f'let {", ".join(declarations)} '
+        f'in {result}'
+    )
+
+
+def _composite_key_type(value):
+    normalized = str(value or '').casefold().replace(' ', '')
+    if normalized in ('string', 'text', 'varchar', 'nvarchar'):
+        return 'string'
+    if normalized in ('integer', 'int64', 'whole', 'wholenumber'):
+        return 'integer'
+    if normalized in ('boolean', 'bool', 'logical'):
+        return 'boolean'
+    return None
+
+
+def _materialize_composite_logical_relationships(model, extra_objects):
+    """Materialize explicitly governed composite equalities as Import relationships.
+
+    The generated key is an unambiguous encoding, not a delimited concatenation.
+    The declared one-side uniqueness is checked on every Power Query refresh.
+    """
+    policies = extra_objects.get('composite_relationship_policies')
+    policies_from_environment = policies is None
+    if policies_from_environment:
+        raw = os.environ.get('TTPBI_COMPOSITE_RELATIONSHIP_POLICIES', '{}')
+        try:
+            policies = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Invalid TTPBI_COMPOSITE_RELATIONSHIP_POLICIES JSON") from exc
+    if not isinstance(policies, dict):
+        raise TypeError("composite_relationship_policies must be datasource-keyed")
+    if any(not isinstance(name, str) for name in policies):
+        raise TypeError("composite_relationship_policies keys must be datasource names")
+
+    tables = {table.get('name'): table
+              for table in model.get('model', {}).get('tables', [])}
+    datasources = model.get('_datasources', [])
+    table_renames = model.get('_table_rename_map', {})
+    column_renames = model.get('_column_rename_map', {})
+    plans = []
+    known_datasources = set()
+
+    for datasource in datasources:
+        ds_name = datasource.get('name', '')
+        known_datasources.add(ds_name)
+        ds_policies = policies.get(ds_name, {})
+        if not isinstance(ds_policies, dict):
+            raise TypeError(
+                f"Composite relationship policies for {ds_name!r} must be an object")
+        if any(not isinstance(index, str) for index in ds_policies):
+            raise TypeError(
+                f"Composite relationship policy indices for {ds_name!r} must be strings")
+        matched_policy_indices = set()
+        for index, relation in enumerate(
+                datasource.get('relation_metadata', {}).get('logical_relationships', [])):
+            endpoints = [relation.get(side, {}).get('tables', [])
+                         for side in ('left', 'right')]
+            if any(len(side) != 1 for side in endpoints):
+                continue
+            left_alias, right_alias = endpoints[0][0], endpoints[1][0]
+            pairs = _composite_equality_terms(
+                relation.get('predicate', {}), left_alias, right_alias)
+            if pairs is None:
+                continue
+            raw_policy = ds_policies.get(str(index))
+            if raw_policy is None:
+                continue
+            matched_policy_indices.add(str(index))
+            if not isinstance(raw_policy, dict):
+                raise TypeError(
+                    f"Composite relationship policy {ds_name}[{index}] must be an object")
+            required = {
+                'one_side', 'comparison_case_sensitive', 'comparison_exact',
+                'nulls_match', 'filter_direction',
+            }
+            if set(raw_policy) != required:
+                raise ValueError(
+                    f"Composite relationship policy {ds_name}[{index}] must contain "
+                    "only one_side, comparison_case_sensitive, comparison_exact, "
+                    "nulls_match, and filter_direction")
+            if raw_policy.get('one_side') not in ('left', 'right'):
+                raise ValueError(
+                    f"Composite relationship policy {ds_name}[{index}] one_side "
+                    "must be 'left' or 'right'")
+            if raw_policy.get('comparison_case_sensitive') is not True:
+                raise ValueError(
+                    f"Composite relationship {ds_name}[{index}] requires verified "
+                    "case-sensitive source equality")
+            if raw_policy.get('comparison_exact') is not True:
+                raise ValueError(
+                    f"Composite relationship {ds_name}[{index}] requires verified "
+                    "exact source string equality, including accent and trailing-space "
+                    "semantics")
+            if not isinstance(raw_policy.get('nulls_match'), bool):
+                raise TypeError(
+                    f"Composite relationship policy {ds_name}[{index}] must explicitly "
+                    "declare whether null tuples match")
+            if raw_policy.get('filter_direction') != 'oneDirection':
+                raise ValueError(
+                    f"Composite relationship {ds_name}[{index}] supports only an "
+                    "explicit oneDirection filter policy")
+            left_table = table_renames.get((ds_name, left_alias), left_alias)
+            right_table = table_renames.get((ds_name, right_alias), right_alias)
+            if left_table == right_table or left_table not in tables or right_table not in tables:
+                raise ValueError(
+                    f"Composite relationship {ds_name}[{index}] does not resolve "
+                    "to two distinct generated model tables")
+
+            source_tables = {}
+            for source_table in datasource.get('tables', []):
+                source_tables.setdefault(source_table.get('name'), []).append(
+                    source_table)
+
+            def resolve_terms(
+                    alias, model_table, field_names, *, source_tables=source_tables,
+                    ds_name=ds_name, index=index, column_renames=column_renames,
+                    tables=tables):
+                matching_tables = source_tables.get(alias, [])
+                if len(matching_tables) != 1:
+                    raise ValueError(
+                        f"Composite relationship {ds_name}[{index}] source alias "
+                        f"{alias!r} has missing or ambiguous table metadata")
+                source_columns = {}
+                for source_column in matching_tables[0].get('columns', []):
+                    source_columns.setdefault(
+                        str(source_column.get('name', '')).strip('[]'), []).append(
+                            source_column)
+                result = []
+                model_columns = tables[model_table].get('columns', [])
+                for field_name in field_names:
+                    matching_columns = source_columns.get(field_name, [])
+                    if len(matching_columns) != 1:
+                        raise ValueError(
+                            f"Composite relationship {ds_name}[{index}] cannot resolve "
+                            f"or has ambiguous source field {alias}.{field_name}")
+                    source_column = matching_columns[0]
+                    produced_name = column_renames.get(
+                        (model_table, field_name), field_name)
+                    matches = [column for column in model_columns
+                               if column.get('sourceColumn') == produced_name
+                               or column.get('name') == produced_name]
+                    if len(matches) != 1:
+                        raise ValueError(
+                            f"Composite relationship {ds_name}[{index}] has ambiguous "
+                            f"generated field {model_table}.{produced_name}")
+                    data_type = source_column.get('datatype')
+                    if not data_type:
+                        raise ValueError(
+                            f"Composite relationship {ds_name}[{index}] is missing "
+                            f"type metadata for {alias}.{field_name}")
+                    model_column = matches[0]
+                    source_name = model_column.get('sourceColumn')
+                    if (not isinstance(source_name, str) or not source_name
+                            or model_column.get('expression')
+                            or model_column.get('isCalculated')):
+                        raise ValueError(
+                            f"Composite relationship {ds_name}[{index}] requires "
+                            f"source-bound M columns; {model_table}.{produced_name} "
+                            "is not available in the Import partition")
+                    model_type = model_column.get('dataType')
+                    if (model_type
+                            and _composite_key_type(model_type)
+                            != _composite_key_type(data_type)):
+                        raise ValueError(
+                            f"Composite relationship {ds_name}[{index}] has "
+                            f"mismatched model and source types for "
+                            f"{model_table}.{produced_name}")
+                    result.append((source_name, data_type))
+                return result
+
+            left_terms = resolve_terms(left_alias, left_table,
+                                       [pair[0] for pair in pairs])
+            right_terms = resolve_terms(right_alias, right_table,
+                                        [pair[1] for pair in pairs])
+            if ([_composite_key_type(t[1]) for t in left_terms] !=
+                    [_composite_key_type(t[1]) for t in right_terms]
+                    or any(_composite_key_type(t[1]) is None
+                           for t in left_terms + right_terms)):
+                raise ValueError(
+                    f"Composite relationship {ds_name}[{index}] has mismatched "
+                    "key component types")
+            one_table = left_table if raw_policy['one_side'] == 'left' else right_table
+            many_table = right_table if raw_policy['one_side'] == 'left' else left_table
+            plans.append({
+                'datasource': ds_name, 'index': index,
+                'left_table': left_table, 'right_table': right_table,
+                'left_terms': left_terms, 'right_terms': right_terms,
+                'one_table': one_table, 'many_table': many_table,
+                'one_terms': left_terms if raw_policy['one_side'] == 'left'
+                else right_terms,
+                'many_terms': right_terms if raw_policy['one_side'] == 'left'
+                else left_terms,
+                'policy': raw_policy,
+            })
+        unknown_indices = set(ds_policies) - matched_policy_indices
+        if unknown_indices:
+            raise ValueError(
+                f"Composite relationship policy indices for {ds_name!r} do not "
+                f"identify supported composite equalities: {sorted(unknown_indices)!r}")
+
+    unknown_datasources = set(policies) - known_datasources
+    if unknown_datasources:
+        if not policies_from_environment:
+            raise ValueError(
+                "Composite relationship policies reference unknown datasources: "
+                f"{sorted(unknown_datasources)!r}")
+        logger.info(
+            "Composite relationship policies for other datasources were not "
+            "applied to this model: %s", sorted(unknown_datasources))
+
+    if not plans:
+        return
+    from powerbi_import.tmdl_m_conversion import inject_m_steps
+
+    existing_relations = set()
+    for plan in plans:
+        identity = frozenset((plan['left_table'], plan['right_table']))
+        if identity in existing_relations:
+            raise ValueError(
+                "Multiple composite logical relationships between the same model "
+                "tables require an explicit shared bridge and are not supported")
+        existing_relations.add(identity)
+
+    prepared = []
+    staged_partitions = {}
+    planned_columns = {}
+    for plan in plans:
+        tag_seed = f"{plan['datasource']}\0{plan['index']}".encode()
+        tag = hashlib.sha256(tag_seed).hexdigest()[:32].upper()
+        key_name = f'__TTPBI_CompositeKey_{tag}'
+        row_name = f'__TTPBI_CompositeRow_{tag}'
+        key_names = {key_name.casefold(), row_name.casefold()}
+        partitions = {}
+        for table_name in (plan['left_table'], plan['right_table']):
+            table = tables[table_name]
+            existing_names = {
+                name.casefold()
+                for column in table.get('columns', [])
+                for name in (column.get('name'), column.get('sourceColumn'))
+                if isinstance(name, str)
+            }
+            if key_names & (existing_names | planned_columns.get(table_name, set())):
+                raise ValueError(
+                    f"Composite relationship helper column collides in {table_name}")
+            table_partitions = table.get('partitions')
+            if (not isinstance(table_partitions, list) or len(table_partitions) != 1
+                    or not isinstance(table_partitions[0], dict)
+                    or table_partitions[0].get('mode') != 'import'
+                    or not isinstance(table_partitions[0].get('source'), dict)
+                    or table_partitions[0]['source'].get('type') != 'm'
+                    or not table_partitions[0]['source'].get('expression')):
+                raise ValueError(
+                    f"Composite relationship {plan['datasource']}[{plan['index']}] "
+                    f"requires a single Import M partition for {table_name}")
+            partitions[table_name] = table_partitions[0]
+            planned_columns.setdefault(table_name, set()).update(key_names)
+
+        one = tables[plan['one_table']]
+        many = tables[plan['many_table']]
+        expressions = {}
+        for table, terms, side in (
+                (one, plan['one_terms'],
+                 'L' if plan['one_table'] == plan['left_table'] else 'R'),
+                (many, plan['many_terms'],
+                 'L' if plan['many_table'] == plan['left_table'] else 'R')):
+            expressions[table['name']] = _composite_key_m_expression(
+                terms, side=side,
+                nulls_match=plan['policy']['nulls_match'],
+                row_name=row_name,
+            )
+            table_literal = _m_header_literal(table['name'])
+            error_message = _m_header_literal(
+                f"Declared one-side key is not unique in {table['name']}")
+            steps = [
+                (f'#"TTPBI Composite Row {tag}"', (
+                    f'Table.AddIndexColumn({{prev}}, "{row_name}", 0, 1, Int64.Type)')),
+                (f'#"TTPBI Composite Key {tag}"', (
+                    f'Table.AddColumn({{prev}}, "{key_name}", each '
+                    f'{expressions[table["name"]]}, type text)')),
+                (f'#"TTPBI Remove Composite Row {tag}"', (
+                    f'Table.RemoveColumns({{prev}}, {{"{row_name}"}})')),
+            ]
+            if table is one:
+                steps.append((f'#"TTPBI Composite Key Check {tag}"', (
+                    f'let __rows = {{prev}}, '
+                    f'__distinct = Table.RowCount(Table.Distinct(__rows, {{"{key_name}"}})) '
+                    f'in if __distinct <> Table.RowCount(__rows) then '
+                    'error Error.Record("Migration.CompositeKeyNotUnique", '
+                    f'{error_message}, '
+                    f'[Table = {table_literal}, Key = "{key_name}"]) else __rows'
+                )))
+            partition = partitions[table['name']]
+            source = partition['source']
+            previous = staged_partitions.get(table['name'])
+            current_expression = previous[1] if previous else source['expression']
+            updated = inject_m_steps(current_expression, steps)
+            if f'#"TTPBI Composite Key {tag}"' not in updated:
+                raise ValueError(
+                    f"Could not inject composite key into Import M partition "
+                    f"for {table['name']}")
+            staged_partitions[table['name']] = (partition, updated)
+        prepared.append({
+            **plan, 'tag': tag, 'key_name': key_name, 'row_name': row_name,
+            'expressions': expressions,
+        })
+
+    for partition, expression in staged_partitions.values():
+        partition['source']['expression'] = expression
+
+    for plan in prepared:
+        key_name = plan['key_name']
+        one = tables[plan['one_table']]
+        many = tables[plan['many_table']]
+        for table in (one, many):
+            table['columns'].append({
+                'name': key_name, 'dataType': 'String',
+                'sourceColumn': key_name, 'summarizeBy': 'none',
+                'isHidden': True, 'displayFolder': 'Technical',
+                'description': 'Refresh-validated composite logical relationship key.',
+            })
+
+        model.setdefault('_logical_predicate_pairs', []).append(
+            [plan['left_table'], plan['right_table']])
+        model.setdefault('_logical_equality_compiled_pairs', []).append(
+            [plan['left_table'], plan['right_table']])
+        model.setdefault('_materialized_composite_relationships', []).append({
+            'name': str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"ttpbi:composite:{plan['datasource']}:{plan['index']}:"
+                f"{plan['many_table']}:{plan['one_table']}",
+            )),
+            'fromTable': plan['many_table'], 'fromColumn': key_name,
+            'toTable': plan['one_table'], 'toColumn': key_name,
+            'joinType': 'left', 'crossFilteringBehavior': 'oneDirection',
+            '_source_cardinality_verified': True,
+        })
 
 
 def _enforce_hybrid_relationship_constraints(model):
@@ -35,6 +455,79 @@ def _create_and_validate_relationships(model, datasources):
     protected_pairs = {
         frozenset(pair) for pair in model.get('_logical_predicate_pairs', [])
     }
+    compiled_equality_pairs = {
+        frozenset(pair) for pair in model.get('_logical_equality_compiled_pairs', [])
+    }
+
+    def logical_pair_error(source_rel, endpoints, predicate=None):
+        predicate = predicate or {}
+        op = str(predicate.get('operator', '')).upper()
+        if op == 'AND':
+            leaves = predicate.get('arguments', [])
+            pure_equality = bool(leaves) and all(
+                str(leaf.get('operator', '')).upper() in ('=', '==')
+                and all(
+                    isinstance(leaf.get(side), dict)
+                    and leaf[side].get('table') and leaf[side].get('column')
+                    for side in ('left', 'right'))
+                for leaf in leaves)
+            blocker = (
+                "the complete predicate has multiple equality terms and a "
+                "single-column model relationship would discard composite-key "
+                "semantics"
+                if pure_equality else
+                "the predicate contains a range, disjunction, opaque operand, "
+                "or other non-equality term that a model relationship cannot encode"
+            )
+        elif op in ('=', '=='):
+            blocker = (
+                "source row uniqueness/cardinality and key encoding have not "
+                "been proven for a model relationship"
+            )
+        else:
+            blocker = (
+                "the predicate is not a proven conjunctive equality; range, "
+                "disjunctive, and ambiguous predicates remain unsupported"
+            )
+        left, right = endpoints
+        edge = source_rel.get('left', {})
+        other = source_rel.get('right', {})
+        return (
+            f"Cannot emit legacy equality edge {edge.get('table', left)}."
+            f"{edge.get('column', '')} -> {other.get('table', right)}."
+            f"{other.get('column', '')} for logical pair '{left}' / '{right}': "
+            f"{blocker}. Preserve the complete source predicate or provide "
+            "provable key/cardinality and encoding evidence."
+        )
+
+    def pure_equality_conjunction(predicate):
+        terms = [predicate]
+        if str(predicate.get('operator', '')).upper() == 'AND':
+            terms = predicate.get('arguments', [])
+        return bool(terms) and all(
+            str(term.get('operator', '')).upper() in ('=', '==')
+            and all(
+                isinstance(term.get(side), dict)
+                and term[side].get('table') and term[side].get('column')
+                for side in ('left', 'right'))
+            for term in terms)
+
+    logical_predicates = {}
+    for datasource in datasources:
+        rename_map = model.get('_table_rename_map', {})
+        for logical in (datasource.get('relation_metadata', {})
+                        .get('logical_relationships', [])):
+            left = logical.get('left', {}).get('tables', [])
+            right = logical.get('right', {}).get('tables', [])
+            if len(left) == len(right) == 1:
+                pair = frozenset((
+                    rename_map.get((datasource.get('name', ''), left[0]), left[0]),
+                    rename_map.get((datasource.get('name', ''), right[0]), right[0]),
+                ))
+                logical_predicates.setdefault(pair, []).append(logical.get('predicate', {}))
+                if logical.get('requires_materialization'):
+                    protected_pairs.add(pair)
+
     for ds in datasources:
         relationships = []
         for source_rel in ds.get('relationships', []):
@@ -58,16 +551,28 @@ def _create_and_validate_relationships(model, datasources):
                         "preserved logical predicate governs this pair",
                         *endpoints)
                     continue
+                # Only a compiler that preserves the complete source predicate
+                # may replace its legacy per-column projections.
+                predicates = logical_predicates.get(pair, [])
+                if (pair in compiled_equality_pairs and len(predicates) == 1
+                        and pure_equality_conjunction(predicates[0])):
+                    logger.info(
+                        "Skipped lossy legacy equality projection for compiled "
+                        "logical pair %s / %s", *endpoints)
+                    continue
                 raise ValueError(
-                    "A model equality relationship cannot represent the preserved "
-                    "logical composite/range predicate; remove the lossy legacy edge")
+                    logical_pair_error(
+                        source_rel, endpoints,
+                        predicates[0] if len(predicates) == 1 else {}))
             relationships.append(source_rel)
         rels = _build_relationships(relationships)
         for rel in rels:
             if frozenset((rel.get('fromTable'), rel.get('toTable'))) in protected_pairs:
                 raise ValueError(
-                    "A model equality relationship cannot represent the preserved "
-                    "logical composite/range predicate; remove the lossy legacy edge")
+                    "Generated equality edge is blocked because it would replace "
+                    "a preserved logical relationship predicate; composite, "
+                    "range, ambiguous, and uncompiled predicates are never "
+                    "projected into model relationships.")
             key = (rel.get('fromTable'), rel.get('fromColumn'),
                    rel.get('toTable'), rel.get('toColumn'))
             if key not in seen_rels:
@@ -75,6 +580,14 @@ def _create_and_validate_relationships(model, datasources):
                 model["model"]["relationships"].append(rel)
             else:
                 print(f"  ⚠ Skipped duplicate relationship: {key[0]}.{key[1]} → {key[2]}.{key[3]}")
+
+    for relation in model.get('_materialized_composite_relationships', []):
+        key = (relation.get('fromTable'), relation.get('fromColumn'),
+               relation.get('toTable'), relation.get('toColumn'))
+        if key in seen_rels:
+            raise ValueError(f"Duplicate materialized composite relationship: {key}")
+        seen_rels.add(key)
+        model["model"]["relationships"].append(relation)
 
     # Validate relationships: keep only those pointing to existing tables/columns
     valid_relationships = []
@@ -286,6 +799,15 @@ def _source_alias_pairs(model):
     """
     aliases = set()
     renames = model.get('_table_rename_map', {})
+
+    def exact_hyper_identity(value):
+        fields = ('workbook', 'archive_member', 'schema', 'table')
+        return (
+            isinstance(value, dict) and set(value) == set(fields)
+            and all(isinstance(value.get(key), str) and value[key]
+                    for key in fields)
+        )
+
     for datasource in model.get('_datasources', []):
         ds_name = datasource.get('name', '')
         sources = []
@@ -299,11 +821,24 @@ def _source_alias_pairs(model):
             if not physical or not connection or not name:
                 continue
             actual_name = renames.get((ds_name, name), name)
-            for other_name, other_physical, other_connection in sources:
-                if (actual_name != other_name and physical == other_physical
-                        and connection == other_connection):
+            identity = table.get('hyper_identity')
+            connector = str(connection.get('type', '')).strip().casefold()
+            is_hyper = connector in {'hyper', 'extract', 'dataengine'} or identity is not None
+            for other_name, other_physical, other_connection, other_identity in sources:
+                if is_hyper:
+                    same_source = (
+                        exact_hyper_identity(identity)
+                        and exact_hyper_identity(other_identity)
+                        and identity == other_identity
+                    )
+                else:
+                    same_source = (
+                        physical == other_physical
+                        and connection == other_connection
+                    )
+                if actual_name != other_name and same_source:
                     aliases.add(frozenset((actual_name, other_name)))
-            sources.append((actual_name, physical, connection))
+            sources.append((actual_name, physical, connection, identity))
     return aliases
 
 
@@ -553,12 +1088,12 @@ def _detect_many_to_many(model, datasources):
         tname = table.get('name', '')
         table_col_counts[tname] = len(table.get('columns', []))
 
-    # Count Calendar relationships — when >1 table connects to Calendar,
-    # use bothDirections so Calendar acts as a shared dimension bridge.
-    _cal_rel_count = sum(1 for r in model['model']['relationships']
-                         if r.get('toTable') == 'Calendar')
-
     for rel in model['model']['relationships']:
+        if rel.pop('_source_cardinality_verified', False):
+            rel['fromCardinality'] = 'many'
+            rel['toCardinality'] = 'one'
+            rel['crossFilteringBehavior'] = 'oneDirection'
+            continue
         to_table = rel.get('toTable', '')
         to_col = rel.get('toColumn', '')
         from_table = rel.get('fromTable', '')
@@ -572,14 +1107,8 @@ def _detect_many_to_many(model, datasources):
             # peer table and make it many-to-many.
             rel['fromCardinality'] = 'many'
             rel['toCardinality'] = 'one'
-            # Use bothDirections when multiple tables connect to Calendar
-            # so Calendar acts as a shared dimension bridge (star schema).
-            if _cal_rel_count > 1:
-                rel['crossFilteringBehavior'] = 'bothDirections'
-                print(f"  ✓  Relation → '{to_table}.{to_col}' set to manyToOne bothDirections (Calendar bridge).")
-            else:
-                rel['crossFilteringBehavior'] = 'oneDirection'
-                print(f"  ✓  Relation → '{to_table}.{to_col}' set to manyToOne (Calendar table).")
+            rel['crossFilteringBehavior'] = 'oneDirection'
+            print(f"  ✓  Relation → '{to_table}.{to_col}' set to manyToOne (Calendar table, single direction).")
         elif join_type == 'full':
             rel['fromCardinality'] = 'many'
             rel['toCardinality'] = 'many'

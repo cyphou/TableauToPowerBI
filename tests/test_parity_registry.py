@@ -130,6 +130,19 @@ class TestOtherDetectors(unittest.TestCase):
         self.assertEqual(keys["groups"], 3)
         self.assertEqual(keys["data_blending"], 2)
 
+    def test_combined_groups_are_scored_separately_as_approximations(self):
+        conv = {"groups": [
+            {"name": "Region", "group_type": "values"},
+            {"name": "Combined", "group_type": "combined"},
+        ]}
+        scan = scan_workbook(conv)
+        usages = {usage.key: usage for usage in scan.usages}
+        self.assertEqual(usages["groups"].count, 1)
+        self.assertEqual(usages["groups"].status, HEALED)
+        self.assertEqual(usages["combined_groups"].count, 1)
+        self.assertEqual(usages["combined_groups"].status, APPROXIMATED)
+        self.assertEqual(scan.parity_score, 75.0)
+
     def test_rls_healed(self):
         conv = {"user_filters": [{"name": "r"}]}
         keys = {u.key: u for u in scan_workbook(conv).usages}

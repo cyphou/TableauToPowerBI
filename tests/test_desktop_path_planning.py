@@ -244,6 +244,52 @@ def test_injected_winerror206_reaches_cli_no_partial_success(tmp_path, capsys, f
     assert 'Error during generation' in text
 
 
+def test_gitignore_write_failure_does_not_publish_pbip(tmp_path):
+    real_open = builtins.open
+
+    def failing_open(file, mode='r', *args, **kwargs):
+        if os.path.basename(os.fspath(file)) == '.gitignore' and 'w' in mode:
+            raise OSError('injected gitignore write failure')
+        return real_open(file, mode, *args, **kwargs)
+
+    with mock.patch('builtins.open', side_effect=failing_open):
+        with pytest.raises(OSError, match='injected gitignore write failure'):
+            PowerBIProjectGenerator(output_dir=str(tmp_path)).generate_project(
+                'Orders', _objects())
+    assert not (tmp_path / 'Orders' / 'Orders.pbip').exists()
+
+
+def test_preprocessing_failure_invalidates_stale_pbip(tmp_path):
+    project = tmp_path / 'Orders'
+    project.mkdir()
+    (project / 'Orders.pbip').write_text('{}', encoding='utf-8')
+    generator = PowerBIProjectGenerator(output_dir=str(tmp_path))
+
+    with mock.patch.object(generator, '_preprocess_for_fidelity',
+                           side_effect=ValueError('preprocessing failed')):
+        with pytest.raises(ValueError, match='preprocessing failed'):
+            generator.generate_project('Orders', _objects())
+    assert not (project / 'Orders.pbip').exists()
+
+
+def test_manifest_publication_failure_leaves_no_partial_pbip(tmp_path):
+    real_replace = os.replace
+
+    def failing_replace(source, destination):
+        if os.fspath(destination).endswith('.pbip'):
+            raise OSError('injected manifest publication failure')
+        return real_replace(source, destination)
+
+    with mock.patch('powerbi_import.atomic_file.os.replace',
+                    side_effect=failing_replace):
+        with pytest.raises(OSError, match='injected manifest publication failure'):
+            PowerBIProjectGenerator(output_dir=str(tmp_path)).generate_project(
+                'Orders', _objects())
+    project = tmp_path / 'Orders'
+    assert not (project / 'Orders.pbip').exists()
+    assert not list(project.glob('.Orders.pbip.*.tmp'))
+
+
 def test_standalone_tmdl_filesystem_failure_is_not_an_omitted_table(tmp_path):
     with mock.patch('powerbi_import.tmdl_writers._write_table_tmdl',
                     side_effect=_winerror206()):

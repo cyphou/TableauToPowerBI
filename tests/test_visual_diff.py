@@ -17,12 +17,14 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.visual_diff import (
     _ENCODING_TYPES,
     _MARK_TO_PBI,
+    _calculation_display_names,
     _diff_worksheet,
     _esc,
     _extract_pbi_visual_info,
@@ -276,6 +278,30 @@ class TestDiffWorksheet(unittest.TestCase):
         self.assertGreater(result['field_coverage'], 0)
         self.assertLess(result['field_coverage'], 100)
 
+    def test_candidate_field_names_do_not_match_table_names_or_substrings(self):
+        source = {'name': 'Synthetic', 'mark_type': 'bar',
+                  'fields': [{'name': 'Revenue'}, {'name': 'Orders'}]}
+        target = {'visual': {'visualType': 'clusteredBarChart',
+                             'query': {'queryState': {'Y': {'projections': [{
+                                 'field': {'Column': {
+                                     'Expression': {'SourceRef': {'Entity': 'Orders'}},
+                                     'Property': 'Revenue Forecast'}}}
+                             ]}}}}, 'title': {'text': 'Synthetic'}}
+        result = _diff_worksheet(source, [target])
+        self.assertEqual(result['field_coverage'], 0)
+        self.assertEqual(result['unmapped_fields'], ['Revenue', 'Orders'])
+        self.assertEqual(result['status_scope'], 'candidate_visual_type_only')
+        self.assertEqual(result['visual_coverage']['status'], 'not_run')
+
+    def test_ambiguous_calculation_captions_are_not_chosen_arbitrarily(self):
+        names = _calculation_display_names({'calculations': [
+            {'name': '[Calculation_1]', 'caption': 'First', 'datasource': 'one'},
+            {'name': '[Calculation_1]', 'caption': 'Second', 'datasource': 'two'},
+            {'name': '[Value[1]]', 'caption': 'Value[1]', 'datasource': 'one'},
+        ]})
+        self.assertNotIn('Calculation_1', names)
+        self.assertEqual(names['Value[1]'], 'Value[1]')
+
     def test_encoding_detection(self):
         ws = {
             'name': 'Test',
@@ -393,6 +419,10 @@ class TestGenerateVisualDiffJson(unittest.TestCase):
             result = generate_visual_diff_json(data, tmpdir)
         self.assertEqual(result['total'], 1)
         self.assertIn('visuals', result)
+        self.assertEqual(result['visual_coverage']['status'], 'not_run')
+        self.assertEqual(result['field_coverage_scope'],
+                         'unqualified_names_on_heuristic_candidate')
+        self.assertEqual(result['visuals'][0]['visual_coverage']['status'], 'not_run')
 
     def test_worksheets_as_dict(self):
         data = {
@@ -408,6 +438,51 @@ class TestGenerateVisualDiffJson(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = generate_visual_diff_json(data, tmpdir)
         self.assertEqual(result['total'], 1)
+
+
+class TestSourceFidelityReviewGate(unittest.TestCase):
+    def test_verified_data_and_heuristic_visuals_still_require_review(self):
+        from scripts import compare_source_fidelity as audit
+
+        with tempfile.TemporaryDirectory() as root:
+            source = os.path.join(root, 'Synthetic.twb')
+            pbip = os.path.join(root, 'Synthetic.pbip')
+            opening = os.path.join(root, 'opening.json')
+            for path in (source, pbip):
+                with open(path, 'w', encoding='utf-8'):
+                    pass
+            with open(opening, 'w', encoding='utf-8') as stream:
+                json.dump([{'pbip_path': pbip, 'data_load': {'status': 'verified'}}], stream)
+
+            extractor = MagicMock()
+            extractor.extract_all.return_value = True
+            values = {
+                'TableauExtractor': MagicMock(return_value=extractor),
+                'generate_visual_diff_json': MagicMock(return_value={
+                    'visuals': [], 'unmapped': 0,
+                    'visual_coverage': {'status': 'not_run', 'reason': 'Heuristic only'},
+                }),
+                'compare_report_tables': MagicMock(return_value={'summary': {
+                    'table_match_percent': 100, 'avg_column_coverage_percent': 100,
+                    'sourceless_tables': [],
+                }}),
+                'compare_report_metadata': MagicMock(return_value={'summary': {}}),
+                'compare_calculation_metadata': MagicMock(return_value={'summary': {
+                    'missing_symbol': 0, 'ambiguous_symbol': 0, 'type_mismatch': 0,
+                }}),
+                'compare_caption_metadata': MagicMock(
+                    return_value={'summary': {'not_found_in_model': 0}}),
+                'compare_semantic_metadata': MagicMock(return_value={'summary': {
+                    'category_mismatch': 0, 'unmapped_role': 0,
+                    'column_not_found': 0, 'hidden_mismatch': 0,
+                }}),
+                'compare_report_interface': MagicMock(return_value={}),
+                'compare_report_counts': MagicMock(return_value={}),
+            }
+            with patch.multiple(audit, **values):
+                report = audit.compare_existing(root, opening)
+            self.assertEqual(report['reports'][0]['status'], 'needs_review')
+            self.assertEqual(report['reports'][0]['review_reasons'], ['Heuristic only'])
 
 
 class TestGenerateVisualDiffHtml(unittest.TestCase):
@@ -432,6 +507,9 @@ class TestGenerateVisualDiffHtml(unittest.TestCase):
                 html = f.read()
             self.assertIn('Visual Diff Report', html)
             self.assertIn('Sheet1', html)
+            self.assertIn('Worksheet-to-visual matching is heuristic', html)
+            self.assertIn('Candidate Name Overlap', html)
+            self.assertNotIn('Exact Match', html)
 
     def test_default_output_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:

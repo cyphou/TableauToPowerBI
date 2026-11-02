@@ -3,7 +3,7 @@
  "visuals": [
   {
    "fields": 2,
-   "has_format": false,
+   "has_format": true,
    "height": 700,
    "page": "Lead Details",
    "title_font": "",
@@ -41,19 +41,6 @@
    "z": 2000
   },
   {
-   "fields": 2,
-   "has_format": true,
-   "height": 432,
-   "page": "Marketing Dashboard",
-   "title_font": "",
-   "title_size": "",
-   "type": "lineChart",
-   "width": 768,
-   "x": 384,
-   "y": 594,
-   "z": 4000
-  },
-  {
    "fields": 4,
    "has_format": true,
    "height": 432,
@@ -65,6 +52,19 @@
    "x": 1152,
    "y": 594,
    "z": 5000
+  },
+  {
+   "fields": 1,
+   "has_format": true,
+   "height": 432,
+   "page": "Marketing Dashboard",
+   "title_font": "",
+   "title_size": "",
+   "type": "tableEx",
+   "width": 768,
+   "x": 384,
+   "y": 594,
+   "z": 4000
   },
   {
    "fields": 0,

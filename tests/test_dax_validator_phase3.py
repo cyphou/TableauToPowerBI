@@ -56,6 +56,14 @@ class TestDaxValidatorPhase3(unittest.TestCase):
         issues = validate_dax_expression("[Col] + None")
         self.assertTrue(any('invalid literal' in i for i in issues))
 
+    def test_function_and_invalid_tokens_inside_names_or_literals_are_not_leaks(self):
+        for expression in (
+            "DISTINCTCOUNTNOBLANK('Lookup'[WINDOW_SUM])",
+            'IF([None] = "COUNTD", 1, 0)',
+        ):
+            with self.subTest(expression=expression):
+                self.assertEqual(validate_dax_expression(expression), [])
+
     def test_unterminated_block_comment(self):
         issues = validate_dax_expression("/* this is incomplete SUM([A])")
         self.assertTrue(any('unterminated block comment' in i for i in issues))

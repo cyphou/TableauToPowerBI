@@ -829,6 +829,20 @@ class TestLocalAllPagePixels(AllPagesFixture):
         self.assertIn("open", opening.attrs)
         self.assertEqual(len(list(opening.nodes("img"))), 2)
 
+    def test_returned_incomplete_page_status_is_reported_as_error(self):
+        for status in ("", None, [], "in_progress"):
+            with self.subTest(status=status):
+                self.page_overrides[(111, "Dashboard")] = {"status": status}
+                manifest = self.run_comparison()
+                row, = manifest["workbooks"]
+                page = next(page for page in row["source_inventory"]
+                            if page["name"] == "Dashboard")
+                self.assertEqual(manifest["status"], "failed")
+                self.assertEqual(page["capture"]["status"], "error")
+                self.assertIsNone(page["capture"]["screenshot"])
+                self.assertIn("no valid terminal status", page["capture"]["note"])
+                self.assertEqual(manifest["totals"]["source"]["captured"], 2)
+
     def test_unavailable_and_corrupt_pages_are_not_zero_metrics_or_launch_fallbacks(self):
         self.page_overrides[(111, "Dashboard")] = {"status": "unavailable"}
         self.page_images[(222, "Solo")] = tiny_png()[:-1]

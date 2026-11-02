@@ -5,7 +5,10 @@ Extracted from datasource_extractor.py for maintainability.
 Converts Tableau calculation formulas to valid DAX expressions.
 """
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 # ── Shared utility ────────────────────────────────────────────────────────────
 
@@ -64,7 +67,6 @@ _SIMPLE_FUNCTION_MAP = [
     (r'\bNOT\s*\(', 'NOT('),
 
     # Aggregation (before generic text/math to avoid conflicts)
-    (r'\bCOUNTD\s*\(', 'DISTINCTCOUNT('),
     (r'\bAVG\s*\(', 'AVERAGE('),
     (r'\bCONTAINS\s*\(', 'CONTAINSSTRING('),
     (r'\bASCII\s*\(', 'UNICODE('),
@@ -101,8 +103,7 @@ _SIMPLE_FUNCTION_MAP = [
     (r'\bTRIM\s*\(', 'TRIM('),
     # LTRIM/RTRIM handled by dedicated converters (_convert_ltrim, _convert_rtrim)
     (r'\bLEN\s*\(', 'LEN('),
-    (r'\bLEFT\s*\(', 'LEFT('),
-    (r'\bRIGHT\s*\(', 'RIGHT('),
+    # LEFT/RIGHT are handled by _convert_left_right, which protects literals.
     (r'\bMID\s*\(', 'MID('),
     (r'\bUPPER\s*\(', 'UPPER('),
     (r'\bLOWER\s*\(', 'LOWER('),
@@ -204,13 +205,20 @@ _RE_ISMEMBEROF = re.compile(
     r'\bISMEMBEROF\s*\(\s*["\']([^"\']+)["\']\s*\)',
     re.IGNORECASE
 )
-_RE_OR = re.compile(r'\bor\b', re.IGNORECASE)
-_RE_AND = re.compile(r'\band\b', re.IGNORECASE)
 _RE_NEWLINES = re.compile(r'[\r\n]+\s*')
 # Consume identifiers and quoted tokens before considering NULL literals.
 # Doubled delimiters and Tableau backslash escapes stay inside their token.
 _RE_NULL_PROTECTED_TOKEN = re.compile(
     r'''"(?:[^"\\]|\\.|"")*"|'(?:[^'\\]|\\.|'')*'|\[(?:[^\]]|\]\])*\]'''
+)
+_RE_TABLEAU_OPERATOR = re.compile(
+    _RE_NULL_PROTECTED_TOKEN.pattern + r'|(?P<operator>!=|==|\bOR\b|\bAND\b)',
+    re.IGNORECASE,
+)
+_TABLEAU_OPERATOR_MAP = {'!=': '<>', '==': '=', 'OR': '||', 'AND': '&&'}
+_RE_COUNTD_TOKEN = re.compile(
+    _RE_NULL_PROTECTED_TOKEN.pattern + r'|(?P<countd>\bCOUNTD\s*\()',
+    re.IGNORECASE,
 )
 _RE_NULL_LITERAL = re.compile(
     _RE_NULL_PROTECTED_TOKEN.pattern
@@ -389,11 +397,20 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_rawsql(dax)
     dax = _convert_attr(dax, measure_names)
 
+    # COUNTD ignores NULL. Protect literals and identifiers while identifying
+    # Tableau calls so a string containing "COUNTD(" stays unchanged.
+    dax = _RE_COUNTD_TOKEN.sub(
+        lambda match: 'DISTINCTCOUNTNOBLANK(' if match.group('countd')
+        else match.group(0),
+        dax,
+    )
+
     # 3b. Apply all simple function mappings (table-driven)
     for compiled_pattern, replacement in _COMPILED_FUNCTION_MAP:
         dax = compiled_pattern.sub(replacement, dax)
 
     # 3b-post. Fix functions needing additional arguments
+    dax = _convert_left_right(dax)
     dax = _fix_ceiling_floor(dax)
 
     # 3c. Special functions requiring argument reordering
@@ -420,10 +437,12 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_total_function(dax, table_name)
 
     # === Phase 4: Convert operators ===
-    dax = dax.replace('!=', '<>')   # != before == to avoid partial match
-    dax = dax.replace('==', '=')
-    dax = _RE_OR.sub('||', dax)
-    dax = _RE_AND.sub('&&', dax)
+    # Quoted values and identifiers can contain operator-looking text.
+    dax = _RE_TABLEAU_OPERATOR.sub(
+        lambda match: _TABLEAU_OPERATOR_MAP[match.group('operator').upper()]
+        if match.group('operator') else match.group(0),
+        dax,
+    )
 
     # === Phase 5: Resolve remaining columns [col] → 'Table'[col] ===
     dax = _resolve_columns(dax, table_name, column_table_map, measure_names,
@@ -456,6 +475,10 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # in complex DAX (e.g. FILTER("Table",...) or "Table"[Col]).
     # Fix "Table"[Col] → 'Table'[Col] and FUNC("Table", → FUNC('Table',
     dax = _fix_double_quoted_table_refs(dax)
+
+    # Tableau COUNTD accepts row expressions and ignores NULL; DAX's
+    # DISTINCTCOUNTNOBLANK accepts only a physical column.
+    dax = _convert_tableau_countd(dax, table_name)
 
     # === Phase 5h: Wrap bare column refs in measures with MAX() ===
     # In measure context, bare 'Table'[Col] references (not inside an
@@ -1386,6 +1409,36 @@ def _convert_endswith(dax):
     return _transform_func_call(dax, 'ENDSWITH', _xf)
 
 
+def _convert_left_right(dax):
+    """Guard LEFT/RIGHT against missing text and negative character counts.
+
+    Tableau returns NULL for missing text and does not raise on negative
+    character counts. DAX LEFT/RIGHT can error for a negative count, so clamp
+    the function argument and return BLANK for negative counts explicitly.
+    """
+    def _xf(args, inner, function_name):
+        if len(args) < 2:
+            return f'{function_name}({inner})'
+
+        text = args[0].strip()
+        length = args[1].strip()
+        return (
+            f'IF(ISBLANK({text}), BLANK(), '
+            f'IF({length} < 0, BLANK(), '
+            f'{function_name}({text}, IF({length} < 0, 0, {length}))))'
+        )
+
+    # The protected transformer also descends into nested calls of the same
+    # function. It uses a collision-free token prefix and restores literals,
+    # quoted table names and bracketed identifiers after rewriting.
+    for function_name in ('LEFT', 'RIGHT'):
+        dax = _transform_date_func_call(
+            dax, function_name,
+            lambda args, inner, restore, name=function_name: _xf(args, inner, name),
+        )
+    return dax
+
+
 def _convert_startswith(dax):
     """STARTSWITH(string, substring) → LEFT(string, LEN(substring)) = substring"""
     def _xf(args, inner):
@@ -1550,11 +1603,12 @@ _DATE_FORMAT_MAP = {
 }
 
 def _transform_date_func_call(dax, func_name, transformer_fn):
-    """Transform date calls, including nested calls, but never quoted tokens.
+    """Transform calls, including nested calls, but never quoted tokens.
 
     The generic call/argument helpers count delimiters in raw text.  Mask
     literals and identifiers here so embedded commas, parentheses and function
-    names remain data, without changing the other conversion paths.
+    names remain data, without changing the other conversion paths.  Used by
+    date conversions and the LEFT/RIGHT guards.
     """
     prefix = '__date_token_'
     while prefix in dax:
@@ -2588,7 +2642,8 @@ def _convert_lod_expressions(dax, table_name, column_table_map):
     # Clean up redundant AGG(CALCULATE(...)) patterns produced when an LOD
     # is used inside an aggregation like SUM({FIXED …}).
     # E.g. SUM(CALCULATE(MAX([X]), ALLEXCEPT(…))) → CALCULATE(MAX([X]), ALLEXCEPT(…))
-    for agg_func in ('SUM', 'AVERAGE', 'MIN', 'MAX', 'COUNT', 'DISTINCTCOUNT', 'MEDIAN'):
+    for agg_func in ('SUM', 'AVERAGE', 'MIN', 'MAX', 'COUNT',
+                     'DISTINCTCOUNT', 'DISTINCTCOUNTNOBLANK', 'MEDIAN'):
         pattern = re.compile(rf'\b{agg_func}\s*\(\s*CALCULATE\s*\(', re.IGNORECASE)
         m = pattern.search(dax)
         while m:
@@ -2913,12 +2968,23 @@ def _convert_running_functions(dax, table_name):
                     depth -= 1
                 i += 1
             inner = dax[start_pos:i - 1].strip()
-            # No Tableau function name is emitted: a leftover RUNNING_* token
-            # would make conversion validation report a failed conversion.
-            replacement = (
-                f"CALCULATE({inner}, "
-                f"FILTER(ALLSELECTED('{table_name}'), TRUE()))"
-            )
+            unquoted = _RE_NULL_PROTECTED_TOKEN.sub('', inner)
+            if re.search(r'\bDISTINCTCOUNTNOBLANK\s*\(', unquoted, re.IGNORECASE):
+                logger.warning(
+                    "%s of COUNTD requires Tableau mark ordering and partitioning; "
+                    "the calculation was not converted", tab_func,
+                )
+                replacement = (
+                    f"/* TODO: {tab_func} of COUNTD requires Tableau mark ordering "
+                    "plus partitioning */ BLANK()"
+                )
+            else:
+                # No Tableau function name is emitted: a leftover RUNNING_* token
+                # would make conversion validation report a failed conversion.
+                replacement = (
+                    f"CALCULATE({inner}, "
+                    f"FILTER(ALLSELECTED('{table_name}'), TRUE()))"
+                )
             dax = dax[:match.start()] + replacement + dax[i:]
             match = pattern.search(dax)
     return dax
@@ -3001,10 +3067,12 @@ def _resolve_columns(dax, table_name, column_table_map, measure_names,
             # same-table reference to avoid spurious RELATED/LOOKUPVALUE.
             if col in _local_cols:
                 col_table = table_name
+            safe_col_table = col_table.replace("'", "''")
             if is_calc_column and col_table != table_name:
-                return f"RELATED('{col_table}'[{_dax_escape_col(col)}])"
-            return f"'{col_table}'[{_dax_escape_col(col)}]"
-        return f"'{table_name}'[{_dax_escape_col(col)}]"
+                return f"RELATED('{safe_col_table}'[{_dax_escape_col(col)}])"
+            return f"'{safe_col_table}'[{_dax_escape_col(col)}]"
+        safe_table = table_name.replace("'", "''")
+        return f"'{safe_table}'[{_dax_escape_col(col)}]"
 
     # Apply column resolution ONLY outside of string literals ("..." in DAX)
     # to avoid mangling regex patterns or other bracketed content inside strings.
@@ -3177,6 +3245,93 @@ def _split_if_args(if_content):
     if len(args) < 2:
         return None
     return (args[0], args[1], args[2] if len(args) > 2 else None)
+
+
+_RE_COUNTD_COLUMN = re.compile(
+    r"^'((?:[^']|'')+)'\[((?:[^\]]|\]\])+)\]$"
+)
+
+
+def _countd_result(table_name, expression):
+    table = table_name.replace("'", "''")
+    return (f"IF(ISEMPTY('{table}'), BLANK(), "
+            f"COALESCE({expression}, 0))")
+
+
+def tableau_countd_column(table_name, column_name):
+    """Count nonblank values, without creating marks for missing groups."""
+    table = table_name.replace("'", "''")
+    column = column_name.replace(']', ']]')
+    return _countd_result(
+        table_name, f"DISTINCTCOUNTNOBLANK('{table}'[{column}])")
+
+
+def _convert_tableau_countd(dax, default_table):
+    """Lower Tableau COUNTD calls after their column references are resolved."""
+    prefix = '__countd_token_'
+    while prefix in dax:
+        prefix = '_' + prefix
+    tokens = []
+
+    def protect(match):
+        tokens.append(match.group(0))
+        return f'{prefix}{len(tokens) - 1}__'
+
+    masked = _RE_NULL_PROTECTED_TOKEN.sub(protect, dax)
+    token_re = re.compile(re.escape(prefix) + r'(\d+)__')
+
+    def restore(text):
+        return token_re.sub(lambda match: tokens[int(match.group(1))], text)
+
+    for start, end, masked_inner in reversed(
+            _extract_balanced_call(masked, 'DISTINCTCOUNTNOBLANK')):
+        inner = restore(masked_inner).strip()
+        simple = _RE_COUNTD_COLUMN.fullmatch(inner)
+        if simple:
+            table = simple.group(1).replace("''", "'")
+            column = simple.group(2).replace(']]', ']')
+            replacement = tableau_countd_column(table, column)
+        else:
+            # Ignore quoted string contents when finding row-context tables.
+            without_strings = re.sub(r'"(?:[^"]|"")*"', '', inner)
+            tables = {
+                match.group(1).replace("''", "'")
+                for match in _MEASURE_TABLE_COL_RE.finditer(without_strings)
+            }
+            if len(tables) > 1:
+                logger.warning(
+                    "COUNTD expression references multiple tables; "
+                    "its row context requires manual review"
+                )
+                replacement = '/* TODO: COUNTD row context spans tables */ BLANK()'
+            else:
+                table = next(iter(tables), default_table)
+                safe_table = table.replace("'", "''")
+                count = None
+                calls = _extract_balanced_call(masked_inner.strip(), 'IF')
+                if calls and calls[0][0] == 0 and calls[0][1] == len(masked_inner.strip()):
+                    args = _split_if_args(calls[0][2])
+                    if args:
+                        condition, value, otherwise = args
+                        value = restore(value).strip()
+                        other = restore(otherwise).strip() if otherwise else ''
+                        if (_RE_COUNTD_COLUMN.fullmatch(value)
+                                and (not other or re.fullmatch(
+                                    r'BLANK\s*\(\s*\)', other, re.IGNORECASE))):
+                            count = (
+                                f"CALCULATE(DISTINCTCOUNTNOBLANK({value}), "
+                                f"FILTER('{safe_table}', {restore(condition)}))"
+                            )
+                if count is None:
+                    count = (
+                        f"COUNTROWS(FILTER(DISTINCT(SELECTCOLUMNS('{safe_table}', "
+                        f"\"__TableauCountD\", {inner})), "
+                        "NOT(ISBLANK([__TableauCountD]))))"
+                    )
+                replacement = _countd_result(table, count)
+        masked = masked[:start] + replacement + masked[end:]
+
+    return restore(masked)
 
 
 def _convert_distinctcount_if(dax_text, table_name):
@@ -3382,7 +3537,7 @@ def _ensure_comparison_spacing(dax):
 # ── Phase 6: Cleanup ─────────────────────────────────────────────────────────
 
 def _normalize_spaces_outside_identifiers(text):
-    """Normalize multiple spaces except inside [identifiers] and 'names'."""
+    """Normalize multiple spaces except inside identifiers and string literals."""
     result = []
     i = 0
     while i < len(text):
@@ -3400,6 +3555,22 @@ def _normalize_spaces_outside_identifiers(text):
                         j += 2  # skip escaped ''
                     else:
                         j += 1  # closing quote
+                        break
+                else:
+                    j += 1
+            result.append(text[i:j])
+            i = j
+        elif text[i] == '"':
+            # DAX uses doubled quotes; Tableau also permits backslash escapes.
+            j = i + 1
+            while j < len(text):
+                if text[j] == '\\' and j + 1 < len(text):
+                    j += 2
+                elif text[j] == '"':
+                    if j + 1 < len(text) and text[j + 1] == '"':
+                        j += 2
+                    else:
+                        j += 1
                         break
                 else:
                     j += 1

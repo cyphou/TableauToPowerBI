@@ -149,10 +149,23 @@ def test_supertransform_orders_before_direct_action_and_after_group():
     assert [column['name'] for column in datasource['tables'][0]['columns']] == ['Amount']
 
 
-def test_supernode_conflicting_inner_identity_or_edges_fail_explicitly():
+def test_supernode_keeps_distinct_action_label_without_changing_graph_identity():
     flow = _clean_supernode_flow()
     flow['nodes']['clean']['actionNode']['name'] = 'DifferentInnerName'
-    with pytest.raises(ValueError, match='conflicting wrapper/actionNode name'):
+    normalized = normalize_prep_flow(flow)
+    clean = normalized['nodes']['clean']
+    assert clean['name'] == 'SyntheticRename'
+    assert clean['_prep_action_node_name'] == 'DifferentInnerName'
+    assert clean['nextNodes'] == [edge('out')]
+    query = _output_datasource(_parse_tmp(flow))['m_query_override']
+    assert 'Table.RenameColumns' in query
+    assert '"Raw"' in query and '"Amount"' in query
+
+
+def test_supernode_conflicting_inner_identity_or_edges_fail_explicitly():
+    flow = _clean_supernode_flow()
+    flow['nodes']['clean']['actionNode']['id'] = 'different-action-id'
+    with pytest.raises(ValueError, match='conflicting wrapper/actionNode id'):
         normalize_prep_flow(flow)
 
     flow = _clean_supernode_flow()
@@ -521,6 +534,46 @@ def test_empty_semantics_free_container_collapses_only_with_unique_routing():
     ambiguous['nodes']['empty']['nextNodes'] = [edge('out_a'), edge('out_b')]
     with pytest.raises(ValueError, match='ambiguous entry routing'):
         normalize_prep_flow(ambiguous)
+
+
+def test_empty_container_preserves_observed_default_namespace_routing():
+    flow = {
+        'nodes': {
+            'input': _synthetic_source('empty'),
+            'empty': _empty_container(
+                'out',
+                loomContainer={
+                    'parameters': {'parameters': {}},
+                    'initialNodes': [], 'nodes': {}, 'connections': {},
+                    'connectionIds': [], 'nodeProperties': {},
+                },
+                namespacesToInput={}, namespacesToOutput={}, providedParameters={},
+            ),
+            'out': output(),
+        },
+        'connections': {},
+    }
+    for node in (flow['nodes']['input'], flow['nodes']['empty']):
+        node['nextNodes'][0].update(namespace='Default', nextNamespace='Default')
+
+    normalized = normalize_prep_flow(flow)
+    assert 'empty' not in normalized['nodes']
+    assert normalized['nodes']['input']['nextNodes'] == [{
+        'nextNodeId': 'out', 'namespace': 'Default', 'nextNamespace': 'Default',
+    }]
+    assert _output_datasource(_parse_tmp(flow))['tables'][0]['columns'][0]['name'] == 'Raw'
+
+    flow['nodes']['empty']['nextNodes'][0]['nextNamespace'] = 'Left'
+    with pytest.raises(ValueError, match='edge metadata cannot be preserved'):
+        normalize_prep_flow(flow)
+    flow['nodes']['empty']['nextNodes'][0]['nextNamespace'] = 'Default'
+    del flow['nodes']['empty']['nextNodes'][0]['namespace']
+    with pytest.raises(ValueError, match='edge metadata cannot be preserved'):
+        normalize_prep_flow(flow)
+    flow['nodes']['empty']['nextNodes'][0]['namespace'] = 'Default'
+    flow['nodes']['empty']['loomContainer']['parameters']['parameters']['x'] = 'value'
+    with pytest.raises(ValueError, match='loomContainer field'):
+        normalize_prep_flow(flow)
 
 
 def test_empty_container_with_schema_or_edge_semantics_is_not_identity():

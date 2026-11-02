@@ -2,7 +2,8 @@
 Migration report generator.
 
 Produces a structured JSON report listing every converted item with
-its conversion status (exact, approximate, placeholder, unsupported).
+its conversion status (exact, approximate, placeholder, unsupported, or
+unverified when the report has no evidence to classify a visual).
 
 Usage:
     report = MigrationReport("my_workbook")
@@ -42,6 +43,23 @@ _TABLEAU_LEAK_PATTERNS = [
     re.compile(r'\bDATEPART\s*\(', re.IGNORECASE),
 ]
 
+_DAX_DIAGNOSTIC_TOKENS = re.compile(
+    r'''"(?:[^"]|"")*"|'(?:[^']|'')*'|\[(?:[^\]]|\]\])*\]|(?P<comment>/\*[\s\S]*?\*/)'''
+)
+_COUNTD_UNSUPPORTED_NOTE = re.compile(
+    r'\bTODO:\s*(?:COUNTD row context spans tables|'
+    r'RUNNING_(?:SUM|AVG|COUNT|MAX|MIN) of COUNTD\b)',
+    re.IGNORECASE,
+)
+
+
+def has_unsupported_countd_marker(dax):
+    """Recognize our COUNTD diagnostic comments, excluding quoted text."""
+    return any(
+        match.group('comment') and _COUNTD_UNSUPPORTED_NOTE.search(match.group('comment'))
+        for match in _DAX_DIAGNOSTIC_TOKENS.finditer(dax)
+    )
+
 
 class MigrationReport:
     """Tracks per-item migration status and generates a structured report."""
@@ -52,8 +70,11 @@ class MigrationReport:
     PLACEHOLDER = 'placeholder'
     UNSUPPORTED = 'unsupported'
     SKIPPED = 'skipped'
+    UNVERIFIED = 'unverified'
 
-    _VALID_STATUSES = {EXACT, APPROXIMATE, PLACEHOLDER, UNSUPPORTED, SKIPPED}
+    _VALID_STATUSES = {
+        EXACT, APPROXIMATE, PLACEHOLDER, UNSUPPORTED, SKIPPED, UNVERIFIED,
+    }
 
     def __init__(self, report_name):
         self.report_name = report_name
@@ -71,13 +92,22 @@ class MigrationReport:
                       'parameter', 'set', 'group', 'bin', 'hierarchy',
                       'datasource', 'filter', 'rls_role', 'bookmark')
             name: Item name or identifier
-            status: One of 'exact', 'approximate', 'placeholder', 'unsupported', 'skipped'
+            status: One of 'exact', 'approximate', 'placeholder', 'unsupported',
+                    'skipped', or 'unverified'
             dax: Optional generated DAX formula
             note: Optional human-readable note
             source_formula: Optional original Tableau formula
         """
         if status not in self._VALID_STATUSES:
             raise ValueError(f"Invalid status '{status}'; must be one of {self._VALID_STATUSES}")
+
+        # This report has no PBIR projection/render evidence at this call site.
+        # A caller-supplied "exact" visual label is therefore not supportable.
+        if category == 'visual' and status == self.EXACT:
+            status = self.UNVERIFIED
+            note = '; '.join(filter(None, (
+                note, 'PBIR visual projection and rendered parity not verified'
+            )))
 
         entry = {
             'category': category,
@@ -144,11 +174,11 @@ class MigrationReport:
                           source_formula=source, dax=dax)
 
     def add_visuals(self, worksheets, visual_type_map=None):
-        """Add visual migration entries.
+        """Record source worksheets without asserting target visual fidelity.
 
         Args:
             worksheets: List of worksheet dicts from worksheets.json
-            visual_type_map: Optional dict of tableau_mark → pbi_visual used
+            visual_type_map: Optional dict of tableau_mark → candidate PBI type
         """
         for ws in worksheets:
             name = ws.get('name', 'Unknown')
@@ -156,17 +186,14 @@ class MigrationReport:
             if isinstance(mark, dict):
                 mark = mark.get('type', '')
 
-            # All mapped visuals are considered exact unless the mark type
-            # falls back to the default "tableEx"
-            mapped = (visual_type_map or {}).get(str(mark).lower(), 'tableEx')
-            if str(mark).lower() and mapped == 'tableEx' and str(mark).lower() != 'automatic':
-                status = self.APPROXIMATE
-                note = f'Mark "{mark}" mapped to tableEx (fallback)'
-            else:
-                status = self.EXACT
-                note = f'{mark} → {mapped}' if mark else None
-
-            self.add_item('visual', name, status, note=note)
+            mapped = (visual_type_map or {}).get(str(mark).lower())
+            candidate = mapped or ws.get('chart_type')
+            note = 'PBIR visual binding and rendered parity not verified'
+            if candidate:
+                note += f'; extracted or mapped candidate type: {candidate}'
+            elif mark:
+                note += f'; source mark: {mark}'
+            self.add_item('visual', name, self.UNVERIFIED, note=note)
 
     def add_parameters(self, parameters):
         """Add parameter migration entries."""
@@ -204,8 +231,15 @@ class MigrationReport:
         """Add group migration entries."""
         for g in groups:
             name = g.get('name', 'Unknown')
-            self.add_item('group', name, self.EXACT,
-                          note='SWITCH calculated column')
+            if g.get('group_type') == 'combined':
+                self.add_item(
+                    'group', name, self.APPROXIMATE,
+                    note='Text concatenation; delimiter collisions, nulls, culture '
+                         'and Tableau labels require source-to-target validation',
+                )
+            else:
+                self.add_item('group', name, self.EXACT,
+                              note='SWITCH calculated column')
 
     def add_bins(self, bins):
         """Add bin migration entries."""
@@ -306,6 +340,9 @@ class MigrationReport:
         if not dax:
             return cls.SKIPPED
 
+        if has_unsupported_countd_marker(dax):
+            return cls.UNSUPPORTED
+
         # Check unsupported patterns first (highest severity)
         for pattern, _ in _UNSUPPORTED_PATTERNS:
             if pattern.search(dax):
@@ -350,15 +387,23 @@ class MigrationReport:
         placeholder = by_status.get(self.PLACEHOLDER, 0)
         unsupported = by_status.get(self.UNSUPPORTED, 0)
         skipped = by_status.get(self.SKIPPED, 0)
+        unverified = by_status.get(self.UNVERIFIED, 0)
 
-        # Fidelity score: exact=100%, approximate=50%, rest=0%
-        # Exclude skipped items from denominator — skipped means no conversion
-        # was attempted, not a conversion failure
-        scored = total - skipped
-        if scored > 0:
+        # Do not publish a workbook-wide score that excludes unverified visuals:
+        # that would let a workbook with no target visuals inherit a 100% score
+        # from unrelated, verified item categories.
+        scored = total - skipped - unverified
+        visual_evidence_pending = any(
+            item['category'] == 'visual' and
+            item['status'] in (self.SKIPPED, self.UNVERIFIED)
+            for item in self.items
+        )
+        if visual_evidence_pending:
+            fidelity = None
+        elif scored > 0:
             fidelity = round((exact * 100 + approx * 50) / scored, 1)
         else:
-            fidelity = 100.0
+            fidelity = None if total else 100.0
 
         self._summary = {
             'total_items': total,
@@ -367,7 +412,19 @@ class MigrationReport:
             'placeholder': placeholder,
             'unsupported': unsupported,
             'skipped': skipped,
+            'unverified': unverified,
             'fidelity_score': fidelity,
+            'fidelity_score_scope': 'classification_heuristic_excludes_unverified_and_skipped',
+            'visual_coverage': {
+                'status': 'not_run',
+                'reason': 'Worksheet-to-PBIR binding and rendered parity were not verified.',
+            },
+            'visual_artifact_reconciliation': {
+                'source_worksheet_count': by_category.get('visual', {}).get('total', 0),
+                'generated_visual_artifact_count': None,
+                'status': 'not_run',
+                'reason': 'This report was not given generated PBIR visual artifacts to inspect.',
+            },
             'by_category': by_category,
         }
         return self._summary
@@ -397,8 +454,9 @@ class MigrationReport:
             dict with keys:
             - ``categories``: dict of category → {total, exact, approximate,
               unsupported, skipped, fidelity_pct}
-            - ``overall_score``: weighted score 0–100
-            - ``grade``: letter grade (A/B/C/D/F)
+            - ``overall_score``: weighted score 0–100, or None when no tracked
+              items were scored
+            - ``grade``: letter grade (A/B/C/D/F), or None when not scored
         """
         summary = self.get_summary()
         by_cat = summary.get('by_category', {})
@@ -409,11 +467,12 @@ class MigrationReport:
             exact = counts.get(self.EXACT, 0)
             approx = counts.get(self.APPROXIMATE, 0)
             cat_skipped = counts.get(self.SKIPPED, 0)
-            scored = total - cat_skipped
+            cat_unverified = counts.get(self.UNVERIFIED, 0)
+            scored = total - cat_skipped - cat_unverified
             if scored > 0:
                 fidelity = round((exact * 100 + approx * 50) / scored, 1)
             else:
-                fidelity = 100.0
+                fidelity = None if total else 100.0
             categories[cat] = {
                 'total': total,
                 'exact': exact,
@@ -421,21 +480,36 @@ class MigrationReport:
                 'placeholder': counts.get(self.PLACEHOLDER, 0),
                 'unsupported': counts.get(self.UNSUPPORTED, 0),
                 'skipped': cat_skipped,
+                'unverified': cat_unverified,
                 'fidelity_pct': fidelity,
             }
 
-        # Weighted overall score
+        # A visual category with no PBIR evidence makes an overall score
+        # unavailable. Per-category scores for independently verified items
+        # remain useful, but must not stand in for visual fidelity.
         weighted_sum = 0.0
         weight_sum = 0.0
         for cat, info in categories.items():
+            if info['fidelity_pct'] is None:
+                continue
             w = self._CATEGORY_WEIGHTS.get(cat, 0.01)
             weighted_sum += info['fidelity_pct'] * w
             weight_sum += w
 
-        overall = round(weighted_sum / weight_sum, 1) if weight_sum > 0 else 100.0
+        visual_info = categories.get('visual', {})
+        visual_evidence_pending = bool(
+            visual_info.get('skipped') or visual_info.get('unverified')
+        )
+        overall = (
+            None if visual_evidence_pending else
+            round(weighted_sum / weight_sum, 1) if weight_sum > 0 else
+            None if summary['total_items'] else 100.0
+        )
 
         # Grade
-        if overall >= 90:
+        if overall is None:
+            grade = None
+        elif overall >= 90:
             grade = 'A'
         elif overall >= 75:
             grade = 'B'
@@ -450,6 +524,13 @@ class MigrationReport:
             'categories': categories,
             'overall_score': overall,
             'grade': grade,
+            'status': ('partial' if overall is None and any(
+                           info['fidelity_pct'] is not None
+                           for info in categories.values()
+                       ) else 'not_run' if overall is None else
+                       'partial' if summary['unverified'] or summary['skipped']
+                       else 'available'),
+            'score_scope': 'classification_heuristic_excludes_unverified_and_skipped',
         }
 
     # ── Serialisation ────────────────────────────────────────────
@@ -493,14 +574,16 @@ class MigrationReport:
         print('=' * 72)
         print(f'  MIGRATION REPORT: {self.report_name}')
         print('=' * 72)
-        print(f'  Total items converted: {s["total_items"]}')
-        print(f'  Extraction score:      {s["fidelity_score"]}%')
+        print(f'  Total items tracked:   {s["total_items"]}')
+        score = f'{s["fidelity_score"]}%' if s['fidelity_score'] is not None else 'not run'
+        print(f'  Extraction score:      {score} (classification heuristic)')
         print()
         print(f'    Exact:        {s["exact"]:>4}')
         print(f'    Approximate:  {s["approximate"]:>4}')
         print(f'    Placeholder:  {s["placeholder"]:>4}')
         print(f'    Unsupported:  {s["unsupported"]:>4}')
         print(f'    Skipped:      {s["skipped"]:>4}')
+        print(f'    Unverified:   {s["unverified"]:>4}')
 
         if s['by_category']:
             print()
@@ -514,11 +597,15 @@ class MigrationReport:
         # Completeness score
         cs = self.get_completeness_score()
         print()
-        print(f'  Completeness grade:    {cs["grade"]} ({cs["overall_score"]}%)')
+        grade = cs['grade'] if cs['grade'] is not None else 'not run'
+        overall = f'{cs["overall_score"]}%' if cs['overall_score'] is not None else 'not run'
+        print(f'  Completeness grade:    {grade} ({overall}; {cs["status"]})')
         if cs['categories']:
             print('  Per-category extraction:')
             for cat, info in sorted(cs['categories'].items()):
-                print(f'    {cat:<20} {info["fidelity_pct"]:>5.1f}%  ({info["total"]} items)')
+                value = (f'{info["fidelity_pct"]:.1f}%'
+                         if info['fidelity_pct'] is not None else 'not run')
+                print(f'    {cat:<20} {value:>6}  ({info["total"]} items)')
 
         # Table mapping
         if self.table_mapping:

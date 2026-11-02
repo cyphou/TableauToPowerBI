@@ -459,7 +459,8 @@ def wait_for_window(
         pids: Union[int, Iterable[int], Callable[[], Iterable[int]]],
         title_fragment: str = "", *, timeout: float = 120,
         stable_for: float = 3.0,
-        poll: float = 1.0) -> Tuple[Optional[WindowInfo], List[str]]:
+        poll: float = 1.0,
+        stop_when: Optional[Callable[[], bool]] = None) -> Tuple[Optional[WindowInfo], List[str]]:
     """Wait until one of *pids* shows a responsive report window.
 
     Returns ``(window, signals)``. Recognized transient progress consumes the
@@ -485,16 +486,35 @@ def wait_for_window(
     matched_since: Optional[float] = None
     matched_identity = None
     seen_titles = set()
+    saw_matching_title = False
+    saw_responsive_match = False
+
+    def stopped():
+        if stop_when is not None and stop_when():
+            signals.append("window wait stopped: launched process exited")
+            return True
+        return False
 
     while time.monotonic() < deadline:
+        if stopped():
+            return None, signals
         live = list(pids() if callable(pids) else pids)
+        if stopped():
+            return None, signals
         busy = False
         for pid in live:
-            for dialog in dialog_windows(pid):
+            dialogs = dialog_windows(pid)
+            if stopped():
+                return None, signals
+            for dialog in dialogs:
+                if stopped():
+                    return None, signals
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 state = dialog_state(dialog, pid, timeout=remaining)
+                if stopped():
+                    return None, signals
                 if is_powershell_failure(state):
                     signals.append(f"native helper failure: {state['cause']}")
                     return None, signals
@@ -524,12 +544,20 @@ def wait_for_window(
             continue
 
         win = report_window(live, title_fragment)
+        if stopped():
+            return None, signals
         if win is not None and win.title:
             seen_titles.add(win.title)
+            saw_matching_title = True
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        if win is not None and is_responsive(win.hwnd, min(2000, remaining * 1000)):
+        responsive = (win is not None
+                      and is_responsive(win.hwnd, min(2000, remaining * 1000)))
+        if stopped():
+            return None, signals
+        if responsive and win is not None:
+            saw_responsive_match = True
             now = time.monotonic()
             identity = (win.hwnd, win.title)
             if matched_since is None or matched_identity != identity:
@@ -541,6 +569,8 @@ def wait_for_window(
             matched_since = matched_identity = None
             for pid in live:
                 other = main_window(pid)
+                if stopped():
+                    return None, signals
                 if other is not None and other.title:
                     seen_titles.add(other.title)
         time.sleep(min(poll, max(0.0, deadline - time.monotonic())))
@@ -551,11 +581,18 @@ def wait_for_window(
         signals.append(
             f"no stable responsive window titled {title_fragment!r} before the timeout "
             f"(saw: {', '.join(sorted(seen_titles)[:3])})")
+    if not saw_matching_title:
+        signals.append("window match: no document-titled candidate was observed in the selected process")
+    elif not saw_responsive_match:
+        signals.append("window match: document title matched, but no responsive observation was obtained")
+    else:
+        signals.append("window match: a responsive titled window did not remain stable before the deadline")
     return None, signals
 
 
 def wait_for_document_ready(hwnd: int, pid: int, *, timeout: float,
-                            stable_for: float = 0.2, poll: float = 0.1) -> dict:
+                            stable_for: float = 0.2, poll: float = 0.1,
+                            stop_when: Optional[Callable[[], bool]] = None) -> dict:
     """Bounded readiness for an EXACT owned handle, not a substitute document."""
     if not IS_WINDOWS:
         return {"status": "unavailable", "note": "Window inspection requires Windows"}
@@ -570,15 +607,36 @@ def wait_for_document_ready(hwnd: int, pid: int, *, timeout: float,
     deadline = time.monotonic() + timeout
     stable_since = None
     signals = []
+
+    def stopped():
+        return stop_when is not None and stop_when()
+
+    def exited():
+        return {"status": "error", "cause": "owner_process_exited",
+                "note": "Launched process exited while waiting for the document",
+                "signals": signals}
+
     while time.monotonic() < deadline:
+        if stopped():
+            return exited()
         if window_process_id(hwnd) != pid:
+            if stopped():
+                return exited()
             return {"status": "error", "note": "Document window ownership changed"}
+        if stopped():
+            return exited()
         dialogs = dialog_windows(pid)
+        if stopped():
+            return exited()
         for dialog in dialogs:
+            if stopped():
+                return exited()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             state = dialog_state(dialog, pid, timeout=remaining)
+            if stopped():
+                return exited()
             if dialog.title not in signals:
                 signals.append(dialog.title)
             if is_powershell_failure(state):
@@ -599,7 +657,10 @@ def wait_for_document_ready(hwnd: int, pid: int, *, timeout: float,
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        if not dialogs and is_responsive(hwnd, min(2000, remaining * 1000)):
+        responsive = not dialogs and is_responsive(hwnd, min(2000, remaining * 1000))
+        if stopped():
+            return exited()
+        if responsive:
             now = time.monotonic()
             if stable_since is None:
                 stable_since = now

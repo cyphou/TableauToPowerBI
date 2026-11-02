@@ -6,17 +6,27 @@ DAX for cross-table references. Extracted from ``tmdl_generator``, which
 re-exports these names.
 """
 
+import hashlib
+import json
+import logging
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tableau_export'))
-from m_query_builder import m_transform_add_column  # noqa: E402
+from extract_primitives import (  # noqa: E402
+    _RE_DERIVATION_PREFIX,
+    _RE_TABLE_CALC_PREFIX,
+    _clean_field_ref,
+)
+from m_query_builder import _m_header_literal, m_transform_add_column  # noqa: E402
 
 from powerbi_import.tmdl_m_conversion import (
     _dax_to_m_expression,
     _inject_m_steps_into_partition,
 )
+
+logger = logging.getLogger(__name__)
 
 # ════════════════════════════════════════════════════════════════════
 #  TABLEAU DERIVATION PREFIX CLEANING
@@ -37,6 +47,130 @@ def _clean_tableau_field_ref(raw):
     """
     clean = _RE_TMDL_DERIVATION_PREFIX.sub('', raw)
     return _RE_TMDL_TYPE_SUFFIX.sub('', clean)
+
+
+def _combined_group_identity(group):
+    identity = {
+        key: group.get(key) for key in ('name', 'raw_name', 'datasource', 'source_fields')
+    }
+    if 'source_field_refs' in group:
+        identity['source_field_refs'] = group['source_field_refs']
+    encoded = json.dumps(identity, sort_keys=True, ensure_ascii=True).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _combined_source_field_refs(group):
+    fields = group.get('source_fields')
+    if not isinstance(fields, list) or not fields:
+        raise ValueError(f"Combined group {group.get('name')!r}: source fields are missing")
+    if 'source_field_refs' not in group:
+        return fields, False
+    refs = group['source_field_refs']
+    if (not isinstance(refs, list) or len(refs) != len(fields)
+            or any(not isinstance(field, str) or not isinstance(ref, str)
+                   or not field or not ref or _clean_field_ref(ref) != field
+                   for field, ref in zip(fields, refs))):
+        raise ValueError(
+            f"Combined group {group.get('name')!r}: source field references "
+            "are inconsistent with normalized source fields")
+    return refs, True
+
+
+def _combined_datasource_table_scope(model, extra_objects, group, *, allow_unresolved=False):
+    datasource_name = group.get('datasource', '')
+    if not datasource_name:
+        return None
+    datasources = extra_objects.get('_datasources') or model.get('_datasources', [])
+    sources = [ds for ds in datasources if ds.get('name') == datasource_name]
+    if len(sources) != 1:
+        if allow_unresolved:
+            return set()
+        problem = 'missing' if not sources else 'ambiguous'
+        raise ValueError(
+            f"Combined group {group.get('name')!r}: declared datasource "
+            f"{datasource_name!r} is {problem}")
+    renames = model.get('_table_rename_map', {})
+    return {
+        renames.get((datasource_name, table.get('name')), table.get('name'))
+        for table in sources[0].get('tables', [])
+    }
+
+
+def _combined_field_owners(model, extra_objects, group, column_table_map,
+                           *, allow_unresolved=False, register_aliases=True):
+    """Resolve each combined-field input to a uniquely evidenced table."""
+    _, has_source_refs = _combined_source_field_refs(group)
+    owners = {}
+    table_fields = {}
+    datasources = extra_objects.get('_datasources') or model.get('_datasources', [])
+    allowed_tables = _combined_datasource_table_scope(
+        model, extra_objects, group, allow_unresolved=allow_unresolved)
+
+    def remember(field, table_name):
+        if isinstance(field, str) and field:
+            owners.setdefault(field.casefold(), set()).add(table_name)
+
+    for table in model['model']['tables']:
+        table_name = table.get('name', '')
+        table_fields[table_name] = set()
+        for field in table.get('columns', []) + table.get('measures', []):
+            for alias in (field.get('name'), field.get('sourceColumn'), field.get('caption')):
+                if isinstance(alias, str) and alias:
+                    table_fields[table_name].add(alias.casefold())
+                    remember(alias, table_name)
+    for (table_name, raw), produced in model.get('_column_rename_map', {}).items():
+        if (isinstance(produced, str)
+                and produced.casefold() in table_fields.get(table_name, set())):
+            remember(raw, table_name)
+    for datasource in datasources:
+        aliases = list(datasource.get('calculations', [])) + list(datasource.get('columns', []))
+        for table in datasource.get('tables', []):
+            aliases.extend(table.get('columns', []))
+        for alias in aliases:
+            raw = str(alias.get('name', '')).replace('[', '').replace(']', '')
+            caption = str(alias.get('caption', '')).replace('[', '').replace(']', '')
+            if raw and caption:
+                raw_owners = owners.get(raw.casefold(), set()).copy()
+                caption_owners = owners.get(caption.casefold(), set()).copy()
+                if raw_owners:
+                    for table_name in raw_owners:
+                        remember(caption, table_name)
+                else:
+                    for table_name in caption_owners:
+                        remember(raw, table_name)
+
+    resolved = {}
+    for raw in group['source_fields']:
+        if not isinstance(raw, str) or not raw:
+            raise ValueError(f"Combined group {group.get('name')!r}: "
+                             "source fields must be nonempty strings")
+        field = raw if has_source_refs else _clean_tableau_field_ref(raw)
+        candidates = owners.get(field.casefold(), set()).copy()
+        if allowed_tables is not None:
+            candidates.intersection_update(allowed_tables)
+        if len(candidates) != 1:
+            if allow_unresolved:
+                return None
+            if candidates:
+                raise ValueError(
+                    f"Combined group {group.get('name')!r}: source field "
+                    f"{raw!r} has ambiguous ownership in {sorted(candidates)!r}")
+            raise ValueError(
+                f"Combined group {group.get('name')!r}: source field "
+                f"{raw!r} is unresolved in the model")
+        owner = next(iter(candidates))
+        mapped = column_table_map.get(field)
+        if (mapped and mapped != owner
+                and (allowed_tables is None or mapped in allowed_tables)):
+            if allow_unresolved:
+                return None
+            raise ValueError(
+                f"Combined group {group.get('name')!r}: source field "
+                f"{raw!r} has conflicting ownership metadata")
+        if register_aliases:
+            column_table_map.setdefault(field, owner)
+        resolved[field] = owner
+    return resolved
 
 
 def _process_sets_groups_bins(model, extra_objects, main_table_name, column_table_map):
@@ -115,43 +249,82 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
 
     # Groups -> SWITCH / concatenation column
     for g in extra_objects.get('groups', []):
-        if g.get('group_type') == 'combined' and g.get('source_fields'):
-            # Action keys are row expressions too. Route an explicitly
-            # single-host key before attempting M or RELATED; the widest
-            # table is not its current row grain.
-            hosts = {
-                column_table_map.get(_clean_tableau_field_ref(field))
-                for field in g['source_fields']
-            }
+        group_name = g.get('name', '')
+        is_combined = g.get('group_type') == 'combined'
+        if group_name and is_combined and not g.get('source_fields'):
+            raise ValueError(f"Combined group {group_name!r}: source fields are missing")
+        if not group_name or (not is_combined and group_name in existing_cols):
+            continue
+
+        if is_combined:
+            source_refs, has_source_refs = _combined_source_field_refs(g)
+            field_owners = _combined_field_owners(
+                model, extra_objects, g, column_table_map)
+            if field_owners is None:
+                raise ValueError(
+                    f"Combined group {group_name!r}: source field ownership is unresolved")
+            hosts = set(field_owners.values())
             if None not in hosts and len(hosts) == 1:
                 host = next(iter(hosts))
-                # Only the preserved logical-predicate path requires this new
-                # current-row routing. Ordinary cross-table groups retain
-                # their existing RELATED fallback on the requested table.
-                logical_hosts = {
-                    name for pair in model.get('_logical_predicate_pairs', [])
-                    for name in pair
-                }
-                if host != main_table_name and host in logical_hosts:
+                if host != main_table_name and any(
+                        table.get('name') == host
+                        for table in model['model']['tables']):
                     _process_sets_groups_bins(
                         model, dict(extra_objects, sets=[], groups=[g], bins=[]),
                         host, column_table_map)
                     continue
-            elif any(frozenset(pair).issubset(hosts)
-                     for pair in model.get('_logical_predicate_pairs', [])):
+            else:
+                materialized = {
+                    frozenset((rel.get('fromTable'), rel.get('toTable')))
+                    for rel in model.get('_materialized_composite_relationships', [])
+                }
+                if any(frozenset(pair).issubset(hosts)
+                       and frozenset(pair) not in materialized
+                       for pair in model.get('_logical_predicate_pairs', [])):
+                    raise ValueError(
+                        f"Combined group {group_name!r} spans a logical predicate: "
+                        "no verified scalar relationship; cannot substitute RELATED or MAX")
+            if '\0' in group_name:
                 raise ValueError(
-                    f"Combined group {g.get('name')} spans a logical predicate: "
-                    "no single current-row host; cannot substitute RELATED or MAX")
-        group_name = g.get('name', '')
-        if not group_name or group_name in existing_cols:
-            continue
+                    f"Combined group {group_name!r}: name contains a null character")
+            identity = _combined_group_identity(g)
+            existing = [
+                field for field in main_table.get('columns', []) + main_table.get('measures', [])
+                if any(isinstance(alias, str) and alias.casefold() == group_name.casefold()
+                       for alias in (field.get('name'), field.get('sourceColumn')))
+            ]
+            same_group = len(existing) == 1 and any(
+                    annotation.get('name') == 'Migration_CombinedGroupIdentity'
+                    and annotation.get('value') == identity
+                    for annotation in existing[0].get('annotations', []))
+            if existing and not same_group:
+                raise ValueError(
+                    f"Combined group {group_name!r}: a column, measure or source binding "
+                    f"with that name already exists in table {main_table_name!r}")
+            raw_name = g.get('raw_name', '')
+            aliases = {group_name}
+            if isinstance(raw_name, str) and raw_name:
+                aliases.add(raw_name)
+            scope = _combined_datasource_table_scope(model, extra_objects, g)
+            for table in model['model']['tables']:
+                if scope is not None and table.get('name') not in scope:
+                    continue
+                fields = table.get('columns', []) + table.get('measures', [])
+                for field in fields:
+                    if same_group and field is existing[0]:
+                        continue
+                    for field_name in (field.get('name'), field.get('sourceColumn')):
+                        if not isinstance(field_name, str):
+                            continue
+                        for alias in aliases:
+                            if field_name.casefold() == alias.casefold():
+                                raise ValueError(
+                                    f"Combined group {group_name!r}: identifier {alias!r} "
+                                    f"already exists in table {table.get('name')!r}")
+            if same_group:
+                continue
 
-        group_type = g.get('group_type', 'values')
-        members = g.get('members', {})
-        source_field = g.get('source_field', '').replace('[', '').replace(']', '')
-        source_fields = g.get('source_fields', [])
-
-        if group_type == 'combined' and source_fields:
+            source_fields = g['source_fields']
             calc_map_lookup = {}
             # Also build internal-name → caption mapping from datasource columns
             col_caption_map = {}
@@ -189,13 +362,17 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
 
             # Date-part derivation prefix → M date function mapping
             _DATE_PART_M_FUNC = {
-                'yr': 'Date.Year', 'tyr': 'Date.Year',
-                'mn': 'Date.Month', 'tmn': 'Date.Month',
-                'dy': 'Date.Day', 'tdy': 'Date.Day',
-                'qr': 'Date.QuarterOfYear', 'tqr': 'Date.QuarterOfYear',
-                'wk': 'Date.WeekOfYear', 'twk': 'Date.WeekOfYear',
+                'yr': 'Date.Year', 'tyr': 'Date.StartOfYear',
+                'mn': 'Date.Month', 'tmn': 'Date.StartOfMonth',
+                'dy': 'Date.Day',
+                'qr': 'Date.QuarterOfYear', 'tqr': 'Date.StartOfQuarter',
+                'wk': 'Date.WeekOfYear',
                 'hr': 'Time.Hour', 'mt': 'Time.Minute', 'sc': 'Time.Second',
             }
+            # These derivations are date/time operations, but do not have a
+            # supported equivalent in the mapping above. Failing closed is
+            # preferable to serializing the untouched timestamp as text.
+            _UNSUPPORTED_DATE_PART_PREFIXES = {'md', 'mdy', 'hms', 'thr', 'trunc', 'tdy', 'twk'}
             # Also map function names from group name (e.g. YEAR, MONTH)
             _FUNC_NAME_M = {
                 'YEAR': 'Date.Year', 'MONTH': 'Date.Month', 'DAY': 'Date.Day',
@@ -251,35 +428,67 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                 'Time.Minute': 'MINUTE', 'Time.Second': 'SECOND',
             }
             all_m_available = True
-            unknown_source = False
-            for idx, sf_raw in enumerate(source_fields):
+            for idx, sf_raw in enumerate(source_refs):
                 # 1. Extract derivation prefix before cleaning
-                prefix_match = _RE_TMDL_DERIVATION_PREFIX.match(sf_raw)
+                if _RE_TABLE_CALC_PREFIX.match(sf_raw):
+                    raise ValueError(
+                        f"Combined group {group_name!r} uses unsupported "
+                        f"table-calculation derivation {sf_raw!r}")
+                prefix_match = _RE_DERIVATION_PREFIX.match(sf_raw)
                 date_prefix = prefix_match.group(1) if prefix_match else None
+                if date_prefix in _UNSUPPORTED_DATE_PART_PREFIXES:
+                    raise ValueError(
+                        f"Combined group '{group_name}' uses unsupported "
+                        f"date-part derivation prefix '{date_prefix}'")
+                if date_prefix and date_prefix not in _DATE_PART_M_FUNC and date_prefix != 'none':
+                    raise ValueError(
+                        f"Combined group {group_name!r} uses unsupported "
+                        f"component derivation prefix {date_prefix!r}")
                 # 2. Clean and resolve field name
-                sf = _clean_tableau_field_ref(sf_raw)
+                sf = source_fields[idx]
+                if not has_source_refs:
+                    sf = _clean_tableau_field_ref(sf)
                 resolved = calc_map_lookup.get(sf, sf)
-                resolved = _clean_tableau_field_ref(resolved)
+                if not has_source_refs:
+                    resolved = _clean_tableau_field_ref(resolved)
                 # Resolve internal Tableau field name to caption (e.g. "Postal Code" → "Code postal")
-                resolved = col_caption_map.get(resolved, resolved)
-                # Also check if the resolved name exists in existing columns
-                if resolved not in existing_cols and sf in col_caption_map:
-                    resolved = col_caption_map[sf]
-                # Never silently generate a partial combined key.
-                if resolved not in existing_cols and resolved not in column_table_map:
-                    print(f"  ⚠ Group '{group_name}': unknown source field '{sf_raw}' (resolved='{resolved}'), skipping whole group")
-                    unknown_source = True
-                    break
+                owner = field_owners.get(sf)
+                if owner is None:
+                    raise ValueError(
+                        f"Combined group {group_name!r}: source field {sf!r} "
+                        "has no resolved owner")
+                resolved = model.get('_column_rename_map', {}).get(
+                    (owner, sf), col_caption_map.get(resolved, resolved))
+                owner_table = next(table for table in model['model']['tables']
+                                   if table.get('name') == owner)
+                owner_names = {
+                    field.get('name') for field in
+                    owner_table.get('columns', []) + owner_table.get('measures', [])
+                }
+                if resolved not in owner_names:
+                    matching = [name for name in owner_names
+                                if isinstance(name, str)
+                                and name.casefold() == resolved.casefold()]
+                    if len(matching) == 1:
+                        resolved = matching[0]
+                if resolved not in owner_names:
+                    raise ValueError(
+                        f"Combined group {group_name!r}: source field {sf_raw!r} "
+                        f"is unresolved (resolved name {resolved!r})")
                 # 3. Build M column reference
-                if resolved not in m_row_columns:
+                if owner != main_table_name or resolved not in m_row_columns:
                     all_m_available = False
-                escaped_m = m_row_columns.get(resolved, resolved).replace('"', '""')
-                m_ref = f'[#"{escaped_m}"]'
+                source_name = m_row_columns.get(resolved, resolved)
+                if '\0' in source_name:
+                    raise ValueError(
+                        f"Combined group {group_name!r}: source field contains a null character")
+                m_ref = '[#' + _m_header_literal(source_name) + ']'
                 # 4. Apply date-part function: first from derivation prefix, then from group name
                 m_func = None
                 if date_prefix and date_prefix in _DATE_PART_M_FUNC:
                     m_func = _DATE_PART_M_FUNC[date_prefix]
-                elif idx < len(name_func_map) and name_func_map[idx]:
+                elif (not has_source_refs and not date_prefix
+                      and idx < len(name_func_map) and name_func_map[idx]):
                     m_func = name_func_map[idx]
                 if m_func:
                     m_ref = f'{m_func}({m_ref})'
@@ -287,25 +496,33 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                 m_ref = f'Text.From({m_ref})'
                 m_parts.append(m_ref)
                 # Also build DAX parts for fallback
-                table_ref = column_table_map.get(resolved, column_table_map.get(sf, main_table_name))
-                # A local row column wins over a same-named remote field.
-                if resolved in existing_cols:
-                    table_ref = main_table_name
+                table_ref = owner
                 escaped_table = table_ref.replace("'", "''")
                 escaped_col = resolved.replace(']', ']]')
                 ref = f"'{escaped_table}'[{escaped_col}]"
                 if table_ref != main_table_name and (table_ref, resolved) not in measure_refs:
                     ref = f"RELATED({ref})"
-                if m_func:
+                if m_func == 'Date.StartOfYear':
+                    ref = f'IF(ISBLANK({ref}), BLANK(), DATE(YEAR({ref}), 1, 1))'
+                elif m_func == 'Date.StartOfQuarter':
+                    ref = (f'IF(ISBLANK({ref}), BLANK(), '
+                           f'DATE(YEAR({ref}), 3 * INT((MONTH({ref}) - 1) / 3) + 1, 1))')
+                elif m_func == 'Date.StartOfMonth':
+                    ref = f'IF(ISBLANK({ref}), BLANK(), DATE(YEAR({ref}), MONTH({ref}), 1))'
+                elif m_func:
                     ref = f'{date_dax_funcs[m_func]}({ref})'
                 dax_parts.append(ref)
 
-            if unknown_source:
-                continue
-            if not dax_parts:
-                # All source fields were unknown — skip this group entirely
-                print(f"  ⚠ Group '{group_name}': no valid source fields found, skipping")
-                continue
+            approximation_note = (
+                'Combined field concatenation is approximate: delimiter collisions, '
+                'nulls, culture and Tableau labels require source-to-target validation.'
+            )
+            logger.warning("Combined group %r: %s", group_name, approximation_note)
+            annotations = [
+                {'name': 'Migration_CombinedGroup', 'value': 'approximated'},
+                {'name': 'Migration_CombinedGroupIdentity', 'value': identity},
+                {'name': 'MigrationNote', 'value': approximation_note},
+            ]
             if all_m_available:
                 # Every reference is present in this partition's row.
                 m_concat_expr = ' & " | " & '.join(m_parts)
@@ -315,7 +532,8 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                     "dataType": "String",
                     "sourceColumn": group_name,
                     "summarizeBy": "none",
-                    "displayFolder": "Groups"
+                    "displayFolder": "Groups",
+                    "annotations": annotations,
                 })
             else:
                 # Do not pass this through DAX-to-M conversion: its dependencies
@@ -326,15 +544,34 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                     "expression": ' & " | " & '.join(dax_parts),
                     "summarizeBy": "none",
                     "isCalculated": True,
-                    "displayFolder": "Groups"
+                    "displayFolder": "Groups",
+                    "annotations": annotations,
                 })
             existing_cols.add(group_name)
             continue
 
-        elif members and source_field:
+        members = g.get('members', {})
+        source_field = g.get('source_field', '').replace('[', '').replace(']', '')
+        if members and source_field:
             owner_table, owner_name = _owner_of(source_field)
             if group_name in {c.get("name", "") for c in owner_table.get("columns", [])}:
                 continue
+            # Tableau value groups default unmatched values to "Other" unless
+            # the calculation declares an explicit default. Keep explicit
+            # empty-string and null defaults distinct from an absent default.
+            calculation_metadata = g.get('calculation')
+            nested_default = (
+                isinstance(calculation_metadata, dict)
+                and 'default' in calculation_metadata
+            )
+            if 'default' in g:
+                group_default = g['default']
+            elif 'calculation_default' in g:
+                group_default = g['calculation_default']
+            elif nested_default:
+                group_default = calculation_metadata['default']
+            else:
+                group_default = 'Other'
             total_values = sum(len(v) for v in members.values())
             # Large groups: use M table-join lookup (avoids M engine complexity limit)
             if total_values > 100:
@@ -360,10 +597,12 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                     f'#"Expand_{safe_tag}"',
                     f'Table.ExpandTableColumn({{prev}}, "_lkp_{safe_tag}", {{"grp"}}, {{"{escaped_grp}"}})'
                 ))
-                owner_steps.append((
-                    f'#"Fill_{safe_tag}"',
-                    f'Table.ReplaceValue({{prev}}, null, "Other", Replacer.ReplaceValue, {{"{escaped_grp}"}})'
-                ))
+                if group_default is not None:
+                    escaped_default = str(group_default).replace('"', '""')
+                    owner_steps.append((
+                        f'#"Fill_{safe_tag}"',
+                        f'Table.ReplaceValue({{prev}}, null, "{escaped_default}", Replacer.ReplaceValue, {{"{escaped_grp}"}})'
+                    ))
                 owner_table["columns"].append({
                     "name": group_name,
                     "dataType": "String",
@@ -383,7 +622,15 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                     cases.append(f'"{escaped_val}", "{escaped_label}"')
 
             if cases:
-                dax_expr = f"SWITCH('{table_ref}'[{source_field}], {', '.join(cases)}, \"Other\")"
+                if group_default is None:
+                    default_arg = ', BLANK()'
+                else:
+                    escaped_default = str(group_default).replace('"', '""')
+                    default_arg = f', "{escaped_default}"'
+                dax_expr = (
+                    f"SWITCH('{table_ref}'[{source_field}], "
+                    f"{', '.join(cases)}{default_arg})"
+                )
             else:
                 dax_expr = f"'{table_ref}'[{source_field}]"
             group_target, group_target_name = owner_table, owner_name

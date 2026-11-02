@@ -287,6 +287,23 @@ class TestMixedWorkbookReportPages(unittest.TestCase):
     def test_thin_report_keeps_three_dashboards_and_five_standalone_pages(self):
         self._assert_mixed_pages("thin")
 
+    def test_worksheet_only_story_targets_its_named_page(self):
+        source = _workbook(
+            [_worksheet("First"), _worksheet("Second")],
+            stories=[{"name": "Story", "story_points": [
+                {"caption": "Second view", "captured_sheet": "Second"},
+            ]}])
+        for mode in ("full", "thin"):
+            with self.subTest(mode=mode):
+                report_dir = self._generate(mode, source)
+                _, pages = self._pages(report_dir)
+                index = _read_json(report_dir / "definition" / "bookmarks" / "bookmarks.json")
+                name = index["items"][0]["name"]
+                bookmark = _read_json(
+                    report_dir / "definition" / "bookmarks" / f"{name}.bookmark.json")
+                self.assertEqual(bookmark["explorationState"]["activeSection"],
+                                 pages[1]["name"])
+
     def test_scoped_navigation_and_story_resolve_the_actual_standalone_page_id(self):
         source = _mixed_workbook()
         target_name = "Field Mention"

@@ -119,7 +119,7 @@ evidence, not a current full-suite or runtime certification:
 - **Quality evidence is explicit and deterministic**: static validation, warnings, and repair actions are recorded without overstating live Desktop/Fabric readiness.
 - **MCP and CLI surfaces remain stable**: the concise 14-command CLI and quality/prioritization flows continue to document the verified static path cleanly.
 - **Safety-first automation**: deployment remains dry-run by default, credentials stay in environment variables, and optional AI assistance only acts on verified findings.
-- **Semantic runtime evidence**: an injected executor boundary records `not_run`, `passed`, or `failed` DAX evidence without requiring credentials in local CI. Use `--quality-policy report|enterprise|production` to control escalation of semantic diagnostics and unresolved lineage.
+- **Semantic runtime evidence**: an injected executor boundary records `not_run`, `passed`, or `failed` DAX evidence without requiring credentials in local CI. A pass requires a nonempty, fully covered query suite with valid observations; missing or incomplete execution cannot release the semantic contract. Explicit null expectations, finite tolerances and provider provenance follow the [runtime contract](docs/ARCHITECTURE.md#optional-semantic-runtime-evidence). Use `--quality-policy report|enterprise|production` to control escalation of semantic diagnostics and unresolved lineage.
 - **Visual mapping evidence**: the generator inventory is measured as 129 native mappings, 16 approximations, and 19 custom visual mappings; approximations remain explicit in quality evidence.
 - **Evidence packages**: batch quality runs produce an `evidence_package_<workbook>.zip` containing quality status, lineage, M/visual matrices, Fabric evidence, manifests, priorities, and explicit runtime states.
 - **Local browser UI**: start the Python migration interface from a source checkout with `.\run_web_ui.ps1`; see the [local browser guide](docs/LOCAL_WEB_UI.md).
@@ -235,9 +235,23 @@ generation path. For a CI quality exit gate, run
 `python migrate.py quality workbook.twbx --quality-strict` after generation;
 batch does not forward `--quality-strict`, so its exit status alone is not a
 quality PASS.
+The separate `equivalence_report_v2.json` scores offline, unqualified model-name
+presence only. Its `visual_coverage` remains `not_run` without verified
+worksheet-to-PBIR projection provenance; neither that score nor name presence
+establishes rendered or value parity.
+Visual-diff type and field-name matches are also heuristic; the source-fidelity
+audit keeps them in `needs_review` until visual coverage is verified. The
+migration report records source visual entries as `unverified`; its
+classification scores exclude those entries and are not visual-parity scores.
+When only unverified items are available, the score is `null`, not 100%.
 Use `--quality-policy report|enterprise|production` to control whether static
 semantic diagnostics and unresolved lineage are informational, warnings, or
-blocking findings. This does not bypass semantic/source integrity guards or
+blocking findings. Combined-field text concatenation is approximate: `report`
+warns, and `enterprise`/`production` block it. There is no automatic
+evidence-based waiver. Delimiter collisions, nulls, culture and Tableau
+labels require source-value validation;
+see [combined-group limitations](docs/KNOWN_LIMITATIONS.md#combined-groups-spanning-tables).
+This does not bypass semantic/source integrity guards or
 authorize lossy conversions. Failed PBIP workbook batches withhold the entry
 point and retain explicit [failure diagnostics](docs/FAQ.md#why-does-my-project-fail-the-openability-gate).
 Runtime execution still requires an authorized executor.
@@ -812,7 +826,7 @@ SharedSales/
 | Text | `CONTAINS([col], "text")` | `CONTAINSSTRING([col], "text")` |
 | Text | `ASCII`, `LEN`, `LEFT`, `RIGHT`, `MID` | `UNICODE`, `LEN`, `LEFT`, `RIGHT`, `MID` |
 | Text | `UPPER`, `LOWER`, `REPLACE`, `TRIM` | `UPPER`, `LOWER`, `SUBSTITUTE`, `TRIM` |
-| Agg | `COUNTD([col])` | `DISTINCTCOUNT([col])` |
+| Agg | `COUNTD([col])` | `DISTINCTCOUNTNOBLANK([col])` with empty-table handling |
 | Agg | `AVG([col])` | `AVERAGE([col])` |
 | Date | `DATETRUNC`, `DATEPART`, `DATEDIFF` | `STARTOF*`, `YEAR/MONTH/DAY/etc`, `DATEDIFF` |
 | Date | `DATEADD`, `TODAY`, `NOW` | `DATEADD`, `TODAY`, `NOW` |
@@ -1191,14 +1205,14 @@ publishing uses a [separate workflow](.github/workflows/gh-pages.yml).
 
 ### 📊 Migration Report
 
-After batch migration, run `python generate_report.py` to produce an HTML Migration & Assessment Report with per-workbook fidelity scores:
+After batch migration, run `python generate_report.py` to produce an HTML Migration & Assessment Report:
 
 ![Migration Results](docs/images/migration_results.png)
 
 The report shows for each migrated workbook:
-- **Fidelity** — percentage of items migrated successfully (100% = everything converted)
-- **Total Items / Exact / Approximate / Unsupported** — breakdown of migration quality per item
-- **Tables / Measures / Visuals** — counts of generated artifacts in the output .pbip project
+- **Fidelity** — score for scoreable items; unverified visual entries are excluded. The score is `null` when no items can be scored and is not a visual- or value-parity score.
+- **Total Items / Exact / Approximate / Unsupported / Unverified** — migration-status breakdown.
+- **Tables / Measures / Visuals** — counts of generated artifacts in the output .pbip project.
 
 ---
 

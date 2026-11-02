@@ -633,19 +633,29 @@ class TestCompletenessScoring(unittest.TestCase):
         self.assertAlmostEqual(calc_info['fidelity_pct'], 50.0, places=1)
 
     def test_visual_100_fidelity(self):
-        """All exact visuals should be 100% fidelity."""
+        """Unverified visual bindings must not receive a fidelity score."""
         r = self._make_report()
         cs = r.get_completeness_score()
-        self.assertEqual(cs['categories']['visual']['fidelity_pct'], 100.0)
+        self.assertEqual(cs['categories']['visual']['unverified'], 2)
+        self.assertIsNone(cs['categories']['visual']['fidelity_pct'])
+        self.assertIsNone(cs['overall_score'])
 
     def test_grade_A(self):
-        """All exact items should produce grade A."""
+        """Exact non-visual classifications can produce grade A."""
+        r = MigrationReport('Test')
+        r.add_item('calculation', 'C1', 'exact')
+        cs = r.get_completeness_score()
+        self.assertEqual(cs['grade'], 'A')
+        self.assertGreaterEqual(cs['overall_score'], 90)
+
+    def test_unverified_visual_prevents_overall_grade(self):
         r = MigrationReport('Test')
         r.add_item('calculation', 'C1', 'exact')
         r.add_item('visual', 'V1', 'exact')
         cs = r.get_completeness_score()
-        self.assertEqual(cs['grade'], 'A')
-        self.assertGreaterEqual(cs['overall_score'], 90)
+        self.assertEqual(cs['categories']['visual']['unverified'], 1)
+        self.assertIsNone(cs['overall_score'])
+        self.assertIsNone(cs['grade'])
 
     def test_grade_F(self):
         """All unsupported items should produce grade F."""

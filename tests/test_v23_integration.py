@@ -134,13 +134,15 @@ class TestFidelityScoringIntegration(unittest.TestCase):
         report.add_item('datasource', 'ds1', 'exact')
         scores = report.get_completeness_score()
         self.assertIn('overall_score', scores)
-        self.assertGreaterEqual(scores['overall_score'], 90.0)
+        self.assertIsNone(scores['overall_score'])
+        self.assertEqual(scores['categories']['calculation']['fidelity_pct'], 100.0)
+        self.assertEqual(scores['categories']['datasource']['fidelity_pct'], 100.0)
+        self.assertEqual(scores['status'], 'partial')
 
     def test_all_exact_gives_100(self):
         from powerbi_import.migration_report import MigrationReport
         report = MigrationReport('test_wb')
         report.add_item('calculation', 'c1', 'exact', dax='SUM([X])')
-        report.add_item('visual', 'v1', 'exact')
         report.add_item('datasource', 'ds1', 'exact')
         report.add_item('filter', 'f1', 'exact')
         scores = report.get_completeness_score()

@@ -11,12 +11,13 @@ import uuid
 import xml.etree.ElementTree as ET
 import zipfile
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
 from powerbi_import import desktop_probe, desktop_window, tableau_desktop_probe
+from powerbi_import.atomic_file import atomic_write_text
 from powerbi_import.desktop_accessibility import (
     is_powershell_failure,
     powershell_preflight,
@@ -344,6 +345,13 @@ def _powerbi_data_gate(evidence: dict) -> dict:
     return result
 
 
+def _finished_capture_result(capture: Any) -> bool:
+    return (isinstance(capture, dict)
+            and isinstance(capture.get("status"), str)
+            and bool(capture["status"].strip())
+            and capture["status"] != "in_progress")
+
+
 def _verified_page_capture(capture: dict, expected: Path | None = None) -> bool:
     """Require the existing exact page identity checks before and after a fresh capture."""
     if (capture.get("status") != "captured" or not capture.get("screenshot")
@@ -475,36 +483,40 @@ def _capture_all_pages(row: dict, shots: Path, page_timeout: float,
             try:
                 requested = shots / subdir / filename
                 requested_paths[field][page["id"]] = requested
-                page["capture"] = capture_document_tab(
+                page["capture"] = {
+                    "status": "in_progress", "screenshot": None,
+                    "note": "Page capture was started but has not completed",
+                }
+                capture = capture_document_tab(
                     window.hwnd, row[field]["pid"], page["name"],
                     str(requested), timeout=page_timeout)
-                if (not isinstance(page["capture"], dict)
-                        or not isinstance(page["capture"].get("status"), str)):
-                    raise ValueError("Page capture returned no valid status")
-                page["capture"].setdefault("note", "")
-                native = _native_failure(page["capture"])
+                if not _finished_capture_result(capture):
+                    raise ValueError("Page capture returned no valid terminal status")
+                capture.setdefault("note", "")
+                native = _native_failure(capture)
                 if native is not None:
                     failure = deepcopy(native)
-                    if page["capture"]["status"] == "captured":
-                        page["capture"]["probe_screenshot"] = page["capture"].get("screenshot")
-                    page["capture"].update(
+                    if capture["status"] == "captured":
+                        capture["probe_screenshot"] = capture.get("screenshot")
+                    capture.update(
                         status=failure["status"], screenshot=None, cause=failure["cause"],
                         native_error=failure, note=_native_failure_note(failure))
-                if (page["capture"].get("status") == "captured"
-                        and not _verified_page_capture(page["capture"], requested)):
-                    page["capture"].update(
-                        probe_status="captured", probe_screenshot=page["capture"].get("screenshot"),
+                if (capture.get("status") == "captured"
+                        and not _verified_page_capture(capture, requested)):
+                    capture.update(
+                        probe_status="captured", probe_screenshot=capture.get("screenshot"),
                         status="error", screenshot=None,
                         note="Page capture gate failed: current PNG and exact page identity "
                              "must be verified before and after capture")
             except Exception as exc:
-                page["capture"] = {"status": "error", "screenshot": None,
-                                   "note": f"{type(exc).__name__}: {exc}"}
+                capture = {"status": "error", "screenshot": None,
+                           "note": f"{type(exc).__name__}: {exc}"}
             if gate is not None:
-                page["capture"]["powerbi_launch_gate"] = gate
-            if page["capture"]["status"] != "captured" and (page.get("hidden") or page.get("tooltip")):
-                page["capture"]["note"] = (str(page["capture"].get("note", ""))
-                                           + " (hidden/tooltip page; no state changes to expose it)")
+                capture["powerbi_launch_gate"] = gate
+            if capture["status"] != "captured" and (page.get("hidden") or page.get("tooltip")):
+                capture["note"] = (str(capture.get("note", ""))
+                                   + " (hidden/tooltip page; no state changes to expose it)")
+            page["capture"] = capture
     if screen_comparison == "local":
         sources = {p["id"]: p for p in inventories["source"]}
         targets = {p["id"]: p for p in inventories["target"]}
@@ -987,6 +999,19 @@ def _capture_scope_html(manifest: dict) -> str:
 def _report_document(manifest: dict, title: str, body: str, *,
                      collapse_limitations: bool = False) -> str:
     timestamp = manifest.get("created_at", "Not recorded")
+    if manifest.get("status") in ("in_progress", "interrupted"):
+        progress = manifest.get("progress", {})
+        completed = progress.get("workbooks_completed", 0)
+        total = progress.get("workbooks_total", 0)
+        body = (
+            '<div class="dc-notice" role="status"><p>'
+            + _ui(
+                f"Partial diagnostic: {completed} of {total} workbooks completed. "
+                "Unrecorded workbooks and unfinished attempts are not successful captures.",
+                f"Diagnostic partiel : {completed} / {total} classeurs terminés. "
+                "Les classeurs non enregistrés et les tentatives inachevées ne sont pas des captures réussies.")
+            + '</p></div>' + body
+        )
     limitation = '<p>' + _ui(CAPTURE_LIMITATION,
         "Une fenêtre réactive portant le titre du document et une capture non vide de la fenêtre complète constituent uniquement des indices diagnostiques, pas une preuve du chargement des données ni de la fidélité visuelle. Les interfaces des applications diffèrent : une revue manuelle est nécessaire. La sonde directe laisse l’application ouverte ; les comparaisons ferment uniquement les PID qu’elles ont lancés, après la capture. Le transfert vers une instance existante n’est pas pris en charge.") + '</p>'
     if collapse_limitations:
@@ -1291,10 +1316,17 @@ def _capture_html(capture: dict, run_dir: Path, alt: str, *,
     return content + f'<p>{esc(note)}</p>'
 
 
+def _write_comparison_manifest(manifest: dict, run_dir: Path) -> None:
+    """Publish a complete checkpoint without replacing previous valid JSON on failure."""
+    atomic_write_text(
+        run_dir / "manifest.json",
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+    )
+
+
 def write_comparison_reports(manifest: dict, run_dir: Path) -> None:
     """Write separate run JSON and HTML; link only current successful captures."""
-    (run_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _write_comparison_manifest(manifest, run_dir)
     render_comparison_html(manifest, run_dir)
 
 
@@ -1754,7 +1786,8 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                             powerbi_desktop_path: str | None = None,
                             refresh_timeout: float = 300,
                             capture_tableau: bool = True,
-                            workbook_pairs: list[dict] | None = None) -> dict:
+                            workbook_pairs: list[dict] | None = None,
+                            progress_callback: Callable[[str, dict[str, Any]], None] | None = None) -> dict:
     """Explicit native Desktop diagnostic, shared by migration and standalone CLI.
 
     New captures and reports share output_root/desktop_comparisons/<run_id>/,
@@ -1778,6 +1811,12 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
     Pixel differences/errors do not change capture status or process cleanup.
     PowerShell executable discovery runs once before any native comparison work.
     Missing tooling yields failed JSON/HTML evidence without launching either app.
+    The manifest is atomically checkpointed before capture and after each finished
+    workbook. An in_progress checkpoint is not proof that the process is still
+    running. An interrupt records the current attempt as incomplete when possible.
+    An optional progress callback receives start, recorded-workbook and end events
+    only after their corresponding manifest checkpoints have been published.
+    Callback failures stop the diagnostic and propagate to the caller.
     Raises ValueError/OSError for invalid folders/options or report write failures.
     """
     if screen_comparison not in ("manual", "local"):
@@ -1786,6 +1825,8 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
         raise ValueError("capture_tableau must be a boolean")
     if not capture_tableau and screen_comparison == "local":
         raise ValueError("local pixel comparison requires Tableau and Power BI captures")
+    if progress_callback is not None and not callable(progress_callback):
+        raise ValueError("progress_callback must be callable")
     for name, value in (("timeout", timeout), ("page_timeout", page_timeout),
                         ("refresh_timeout", refresh_timeout)):
         _positive_timeout(value, name)
@@ -1808,7 +1849,7 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
         refresh_desktop_comparison_links,
     )
     comparison_root = _desktop_comparison_root(output)
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex
+    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex
     run_dir = comparison_root / run_id
     _safe_destination(run_dir)
     if (any(row.get("pbip") and _inside(run_dir, Path(row["pbip"]).parent) for row in rows)
@@ -1816,6 +1857,81 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
         raise ValueError("Comparison evidence directory would be inside a PBIP project")
     run_dir.mkdir(parents=True, exist_ok=False)
     preflight = powershell_preflight()
+    recorded_rows: list[dict] = []
+    manifest = {
+        "schema_version": 3 if all_pages else 2, "run_id": run_id,
+        "created_at": datetime.now(UTC).isoformat(),
+        "source_dir": str(source), "output_root": str(output),
+        "run_dir": str(run_dir),
+        "manifest_path": str(run_dir / "manifest.json"),
+        "limitation": CAPTURE_LIMITATION,
+        "evidence_location": {
+            "layout_version": 1, "comparison_root": str(comparison_root),
+            "screenshot_root": str(run_dir / "screenshots"),
+            "external_to_output_root": not _inside(run_dir, output),
+        },
+        "capture_mode": "paired" if capture_tableau else "powerbi_only",
+        "capture_tableau": capture_tableau,
+        "pairing_mode": "pair_workbooks" if workbook_pairs is None else "explicit",
+        "timeout": timeout, "refresh_timeout": refresh_timeout,
+        "preflight": preflight,
+        "requested_stages": _requested_capture_stages(
+            capture_tableau, all_pages, screen_comparison),
+        "totals_scope": "recorded_workbooks_only",
+        "parity_score": None,
+        "status": "in_progress",
+        "workbooks": recorded_rows,
+    }
+    if all_pages:
+        manifest.update(all_pages=True, page_timeout=page_timeout,
+                        initial_captures_counted=False)
+    if screen_comparison == "local":
+        manifest.update(screen_comparison="local",
+                        screen_comparison_limitations=PIXEL_LIMITATION)
+
+    def checkpoint(status: str, completed: int, *, render: bool = False) -> None:
+        manifest["status"] = status
+        manifest["progress"] = {
+            "workbooks_total": len(rows),
+            "workbooks_completed": completed,
+            "workbooks_recorded": len(recorded_rows),
+            "workbooks_incomplete": len(rows) - completed,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "note": ("An in_progress checkpoint may represent an interrupted run; "
+                     "it does not establish that the process is still running."),
+        }
+        manifest["initial_capture_totals"] = _initial_capture_totals(
+            recorded_rows, capture_tableau)
+        if all_pages:
+            manifest["totals"] = _page_totals(
+                recorded_rows, capture_tableau=capture_tableau)
+        if render:
+            write_comparison_reports(manifest, run_dir)
+        else:
+            _write_comparison_manifest(manifest, run_dir)
+
+    def notify(event: str, **details: Any) -> None:
+        if progress_callback is not None:
+            progress_callback(event, {
+                "manifest_path": manifest["manifest_path"],
+                "workbooks_total": len(rows),
+                **details,
+            })
+
+    def notify_workbook(row: dict) -> None:
+        progress = manifest["progress"]
+        notify(
+            "desktop_workbook_end",
+            workbook=row["relative_source"], status=row["status"],
+            tableau_status=row["tableau"]["status"],
+            powerbi_status=row["powerbi"]["status"],
+            workbooks_completed=progress["workbooks_completed"],
+            workbooks_recorded=progress["workbooks_recorded"],
+        )
+
+    checkpoint("in_progress", 0)
+    notify("desktop_start", status="in_progress", capture_mode=manifest["capture_mode"],
+           all_pages=all_pages)
     for index, row in enumerate(rows):
         row["evidence_id"] = _comparison_pair_identity(row, source, output)
         shots = run_dir / "screenshots" / row["evidence_id"]
@@ -1834,6 +1950,7 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
         if not capture_tableau:
             row["tableau"]["note"] = "Tableau capture not requested (Power BI-only diagnostic)"
         inventory_allowed = preflight["status"] == "ready"
+        interrupted = None
         try:
             if not inventory_allowed:
                 note = "Desktop tooling preflight failed: " + _native_failure_note(preflight)
@@ -1872,7 +1989,11 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                         probe = tableau_desktop_probe if field == "tableau" else desktop_probe
                         previously_owned = _owned_probe_pids(probe)
                         row[field]["owned_probe_pids"] = []
+                        probe_pid = None
                         try:
+                            row[field].update(
+                                status="in_progress",
+                                note="Desktop capture was started but has not completed")
                             destination = shots / subdir
                             _safe_destination(destination)
                             destination.mkdir(exist_ok=False)
@@ -1882,35 +2003,43 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                                 report = probe_tableau_open(
                                     row["source"], screenshot_path=str(shot),
                                     desktop_path=tableau_desktop_path, timeout=timeout)
-                                row[field]["pid"] = getattr(report, "pid", None)
-                                row[field].update(report.to_dict())
-                                native = _native_failure(row[field])
-                                if native is not None:
-                                    failure = deepcopy(native)
-                                    row[field].update(
-                                        status=failure["status"], screenshot=None,
-                                        cause=failure["cause"], native_error=failure,
-                                        note=_native_failure_note(failure))
+                                probe_pid = getattr(report, "pid", None)
+                                capture = report.to_dict()
                             else:
                                 refresh_options = ({"refresh_timeout": refresh_timeout}
                                                    if refresh_timeout != 300 else {})
-                                row[field].update(_pbi_capture(
+                                capture = _pbi_capture(
                                     row["pbip"], shot, timeout, powerbi_desktop_path,
-                                    **refresh_options))
-                                if row[field].get("status") == "captured":
-                                    gate = _powerbi_data_gate(row[field])
-                                    if gate["status"] != "verified":
-                                        row[field].setdefault(
-                                            "probe_screenshot", row[field].get("screenshot"))
-                                        row[field].update(status="error", screenshot=None,
-                                                          capture_gate=gate, note=gate["note"])
+                                    **refresh_options)
+                                if isinstance(capture, dict):
+                                    probe_pid = capture.get("pid")
+                            if not _finished_capture_result(capture):
+                                raise ValueError("Desktop capture returned no valid terminal status")
+                            if field == "tableau":
+                                native = _native_failure(capture)
+                                if native is not None:
+                                    failure = deepcopy(native)
+                                    capture.update(
+                                        status=failure["status"], screenshot=None,
+                                        cause=failure["cause"], native_error=failure,
+                                        note=_native_failure_note(failure))
+                            elif capture["status"] == "captured":
+                                gate = _powerbi_data_gate(capture)
+                                if gate["status"] != "verified":
+                                    capture.setdefault(
+                                        "probe_screenshot", capture.get("screenshot"))
+                                    capture.update(status="error", screenshot=None,
+                                                   capture_gate=gate, note=gate["note"])
+                            row[field].update(capture)
                         except Exception as exc:
                             note = f"{field} capture failed: {type(exc).__name__}: {exc}"
                             row["issues"].append(note)
                             row[field].update(status="error", screenshot=None, note=note)
                         finally:
                             owned = _owned_probe_pids(probe) - previously_owned
-                            pid = row[field].get("pid")
+                            pid = row[field].get("pid") or probe_pid
+                            if type(pid) is int and pid > 0:
+                                row[field]["pid"] = pid
                             if type(pid) is int and pid > 0 and pid not in previously_owned:
                                 # The closer still independently checks probe ownership.
                                 owned.add(pid)
@@ -1931,8 +2060,44 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                 except Exception as exc:
                     row["status"] = "failed"
                     row["issues"].append(f"All-page workflow failed: {type(exc).__name__}: {exc}")
+        except KeyboardInterrupt as exc:
+            interrupted = exc
+            row["status"] = "interrupted"
+            row["issues"].append("Desktop diagnostic interrupted before this workbook completed")
+            for field, _ in capture_fields:
+                status = row[field].get("status")
+                if status == "in_progress":
+                    row[field].update(status="interrupted", screenshot=None,
+                                      note="Capture interrupted before its result was verified")
+                elif status == "not_requested" and row["pair_status"] == "paired":
+                    row[field].update(status="not_run",
+                                      note="Capture was not reached before interruption")
+            if all_pages:
+                for inventory in ("source_inventory", "target_inventory"):
+                    for page in row.get(inventory, []):
+                        capture = page.setdefault("capture", {
+                            "status": "not_run", "screenshot": None,
+                            "note": "Page capture was not reached before interruption",
+                        })
+                        if capture.get("status") == "in_progress":
+                            capture.update(
+                                status="interrupted", screenshot=None,
+                                note="Page capture interrupted before its result was verified")
+                        elif capture.get("status") == "not_requested":
+                            capture.update(
+                                status="not_run",
+                                note="Page capture was not reached before interruption")
         finally:
             _cleanup_comparison_processes(row)
+        if interrupted is not None:
+            recorded_rows.append(row)
+            checkpoint("interrupted", index, render=True)
+            notify_workbook(row)
+            notify("desktop_end", status="interrupted",
+                   workbooks_completed=index, workbooks_recorded=len(recorded_rows))
+            refresh_desktop_comparison_links(str(
+                comparison_root.parent if not _inside(run_dir, output) else output))
+            raise interrupted
         if screen_comparison == "local":
             if all_pages:
                 # Unexpected workflow exceptions must not masquerade as comparisons.
@@ -1962,36 +2127,14 @@ def compare_desktop_reports(source_dir: str, output_root: str, *,
                          and all(row[field]["status"] == "captured" for field, _ in capture_fields)
                          and (not all_pages or row.get("status") == "manual_review")
                          and not row["issues"] else "failed")
-    manifest = {
-        "schema_version": 3 if all_pages else 2, "run_id": run_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_dir": str(source), "output_root": str(output),
-        "run_dir": str(run_dir), "limitation": CAPTURE_LIMITATION,
-        "evidence_location": {
-            "layout_version": 1, "comparison_root": str(comparison_root),
-            "screenshot_root": str(run_dir / "screenshots"),
-            "external_to_output_root": not _inside(run_dir, output),
-        },
-        "capture_mode": "paired" if capture_tableau else "powerbi_only",
-        "capture_tableau": capture_tableau,
-        "pairing_mode": "pair_workbooks" if workbook_pairs is None else "explicit",
-        "timeout": timeout, "refresh_timeout": refresh_timeout,
-        "preflight": preflight,
-        "requested_stages": _requested_capture_stages(
-            capture_tableau, all_pages, screen_comparison),
-        "initial_capture_totals": _initial_capture_totals(rows, capture_tableau),
-        "parity_score": None,
-        "status": "captured" if all(r["status"] == "manual_review" for r in rows) else "failed",
-        "workbooks": rows,
-    }
-    if all_pages:
-        manifest.update(all_pages=True, page_timeout=page_timeout,
-                        initial_captures_counted=False,
-                        totals=_page_totals(rows, capture_tableau=capture_tableau))
-    if screen_comparison == "local":
-        manifest.update(screen_comparison="local",
-                        screen_comparison_limitations=PIXEL_LIMITATION)
-    write_comparison_reports(manifest, run_dir)
+        recorded_rows.append(row)
+        checkpoint("in_progress", index + 1)
+        notify_workbook(row)
+    checkpoint(
+        "captured" if all(r["status"] == "manual_review" for r in recorded_rows) else "failed",
+        len(rows), render=True)
     refresh_desktop_comparison_links(str(
         comparison_root.parent if not _inside(run_dir, output) else output))
+    notify("desktop_end", status=manifest["status"],
+           workbooks_completed=len(rows), workbooks_recorded=len(recorded_rows))
     return manifest

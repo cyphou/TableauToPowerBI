@@ -173,7 +173,7 @@ _PREP_JOIN_MAP = {
     'full': 'full',
     'leftOnly': 'leftanti',
     'rightOnly': 'rightanti',
-    'notInner': 'leftanti',  # exclusive left (Tableau "not inner")
+    'notInner': 'fullanti',
 }
 
 _PREP_SUPERNODE_TYPES = frozenset({
@@ -183,7 +183,7 @@ _PREP_SUPERNODE_TYPES = frozenset({
 
 _PREP_SUPERNODE_INNER_TYPES = {
     'SuperTransform': {'SuperTransform', 'Transform'},
-    'SuperJoin': {'SuperJoin', 'Join'},
+    'SuperJoin': {'SuperJoin', 'Join', 'SimpleJoin'},
     'SuperAggregate': {'SuperAggregate', 'Aggregate'},
     'SuperUnion': {'SuperUnion', 'Union', 'SimpleUnion'},
     'SuperUnpivotExtended': {
@@ -224,7 +224,7 @@ _PREP_SUPERNODE_PAYLOAD_FIELDS = {
         'actions', 'beforeActionGroup', 'actionGroup', 'afterActionGroup',
     },
     'SuperJoin': _PREP_SUPERNODE_COMMON_FIELDS | {
-        'joinType', 'joinConditions', 'leftNodeId', 'rightNodeId',
+        'joinType', 'joinConditions', 'conditions', 'leftNodeId', 'rightNodeId',
     },
     'SuperAggregate': _PREP_SUPERNODE_COMMON_FIELDS | {
         'groupByFields', 'aggregateFields',
@@ -243,6 +243,12 @@ _PREP_SUPERNODE_PAYLOAD_FIELDS = {
 }
 
 _PREP_MANUAL_UNION_DIALECT = 'simple_namespace_field_mappings'
+_PREP_SIMPLE_JOIN_DIALECT = 'simple_join_declared_fields'
+_PREP_SIMPLE_JOIN_POLICY_FIELDS = frozenset({
+    'comparison_semantics_verified',
+    'null_semantics_verified',
+    'duplicate_semantics_verified',
+})
 
 
 def _canonical_filter_type(value):
@@ -252,6 +258,70 @@ def _canonical_filter_type(value):
         if canonical in ('keep', 'remove'):
             return canonical
     return None
+
+
+def _simple_join_conditions(value, node_id):
+    """Translate observed SimpleJoin equality expressions without guessing."""
+    context = f'Prep SimpleJoin {node_id!r}.actionNode.conditions'
+    if not isinstance(value, list) or not value:
+        raise ValueError(f'{context}: expected a nonempty list')
+
+    conditions = []
+    for index, condition in enumerate(value):
+        item_context = f'{context}[{index}]'
+        if not isinstance(condition, dict):
+            raise ValueError(f'{item_context}: expected object')
+        expected = {'leftExpression', 'rightExpression', 'comparator'}
+        if set(condition) != expected:
+            raise ValueError(
+                f'{item_context}: expected exactly leftExpression, '
+                'rightExpression and comparator'
+            )
+        if condition['comparator'] != '==':
+            raise ValueError(
+                f'{item_context}.comparator: only explicit equality "==" '
+                'is supported'
+            )
+
+        columns = {}
+        for side in ('left', 'right'):
+            key = side + 'Expression'
+            expression = condition[key]
+            match = (
+                re.fullmatch(r'\[([^\[\]]+)\]', expression)
+                if isinstance(expression, str) else None
+            )
+            if not match or not match.group(1):
+                raise ValueError(
+                    f'{item_context}.{key}: expected one explicit [Field] '
+                    'reference; calculated/qualified expressions are unsupported'
+                )
+            columns[side + 'Column'] = match.group(1)
+        conditions.append(columns)
+    return conditions
+
+
+def _simple_join_policies(value):
+    """Load per-node attestations without inferring source runtime semantics."""
+    if value is None:
+        raw = os.environ.get('TTPBI_PREP_SIMPLE_JOIN_POLICIES', '{}')
+        try:
+            value = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise ValueError('Invalid TTPBI_PREP_SIMPLE_JOIN_POLICIES JSON') from exc
+    if not isinstance(value, dict):
+        raise ValueError('Prep SimpleJoin policies must be a node-keyed object')
+    for node_id, policy in value.items():
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError('Prep SimpleJoin policy node IDs must be nonempty strings')
+        if (not isinstance(policy, dict)
+                or set(policy) != _PREP_SIMPLE_JOIN_POLICY_FIELDS
+                or any(policy[field] is not True
+                       for field in _PREP_SIMPLE_JOIN_POLICY_FIELDS)):
+            raise ValueError(
+                f'Prep SimpleJoin {node_id!r}: semantics policy must explicitly '
+                'verify comparison, null and duplicate semantics')
+    return value
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -619,6 +689,9 @@ def normalize_prep_flow(flow):
         simple_union_dialect = (
             sem == 'SuperUnion' and inner_node_type == 'SimpleUnion'
         )
+        simple_join_dialect = (
+            sem == 'SuperJoin' and inner_node_type == 'SimpleJoin'
+        )
         if simple_union_dialect:
             namespace_mappings = action_node.get('namespaceFieldMappings')
             if not isinstance(namespace_mappings, list) or not namespace_mappings:
@@ -627,6 +700,8 @@ def normalize_prep_flow(flow):
                     'actionNode.namespaceFieldMappings must be a nonempty list'
                 )
             node['_prep_union_dialect'] = _PREP_MANUAL_UNION_DIALECT
+        if simple_join_dialect:
+            node['_prep_simple_join_dialect'] = _PREP_SIMPLE_JOIN_DIALECT
         direct_action_type = ''
         if sem == 'SuperTransform':
             candidates = [
@@ -657,14 +732,20 @@ def normalize_prep_flow(flow):
             if inner_value is not None and not isinstance(inner_value, str):
                 raise ValueError(f'Prep superNode {nid!r}.actionNode.{key}: '
                                  'expected string')
-            if simple_union_dialect and key == 'id':
-                # SimpleUnion owns an action identity distinct from the
+            if (simple_union_dialect or simple_join_dialect) and key == 'id':
+                # The inner action owns an identity distinct from the
                 # wrapper's graph identity. Preserve it without treating it
                 # as an edge ID.
                 if inner_value is not None:
                     node['_prep_action_node_id'] = inner_value
                 continue
             outer_value = node.get(key)
+            if (key == 'name' and outer_value not in (None, '')
+                    and inner_value not in (None, '', outer_value)):
+                # The wrapper names the graph node; the inner name labels its
+                # operation and does not change the wrapper's routing.
+                node['_prep_action_node_name'] = inner_value
+                continue
             if outer_value not in (None, '') and inner_value not in (None, outer_value):
                 raise ValueError(
                     f'Prep superNode {nid!r}: conflicting wrapper/actionNode '
@@ -715,6 +796,25 @@ def normalize_prep_flow(flow):
                     )
             else:
                 node[key] = deepcopy(value)
+
+        if simple_join_dialect:
+            if node.get('joinConditions') not in (None, []):
+                raise ValueError(
+                    f'Prep SimpleJoin {nid!r}: actionNode.conditions cannot be '
+                    'combined with wrapper joinConditions'
+                )
+            if 'conditions' not in node:
+                raise ValueError(
+                    f'Prep SimpleJoin {nid!r}: actionNode.conditions is required'
+                )
+            node['joinConditions'] = _simple_join_conditions(
+                node['conditions'], nid
+            )
+            if node.get('joinType') not in _PREP_JOIN_MAP:
+                raise ValueError(
+                    f'Prep SimpleJoin {nid!r}: explicit supported joinType is '
+                    'required'
+                )
 
         if sem == 'SuperTransform':
             inner_actions = _as_list(action_node.get('actions'))
@@ -880,6 +980,8 @@ def normalize_prep_flow(flow):
                                 f'container field {key!r} as identity'
                             )
                     for key, value in loom.items():
+                        if key == 'parameters' and value == {'parameters': {}}:
+                            continue
                         if key not in {'nodes', 'connections'} and nonempty(value):
                             raise ValueError(
                                 f'Prep container {nid!r}: cannot treat empty '
@@ -1027,7 +1129,11 @@ def normalize_prep_flow(flow):
                     f'Prep empty identity container {nid!r}: ambiguous {direction} '
                     f'routing through neighbors {sorted(neighbors)!r}'
                 )
-            if any(set(edge) - {'nextNodeId'} for edge in touching_edges):
+            routing = [{key: value for key, value in edge.items()
+                        if key != 'nextNodeId'} for edge in touching_edges]
+            default_routing = {'namespace': 'Default', 'nextNamespace': 'Default'}
+            if (any(item not in ({}, default_routing) for item in routing)
+                    or any(item != routing[0] for item in routing[1:])):
                 raise ValueError(
                     f'Prep empty identity container {nid!r}: edge metadata '
                     'cannot be preserved while collapsing the container'
@@ -1279,6 +1385,72 @@ _RE_LOWER = re.compile(r'\bLOWER\s*\(', re.IGNORECASE)
 _RE_TRIM = re.compile(r'\bTRIM\s*\(', re.IGNORECASE)
 _RE_LEFT = re.compile(r'\bLEFT\s*\(', re.IGNORECASE)
 _RE_RIGHT = re.compile(r'\bRIGHT\s*\(', re.IGNORECASE)
+_RE_SPLIT_CALL = re.compile(r'\bSPLIT\s*\(', re.IGNORECASE)
+_PREP_SPLIT_EXPR = re.compile(
+    r'^\s*SPLIT\s*\(\s*(\[[^\]\r\n]+\])\s*,\s*'
+    r'("(?:[^"]|"")*")\s*,\s*([^()]*)\)\s*$',
+    re.IGNORECASE,
+)
+_PREP_TRIM_SPLIT_EXPR = re.compile(
+    r'^\s*TRIM\s*\(\s*(SPLIT\s*\(.*\))\s*\)\s*$',
+    re.IGNORECASE | re.DOTALL,
+)
+_PREP_FIELD_REF = re.compile(r'^\[([^\]\r\n]+)\]$')
+
+
+def _prep_split_expression(expression):
+    """Parse only the evidenced SPLIT(field, quoted-delimiter, positive-int) form."""
+    expr = expression.strip()
+    trimmed_match = _PREP_TRIM_SPLIT_EXPR.fullmatch(expr)
+    is_trimmed = trimmed_match is not None
+    split_expr = trimmed_match.group(1).strip() if is_trimmed else expr
+    match = _PREP_SPLIT_EXPR.fullmatch(split_expr)
+    if match is None:
+        # Ignore occurrences inside quoted string literals; other SPLIT syntax
+        # must not fall through to the generic, lossy expression substitutions.
+        unquoted = re.sub(
+            r'"(?:[^"]|"")*"|\'(?:[^\']|\'\')*\'', '""', expr
+        )
+        if _RE_SPLIT_CALL.search(unquoted):
+            raise ValueError(
+                'Prep SPLIT supports only SPLIT([field], "delimiter", '
+                'positive integer), optionally wrapped in TRIM'
+            )
+        return None
+
+    field_match = _PREP_FIELD_REF.fullmatch(match.group(1).strip())
+    token_text = match.group(3).strip()
+    if field_match is None:
+        raise ValueError('Prep SPLIT requires a simple field-reference operand')
+    if not re.fullmatch(r'[+-]?\d+', token_text):
+        raise ValueError('Prep SPLIT requires a literal positive integer token')
+    token_number = int(token_text)
+    if token_number < 1:
+        raise ValueError('Prep SPLIT supports positive token numbers only')
+
+    # Tableau and M both use doubled quotes in quoted string literals.
+    delimiter = match.group(2)[1:-1].replace('""', '"')
+    return field_match.group(1), delimiter, token_number, is_trimmed
+
+
+def _prep_split_to_m(field_name, delimiter, token_number, is_trimmed):
+    """Generate guarded 1-based Tableau token selection using M's 0-based list."""
+    field_ref = f'[{field_name}]'
+    m_delimiter = '"' + delimiter.replace('"', '""') + '"'
+    source = '__tableau_prep_split_source'
+    tokens = '__tableau_prep_split_tokens'
+    result = (
+        f'let {source} = {field_ref} in '
+        f'if {source} = null then error '
+        '"Tableau SPLIT null-input behavior is unsupported" '
+        f'else if not Value.Is({source}, type text) then error '
+        '"Tableau SPLIT requires a text input" '
+        f'else let {tokens} = Text.Split({source}, {m_delimiter}) in '
+        f'if List.Count({tokens}) < {token_number} then error '
+        f'"Tableau SPLIT token {token_number} is unavailable" '
+        f'else {tokens}{{{token_number - 1}}}'
+    )
+    return f'Text.Trim(({result}))' if is_trimmed else f'({result})'
 
 
 def _convert_prep_expression_to_m(expression):
@@ -1291,6 +1463,9 @@ def _convert_prep_expression_to_m(expression):
         return '""'
 
     expr = expression.strip()
+    split_expression = _prep_split_expression(expr)
+    if split_expression is not None:
+        return _prep_split_to_m(*split_expression)
 
     # Basic column references: [Column] → [Column] (same in M for row context)
     # Tableau Prep IF/THEN/ELSE → M if/then/else (pre-compiled patterns)
@@ -1409,18 +1584,11 @@ def _parse_clean_actions(node):
         sem_type = action_type.rsplit('.', 1)[-1] if '.' in action_type else action_type
 
         if sem_type == 'RenameColumn':
-            old_name = action.get('columnName', '')
-            new_name = action.get('newColumnName', '')
-            if old_name and new_name:
-                # A->B followed by B->C is sequential, not a simultaneous map.
-                if old_name in pending_renames or old_name in pending_renames.values():
-                    flush_renames()
-                pending_renames[old_name] = new_name
-            else:
-                raise ValueError(
-                    'Prep RenameColumn requires columnName/newColumnName: '
-                    f'{action!r}'
-                )
+            old_name, new_name = _rename_column_names(action)
+            # A->B followed by B->C is sequential, not a simultaneous map.
+            if old_name in pending_renames or old_name in pending_renames.values():
+                flush_renames()
+            pending_renames[old_name] = new_name
             continue
 
         # Flush any pending renames before processing a non-rename action
@@ -1442,6 +1610,26 @@ def _parse_clean_actions(node):
     flush_renames()
 
     return steps
+
+
+def _rename_column_names(action):
+    """Return a validated source/target pair for a Prep RenameColumn action."""
+    old_name = action.get('columnName')
+    # ``rename`` is the target key used by observed public Prep node payloads.
+    # An explicitly present canonical key takes precedence, including invalid
+    # values, so malformed canonical payloads are not silently reinterpreted.
+    new_name = (
+        action.get('newColumnName')
+        if 'newColumnName' in action
+        else action.get('rename')
+    )
+    if (not isinstance(old_name, str) or not old_name.strip()
+            or not isinstance(new_name, str) or not new_name.strip()):
+        raise ValueError(
+            'Prep RenameColumn requires nonempty string columnName and target '
+            f'(newColumnName or rename): {action!r}'
+        )
+    return old_name, new_name
 
 
 def _require_filter_type(action, action_type):
@@ -1466,10 +1654,8 @@ def _convert_action_to_m_step(action_type, action, counter):
     """
 
     if action_type == 'RenameColumn':
-        old_name = action.get('columnName', '')
-        new_name = action.get('newColumnName', '')
-        if old_name and new_name:
-            return m_transform_rename({old_name: new_name})
+        old_name, new_name = _rename_column_names(action)
+        return m_transform_rename({old_name: new_name})
 
     elif action_type == 'RemoveColumns':
         columns = _as_list(action.get('columnNames', action.get('columns')))
@@ -1721,6 +1907,11 @@ def _require_field(fields, name, context):
 def _expression_type(expression, fields):
     """Conservative inference for literals, references and numeric arithmetic."""
     expr = (expression or '').strip()
+    split_expression = _prep_split_expression(expr)
+    if split_expression is not None:
+        field_name = split_expression[0]
+        source_type = _require_field(fields, field_name, 'SPLIT')['type']
+        return 'string' if source_type == 'string' else 'unknown'
     if re.fullmatch(r'(?:"[^"]*"|\'[^\']*\')', expr):
         return 'string'
     # Brackets inside literals are not field references.
@@ -1758,7 +1949,10 @@ def _clean_schema(node, fields):
                 _require_field(fields, col, kind)
             fields = [f for f in fields if f['name'] not in removed]
         elif kind == 'RenameColumn':
-            _require_field(fields, name, kind)['name'] = action['newColumnName']
+            old_name, new_name = _rename_column_names(action)
+            _require_field(fields, old_name, kind)['name'] = new_name
+            # Reuse the schema's case-insensitive duplicate-name safeguard.
+            _schema(fields, 'clean rename')
         elif kind == 'ChangeColumnType':
             _require_field(fields, name, kind)['type'] = action['newType']
         elif kind == 'DuplicateColumn':
@@ -2187,7 +2381,7 @@ def _clean_m_table_ref(name):
     return clean
 
 
-def _parse_join_node(node, right_table_name, right_fields):
+def _parse_join_node(node, right_table_name, right_fields, expand_fields=None):
     """
     Convert a Join node to m_transform_join steps.
 
@@ -2196,18 +2390,22 @@ def _parse_join_node(node, right_table_name, right_fields):
     """
     node = _as_dict(node)
     join_type = _PREP_JOIN_MAP.get(node.get('joinType', 'inner'), 'inner')
+    if join_type == 'fullanti':
+        raise ValueError(
+            'Prep notInner requires a SimpleJoin with an explicit output projection')
     conditions = _as_list(node.get('joinConditions', []))
 
     left_keys = [c.get('leftColumn', '') for c in conditions if isinstance(c, dict)]
     right_keys = [c.get('rightColumn', '') for c in conditions if isinstance(c, dict)]
 
     # Fields to expand from right table
-    expand_fields = [f.get('name', '') for f in _as_list(right_fields)
-                     if isinstance(f, dict) and f.get('name', '') not in right_keys]
+    if expand_fields is None:
+        expand_fields = [f.get('name', '') for f in _as_list(right_fields)
+                         if isinstance(f, dict) and f.get('name', '') not in right_keys]
 
     if left_keys and right_keys:
         # Use cleaned M table reference
-        m_ref = _clean_m_table_ref(right_table_name)
+        m_ref = _m_query_identifier(_clean_m_table_ref(right_table_name))
         return m_transform_join(
             m_ref, left_keys, right_keys,
             join_type, expand_fields
@@ -2222,6 +2420,48 @@ def _parse_join_node(node, right_table_name, right_fields):
 def _m_query_identifier(name):
     """Quote an M query identifier without changing its emitted table name."""
     return '#"' + str(name).replace('"', '""') + '"'
+
+
+def _join_temporary_name(stem, *schemas):
+    used = {field['name'].casefold() for fields in schemas for field in fields}
+    name = stem
+    suffix = 2
+    while name.casefold() in used:
+        name = f'{stem}_{suffix}'
+        suffix += 1
+    return name
+
+
+def _simple_join_full_anti_steps(node, right_table_name, left_fields, right_fields):
+    """Combine the left-only and right-only rows without deduplication."""
+    conditions = node['joinConditions']
+    left_keys = ', '.join(_m_literal(c['leftColumn']) for c in conditions)
+    right_keys = ', '.join(_m_literal(c['rightColumn']) for c in conditions)
+    declared = [field['name'] for field in node['fields']]
+    marker = _join_temporary_name('__TTPBI_JoinRow', left_fields, right_fields)
+    nested = _join_temporary_name('__TTPBI_AntiMatches', left_fields, right_fields)
+    projected = ', '.join(_m_literal(name) for name in [marker, *declared])
+    right_ref = _m_query_identifier(_clean_m_table_ref(right_table_name))
+    marker_literal = _m_literal(marker)
+    nested_literal = _m_literal(nested)
+    expression = (
+        f'let __left = {{prev}}, __right = {right_ref}, '
+        f'__left_only = Table.NestedJoin(__left, {{{left_keys}}}, '
+        f'__right, {{{right_keys}}}, {nested_literal}, JoinKind.LeftAnti), '
+        f'__right_only = Table.NestedJoin(__right, {{{right_keys}}}, '
+        f'__left, {{{left_keys}}}, {nested_literal}, JoinKind.LeftAnti), '
+        f'__left_marked = Table.AddColumn(__left_only, {marker_literal}, '
+        'each null, type nullable text), '
+        f'__right_marked = Table.AddColumn(__right_only, {marker_literal}, '
+        'each null, type nullable text), '
+        f'__left_projected = Table.SelectColumns(__left_marked, {{{projected}}}, '
+        'MissingField.UseNull), '
+        f'__right_projected = Table.SelectColumns(__right_marked, {{{projected}}}, '
+        'MissingField.UseNull), '
+        '__combined = Table.Combine({__left_projected, __right_projected}) '
+        f'in Table.RemoveColumns(__combined, {{{marker_literal}}})'
+    )
+    return [('#"Unmatched Join Rows"', expression)]
 
 
 def _manual_union_rename_expression(table_ref, manual_input):
@@ -2334,7 +2574,7 @@ def _parse_pivot_node(node):
 #  MAIN FLOW PARSER — CONVERTS ENTIRE FLOW TO DATASOURCES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def parse_prep_flow(filepath):
+def parse_prep_flow(filepath, simple_join_policies=None):
     """
     Parse a Tableau Prep flow file and convert to datasource definitions
     compatible with the Power BI generation pipeline.
@@ -2344,6 +2584,8 @@ def parse_prep_flow(filepath):
 
     Args:
         filepath: Path to .tfl or .tflx file
+        simple_join_policies: Optional node-keyed semantic attestations. When
+            omitted, TTPBI_PREP_SIMPLE_JOIN_POLICIES supplies the same JSON.
 
     Returns:
         list of datasource dicts, each with:
@@ -2353,6 +2595,8 @@ def parse_prep_flow(filepath):
         - columns_metadata: []
         - calculations: []
     """
+    policies_from_environment = simple_join_policies is None
+    simple_join_policies = _simple_join_policies(simple_join_policies)
     flow = normalize_prep_flow(read_prep_flow(filepath))
     blocking_diagnostics = [
         item for item in flow.get('_prep_diagnostics', [])
@@ -2369,6 +2613,22 @@ def parse_prep_flow(filepath):
         )
     nodes = _as_dict(flow.get('nodes', {}))
     connections = _as_dict(flow.get('connections', {}))
+    simple_join_ids = {
+        nid for nid, node in nodes.items()
+        if node.get('_prep_simple_join_dialect') == _PREP_SIMPLE_JOIN_DIALECT
+    }
+    if policies_from_environment:
+        for node_id in sorted(simple_join_ids.intersection(simple_join_policies)):
+            logger.warning(
+                "Prep SimpleJoin environment policy %r applies to %s but is not "
+                "scoped to a flow; verify its semantics for every matching flow",
+                node_id, filepath,
+            )
+    else:
+        unknown = set(simple_join_policies) - simple_join_ids
+        if unknown:
+            raise ValueError(
+                f'Prep SimpleJoin policies reference unknown nodes: {sorted(unknown)!r}')
 
     if not nodes:
         raise ValueError(
@@ -2385,7 +2645,9 @@ def parse_prep_flow(filepath):
     secondary_branch_ids = set()
 
     for nid in sorted_ids:
-        _process_prep_node(nid, nodes, connections, node_results, secondary_branch_ids)
+        _process_prep_node(
+            nid, nodes, connections, node_results, secondary_branch_ids,
+            simple_join_policies=simple_join_policies)
 
     # Collect output nodes into datasources
     return _collect_prep_datasources(
@@ -2393,7 +2655,8 @@ def parse_prep_flow(filepath):
     )
 
 
-def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_ids):
+def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_ids,
+                       simple_join_policies=None):
     """Process one input/transform/output node and store its result."""
     nodes = _as_dict(nodes)
     connections = _as_dict(connections)
@@ -2408,8 +2671,13 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
     elif base_type == 'transform':
         upstream_ids = _find_upstream_nodes(nodes, nid)
         _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
-                                node_results, secondary_branch_ids, node_name)
-        _declared_schema(node, node_results[nid], f'transform {nid!r}')
+                                node_results, secondary_branch_ids, node_name,
+                                simple_join_policies=simple_join_policies)
+        _declared_schema(
+            node, node_results[nid], f'transform {nid!r}',
+            project=node.get('_prep_simple_join_dialect')
+            == _PREP_SIMPLE_JOIN_DIALECT,
+        )
 
     elif base_type == 'output':
         upstream_ids = _find_upstream_nodes(nodes, nid)
@@ -2480,7 +2748,8 @@ def _process_input_node(nid, node, connections, node_results, node_name):
 
 
 def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
-                            node_results, secondary_branch_ids, node_name):
+                            node_results, secondary_branch_ids, node_name,
+                            simple_join_policies=None):
     """Dispatch a transform node to its specific handler based on semantic type."""
     node = _as_dict(node)
     nodes = _as_dict(nodes)
@@ -2559,6 +2828,48 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
         # Join needs two upstream sources
         left_id = node.get('leftNodeId')
         right_id = node.get('rightNodeId')
+        simple_join = (
+            node.get('_prep_simple_join_dialect') == _PREP_SIMPLE_JOIN_DIALECT
+        )
+
+        if simple_join:
+            if not node.get('_prep_declared_fields') or not node.get('fields'):
+                raise ValueError(
+                    f'Prep SimpleJoin {nid!r}: source-declared nonempty fields '
+                    'projection is required; the observed public payload has '
+                    'no output schema/projection'
+                )
+            incoming_by_side = {'Left': [], 'Right': []}
+            for input_id in upstream_ids:
+                input_node = _as_dict(nodes.get(input_id))
+                edges = [
+                    edge for edge in _as_list(input_node.get('nextNodes'))
+                    if isinstance(edge, dict)
+                    and edge.get('nextNodeId') == nid
+                ]
+                if len(edges) != 1:
+                    raise ValueError(
+                        f'Prep SimpleJoin {nid!r}: input {input_id!r} '
+                        'requires exactly one incoming edge'
+                    )
+                side = edges[0].get('nextNamespace')
+                if side not in incoming_by_side:
+                    raise ValueError(
+                        f'Prep SimpleJoin {nid!r}: edge namespace must explicitly '
+                        f'identify Left or Right, got {side!r}'
+                    )
+                incoming_by_side[side].append(input_id)
+            if (
+                len(upstream_ids) != 2
+                or len(incoming_by_side['Left']) != 1
+                or len(incoming_by_side['Right']) != 1
+            ):
+                raise ValueError(
+                    f'Prep SimpleJoin {nid!r}: requires exactly one input on '
+                    'each explicit Left/Right edge namespace'
+                )
+            left_id = incoming_by_side['Left'][0]
+            right_id = incoming_by_side['Right'][0]
 
         # A side may be inferred only as the unique complement of an explicitly
         # identified side. Dictionary/topological order is not left/right
@@ -2588,8 +2899,6 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 right = node_results[right_id]
                 right_name = right.get('name', 'RightTable')
                 right_fields = right.get('fields', [])
-                # Mark the right branch for emission as a separate query
-                secondary_branch_ids.add(right_id)
 
             if node.get('joinType', 'inner') not in _PREP_JOIN_MAP:
                 raise ValueError(f'Prep join {nid!r}: unsupported joinType')
@@ -2597,31 +2906,90 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
             right_fields = _schema(right_fields, 'join right')
             conditions = _as_list(node.get('joinConditions'))
             for condition in conditions:
-                _require_field(
+                left_key = _require_field(
                     left_fields, condition.get('leftColumn'), 'join left key'
                 )
-                _require_field(
+                right_key = _require_field(
                     right_fields, condition.get('rightColumn'), 'join right key'
                 )
+                if simple_join and (
+                        left_key['type'] == 'unknown'
+                        or left_key['type'] != right_key['type']):
+                    raise ValueError(
+                        f'Prep SimpleJoin {nid!r}: join key types must match '
+                        'without an inferred cast')
             right_keys = {c.get('rightColumn') for c in conditions}
-            expanded = [f for f in right_fields if f['name'] not in right_keys]
-            # NestedJoin introduces Joined; expansion removes it only if there
-            # are fields to expand. Remove the empty nested column explicitly.
-            if any(f['name'].casefold() == 'joined' for f in left_fields):
+            if simple_join:
+                declared = _schema(node['fields'], 'SimpleJoin projection')
+                left_names = {field['name'].casefold(): field['name']
+                              for field in left_fields}
+                right_names = {field['name'].casefold(): field['name']
+                               for field in right_fields}
+                expanded = []
+                for field in declared:
+                    name = field['name']
+                    folded = name.casefold()
+                    if folded in left_names and folded in right_names:
+                        raise ValueError(
+                            f'Prep SimpleJoin {nid!r}: ambiguous projected field '
+                            f'{name!r} exists on both inputs')
+                    if name == right_names.get(folded):
+                        expanded.append(_require_field(right_fields, name, 'join projection'))
+                    elif name != left_names.get(folded):
+                        raise ValueError(
+                            f'Prep SimpleJoin {nid!r}: projected field {name!r} '
+                            'does not resolve to an input')
+                m_names = ([right_name] + [field['name'] for field in declared]
+                           + [c[side + 'Column'] for c in conditions
+                              for side in ('left', 'right')])
+                if any('#(' in name or any(char in name for char in '\r\n\t\0')
+                       for name in m_names):
+                    raise ValueError(
+                        f'Prep SimpleJoin {nid!r}: control characters or M escape '
+                        'sequences in query/field names are unsupported')
+                if not isinstance(simple_join_policies, dict) \
+                        or nid not in simple_join_policies:
+                    raise ValueError(
+                        f'Prep SimpleJoin {nid!r}: semantics evidence policy is '
+                        'required before generating the join')
+                _simple_join_policies({nid: simple_join_policies[nid]})
+            else:
+                expanded = [f for f in right_fields if f['name'] not in right_keys]
+            if (node.get('joinType') != 'notInner'
+                    and any(f['name'].casefold() == 'joined' for f in left_fields)):
                 raise ValueError(
                     f'Prep join {nid!r}: reserved nested column Joined collides'
                 )
             joined_fields = _schema(left_fields + expanded, 'join output')
-            join_steps = _parse_join_node(node, right_name, right_fields)
+            if simple_join and node.get('joinType') == 'notInner':
+                join_steps = _simple_join_full_anti_steps(
+                    node, right_name, left_fields, right_fields)
+            else:
+                join_steps = _parse_join_node(
+                    node, right_name, right_fields,
+                    expand_fields=[field['name'] for field in expanded]
+                    if simple_join else None)
             if not join_steps:
                 raise ValueError(
                     f'Prep join {nid!r}: missing supported join conditions'
                 )
-            if not expanded:
-                join_steps.append(m_transform_remove_columns(['Joined']))
+            if not expanded and node.get('joinType') != 'notInner':
+                if node.get('joinType') == 'leftOnly':
+                    join_steps.append(m_transform_remove_columns(['Joined']))
+                else:
+                    marker = _join_temporary_name(
+                        '__TTPBI_JoinMatch', left_fields, right_fields)
+                    join_steps.append((
+                        '#"Expanded Join Multiplicity"',
+                        f'Table.ExpandTableColumn({{prev}}, "Joined", '
+                        f'{{{_m_literal(conditions[0]["rightColumn"])}}}, '
+                        f'{{{_m_literal(marker)}}})',
+                    ))
+                    join_steps.append(m_transform_remove_columns([marker]))
             m_query = left['m_query']
             if join_steps:
                 m_query = inject_m_steps(m_query, join_steps)
+            secondary_branch_ids.add(right_id)
 
             node_results[nid] = {
                 **left,

@@ -687,7 +687,7 @@ class TestSetsAndCombinedGroups(unittest.TestCase):
         self.assertIsNotNone(comb_col)
 
     def test_combined_group_cross_table_related(self):
-        """L1812-1815: combined group source field from different table → RELATED()."""
+        """A missing remote source table cannot supply a combined-group field."""
         model = self._make_model()
         extra = {
             'sets': [],
@@ -702,12 +702,10 @@ class TestSetsAndCombinedGroups(unittest.TestCase):
             '_datasources': [],
         }
         # OtherCol maps to a different table
-        _process_sets_groups_bins(
-            model, extra, 'Sales',
-            {'Region': 'Sales', 'OtherCol': 'Products'})
-        cols = model["model"]["tables"][0]["columns"]
-        cross_col = next((c for c in cols if c.get('name') == 'CrossGrp'), None)
-        self.assertIsNotNone(cross_col)
+        with self.assertRaisesRegex(ValueError, "OtherCol.*unresolved"):
+            _process_sets_groups_bins(
+                model, extra, 'Sales',
+                {'Region': 'Sales', 'OtherCol': 'Products'})
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1474,7 +1472,7 @@ class TestIntegrationSetsCombinedGroupsBins(unittest.TestCase):
             'groups': [{
                 'name': 'CrossGrp',
                 'group_type': 'combined',
-                'source_fields': ['CustName'],
+                'source_fields': ['OrderID', 'CustName'],
                 'members': {},
                 'source_field': '',
             }],

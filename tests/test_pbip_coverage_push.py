@@ -153,9 +153,9 @@ class TestThemeReferenceInReportJson(unittest.TestCase):
 # ─── Report-level filters (lines 905-920) ───────────────────────────
 
 class TestReportLevelFilters(unittest.TestCase):
-    """Report-level filters from global + datasource filters."""
+    """Only datasource filters belong at report level."""
 
-    def test_global_filters_applied(self):
+    def test_worksheet_filters_are_not_promoted_but_datasource_filters_are(self):
         gen = _make_generator()
         _init_gen(gen)
         project_dir = tempfile.mkdtemp()
@@ -177,7 +177,13 @@ class TestReportLevelFilters(unittest.TestCase):
         with open(rpath) as f:
             report = json.load(f)
         self.assertIn('filterConfig', report)
-        self.assertGreater(len(report['filterConfig']['filters']), 0)
+        emitted = report['filterConfig']['filters']
+        fields = {
+            entry.get('field', {}).get('Column', {}).get('Property')
+            for entry in emitted
+        }
+        self.assertIn('Year', fields)
+        self.assertNotIn('Region', fields)
 
 
 # ─── Swap bookmarks from dynamic zone visibility (lines 951-952) ────
@@ -813,8 +819,45 @@ class TestSortDefinition(unittest.TestCase):
         sd = vj.get('visual', {}).get('query', {}).get('sortDefinition', {})
         self.assertIn('sort', sd)
         self.assertEqual(sd['sort'][0]['direction'], 'Descending')
-        # sort_by should produce Aggregation field
-        self.assertIn('Aggregation', sd['sort'][0]['field'])
+        self.assertEqual(sd['sort'][0]['field'], {
+            'Measure': {
+                'Expression': {'SourceRef': {'Entity': 'T'}},
+                'Property': 'Sales',
+            },
+        })
+
+    def test_sort_by_column_uses_aggregation(self):
+        gen = _make_generator()
+        _init_gen(gen, field_map={
+            'Category': ('T', 'Category'),
+            'Sales': ('T', 'Sales'),
+        })
+        visuals_dir = tempfile.mkdtemp()
+        _TEMP_DIRS.append(visuals_dir)
+        ws_data = {
+            'name': 'WS1', 'chart_type': 'clusteredBarChart',
+            'fields': [{'name': 'Category'}],
+            'sort_orders': [{'field': 'Category', 'direction': 'DESC', 'sort_by': 'Sales'}],
+        }
+        obj = {'type': 'worksheetReference', 'worksheetName': 'WS1',
+               'position': {'x': 0, 'y': 0, 'w': 400, 'h': 300}}
+        gen._create_visual_worksheet(visuals_dir, ws_data, obj, 1.0, 1.0, 0,
+                                     [], {'calculations': []})
+        vid = os.listdir(visuals_dir)[0]
+        with open(os.path.join(visuals_dir, vid, 'visual.json')) as f:
+            visual = json.load(f)
+        sort_field = visual['visual']['query']['sortDefinition']['sort'][0]['field']
+        self.assertEqual(sort_field, {
+            'Aggregation': {
+                'Expression': {
+                    'Column': {
+                        'Expression': {'SourceRef': {'Entity': 'T'}},
+                        'Property': 'Sales',
+                    },
+                },
+                'Function': 0,
+            },
+        })
 
     def test_sort_simple_ascending(self):
         gen = _make_generator()
@@ -1017,6 +1060,22 @@ class TestAxesLabelRotation(unittest.TestCase):
 
 class TestContinuousDiscreteAxis(unittest.TestCase):
     """is_continuous on axes → Continuous/Categorical axisType."""
+
+    def test_empty_legacy_axis_list_has_no_axis_detail(self):
+        gen = _make_generator()
+        _init_gen(gen)
+        objects = {}
+        expected = {}
+        gen._build_axis_objects(objects, {'axes': []}, 'lineChart')
+        gen._build_axis_objects(expected, {'axes': {}}, 'lineChart')
+        self.assertEqual(objects, expected)
+
+    def test_nonempty_axis_list_is_rejected(self):
+        gen = _make_generator()
+        _init_gen(gen)
+        with self.assertRaisesRegex(ValueError, 'axes'):
+            gen._build_axis_objects(
+                {}, {'axes': [{'type': 'x'}]}, 'lineChart')
 
     def test_continuous_x_axis(self):
         gen = _make_generator()

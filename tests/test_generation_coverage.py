@@ -405,6 +405,28 @@ class TestRuntimeRowConversionRegressions(unittest.TestCase):
         self.assertTrue(_m_row_dependencies_available(
             'Text.From([#"Quoted ""Name"])', {'Quoted "Name'}))
 
+    def test_row_dependency_guard_drives_m_or_dax_fallback(self):
+        from powerbi_import.tmdl_generator import _build_table
+
+        table = {'name': 'Facts', 'columns': [{'name': 'Date', 'datatype': 'string'}]}
+        connection = {'type': 'SQL Server', 'server': 's', 'database': 'd'}
+        context = {'measure_names': {'Objective'}, 'calc_map': {}, 'param_map': {},
+                   'column_table_map': {}, 'param_values': {}}
+        for formula, materialized in (
+            ('[Date] + "[Objective]"', True),
+            ('[Date] + [Objective]', False),
+        ):
+            with self.subTest(formula=formula):
+                calculations = [{'name': 'Label', 'caption': 'Label',
+                                 'formula': formula, 'role': 'dimension',
+                                 'datatype': 'string'}]
+                result = _build_table(table, connection, calculations, [],
+                                      dax_context=context)
+                column = next(c for c in result['columns'] if c['name'] == 'Label')
+                self.assertEqual('sourceColumn' in column, materialized)
+                m_expression = result['partitions'][0]['source']['expression']
+                self.assertEqual('Table.AddColumn' in m_expression, materialized)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Helper Functions

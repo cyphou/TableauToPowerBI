@@ -67,13 +67,13 @@
    "z": 0
   },
   {
-   "fields": 2,
-   "has_format": false,
+   "fields": 1,
+   "has_format": true,
    "height": 700,
    "page": "Sales Map",
    "title_font": "",
    "title_size": "",
-   "type": "azureMap",
+   "type": "tableEx",
    "width": 1260,
    "x": 10,
    "y": 10,

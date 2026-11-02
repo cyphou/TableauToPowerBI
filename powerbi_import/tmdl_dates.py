@@ -120,6 +120,11 @@ def _worksheet_date_usage(model, worksheets, table_rename_map):
     """
     tables = {t['name']: t for t in model['model']['tables']}
     sources = model.get('_datasources', [])
+    source_names = {source.get('name') for source in sources}
+    merged_sources = any(
+        table.get('_source_workbooks')
+        for source in sources for table in source.get('tables', [])
+    )
     renames = model.get('_column_rename_map', {})
     usage = {}
     for ws in worksheets:
@@ -128,9 +133,12 @@ def _worksheet_date_usage(model, worksheets, table_rename_map):
             name = field.get('name', '').strip('[]')
             ds_name = field.get('datasource', '')
             explicit_table = field.get('table', '')
+            known_datasource = ds_name in source_names
+            if ds_name and not known_datasource and not merged_sources:
+                continue
             matches = set()
             for ds in sources:
-                if ds_name and ds.get('name') != ds_name:
+                if ds_name and known_datasource and ds.get('name') != ds_name:
                     continue
                 for source in ds.get('tables', []):
                     raw_table = source.get('name', '')
@@ -148,7 +156,7 @@ def _worksheet_date_usage(model, worksheets, table_rename_map):
             if not sources and not ds_name:
                 matches = {(tname, name) for tname, table in tables.items()
                            if any(c.get('name') == name for c in table.get('columns', []))}
-            if not ds_name and not explicit_table and len(matches) > 1:
+            if (not ds_name or not known_datasource) and not explicit_table and len(matches) > 1:
                 continue
             axis = field.get('shelf') in ('rows', 'columns')
             rank = 2 if axis and (field.get('date_part') or field.get('derivation')) else int(axis)
@@ -272,7 +280,10 @@ def _runtime_calendar_dates(model, candidates):
                 or not expression or references(expression, list(tables) + ['Calendar'])):
             continue
         identifier = '#"' + (tname + '.' + cname + ' Dates').replace('"', '""') + '"'
-        column = cname.replace('"', '""')
+        model_column = next(
+            col for col in tables[tname].get('columns', []) if col.get('name') == cname)
+        source_column = model_column.get('sourceColumn')
+        column = (cname if source_column is None else source_column).replace('"', '""')
         query_name = f'Calendar Source {tname}.{cname}'
         base_name = query_name
         suffix = 2
@@ -375,7 +386,8 @@ def _add_date_table(model, worksheets=None, hyper_files=None, table_rename_map=N
         '    DateList = List.Dates(StartDate, DayCount, #duration(1, 0, 0, 0)),\n'
         '    #"Date Table" = Table.FromList(DateList, Splitter.SplitByNothing(), {"Date"}, null, ExtraValues.Error),\n'
         '    #"Changed Type" = Table.TransformColumnTypes(#"Date Table", {{"Date", type date}}),\n'
-        '    #"Added Year" = Table.AddColumn(#"Changed Type", "Year", each Date.Year([Date]), Int64.Type),\n'
+        '    #"Added MonthStart" = Table.AddColumn(#"Changed Type", "MonthStart", each Date.StartOfMonth([Date]), type date),\n'
+        '    #"Added Year" = Table.AddColumn(#"Added MonthStart", "Year", each Date.Year([Date]), Int64.Type),\n'
         '    #"Added Quarter" = Table.AddColumn(#"Added Year", "Quarter", each "Q" & Text.From(Date.QuarterOfYear([Date]))),\n'
         '    #"Added Month" = Table.AddColumn(#"Added Quarter", "Month", each Date.Month([Date]), Int64.Type),\n'
         f'    #"Added MonthName" = Table.AddColumn(#"Added Month", "MonthName", each Date.MonthName([Date], "{cal_culture}")),\n'
@@ -398,6 +410,13 @@ def _add_date_table(model, worksheets=None, hyper_files=None, table_rename_map=N
                 "dataCategory": "DateTime",
                 "formatString": "dd/mm/yyyy",
                 "sourceColumn": "Date",
+                "summarizeBy": "none"
+            },
+            {
+                "name": "MonthStart",
+                "dataType": "DateTime",
+                "formatString": "mmm yyyy",
+                "sourceColumn": "MonthStart",
                 "summarizeBy": "none"
             },
             {
@@ -514,10 +533,8 @@ def _add_date_table(model, worksheets=None, hyper_files=None, table_rename_map=N
 
     model["model"]["tables"].append(date_table)
 
-    # When multiple tables connect to Calendar, use bothDirections so
-    # Calendar acts as a shared dimension that bridges cross-table
-    # filtering (star schema pattern).  This prevents
-    # InvalidUnconstrainedJoin errors in multi-datasource workbooks.
+    # A shared Calendar is not evidence that otherwise independent fact
+    # tables should filter each other. Keep every generated link single-way.
     # A previous/candidate logical alias is not a second fact at the current
     # date grain. An automatic Calendar bridge would silently filter its
     # candidate bag and thereby change a compiled range-predicate SUM.
@@ -525,7 +542,6 @@ def _add_date_table(model, worksheets=None, hyper_files=None, table_rename_map=N
                          if len(pair) == 2}
     cal_candidates = [(table, column) for table, column in cal_candidates
                       if table not in candidate_aliases]
-    cross_dir = "bothDirections" if len(cal_candidates) > 1 else "oneDirection"
     for tname, date_col_name in cal_candidates:
         model["model"]["relationships"].append({
             "name": f"Calendar_{tname}_{date_col_name}",
@@ -533,5 +549,5 @@ def _add_date_table(model, worksheets=None, hyper_files=None, table_rename_map=N
             "fromColumn": date_col_name,
             "toTable": "Calendar",
             "toColumn": "Date",
-            "crossFilteringBehavior": cross_dir
+            "crossFilteringBehavior": "oneDirection"
         })

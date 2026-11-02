@@ -641,8 +641,9 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
             cat.name, "Table calculations", INFO,
             f"{len(table_calcs)} table calculation(s) (RUNNING/WINDOW): "
             f"{names_preview}{extra}. "
-            "Auto-converted to DAX CALCULATE / window functions.",
-            "Verify sort order and partitioning match Tableau behavior.",
+            "Conversion depends on the function and Tableau mark scope.",
+            "Review generated DAX, including unresolved calculations, and verify "
+            "sort order and partitioning against Tableau.",
         ))
     else:
         cat.checks.append(CheckItem(

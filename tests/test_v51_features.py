@@ -270,8 +270,8 @@ class TestPrepFlowAggregations(unittest.TestCase):
 class TestPrepFlowJoinMapping(unittest.TestCase):
     """Prep flow notInner join mapping fix."""
 
-    def test_notinner_is_leftanti(self):
-        self.assertEqual(_PREP_JOIN_MAP['notInner'], 'leftanti')
+    def test_notinner_is_fullanti(self):
+        self.assertEqual(_PREP_JOIN_MAP['notInner'], 'fullanti')
 
     def test_notinner_not_full(self):
         self.assertNotEqual(_PREP_JOIN_MAP['notInner'], 'full')

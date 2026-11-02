@@ -2325,12 +2325,10 @@ def m_transform_add_column(new_col_name, expression, col_type=None):
         col_type: str — optional M type (e.g., 'type number')
     """
     type_arg = f', {col_type}' if col_type else ''
-    # Escape " in step name (M identifier quoting uses "" for literal quotes)
-    safe_step_name = new_col_name.replace('"', '""')
-    # Escape " in column name within the Table.AddColumn expression string
-    safe_col_name = new_col_name.replace('"', '""')
-    return (f'#"Added {safe_step_name}"',
-            f'Table.AddColumn({{prev}}, "{safe_col_name}", {expression}{type_arg})')
+    step_name = '#' + _m_header_literal('Added ' + new_col_name)
+    column_name = _m_header_literal(new_col_name)
+    return (step_name,
+            f'Table.AddColumn({{prev}}, {column_name}, {expression}{type_arg})')
 
 
 def m_transform_conditional_column(new_col_name, conditions, default_value=None):

@@ -3,44 +3,32 @@
   "version": 1,
   "known_limitations": {
     "real_world/Cache.twbx": {
-      "category": "hyper_import",
+      "category": "generation",
       "details": [
-        "Required Hyper full-export/Import binding checks failed"
+        "Hyper source lacks an exact physical identity; full-data import cannot be bound safely."
       ],
       "blockers": [
-        "Hyper datasource table lacks an exact packaged or explicit local source identity.",
-        "Hyper is required, but Data/hyper_exports.json is missing; full export proof cannot be established.",
-        "Hyper is required, but the project Data directory is missing.",
-        "Hyper source evidence has no final table with an exact Migration_HyperIdentity annotation.",
-        "Hyper source is present, but no exact explicit physical identity is available; filename/table heuristics are not accepted."
+        "Migration failed during generation: Hyper source lacks an exact physical identity; full-data import cannot be bound safely."
       ],
       "reason": "The workbook packages only a legacy .tde extract (Data/en_US-US/Sales Target.tde). The Hyper API refuses it ('invalid magic value in header'), so no complete CSV/Parquet export can be produced, and sampling or falling back to the historical live source is not acceptable. Re-saving the extract as .hyper in Tableau Desktop would make it migratable."
     },
     "real_world/SampleWB.twbx": {
-      "category": "hyper_import",
+      "category": "generation",
       "details": [
-        "Required Hyper full-export/Import binding checks failed"
+        "Hyper source lacks an exact physical identity; full-data import cannot be bound safely."
       ],
       "blockers": [
-        "Hyper datasource table lacks an exact packaged or explicit local source identity.",
-        "Hyper is required, but Data/hyper_exports.json is missing; full export proof cannot be established.",
-        "Hyper is required, but the project Data directory is missing.",
-        "Hyper source evidence has no final table with an exact Migration_HyperIdentity annotation.",
-        "Hyper source is present, but no exact explicit physical identity is available; filename/table heuristics are not accepted."
+        "Migration failed during generation: Hyper source lacks an exact physical identity; full-data import cannot be bound safely."
       ],
       "reason": "The workbook packages only a legacy .tde extract (Data/Tableau Samples/World Indicators.tde), which the Hyper API refuses ('invalid magic value in header'). No complete export exists, and sampling or the historical live source is not acceptable. Re-saving the extract as .hyper in Tableau Desktop would make it migratable."
     },
     "real_world/RESTAPISample.twb": {
-      "category": "hyper_import",
+      "category": "generation",
       "details": [
-        "Required Hyper full-export/Import binding checks failed"
+        "Hyper source lacks an exact physical identity; full-data import cannot be bound safely."
       ],
       "blockers": [
-        "Hyper datasource table lacks an exact packaged or explicit local source identity.",
-        "Hyper is required, but Data/hyper_exports.json is missing; full export proof cannot be established.",
-        "Hyper is required, but the project Data directory is missing.",
-        "Hyper source evidence has no final table with an exact Migration_HyperIdentity annotation.",
-        "Hyper source is present, but no exact explicit physical identity is available; filename/table heuristics are not accepted."
+        "Migration failed during generation: Hyper source lacks an exact physical identity; full-data import cannot be bound safely."
       ],
       "reason": "An unpackaged .twb whose datasource points at the relative extract Data/Tableau Samples/World Indicators.tde. The extract is not shipped with it, and the same file packaged in SampleWB.twbx is a legacy .tde that the Hyper API refuses ('invalid magic value in header'), so no complete export exists."
     },
@@ -53,12 +41,12 @@
       "reason": "Empty flow from tableau/server-client-python's test assets: it declares no nodes, so there is nothing to convert."
     },
     "real_world/tableau_prep_book.tfl": {
-      "category": "analysis",
+      "category": "conversion",
       "details": [
-        "actionNode.nodeType 'SimpleJoin' conflicts with wrapper 'SuperJoin'"
+        "Prep union incompatible types for 'Discount': 'real', 'string'"
       ],
       "blockers": [],
-      "reason": "The observed SimpleUnion namespaceFieldMappings dialect is now supported, but this real flow from 'Visual Analytics with Tableau' still rejects the later SimpleJoin action inside SuperJoin. Left/right inputs and equality keys are declared, but result-field selection and duplicate-key/collision semantics are not established; aliasing it to the existing Join parser would invent a projection. Separately, the mapped union inputs declare incompatible string/real fields without an explicit cast. The measured first blocker remains exact, with no fields discarded or types guessed to force success."
+      "reason": "The observed RenameColumn target alias and positive SPLIT expressions are now supported within guarded bounds, so this flow reaches its mapped union and rejects the Discount field's incompatible real/string inputs. No cast is inferred. Independently, the SimpleJoin has no declared result projection, so it remains blocked rather than projecting every input field. No M output is published."
     }
   }
 }

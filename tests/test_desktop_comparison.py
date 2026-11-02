@@ -125,6 +125,352 @@ class TestLocalInitialPixels(FolderFixture):
         self.assertEqual(row["tableau"]["cleanup"]["status"], "closed")
         self.assertEqual(row["powerbi"]["cleanup"]["status"], "closed")
 
+    def test_completed_workbook_checkpoint_survives_abrupt_termination(self):
+        self.pair("Zulu.twb")
+        observed = {}
+
+        def capture(pbip, shot, timeout, desktop_path, **kwargs):
+            if Path(pbip).stem == "Zulu":
+                manifest_path, = (self.output / "desktop_comparisons").glob(
+                    "*/manifest.json")
+                observed["path"] = manifest_path
+                observed["manifest"] = json.loads(
+                    manifest_path.read_text(encoding="utf-8"))
+                raise SystemExit("simulated abrupt termination")
+            return self.powerbi_capture(pbip, shot, timeout, desktop_path, **kwargs)
+
+        self.powerbi.side_effect = capture
+        with self.assertRaisesRegex(SystemExit, "simulated abrupt termination"):
+            self.run_comparison()
+
+        checkpoint = observed["manifest"]
+        self.assertEqual(checkpoint["status"], "in_progress")
+        self.assertEqual(Path(checkpoint["manifest_path"]), observed["path"])
+        self.assertEqual(checkpoint["totals_scope"], "recorded_workbooks_only")
+        self.assertEqual(checkpoint["progress"]["workbooks_total"], 2)
+        self.assertEqual(checkpoint["progress"]["workbooks_completed"], 1)
+        self.assertEqual(checkpoint["progress"]["workbooks_incomplete"], 1)
+        self.assertEqual(len(checkpoint["workbooks"]), 1)
+        row, = checkpoint["workbooks"]
+        self.assertEqual(row["relative_source"], "Sales.twb")
+        self.assertEqual(row["powerbi"]["status"], "captured")
+        self.assertEqual(row["powerbi"]["cleanup"]["status"], "closed")
+        self.assertEqual(json.loads(observed["path"].read_text("utf-8")), checkpoint)
+        self.assertFalse((observed["path"].parent / "comparison.html").exists())
+        comparison.render_comparison_html(checkpoint, observed["path"].parent)
+        document = (observed["path"].parent / "comparison.html").read_text("utf-8")
+        self.assertIn("Diagnostic partiel", document)
+        self.assertIn("1 / 2", document)
+
+    def test_keyboard_interrupt_records_current_workbook_and_partial_html(self):
+        self.pair("Zulu.twb")
+        registry = {}
+
+        def capture(pbip, shot, timeout, desktop_path, **kwargs):
+            if Path(pbip).stem == "Zulu":
+                registry[333] = object()
+                raise KeyboardInterrupt("simulated interruption")
+            return self.powerbi_capture(pbip, shot, timeout, desktop_path, **kwargs)
+
+        self.powerbi.side_effect = capture
+        with mock.patch.object(comparison.desktop_probe, "_OPEN_PROBE_PROCESSES", registry), \
+                self.assertRaisesRegex(KeyboardInterrupt, "simulated interruption"):
+            self.run_comparison()
+
+        manifest_path, = (self.output / "desktop_comparisons").glob(
+            "*/manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "interrupted")
+        self.assertEqual(manifest["progress"]["workbooks_total"], 2)
+        self.assertEqual(manifest["progress"]["workbooks_completed"], 1)
+        self.assertEqual(manifest["progress"]["workbooks_recorded"], 2)
+        self.assertEqual(manifest["progress"]["workbooks_incomplete"], 1)
+        first, interrupted = manifest["workbooks"]
+        self.assertEqual(first["status"], "manual_review")
+        self.assertEqual(interrupted["status"], "interrupted")
+        self.assertEqual(interrupted["tableau"]["status"], "captured")
+        self.assertEqual(interrupted["tableau"]["cleanup"]["status"], "closed")
+        self.assertEqual(interrupted["powerbi"]["status"], "interrupted")
+        self.assertIsNone(interrupted["powerbi"]["screenshot"])
+        self.assertEqual(interrupted["powerbi"]["owned_probe_pids"], [333])
+        self.assertEqual(interrupted["powerbi"]["cleanup"]["status"], "closed")
+        self.assertEqual(interrupted["powerbi"]["cleanup"]["pid"], 333)
+        document = (manifest_path.parent / "comparison.html").read_text("utf-8")
+        self.assertIn("Diagnostic partiel", document)
+        self.assertIn("interrupted", document)
+
+    def test_progress_events_follow_persisted_checkpoints_on_interrupt(self):
+        self.pair("Zulu.twb")
+        observed = []
+
+        def progress(event, details):
+            manifest = json.loads(
+                Path(details["manifest_path"]).read_text(encoding="utf-8"))
+            observed.append((event, dict(details), manifest))
+
+        def capture(pbip, shot, timeout, desktop_path, **kwargs):
+            if Path(pbip).stem == "Zulu":
+                raise KeyboardInterrupt("interrupted after first workbook")
+            return self.powerbi_capture(pbip, shot, timeout, desktop_path, **kwargs)
+
+        self.powerbi.side_effect = capture
+        with self.assertRaisesRegex(KeyboardInterrupt, "interrupted after first workbook"):
+            self.run_comparison(progress_callback=progress)
+
+        self.assertEqual([event for event, _, _ in observed], [
+            "desktop_start", "desktop_workbook_end",
+            "desktop_workbook_end", "desktop_end",
+        ])
+        self.assertEqual(observed[0][2]["progress"]["workbooks_completed"], 0)
+        first_event = observed[1]
+        self.assertEqual(first_event[1]["status"], "manual_review")
+        self.assertEqual(first_event[2]["progress"]["workbooks_completed"], 1)
+        self.assertEqual(first_event[2]["workbooks"][0]["powerbi"]["cleanup"]["status"],
+                         "closed")
+        interrupted_event = observed[2]
+        self.assertEqual(interrupted_event[1]["status"], "interrupted")
+        self.assertEqual(interrupted_event[2]["status"], "interrupted")
+        self.assertEqual(interrupted_event[2]["progress"]["workbooks_completed"], 1)
+        self.assertEqual(interrupted_event[2]["progress"]["workbooks_recorded"], 2)
+        self.assertIsNone(interrupted_event[2]["workbooks"][1]["powerbi"]["screenshot"])
+        self.assertEqual(observed[3][1]["status"], "interrupted")
+
+    def test_completed_progress_events_reference_final_manifest(self):
+        events = []
+
+        def progress(event, details):
+            manifest = json.loads(
+                Path(details["manifest_path"]).read_text(encoding="utf-8"))
+            events.append((event, dict(details), manifest))
+
+        result = self.run_comparison(progress_callback=progress)
+        self.assertEqual([event for event, _, _ in events], [
+            "desktop_start", "desktop_workbook_end", "desktop_end",
+        ])
+        self.assertEqual(events[1][1]["workbook"], "Sales.twb")
+        self.assertEqual(events[1][1]["powerbi_status"], "captured")
+        self.assertEqual(events[1][1]["workbooks_completed"], 1)
+        self.assertEqual(events[-1][1]["status"], "captured")
+        self.assertEqual(events[-1][2], result)
+
+    def test_powerbi_only_progress_identifies_unrequested_tableau_capture(self):
+        events = []
+
+        def progress(event, details):
+            events.append((event, dict(details)))
+
+        result = self.run_comparison(capture_tableau=False, progress_callback=progress)
+        self.assertEqual([event for event, _ in events], [
+            "desktop_start", "desktop_workbook_end", "desktop_end",
+        ])
+        self.assertEqual(events[0][1]["capture_mode"], "powerbi_only")
+        self.assertEqual(events[1][1]["tableau_status"], "not_requested")
+        self.assertEqual(events[1][1]["powerbi_status"], "captured")
+        self.assertEqual(events[-1][1]["status"], result["status"])
+        self.tableau.assert_not_called()
+
+    def test_progress_callback_failure_stops_before_launch(self):
+        def fail(event, details):
+            raise OSError("progress sink unavailable")
+
+        with self.assertRaisesRegex(OSError, "progress sink unavailable"):
+            self.run_comparison(progress_callback=fail)
+
+        self.tableau.assert_not_called()
+        self.powerbi.assert_not_called()
+        manifest_path, = (self.output / "desktop_comparisons").glob(
+            "*/manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "in_progress")
+        self.assertEqual(manifest["progress"]["workbooks_completed"], 0)
+
+    def test_progress_sink_failure_does_not_start_next_workbook(self):
+        self.pair("Zulu.twb")
+
+        def fail_after_first(event, details):
+            if event == "desktop_workbook_end":
+                raise OSError("progress sink unavailable")
+
+        with self.assertRaisesRegex(OSError, "progress sink unavailable"):
+            self.run_comparison(progress_callback=fail_after_first)
+
+        self.assertEqual(self.powerbi.call_count, 1)
+        self.assertEqual(self.tableau.call_count, 1)
+        manifest_path, = (self.output / "desktop_comparisons").glob(
+            "*/manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "in_progress")
+        self.assertEqual(manifest["progress"]["workbooks_completed"], 1)
+        self.assertEqual(manifest["workbooks"][0]["powerbi"]["cleanup"]["status"], "closed")
+
+    def test_non_callable_progress_callback_is_rejected_before_capture(self):
+        with self.assertRaisesRegex(ValueError, "progress_callback must be callable"):
+            self.run_comparison(progress_callback="not callable")
+        self.tableau.assert_not_called()
+        self.powerbi.assert_not_called()
+        self.assertFalse((self.output / "desktop_comparisons").exists())
+
+    def test_all_page_interrupt_with_no_completed_workbook_is_not_success(self):
+        self.powerbi.side_effect = KeyboardInterrupt("interrupted before pages")
+        with self.assertRaisesRegex(KeyboardInterrupt, "interrupted before pages"):
+            self.run_comparison(all_pages=True)
+
+        manifest_path, = (self.output / "desktop_comparisons").glob(
+            "*/manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "interrupted")
+        self.assertEqual(manifest["progress"]["workbooks_completed"], 0)
+        self.assertEqual(manifest["progress"]["workbooks_incomplete"], 1)
+        self.assertEqual(manifest["totals"]["target"]["inventory"], 0)
+        self.assertEqual(manifest["workbooks"][0]["powerbi"]["status"], "interrupted")
+        self.assertIn("Diagnostic partiel",
+                      (manifest_path.parent / "comparison.html").read_text("utf-8"))
+
+    def test_interruption_does_not_close_preexisting_probe_process(self):
+        registry = {999: object()}
+
+        def capture(*args, **kwargs):
+            registry[333] = object()
+            raise KeyboardInterrupt("interrupted after launch")
+
+        self.powerbi.side_effect = capture
+        with mock.patch.object(comparison.desktop_probe, "_OPEN_PROBE_PROCESSES", registry), \
+                mock.patch.object(comparison.desktop_probe, "close_probe_process",
+                                  return_value={"status": "closed"}) as close, \
+                self.assertRaisesRegex(KeyboardInterrupt, "interrupted after launch"):
+            self.run_comparison()
+
+        close.assert_called_once_with(333)
+        manifest_path, = (self.output / "desktop_comparisons").glob(
+            "*/manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        row, = manifest["workbooks"]
+        self.assertEqual(row["powerbi"]["owned_probe_pids"], [333])
+        self.assertEqual(row["powerbi"]["cleanup"]["pid"], 333)
+
+    def test_interruption_during_page_capture_preserves_only_verified_pages(self):
+        source_pages = [
+            {"id": f"source-{index}", "name": name, "kind": "worksheet"}
+            for index, name in enumerate(("First", "Second"))
+        ]
+        target_pages = [
+            {"id": f"target-{index}", "name": name, "kind": "page"}
+            for index, name in enumerate(("First", "Second"))
+        ]
+
+        def capture_page(hwnd, pid, name, path, *, timeout):
+            if name == "Second":
+                raise KeyboardInterrupt("interrupted during page capture")
+            Path(path).write_bytes(tiny_png())
+            return {
+                "status": "captured", "screenshot": path,
+                "screenshot_blank": False, "note": "",
+                "selection": {"status": "verified"},
+                "post_capture_selection": {"status": "verified"},
+            }
+
+        with mock.patch.object(comparison, "inventory_tableau_pages",
+                               return_value=source_pages), \
+                mock.patch.object(comparison, "inventory_powerbi_pages",
+                                  return_value=target_pages), \
+                mock.patch.object(comparison, "_launched_window",
+                                  return_value=SimpleNamespace(hwnd=55)), \
+                mock.patch.object(comparison, "capture_document_tab",
+                                  side_effect=capture_page), \
+                self.assertRaisesRegex(KeyboardInterrupt, "interrupted during page capture"):
+            self.run_comparison(all_pages=True)
+
+        manifest_path, = (self.output / "desktop_comparisons").glob(
+            "*/manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        row, = manifest["workbooks"]
+        self.assertEqual(row["status"], "interrupted")
+        self.assertEqual([page["capture"]["status"] for page in row["source_inventory"]],
+                         ["captured", "interrupted"])
+        self.assertEqual([page["capture"]["status"] for page in row["target_inventory"]],
+                         ["not_run", "not_run"])
+        self.assertEqual(manifest["totals"]["source"]["captured"], 1)
+        self.assertEqual(manifest["totals"]["target"]["captured"], 0)
+        self.assertIn("Diagnostic partiel",
+                      (manifest_path.parent / "comparison.html").read_text("utf-8"))
+
+    def test_interrupted_initial_gate_never_promotes_unverified_capture(self):
+        with mock.patch.object(comparison, "_powerbi_data_gate",
+                               side_effect=KeyboardInterrupt("gate interrupted")), \
+                self.assertRaisesRegex(KeyboardInterrupt, "gate interrupted"):
+            self.run_comparison()
+
+        manifest_path, = (self.output / "desktop_comparisons").glob(
+            "*/manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        row, = manifest["workbooks"]
+        self.assertEqual(row["powerbi"]["status"], "interrupted")
+        self.assertIsNone(row["powerbi"]["screenshot"])
+        self.assertEqual(row["powerbi"]["cleanup"]["pid"], 222)
+        self.assertEqual(manifest["initial_capture_totals"]["target"]["captured"], 0)
+
+    def test_malformed_capture_results_end_with_explicit_error(self):
+        for result in (None, {}, {"pid": 222}, {"pid": 222, "status": None},
+                       {"pid": 222, "status": []}, {"pid": 222, "status": ""},
+                       {"pid": 222, "status": "in_progress"}):
+            with self.subTest(result=result):
+                self.powerbi.side_effect = lambda *args, **kwargs: result
+                manifest = self.run_comparison()
+                row, = manifest["workbooks"]
+                self.assertEqual(manifest["status"], "failed")
+                self.assertEqual(row["status"], "failed")
+                self.assertEqual(row["powerbi"]["status"], "error")
+                self.assertIn("no valid terminal status", row["powerbi"]["note"])
+                self.assertEqual(manifest["initial_capture_totals"]["target"]["captured"], 0)
+                if isinstance(result, dict) and result.get("pid"):
+                    self.assertEqual(row["powerbi"]["cleanup"]["pid"], result["pid"])
+
+    def test_malformed_tableau_result_retains_owned_pid_for_cleanup(self):
+        self.tableau.side_effect = lambda *args, **kwargs: SimpleNamespace(
+            pid=111, to_dict=lambda: {"status": "in_progress"})
+        manifest = self.run_comparison()
+        row, = manifest["workbooks"]
+        self.assertEqual(manifest["status"], "failed")
+        self.assertEqual(row["tableau"]["status"], "error")
+        self.assertEqual(row["tableau"]["cleanup"]["pid"], 111)
+        self.assertIn("no valid terminal status", row["tableau"]["note"])
+        self.assertEqual(manifest["initial_capture_totals"]["source"]["captured"], 0)
+
+    def test_checkpoint_replace_failure_retains_the_previous_valid_manifest(self):
+        run_dir = self.root / "atomic"
+        run_dir.mkdir()
+        comparison._write_comparison_manifest({"status": "in_progress"}, run_dir)
+        previous = (run_dir / "manifest.json").read_bytes()
+        with mock.patch("powerbi_import.atomic_file.os.replace",
+                        side_effect=OSError("synthetic replace failure")), \
+                self.assertRaisesRegex(OSError, "synthetic replace failure"):
+            comparison._write_comparison_manifest({"status": "captured"}, run_dir)
+        self.assertEqual((run_dir / "manifest.json").read_bytes(), previous)
+        self.assertEqual(list(run_dir.glob(".manifest.json.*.tmp")), [])
+
+    def test_checkpoint_write_failure_stops_before_next_workbook(self):
+        self.pair("Zulu.twb")
+        real_write = comparison._write_comparison_manifest
+
+        def fail_after_first(manifest, run_dir):
+            if manifest["progress"]["workbooks_completed"] == 1:
+                raise OSError("checkpoint unavailable")
+            return real_write(manifest, run_dir)
+
+        with mock.patch.object(comparison, "_write_comparison_manifest",
+                               side_effect=fail_after_first), \
+                self.assertRaisesRegex(OSError, "checkpoint unavailable"):
+            self.run_comparison()
+
+        self.assertEqual(self.powerbi.call_count, 1)
+        self.assertEqual(self.tableau.call_count, 1)
+        manifest_path, = (self.output / "desktop_comparisons").glob(
+            "*/manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["status"], "in_progress")
+        self.assertEqual(manifest["progress"]["workbooks_completed"], 0)
+        self.assertEqual(manifest["workbooks"], [])
+
     def test_bad_image_metrics_do_not_change_capture_status(self):
         for image, code, pixel_status in (
                 (b"not PNG", "unsupported_image", "not_comparable"),
@@ -405,6 +751,36 @@ class TestPowerBIProcessSafety(FolderFixture):
             result = self.capture()
         self.assertNotEqual(result["status"], "captured")
         self.assertIsNone(result["screenshot"])
+        self.assertIn("exited", result["probe_note"])
+        dialogs.assert_not_called()
+        main.assert_not_called()
+        capture.assert_not_called()
+        self.proc.terminate.assert_not_called()
+        self.proc.kill.assert_not_called()
+        self.proc.wait.assert_not_called()
+        self.resolver.assert_called_once_with()
+
+    def test_live_launcher_timeout_enumerates_only_its_own_windows(self):
+        self.proc.poll.return_value = None
+
+        def wait(pids, name, **kwargs):
+            self.assertEqual(pids(), [4242])
+            self.assertEqual(name, "Sales")
+            return None, ["document window timeout"]
+
+        with mock.patch.dict(comparison.desktop_probe._OPEN_PROBE_PROCESSES,
+                             {}, clear=True), \
+             mock.patch.object(comparison.desktop_probe, "find_pbi_desktop",
+                               return_value="PBIDesktop.exe"), \
+             mock.patch.object(comparison.desktop_probe, "desktop_pids",
+                               return_value=[999]), \
+             mock.patch.object(desktop_window, "wait_for_window", side_effect=wait), \
+             mock.patch.object(desktop_window, "dialog_windows", return_value=[]) as dialogs, \
+             mock.patch.object(desktop_window, "main_window", return_value=None) as main, \
+             mock.patch.object(desktop_window, "capture_window") as capture:
+            result = self.capture()
+
+        self.assertNotEqual(result["status"], "captured")
         self.assertTrue(dialogs.called)
         self.assertTrue(all(call.args == (4242,) for call in dialogs.call_args_list))
         self.assertTrue(all(call.args == (4242,) for call in main.call_args_list))
@@ -412,7 +788,6 @@ class TestPowerBIProcessSafety(FolderFixture):
         self.proc.terminate.assert_not_called()
         self.proc.kill.assert_not_called()
         self.proc.wait.assert_not_called()
-        self.resolver.assert_called_once_with()
 
     def test_missing_or_nonwindows_native_tooling_stops_before_launch_or_borrowing(self):
         for platform, executable, cause in (

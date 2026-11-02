@@ -76,7 +76,7 @@ class TestPrepFlowAggMapping(unittest.TestCase):
     def test_prep_join_map_not_inner(self):
         from tableau_export.prep_flow_parser import _PREP_JOIN_MAP
         self.assertIn('notInner', _PREP_JOIN_MAP)
-        self.assertEqual(_PREP_JOIN_MAP['notInner'], 'leftanti')
+        self.assertEqual(_PREP_JOIN_MAP['notInner'], 'fullanti')
 
 
 if __name__ == '__main__':

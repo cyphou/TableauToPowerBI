@@ -32,7 +32,7 @@ from typing import Callable, Dict, List, Optional
 # distinction; reuse it rather than restating it here.
 from tableau_export.blend_graph import VIRTUAL_SECONDARIES
 
-REGISTRY_VERSION = "1.2.0"
+REGISTRY_VERSION = "1.3.0"
 
 EXACT = "exact"
 HEALED = "healed"
@@ -80,6 +80,9 @@ _FEATURES: List[Feature] = [
     Feature("sets", "Data Model", "Set", HEALED, "Boolean calculated column",
             "Cross-table sets fall back to DAX."),
     Feature("groups", "Data Model", "Group", HEALED, "SWITCH calculated column", ""),
+    Feature("combined_groups", "Data Model", "Combined field", APPROXIMATED,
+            "Text-concatenated row-level column",
+            "Validate delimiter collisions, nulls, culture and Tableau labels."),
     Feature("bins", "Data Model", "Bin", HEALED, "FLOOR calculated column", ""),
     Feature("hierarchies", "Data Model", "Hierarchy", EXACT, "Power BI hierarchy", ""),
     Feature("rls", "Security", "User filter / RLS", HEALED,
@@ -314,6 +317,17 @@ def _count_value_aliases(converted: Dict) -> int:
                if key != _MEASURE_NAMES_KEY and key not in parameters)
 
 
+def _count_combined_groups(converted: Dict) -> int:
+    return sum(
+        1 for group in converted.get("groups", []) or []
+        if isinstance(group, dict) and group.get("group_type") == "combined"
+    )
+
+
+def _count_value_groups(converted: Dict) -> int:
+    return len(converted.get("groups", []) or []) - _count_combined_groups(converted)
+
+
 def _count_worksheet_list(key: str) -> Callable[[Dict], int]:
     """Sum the lengths of a per-worksheet list-valued field (e.g. trend_lines).
 
@@ -341,7 +355,8 @@ _DETECTORS: Dict[str, Callable[[Dict], int]] = {
     "parameters": _len("parameters"),
     "filters": _len("filters"),
     "sets": _len("sets"),
-    "groups": _len("groups"),
+    "groups": _count_value_groups,
+    "combined_groups": _count_combined_groups,
     "bins": _len("bins"),
     "hierarchies": _len("hierarchies"),
     "rls": _len("user_filters"),
@@ -574,7 +589,7 @@ _EVIDENCE_PROBED = frozenset({
     "filters", "datasource_filter", "dashboard", "action_url", "action_nav",
     "story_bookmarks", "parameters", "hierarchies", "sort_order", "rls",
     "custom_sql", "refresh_schedule", "subscription", "alias_measure_name",
-    "alias_value", "groups", "bins", "reference_line", "action_filter",
+    "alias_value", "groups", "combined_groups", "bins", "reference_line", "action_filter",
     "extract_hyper", "linguistic_schema",
     "calc_basic", "calc_lod", "calc_table",
 })
@@ -626,6 +641,8 @@ _TMDL_ALIAS_MEASURE_RE = re.compile(
     re.MULTILINE,
 )
 _TMDL_GROUP_FOLDER_RE = re.compile(r"^[ \t]*displayFolder: Groups\b", re.MULTILINE)
+_TMDL_COMBINED_GROUP_RE = re.compile(
+    r"^[ \t]*annotation Migration_CombinedGroup = approximated\b", re.MULTILINE)
 _TMDL_BIN_FOLDER_RE = re.compile(r"^[ \t]*displayFolder: Bins\b", re.MULTILINE)
 _PBIR_REFERENCE_LINE_RE = re.compile(r'"referenceLine"\s*:', re.MULTILINE)
 
@@ -751,6 +768,8 @@ def collect_target_evidence(project_dir: str, report_name: str) -> Dict[str, Lis
             add("alias_measure_name", path)
         if _TMDL_GROUP_FOLDER_RE.search(text):
             add("groups", path)
+        if _TMDL_COMBINED_GROUP_RE.search(text):
+            add("combined_groups", path)
         if _TMDL_BIN_FOLDER_RE.search(text):
             add("bins", path)
         for family in sorted(_calculation_families(text)):

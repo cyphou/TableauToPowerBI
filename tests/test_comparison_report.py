@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import
 from comparison_report import (
     _compare_calculations,
     _compare_datasources,
+    _compare_field_bindings,
     _compare_worksheets,
     _load_extracted,
     _load_json,
@@ -171,6 +172,58 @@ class TestCompareWorksheets(unittest.TestCase):
         result = _compare_worksheets(extracted, pbip)
         self.assertIsInstance(result, list)
 
+    def test_title_match_is_only_a_candidate_and_reads_nested_pbir_visual(self):
+        result = _compare_worksheets(
+            {'worksheets': [{'name': 'Sheet A', 'fields': ['Amount']}]},
+            {'visuals': [{
+                'path': 'pages/p1/visuals/v1/visual.json',
+                'data': {'visual': {
+                    'visualType': 'clusteredBarChart',
+                    'visualContainerObjects': {'title': [{
+                        'properties': {'text': {'expr': {'Literal': {'Value': "'Sheet A'"}}}}
+                    }]},
+                }},
+            }]},
+        )
+        self.assertEqual('candidate', result[0]['status'])
+        self.assertEqual('clusteredBarChart', result[0]['powerbi']['visual_type'])
+        self.assertEqual('pages/p1/visuals/v1/visual.json',
+                         result[0]['powerbi']['artifact_path'])
+
+    def test_no_target_visual_is_not_an_empty_field_coverage_pass(self):
+        with tempfile.TemporaryDirectory() as pbip_dir:
+            result = _compare_field_bindings(
+                {'worksheets': [{'name': 'Empty Sheet', 'fields': []}]},
+                pbip_dir,
+            )
+        self.assertEqual('NO_VISUAL', result[0]['status'])
+        self.assertEqual(0, result[0]['generated_visual_artifact_count'])
+
+    def test_actual_pbir_projection_is_counted_but_empty_source_is_unverified(self):
+        with tempfile.TemporaryDirectory() as pbip_dir:
+            visual_dir = os.path.join(
+                pbip_dir, 'P.Report', 'definition', 'pages', 'p1', 'visuals', 'v1')
+            os.makedirs(visual_dir)
+            with open(os.path.join(visual_dir, 'visual.json'), 'w',
+                      encoding='utf-8') as stream:
+                json.dump({'visual': {
+                    'visualType': 'tableEx',
+                    'title': 'Empty Sheet',
+                    'query': {'queryState': {'Values': {'projections': [{
+                        'field': {'Column': {'Expression': {
+                            'SourceRef': {'Entity': 'Sales'}, 'Property': 'Amount'
+                        }}}
+                    }]}}},
+                }}, stream)
+
+            result = _compare_field_bindings(
+                {'worksheets': [{'name': 'Empty Sheet', 'fields': []}]},
+                pbip_dir,
+            )
+        self.assertEqual('UNVERIFIED', result[0]['status'])
+        self.assertEqual(1, result[0]['generated_visual_artifact_count'])
+        self.assertEqual(1, result[0]['pbi_count'])
+
 
 class TestCompareCalculations(unittest.TestCase):
     """Test _compare_calculations() function."""
@@ -304,6 +357,39 @@ class TestGenerateComparisonReport(unittest.TestCase):
             self.assertIn('html', content.lower())
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_unverified_visuals_and_candidate_names_are_not_reported_as_proof(self):
+        with tempfile.TemporaryDirectory(prefix='ttpbi_test_cmp_') as tmpdir:
+            extract_dir = os.path.join(tmpdir, 'extract')
+            pbip_dir = os.path.join(tmpdir, 'pbip')
+            os.makedirs(extract_dir)
+            os.makedirs(pbip_dir)
+            with open(os.path.join(extract_dir, 'worksheets.json'), 'w') as stream:
+                json.dump([{'name': 'Sheet 1', 'fields': []}], stream)
+            report = {
+                'overall_fidelity': 100,
+                'items': [
+                    {
+                        'name': 'Sheet 1', 'category': 'visual', 'status': 'unverified',
+                        'note': 'PBIR visual binding and rendered parity not verified',
+                    },
+                    {'name': 'Sheet 2', 'category': 'visual', 'status': 'exact'},
+                ],
+            }
+            with open(os.path.join(tmpdir, 'migration_report_test.json'), 'w') as stream:
+                json.dump(report, stream)
+
+            output = generate_comparison_report(extract_dir, pbip_dir)
+            with open(output, encoding='utf-8') as stream:
+                content = stream.read()
+            self.assertIn('do not verify worksheet provenance', content)
+            self.assertIn('Heuristic Candidate Field-Name Comparison', content)
+            self.assertNotIn('Field Binding Verification', content)
+            self.assertIn('<td class="warn">unverified</td>', content)
+            self.assertIn('<td>visual</td>', content)
+            self.assertIn('rendered parity not verified', content)
+            self.assertNotIn('<td>exact</td>', content)
+            self.assertIn('not_run (visual parity unverified)', content)
 
 
 class TestComparisonReportMain(unittest.TestCase):

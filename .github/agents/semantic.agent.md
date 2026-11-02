@@ -10,6 +10,7 @@ You are the **Semantic** agent for the Tableau to Power BI migration project. Yo
 ## Your Files (You Own These)
 
 ### Also owned
+- `powerbi_import/tableau_identity.py` — shared calculation-identity normalization
 - `powerbi_import/relationship_inference_v2.py` — relationship inference scoring
 - `powerbi_import/model_templates.py` — industry semantic-model skeletons
 - `powerbi_import/schema_validator.py` — TMDL/PBIR schema validation

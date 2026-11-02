@@ -36,6 +36,7 @@ from powerbi_import.report_localization import (
 from powerbi_import.report_localization import (
     selector as language_selector,
 )
+from powerbi_import.report_scoring import percentage_or_none
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Design tokens — Fluent / Power BI design language
@@ -1044,8 +1045,11 @@ def badge(score: str, level: str = "") -> str:
     return f'<span class="badge badge-{cls}">{ui(score)}</span>'
 
 
-def fidelity_bar(pct: float) -> str:
-    """Return an inline fidelity progress bar."""
+def fidelity_bar(pct: Optional[float]) -> str:
+    """Return a score bar, or a neutral badge when the score is unavailable."""
+    pct = percentage_or_none(pct)
+    if pct is None:
+        return badge("not_run")
     color = "var(--success)" if pct >= 95 else "#c19c00" if pct >= 80 else "var(--fail)"
     return f"""<span class="fidelity-bar">
     <span class="fidelity-track"><span class="fidelity-fill" style="width:{pct:.0f}%;background:{color}"></span></span>

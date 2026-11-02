@@ -2,7 +2,7 @@
  "visual_count": 8,
  "visuals": [
   {
-   "fields": 2,
+   "fields": 3,
    "has_format": true,
    "height": 486,
    "page": "Analytics Deep Dive",
@@ -67,7 +67,7 @@
    "z": 3000
   },
   {
-   "fields": 3,
+   "fields": 2,
    "has_format": true,
    "height": 486,
    "page": "Operations Overview",

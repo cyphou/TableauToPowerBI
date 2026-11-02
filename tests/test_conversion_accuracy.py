@@ -3,7 +3,7 @@ Sprint 84 — Conversion Accuracy Depth tests.
 
 Covers:
   84.1  Prep VAR/VARP → correct M variance formulas
-  84.2  Prep notInner → leftanti (already mapped, regression guard)
+  84.2  Prep notInner preserves both unmatched sides
   84.3  Bump chart → RANKX measure auto-injection
   84.4  PDF connector depth (page range, table selection)
   84.5  Salesforce SOQL depth (API version, SOQL passthrough, relationships)
@@ -86,17 +86,21 @@ class TestPrepVariance(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 84.2  Prep notInner → leftanti
+# 84.2  Prep notInner → full anti
 # ═══════════════════════════════════════════════════════════════════
 
-from tableau_export.prep_flow_parser import _PREP_JOIN_MAP
+from tableau_export.prep_flow_parser import _PREP_JOIN_MAP, _parse_join_node
 
 
 class TestPrepNotInner(unittest.TestCase):
-    """84.2 — notInner must map to leftanti."""
+    """notInner is a full anti join, not a left-only join."""
 
-    def test_not_inner_maps_to_leftanti(self):
-        self.assertEqual(_PREP_JOIN_MAP['notInner'], 'leftanti')
+    def test_not_inner_maps_to_fullanti(self):
+        self.assertEqual(_PREP_JOIN_MAP['notInner'], 'fullanti')
+
+    def test_legacy_not_inner_without_projection_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'explicit output projection'):
+            _parse_join_node({'joinType': 'notInner'}, 'Other', [])
 
     def test_left_only_maps_to_leftanti(self):
         self.assertEqual(_PREP_JOIN_MAP['leftOnly'], 'leftanti')

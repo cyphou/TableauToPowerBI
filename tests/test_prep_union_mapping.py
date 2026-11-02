@@ -30,7 +30,8 @@ sys.path.insert(0, str(ROOT / 'tableau_export'))
 
 from prep_flow_parser import merge_prep_with_workbook, parse_prep_flow
 
-from migrate import run_standalone_prep
+from migrate import _migrate_single_prep_flow, run_standalone_prep
+from powerbi_import.m_validator import validate_m_query
 from powerbi_import.tmdl_generator import generate_tmdl
 from tests.prep_flow_fixtures import write_flow
 
@@ -137,10 +138,72 @@ def _manual_union_flow(
     return {'nodes': nodes, 'connections': {}}
 
 
-def _parse_flow(flow):
+def _simple_join_flow(*, join_type='left', left_fields=None, right_fields=None,
+                      fields=None, right_name='SyntheticRight'):
+    left = _input_node('SyntheticLeft', 'Left', left_fields or [
+        {'name': 'Left Key', 'type': 'string'},
+        {'name': 'Left Value', 'type': 'string'},
+    ])
+    right = _input_node(right_name, 'Right', right_fields or [
+        {'name': 'Right Key', 'type': 'string'},
+        {'name': 'Right Value', 'type': 'string'},
+    ])
+    left['nextNodes'][0].update(nextNodeId='join', nextNamespace='Left')
+    right['nextNodes'][0].update(nextNodeId='join', nextNamespace='Right')
+    join = {
+        'nodeType': '.v2018_2_3.SuperJoin',
+        'baseType': 'superNode',
+        'id': 'join',
+        'name': 'Synthetic Join',
+        'fields': deepcopy(fields if fields is not None else [
+            {'name': 'Left Value', 'type': 'string'},
+            {'name': 'Right Value', 'type': 'string'},
+        ]),
+        'nextNodes': [{
+            'namespace': 'Default', 'nextNodeId': 'out',
+            'nextNamespace': 'Default',
+        }],
+        'actionNode': {
+            'nodeType': '.v1.SimpleJoin',
+            'baseType': 'transform',
+            'id': 'join-action',
+            'name': 'Synthetic Join',
+            'nextNodes': [],
+            'joinType': join_type,
+            'conditions': [{
+                'leftExpression': '[Left Key]',
+                'rightExpression': '[Right Key]',
+                'comparator': '==',
+            }],
+        },
+    }
+    return {
+        'nodes': {
+            'right': right, 'left': left, 'join': join,
+            'out': {
+                'baseType': 'output', 'nodeType': '.v1.PublishExtract',
+                'name': 'JoinOutput', 'nextNodes': [],
+            },
+        },
+        'connections': {},
+    }
+
+
+def _simple_join_policies():
+    return {'join': {
+        'comparison_semantics_verified': True,
+        'null_semantics_verified': True,
+        'duplicate_semantics_verified': True,
+    }}
+
+
+def _parse_flow(flow, simple_join_policies=None):
     with tempfile.TemporaryDirectory() as directory:
         path = write_flow(directory, flow)
         with redirect_stdout(io.StringIO()):
+            if simple_join_policies is not None:
+                return parse_prep_flow(
+                    path, simple_join_policies=simple_join_policies)
             return parse_prep_flow(path)
 
 
@@ -236,7 +299,40 @@ class TestSimpleUnionProducerEvidence(unittest.TestCase):
         ]
         self.assertEqual(mapped, [{'[Discounts]': 'Discount'}])
 
-    def test_public_simplejoin_inside_superjoin_remains_fail_closed(self):
+    def test_public_empty_container_uses_empty_parameters_and_default_edges(self):
+        containers = [
+            node for node in self.flow['nodes'].values()
+            if node.get('baseType') == 'container'
+            and (node.get('loomContainer') or {}).get('nodes') == {}
+        ]
+        self.assertEqual(len(containers), 1)
+        container = deepcopy(containers[0])
+        self.assertEqual(container['loomContainer']['parameters'], {'parameters': {}})
+        self.assertEqual(container['nextNodes'][0]['namespace'], 'Default')
+        self.assertEqual(container['nextNodes'][0]['nextNamespace'], 'Default')
+
+        container['name'] = 'Synthetic Identity'
+        container['id'] = 'synthetic-identity'
+        container['nextNodes'][0]['nextNodeId'] = 'out'
+        source = _input_node('SyntheticInput', 'Default', [
+            {'name': 'Raw', 'type': 'string'},
+        ])
+        source['nextNodes'][0]['nextNodeId'] = 'identity'
+        flow = {
+            'nodes': {
+                'source': source, 'identity': container,
+                'out': {
+                    'baseType': 'output', 'nodeType': '.v1.PublishExtract',
+                    'name': 'SyntheticOutput', 'nextNodes': [],
+                },
+            },
+            'connections': {},
+        }
+        datasource = _output_datasource(_parse_flow(flow))
+        self.assertEqual(_columns(datasource), [('Raw', 'string')])
+        self.assertIn('Csv.Document', datasource['m_query_override'])
+
+    def test_public_simplejoin_inside_superjoin_requires_projection(self):
         joins = [
             node for node in self.flow['nodes'].values()
             if node.get('nodeType') == '.v2018_2_3.SuperJoin'
@@ -268,11 +364,18 @@ class TestSimpleUnionProducerEvidence(unittest.TestCase):
             'nextNodeId': 'out',
             'nextNamespace': 'Default',
         }]
-        fields = [{'name': 'Order ID', 'type': 'string'}]
-        left = _input_node('SyntheticLeft', 'Left', fields)
-        right = _input_node('SyntheticRight', 'Right', fields)
-        left['nextNodes'][0]['nextNodeId'] = 'join'
-        right['nextNodes'][0]['nextNodeId'] = 'join'
+        left = _input_node('SyntheticLeft', 'Left', [
+            {'name': 'Order ID', 'type': 'string'},
+            {'name': 'Left Value', 'type': 'string'},
+        ])
+        right = _input_node('SyntheticRight', 'Right', [
+            {'name': 'Order ID', 'type': 'string'},
+            {'name': 'Right Value', 'type': 'string'},
+        ])
+        left['nextNodes'][0].update(
+            nextNodeId='join', nextNamespace='Left')
+        right['nextNodes'][0].update(
+            nextNodeId='join', nextNamespace='Right')
         flow = {
             'nodes': {
                 'left': left,
@@ -290,9 +393,111 @@ class TestSimpleUnionProducerEvidence(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            r"actionNode\.nodeType 'SimpleJoin' conflicts with wrapper 'SuperJoin'",
+            r"source-declared nonempty fields projection is required",
         ):
             _parse_flow(flow)
+
+    def test_public_flow_advances_past_split_remap_to_union_blocker_without_m(self):
+        with tempfile.TemporaryDirectory() as output:
+            with redirect_stdout(io.StringIO()):
+                result = _migrate_single_prep_flow(
+                    str(REAL_WORLD_FLOW), 'PublicPrep', output, 'PublicPrep')
+
+            self.assertFalse(result['success'])
+            self.assertEqual(result['error'], 'conversion')
+            self.assertNotIn('Prep RenameColumn requires', result['error_details'])
+            self.assertNotIn("Prep Remap column 'Approver'", result['error_details'])
+            self.assertIn(
+                "Prep union incompatible types for 'Discount': 'real', 'string'",
+                result['error_details'],
+            )
+            self.assertFalse((Path(output) / 'PublicPrep' / 'PowerQuery').exists())
+
+    def test_simplejoin_uses_explicit_fields_projection_and_declared_edges(self):
+        public_join = next(
+            node for node in self.flow['nodes'].values()
+            if node.get('nodeType') == '.v2018_2_3.SuperJoin'
+        )
+        join = deepcopy(public_join)
+        join['id'] = 'join'
+        join['name'] = 'Synthetic Join'
+        join['fields'] = [
+            {'name': 'Right Value', 'type': 'string'},
+            {'name': 'Left Value', 'type': 'string'},
+        ]
+        join['nextNodes'] = [{
+            'namespace': 'Default',
+            'nextNodeId': 'out',
+            'nextNamespace': 'Default',
+        }]
+        left = _input_node('SyntheticLeft', 'Left', [
+            {'name': 'Order ID', 'type': 'string'},
+            {'name': 'Left Value', 'type': 'string'},
+        ])
+        right = _input_node('SyntheticRight', 'Right', [
+            {'name': 'Order ID', 'type': 'string'},
+            {'name': 'Right Value', 'type': 'string'},
+        ])
+        left['nextNodes'][0].update(
+            nextNodeId='join', nextNamespace='Left')
+        right['nextNodes'][0].update(
+            nextNodeId='join', nextNamespace='Right')
+        flow = {
+            'nodes': {
+                'left': left,
+                'right': right,
+                'join': join,
+                'out': {
+                    'baseType': 'output',
+                    'nodeType': '.v1.PublishExtract',
+                    'name': 'JoinOutput',
+                    'nextNodes': [],
+                },
+            },
+            'connections': {},
+        }
+
+        datasource = _output_datasource(_parse_flow(flow, _simple_join_policies()))
+        self.assertEqual(_columns(datasource), [
+            ('Right Value', 'string'),
+            ('Left Value', 'string'),
+        ])
+        query = datasource['m_query_override']
+        self.assertIn('Table.NestedJoin', query)
+        self.assertIn('Table.SelectColumns', query)
+        self.assertIn('JoinKind.LeftOuter', query)
+
+    def test_simplejoin_rejects_non_field_and_non_equality_conditions(self):
+        base = {
+            'nodeType': '.v2018_2_3.SuperJoin',
+            'baseType': 'superNode',
+            'id': 'join',
+            'name': 'Join',
+            'nextNodes': [],
+            'actionNode': {
+                'nodeType': '.v1.SimpleJoin',
+                'baseType': 'transform',
+                'id': 'action',
+                'name': 'Join',
+                'nextNodes': [],
+                'joinType': 'left',
+                'conditions': [{
+                    'leftExpression': '[ID]',
+                    'rightExpression': '[ID]',
+                    'comparator': '==',
+                }],
+            },
+        }
+        computed = deepcopy(base)
+        computed['actionNode']['conditions'][0]['leftExpression'] = '[A] + [B]'
+        with self.assertRaisesRegex(ValueError, r'expected one explicit \[Field\]'):
+            from prep_flow_parser import normalize_prep_flow
+            normalize_prep_flow({'nodes': {'join': computed}, 'connections': {}})
+
+        non_equality = deepcopy(base)
+        non_equality['actionNode']['conditions'][0]['comparator'] = '!='
+        with self.assertRaisesRegex(ValueError, 'only explicit equality'):
+            normalize_prep_flow({'nodes': {'join': non_equality}, 'connections': {}})
 
     def test_public_discount_union_mapping_rejects_string_to_real_without_cast(self):
         nodes = self.flow['nodes']
@@ -372,6 +577,182 @@ class TestSimpleUnionProducerEvidence(unittest.TestCase):
             ValueError, r"Prep union incompatible types for 'Discount'"
         ):
             _parse_flow(flow)
+
+
+class TestSimpleJoinSafety(unittest.TestCase):
+    def test_requires_explicit_runtime_semantics_evidence(self):
+        flow = _simple_join_flow()
+        with patch.dict(os.environ, {'TTPBI_PREP_SIMPLE_JOIN_POLICIES': '{}'}):
+            with self.assertRaisesRegex(ValueError, 'SimpleJoin.*semantics.*policy'):
+                _parse_flow(flow)
+        datasource = _output_datasource(_parse_flow(flow, _simple_join_policies()))
+        self.assertIn('JoinKind.LeftOuter', datasource['m_query_override'])
+
+    def test_incomplete_or_unverified_policy_is_rejected(self):
+        flow = _simple_join_flow()
+        policy = _simple_join_policies()
+        policy['join']['null_semantics_verified'] = False
+        with self.assertRaisesRegex(ValueError, 'must explicitly verify'):
+            _parse_flow(flow, policy)
+        policy = _simple_join_policies()
+        del policy['join']['duplicate_semantics_verified']
+        with self.assertRaisesRegex(ValueError, 'must explicitly verify'):
+            _parse_flow(flow, policy)
+
+    def test_explicit_policy_for_unknown_node_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'unknown nodes'):
+            _parse_flow(_simple_join_flow(), {'typo': _simple_join_policies()['join']})
+
+    def test_environment_policy_is_available_to_batch_paths(self):
+        flow = _simple_join_flow()
+        with patch.dict(os.environ, {
+            'TTPBI_PREP_SIMPLE_JOIN_POLICIES': json.dumps(_simple_join_policies()),
+        }):
+            datasource = _output_datasource(_parse_flow(flow))
+        self.assertIn('Table.NestedJoin', datasource['m_query_override'])
+
+    def test_environment_node_policy_can_apply_to_multiple_flows_and_warns(self):
+        with patch.dict(os.environ, {
+            'TTPBI_PREP_SIMPLE_JOIN_POLICIES': json.dumps(_simple_join_policies()),
+        }), self.assertLogs('prep_flow_parser', level='WARNING') as logs:
+            first = _output_datasource(_parse_flow(
+                _simple_join_flow(right_name='SyntheticRightOne')))
+            second = _output_datasource(_parse_flow(
+                _simple_join_flow(right_name='SyntheticRightTwo')))
+        self.assertIn('#"SyntheticRightOne"', first['m_query_override'])
+        self.assertIn('#"SyntheticRightTwo"', second['m_query_override'])
+        warnings = [message for message in logs.output if 'not scoped to a flow' in message]
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(all('join' in message for message in warnings))
+
+    def test_analyzer_reports_missing_policy_and_accepts_explicit_environment(self):
+        from prep_flow_analyzer import analyze_flow
+
+        flow = _simple_join_flow()
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_flow(directory, flow)
+            with patch.dict(os.environ, {'TTPBI_PREP_SIMPLE_JOIN_POLICIES': '{}'}):
+                rejected = analyze_flow(path, include_m_queries=True)
+            self.assertEqual(rejected.m_queries, {})
+            self.assertEqual(rejected.assessment['grade'], 'RED')
+            self.assertIn('semantics evidence policy',
+                          rejected.assessment['conversion_error'])
+            with patch.dict(os.environ, {
+                'TTPBI_PREP_SIMPLE_JOIN_POLICIES': json.dumps(_simple_join_policies()),
+            }):
+                accepted = analyze_flow(path, include_m_queries=True)
+            self.assertIn('JoinOutput', accepted.m_queries)
+
+    def test_standalone_batch_exports_output_and_join_dependency(self):
+        from migrate import _migrate_single_prep_flow
+
+        flow = _simple_join_flow()
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_flow(directory, flow)
+            output = os.path.join(directory, 'output')
+            with patch.dict(os.environ, {'TTPBI_PREP_SIMPLE_JOIN_POLICIES': '{}'}):
+                rejected = _migrate_single_prep_flow(
+                    path, 'flow', output, 'synthetic flow')
+            self.assertFalse(rejected['success'])
+            self.assertIn('semantics evidence policy', rejected['error_details'])
+            self.assertFalse(os.path.exists(output))
+
+            with patch.dict(os.environ, {
+                'TTPBI_PREP_SIMPLE_JOIN_POLICIES': json.dumps(_simple_join_policies()),
+            }):
+                accepted = _migrate_single_prep_flow(
+                    path, 'flow', output, 'synthetic flow')
+            self.assertTrue(accepted['success'])
+            pq_dir = os.path.join(output, 'flow', 'PowerQuery')
+            with open(os.path.join(pq_dir, 'JoinOutput.pq'), encoding='utf-8') as stream:
+                joined = stream.read()
+            self.assertIn('#"SyntheticRight"', joined)
+            self.assertIn('Table.NestedJoin', joined)
+            self.assertTrue(os.path.isfile(os.path.join(pq_dir, 'SyntheticRight.pq')))
+
+    def test_malformed_environment_policy_is_explicitly_rejected(self):
+        with patch.dict(os.environ, {'TTPBI_PREP_SIMPLE_JOIN_POLICIES': '{invalid'}):
+            with self.assertRaisesRegex(ValueError, 'Invalid TTPBI_PREP_SIMPLE_JOIN_POLICIES'):
+                _parse_flow(_simple_join_flow())
+
+    def test_rejects_ambiguous_projected_join_key(self):
+        flow = _simple_join_flow(
+            left_fields=[{'name': 'Key', 'type': 'string'}],
+            right_fields=[{'name': 'Key', 'type': 'string'}],
+            fields=[{'name': 'Key', 'type': 'string'}],
+        )
+        condition = flow['nodes']['join']['actionNode']['conditions'][0]
+        condition['leftExpression'] = condition['rightExpression'] = '[Key]'
+        with self.assertRaisesRegex(ValueError, 'ambiguous.*Key'):
+            _parse_flow(flow, _simple_join_policies())
+
+    def test_selects_distinct_right_key_and_quotes_query_identifier(self):
+        flow = _simple_join_flow(
+            fields=[
+                {'name': 'Left Value', 'type': 'string'},
+                {'name': 'Right Key', 'type': 'string'},
+            ],
+            right_name='Right-Rates',
+        )
+        datasource = _output_datasource(_parse_flow(flow, _simple_join_policies()))
+        query = datasource['m_query_override']
+        self.assertIn('#"Right-Rates"', query)
+        self.assertIn('Table.ExpandTableColumn', query)
+        self.assertIn('{"Right Key"}', query)
+        self.assertEqual(_columns(datasource), [
+            ('Left Value', 'string'), ('Right Key', 'string')])
+
+    def test_preserves_duplicate_matches_when_no_right_column_is_projected(self):
+        flow = _simple_join_flow(
+            left_fields=[
+                {'name': 'Left Key', 'type': 'string'},
+                {'name': 'Left Value', 'type': 'string'},
+                {'name': '__TTPBI_JoinMatch', 'type': 'string'},
+            ],
+            right_fields=[{'name': 'Right Key', 'type': 'string'}],
+            fields=[{'name': 'Left Value', 'type': 'string'}],
+        )
+        datasource = _output_datasource(_parse_flow(flow, _simple_join_policies()))
+        query = datasource['m_query_override']
+        self.assertIn('Table.ExpandTableColumn', query)
+        self.assertIn('"Right Key"', query)
+        self.assertIn('__TTPBI_JoinMatch_2', query)
+        self.assertIn('Table.RemoveColumns', query)
+
+    def test_multiple_keys_follow_edge_namespaces_not_node_order(self):
+        flow = _simple_join_flow()
+        flow['nodes']['left']['fields'].append(
+            {'name': 'Left Version', 'type': 'integer'})
+        flow['nodes']['right']['fields'].append(
+            {'name': 'Right Version', 'type': 'integer'})
+        flow['nodes']['join']['actionNode']['conditions'].append({
+            'leftExpression': '[Left Version]',
+            'rightExpression': '[Right Version]',
+            'comparator': '==',
+        })
+        datasource = _output_datasource(_parse_flow(flow, _simple_join_policies()))
+        query = datasource['m_query_override']
+        self.assertIn('{"Left Key", "Left Version"}', query)
+        self.assertIn('{"Right Key", "Right Version"}', query)
+
+    def test_rejects_mismatched_join_key_types(self):
+        flow = _simple_join_flow(right_fields=[
+            {'name': 'Right Key', 'type': 'integer'},
+            {'name': 'Right Value', 'type': 'string'},
+        ])
+        with self.assertRaisesRegex(ValueError, 'join key.*type'):
+            _parse_flow(flow, _simple_join_policies())
+
+    def test_not_inner_combines_both_unmatched_sides(self):
+        flow = _simple_join_flow(join_type='notInner')
+        datasource = _output_datasource(_parse_flow(flow, _simple_join_policies()))
+        query = datasource['m_query_override']
+        self.assertEqual(query.count('JoinKind.LeftAnti'), 2)
+        self.assertIn('Table.Combine', query)
+        self.assertIn('MissingField.UseNull', query)
+        self.assertEqual(validate_m_query(query), [])
+        self.assertEqual(_columns(datasource), [
+            ('Left Value', 'string'), ('Right Value', 'string')])
 
 
 class TestPrepUnionMappingConversion(unittest.TestCase):

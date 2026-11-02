@@ -139,7 +139,7 @@ def _clean_tableau_run_text(run_elem):
 
 #: Marks-card encodings. Shared so the field extractor and the chart-type
 #: inference cannot disagree about which shelves exist.
-_MARK_ENCODINGS = ('color', 'size', 'shape', 'detail', 'tooltip', 'label', 'text')
+_MARK_ENCODINGS = ('color', 'size', 'wedge-size', 'shape', 'detail', 'tooltip', 'label', 'text')
 
 
 def _read_filter_condition(filt):
@@ -165,6 +165,15 @@ def _read_filter_condition(filt):
                 for gf in parent.findall('.//groupfilter[@function="member"]')
                 if gf.get('member')]
 
+    def _tableau_attr(element, name):
+        for attr, value in element.attrib.items():
+            if attr.rsplit('}', 1)[-1].split(':')[-1] == name:
+                return value
+        return ''
+
+    if filt.get('included-values', '').lower() == 'all':
+        return 'all', [], None, None, False
+
     groupfilter = filt.find('.//groupfilter')
     if groupfilter is not None:
         func = groupfilter.get('function', '')
@@ -174,8 +183,23 @@ def _read_filter_condition(filt):
             if val:
                 values.append(val.replace('&quot;', '"'))
         elif func == 'union':
-            filter_type = 'categorical'
-            values.extend(_members(groupfilter))
+            domain = (_tableau_attr(groupfilter, 'ui-domain')
+                      or _tableau_attr(filt, 'ui-domain'))
+            enumeration = _tableau_attr(groupfilter, 'ui-enumeration')
+            marker = _tableau_attr(groupfilter, 'ui-marker')
+            if enumeration == 'all':
+                filter_type = 'all'
+            else:
+                filter_type = 'categorical'
+                values.extend(_members(groupfilter))
+                if (domain == 'relevant' and enumeration == 'inclusive'
+                        and marker == 'enumerate'):
+                    logger.warning(
+                        "Relevant-domain filter %r is an inclusive member list; "
+                        "whether it represents dynamic (All) is not encoded "
+                        "unambiguously. Preserving %d selected members as a snapshot.",
+                        filt.get('column', ''), len(values),
+                    )
         elif func == 'range':
             from_val = groupfilter.get('from', '')
             to_val = groupfilter.get('to', '')
@@ -189,7 +213,10 @@ def _read_filter_condition(filt):
                         is_numeric = True
                     except (ValueError, TypeError):
                         pass
-            if is_numeric:
+            is_date = any(re.fullmatch(
+                r'#\d{4}-\d{2}-\d{2}(?:[ T][^#]+)?#', raw or '')
+                for raw in (from_val, to_val))
+            if is_numeric or is_date:
                 filter_type = 'range'
                 filter_min = from_val or None
                 filter_max = to_val or None
@@ -203,6 +230,14 @@ def _read_filter_condition(filt):
             exclude_mode = True
             filter_type = 'categorical'
             values.extend(_members(groupfilter))
+
+    if filt.get('class', '') != 'topn':
+        explicit_min = filt.get('min', filt.findtext('.//min', ''))
+        explicit_max = filt.get('max', filt.findtext('.//max', ''))
+        if explicit_min or explicit_max:
+            filter_type = 'range'
+            filter_min = explicit_min or None
+            filter_max = explicit_max or None
 
     for v in filt.findall('.//value'):
         if v.text:

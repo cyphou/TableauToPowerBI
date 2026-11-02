@@ -657,6 +657,10 @@ cause is an invalid generated M partition. Fix the source generator, not the emi
 `.tmdl`. Re-run with `--no-verify-open` only to bypass the gate deliberately for diagnosis.
 
 After a failed PBIP workbook batch, the `.pbip` completion marker is withheld.
+Once the project path is accepted, generation removes any previous marker
+before preprocessing and publishes a new one atomically only after the
+generated tree passes its Desktop path check. Later pipeline gates can still
+withhold that marker.
 Read `migration_failure.json` in the project directory for the original stage
 and rejection reason. The stored openability report, quality JSON/HTML and
 evidence ZIP describe that final failed state, not an earlier static pass.
@@ -729,6 +733,16 @@ applications launched by the diagnostic are closed. There is no automatic
 Desktop save, credential/license acceptance or deployment.
 See the [one-command guide](DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command)
 for timeouts, executable overrides and evidence locations.
+
+If the launched Power BI process exits, or its window changes owner, native
+diagnostics stop rather than accept a capture from that window. A
+`window_not_foreground` or `window_point_not_owned` result means a physical-click
+safety check failed; retry in an unobstructed interactive session. A nonzero
+exit or a crash dump observed after launch is diagnostic evidence, but the dump
+is not independently attributed to that PID. Simulated tests do not establish
+native Desktop behavior. A previously observed `window_loaded` or row count
+does not override a later failed process, ownership, or refresh check. The
+standalone probe reports the final status and does not mark that case successful.
 
 If native automation reports `tooling_unavailable`, check Windows PowerShell
 availability first. The diagnostic checks its installed system location as

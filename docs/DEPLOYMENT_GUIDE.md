@@ -323,6 +323,18 @@ marked ready for visual review only when its Power BI launch also captured with
 a verified refresh and complete data checks; otherwise the page is reported as
 incomplete even when its screenshots exist. After capture, the comparison
 closes only application processes it launched, not unrelated or existing instances.
+If the launched Power BI process exits during opening or diagnostics, the
+probe stops at the next observation rather than continuing to refresh or
+accepting a capture against that former PID. It rechecks window ownership
+before automation and capture; a physical click is refused if, at the final
+pre-click check, the target window is not foreground (`window_not_foreground`),
+the cursor has moved, or the window under the click point is not part of the
+target (`window_point_not_owned`).
+A native operation
+already in flight cannot be retroactively canceled. A clean launcher exit
+without a verified live document is an error; the exit alone does not prove a
+crash. A nonzero exit or a newly observed crash dump remains crash evidence,
+but a post-launch dump is not independently attributed to the launched PID.
 Tableau forwarding to an existing
 instance is rejected conservatively when the document cannot be attributed to
 the launched process; close existing Tableau instances manually before retrying.
@@ -353,13 +365,64 @@ Each run creates fresh evidence:
 - `<run-dir>\manifest.json`
 - `<run-dir>\comparison.html`
 
-`<run-dir>` is printed by the command. Batch roots use
+As soon as the first manifest is published, the command prints and flushes its
+checkpoint path before launching Desktop. On completion, it also prints the
+final evidence paths. Batch roots use
 `<output>\desktop_comparisons\<run_id>`; direct-project diagnostics use an
 external sibling `<project>.desktop_comparisons\<run_id>` so their evidence
 does not enter the PBIP project. Each workbook pair has a distinct evidence
 directory, including pairs with the same workbook name in different folders.
 The report keeps relative image links, and existing reports referring to older
 per-project screenshots remain readable.
+
+`manifest.json` is created before the first capture and atomically updated after
+each finished workbook. Its `progress` records total, completed and incomplete
+workbooks; capture and page totals cover only recorded workbooks. A
+`status: "in_progress"` checkpoint is partial and may belong to a process that
+has already been terminated. It is not a successful run or proof that the process
+is still running. On Ctrl+C, the current attempt is recorded as `interrupted`
+after owned-process cleanup when possible, and a partial HTML report is written.
+Forced termination may leave only the last JSON checkpoint; unfinished
+screenshots are not promoted to verified captures, and an HTML file may not exist.
+
+With batch `--jsonl-log`, `batch_end` marks the end of **migration**, not
+Desktop diagnostics. When capture starts, it is followed by `desktop_start`, a
+`desktop_workbook_end` after each recorded workbook, and `desktop_end`.
+Events produced by the comparison reference the manifest and are flushed after
+their corresponding atomic checkpoint; workbook events include the capture
+statuses and completed-attempt count, not a success or parity count. A managed
+interruption is recorded as `interrupted` when possible. A diagnostic exception
+before the final event is recorded as `error` when possible; a request without
+an eligible generated workbook ends as `not_run`, without a start event. Errors
+before manifest creation and `not_run` events may have no manifest path.
+Exceptions after a final event are reported separately in the console.
+An abrupt termination or log-write failure can leave no final event; consult the
+last valid manifest. JSONL paths and workbook names may be sensitive and should
+be handled like the manifest.
+
+To render a retained checkpoint without launching either Desktop application,
+run the following from the repository root with the selected local run directory:
+
+```powershell
+$env:DESKTOP_RUN = 'C:\Migration\Output\desktop_comparisons\<run_id>'
+@'
+import json
+import os
+from pathlib import Path
+from powerbi_import.desktop_comparison import render_comparison_html
+
+run = Path(os.environ["DESKTOP_RUN"])
+manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+render_comparison_html(manifest, run)
+'@ | .\.venv\Scripts\python.exe -
+```
+
+Only render a trusted local manifest; it contains paths to potentially sensitive
+screenshots. The regenerated HTML is presentation only: it does not resume the
+run, verify unfinished captures, refresh data or establish parity. A timed-out Power BI
+opening also records whether no matching document title was observed, the
+matching window did not respond, or it did not remain stable. Window matching
+remains restricted to the launched PID; existing-instance handoff is not accepted.
 
 After a comparison run, existing migration quality HTML (including
 `MIGRATION_QUALITY_CONSOLIDATED.html`) is refreshed with relative links to

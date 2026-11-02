@@ -127,15 +127,43 @@ CONTROLS = [
         "test": "tests/test_data_validation.py",
     },
     {
-        "name": "field coverage compares Tableau against itself again",
+        "name": "model names are mistaken for verified visual coverage",
         "file": "powerbi_import/equivalence_tester_v2.py",
-        "old": "        passed, coverage = tester.test_visual_field_coverage(\n"
-               "            tableau_fields, model_names, ws_name\n"
-               "        )",
-        "new": "        passed, coverage = tester.test_visual_field_coverage(\n"
-               "            tableau_fields, tableau_fields, ws_name\n"
-               "        )",
+        "old": "            'test': f'visual_coverage:{ws_name}',\n"
+               "            'passed': False,\n"
+               "            'status': 'not_run',",
+        "new": "            'test': f'visual_coverage:{ws_name}',\n"
+               "            'passed': True,\n"
+               "            'status': 'pass',",
         "test": "tests/test_data_validation.py",
+    },
+    {
+        "name": "candidate field names match table names and substrings",
+        "file": "powerbi_import/visual_diff.py",
+        "old": "found = canonical(expected).casefold() in pbi_names",
+        "new": "found = any(canonical(expected).casefold() in pf.casefold() for pf in pbi_fields)",
+        "test": "tests/test_visual_diff.py",
+    },
+    {
+        "name": "source fidelity treats heuristic visual matches as verified",
+        "file": "scripts/compare_source_fidelity.py",
+        "old": "visual_verified = visual_coverage.get('status') == 'verified'",
+        "new": "visual_verified = True",
+        "test": "tests/test_visual_diff.py",
+    },
+    {
+        "name": "source visual inventory is treated as an exact conversion",
+        "file": "powerbi_import/migration_report.py",
+        "old": "self.add_item('visual', name, self.UNVERIFIED, note=note)",
+        "new": "self.add_item('visual', name, self.EXACT, note=note)",
+        "test": "tests/test_migration_report.py",
+    },
+    {
+        "name": "M calculated columns may reference unavailable row fields",
+        "file": "powerbi_import/tmdl_generator.py",
+        "old": "if not _m_row_dependencies_available(\n",
+        "new": "if False and not _m_row_dependencies_available(\n",
+        "test": "tests/test_generation_coverage.py",
     },
     {
         "name": "--validate-data stops being acted on",

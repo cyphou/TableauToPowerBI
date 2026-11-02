@@ -67,6 +67,9 @@ def _full_project(root, name="Demo"):
            "table Classifications\n"
            "\tcolumn Grouped = SWITCH([Category], \"A\", \"Alpha\", \"Other\")\n"
            "\t\tdisplayFolder: Groups\n"
+           "\tcolumn Combined = [Category] & \" | \" & [Region]\n"
+           "\t\tdisplayFolder: Groups\n"
+           "\t\tannotation Migration_CombinedGroup = approximated\n"
            "\tcolumn Bucket = FLOOR([Amount], 10)\n"
            "\t\tdisplayFolder: Bins\n")
     _write(os.path.join(model, "tables", "Calculations.tmdl"),
@@ -218,6 +221,16 @@ class TestProbesCanFail(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             evidence = collect_target_evidence(tmp, "Demo")
         self.assertNotIn("extract_hyper", evidence)
+
+    def test_value_group_is_not_combined_group_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(os.path.join(tmp, "Demo.SemanticModel", "definition",
+                                "tables", "Groups.tmdl"),
+                   "table Groups\n\tcolumn Grouped\n"
+                   "\t\tdisplayFolder: Groups\n")
+            evidence = collect_target_evidence(tmp, "Demo")
+        self.assertIn("groups", evidence)
+        self.assertNotIn("combined_groups", evidence)
 
 
 class TestCalculationFamiliesAreDistinguished(unittest.TestCase):

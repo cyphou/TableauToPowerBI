@@ -114,6 +114,20 @@ class TestAuditVisualSourceToOutput(unittest.TestCase):
         self.assertNotIn("Facts.Region", json.dumps(objects))
         self.assertNotIn("100", json.dumps(state))
 
+    def test_multiple_values_format_does_not_change_table_dimensions(self):
+        state = {"Values": {"projections": [
+            {"field": {"Column": {"Expression": {"SourceRef": {"Entity": "Facts"}},
+                                  "Property": "Region"}}, "queryRef": "Facts.Region"},
+            {"field": {"Measure": {"Expression": {"SourceRef": {"Entity": "Facts"}},
+                                   "Property": "Ratio"}}, "queryRef": "Facts.Ratio"},
+        ]}}
+        worksheet = {"formatting": {"cell": {
+            "field": "[ds].[Multiple Values]", "text-format": "p0.0%"}}}
+        objects = {}
+        self.generator._build_field_format_objects(objects, worksheet, state)
+        self.assertEqual(
+            [item["selector"]["metadata"] for item in objects["general"]], ["Facts.Ratio"])
+
     def test_pie_keeps_dimension_as_category_and_numeric_angle_as_value(self):
         _, payload = self.emit("""
             <workbook><worksheet name="Synthetic pie"><table><cols/><rows/>
@@ -128,6 +142,24 @@ class TestAuditVisualSourceToOutput(unittest.TestCase):
         state = visual["query"]["queryState"]
         self.assertEqual(state["Category"]["projections"][0]["field"], {"Column": {
             "Expression": {"SourceRef": {"Entity": "Facts"}}, "Property": "Region"}})
+        self.assertEqual(state["Y"]["projections"][0]["field"], {"Aggregation": {
+            "Expression": {"Column": {"Expression": {"SourceRef": {"Entity": "Facts"}},
+                                      "Property": "Amount"}}, "Function": 0}})
+
+    def test_axis_dimension_reused_for_color_keeps_both_source_encodings(self):
+        _, payload = self.emit("""
+            <workbook><worksheet name="Synthetic colored chart"><table>
+              <cols>[ds].[none:Region:nk]</cols><rows>[ds].[sum:Amount:qk]</rows>
+              <panes><pane><mark class="Bar"/><encodings>
+                <color column="[ds].[none:Region:nk]"/>
+              </encodings></pane></panes>
+            </table></worksheet></workbook>
+        """)
+        state = payload["visual"]["query"]["queryState"]
+        dimension = {"Column": {
+            "Expression": {"SourceRef": {"Entity": "Facts"}}, "Property": "Region"}}
+        self.assertEqual(state["Category"]["projections"][0]["field"], dimension)
+        self.assertEqual(state["Series"]["projections"][0]["field"], dimension)
         self.assertEqual(state["Y"]["projections"][0]["field"], {"Aggregation": {
             "Expression": {"Column": {"Expression": {"SourceRef": {"Entity": "Facts"}},
                                       "Property": "Amount"}}, "Function": 0}})
@@ -208,6 +240,38 @@ class TestAuditVisualSourceToOutput(unittest.TestCase):
                          ["projections"][0]["field"], {"Column": {
                              "Expression": {"SourceRef": {"Entity": "Facts"}},
                              "Property": "Event Date"}})
+
+    def test_slicer_mode_uses_the_resolved_datasource_binding(self):
+        self.generator._field_map["Moment"] = ("Other", "Moment")
+        self.generator._actual_bim_column_types[("Other", "Moment")] = "string"
+        mode = self.generator._detect_slicer_mode(
+            {"param": "[ds].[none:Moment:qk]"}, "Moment", {},
+            resolved_pair=("Facts", "Event Date"))
+        self.assertEqual(mode, "Between")
+
+    def test_foreign_physical_lineage_is_not_bound_as_a_source_field(self):
+        self.generator._datasources_ref = [{
+            "name": "ds", "tables": [{"name": "Facts", "columns": []}],
+        }]
+        self.generator._actual_bim_symbols.add(("Other", "Event Date"))
+        worksheet = {"chart_type": "tableEx", "fields": [{
+            "name": "Event Date", "datasource": "ds", "source_table": "Other",
+            "source_column": "Event Date",
+        }]}
+        self.assertIsNone(self.generator._build_visual_query(worksheet))
+        self.assertEqual(worksheet["_unresolved_source_fields"], ["Event Date"])
+
+    def test_foreign_declared_local_table_is_not_borrowed_from_another_source(self):
+        self.generator._datasources_ref = [{
+            "name": "ds", "tables": [{"name": "Facts", "columns": []}],
+            "col_local_name_map": {"Event Date": "Other"},
+        }]
+        self.generator._actual_bim_symbols.add(("Other", "Event Date"))
+        worksheet = {"chart_type": "tableEx", "fields": [{
+            "name": "Event Date", "datasource": "ds",
+        }]}
+        self.assertIsNone(self.generator._build_visual_query(worksheet))
+        self.assertEqual(worksheet["_unresolved_source_fields"], ["Event Date"])
 
     def test_physical_date_lineage_wins_over_duplicate_model_schema_in_combo(self):
         self.generator._field_map["DATE"] = ("WrongCopy", "DATE")

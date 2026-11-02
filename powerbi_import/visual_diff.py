@@ -5,7 +5,7 @@ Produces a side-by-side HTML report comparing Tableau visuals
 (worksheets) against the generated Power BI visuals, highlighting:
 
 * Visual type mappings and approximations
-* Field assignment coverage (mapped vs. unmapped)
+* Heuristic field-name overlap on candidate visuals
 * Encoding gaps (color, size, tooltip, label, detail)
 * Filter mapping completeness
 
@@ -24,6 +24,12 @@ import os
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_VISUAL_COMPARISON_LIMITATION = (
+    'Worksheet-to-visual matching is heuristic: type, title and unqualified '
+    'field names do not prove source provenance, field bindings, data values '
+    'or rendered visual parity.'
+)
 
 try:
     from powerbi_import.html_template import get_report_css, get_report_js
@@ -149,6 +155,7 @@ def _extract_pbi_visual_info(visual_json: Dict) -> Dict:
 
     # Extract field references
     fields = []
+    field_names = []
     role_fields = {}
     query = visual_json.get('query', visual.get('query', {}))
     if isinstance(query, dict):
@@ -175,12 +182,14 @@ def _extract_pbi_visual_info(visual_json: Dict) -> Dict:
                         prop = ref.get('Property', '')
                         if entity and prop:
                             fields.append(f'{entity}[{prop}]')
+                            field_names.append(prop)
                             role_fields.setdefault(role, []).append(prop)
                         break
             return {
                 'visualType': visual_type,
                 'title': title,
                 'fields': fields,
+                'field_names': field_names,
                 'role_fields': role_fields,
             }
         commands = query.get('Commands', [])
@@ -203,6 +212,7 @@ def _extract_pbi_visual_info(visual_json: Dict) -> Dict:
                             prop = ref.get('Property', '')
                             if entity and prop:
                                 fields.append(f'{entity}[{prop}]')
+                                field_names.append(prop)
                             # Aggregation wraps another expression
                             inner = ref.get('Expression', {})
                             if 'Column' in inner:
@@ -212,11 +222,13 @@ def _extract_pbi_visual_info(visual_json: Dict) -> Dict:
                                 ip = inner_col.get('Property', '')
                                 if ie and ip:
                                     fields.append(f'{ie}[{ip}]')
+                                    field_names.append(ip)
 
     return {
         'visualType': visual_type,
         'title': title,
         'fields': fields,
+        'field_names': field_names,
         'role_fields': role_fields,
     }
 
@@ -224,6 +236,17 @@ def _extract_pbi_visual_info(visual_json: Dict) -> Dict:
 # ── Diff logic ──────────────────────────────────────────────────
 
 _ENCODING_TYPES = ['color', 'size', 'shape', 'label', 'tooltip', 'detail', 'path']
+
+
+def _calculation_display_names(extracted_data):
+    from powerbi_import.equivalence_tester_v2 import _calculation_aliases
+
+    names = {}
+    for raw, aliases in _calculation_aliases(extracted_data).items():
+        captions = {caption for _, caption in aliases}
+        if len(captions) == 1:
+            names[raw] = next(iter(captions))
+    return names
 
 
 def _diff_worksheet(ws: Dict, pbi_visuals: List[Dict], calculation_map=None) -> Dict:
@@ -283,9 +306,8 @@ def _diff_worksheet(ws: Dict, pbi_visuals: List[Dict], calculation_map=None) -> 
     matching_type = [info for info in infos if info['visualType'] == expected_pbi]
     candidates = matching_type or infos
     def match_score(info):
-        available = [f.lower() for f in info['fields']]
-        overlap = sum(any(field.lower() in pbi for pbi in available)
-                      for field in tab_fields)
+        available = {canonical(name).casefold() for name in info['field_names']}
+        overlap = sum(canonical(field).casefold() in available for field in tab_fields)
         source_title = ws.get('title', '')
         title_exact = bool(source_title and source_title != '<Sheet Name>' and
                            canonical(info['title']).casefold() == canonical(source_title).casefold())
@@ -308,8 +330,10 @@ def _diff_worksheet(ws: Dict, pbi_visuals: List[Dict], calculation_map=None) -> 
     pbi_fields = pbi_match['fields'] if pbi_match else []
     mapped_fields = []
     unmapped_fields = []
+    pbi_names = {canonical(name).casefold()
+                 for name in pbi_match['field_names']} if pbi_match else set()
     for raw, expected in zip(tab_labels, tab_fields):
-        found = any(expected.lower() in pf.lower() for pf in pbi_fields)
+        found = canonical(expected).casefold() in pbi_names
         if found:
             mapped_fields.append(raw)
         else:
@@ -330,6 +354,7 @@ def _diff_worksheet(ws: Dict, pbi_visuals: List[Dict], calculation_map=None) -> 
         'expected_pbi_type': expected_pbi,
         'actual_pbi_type': pbi_match['visualType'] if pbi_match else None,
         'status': status,
+        'status_scope': 'candidate_visual_type_only',
         'tableau_fields': tab_labels,
         'pbi_fields': pbi_fields,
         'mapped_fields': mapped_fields,
@@ -338,6 +363,11 @@ def _diff_worksheet(ws: Dict, pbi_visuals: List[Dict], calculation_map=None) -> 
             round(len(mapped_fields) / len(tab_fields) * 100)
             if tab_fields else 100
         ),
+        'field_coverage_scope': 'unqualified_names_on_heuristic_candidate',
+        'visual_coverage': {
+            'status': 'not_run',
+            'reason': _VISUAL_COMPARISON_LIMITATION,
+        },
         'tableau_encodings': tab_encodings,
         'tableau_tooltips': tableau_tooltips,
         'pbi_tooltips': pbi_tooltips,
@@ -369,12 +399,11 @@ def generate_visual_diff(
     worksheets = extracted_data.get('worksheets', [])
     if isinstance(worksheets, dict):
         worksheets = worksheets.get('worksheets', [])
-    worksheets, _source_only = _placed_worksheets(extracted_data, worksheets)
+    worksheets, source_only = _placed_worksheets(extracted_data, worksheets)
 
     pbi_visuals = _load_pbi_visuals(pbip_dir)
 
-    calc_map = {str(c.get('name', '')).strip('[]'): c.get('caption') or c.get('name', '').strip('[]')
-                for c in extracted_data.get('calculations', []) if isinstance(c, dict)}
+    calc_map = _calculation_display_names(extracted_data)
     diffs = [_diff_worksheet(ws, pbi_visuals, calc_map) for ws in worksheets]
 
     # Summary stats
@@ -407,24 +436,29 @@ def generate_visual_diff(
 <p>Project: {_esc(pbip_dir)}</p>
 </div>
 <div class="container">
+<p><strong>Limitations:</strong> {_esc(_VISUAL_COMPARISON_LIMITATION)}
+An empty field list receives 100% in the compatibility metric.
+When dashboards exist, only worksheets placed on dashboards are compared;
+{len(source_only)} other worksheet(s) are excluded.</p>
 """]
 
     # Summary cards
     cov_cls = 'pass' if avg_coverage >= 80 else ('warn' if avg_coverage >= 50 else 'fail')
     parts.append(f"""
 <div class="summary">
-  <div class="card"><h3>Total Visuals</h3><div class="val">{total}</div></div>
-  <div class="card"><h3>Exact Match</h3><div class="val pass">{exact_count}</div></div>
-  <div class="card"><h3>Approximate</h3><div class="val warn">{approx_count}</div></div>
-  <div class="card"><h3>Unmapped</h3><div class="val fail">{unmapped_count}</div></div>
-  <div class="card"><h3>Avg Field Coverage</h3><div class="val {cov_cls}">{avg_coverage}%</div></div>
+  <div class="card"><h3>Compared Worksheets</h3><div class="val">{total}</div></div>
+  <div class="card"><h3>Same Candidate Type</h3><div class="val pass">{exact_count}</div></div>
+  <div class="card"><h3>Different Candidate Type</h3><div class="val warn">{approx_count}</div></div>
+  <div class="card"><h3>No Candidate</h3><div class="val fail">{unmapped_count}</div></div>
+  <div class="card"><h3>Avg Candidate Name Overlap</h3><div class="val {cov_cls}">{avg_coverage}%</div></div>
 </div>
 """)
 
     # Per-visual diff cards
     for d in diffs:
         badge_cls = d['status']
-        badge_map = {'exact': 'Exact Match', 'approx': 'Approximate', 'unmapped': 'Unmapped'}
+        badge_map = {'exact': 'Same candidate type', 'approx': 'Different candidate type',
+                     'unmapped': 'No candidate'}
         badge_txt = badge_map.get(badge_cls, badge_cls)
 
         # Encoding status
@@ -449,7 +483,7 @@ def generate_visual_diff(
 <div class="diff">
   <div class="row-header">
     <span>{_esc(d['name'])}</span>
-    <span class="badge {badge_cls}">{badge_txt} — {d['field_coverage']}% field coverage</span>
+    <span class="badge {badge_cls}">{badge_txt} — {d['field_coverage']}% candidate name overlap</span>
   </div>
   <div class="cols">
     <div class="col">
@@ -458,7 +492,7 @@ def generate_visual_diff(
       <p><span class="label">Expected PBI type:</span> {_esc(d['expected_pbi_type'])}</p>
       <p><span class="label">Fields ({len(d['tableau_fields'])}):</span></p>
       <ul class="field-list">{mapped_html}{unmapped_html}</ul>
-      <p><span class="label">Encodings:</span></p>
+      <p><span class="label">Source encodings only:</span></p>
       {enc_html}
       <p><span class="label">Filters:</span> {d['tableau_filter_count']}</p>
     </div>
@@ -476,7 +510,7 @@ def generate_visual_diff(
     parts.append(
         '<table><tr><th>Worksheet</th><th>Tableau Mark</th>'
         '<th>Expected PBI</th><th>Actual PBI</th>'
-        '<th>Status</th><th>Field Coverage</th></tr>'
+        '<th>Candidate type status</th><th>Candidate name overlap</th></tr>'
     )
     for d in diffs:
         st_cls = d['status']
@@ -519,14 +553,20 @@ def generate_visual_diff_json(
     worksheets, source_only = _placed_worksheets(extracted_data, worksheets)
 
     pbi_visuals = _load_pbi_visuals(pbip_dir)
-    calc_map = {str(c.get('name', '')).strip('[]'): c.get('caption') or c.get('name', '').strip('[]')
-                for c in extracted_data.get('calculations', []) if isinstance(c, dict)}
+    calc_map = _calculation_display_names(extracted_data)
     diffs = [_diff_worksheet(ws, pbi_visuals, calc_map) for ws in worksheets]
 
     total = len(diffs)
     return {
         'total': total,
         'source_only_worksheets': source_only,
+        'comparison_scope': 'dashboard_worksheets_when_dashboards_exist',
+        'status_scope': 'candidate_visual_type_only',
+        'field_coverage_scope': 'unqualified_names_on_heuristic_candidate',
+        'visual_coverage': {
+            'status': 'not_run',
+            'reason': _VISUAL_COMPARISON_LIMITATION,
+        },
         'exact': sum(1 for d in diffs if d['status'] == 'exact'),
         'approximate': sum(1 for d in diffs if d['status'] == 'approx'),
         'unmapped': sum(1 for d in diffs if d['status'] == 'unmapped'),

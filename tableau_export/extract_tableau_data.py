@@ -144,6 +144,52 @@ def _strip_datasource_prefix(column):
     return match.group(1) if match else (column or '')
 
 
+def _attribute_by_local_name(element, name):
+    """Read an XML attribute by local name, including namespace-qualified attrs."""
+    for key, value in element.attrib.items():
+        if key.rsplit('}', 1)[-1].split(':')[-1] == name:
+            return value
+    return ''
+
+
+def _action_pseudo_field_index(root):
+    """Index explicit Tableau-generated action fields without name heuristics.
+
+    Tableau marks these datasource groups with ``user:auto-column="sheet_link"``.
+    Names alone (including an ``Action (...)`` caption) are not evidence.
+    """
+    result = {}
+    for datasource in root.findall('.//datasource'):
+        ds_name = datasource.get('name', '')
+        for group in datasource.findall('.//group'):
+            if _attribute_by_local_name(group, 'auto-column') != 'sheet_link':
+                continue
+            raw_name = group.get('name', '')
+            field_name = _strip_brackets(raw_name)
+            if not ds_name or not field_name:
+                continue
+            result[(ds_name, field_name)] = {
+                'source_element': group.tag.rsplit('}', 1)[-1],
+                'source_attributes': dict(group.attrib),
+                'source_name': raw_name,
+            }
+    return result
+
+
+def _decode_tableau_group_literal(value):
+    """Decode a Tableau quoted string literal without evaluating an expression.
+
+    ElementTree has already decoded XML entities in the attribute. Tableau
+    additionally backslash-escapes quotes and backslashes inside string
+    literals; categorical-group defaults and bin labels need the literal value,
+    not the surrounding Tableau expression quotes.
+    """
+    decoded = re.sub(r"\\([\"\\'#%])", r'\1', value or '')
+    if len(decoded) >= 2 and decoded[0] == '"' and decoded[-1] == '"':
+        return decoded[1:-1]
+    return decoded
+
+
 def _find_collection_items(root, collection_name, item_name):
     """Return items directly owned by a workbook collection.
 
@@ -494,6 +540,9 @@ class TableauExtractor:
         worksheets = []
         self._color_index = self._build_color_index(root)
         self._worksheet_field_provenance = build_field_provenance(root)
+        self._action_pseudo_field_index = _action_pseudo_field_index(root)
+        workbook_aggregation = self._aggregation_evidence(
+            root, exclude_worksheet_descendants=True)
         # A selected DB may prove a field through native cols maps or physical
         # leaf declarations rather than a complete metadata-record. Use the
         # same validated remote identities as datasources.json; never infer a
@@ -518,10 +567,14 @@ class TableauExtractor:
             'name': safe_get_attr(worksheet, 'name', ''),
                 'title': self._extract_title_text(worksheet),
                 'title_format': self._extract_title_format(worksheet),
-                'chart_type': self.determine_chart_type(worksheet),
-                'original_mark_class': self._extract_mark_class(worksheet),
-                'fields': self.extract_worksheet_fields(worksheet),
-                'slices': self.extract_worksheet_slices(worksheet),
+            'aggregation': self._worksheet_aggregation(
+                worksheet, workbook_aggregation),
+            'chart_type': self.determine_chart_type(worksheet),
+            'original_mark_class': self._extract_mark_class(worksheet),
+            'fields': self.extract_worksheet_fields(worksheet),
+            'action_pseudo_filters': self.extract_action_pseudo_filters(
+                worksheet),
+            'slices': self.extract_worksheet_slices(worksheet),
                 'filters': self.extract_worksheet_filters(worksheet),
                 'formatting': self.extract_formatting(worksheet),
                 'tooltips': self.extract_tooltips(worksheet),
@@ -562,8 +615,146 @@ class TableauExtractor:
                     ws_data['fields'][position] = field
             worksheets.append(ws_data)
 
+        self._attach_shared_view_filters(root, worksheets)
         self.workbook_data['worksheets'] = worksheets
         print(f"  ✓ {len(worksheets)} worksheets extracted")
+
+    @staticmethod
+    def _aggregation_evidence(element, exclude_worksheet_descendants=False):
+        """Return literal XML evidence for explicitly declared aggregation state."""
+        parents = {}
+        if exclude_worksheet_descendants:
+            for parent in element.iter():
+                for child in list(parent):
+                    parents[id(child)] = parent
+
+        evidence = []
+        for node in element.iter():
+            if node.tag.rsplit('}', 1)[-1].split(':')[-1] != 'aggregation':
+                continue
+            if exclude_worksheet_descendants:
+                parent = parents.get(id(node))
+                inside_worksheet = False
+                while parent is not None:
+                    if parent.tag.rsplit('}', 1)[-1].split(':')[-1] == 'worksheet':
+                        inside_worksheet = True
+                        break
+                    parent = parents.get(id(parent))
+                if inside_worksheet:
+                    continue
+            evidence.append({
+                'source_element': node.tag.rsplit('}', 1)[-1],
+                'source_attributes': dict(node.attrib),
+                'text': (node.text or '').strip(),
+            })
+        return evidence
+
+    @staticmethod
+    def _worksheet_aggregation(worksheet, workbook_evidence):
+        worksheet_evidence = TableauExtractor._aggregation_evidence(worksheet)
+        evidence = worksheet_evidence or workbook_evidence
+        scope = 'worksheet' if worksheet_evidence else (
+            'workbook' if workbook_evidence else '')
+        declared_values = []
+        unknown_value = False
+        for item in evidence:
+            attrs = item['source_attributes']
+            for key, raw_value in attrs.items():
+                if key.rsplit('}', 1)[-1].split(':')[-1] not in (
+                        'value', 'enabled'):
+                    continue
+                normalized = raw_value.strip().lower()
+                if normalized in ('true', '1'):
+                    declared_values.append(True)
+                elif normalized in ('false', '0'):
+                    declared_values.append(False)
+                elif raw_value:
+                    unknown_value = True
+
+        unique_values = set(declared_values)
+        if len(unique_values) == 1 and not unknown_value:
+            enabled = next(iter(unique_values))
+            status = 'explicit'
+        elif len(unique_values) > 1 or (unique_values and unknown_value):
+            enabled = None
+            status = 'ambiguous'
+        elif unknown_value:
+            enabled = None
+            status = 'unsupported_value'
+        else:
+            enabled = None
+            status = 'not_declared'
+        return {
+            'enabled': enabled,
+            'status': status,
+            'source_scope': scope,
+            'worksheet_evidence': worksheet_evidence,
+            'workbook_evidence': workbook_evidence,
+        }
+
+    def _attach_shared_view_filters(self, root, worksheets):
+        """Apply shared-view filters only to worksheets using that datasource."""
+        declared_sources = {}
+        for element in _find_collection_items(root, 'worksheets', 'worksheet'):
+            sources = {
+                dependency.get('datasource', '')
+                for dependency in element.findall('.//datasource-dependencies')
+            }
+            sources.update(
+                source.get('name', '')
+                for source in element.findall('.//view/datasources/datasource')
+            )
+            declared_sources[element.get('name', '')] = sources - {''}
+        for shared_view in root.findall('.//shared-view'):
+            shared_datasource = shared_view.get('name', '')
+            if not shared_datasource:
+                logger.warning("Shared-view filters have no declared datasource; skipping")
+                continue
+            for filt in shared_view.findall('.//filter'):
+                wrapper = ET.Element('worksheet')
+                wrapper.append(deepcopy(filt))
+                parsed = extract_worksheet_filters(wrapper)
+                if not parsed:
+                    continue
+                shared_filter = parsed[0]
+                filter_datasource = shared_filter.get('datasource')
+                if filter_datasource and filter_datasource != shared_datasource:
+                    logger.warning(
+                        "Shared-view filter source %r conflicts with declared source %r; skipping",
+                        filter_datasource, shared_datasource,
+                    )
+                    continue
+                shared_filter['datasource'] = shared_datasource
+                signature = (
+                    shared_filter.get('field'),
+                    shared_filter.get('datasource'),
+                    tuple(shared_filter.get('values', [])),
+                    shared_filter.get('min'),
+                    shared_filter.get('max'),
+                    shared_filter.get('exclude', False),
+                )
+                for worksheet in worksheets:
+                    used_datasources = {
+                        field.get('datasource', '')
+                        for field in worksheet.get('fields', [])
+                        if field.get('datasource')
+                    }
+                    used_datasources.update(declared_sources.get(worksheet.get('name', ''), ()))
+                    used_datasources.update(
+                        f.get('datasource', '') for f in worksheet.get('filters', [])
+                        if f.get('datasource')
+                    )
+                    if shared_filter['datasource'] not in used_datasources:
+                        continue
+                    existing = worksheet.setdefault('filters', [])
+                    existing_signatures = {
+                        (f.get('field'), f.get('datasource'),
+                         tuple(f.get('values', [])), f.get('min'), f.get('max'),
+                         f.get('exclude', False))
+                        for f in existing
+                    }
+                    if signature not in existing_signatures:
+                        existing.append(dict(shared_filter))
 
     def extract_dashboards(self, root):
         """Extracts dashboards"""
@@ -616,9 +807,30 @@ class TableauExtractor:
         """
 
         raw_datasources = []
+        action_fields_by_datasource = {}
+        for (datasource_name, field_name), evidence in (
+                _action_pseudo_field_index(root).items()):
+            action_fields_by_datasource.setdefault(datasource_name, []).append({
+                'name': field_name,
+                'kind': 'action_pseudo_field',
+                'source_evidence': evidence,
+            })
 
         for datasource in self._findall_root_cached(root, './/datasource'):
             ds_data = self._extract_datasource_with_selection(datasource)
+            action_fields = action_fields_by_datasource.get(
+                ds_data.get('name', ''), [])
+            if action_fields:
+                # Keep explicit action plumbing distinct from calculations.
+                # Match only the datasource and exact XML field identity; a
+                # caption such as "Action (...)" is not classification evidence.
+                action_names = {field['name'] for field in action_fields}
+                ds_data['calculations'] = [
+                    calculation for calculation in ds_data.get('calculations', [])
+                    if _strip_brackets(calculation.get('name', ''))
+                    not in action_names
+                ]
+                ds_data['action_pseudo_fields'] = action_fields
             raw_datasources.append(ds_data)
 
         # Deduplicate: keep the richest DS by name
@@ -669,9 +881,19 @@ class TableauExtractor:
                 for ds in self._findall_root_cached(root, './/datasource')
             ]
 
+        action_pseudo_fields = _action_pseudo_field_index(root)
+        action_names_by_datasource = {}
+        for datasource_name, field_name in action_pseudo_fields:
+            action_names_by_datasource.setdefault(datasource_name, set()).add(
+                field_name)
+
         for ds_data in source_datasources:
             for calc in ds_data.get('calculations', []):
                 cname = calc.get('name', '')
+                datasource_name = ds_data.get('name', '')
+                if (_strip_brackets(cname)
+                        in action_names_by_datasource.get(datasource_name, set())):
+                    continue
                 if cname not in seen_names:
                     seen_names.add(cname)
                     calculations.append(calc)
@@ -686,11 +908,14 @@ class TableauExtractor:
         ds_seen = {}  # datasource_name -> set of calc names already present
         for ds_name, ds in ds_by_name.items():
             ds_seen[ds_name] = {c.get('name', '') for c in ds.get('calculations', [])}
-
         for ws in _find_collection_items(root, 'worksheets', 'worksheet'):
             for dep in safe_findall(ws, './/datasource-dependencies'):
                 ds_ref = safe_get_attr(dep, 'datasource', '')
                 for col_elem in safe_findall(dep, 'column'):
+                    pseudo_identity = (
+                        ds_ref, _strip_brackets(safe_get_attr(col_elem, 'name', '')))
+                    if pseudo_identity in action_pseudo_fields:
+                        continue
                     calc_elem = safe_find(col_elem, 'calculation')
                     if calc_elem is None:
                         continue
@@ -1060,6 +1285,15 @@ class TableauExtractor:
             for column in dependency.findall('./column'):
                 definitions[(ds, column.get('name', '').strip('[]'))] = column
         provenance = getattr(self, '_worksheet_field_provenance', {})
+        action_pseudo_fields = getattr(self, '_action_pseudo_field_index', {})
+        # Build the worksheet result without explicitly declared generated
+        # action-link fields. ``continue`` in the metadata loop below would
+        # skip enrichment but leave the field in the returned list.
+        fields = [
+            field for field in fields
+            if (field.get('datasource', ''), field.get('name', ''))
+            not in action_pseudo_fields
+        ]
         for field in fields:
             identity = (field.get('datasource', ''), field.get('name', ''))
             lineage = provenance.get(identity)
@@ -1085,6 +1319,9 @@ class TableauExtractor:
                 if not name or identity in seen:
                     continue
                 seen.add(identity)
+                if (datasource, name) in getattr(
+                        self, '_action_pseudo_field_index', {}):
+                    continue
                 slices.append({
                     'name': name,
                     'datasource': datasource,
@@ -1092,6 +1329,71 @@ class TableauExtractor:
                     'source': 'slices',
                 })
         return slices
+
+    def extract_action_pseudo_filters(self, worksheet):
+        """Retain generated action filters separately from data fields.
+
+        A match requires Tableau's explicit ``auto-column=sheet_link`` group
+        metadata and an exact datasource/field reference. No caption/name
+        pattern is used to classify a field.
+        """
+        known = getattr(self, '_action_pseudo_field_index', {})
+        result = []
+        recorded = set()
+        for filt in worksheet.findall('.//filter'):
+            column = filt.get('column', '')
+            refs = re.findall(r'\[([^\]]+)\]\.\[([^\]]+)\]', column)
+            if not refs:
+                continue
+            datasource, raw_field = refs[0]
+            field_name = _strip_brackets(raw_field)
+            declaration = known.get((datasource, field_name))
+            if declaration is None:
+                continue
+            action_refs = []
+            for groupfilter in filt.iter():
+                action_id = _attribute_by_local_name(
+                    groupfilter, 'ui-action-filter')
+                if action_id:
+                    action_refs.append({
+                        'source_element': groupfilter.tag.rsplit('}', 1)[-1],
+                        'action_id': action_id,
+                        'source_attributes': dict(groupfilter.attrib),
+                    })
+            result.append({
+                'field': field_name,
+                'datasource': datasource,
+                'kind': 'action_pseudo_field',
+                'filter_column': column,
+                'status': 'pseudo_filter_not_materialized',
+                'materialized_as_column': False,
+                'source_evidence': declaration,
+                'filter_evidence': {
+                    'source_element': filt.tag.rsplit('}', 1)[-1],
+                    'source_attributes': dict(filt.attrib),
+                    'action_references': action_refs,
+                },
+            })
+            recorded.add((datasource, field_name))
+
+        worksheet_sources = {
+            dependency.get('datasource', '')
+            for dependency in worksheet.findall('.//datasource-dependencies')
+        }
+        for (datasource, field_name), declaration in known.items():
+            identity = (datasource, field_name)
+            if identity in recorded or datasource not in worksheet_sources:
+                continue
+            result.append({
+                'field': field_name,
+                'datasource': datasource,
+                'kind': 'action_pseudo_field',
+                'status': 'pseudo_filter_declaration_only',
+                'materialized_as_column': False,
+                'source_evidence': declaration,
+                'filter_evidence': None,
+            })
+        return result
 
     def _preserve_worksheet_pill_metadata(self, worksheet, fields):
         """Add date-pill and encoding aggregation metadata, never new axes.
@@ -1339,22 +1641,56 @@ class TableauExtractor:
         return story_points
 
     def extract_worksheet_sort_orders(self, worksheet):
-        """Extracts sort orders of a worksheet including computed sorts."""
+        """Extract shelf, computed, alphabetic, and natural sort declarations."""
         sorts = []
-        for sort in worksheet.findall('.//sort'):
+        for sort in worksheet.findall('.//shelf-sort-v2'):
+            sort_field = sort.get('dimension-to-sort', '')
+            if not sort_field:
+                continue
+            sort_by = sort.get('measure-to-sort-by', '')
+            entry = {
+                'field': _strip_brackets(sort_field),
+                'direction': sort.get('direction', 'ASC').upper(),
+                'shelf': sort.get('shelf', ''),
+                'sort_type': 'computed' if sort_by else 'field',
+                'source_element': sort.tag.rsplit('}', 1)[-1],
+                'source_attributes': dict(sort.attrib),
+            }
+            if sort_by:
+                entry['sort_by'] = _strip_brackets(sort_by)
+            sorts.append(entry)
+
+        for sort in worksheet.iter():
+            tag = sort.tag.rsplit('}', 1)[-1].split(':')[-1]
+            if tag not in ('sort', 'computed-sort', 'alphabetic-sort',
+                           'natural-sort'):
+                continue
             col = _strip_brackets(sort.get('column', ''))
+            if not col:
+                col = _strip_brackets(sort.get('dimension-to-sort', ''))
             direction = sort.get('direction', 'ASC')
             sort_entry = {'field': col, 'direction': direction.upper()}
 
             # Computed sort: sort by another field/measure
-            sort_using = sort.get('using', '')
+            sort_using = (sort.get('using', '')
+                          or sort.get('measure-to-sort-by', ''))
             if sort_using:
                 sort_entry['sort_by'] = _strip_brackets(sort_using)
 
-            # Sort type: alphabetic, manual, computed
-            sort_type = sort.get('type', '')
+            sort_entry['source_element'] = tag
+            sort_entry['source_attributes'] = dict(sort.attrib)
+            # Element names are direct source evidence. Generic <sort> types
+            # remain as declared, including unrecognized values.
+            sort_type = {
+                'computed-sort': 'computed',
+                'alphabetic-sort': 'alphabetic',
+                'natural-sort': 'natural',
+            }.get(tag, sort.get('type', sort.get('class', '')))
             if sort_type:
                 sort_entry['sort_type'] = sort_type
+            shelf = sort.get('shelf', '')
+            if shelf:
+                sort_entry['shelf'] = shelf
 
             sorts.append(sort_entry)
         return sorts
@@ -1585,6 +1921,8 @@ class TableauExtractor:
                 'style': rl.get('style', rl.get('line-style', 'solid')),
                 'computation': rl.get('computation', 'constant'),
                 'field': rl.get('column', ''),
+                'axis_column': rl.get('axis-column', ''),
+                'source_attributes': dict(rl.attrib),
                 'is_band': is_band,
             }
             if is_band:
@@ -1910,6 +2248,12 @@ class TableauExtractor:
 
         for ds in self._findall_root_cached(root, './/datasource'):
             for group_elem in ds.findall('.//group'):
+                if _attribute_by_local_name(
+                        group_elem, 'auto-column') == 'sheet_link':
+                    # Tableau-generated action-link groups are filter
+                    # plumbing, not group-derived fact columns. Their source
+                    # evidence is retained with the worksheet action filters.
+                    continue
                 group_name = _strip_brackets(group_elem.get('caption', group_elem.get('name', '')))
                 if not group_name:
                     continue
@@ -1923,16 +2267,19 @@ class TableauExtractor:
                 if func == 'crossjoin':
                     # Combined Field — extract source fields
                     levels = []
+                    source_field_refs = []
                     for lm in group_elem.findall('.//groupfilter[@function="level-members"]'):
                         level = _strip_brackets(lm.get('level', ''))
-                        # Clean all Tableau derivation prefixes (yr:, mn:, none:, etc.)
-                        level = _clean_field_ref(level)
-                        levels.append(level)
+                        source_field_refs.append(level)
+                        levels.append(_clean_field_ref(level))
 
                     groups.append({
                         'name': group_name,
+                        'raw_name': _strip_brackets(group_elem.get('name', '')),
+                        'datasource': ds.get('name', ''),
                         'group_type': 'combined',
                         'source_fields': levels,
+                        'source_field_refs': source_field_refs,
                         'source_field': '',
                         'members': {}
                     })
@@ -2020,13 +2367,19 @@ class TableauExtractor:
                 if values:
                     members[label] = values
             if members and source_col:
-                groups.append({
+                group_data = {
                     'name': col_name,
                     'group_type': 'values',
                     'source_field': source_col,
                     'source_fields': [],
                     'members': members
-                })
+                }
+                # The XML parser already decodes XML entities. Decode only
+                # Tableau's quoted-string escapes; never interpret formulas.
+                if 'default' in calc_elem.attrib:
+                    group_data['default'] = _decode_tableau_group_literal(
+                        calc_elem.get('default', ''))
+                groups.append(group_data)
                 seen_group_names.add(col_name)
 
         self.workbook_data['groups'] = groups
@@ -2544,23 +2897,43 @@ class TableauExtractor:
         return map_opts
 
     def extract_clustering(self, worksheet):
-        """Extracts clustering configuration (no direct PBI equivalent)."""
+        """Retain Tableau cluster declarations; never calculate cluster labels."""
         clusters = []
-        for cl in worksheet.findall('.//cluster'):
+        for cl in worksheet.iter():
+            tag = cl.tag.rsplit('}', 1)[-1].split(':')[-1]
+            if tag != 'cluster':
+                continue
+            adhoc_value = _attribute_by_local_name(cl, 'adhoc').strip().lower()
             clusters.append({
                 'num_clusters': cl.get('num-clusters', 'auto'),
                 'variables': [v.get('column', '').replace('[', '').replace(']', '')
                               for v in cl.findall('.//variable') if v.get('column')],
                 'seed': cl.get('seed', ''),
+                'status': 'metadata_only_not_calculated',
+                'adhoc': adhoc_value in ('true', '1'),
+                'source_element': tag,
+                'source_attributes': dict(cl.attrib),
             })
-        # Also check <cluster-analysis>
-        for ca in worksheet.findall('.//cluster-analysis'):
-            if not clusters:
-                clusters.append({
-                    'num_clusters': ca.get('num-clusters', 'auto'),
-                    'variables': [],
-                    'seed': ca.get('seed', ''),
-                })
+        # Preserve the signal itself, not an inferred set of assignments.
+        for ca in worksheet.iter():
+            tag = ca.tag.rsplit('}', 1)[-1].split(':')[-1]
+            if tag not in ('cluster-analysis', 'adhoc-cluster'):
+                continue
+            entry = {
+                'variables': [],
+                'seed': ca.get('seed', ''),
+                'status': 'metadata_only_not_calculated',
+                'adhoc': tag == 'adhoc-cluster',
+                'source_element': tag,
+                'source_attributes': dict(ca.attrib),
+            }
+            if ca.get('num-clusters'):
+                entry['num_clusters'] = ca.get('num-clusters')
+            elif tag == 'cluster-analysis':
+                # Preserve the historical fallback for the established
+                # cluster-analysis shape; adhoc-cluster remains source-only.
+                entry['num_clusters'] = 'auto'
+            clusters.append(entry)
         return clusters
 
     def extract_dual_axis_sync(self, worksheet):

@@ -64,7 +64,7 @@ class TestCalendarIsAlwaysTheOneSide(unittest.TestCase):
         rel = self._run(_calendar_rel())
         self.assertEqual(rel['crossFilteringBehavior'], 'oneDirection')
 
-    def test_several_tables_make_calendar_a_bridge(self):
+    def test_several_tables_still_filter_in_one_direction(self):
         model = _model([
             _calendar_rel(),
             _calendar_rel(name='r2', fromTable='Regions',
@@ -73,7 +73,7 @@ class TestCalendarIsAlwaysTheOneSide(unittest.TestCase):
         _detect_many_to_many(model, [])
         for rel in model['model']['relationships']:
             self.assertEqual(rel['toCardinality'], 'one')
-            self.assertEqual(rel['crossFilteringBehavior'], 'bothDirections')
+            self.assertEqual(rel['crossFilteringBehavior'], 'oneDirection')
 
 
 class TestTheGuessesStillApplyElsewhere(unittest.TestCase):

@@ -42,6 +42,11 @@ provide the central action. Conflicting central forms reject. These are action
 before/after annotations allow conversion; nonempty annotations are inventoried
 and block it.
 
+The wrapper's graph name and an inner action's display name may differ; the
+wrapper keeps its graph identity and the inner label is retained as metadata.
+Conflicting graph IDs and edges remain errors except for separately documented
+producer dialects with their own action identity.
+
 `fields` accepts lists, null/missing collections or dictionaries keyed by
 column name. A missing/null entry name comes from its key; conflicting names,
 invalid values and case-insensitive collisions reject. Filters accept explicit
@@ -51,7 +56,10 @@ retained as structured `_prep_diagnostics`
 and `FlowProfile.diagnostics` for inventory. Diagnostics marked
 `blocks_conversion` prevent successful M export. Empty containers are identity
 only when they contain no schema/operation semantics and have unambiguous
-routing, without discarding edge metadata. No unsupported transformation is
+routing, without discarding edge metadata. The observed empty parameter
+envelope and identical `Default` namespace edges are accepted; non-default,
+conflicting or otherwise unrecognized edge metadata still blocks collapse.
+No unsupported transformation is
 skipped to manufacture a successful output. The observed `SimpleUnion` inside
 `SuperUnion` now decodes its per-input `namespaceFieldMappings` rather than
 treating it as an automatic union. Recognizing that operation does not prove
@@ -59,12 +67,72 @@ conversion of every later node in the public flow. Synthetic
 normalization/conversion tests do not establish native M execution or recovery
 rates on an external/private corpus.
 
-The full public flow still rejects its `SimpleJoin` inside `SuperJoin`:
-left/right identities and equality keys alone do not establish output-field
-selection, duplicate-key treatment or collision/rename semantics. An alias to
-the existing `Join` dialect would invent a projection. Its union inputs also
-declare a string/real mismatch without an explicit cast. The mapped-union
-implementation does not turn either independent limitation into a success.
+The public `SimpleJoin` inside `SuperJoin` is recognized as its own dialect:
+the observed `conditions` entries contain `[Field]` expressions and an
+explicit `==` comparator, while incoming edge namespaces identify `Left` and
+`Right`. It is not treated as an alias for the older `Join` payload. Conversion
+requires a nonempty, source-declared node `fields` list; it is used as the
+output projection. Each projected name must identify exactly one input, and
+join-key types must match without an inferred cast. A distinct right-hand key
+is retained when projected; a temporary expansion preserves multiple matches
+even when no right-hand field is projected. `notInner` combines the two
+unmatched sides rather than treating it as `leftOnly`. Legacy `notInner`
+payloads without this explicit projection remain blocked.
+
+Conversion also requires a node-keyed policy attesting that Tableau and Power
+Query agree on comparisons, null keys and duplicate matches for the actual
+sources and execution context. Set `TTPBI_PREP_SIMPLE_JOIN_POLICIES` to JSON,
+or pass the same object as `simple_join_policies` to `parse_prep_flow`:
+
+```json
+{
+  "synthetic-join-node": {
+    "comparison_semantics_verified": true,
+    "null_semantics_verified": true,
+    "duplicate_semantics_verified": true
+  }
+}
+```
+
+The key is the normalized graph node ID shown in the diagnostic, not the
+inner action ID. All three values must be `true`; they are evidence supplied
+by the operator, not checks performed by the generator. Verify case, accents,
+trailing spaces, nulls and duplicate matches on the actual source and target,
+including any query folding, before setting them. Policies in the environment
+may include nodes from other flows in a batch, and are **not scoped to a flow**:
+if two flows reuse a node ID, the same policy is applied to both. The parser
+logs a warning for each environment-policy application; it does not detect
+whether the attestation is valid for either source. Verify every matching flow
+independently, or use explicit `simple_join_policies` for individual parser
+calls. Tableau documents the
+[join types](https://help.tableau.com/current/prep/en-us/prep_combine.htm);
+its support guidance notes that
+[null-key evaluation can vary by execution context](https://help.salesforce.com/s/articleView?id=005385506&language=en_US&type=1).
+
+The public flow's observed `RenameColumn` payload uses `rename` for the target;
+the parser accepts it only when canonical `newColumnName` is absent, and
+rejects empty or invalid names and schema collisions. Its
+`TRIM(SPLIT([Notes], "-", n))` calculations use a bounded conversion for
+positive integer `n` and a string-typed source field. Tableau token numbers are
+one-based; generated M indexes the `Text.Split` list at `n - 1`. Negative or
+nonliteral token numbers and other SPLIT operands are rejected. Because source
+behavior for null input and unavailable tokens has not been established, the
+generated expression raises explicit M errors for those cases rather than
+assuming a null result. This expression coverage does not establish value
+parity or native refresh. See Tableau's
+[Prep function reference](https://help.tableau.com/current/prep/en-us/prep_function_reference.htm)
+and Microsoft's
+[Text.Split reference](https://learn.microsoft.com/en-us/powerquery-m/text-split).
+
+The public flow now reaches its mapped union and fails on the `Discount` field's
+incompatible `real` and `string` input types; no cast is inferred and no M is
+published. Independently, its `SimpleJoin` has no output schema/projection, so
+conversion remains blocked rather than projecting every input field by
+assumption. Calculated/qualified join-key expressions, non-equality
+comparators, ambiguous field collisions and inferred sides are also rejected.
+Reduced producer-backed tests isolate the union mismatch and missing join
+projection; synthetic M/schema tests do not establish native refresh or value
+parity.
 
 ### Schema propagation
 
@@ -349,8 +417,9 @@ that parser case remains rejected.
 ## 8. Join Step
 
 These examples describe M helpers and the supported explicit join contract.
-They do not establish the implicit result projection of the public
-`SuperJoin`/`SimpleJoin` producer variant, which remains rejected.
+They do not establish implicit output projection for the public
+`SuperJoin`/`SimpleJoin` producer variant; a source-declared `fields`
+projection is required.
 
 | # | Tableau Prep Operation | Power Query M Function | Status | Example |
 |---|----------------------|----------------------|--------|---------|
@@ -360,7 +429,7 @@ They do not establish the implicit result projection of the public
 | 4 | Full Outer Join | `Table.NestedJoin()` + Expand | 🆕 | `Table.NestedJoin(T1, "key", T2, "key", "Joined", JoinKind.FullOuter)` |
 | 5 | Left Only (anti-join) | `Table.NestedJoin()` + filter null | 🆕 | Join + `Table.SelectRows(each [Joined] = null)` |
 | 6 | Right Only (anti-join) | `Table.NestedJoin()` reversed | 🆕 | Reverse tables + left anti |
-| 7 | Not Inner (full anti) | Combination of anti-joins | 🔧 | Complex M pattern |
+| 7 | Not Inner (full anti) | Two left anti-joins + `Table.Combine` | Explicit `SimpleJoin` projection and evidence policy only | Keep unmatched rows from both inputs |
 | 8 | Multi-key join | `Table.NestedJoin()` with lists | 🆕 | `Table.NestedJoin(T1, {"k1","k2"}, T2, {"k1","k2"}, "J", JoinKind.Inner)` |
 | 9 | Join with calculation clause | `Table.AddColumn()` pre-join | 🔧 | Add computed key before joining |
 | 10 | Expand joined columns | `Table.ExpandTableColumn()` | 🆕 | `Table.ExpandTableColumn(Joined, "J", {"col1", "col2"})` |

@@ -55,7 +55,7 @@ def extract_worksheet_fields(worksheet):
     derivation_re = r'^(none|sum|avg|count|cnt|ctd|countd|min|max|usr|yr|mn|dy|qr|wk|attr|md|mdy|hms|hr|mt|sc|thr|trunc|tyr|tqr|tmn|tdy|twk):'
     suffix_re = r':(nk|qk|ok|fn|tn)(?::\d+)?$'
     # Quick table calc prefixes (pcto = % of total, pctd = % difference, running_*)
-    table_calc_re = r'^(pcto|pctd|diff|running_sum|running_avg|running_count|running_min|running_max|rank|rank_unique|rank_dense):(sum|avg|count|min|max|countd)?:?'
+    table_calc_re = r'^(pcto|pctd|diff|running_sum|running_avg|running_count|running_min|running_max|rank_unique|rank_dense|rank):(sum|avg|countd|ctd|count|cnt|min|max)?:?'
 
     # ── Non-standard shelf format ─────────────────────────────
     # Some Tableau exports (and minimal test fixtures) use
@@ -119,7 +119,7 @@ def extract_worksheet_fields(worksheet):
                     table_calc_agg = table_calc_match.group(2) or 'sum'
 
                 # Detect aggregation prefix (cnt:, sum:, avg:, etc.)
-                agg_prefix_match = re.match(r'^(cnt|sum|avg|min|max|countd|median|attr|stdev|stdevp|var|varp):', field_ref)
+                agg_prefix_match = re.match(r'^(cnt|count|ctd|countd|sum|avg|min|max|median|attr|stdev|stdevp|var|varp):', field_ref)
                 shelf_agg = agg_prefix_match.group(1) if agg_prefix_match else None
 
                 # Clean the field name (remove derivation prefix and type suffix)
@@ -170,6 +170,12 @@ def extract_worksheet_fields(worksheet):
                             'shelf': enc_type,
                             'datasource': col_refs[0][0]
                         }
+                        agg_prefix_match = re.match(
+                            r'^(cnt|count|ctd|countd|sum|avg|min|max|median|attr|stdev|stdevp|var|varp):',
+                            raw,
+                        )
+                        if agg_prefix_match:
+                            entry['aggregation'] = agg_prefix_match.group(1)
                         if table_calc_match:
                             entry['table_calc'] = table_calc_match.group(1)
                             entry['table_calc_agg'] = table_calc_match.group(2) or 'sum'
@@ -192,7 +198,7 @@ def extract_worksheet_fields(worksheet):
             continue
         ds_ref, field_ref = col_refs[0]
         # Detect aggregation prefix (cnt:, sum:, etc.)
-        agg_prefix_match = re.match(r'^(cnt|sum|avg|min|max|countd|median|attr|stdev|stdevp|var|varp):', field_ref)
+        agg_prefix_match = re.match(r'^(cnt|count|ctd|countd|sum|avg|min|max|median|attr|stdev|stdevp|var|varp):', field_ref)
         shelf_agg = agg_prefix_match.group(1) if agg_prefix_match else None
         clean = re.sub(derivation_re, '', field_ref)
         clean = re.sub(suffix_re, '', clean)

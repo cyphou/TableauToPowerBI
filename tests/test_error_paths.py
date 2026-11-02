@@ -487,7 +487,7 @@ class TestMigrationReportErrors(unittest.TestCase):
         report = MigrationReport('Test')
         report.add_item('calc', 'M1', 'skipped')
         summary = report.get_summary()
-        self.assertIsInstance(summary['fidelity_score'], float)
+        self.assertIsNone(summary['fidelity_score'])
 
     def test_classify_dax_none(self):
         status = MigrationReport._classify_dax(None)

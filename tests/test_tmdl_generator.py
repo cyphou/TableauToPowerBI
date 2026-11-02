@@ -25,6 +25,7 @@ from powerbi_import.tmdl_generator import (
     _add_date_table,
     _audit_local_partition_sources,
     _build_semantic_model,
+    _collect_semantic_context,
     _fail_unavailable_local_sources,
     _get_display_folder,
     _get_format_string,
@@ -45,6 +46,56 @@ from powerbi_import.tmdl_generator import (
     generate_theme_json,
     generate_tmdl,
 )
+
+
+class TestDatasourceTableNaming(unittest.TestCase):
+
+    def test_datasource_caption_with_table_prefix_is_not_nested(self):
+        datasources = [
+            {'name': 'source-first', 'caption': 'First',
+             'tables': [{'name': 'Sheet1',
+                         'columns': [{'name': 'Id', 'datatype': 'integer'}]}]},
+            {'name': 'source-a', 'caption': 'Sheet1 (SrcA)',
+             'tables': [{'name': 'Sheet1',
+                         'columns': [{'name': 'Id', 'datatype': 'integer'}]}]},
+        ]
+
+        context = _collect_semantic_context(datasources, {})
+
+        self.assertIn('Sheet1 (SrcA)', context['best_tables'])
+        self.assertNotIn('Sheet1 (Sheet1 (SrcA))', context['best_tables'])
+
+
+class TestCombinedGroupMonthTruncation(unittest.TestCase):
+
+    def test_month_truncation_keeps_year_in_m_and_dax_keys(self):
+        from powerbi_import.tmdl_sets import _process_sets_groups_bins
+
+        for dax_only in (False, True):
+            with self.subTest(dax_only=dax_only):
+                day = {'name': 'Day', 'sourceColumn': 'Day'}
+                if dax_only:
+                    day = {'name': 'Day', 'expression': 'TODAY()', 'isCalculated': True}
+                table = {
+                    'name': 'Facts', 'columns': [day, {'name': 'Category'}],
+                    'partitions': [{'source': {
+                        'type': 'm',
+                        'expression': 'let\n    Source = #table({}, {})\nin\n    Source'}}],
+                }
+                model = {'model': {'tables': [table]}}
+                _process_sets_groups_bins(model, {'groups': [{
+                    'name': 'Month key', 'group_type': 'combined',
+                    'source_fields': ['tmn:Day:qk', 'Category'],
+                }]}, 'Facts', {'Day': 'Facts', 'Category': 'Facts'})
+                column = next(c for c in table['columns'] if c['name'] == 'Month key')
+                if dax_only:
+                    self.assertIn("DATE(YEAR('Facts'[Day]), MONTH('Facts'[Day]), 1)",
+                                  column['expression'])
+                    self.assertIn("ISBLANK('Facts'[Day])", column['expression'])
+                else:
+                    expression = table['partitions'][0]['source']['expression']
+                    self.assertIn('Date.StartOfMonth([#"Day"])', expression)
+                    self.assertNotIn('Date.Month([#"Day"])', expression)
 
 
 class TestCombinedGroupSourceRelationshipContract(unittest.TestCase):
@@ -76,6 +127,12 @@ class TestCombinedGroupSourceRelationshipContract(unittest.TestCase):
         self.validate(self.model([self.edge()]))
         self.validate(self.model([
             self.edge(target='Bridge'), self.edge(home='Bridge')]))
+
+    def test_missing_cardinality_is_not_proof_of_a_to_one_source_path(self):
+        edge = self.edge()
+        del edge['toCardinality']
+        with self.assertRaisesRegex(ValueError, 'unambiguous active to-one source'):
+            self.validate(self.model([edge]))
 
     def test_explicit_to_one_combined_group_processing_retargets_and_validates(self):
         from powerbi_import.tmdl_dax_postprocess import retarget_dax_column_refs
@@ -1016,12 +1073,15 @@ class TestAddDateTable(unittest.TestCase):
         }
 
     def test_calendar_columns_complete(self):
-        """All 8 expected Calendar columns are present."""
+        """All 9 expected Calendar columns are present."""
         model = self._make_model_with_measure()
         _add_date_table(model)
         cal = [t for t in model["model"]["tables"] if t["name"] == "Calendar"][0]
         col_names = {c["name"] for c in cal["columns"]}
-        expected = {"Date", "Year", "Quarter", "Month", "MonthName", "Day", "DayOfWeek", "DayName"}
+        expected = {
+            "Date", "MonthStart", "Year", "Quarter", "Month", "MonthName",
+            "Day", "DayOfWeek", "DayName",
+        }
         self.assertEqual(col_names, expected)
 
     def test_calendar_partition_is_m(self):
@@ -1032,6 +1092,7 @@ class TestAddDateTable(unittest.TestCase):
         partition = cal["partitions"][0]
         self.assertEqual(partition["source"]["type"], "m")
         self.assertIn("List.Dates", partition["source"]["expression"])
+        self.assertIn("Date.StartOfMonth([Date])", partition["source"]["expression"])
 
     def test_calendar_data_categories(self):
         """Calendar columns have correct dataCategory."""
@@ -2328,6 +2389,258 @@ class TestWorksheetSupportedCalendarRegressions(unittest.TestCase):
         self.assertIn('Orders', expression)
         self.assertIn('Order Date', expression)
         self.assertNotIn('StartDate = #date(2020, 1, 1)', expression)
+
+
+class TestReproducibleSemanticModelFixes(unittest.TestCase):
+    """Targeted regressions for the supplied semantic-model report cases."""
+
+    @staticmethod
+    def _predicate(operators=('=', '=')):
+        terms = []
+        for index, operator in enumerate(operators):
+            terms.append({
+                'operator': operator,
+                'left': {'table': 'Current', 'column': f'Key{index}'},
+                'right': {'table': 'Prior', 'column': f'Key{index}'},
+            })
+        return {'operator': 'AND', 'arguments': terms}
+
+    @staticmethod
+    def _logical_model(predicate, compiled=True):
+        pair = ['Current', 'Prior']
+        model = {
+            'model': {
+                'tables': [
+                    {'name': 'Current', 'columns': [{'name': 'Key0'}, {'name': 'Key1'}]},
+                    {'name': 'Prior', 'columns': [{'name': 'Key0'}, {'name': 'Key1'}]},
+                ],
+                'relationships': [],
+            },
+            '_logical_predicate_pairs': [pair],
+            '_logical_equality_compiled_pairs': [pair] if compiled else [],
+            '_datasources': [],
+            '_table_rename_map': {},
+        }
+        source = {
+            'name': 'synthetic',
+            'relationships': [
+                {'left': {'table': 'Current', 'column': 'Key0'},
+                 'right': {'table': 'Prior', 'column': 'Key0'}},
+                {'left': {'table': 'Current', 'column': 'Key1'},
+                 'right': {'table': 'Prior', 'column': 'Key1'}},
+            ],
+            'relation_metadata': {'logical_relationships': [{
+                'left': {'tables': ['Current']},
+                'right': {'tables': ['Prior']},
+                'predicate': predicate,
+            }]},
+        }
+        return model, [source]
+
+    def test_compiled_pure_equality_conjunction_drops_lossy_legacy_edges(self):
+        from powerbi_import.tmdl_generator import (
+            _prepare_logical_relationship_measures,
+        )
+        from powerbi_import.tmdl_relationships import _create_and_validate_relationships
+        from tests.logical_relationship_fixtures import (
+            safe_policy,
+            synthetic_datasource,
+        )
+
+        datasource = synthetic_datasource()
+        predicate = datasource['relation_metadata']['logical_relationships'][0]['predicate']
+        predicate['arguments'][2]['operator'] = '='
+        datasource['relationships'] = [
+            {'left': {'table': 'Current', 'column': 'C_Key'},
+             'right': {'table': 'Prior', 'column': 'P_Key'}},
+            {'left': {'table': 'Current', 'column': 'C_Group'},
+             'right': {'table': 'Prior', 'column': 'P_Group'}},
+            {'left': {'table': 'Current', 'column': 'C_Time'},
+             'right': {'table': 'Prior', 'column': 'P_Time'}},
+        ]
+        model = {
+            'model': {
+                'tables': [
+                    {'name': table['name'], 'columns': [
+                        {'name': column['name']} for column in table['columns']]}
+                    for table in datasource['tables']
+                ],
+                'relationships': [],
+            },
+            '_table_rename_map': {},
+        }
+        context = _collect_semantic_context([datasource], {})
+        _prepare_logical_relationship_measures(
+            context, [datasource],
+            {'logical_relationship_policies': {'Synthetic': safe_policy()}},
+            model)
+        self.assertEqual(model['_logical_equality_compiled_pairs'],
+                         [['Current', 'Prior']])
+        datasources = [datasource]
+        _create_and_validate_relationships(model, datasources)
+        self.assertEqual(model['model']['relationships'], [])
+
+    def test_equality_conjunction_without_compiler_proof_fails_closed(self):
+        from powerbi_import.tmdl_relationships import _create_and_validate_relationships
+
+        model, datasources = self._logical_model(self._predicate(), compiled=False)
+        with self.assertRaisesRegex(ValueError, 'multiple equality terms'):
+            _create_and_validate_relationships(model, datasources)
+
+    def test_single_equality_edge_requires_proven_cardinality_and_encoding(self):
+        from powerbi_import.tmdl_relationships import _create_and_validate_relationships
+
+        predicate = {
+            'operator': '=',
+            'left': {'table': 'Current', 'column': 'Key0'},
+            'right': {'table': 'Prior', 'column': 'Key0'},
+        }
+        model, datasources = self._logical_model(predicate, compiled=False)
+        with self.assertRaisesRegex(ValueError, 'source row uniqueness/cardinality'):
+            _create_and_validate_relationships(model, datasources)
+
+    def test_range_term_remains_blocked_even_if_pair_is_marked_compiled(self):
+        from powerbi_import.tmdl_relationships import _create_and_validate_relationships
+
+        model, datasources = self._logical_model(
+            self._predicate(('=', '>')), compiled=True)
+        with self.assertRaisesRegex(ValueError, 'range, disjunction, opaque operand'):
+            _create_and_validate_relationships(model, datasources)
+
+    def test_sum_of_explicit_constant_one_is_row_count(self):
+        from powerbi_import.tmdl_generator import _build_table
+
+        table = {
+            'name': 'Facts',
+            'columns': [{'name': 'Amount', 'datatype': 'integer'}],
+        }
+        calculations = [
+            {'name': '[One Row]', 'caption': 'One Row', 'formula': '1',
+             'datatype': 'integer', 'role': 'measure'},
+            {'name': '[Rows]', 'caption': 'Rows', 'formula': 'SUM([One Row])',
+             'datatype': 'integer', 'role': 'measure'},
+        ]
+        result = _build_table(
+            table, {'type': 'SQL Server'}, calculations, [],
+            dax_context={
+                'calc_map': {'One Row': 'One Row', 'Rows': 'Rows'},
+                'column_table_map': {}, 'measure_names': {'One Row', 'Rows'},
+                'param_values': {},
+            },
+        )
+        rows = next(measure for measure in result['measures']
+                    if measure['name'] == 'Rows')
+        self.assertEqual(rows['expression'], "COUNTROWS('Facts')")
+
+    def test_calendar_link_uses_truncated_key_without_replacing_timestamp(self):
+        from powerbi_import.tmdl_generator import _materialize_calendar_date_keys
+
+        timestamp = {
+            'name': 'Created At', 'dataType': 'DateTime',
+            'sourceColumn': 'Created At', 'summarizeBy': 'none',
+        }
+        relationship = {
+            'name': 'Calendar_Facts_Created At', 'fromTable': 'Facts',
+            'fromColumn': 'Created At', 'toTable': 'Calendar', 'toColumn': 'Date',
+        }
+        model = {'model': {
+            'tables': [{'name': 'Facts', 'columns': [timestamp]}],
+            'relationships': [relationship],
+        }}
+        _materialize_calendar_date_keys(model)
+        facts = model['model']['tables'][0]
+        self.assertIs(facts['columns'][0], timestamp)
+        self.assertEqual(relationship['fromColumn'], 'Created At (Date)')
+        date_key = facts['columns'][1]
+        self.assertIn('DATE(YEAR', date_key['expression'])
+        self.assertIn('DAY(', date_key['expression'])
+
+    def test_multi_object_hyper_tables_keep_exact_identities(self):
+        from contextlib import redirect_stdout
+
+        from powerbi_import.tmdl_generator import _build_semantic_model
+
+        identity_a = {
+            'workbook': 'synthetic.twbx', 'archive_member': 'Data/a.hyper',
+            'schema': 'Extract', 'table': 'Object A',
+        }
+        identity_b = {
+            'workbook': 'synthetic.twbx', 'archive_member': 'Data/a.hyper',
+            'schema': 'Extract', 'table': 'Object B',
+        }
+        datasource = {'name': 'ds', 'tables': [
+            {'name': 'Object A', 'hyper_identity': identity_a,
+             'connection_details': {'type': 'hyper'},
+             'columns': [{'name': 'A', 'datatype': 'string'}]},
+            {'name': 'Object B', 'hyper_identity': identity_b,
+             'connection_details': {'type': 'hyper'},
+             'columns': [{'name': 'B', 'datatype': 'string'}]},
+        ]}
+        with redirect_stdout(io.StringIO()):
+            model = _build_semantic_model([datasource], 'Synthetic', {})
+        emitted = {table['name']: table['hyper_identity']
+                   for table in model['model']['tables']}
+        self.assertEqual(emitted['Object A'], identity_a)
+        self.assertEqual(emitted['Object B'], identity_b)
+
+    def test_same_named_hyper_aliases_are_merged_only_for_exact_identity(self):
+        first_identity = {
+            'workbook': 'synthetic.twbx', 'archive_member': 'Data/a.hyper',
+            'schema': 'Extract', 'table': 'Exact',
+        }
+        second_identity = dict(first_identity, table='Different')
+        first = {
+            'name': 'Alias', 'hyper_identity': first_identity,
+            'connection_details': {'type': 'hyper'},
+            'columns': [{'name': 'A', 'datatype': 'string'}],
+        }
+        same = dict(first, columns=[{'name': 'B', 'datatype': 'string'}])
+        context = _collect_semantic_context(
+            [{'name': 'ds', 'tables': [first, same]}], {})
+        self.assertEqual(
+            {column['name'] for column in context['best_tables']['Alias'][0]['columns']},
+            {'A', 'B'})
+
+        ambiguous = dict(first, hyper_identity=second_identity)
+        with self.assertRaisesRegex(ValueError, 'same exact workbook/archive/schema/table'):
+            _collect_semantic_context(
+                [{'name': 'ds', 'tables': [first, ambiguous]}], {})
+
+        missing = dict(first)
+        missing.pop('hyper_identity')
+        with self.assertRaisesRegex(ValueError, 'same exact workbook/archive/schema/table'):
+            _collect_semantic_context(
+                [{'name': 'ds', 'tables': [first, missing]}], {})
+
+    def test_hyper_source_alias_pair_requires_matching_complete_identities(self):
+        from powerbi_import.tmdl_relationships import _source_alias_pairs
+
+        identity = {
+            'workbook': 'synthetic.twbx', 'archive_member': 'Data/a.hyper',
+            'schema': 'Extract', 'table': 'Physical',
+        }
+
+        def model(second_identity):
+            return {
+                'model': {'tables': [], 'relationships': []},
+                '_datasources': [{
+                    'name': 'ds',
+                    'tables': [
+                        {'name': 'Current', 'source_table': '[Extract].[Physical]',
+                         'connection_details': {'type': 'hyper'},
+                         'hyper_identity': identity},
+                        {'name': 'Prior', 'source_table': '[Extract].[Physical]',
+                         'connection_details': {'type': 'hyper'},
+                         **({'hyper_identity': second_identity}
+                            if second_identity is not None else {})},
+                    ],
+                }],
+            }
+
+        self.assertEqual(_source_alias_pairs(model(identity)),
+                         {frozenset(('Current', 'Prior'))})
+        self.assertEqual(_source_alias_pairs(model(None)), set())
+        self.assertEqual(_source_alias_pairs(model(dict(identity, table='Other'))), set())
 
 
 if __name__ == '__main__':

@@ -14,6 +14,7 @@ import unittest
 import zipfile
 from collections import Counter
 from contextlib import redirect_stdout
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -184,6 +185,69 @@ def _datasource(filename, nullif=True):
 
 
 class TestAuditFixedSourceToOutput(unittest.TestCase):
+    def test_fixed_dimension_planning_rejects_unproven_dependencies(self):
+        from powerbi_import.tmdl_generator import _plan_fixed_dimension_columns
+
+        base = _datasource("unused.csv")["calculations"]
+        self.assertEqual(len(_plan_fixed_dimension_columns(base)), 1)
+
+        multiple_grains = deepcopy(base)
+        multiple_grains[1]["formula"] = 'IF [ratio] > [other] THEN "High" ELSE "Low" END'
+        multiple_grains.append({
+            "name": "[other]", "caption": "Other ratio", "role": "measure",
+            "datatype": "real", "formula": "{FIXED [Units] : SUM([Amount])}",
+        })
+        dynamic = deepcopy(base)
+        dynamic[0]["formula"] = "{FIXED [Entity] : SUM([Amount]) + TODAY()}"
+        duplicate = deepcopy(base)
+        duplicate.append(deepcopy(duplicate[0]))
+        consumed = deepcopy(base)
+        consumed.append({
+            "name": "[dependent]", "caption": "Dependent", "role": "measure",
+            "datatype": "string", "formula": "[band]",
+        })
+        for calculations in (multiple_grains, dynamic, duplicate, consumed):
+            with self.subTest(calculations=calculations):
+                self.assertEqual(_plan_fixed_dimension_columns(calculations), [])
+
+    def test_fixed_materialization_rejects_non_import_and_calculated_leaves(self):
+        from powerbi_import.tmdl_generator import (
+            _materialize_fixed_dimension_columns,
+            _plan_fixed_dimension_columns,
+        )
+
+        plan = _plan_fixed_dimension_columns(
+            _datasource("unused.csv")["calculations"])[0]
+        table = {
+            "name": "Facts",
+            "_fixed_dimension_candidates": [plan],
+            "partitions": [{"mode": "directQuery"}],
+            "columns": [{"name": "Entity"}, {"name": "Amount"}, {"name": "Units"}],
+            "measures": [
+                {"name": "Group ratio", "expression":
+                 "CALCULATE(SUM('Facts'[Amount]), ALLEXCEPT('Facts', 'Facts'[Entity]))"},
+                {"name": "Group band", "expression":
+                 'IF([Group ratio] > 2, "[Group ratio]", "Low")'},
+            ],
+        }
+        model = {"model": {"tables": [table]}}
+        self.assertEqual(_materialize_fixed_dimension_columns(model), {})
+        self.assertEqual(len(table["measures"]), 2)
+
+        table["partitions"][0]["mode"] = "import"
+        table["columns"][1]["expression"] = "1"
+        self.assertEqual(_materialize_fixed_dimension_columns(model), {})
+        self.assertEqual(len(table["measures"]), 2)
+
+        del table["columns"][1]["expression"]
+        contract = _materialize_fixed_dimension_columns(model)
+        self.assertEqual(set(contract), {("Facts", "Group band")})
+        classifier = table["columns"][-1]["expression"]
+        self.assertIn('"[Group ratio]"', classifier)
+        self.assertIn("ALLEXCEPT('Facts', 'Facts'[Entity])", classifier)
+        self.assertEqual([measure["name"] for measure in table["measures"]],
+                         ["Group ratio"])
+
     def test_source_conditional_count_kpi_zero_allnull_and_empty_are_numeric_zero(self):
         source = 'COUNT(IF [Status] = "Ready" THEN [Value] END)'
         emitted = convert_tableau_formula_to_dax(source, table_name="Facts")

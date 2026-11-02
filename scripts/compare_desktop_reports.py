@@ -62,8 +62,13 @@ def main(argv=None) -> int:
                              "differences; no AI/network, SSIM or semantic parity verdict; "
                              "no resizing/cropping. Does not affect capture exit status")
     args = parser.parse_args(argv)
+
+    def report_progress(event, details):
+        if event == "desktop_start":
+            print(f"Checkpoint manifest: {details['manifest_path']}", flush=True)
+
     try:
-        # Preserve the existing default call contract for API wrappers.
+        # Keep manual pixel comparison implicit for API wrappers.
         comparison_options: _ComparisonOptions = (
             {"screen_comparison": "local"} if args.screen_comparison == "local" else {})
         manifest = compare_desktop_reports(
@@ -71,6 +76,7 @@ def main(argv=None) -> int:
             tableau_desktop_path=args.tableau_desktop_path,
             powerbi_desktop_path=args.powerbi_desktop_path,
             all_pages=args.all_pages, page_timeout=args.page_timeout,
+            progress_callback=report_progress,
             **comparison_options)
     except (ValueError, OSError) as exc:
         print(f"Comparison failed: {exc}", file=sys.stderr)

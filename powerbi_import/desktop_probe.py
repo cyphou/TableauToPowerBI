@@ -37,7 +37,7 @@ import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from powerbi_import import desktop_window
 from powerbi_import.desktop_accessibility import (
@@ -352,6 +352,11 @@ class DesktopProbeReport:
         return d
 
 
+def _invalidate_screenshot_verification(report: DesktopProbeReport) -> None:
+    if report.screenshot_data_verified is not None:
+        report.screenshot_data_verified = False
+
+
 def find_pbi_desktop(preferred_path: Optional[str] = None) -> Optional[str]:
     """Return a validated PBIDesktop.exe path, or None if unavailable.
 
@@ -546,10 +551,15 @@ def probe_desktop_open(pbip_path: str, *, settle: float = 20, timeout: float = 9
             if verify_data:
                 report.data_load = _data_load_result("unavailable")
 
+        if not crashed and _recent_matches(_FROWN_GLOBS, start):
+            report.signals.append("FrownDump crash dump created")
+            crashed = True
         trace_errors = _scan_trace_errors(start)
         report.signals.extend(trace_errors)
         rc = proc.poll()
         alive = rc is None
+        if not alive:
+            _invalidate_screenshot_verification(report)
 
         # Diagnostics such as "no matching title before timeout" and transient
         # progress are NOT evidence of a process crash. Preserve their text.
@@ -557,6 +567,12 @@ def probe_desktop_open(pbip_path: str, *, settle: float = 20, timeout: float = 9
             if not crashed:
                 report.signals.append(f"process exited rc={rc}")
             report.status = "crashed"
+            if rc is not None and rc != 0:
+                report.note = f"Desktop process exited with a non-zero code (rc={rc})."
+            elif any("FrownDump" in signal for signal in report.signals):
+                report.note = (
+                    "A Desktop crash dump was observed after launch; "
+                    "its process attribution was not independently verified.")
         elif trace_errors:
             report.status = "error"
             report.note = "Desktop trace reported errors; no process crash established."
@@ -667,20 +683,41 @@ def desktop_pids() -> List[int]:
     return pids
 
 
-def _capture_dialogs(report, screenshot_path, allowed_pids) -> None:
+def _capture_dialogs(report, screenshot_path, allowed_pids, *, stop_when=None) -> None:
     """Record every open popup and screenshot the first one."""
-    dialogs = [w for pid in allowed_pids
-               for w in desktop_window.dialog_windows(pid)]
+    dialogs = []
+    for pid in allowed_pids:
+        if stop_when is not None and stop_when():
+            return
+        windows = desktop_window.dialog_windows(pid)
+        if stop_when is not None and stop_when():
+            return
+        for window in windows:
+            owner = desktop_window.window_process_id(window.hwnd)
+            if stop_when is not None and stop_when():
+                return
+            if owner == pid:
+                dialogs.append((pid, window))
     if not dialogs:
         return
-    report.dialogs = [w.title for w in dialogs]
+    report.dialogs = [window.title for _, window in dialogs]
     if not screenshot_path:
         return
     base, ext = os.path.splitext(screenshot_path)
     os.makedirs(os.path.dirname(os.path.abspath(screenshot_path)),
                 exist_ok=True)
-    report.dialog_screenshot = desktop_window.capture_window(
-        dialogs[0].hwnd, base + ".dialog" + (ext or ".png"))
+    pid, dialog = dialogs[0]
+    if ((stop_when is not None and stop_when())
+            or desktop_window.window_process_id(dialog.hwnd) != pid
+            or (stop_when is not None and stop_when())):
+        return
+    screenshot = desktop_window.capture_window(
+        dialog.hwnd, base + ".dialog" + (ext or ".png"))
+    if ((stop_when is not None and stop_when())
+            or desktop_window.window_process_id(dialog.hwnd) != pid
+            or (stop_when is not None and stop_when())):
+        return
+    report.dialog_screenshot = screenshot
 
 
 def _safe_output_path(path: str) -> bool:
@@ -693,24 +730,38 @@ def _safe_output_path(path: str) -> bool:
     return True
 
 
-def _capture_any(report, screenshot_path, allowed_pids) -> None:
+def _capture_any(report, screenshot_path, allowed_pids, *, stop_when=None) -> None:
     """Screenshot only a window owned by a process launched by this probe."""
     if not screenshot_path:
         return
     best = None
+    best_pid = None
     for pid in allowed_pids:
+        if stop_when is not None and stop_when():
+            return
         win = desktop_window.main_window(pid)
+        if stop_when is not None and stop_when():
+            return
         if win and (best is None or win.width * win.height >
                     best.width * best.height):
             best = win
+            best_pid = pid
     if best is None:
         return
     os.makedirs(os.path.dirname(os.path.abspath(screenshot_path)),
                 exist_ok=True)
+    if ((stop_when is not None and stop_when())
+            or desktop_window.window_process_id(best.hwnd) != best_pid
+            or (stop_when is not None and stop_when())):
+        return
+    screenshot = desktop_window.capture_window(best.hwnd, screenshot_path)
+    if ((stop_when is not None and stop_when())
+            or desktop_window.window_process_id(best.hwnd) != best_pid
+            or (stop_when is not None and stop_when())):
+        return
     # Deliberately not window_title: that field means "the report loaded".
     report.warnings.append(f"captured window titled {best.title!r}")
-    report.screenshot = desktop_window.capture_window(best.hwnd,
-                                                      screenshot_path)
+    report.screenshot = screenshot
     if report.screenshot:
         report.screenshot_blank = desktop_window.is_blank(report.screenshot)
 
@@ -728,19 +779,35 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         report.data_load = _data_load_result("unavailable")
     expected = os.path.splitext(os.path.basename(pbip_path))[0]
 
+    def process_exited():
+        return proc.poll() is not None
+
+    def observe_exit():
+        rc = proc.poll()
+        if rc is not None:
+            report.signals.append(f"launched Desktop process exited rc={rc}")
+            report.status = "error"
+            _invalidate_screenshot_verification(report)
+            report.note = (
+                "Desktop launcher exited without a verified live document "
+                f"(rc={rc}); no process crash established.")
+        return rc
+
     remaining = deadline - time.monotonic()
     window, signals = (
         desktop_window.wait_for_window(
-            lambda: [proc.pid], expected, timeout=remaining)
+            lambda: [proc.pid], expected, timeout=remaining,
+            stop_when=lambda: proc.poll() is not None)
         if remaining > 0 else (None, ["opening deadline exhausted before window wait"]))
+    report.signals.extend(signals)
+    rc = observe_exit()
+    if rc is not None:
+        return rc != 0
 
     if window is None:
-        rc = proc.poll()
-        if rc is not None:
-            report.signals.append(
-                f"process exited and no report window appeared "
-                f"rc={rc}")
-        report.signals.extend(signals)
+        report.signals.append(
+            f"window search restricted to launched PID {proc.pid}; "
+            "existing-instance handoff is not accepted")
         helper_error = next((signal.partition(": ")[2] for signal in signals
                              if signal.startswith("native helper failure: ")), None)
         if helper_error:
@@ -760,14 +827,26 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         # An error popup is what makes a project unusable, so keep its own
         # picture: it carries the message, and it is a separate window that a
         # capture of the main window would not show.
-        _capture_dialogs(report, screenshot_path, allowed_pids)
-        _capture_any(report, screenshot_path, allowed_pids)
+        _capture_dialogs(report, screenshot_path, allowed_pids,
+                         stop_when=process_exited)
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
+        _capture_any(report, screenshot_path, allowed_pids,
+                     stop_when=process_exited)
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
         if any(signal.startswith("error dialog:") for signal in signals):
             report.status = "error"
             report.note = "Owned dialog requires manual attention; no process crash established."
         else:
             report.status = "timed_out"
             report.note = "No stable responsive document-titled window before opening deadline."
+            match_signal = next((signal for signal in signals
+                                 if signal.startswith("window match: ")), None)
+            if match_signal:
+                report.note += " " + match_signal
         return rc is not None and rc != 0
 
     if _recent_matches(_FROWN_GLOBS, start):
@@ -775,17 +854,27 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         return True
 
     owner_pid = desktop_window.window_process_id(window.hwnd)
+    rc = observe_exit()
+    if rc is not None:
+        return rc != 0
     if owner_pid != proc.pid:
         report.status = "error"
         report.note = "Document window is not owned by the launched Desktop PID."
         return False
-    report.signals.extend(signals)
-    _capture_dialogs(report, screenshot_path, allowed_pids)
+    _capture_dialogs(report, screenshot_path, allowed_pids,
+                     stop_when=process_exited)
+    rc = observe_exit()
+    if rc is not None:
+        return rc != 0
     if report.dialogs:
         remaining = deadline - time.monotonic()
         ready = desktop_window.wait_for_document_ready(
-            window.hwnd, proc.pid, timeout=remaining) if remaining > 0 else {
+            window.hwnd, proc.pid, timeout=remaining,
+            stop_when=process_exited) if remaining > 0 else {
                 "status": "timed_out"}
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
         if ready["status"] != "ready":
             if is_powershell_failure(ready):
                 report.native_error = ready
@@ -795,17 +884,31 @@ def _watch_window(report, proc, pbip_path, start, timeout,
             report.note = ready.get("note", "Owned document did not become ready before deadline.")
             return False
         report.dialogs = []
+    rc = observe_exit()
+    if rc is not None:
+        return rc != 0
     report.window_title = window.title
 
     if refresh:
         report.refresh = refresh_report(window.hwnd, pbip_path, owner_pid,
-                                        timeout=refresh_timeout)
+                                        timeout=refresh_timeout,
+                                        stop_when=process_exited)
         report.data_load = report.refresh["data_load"]
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
         # A refresh failure surfaces as an owned popup; keep its picture.
-        _capture_dialogs(report, screenshot_path, allowed_pids)
+        _capture_dialogs(report, screenshot_path, allowed_pids,
+                         stop_when=process_exited)
 
+    rc = observe_exit()
+    if rc is not None:
+        return rc != 0
     if verify_data and not refresh and report.data_load["status"] != "verified":
         report.data_load = verify_desktop_data(pbip_path, owner_pid)
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
     failure = next((item for item in (report.refresh, report.data_load)
                     if is_powershell_failure(item) or item.get("native_error")), None)
     if failure:
@@ -830,10 +933,22 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         os.makedirs(os.path.dirname(os.path.abspath(screenshot_path)),
                     exist_ok=True)
         if refresh and report.refresh.get("clicks"):
-            _wait_for_render(window.hwnd, screenshot_path)
+            _wait_for_render(window.hwnd, screenshot_path,
+                             stop_when=process_exited, owner_pid=proc.pid)
+            rc = observe_exit()
+            if rc is not None:
+                return rc != 0
             # Rendering can take long enough for a late refresh failure to surface.
             try:
-                state = _refresh_ui_state(window.hwnd, owner_pid)
+                state = _refresh_ui_state(
+                    window.hwnd, owner_pid, stop_when=process_exited)
+            except _DesktopOwnerExited:
+                rc = observe_exit()
+                if rc is not None:
+                    return rc != 0
+                report.status = "error"
+                report.note = "Desktop process became unavailable during refresh inspection."
+                return False
             except PowerShellFailure as exc:
                 report.native_error = exc.observation
                 report.refresh.update(exc.observation, completion_basis="none")
@@ -844,10 +959,37 @@ def _watch_window(report, proc, pbip_path, start, timeout,
                 report.refresh["status"] = state
                 report.screenshot_data_verified = False
                 report.note = REFRESH_LIMITATION
-        report.screenshot = desktop_window.capture_window(
-            window.hwnd, screenshot_path)
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
+        if desktop_window.window_process_id(window.hwnd) != proc.pid:
+            report.status = "error"
+            report.note = "Document window ownership changed before capture."
+            _invalidate_screenshot_verification(report)
+            return False
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
+        screenshot = desktop_window.capture_window(window.hwnd, screenshot_path)
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
+        if desktop_window.window_process_id(window.hwnd) != proc.pid:
+            report.status = "error"
+            report.note = "Document window ownership changed during capture."
+            _invalidate_screenshot_verification(report)
+            return False
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
+        report.screenshot = screenshot
         if report.screenshot:
             report.screenshot_blank = desktop_window.is_blank(report.screenshot)
+        if not report.screenshot or report.screenshot_blank is not False:
+            _invalidate_screenshot_verification(report)
+            report.warnings.append(
+                "Window capture failed, was blank, or could not be inspected; "
+                "screenshot data are not verified.")
     return False
 
 
@@ -871,6 +1013,15 @@ try {
         [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())))
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     $root = [Windows.Automation.AutomationElement]::FromHandle([IntPtr][long]$request.hwnd)
+    function Require-OwnedWindow {
+        if ($null -ne $request.owner_pid -and $root.Current.ProcessId -ne [int]$request.owner_pid) {
+            $out.status = 'error'; $out.cause = 'window_ownership_changed'
+            $out.note = 'window_ownership_changed'; $out.retryable = $false
+            [Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
+            exit
+        }
+    }
+    Require-OwnedWindow
     $buttons = New-Object Windows.Automation.PropertyCondition(
         [Windows.Automation.AutomationElement]::ControlTypeProperty,
         [Windows.Automation.ControlType]::Button)
@@ -881,8 +1032,10 @@ try {
         if ($ribbon -notcontains $label -or -not $e.Current.IsEnabled) { continue }
         $pattern = $null
         if ($e.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+            Require-OwnedWindow
             $pattern.Invoke(); $out.opened++
         } elseif ($e.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {
+            Require-OwnedWindow
             $pattern.Expand(); $out.opened++
         }
         break
@@ -898,6 +1051,7 @@ try {
                 if ($names -notcontains $m.Current.Name) { continue }
                 $pattern = $null
                 if ($m.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+                    Require-OwnedWindow
                     $pattern.Invoke(); $out.invoked++; break
                 }
             }
@@ -918,6 +1072,15 @@ try {
         [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())))
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     $root = [Windows.Automation.AutomationElement]::FromHandle([IntPtr][long]$request.hwnd)
+    function Require-OwnedWindow {
+        if ($null -ne $request.owner_pid -and $root.Current.ProcessId -ne [int]$request.owner_pid) {
+            $out.status = 'error'; $out.cause = 'window_ownership_changed'
+            $out.note = 'window_ownership_changed'; $out.retryable = $false
+            [Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
+            exit
+        }
+    }
+    Require-OwnedWindow
     $cond = New-Object Windows.Automation.PropertyCondition(
         [Windows.Automation.AutomationElement]::ControlTypeProperty,
         [Windows.Automation.ControlType]::Button)
@@ -928,6 +1091,7 @@ try {
         if ($request.inspect_only -or $out.invoked -gt 0 -or -not $e.Current.IsEnabled) { continue }
         $pattern = $null
         if ($e.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+            Require-OwnedWindow
             $pattern.Invoke(); $out.invoked++
         }
     }
@@ -948,13 +1112,54 @@ try {
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     Add-Type -Namespace TtPbi -Name Mouse -MemberDefinition @"
 [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+[DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
 [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+[DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+[DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+[StructLayout(LayoutKind.Sequential)]
+public struct POINT { public int X; public int Y; }
 "@
     [TtPbi.Mouse]::SetProcessDPIAware() | Out-Null
     $hwnd = [IntPtr][long]$request.hwnd
     $root = [Windows.Automation.AutomationElement]::FromHandle($hwnd)
+    function Stop-UnsafeClick([string]$reason) {
+        $out.status = 'error'; $out.cause = $reason
+        $out.note = $reason; $out.retryable = $false
+        [Console]::Out.WriteLine((ConvertTo-Json -InputObject $out -Compress))
+        exit
+    }
+    function Require-OwnedWindow {
+        if ($null -ne $request.owner_pid) {
+            [uint32]$actualPid = 0
+            if ([TtPbi.Mouse]::GetWindowThreadProcessId($hwnd, [ref]$actualPid) -eq 0 -or
+                $actualPid -ne [uint32]$request.owner_pid -or
+                $root.Current.ProcessId -ne [int]$request.owner_pid) {
+                Stop-UnsafeClick 'window_ownership_changed'
+            }
+        }
+    }
+    function Require-ForegroundWindow {
+        if ([TtPbi.Mouse]::GetForegroundWindow() -ne $hwnd) {
+            Stop-UnsafeClick 'window_not_foreground'
+        }
+    }
+    function Require-OwnedClickPoint([int]$x, [int]$y) {
+        $point = New-Object 'TtPbi.Mouse+POINT'
+        if (-not [TtPbi.Mouse]::GetCursorPos([ref]$point) -or
+            $point.X -ne $x -or $point.Y -ne $y) {
+            Stop-UnsafeClick 'cursor_position_changed'
+        }
+        $hit = [TtPbi.Mouse]::WindowFromPoint($point)
+        if ($hit -eq [IntPtr]::Zero -or
+            [TtPbi.Mouse]::GetAncestor($hit, 2) -ne $hwnd) {
+            Stop-UnsafeClick 'window_point_not_owned'
+        }
+    }
+    Require-OwnedWindow
     $cond = New-Object Windows.Automation.PropertyCondition(
         [Windows.Automation.AutomationElement]::ControlTypeProperty,
         [Windows.Automation.ControlType]::Button)
@@ -964,10 +1169,19 @@ try {
         $out.found++
         $r = $e.Current.BoundingRectangle
         if ($r.Width -le 0 -or $r.Height -le 0) { continue }
+        Require-OwnedWindow
         [TtPbi.Mouse]::SetForegroundWindow($hwnd) | Out-Null
         Start-Sleep -Milliseconds 300
-        [TtPbi.Mouse]::SetCursorPos([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)) | Out-Null
+        Require-ForegroundWindow
+        $clickX = [int]($r.X + $r.Width / 2)
+        $clickY = [int]($r.Y + $r.Height / 2)
+        if (-not [TtPbi.Mouse]::SetCursorPos($clickX, $clickY)) {
+            Stop-UnsafeClick 'cursor_position_failed'
+        }
         Start-Sleep -Milliseconds 200
+        Require-OwnedWindow
+        Require-ForegroundWindow
+        Require-OwnedClickPoint $clickX $clickY
         [TtPbi.Mouse]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
         [TtPbi.Mouse]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
         $out.invoked++
@@ -1120,8 +1334,18 @@ def _positive_timeout(timeout: float) -> float:
     return seconds
 
 
+class _DesktopOwnerExited(RuntimeError):
+    """The process owning the probed document has exited."""
+
+
+def _raise_if_owner_exited(stop_when):
+    if stop_when is not None and stop_when():
+        raise _DesktopOwnerExited
+
+
 def _refresh_ui_state(hwnd: int, owner_pid: Optional[int], *,
-                      timeout: float = 30.0) -> str:
+                      timeout: float = 30.0,
+                      stop_when: Optional[Callable[[], bool]] = None) -> str:
     """Inspect the report and only its process-owned visible popup windows."""
     if not owner_pid:
         return "unavailable"
@@ -1131,13 +1355,17 @@ def _refresh_ui_state(hwnd: int, owner_pid: Optional[int], *,
         deadline = time.monotonic() + min(_positive_timeout(timeout), 30.0)
     except (TypeError, ValueError, OverflowError):
         return "unavailable"
+    _raise_if_owner_exited(stop_when)
     roots = {int(hwnd): False}
-    for window in desktop_window.dialog_windows(owner_pid):
+    dialogs = desktop_window.dialog_windows(owner_pid)
+    _raise_if_owner_exited(stop_when)
+    for window in dialogs:
         roots[window.hwnd] = window.title.strip().casefold() in {
             "refresh", "actualiser", "actualisation",
         }
     states = []
     for handle, refresh_dialog in roots.items():
+        _raise_if_owner_exited(stop_when)
         observation = _run_uia(_UIA_REFRESH_STATE_SCRIPT, {
             "hwnd": handle, "owner_pid": int(owner_pid),
             "refresh_dialog": refresh_dialog,
@@ -1149,6 +1377,7 @@ def _refresh_ui_state(hwnd: int, owner_pid: Optional[int], *,
             "busy_pattern": _REFRESH_BUSY_PATTERN,
             "completed_pattern": _REFRESH_COMPLETED_PATTERN,
         }, timeout=max(0.0, deadline - time.monotonic()))
+        _raise_if_owner_exited(stop_when)
         if is_powershell_failure(observation) or observation.get("status") == "error":
             raise PowerShellFailure(observation)
         if observation.get("status") not in {
@@ -1195,10 +1424,12 @@ def _uia_clicks(result: dict, key: str = "invoked") -> int:
             "note": "uia_result_invalid", "retryable": False}) from None
 
 
-def _invoke_button(hwnd: int, names, *, timeout: float = 120.0) -> int:
+def _invoke_button(hwnd: int, names, *, timeout: float = 120.0,
+                   owner_pid: Optional[int] = None) -> int:
     """Invoke the first enabled button named in *names*. Returns clicks made."""
     result = _run_uia(
-        _UIA_INVOKE_SCRIPT, {"hwnd": int(hwnd), "names": list(names)}, timeout=timeout)
+        _UIA_INVOKE_SCRIPT, {"hwnd": int(hwnd), "names": list(names),
+                             "owner_pid": owner_pid}, timeout=timeout)
     return _uia_clicks(result)
 
 
@@ -1214,29 +1445,44 @@ def _text_present(hwnd: int, names) -> bool:
     return bool(_uia_clicks(result, "found"))
 
 
-def _click_button(hwnd: int, names, *, timeout: float = 120.0) -> int:
+def _click_button(hwnd: int, names, *, timeout: float = 120.0,
+                  owner_pid: Optional[int] = None) -> int:
     """Mouse-click the first enabled button named in *names*. Returns clicks made."""
     result = _run_uia(
-        _UIA_CLICK_SCRIPT, {"hwnd": int(hwnd), "names": list(names)}, timeout=timeout)
+        _UIA_CLICK_SCRIPT, {"hwnd": int(hwnd), "names": list(names),
+                            "owner_pid": owner_pid}, timeout=timeout)
     return _uia_clicks(result)
 
 
-def _invoke_schema_refresh(hwnd: int, *, timeout: float = 120.0) -> int:
+def _invoke_schema_refresh(hwnd: int, *, timeout: float = 120.0,
+                           owner_pid: Optional[int] = None) -> int:
     """Home > Refresh arrow > Schema and data. Returns clicks made."""
     result = _run_uia(_UIA_MENU_SCRIPT, {
         "hwnd": int(hwnd), "ribbon": list(_RIBBON_REFRESH_NAMES),
-        "names": list(_SCHEMA_REFRESH_NAMES)}, timeout=timeout)
+        "names": list(_SCHEMA_REFRESH_NAMES), "owner_pid": owner_pid}, timeout=timeout)
     return _uia_clicks(result)
 
 
 def _wait_for_render(hwnd: int, screenshot_path: str, *, timeout: float = 60.0,
-                     poll: float = 5.0) -> None:
+                     poll: float = 5.0,
+                     stop_when: Optional[Callable[[], bool]] = None,
+                     owner_pid: Optional[int] = None) -> None:
     """Wait until two consecutive captures match, i.e. visuals stopped redrawing."""
     previous = None
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        time.sleep(poll)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if stop_when is not None and stop_when():
+            return
+        time.sleep(min(poll, max(0.0, deadline - time.monotonic())))
+        if time.monotonic() >= deadline or (stop_when is not None and stop_when()):
+            return
+        if owner_pid is not None and desktop_window.window_process_id(hwnd) != owner_pid:
+            return
+        if stop_when is not None and stop_when():
+            return
         shot = desktop_window.capture_window(hwnd, screenshot_path)
+        if stop_when is not None and stop_when():
+            return
         if not shot:
             return
         try:
@@ -1250,7 +1496,8 @@ def _wait_for_render(hwnd: int, screenshot_path: str, *, timeout: float = 60.0,
 
 
 def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
-                   timeout: float = 300.0, poll: float = 10.0) -> dict:
+                   timeout: float = 300.0, poll: float = 10.0,
+                   stop_when: Optional[Callable[[], bool]] = None) -> dict:
     """Refresh, observing owned UI or physical partition freshness, not just rows.
 
     Counts may reflect a previous or partial load. They never override a visible
@@ -1268,7 +1515,13 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
     try:
         return _refresh_report_impl(
             hwnd, pbip_path, owner_pid, timeout=timeout, poll=poll,
-            result=result, started=started)
+            result=result, started=started, stop_when=stop_when)
+    except _DesktopOwnerExited:
+        result.update(status="error", cause="owner_process_exited",
+                      note="Launched Desktop process exited during refresh.",
+                      completion_basis="none")
+        result["waited_s"] = round(max(0.0, time.monotonic() - started), 1)
+        return result
     except PowerShellFailure as exc:
         invoked = exc.observation.get("invoked", 0)
         if type(invoked) is int and invoked > 0:
@@ -1283,7 +1536,8 @@ def refresh_report(hwnd: int, pbip_path: str, owner_pid: Optional[int], *,
         return result
 
 
-def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, started):
+def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result,
+                         started, stop_when):
     unobserved = _partition_observation_result("not_observed", "refresh_not_requested")
     try:
         timeout = _positive_timeout(timeout)
@@ -1296,9 +1550,20 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, s
     deadline = started + timeout
 
     def remaining():
+        _raise_if_owner_exited(stop_when)
         return max(0.0, deadline - time.monotonic())
 
+    def require_action_owner():
+        _raise_if_owner_exited(stop_when)
+        owner = desktop_window.window_process_id(hwnd)
+        _raise_if_owner_exited(stop_when)
+        if not owner_pid or owner != owner_pid:
+            raise PowerShellFailure({
+                "status": "error", "cause": "window_ownership_changed",
+                "note": "window_ownership_changed", "retryable": False})
+
     def finish():
+        _raise_if_owner_exited(stop_when)
         now = time.monotonic()
         result["waited_s"] = round(max(0.0, now - started), 1)
         if now >= deadline:
@@ -1308,7 +1573,8 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, s
 
     if remaining() <= 0:
         return finish()
-    initial_state = _refresh_ui_state(hwnd, owner_pid, timeout=remaining())
+    initial_state = _refresh_ui_state(
+        hwnd, owner_pid, timeout=remaining(), stop_when=stop_when)
     result["ui_state"] = {
         "initial": initial_state, "readiness": initial_state,
         "readiness_checks": 1, "observed_progress": False,
@@ -1326,7 +1592,8 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, s
         time.sleep(min(poll, 1.0, remaining()))
         if remaining() <= 0:
             return finish()
-        ready_state = _refresh_ui_state(hwnd, owner_pid, timeout=remaining())
+        ready_state = _refresh_ui_state(
+            hwnd, owner_pid, timeout=remaining(), stop_when=stop_when)
         result["ui_state"]["readiness"] = ready_state
         result["ui_state"]["readiness_checks"] += 1
     if remaining() <= 0:
@@ -1344,15 +1611,18 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, s
     for _attempt in range(3):
         if remaining() <= 0:
             return finish()
-        result["clicks"] = _invoke_schema_refresh(hwnd, timeout=remaining())
+        require_action_owner()
+        result["clicks"] = _invoke_schema_refresh(
+            hwnd, timeout=remaining(), owner_pid=owner_pid)
         if result["clicks"] or remaining() <= 0:
             break
         time.sleep(min(5.0, remaining()))
     if result["clicks"]:
         result["mode"] = "schema_and_data"
     elif remaining() > 0:
+        require_action_owner()
         result["clicks"] = _invoke_button(
-            hwnd, _RIBBON_REFRESH_NAMES, timeout=remaining())
+            hwnd, _RIBBON_REFRESH_NAMES, timeout=remaining(), owner_pid=owner_pid)
         if result["clicks"]:
             result["mode"] = "data"
     if not result["clicks"] or remaining() <= 0:
@@ -1366,7 +1636,8 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, s
         time.sleep(min(poll, remaining()))
         if remaining() <= 0:
             break
-        before = _refresh_ui_state(hwnd, owner_pid, timeout=remaining())
+        before = _refresh_ui_state(
+            hwnd, owner_pid, timeout=remaining(), stop_when=stop_when)
         observed_progress = observed_progress or before == "busy"
         result["ui_state"].update(
             before=before, observed_progress=observed_progress)
@@ -1376,11 +1647,13 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, s
         if remaining() <= 0:
             break
         if not applied and before != "unavailable":
+            require_action_owner()
             applied_clicks = _click_button(
-                hwnd, _APPLY_CHANGES_NAMES, timeout=remaining())
+                hwnd, _APPLY_CHANGES_NAMES, timeout=remaining(), owner_pid=owner_pid)
             if not applied_clicks and remaining() > 0:
+                require_action_owner()
                 applied_clicks = _invoke_button(
-                    hwnd, _APPLY_CHANGES_NAMES, timeout=remaining())
+                    hwnd, _APPLY_CHANGES_NAMES, timeout=remaining(), owner_pid=owner_pid)
             if applied_clicks:
                 result["clicks"] += applied_clicks
                 result["applied_changes"] = True
@@ -1391,8 +1664,9 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, s
               and time.monotonic() - apply_attempted_at >= 10):
             # Desktop occasionally leaves the banner visible after a click.
             # Retry without treating its presence as a successful refresh.
+            require_action_owner()
             retry_clicks = _click_button(
-                hwnd, _APPLY_CHANGES_NAMES, timeout=remaining())
+                hwnd, _APPLY_CHANGES_NAMES, timeout=remaining(), owner_pid=owner_pid)
             if retry_clicks:
                 result["clicks"] += retry_clicks
                 apply_attempted_at = time.monotonic()
@@ -1416,7 +1690,8 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, s
         result["partition_freshness"] = freshness
         if remaining() <= 0:
             break
-        after = _refresh_ui_state(hwnd, owner_pid, timeout=remaining())
+        after = _refresh_ui_state(
+            hwnd, owner_pid, timeout=remaining(), stop_when=stop_when)
         observed_progress = observed_progress or after == "busy"
         result["ui_state"].update(
             after=after, observed_progress=observed_progress)
@@ -1464,8 +1739,9 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result, s
             break
         if (not banner_done and remaining() > 0
                 and time.monotonic() - started >= timeout / 3):
+            require_action_owner()
             result["clicks"] += _invoke_button(
-                hwnd, _BANNER_REFRESH_NAMES, timeout=remaining())
+                hwnd, _BANNER_REFRESH_NAMES, timeout=remaining(), owner_pid=owner_pid)
             banner_done = True
     return finish()
 

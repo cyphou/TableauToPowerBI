@@ -198,14 +198,15 @@ def _main_federated_hyper_datasource(member, *, bindings=None):
     return datasource
 
 
-def _alias_hyper_datasource(member, *, extract_aliases=None):
-    """A Hyper join tree whose one physical table backs two explicit aliases."""
+def _alias_hyper_datasource(member, *, extract_aliases=None, aliases=None):
+    """A Hyper join tree whose one physical table backs explicit aliases."""
     import xml.etree.ElementTree as ET
 
-    aliases = (
-        ("Current User", "Current User Caption", "Current User ID"),
-        ("Manager User", "Manager User Caption", "Manager User ID"),
-    )
+    if aliases is None:
+        aliases = (
+            ("Current User", "Current User Caption", "Current User ID"),
+            ("Manager User", "Manager User Caption", "Manager User ID"),
+        )
     extract_aliases = list(extract_aliases or [alias[0] for alias in aliases])
     datasource = ET.Element("datasource", {
         "name": "synthetic-alias-source",
@@ -235,14 +236,31 @@ def _alias_hyper_datasource(member, *, extract_aliases=None):
         })
         return relation
 
+    def binary_join(parent, items, add_leaf):
+        if len(items) < 2:
+            raise ValueError("Synthetic join needs at least two leaves")
+        if len(items) > 2:
+            nested = ET.SubElement(parent, "relation", {
+                "name": f"Nested User Join {len(items)}",
+                "type": "join", "join": "inner",
+            })
+            binary_join(nested, items[:-1], add_leaf)
+        else:
+            add_leaf(parent, items[0])
+        add_leaf(parent, items[-1])
+
     native_join = ET.SubElement(federated, "relation", {
         "name": "Native User Join", "type": "join", "join": "inner",
     })
-    for name, caption, local_column in aliases:
+
+    def native_leaf(parent, alias):
+        name, caption, local_column = alias
         table_relation(
-            native_join, name, caption, "[User$]",
+            parent, name, caption, "[User$]",
             connection="synthetic-native-ref", column_name=local_column,
         )
+
+    binary_join(native_join, aliases, native_leaf)
 
     extract = ET.SubElement(datasource, "extract", {"enabled": "true"})
     hyper_connection = ET.SubElement(extract, "connection", {
@@ -263,13 +281,16 @@ def _alias_hyper_datasource(member, *, extract_aliases=None):
         "name": "Extract User Join", "type": "join", "join": "inner",
     })
     alias_lookup = {name: (caption, local) for name, caption, local in aliases}
-    for name in extract_aliases:
+
+    def extract_leaf(parent, name):
         caption, unused_local = alias_lookup.get(
             name, (f"Unmatched {name} Caption", f"{name} ID"))
         table_relation(
-            extract_join, name, caption, "[Extract].[Physical User]",
+            parent, name, caption, "[Extract].[Physical User]",
             column_name="id",
         )
+
+    binary_join(extract_join, extract_aliases, extract_leaf)
 
     # The paired object contexts are relational joins. This deliberately
     # exercises the old early relational guard without using private metadata.
@@ -328,7 +349,8 @@ def _all_table_files(project):
 
 
 def _build_bound_fixture(root, *, shape="main", export_format="csv",
-                         rows=((1, "first"), (2, "second")), total_rows=2):
+                         rows=((1, "first"), (2, "second")), total_rows=2,
+                         alias_count=2):
     """Run synthetic XML extraction, TMDL generation, and PBIP file binding."""
     from powerbi_import.tmdl_generator import generate_tmdl
     from tableau_export.datasource_extractor import extract_datasource
@@ -345,7 +367,10 @@ def _build_bound_fixture(root, *, shape="main", export_format="csv",
         xml_datasource = _main_federated_hyper_datasource(HYPER_MEMBER, bindings=bindings)
         schema, physical_table = "Extract", "Physical Events"
     elif shape == "aliases":
-        xml_datasource = _alias_hyper_datasource(HYPER_MEMBER)
+        aliases = None if alias_count == 2 else tuple(
+            (f"User Alias {index}", f"User Caption {index}", f"User ID {index}")
+            for index in range(1, alias_count + 1))
+        xml_datasource = _alias_hyper_datasource(HYPER_MEMBER, aliases=aliases)
         schema, physical_table = "Extract", "Physical User"
     else:
         raise ValueError(f"Unknown synthetic Hyper shape: {shape}")
@@ -1867,6 +1892,41 @@ class TestHyperSourceMetadataClassification(unittest.TestCase):
 
 class TestHyperIdentityExtractionAndBinding(unittest.TestCase):
     """Exact XML identity flows through annotations, exports, and final M."""
+
+    def test_eight_explicit_aliases_bind_one_complete_physical_export(self):
+        from powerbi_import.migration_quality import build_hyper_import_evidence
+
+        with _temporary_directory("hyper-eight-aliases-") as root:
+            fixture = _build_bound_fixture(root, shape="aliases", alias_count=8)
+            expected_names = {f"User Alias {index}" for index in range(1, 9)}
+            tables = fixture["datasource"]["tables"]
+            self.assertEqual({table["name"] for table in tables}, expected_names)
+            identity = _complete_identity(
+                fixture["package_identity"], "Extract", "Physical User")
+            self.assertTrue(all(table.get("hyper_identity") == identity
+                                for table in tables))
+            exports = fixture["manifest"]["exports"]
+            self.assertEqual(len(exports), 1)
+            record = exports[0]
+            self.assertEqual(record["identity"], identity)
+            self.assertEqual(record["row_count"], 2)
+            self.assertEqual(record["total_rows"], 2)
+            self.assertIs(record["sampled"], False)
+            self.assertEqual({item["table"] for item in record["staged_files"]},
+                             expected_names)
+            annotated = _tmdl_files_with_hyper_annotation(fixture["project"])
+            self.assertEqual(len(annotated), 8)
+            for unused_path, content in annotated:
+                self.assertEqual(
+                    [annotation for unused_line, annotation
+                     in _annotation_identities(content)], [identity])
+                self.assertIn(record["filename"], content)
+                self.assertIn("\t\tmode: import", content)
+            evidence = build_hyper_import_evidence(
+                fixture["extracted"], fixture["project"])
+            self.assertEqual(evidence["status"], "static_verified",
+                             evidence["diagnostics"])
+            self.assertEqual(evidence["runtime_status"], "not_run")
 
     def test_whitespace_bindings_keep_distinct_physical_names_and_caption_aliases(self):
         from powerbi_import.artifact_diff import _parse_tmdl_table

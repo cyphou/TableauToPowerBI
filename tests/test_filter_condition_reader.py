@@ -54,6 +54,26 @@ class TestConditionReader(unittest.TestCase):
         self.assertEqual('categorical', kind)
         self.assertEqual(['A', 'B'], values)
 
+    def test_relevant_inclusive_union_is_preserved_when_all_is_unproven(self):
+        with self.assertLogs('extract_primitives', level='WARNING'):
+            kind, values, _, _, _ = _read_filter_condition(_filter(
+                '<groupfilter function="union" ui-domain="relevant" '
+                'ui-enumeration="inclusive" ui-marker="enumerate">'
+                '<groupfilter function="member" member="A"/>'
+                '<groupfilter function="member" member="B"/>'
+                '</groupfilter>'))
+        self.assertEqual('categorical', kind)
+        self.assertEqual(['A', 'B'], values)
+
+    def test_explicit_all_does_not_materialize_a_member_snapshot(self):
+        kind, values, _, _, _ = _read_filter_condition(_filter(
+            '<groupfilter function="union" ui-domain="relevant" '
+            'ui-enumeration="inclusive" ui-marker="enumerate">'
+            '<groupfilter function="member" member="A"/>'
+            '</groupfilter>',
+            attrs='class="categorical" column="[ds].[Category]" included-values="all"'))
+        self.assertEqual(('all', []), (kind, values))
+
     def test_an_except_keeps_its_members_and_flags_exclusion(self):
         kind, values, _, _, exclude = _read_filter_condition(_filter(
             '<groupfilter function="except">'
@@ -69,6 +89,25 @@ class TestConditionReader(unittest.TestCase):
             '<groupfilter function="range" from="10" to="90"/>'))
         self.assertEqual('range', kind)
         self.assertEqual(('10', '90'), (lo, hi))
+
+    def test_worksheet_date_range_children_are_preserved(self):
+        xml = (
+            '<filter class="quantitative" column="[ds].[Jour]" '
+            'included-values="in-range"><min>#2020-01-01#</min>'
+            '<max>#2022-12-31#</max></filter>')
+        per_sheet = TableauExtractor.extract_worksheet_filters(
+            TableauExtractor.__new__(TableauExtractor),
+            ET.fromstring(f'<worksheet>{xml}</worksheet>'))[0]
+        self.assertEqual('range', per_sheet['type'])
+        self.assertEqual(('#2020-01-01#', '#2022-12-31#'),
+                         (per_sheet['min'], per_sheet['max']))
+
+    def test_date_groupfilter_range_is_not_treated_as_all(self):
+        kind, _, lo, hi, _ = _read_filter_condition(_filter(
+            '<groupfilter function="range" from="#2020-01-01#" '
+            'to="#2022-12-31#"/>'))
+        self.assertEqual(('range', '#2020-01-01#', '#2022-12-31#'),
+                         (kind, lo, hi))
 
     def test_plain_value_children_are_still_read(self):
         _, values, _, _, _ = _read_filter_condition(
@@ -150,6 +189,68 @@ class TestTopN(unittest.TestCase):
         found = _global_filters(self.XML)[0]
         self.assertIsNone(found.get('min'))
         self.assertIsNone(found.get('max'))
+
+
+class TestSharedViewFilterScope(unittest.TestCase):
+
+    def test_shared_view_filter_is_attached_only_to_using_worksheets(self):
+        root = ET.fromstring(
+            '<workbook><shared-views><shared-view name="source-a">'
+            '<filter class="categorical" '
+            'column="[source-a].[none:Status:nk]">'
+            '<groupfilter function="union">'
+            '<groupfilter function="member" member="Open"/>'
+            '</groupfilter></filter></shared-view></shared-views></workbook>')
+        worksheets = [
+            {'name': 'Using A',
+             'fields': [{'name': 'Status', 'datasource': 'source-a'}],
+             'filters': []},
+            {'name': 'Using B',
+             'fields': [{'name': 'Region', 'datasource': 'source-b'}],
+             'filters': []},
+        ]
+        extractor = TableauExtractor.__new__(TableauExtractor)
+
+        extractor._attach_shared_view_filters(root, worksheets)
+
+        self.assertEqual(len(worksheets[0]['filters']), 1)
+        self.assertEqual(worksheets[0]['filters'][0]['datasource'], 'source-a')
+        self.assertEqual(worksheets[0]['filters'][0]['values'], ['Open'])
+        self.assertEqual(worksheets[1]['filters'], [])
+
+    def test_datasource_dependency_counts_even_without_a_projected_source_field(self):
+        root = ET.fromstring(
+            '<workbook><worksheets><worksheet name="Using A"><table><view>'
+            '<datasource-dependencies datasource="source-a"/>'
+            '</view></table></worksheet>'
+            '<worksheet name="Using B"><table><view>'
+            '<datasource-dependencies datasource="source-b"/>'
+            '</view></table></worksheet></worksheets>'
+            '<shared-views><shared-view name="source-a">'
+            '<filter class="categorical" column="[source-a].[none:Status:nk]">'
+            '<groupfilter function="member" member="Open"/>'
+            '</filter></shared-view></shared-views></workbook>')
+        worksheets = [{'name': 'Using A', 'fields': [], 'filters': []},
+                      {'name': 'Using B', 'fields': [], 'filters': []}]
+        TableauExtractor.__new__(TableauExtractor)._attach_shared_view_filters(
+            root, worksheets)
+        self.assertEqual(worksheets[0]['filters'][0]['values'], ['Open'])
+        self.assertEqual(worksheets[1]['filters'], [])
+
+    def test_conflicting_shared_view_source_is_not_applied_to_another_source(self):
+        root = ET.fromstring(
+            '<workbook><shared-views><shared-view name="source-a">'
+            '<filter class="categorical" column="[source-b].[none:Status:nk]">'
+            '<groupfilter function="member" member="Open"/>'
+            '</filter></shared-view></shared-views></workbook>')
+        worksheets = [
+            {'name': 'Using A', 'fields': [{'name': 'Status', 'datasource': 'source-a'}]},
+            {'name': 'Using B', 'fields': [{'name': 'Status', 'datasource': 'source-b'}]},
+        ]
+        with self.assertLogs('tableau_export.extract_tableau_data', level='WARNING'):
+            TableauExtractor.__new__(TableauExtractor)._attach_shared_view_filters(
+                root, worksheets)
+        self.assertTrue(all(not ws.get('filters') for ws in worksheets))
 
 
 if __name__ == '__main__':

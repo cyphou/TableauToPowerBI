@@ -13,7 +13,10 @@ from unittest import mock
 
 import migrate
 from powerbi_import import desktop_comparison
-from tests.pixel_comparison_fixtures import forbid_network
+from powerbi_import.desktop_comparison import (
+    compare_desktop_reports as real_desktop_comparison,
+)
+from tests.pixel_comparison_fixtures import forbid_network, tiny_png
 
 
 def _snapshot(root):
@@ -313,6 +316,263 @@ class TestPostGenerationDesktopBatch(MigrationDesktopFixture):
         self.worker.assert_called_once()
         self.compare.assert_not_called()
 
+    def test_desktop_jsonl_progress_survives_interruption(self):
+        self.source("Sales.twb")
+        log_path = self.root / "events.jsonl"
+        manifest_path = self.output / "desktop_comparisons" / "run" / "manifest.json"
+
+        def interrupt(source_dir, output_root, **options):
+            progress = options["progress_callback"]
+            progress("desktop_start", {
+                "manifest_path": str(manifest_path), "workbooks_total": 1})
+            progress("desktop_workbook_end", {
+                "manifest_path": str(manifest_path), "workbook": "Sales.twb",
+                "status": "manual_review", "workbooks_completed": 1})
+            persisted = [
+                json.loads(line)["event"]
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(persisted[-2:], ["desktop_start", "desktop_workbook_end"])
+            raise KeyboardInterrupt("interrupted after workbook")
+
+        self.compare.side_effect = interrupt
+        with self.assertRaisesRegex(KeyboardInterrupt, "interrupted after workbook"):
+            self.batch(jsonl_log=str(log_path),
+                       desktop_options=migrate.DesktopDiagnosticOptions())
+
+        records = [json.loads(line) for line in log_path.read_text("utf-8").splitlines()]
+        self.assertEqual([record["event"] for record in records][-3:], [
+            "batch_end", "desktop_start", "desktop_workbook_end",
+        ])
+        self.assertEqual(records[-1]["workbook"], "Sales.twb")
+        self.assertIn(str(manifest_path), self.stdout.getvalue())
+        self.assertTrue((self.output / "Sales" / "Sales.pbip").is_file())
+
+    def test_batch_jsonl_matches_real_powerbi_only_comparison_checkpoints(self):
+        self.source("Sales.twb")
+        log_path = self.root / "integrated-events.jsonl"
+        self.compare.side_effect = real_desktop_comparison
+
+        def capture(pbip, shot, timeout, desktop_path, **kwargs):
+            shot.write_bytes(tiny_png())
+            return {
+                "status": "captured", "screenshot": str(shot),
+                "screenshot_blank": False, "pid": 222,
+                "screenshot_data_verified": True,
+                "refresh": {"status": "verified"},
+                "data_load": {"status": "verified", "tables_checked": 1,
+                              "tables_nonempty": 1, "tables_empty": 0,
+                              "tables_failed": 0, "total_rows": 5},
+            }
+
+        with mock.patch.object(desktop_comparison, "powershell_preflight",
+                               return_value={"status": "ready"}), \
+                mock.patch.object(desktop_comparison, "_pbi_capture", side_effect=capture), \
+                mock.patch.object(desktop_comparison.desktop_probe, "close_probe_process",
+                                  return_value={"status": "closed"}), \
+                mock.patch.object(desktop_comparison, "probe_tableau_open") as tableau:
+            result = self.batch(
+                jsonl_log=str(log_path), desktop_options=migrate.DesktopDiagnosticOptions())
+
+        self.assertEqual(result, migrate.ExitCode.SUCCESS)
+        tableau.assert_not_called()
+        records = [json.loads(line) for line in log_path.read_text("utf-8").splitlines()]
+        self.assertEqual([record["event"] for record in records][-4:], [
+            "batch_end", "desktop_start", "desktop_workbook_end", "desktop_end",
+        ])
+        start, workbook, end = records[-3:]
+        manifest_path = Path(start["manifest_path"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(end["manifest_path"], str(manifest_path))
+        self.assertEqual(end["status"], manifest["status"])
+        self.assertEqual(workbook["workbook"], manifest["workbooks"][0]["relative_source"])
+        self.assertEqual(workbook["powerbi_status"], "captured")
+        self.assertEqual(workbook["tableau_status"], "not_requested")
+        self.assertIn(str(manifest_path), self.stdout.getvalue())
+
+    def test_batch_jsonl_records_real_comparison_interruption_after_cleanup(self):
+        self.source("Sales.twb")
+        log_path = self.root / "integrated-interruption.jsonl"
+        registry = {}
+        self.compare.side_effect = real_desktop_comparison
+
+        def interrupt(*args, **kwargs):
+            registry[333] = object()
+            raise KeyboardInterrupt("synthetic capture interrupt")
+
+        with mock.patch.object(desktop_comparison, "powershell_preflight",
+                               return_value={"status": "ready"}), \
+                mock.patch.object(desktop_comparison, "_pbi_capture", side_effect=interrupt), \
+                mock.patch.object(desktop_comparison.desktop_probe, "_OPEN_PROBE_PROCESSES",
+                                  registry), \
+                mock.patch.object(desktop_comparison.desktop_probe, "close_probe_process",
+                                  return_value={"status": "closed"}) as close, \
+                self.assertRaisesRegex(KeyboardInterrupt, "synthetic capture interrupt"):
+            self.batch(jsonl_log=str(log_path),
+                       desktop_options=migrate.DesktopDiagnosticOptions())
+
+        records = [json.loads(line) for line in log_path.read_text("utf-8").splitlines()]
+        self.assertEqual([record["event"] for record in records][-3:], [
+            "desktop_start", "desktop_workbook_end", "desktop_end",
+        ])
+        self.assertEqual(records[-2]["status"], "interrupted")
+        self.assertEqual(records[-1]["status"], "interrupted")
+        manifest = json.loads(Path(records[-1]["manifest_path"]).read_text("utf-8"))
+        self.assertEqual(manifest["status"], "interrupted")
+        self.assertEqual(manifest["workbooks"][0]["powerbi"]["cleanup"]["pid"], 333)
+        close.assert_called_once_with(333)
+        self.assertTrue((self.output / "Sales" / "Sales.pbip").is_file())
+
+    def test_resumed_batch_keeps_jsonl_open_for_desktop_events(self):
+        self.source("Sales.twb")
+        self.assertEqual(self.batch(), migrate.ExitCode.SUCCESS)
+        log_path = self.root / "resumed.jsonl"
+
+        def capture(source_dir, output_root, **options):
+            result = self.capture_evidence(source_dir, output_root, **options)
+            path = str(Path(result["run_dir"]) / "manifest.json")
+            progress = options["progress_callback"]
+            progress("desktop_start", {"manifest_path": path, "workbooks_total": 1})
+            progress("desktop_workbook_end", {
+                "manifest_path": path, "workbook": "Sales.twb",
+                "status": "manual_review", "workbooks_completed": 1})
+            progress("desktop_end", {
+                "manifest_path": path, "status": "captured", "workbooks_completed": 1})
+            return result
+
+        self.compare.side_effect = capture
+        self.assertEqual(self.batch(
+            resume=True, jsonl_log=str(log_path),
+            desktop_options=migrate.DesktopDiagnosticOptions()), migrate.ExitCode.SUCCESS)
+        records = [json.loads(line) for line in log_path.read_text("utf-8").splitlines()]
+        self.assertEqual([record["event"] for record in records][-4:], [
+            "batch_end", "desktop_start", "desktop_workbook_end", "desktop_end",
+        ])
+        self.assertEqual(records[-1]["status"], "captured")
+
+    def test_jsonl_records_requested_diagnostics_with_no_eligible_workbook(self):
+        self.source("Broken.twb")
+        self.failed_sources.add("Broken")
+        log_path = self.root / "no-desktop.jsonl"
+        result = self.batch(
+            jsonl_log=str(log_path), desktop_options=migrate.DesktopDiagnosticOptions())
+        self.assertEqual(result, migrate.ExitCode.BATCH_PARTIAL_FAIL)
+        records = [json.loads(line) for line in log_path.read_text("utf-8").splitlines()]
+        self.assertEqual(records[-1]["event"], "desktop_end")
+        self.assertEqual(records[-1]["status"], "not_run")
+        self.assertEqual(records[-1]["cause"], "no_eligible_workbooks")
+        self.compare.assert_not_called()
+
+    def test_jsonl_records_diagnostic_exception_after_start(self):
+        self.source("Sales.twb")
+        log_path = self.root / "failed-desktop.jsonl"
+        manifest_path = self.output / "desktop_comparisons" / "run" / "manifest.json"
+
+        def fail(source_dir, output_root, **options):
+            options["progress_callback"]("desktop_start", {
+                "manifest_path": str(manifest_path), "workbooks_total": 1})
+            raise OSError("checkpoint write failed")
+
+        self.compare.side_effect = fail
+        result = self.batch(
+            jsonl_log=str(log_path), desktop_options=migrate.DesktopDiagnosticOptions())
+        self.assertEqual(result, migrate.ExitCode.DESKTOP_DIAGNOSTIC_FAILED)
+        records = [json.loads(line) for line in log_path.read_text("utf-8").splitlines()]
+        self.assertEqual([record["event"] for record in records][-2:], [
+            "desktop_start", "desktop_end",
+        ])
+        self.assertEqual(records[-1]["status"], "error")
+        self.assertEqual(records[-1]["cause"], "diagnostic_exception")
+        self.assertEqual(records[-1]["error_type"], "OSError")
+        self.assertEqual(records[-1]["manifest_path"], str(manifest_path))
+        self.assertTrue((self.output / "Sales" / "Sales.pbip").is_file())
+
+    def test_jsonl_records_diagnostic_exception_before_start(self):
+        self.source("Sales.twb")
+        log_path = self.root / "startup-error.jsonl"
+        self.compare.side_effect = ValueError("invalid diagnostic setup")
+
+        result = self.batch(
+            jsonl_log=str(log_path), desktop_options=migrate.DesktopDiagnosticOptions())
+        self.assertEqual(result, migrate.ExitCode.DESKTOP_DIAGNOSTIC_FAILED)
+        records = [json.loads(line) for line in log_path.read_text("utf-8").splitlines()]
+        self.assertEqual([record["event"] for record in records][-2:], [
+            "batch_end", "desktop_end",
+        ])
+        self.assertEqual(records[-1]["status"], "error")
+        self.assertEqual(records[-1]["cause"], "diagnostic_exception")
+        self.assertEqual(records[-1]["error_type"], "ValueError")
+        self.assertIsNone(records[-1]["manifest_path"])
+        self.assertTrue((self.output / "Sales" / "Sales.pbip").is_file())
+
+    def test_jsonl_does_not_repeat_terminal_event_after_later_error(self):
+        self.source("Sales.twb")
+        log_path = self.root / "terminal-error.jsonl"
+
+        def fail_after_end(source_dir, output_root, **options):
+            options["progress_callback"]("desktop_end", {"status": "failed"})
+            raise OSError("failure after terminal event")
+
+        self.compare.side_effect = fail_after_end
+        result = self.batch(
+            jsonl_log=str(log_path), desktop_options=migrate.DesktopDiagnosticOptions())
+        self.assertEqual(result, migrate.ExitCode.DESKTOP_DIAGNOSTIC_FAILED)
+        records = [json.loads(line) for line in log_path.read_text("utf-8").splitlines()]
+        self.assertEqual(sum(record["event"] == "desktop_end" for record in records), 1)
+        self.assertEqual(records[-1]["status"], "failed")
+        self.assertIn("failure after terminal event", self.stdout.getvalue())
+
+    def test_failed_progress_sink_is_reported_without_retry(self):
+        for error_type in (OSError, RuntimeError):
+            with self.subTest(error_type=error_type):
+                received = []
+
+                def sink(event, details):
+                    received.append(event)
+                    raise error_type("progress sink unavailable")
+
+                def capture(source_dir, output_root, **options):
+                    options["progress_callback"]("desktop_start", {
+                        "manifest_path": str(self.output / "manifest.json")})
+
+                self.compare.side_effect = capture
+                result = migrate._run_batch_desktop_diagnostics(
+                    str(self.sources), str(self.output), [{}],
+                    migrate.DesktopDiagnosticOptions(), progress_callback=sink)
+                self.assertEqual(result, migrate.ExitCode.DESKTOP_DIAGNOSTIC_FAILED)
+                self.assertEqual(received, ["desktop_start"])
+                self.assertIn("progress sink unavailable", self.stdout.getvalue())
+
+    def test_terminal_failure_event_sink_error_is_reported_once(self):
+        received = []
+
+        def sink(event, details):
+            received.append(event)
+            raise RuntimeError("progress sink unavailable")
+
+        self.compare.side_effect = ValueError("invalid diagnostic setup")
+        result = migrate._run_batch_desktop_diagnostics(
+            str(self.sources), str(self.output), [{}],
+            migrate.DesktopDiagnosticOptions(), progress_callback=sink)
+        self.assertEqual(result, migrate.ExitCode.DESKTOP_DIAGNOSTIC_FAILED)
+        self.assertEqual(received, ["desktop_end"])
+        self.assertIn("invalid diagnostic setup", self.stdout.getvalue())
+        self.assertIn("Could not write Desktop failure event", self.stdout.getvalue())
+
+    def test_missing_workbook_event_sink_error_is_reported_once(self):
+        received = []
+
+        def sink(event, details):
+            received.append(event)
+            raise RuntimeError("progress sink unavailable")
+
+        result = migrate._run_batch_desktop_diagnostics(
+            str(self.sources), str(self.output), [],
+            migrate.DesktopDiagnosticOptions(), progress_callback=sink)
+        self.assertEqual(result, migrate.ExitCode.DESKTOP_DIAGNOSTIC_FAILED)
+        self.assertEqual(received, ["desktop_end"])
+        self.assertIn("Could not write Desktop failure event", self.stdout.getvalue())
+
     def test_parallel_workers_finish_before_one_sequential_exact_pair_diagnostic(self):
         first = self.source("region/Sales.twb")
         second = self.source("Finance.twbx")
@@ -338,12 +598,13 @@ class TestPostGenerationDesktopBatch(MigrationDesktopFixture):
         self.assert_pair(pairs[str(second.resolve())], second,
                          self.output / "Finance" / "Finance.pbip")
         self.assertEqual({key: value for key, value in call.kwargs.items()
-                          if key != "workbook_pairs"}, {
+                          if key not in ("workbook_pairs", "progress_callback")}, {
             "timeout": 7.5, "all_pages": True, "page_timeout": 2.5,
             "screen_comparison": "local", "tableau_desktop_path": "tableau.exe",
             "powerbi_desktop_path": "powerbi.exe", "refresh_timeout": 14.5,
             "capture_tableau": True,
         })
+        self.assertTrue(callable(call.kwargs["progress_callback"]))
         diagnostic = next(i for i, event in enumerate(self.events)
                           if event[0] == "diagnostic")
         self.assertTrue(all(i < diagnostic for i, event in enumerate(self.events)

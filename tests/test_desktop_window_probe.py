@@ -283,6 +283,17 @@ class TestWindowAwareProbe(unittest.TestCase):
         self.assertIn('no window titled ... before the timeout', report.signals)
         self.assertIn('opening deadline', report.note)
 
+    def test_timeout_preserves_window_match_reason_and_owned_pid_scope(self):
+        reason = "window match: document title matched, but no responsive observation was obtained"
+        report = self._probe(None, [reason], fallback=_win('Report - Power BI Desktop'))
+        self.assertEqual(report.status, 'timed_out')
+        self.assertIn(reason, report.note)
+        self.assertTrue(any("restricted to launched PID 4242" in signal
+                            for signal in report.signals))
+        self.assertTrue(any("existing-instance handoff is not accepted" in signal
+                            for signal in report.signals))
+        self.assertFalse(report.window_loaded)
+
     def test_progress_diagnostics_do_not_turn_a_live_process_into_a_crash(self):
         signals = [
             "busy dialog: 'Processing Request'",
@@ -306,6 +317,9 @@ class TestWindowAwareProbe(unittest.TestCase):
                                     for signal in report.signals))
                 if rc == 0:
                     self.assertIn('no process crash established', report.note)
+                else:
+                    self.assertIn('non-zero', report.note)
+                    self.assertNotIn('no process crash established', report.note)
 
     def test_a_missing_window_still_captures_evidence(self):
         # Desktop sits on an Untitled window when it refuses the project, and
@@ -535,6 +549,433 @@ class _NativeWaitClock:
         self.now += seconds
 
 
+class TestExitedDesktopLauncher(unittest.TestCase):
+    """A synthetic process exit must stop inspection of its former PID."""
+
+    def setUp(self):
+        from powerbi_import import desktop_probe
+
+        self.dp = desktop_probe
+        self.clock = _NativeWaitClock()
+        patches = (
+            mock.patch.object(desktop_window, 'IS_WINDOWS', True),
+            mock.patch.object(desktop_window.time, 'monotonic', self.clock.monotonic),
+            mock.patch.object(desktop_window.time, 'sleep', self.clock.sleep),
+            mock.patch.object(self.dp, 'find_pbi_desktop', return_value='PBIDesktop.exe'),
+            mock.patch.object(self.dp, 'powershell_preflight',
+                              return_value={'status': 'ready'}),
+            mock.patch.object(self.dp, 'desktop_pids', return_value=[]),
+            mock.patch.object(self.dp, '_DESKTOP_PIDS_QUERY_FAILED', False),
+            mock.patch.object(self.dp, '_scan_trace_errors', return_value=[]),
+            mock.patch.object(self.dp, '_recent_matches', return_value=[]),
+            mock.patch.object(desktop_window, 'dialog_windows', return_value=[]),
+            mock.patch.object(desktop_window, 'report_window', return_value=None),
+            mock.patch.object(desktop_window, 'main_window', return_value=None),
+        )
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_process_exit_stops_wait_at_next_observation(self):
+        clock = self.clock
+
+        class ExitsAfterTwoSeconds(_FakeProc):
+            def poll(self):
+                return 0 if clock.now >= 2 else None
+
+        with tempfile.TemporaryDirectory() as directory:
+            proc = ExitsAfterTwoSeconds()
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(self.dp, '_capture_any') as capture_any, \
+                    mock.patch.object(self.dp, '_capture_dialogs') as capture_dialogs:
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=300, wait_for_window=True,
+                    screenshot_path=os.path.join(directory, 'screen.png'))
+
+        self.assertEqual(self.clock.now, 2)
+        self.assertEqual(report.status, 'error')
+        self.assertIn('exited', report.note)
+        capture_any.assert_not_called()
+        capture_dialogs.assert_not_called()
+
+    def test_exit_after_window_wait_prevents_refresh_and_capture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = _FakeProc(rc=0)
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(desktop_window, 'wait_for_window',
+                                      return_value=(_win(), [])), \
+                    mock.patch.object(desktop_window, 'window_process_id',
+                                      return_value=proc.pid), \
+                    mock.patch.object(self.dp, 'refresh_report') as refresh, \
+                    mock.patch.object(self.dp, '_capture_dialogs') as capture_dialogs, \
+                    mock.patch.object(desktop_window, 'capture_window') as capture:
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=300, wait_for_window=True,
+                    refresh=True, screenshot_path=os.path.join(directory, 'screen.png'))
+
+        self.assertEqual(report.status, 'error')
+        self.assertFalse(report.window_loaded)
+        refresh.assert_not_called()
+        capture_dialogs.assert_not_called()
+        capture.assert_not_called()
+
+    def test_exit_during_refresh_prevents_followup_capture(self):
+        proc = _FakeProc()
+
+        def finish_after_exit(*args, **kwargs):
+            proc._rc = 0
+            return {'status': 'verified', 'data_load': {'status': 'verified'}}
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(desktop_window, 'wait_for_window',
+                                      return_value=(_win(), [])), \
+                    mock.patch.object(desktop_window, 'window_process_id',
+                                      return_value=proc.pid), \
+                    mock.patch.object(self.dp, 'refresh_report',
+                                      side_effect=finish_after_exit), \
+                    mock.patch.object(self.dp, '_capture_dialogs') as dialogs, \
+                    mock.patch.object(desktop_window, 'capture_window') as capture:
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=300, wait_for_window=True,
+                    refresh=True, screenshot_path=os.path.join(directory, 'screen.png'))
+
+        self.assertEqual(report.status, 'error')
+        dialogs.assert_called_once()
+        capture.assert_not_called()
+
+    def test_render_wait_stops_before_capture_after_process_exit(self):
+        with mock.patch.object(self.dp.time, 'time', self.clock.monotonic), \
+                mock.patch.object(desktop_window, 'capture_window') as capture:
+            self.dp._wait_for_render(
+                11, 'synthetic.png', timeout=60, poll=2,
+                stop_when=lambda: self.clock.now >= 2)
+
+        self.assertEqual(self.clock.now, 2)
+        capture.assert_not_called()
+
+    def test_render_wait_never_captures_after_its_deadline(self):
+        with mock.patch.object(desktop_window, 'capture_window') as capture:
+            self.dp._wait_for_render(
+                11, 'synthetic.png', timeout=1, poll=5)
+
+        self.assertEqual(self.clock.now, 1)
+        capture.assert_not_called()
+
+    def test_clean_exit_does_not_hide_recent_crash_dump(self):
+        proc = _FakeProc(rc=0)
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(self.dp, '_recent_matches',
+                                      return_value=['synthetic FrownDump']), \
+                    mock.patch.object(self.dp, '_capture_any') as capture_any, \
+                    mock.patch.object(self.dp, '_capture_dialogs') as capture_dialogs:
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=1, wait_for_window=True)
+
+        self.assertEqual(report.status, 'crashed')
+        self.assertTrue(any('FrownDump' in signal for signal in report.signals))
+        self.assertIn('crash dump', report.note.lower())
+        self.assertNotIn('no process crash established', report.note)
+        capture_any.assert_not_called()
+        capture_dialogs.assert_not_called()
+
+    def test_exit_during_owner_verification_never_inspects_or_refreshes_window(self):
+        proc = _FakeProc()
+
+        def verify_owner(_hwnd):
+            proc._rc = 0
+            return proc.pid
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(desktop_window, 'wait_for_window',
+                                      return_value=(_win(), [])), \
+                    mock.patch.object(desktop_window, 'window_process_id',
+                                      side_effect=verify_owner), \
+                    mock.patch.object(self.dp, '_capture_dialogs') as dialogs, \
+                    mock.patch.object(self.dp, 'refresh_report') as refresh, \
+                    mock.patch.object(desktop_window, 'capture_window') as capture:
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=5, refresh=True,
+                    screenshot_path=os.path.join(directory, 'screen.png'))
+
+        self.assertEqual(report.status, 'error')
+        self.assertFalse(report.window_loaded)
+        dialogs.assert_not_called()
+        refresh.assert_not_called()
+        capture.assert_not_called()
+
+    def test_exit_during_dialog_enumeration_prevents_ui_inspection(self):
+        proc = _FakeProc()
+
+        def enumerate_dialogs(_pid):
+            proc._rc = 0
+            return [_win('Synthetic dialog', owned=True)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(desktop_window, 'dialog_windows',
+                                      side_effect=enumerate_dialogs), \
+                    mock.patch.object(desktop_window, 'dialog_state') as inspect, \
+                    mock.patch.object(desktop_window, 'capture_window') as capture:
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=5,
+                    screenshot_path=os.path.join(directory, 'screen.png'))
+
+        self.assertEqual(report.status, 'error')
+        inspect.assert_not_called()
+        capture.assert_not_called()
+
+    def test_exit_during_fallback_window_enumeration_prevents_capture(self):
+        proc = _FakeProc()
+
+        def enumerate_main(_pid):
+            proc._rc = 0
+            return _win('Synthetic fallback')
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(desktop_window, 'wait_for_window',
+                                      return_value=(None, [])), \
+                    mock.patch.object(desktop_window, 'main_window',
+                                      side_effect=enumerate_main), \
+                    mock.patch.object(desktop_window, 'capture_window') as capture:
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=5,
+                    screenshot_path=os.path.join(directory, 'screen.png'))
+
+        self.assertEqual(report.status, 'error')
+        capture.assert_not_called()
+
+    def test_exit_during_refresh_baseline_prevents_refresh_and_apply_clicks(self):
+        proc = _FakeProc()
+
+        def baseline(*_args, **_kwargs):
+            proc._rc = 0
+            return self.dp._partition_observation_result('unavailable', 'synthetic')
+
+        with mock.patch.object(self.dp, '_refresh_ui_state', return_value='clear'), \
+                mock.patch.object(self.dp, 'observe_desktop_partitions',
+                                  side_effect=baseline), \
+                mock.patch.object(self.dp, '_invoke_schema_refresh') as schema, \
+                mock.patch.object(self.dp, '_invoke_button') as invoke, \
+                mock.patch.object(self.dp, '_click_button') as click:
+            result = self.dp.refresh_report(
+                11, 'synthetic.pbip', proc.pid, timeout=30,
+                stop_when=lambda: proc.poll() is not None)
+
+        self.assertEqual((result['status'], result['cause']),
+                         ('error', 'owner_process_exited'))
+        self.assertEqual(result['completion_basis'], 'none')
+        self.assertEqual(result['clicks'], 0)
+        schema.assert_not_called()
+        invoke.assert_not_called()
+        click.assert_not_called()
+
+    def test_exit_after_refresh_click_prevents_further_actions(self):
+        proc = _FakeProc()
+
+        def request(*_args, **_kwargs):
+            proc._rc = 0
+            return 1
+
+        with mock.patch.object(self.dp, '_refresh_ui_state', return_value='clear'), \
+                mock.patch.object(
+                    self.dp, 'observe_desktop_partitions',
+                    return_value=self.dp._partition_observation_result(
+                        'unavailable', 'synthetic')), \
+                mock.patch.object(desktop_window, 'window_process_id',
+                                  return_value=proc.pid), \
+                mock.patch.object(self.dp, '_invoke_schema_refresh',
+                                  side_effect=request), \
+                mock.patch.object(self.dp, '_invoke_button') as invoke, \
+                mock.patch.object(self.dp, '_click_button') as click, \
+                mock.patch.object(self.dp, 'verify_desktop_data') as counts:
+            result = self.dp.refresh_report(
+                11, 'synthetic.pbip', proc.pid, timeout=30,
+                stop_when=lambda: proc.poll() is not None)
+
+        self.assertEqual((result['status'], result['cause']),
+                         ('error', 'owner_process_exited'))
+        self.assertEqual(result['clicks'], 1)
+        invoke.assert_not_called()
+        click.assert_not_called()
+        counts.assert_not_called()
+
+    def test_exit_during_refresh_ui_observation_prevents_next_native_query(self):
+        proc = _FakeProc()
+
+        def observe(*_args, **_kwargs):
+            proc._rc = 0
+            return {'status': 'clear'}
+
+        with mock.patch.object(self.dp, '_run_uia', side_effect=observe) as uia, \
+                mock.patch.object(self.dp, 'observe_desktop_partitions') as baseline, \
+                mock.patch.object(self.dp, '_invoke_schema_refresh') as schema:
+            result = self.dp.refresh_report(
+                11, 'synthetic.pbip', proc.pid, timeout=30,
+                stop_when=lambda: proc.poll() is not None)
+
+        self.assertEqual((result['status'], result['cause']),
+                         ('error', 'owner_process_exited'))
+        self.assertEqual(uia.call_count, 1)
+        baseline.assert_not_called()
+        schema.assert_not_called()
+
+    def test_reused_window_handle_blocks_refresh_action(self):
+        proc = _FakeProc()
+        with mock.patch.object(self.dp, '_refresh_ui_state', return_value='clear'), \
+                mock.patch.object(
+                    self.dp, 'observe_desktop_partitions',
+                    return_value=self.dp._partition_observation_result(
+                        'unavailable', 'synthetic')), \
+                mock.patch.object(desktop_window, 'window_process_id',
+                                  return_value=999), \
+                mock.patch.object(self.dp, '_invoke_schema_refresh') as schema, \
+                mock.patch.object(self.dp, '_invoke_button') as invoke, \
+                mock.patch.object(self.dp, '_click_button') as click:
+            result = self.dp.refresh_report(
+                11, 'synthetic.pbip', proc.pid, timeout=30,
+                stop_when=lambda: proc.poll() is not None)
+
+        self.assertEqual((result['status'], result['cause']),
+                         ('error', 'window_ownership_changed'))
+        self.assertEqual(result['clicks'], 0)
+        schema.assert_not_called()
+        invoke.assert_not_called()
+        click.assert_not_called()
+
+    def test_exit_during_capture_never_publishes_screenshot(self):
+        proc = _FakeProc()
+
+        def capture_then_exit(_hwnd, path):
+            proc._rc = 0
+            return path
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(desktop_window, 'wait_for_window',
+                                      return_value=(_win(), [])), \
+                    mock.patch.object(desktop_window, 'window_process_id',
+                                      return_value=proc.pid), \
+                    mock.patch.object(desktop_window, 'capture_window',
+                                      side_effect=capture_then_exit):
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=5,
+                    screenshot_path=os.path.join(directory, 'screen.png'))
+
+        self.assertEqual(report.status, 'error')
+        self.assertIsNone(report.screenshot)
+
+    def test_exit_after_verified_refresh_revokes_screenshot_data_evidence(self):
+        proc = _FakeProc()
+
+        def exit_during_render(*_args, **_kwargs):
+            proc._rc = 0
+
+        refresh_result = {
+            'status': 'verified', 'clicks': 1,
+            'data_load': {'status': 'verified'},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(desktop_window, 'wait_for_window',
+                                      return_value=(_win(), [])), \
+                    mock.patch.object(desktop_window, 'window_process_id',
+                                      return_value=proc.pid), \
+                    mock.patch.object(self.dp, '_capture_dialogs'), \
+                    mock.patch.object(self.dp, 'refresh_report',
+                                      return_value=refresh_result), \
+                    mock.patch.object(self.dp, '_wait_for_render',
+                                      side_effect=exit_during_render), \
+                    mock.patch.object(desktop_window, 'capture_window') as capture:
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=5, verify_data=True, refresh=True,
+                    screenshot_path=os.path.join(directory, 'screen.png'))
+
+        self.assertEqual(report.status, 'error')
+        self.assertIs(report.screenshot_data_verified, False)
+        self.assertIsNone(report.screenshot)
+        capture.assert_not_called()
+
+    def test_reused_handle_revokes_screenshot_data_evidence(self):
+        proc = _FakeProc()
+        refresh_result = {
+            'status': 'verified', 'clicks': 0,
+            'data_load': {'status': 'verified'},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(desktop_window, 'wait_for_window',
+                                      return_value=(_win(), [])), \
+                    mock.patch.object(desktop_window, 'window_process_id',
+                                      side_effect=[proc.pid, 999]), \
+                    mock.patch.object(self.dp, '_capture_dialogs'), \
+                    mock.patch.object(self.dp, 'refresh_report',
+                                      return_value=refresh_result), \
+                    mock.patch.object(desktop_window, 'capture_window') as capture:
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=5, verify_data=True, refresh=True,
+                    screenshot_path=os.path.join(directory, 'screen.png'))
+
+        self.assertEqual(report.status, 'error')
+        self.assertIs(report.screenshot_data_verified, False)
+        self.assertIsNone(report.screenshot)
+        capture.assert_not_called()
+
+    def test_owner_change_during_capture_revokes_screenshot_data_evidence(self):
+        proc = _FakeProc()
+        refresh_result = {
+            'status': 'verified', 'clicks': 0,
+            'data_load': {'status': 'verified'},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(desktop_window, 'wait_for_window',
+                                      return_value=(_win(), [])), \
+                    mock.patch.object(desktop_window, 'window_process_id',
+                                      side_effect=[proc.pid, proc.pid, 999]), \
+                    mock.patch.object(self.dp, '_capture_dialogs'), \
+                    mock.patch.object(self.dp, 'refresh_report',
+                                      return_value=refresh_result), \
+                    mock.patch.object(desktop_window, 'capture_window',
+                                      return_value='synthetic.png') as capture:
+                report = probe_desktop_open(
+                    _pbip(directory), timeout=5, verify_data=True, refresh=True,
+                    screenshot_path=os.path.join(directory, 'screen.png'))
+
+        self.assertEqual(report.status, 'error')
+        self.assertIs(report.screenshot_data_verified, False)
+        self.assertIsNone(report.screenshot)
+        capture.assert_called_once()
+
+    def test_exit_after_window_watch_revokes_screenshot_data_evidence(self):
+        proc = _FakeProc()
+
+        def watch(report, *_args, **_kwargs):
+            report.window_title = 'Synthetic'
+            report.screenshot_data_verified = True
+            proc._rc = 0
+            return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(self.dp.subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(self.dp, '_watch_window', side_effect=watch):
+                report = probe_desktop_open(_pbip(directory), timeout=5)
+
+        self.assertEqual(report.status, 'error')
+        self.assertIs(report.screenshot_data_verified, False)
+
+    def test_render_wait_rejects_reused_foreign_window_handle(self):
+        with mock.patch.object(desktop_window, 'window_process_id',
+                               return_value=999), \
+                mock.patch.object(desktop_window, 'capture_window') as capture:
+            self.dp._wait_for_render(
+                11, 'synthetic.png', timeout=5, poll=1, owner_pid=4242)
+        capture.assert_not_called()
+
+
 class TestBoundedNativeDocumentWaits(unittest.TestCase):
     def setUp(self):
         self.clock = _NativeWaitClock()
@@ -552,7 +993,7 @@ class TestBoundedNativeDocumentWaits(unittest.TestCase):
         self.document = _win('Synthetic - Tableau', hwnd=11)
         self.report = self.enterContext(mock.patch.object(
             desktop_window, 'report_window', return_value=self.document))
-        self.enterContext(mock.patch.object(
+        self.main_window = self.enterContext(mock.patch.object(
             desktop_window, 'main_window', return_value=self.document))
         self.responsive = self.enterContext(mock.patch.object(
             desktop_window, 'is_responsive', return_value=True))
@@ -568,6 +1009,25 @@ class TestBoundedNativeDocumentWaits(unittest.TestCase):
                     'signals': signals}
         return desktop_window.wait_for_document_ready(
             11, 42, timeout=timeout, stable_for=stable_for, poll=.1)
+
+    def test_open_timeout_reports_title_response_and_stability_separately(self):
+        scenarios = (
+            (None, True, 'no document-titled candidate was observed'),
+            (self.document, False, 'no responsive observation was obtained'),
+            (self.document, True, 'did not remain stable before the deadline'),
+        )
+        for window, responsive, expected in scenarios:
+            with self.subTest(expected=expected):
+                self.clock.now = 0
+                self.report.return_value = window
+                self.responsive.return_value = responsive
+                self.main_window.return_value = _win(
+                    'Other - Power BI Desktop' if window is None else window.title)
+                result = self.wait('open', timeout=.3, stable_for=.5)
+                self.assertEqual(result['status'], 'not_ready')
+                self.assertTrue(any(expected in signal for signal in result['signals']))
+                self.assertAlmostEqual(self.clock.now, .3)
+        self.capture.assert_not_called()
 
     def closing_popup(self, phase, *, metadata=None, remaining_owner=None,
                       title="Opening workbook 'Synthetic.twb'..."):

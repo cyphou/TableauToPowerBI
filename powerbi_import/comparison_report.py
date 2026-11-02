@@ -21,6 +21,8 @@ import html as html_mod
 import json
 import os
 
+from powerbi_import.report_scoring import migration_classification_score
+
 try:
     from powerbi_import.html_template import get_report_css, get_report_js
 except ImportError:
@@ -89,14 +91,14 @@ def _load_pbip(pbip_dir):
     for root, dirs, files in os.walk(pbip_dir):
         for f in files:
             full = os.path.join(root, f)
-            if f == 'report.json':
-                result['report'] = _load_json(full)
-            elif f.endswith('.json') and 'page' in root.lower():
-                result['pages'].append({'path': full, 'data': _load_json(full)})
-            elif f.endswith('.json') and 'visual' in f.lower():
+            if f == 'visual.json':
                 result.setdefault('visuals', []).append(
                     {'path': full, 'data': _load_json(full)}
                 )
+            elif f == 'report.json':
+                result['report'] = _load_json(full)
+            elif f.endswith('.json') and 'page' in root.lower():
+                result['pages'].append({'path': full, 'data': _load_json(full)})
     # Load migration report if present
     reports = glob.glob(os.path.join(pbip_dir, '..', 'migration_report_*.json'))
     if not reports:
@@ -105,6 +107,56 @@ def _load_pbip(pbip_dir):
     if reports:
         result['migration_report'] = _load_json(sorted(reports)[-1])
     return result
+
+
+def _visual_payload(record):
+    """Unwrap PBIR visual.json records while accepting older flat fixtures."""
+    data = record.get('data', record) if isinstance(record, dict) else {}
+    visual = data.get('visual', data) if isinstance(data, dict) else {}
+    return visual if isinstance(visual, dict) else {}
+
+
+def _visual_title(record):
+    visual = _visual_payload(record)
+    title = visual.get('title', '')
+    if isinstance(title, dict):
+        title = title.get('text', '')
+    if title:
+        return str(title).strip()
+
+    objects = visual.get('visualContainerObjects', visual.get('vcObjects', {}))
+    for item in (objects.get('title', []) if isinstance(objects, dict) else []):
+        properties = item.get('properties', {}) if isinstance(item, dict) else {}
+        text = properties.get('text', {}) if isinstance(properties, dict) else {}
+        if isinstance(text, dict):
+            literal = text.get('expr', {}).get('Literal', {})
+            text = literal.get('Value', '') if isinstance(literal, dict) else ''
+        if text:
+            return str(text).strip("'\"")
+    return ''
+
+
+def _visual_type(record):
+    return _visual_payload(record).get('visualType', 'N/A')
+
+
+def _projection_field_name(field):
+    """Extract a projected property name from common PBIR query expressions."""
+    if not isinstance(field, dict):
+        return ''
+    for expression_name in ('Aggregation', 'Column', 'Measure'):
+        expression = field.get(expression_name)
+        if not isinstance(expression, dict):
+            continue
+        nested = expression.get('Expression', {})
+        if isinstance(nested, dict):
+            expression = (
+                nested if nested.get('Property') else
+                nested.get('Column', nested.get('Measure', expression))
+            )
+        if isinstance(expression, dict) and expression.get('Property'):
+            return str(expression['Property'])
+    return ''
 
 
 # ────────────────────────────────────────────────────────
@@ -119,6 +171,7 @@ def _compare_worksheets(extracted, pbip_data):
         worksheets = worksheets.get('worksheets', [])
 
     pbi_visuals = pbip_data.get('visuals', [])
+    used_indices = set()
 
     for ws in worksheets:
         name = ws.get('name', 'Unknown')
@@ -131,14 +184,16 @@ def _compare_worksheets(extracted, pbip_data):
         tab_fields = ws.get('fields', [])
         tab_filters = ws.get('filters', [])
 
-        # Try to find matching PBI visual
-        pbi_match = None
-        for v in (pbi_visuals or []):
-            vdata = v.get('data', {})
-            title = vdata.get('title', {}).get('text', '')
-            if title and (name.lower() in title.lower() or title.lower() in name.lower()):
-                pbi_match = vdata
-                break
+        # A title is only a heuristic candidate, never proof of equivalence.
+        candidates = [
+            i for i, visual in enumerate(pbi_visuals)
+            if i not in used_indices and _visual_title(visual)
+            and (name.casefold() in _visual_title(visual).casefold()
+                 or _visual_title(visual).casefold() in name.casefold())
+        ]
+        pbi_match = pbi_visuals[candidates[0]] if len(candidates) == 1 else None
+        if pbi_match:
+            used_indices.add(candidates[0])
 
         comparisons.append({
             'name': name,
@@ -149,10 +204,11 @@ def _compare_worksheets(extracted, pbip_data):
                 'filter_count': len(tab_filters),
             },
             'powerbi': {
-                'visual_type': pbi_match.get('visualType', 'N/A') if pbi_match else 'N/A',
+                'visual_type': _visual_type(pbi_match) if pbi_match else 'N/A',
                 'matched': pbi_match is not None,
+                'artifact_path': pbi_match.get('path') if pbi_match else None,
             },
-            'status': 'pass' if pbi_match else 'warn',
+            'status': 'candidate' if pbi_match else 'not_run',
         })
     return comparisons
 
@@ -189,27 +245,21 @@ def _compare_field_bindings(extracted, pbip_dir):
     pbi_visuals = []
     vis_pattern = os.path.join(pbip_dir, '**', 'visual.json')
     for filepath in sorted(glob.glob(vis_pattern, recursive=True)):
+        if os.path.basename(filepath) != 'visual.json':
+            continue
         data = _load_json(filepath)
-        vis = data.get('visual', {})
+        vis = _visual_payload({'data': data})
         vtype = vis.get('visualType', 'unknown')
-        # Extract title
-        title = ''
-        for t_item in vis.get('visualContainerObjects', vis.get('vcObjects', {})).get('title', []):
-            txt = t_item.get('properties', {}).get('text', {})
-            if isinstance(txt, dict):
-                val = txt.get('expr', {}).get('Literal', {}).get('Value', '')
-                title = val.strip("'").strip('"')
+        title = _visual_title({'data': data})
         # Extract fields from queryState
         qs = vis.get('query', {}).get('queryState', {})
         fields = []
-        for role, role_data in qs.items():
+        for role_data in qs.values():
+            if not isinstance(role_data, dict):
+                continue
             for proj in role_data.get('projections', []):
-                fi = proj.get('field', {})
-                agg_node = fi.get('Aggregation', {})
-                if agg_node:
-                    prop = agg_node.get('Expression', {}).get('Column', {}).get('Property', '')
-                else:
-                    prop = fi.get('Column', {}).get('Property', '')
+                fi = proj.get('field', {}) if isinstance(proj, dict) else {}
+                prop = _projection_field_name(fi)
                 if prop:
                     fields.append(prop)
         pbi_visuals.append({
@@ -217,6 +267,7 @@ def _compare_field_bindings(extracted, pbip_dir):
             'title': title,
             'fields': fields,
             'is_empty': len(fields) == 0,
+            'path': filepath,
         })
 
     # ── Generated fields to ignore ──
@@ -236,18 +287,32 @@ def _compare_field_bindings(extracted, pbip_dir):
                 ws_field_names.add(name)
         ws_is_empty = len(ws_field_names) == 0
 
-        # Match by best field overlap (Jaccard)
+        # Prefer a unique title candidate. Otherwise field overlap is only a
+        # heuristic, and is never promoted to a parity verdict.
         best_idx, best_score = None, -1
-        for i, v in enumerate(pbi_visuals):
-            if i in used_indices:
-                continue
-            pbi_set = set(v['fields'])
-            overlap = len(ws_field_names & pbi_set)
-            union = len(ws_field_names | pbi_set)
-            score = overlap / union if union else (1.0 if ws_is_empty and v['is_empty'] else 0)
-            if score > best_score:
-                best_score = score
-                best_idx = i
+        title_candidates = [
+            i for i, visual in enumerate(pbi_visuals)
+            if i not in used_indices and visual['title']
+            and visual['title'].casefold() == ws_name.casefold()
+        ]
+        if len(title_candidates) == 1:
+            best_idx = title_candidates[0]
+        else:
+            tied = False
+            best_score = 0
+            for i, v in enumerate(pbi_visuals):
+                if i in used_indices:
+                    continue
+                pbi_set = set(v['fields'])
+                overlap = len(ws_field_names & pbi_set)
+                union = len(ws_field_names | pbi_set)
+                score = overlap / union if union else 0
+                if score > best_score:
+                    best_score, best_idx, tied = score, i, False
+                elif score == best_score and score > 0:
+                    tied = True
+            if tied:
+                best_idx = None
 
         pbi = pbi_visuals[best_idx] if best_idx is not None else None
         if pbi:
@@ -258,10 +323,12 @@ def _compare_field_bindings(extracted, pbip_dir):
         missing = ws_field_names - pbi_field_names
         extra = pbi_field_names - ws_field_names
 
-        if ws_is_empty:
-            status = 'EMPTY'
-        elif not pbi:
+        if not pbi and not pbi_visuals:
             status = 'NO_VISUAL'
+        elif not pbi:
+            status = 'UNVERIFIED'
+        elif ws_is_empty:
+            status = 'UNVERIFIED'
         elif missing and not extra:
             status = 'MISSING'
         elif missing and extra:
@@ -280,6 +347,12 @@ def _compare_field_bindings(extracted, pbip_dir):
             'extra': sorted(extra),
             'tab_count': len(ws_field_names),
             'pbi_count': len(pbi_field_names),
+            'match_method': (
+                'title' if pbi and pbi['title'].casefold() == ws_name.casefold()
+                else 'field_overlap' if pbi else None
+            ),
+            'artifact_path': pbi.get('path') if pbi else None,
+            'generated_visual_artifact_count': len(pbi_visuals),
         })
 
     return results
@@ -336,11 +409,17 @@ def generate_comparison_report(extract_dir, pbip_dir, output_path=None):
 
     # Counts
     ws_total = len(ws_compare)
-    ws_matched = sum(1 for w in ws_compare if w['status'] == 'pass')
+    ws_matched = sum(1 for w in ws_compare if w['status'] == 'candidate')
     calc_total = len(calc_compare)
     ds_total = len(ds_compare)
-    field_ok = sum(1 for f in field_compare if f['status'] in ('OK', 'EMPTY', 'EXTRA'))
-    field_issues = len(field_compare) - field_ok
+    field_name_matches = sum(1 for f in field_compare if f['status'] == 'OK')
+    visual_artifact_count = len(pbip_data.get('visuals', []))
+    visual_artifact_count_delta = visual_artifact_count - ws_total
+    migration_items = migration_report.get('items', [])
+    has_visual_migration_items = any(
+        str(item.get('category') or item.get('type') or '').casefold() == 'visual'
+        for item in migration_items if isinstance(item, dict)
+    )
 
     if output_path is None:
         output_path = os.path.join(os.path.dirname(pbip_dir), 'comparison_report.html')
@@ -359,27 +438,40 @@ def generate_comparison_report(extract_dir, pbip_dir, output_path=None):
 <p>Extract: {_esc(extract_dir)} | Project: {_esc(pbip_dir)}</p>
 </div>
 <div class="container">
+<p><strong>Limitations:</strong> title and field-name matching select heuristic
+candidates. They do not verify worksheet provenance, target bindings, data
+values, or rendered visual parity.</p>
+<p><strong>Artifact reconciliation:</strong> {ws_total} source worksheet(s)
+versus {visual_artifact_count} generated PBIR <code>visual.json</code>
+artifact(s), count difference {visual_artifact_count_delta:+d}. Counts are
+shown independently because a one-to-one worksheet binding has not been
+verified.</p>
 """]
 
     # Summary cards
-    fidelity = migration_report.get('overall_fidelity', 'N/A')
-    field_cls = 'pass' if field_issues == 0 else 'warn'
+    score = migration_classification_score(migration_report)
+    fidelity = f'{score:g}%' if score is not None else 'not_run'
+    if ws_total or has_visual_migration_items:
+        # A legacy aggregate score cannot establish the visual component when
+        # worksheet-to-PBIR provenance and rendered parity are unverified.
+        fidelity = 'not_run (visual parity unverified)'
     parts.append(f"""
 <div class="summary">
   <div class="card"><h3>Worksheets</h3><div class="val">{ws_total}</div></div>
-  <div class="card"><h3>Matched Visuals</h3><div class="val">{ws_matched}/{ws_total}</div></div>
-  <div class="card"><h3>Field Bindings</h3><div class="val {field_cls}">{field_ok}/{len(field_compare)}</div></div>
+  <div class="card"><h3>Generated PBIR Visual Artifacts</h3><div class="val">{visual_artifact_count}</div></div>
+  <div class="card"><h3>Title-matched Candidates</h3><div class="val warn">{ws_matched}</div></div>
+  <div class="card"><h3>Equal-name Candidates</h3><div class="val warn">{field_name_matches}</div></div>
   <div class="card"><h3>Calculations</h3><div class="val">{calc_total}</div></div>
   <div class="card"><h3>Datasources</h3><div class="val">{ds_total}</div></div>
-  <div class="card"><h3>Fidelity</h3><div class="val">{_esc(str(fidelity))}</div></div>
+  <div class="card"><h3>Reported classification score</h3><div class="val">{_esc(str(fidelity))}</div></div>
 </div>
 """)
 
     # ── Worksheet comparison ──
     parts.append('<h2>Worksheet → Visual Mapping</h2>')
     for ws in ws_compare:
-        badge_cls = ws['status']
-        badge_txt = 'Matched' if badge_cls == 'pass' else 'Unmatched'
+        badge_cls = 'warn'
+        badge_txt = 'Title candidate' if ws['status'] == 'candidate' else 'No verified candidate'
         parts.append(f"""
 <div class="comparison">
   <div class="row-header">
@@ -400,17 +492,18 @@ def generate_comparison_report(extract_dir, pbip_dir, output_path=None):
   </div>
 </div>""")
 
-    # ── Field Binding Verification ──
+    # ── Candidate field-name comparison ──
     if field_compare:
-        parts.append('<h2>Field Binding Verification</h2>')
+        parts.append('<h2>Heuristic Candidate Field-Name Comparison</h2>')
         parts.append('<table><tr>'
                      '<th>Worksheet</th><th>Visual Type</th><th>Status</th>'
                      '<th>Tableau</th><th>PBI</th><th>Matched</th>'
                      '<th>Missing in PBI</th><th>Extra in PBI</th></tr>')
         _STATUS_BADGE = {
-            'OK': ('pass', 'OK'), 'EMPTY': ('', 'Empty'),
-            'EXTRA': ('pass', 'Extra'), 'MISSING': ('fail', 'Missing'),
+            'OK': ('warn', 'Names match'), 'EMPTY': ('', 'No source names'),
+            'EXTRA': ('warn', 'Extra candidate names'), 'MISSING': ('fail', 'Missing'),
             'PARTIAL': ('warn', 'Partial'), 'NO_VISUAL': ('fail', 'No Visual'),
+            'UNVERIFIED': ('warn', 'Unverified'),
         }
         for fc in field_compare:
             cls, label = _STATUS_BADGE.get(fc['status'], ('', fc['status']))
@@ -451,18 +544,27 @@ def generate_comparison_report(extract_dir, pbip_dir, output_path=None):
         parts.append('</table>')
 
     # ── Migration report items ──
-    items = migration_report.get('items', [])
+    items = migration_items
     if items:
         parts.append('<h2>Migration Item Status</h2>')
         parts.append('<table><tr><th>Item</th><th>Type</th><th>Status</th><th>Notes</th></tr>')
         for item in items[:100]:
             status = item.get('status', '')
-            cls = 'pass' if status in ('migrated', 'converted') else 'warn' if status == 'partial' else 'fail'
+            item_category = item.get('type') or item.get('category', '')
+            note = item.get('notes') or item.get('note', '')
+            if str(item_category).casefold() == 'visual' and status == 'exact':
+                status = 'unverified'
+                note = '; '.join(filter(None, (
+                    note, 'PBIR visual projection and rendered parity not verified'
+                )))
+            cls = ('pass' if status in ('migrated', 'converted', 'exact') else
+                   'warn' if status in ('partial', 'approximate', 'unverified', 'skipped', 'placeholder')
+                   else 'fail')
             parts.append(
                 f"<tr><td>{_esc(item.get('name', ''))}</td>"
-                f"<td>{_esc(item.get('type', ''))}</td>"
+                f"<td>{_esc(item_category)}</td>"
                 f"<td class=\"{cls}\">{_esc(status)}</td>"
-                f"<td>{_esc(item.get('notes', ''))}</td></tr>"
+                f"<td>{_esc(note)}</td></tr>"
             )
         parts.append('</table>')
 

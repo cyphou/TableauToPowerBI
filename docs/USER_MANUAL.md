@@ -422,11 +422,19 @@ which may contact configured data sources. The pixel-comparison step itself
 uses no AI service or network and does not prove data correctness or parity.
 The diagnostic closes only application processes it launched.
 
-Each run prints the paths to its manifest and `comparison.html`. For batch
+On completion, each run prints the paths to its manifest and `comparison.html`. For batch
 outputs they share `desktop_comparisons\<run_id>` with the captured PNGs,
 outside the individual generated projects. Direct-project diagnostics use a
 sibling `<project>.desktop_comparisons\<run_id>` location. Old per-project
 captures are retained, not migrated.
+The checkpoint path is printed before Desktop launches. The manifest is saved
+before capture and after each finished workbook. When batch `--jsonl-log` is
+enabled, Desktop progress is recorded after the migration's `batch_end` event.
+If the run stops, `in_progress` or `interrupted` means incomplete, and its totals
+cover only recorded workbooks. Ctrl+C attempts to preserve the current partial
+result and HTML after cleanup; forced termination may leave only the last JSON
+checkpoint. The deployment guide explains how to render it without opening
+Desktop or treating unfinished captures as verified.
 Keep screenshots, source data and manifests outside Git when
 they contain personal, customer or confidential information.
 See [paired Desktop screenshots](DEPLOYMENT_GUIDE.md#paired-tableau--power-bi-desktop-screenshots)
@@ -456,7 +464,7 @@ This table summarizes the practical migration target for common Tableau objects.
 | URL action pointing to a field | TMDL column with `dataCategory: WebUrl` | Direct field targets become row-level Web URL columns | Complex interpolated URLs remain suppressed rather than emitted as wrong static links |
 | Navigation action | Page navigation button or bookmark target | Static navigation can become an action button | Verify target page names after generation |
 | Set | Boolean calculated column | Membership becomes a true/false field | Cross-table sets may use DAX fallback |
-| Group | SWITCH/display column | Group labels map source values to output labels | Review group membership for null and fallback values |
+| Group | M or DAX calculated column | Explicit members map to labels; unmatched values use the declared default, or `Other` when no default is declared; explicit text, empty-string, and null defaults are retained | Verify membership and defaults; hidden inferred clusters are not reconstructed |
 | Bin | Calculated bin column | Uses numeric bucketing such as `FLOOR` | Confirm boundary behavior around negatives and nulls |
 | Hierarchy | TMDL hierarchy | Levels are written into the semantic model | Validate drill order in Power BI |
 | Sort order | Sort-by-column or visual sort state | Sort metadata is written where a target visual/model field exists | Unplaced worksheets do not become visuals |
@@ -466,7 +474,7 @@ This table summarizes the practical migration target for common Tableau objects.
 | Custom SQL | Power Query `Value.NativeQuery` | Query text is preserved where possible | Review folding, gateway, and credential requirements |
 | Published datasource | Shared source binding or handoff note | Source identity is preserved for deployment binding | Requires service-side decision |
 | Data blending | Relationship or merge strategy | Real blends become model relationships; parameter pseudo-blends are ignored | Verify cardinality and direction |
-| Reference line | PBIR analytics/reference line metadata | Constant and supported dynamic lines become `referenceLine` settings | Compare analytics pane behavior in Desktop |
+| Reference line | Axis-specific PBIR reference-line metadata | A uniquely resolved constant X-axis line uses `xAxisReferenceLine`; supported Y-axis lines use separate Y-axis metadata | Unresolved or ambiguous lines are omitted with a note; dynamic X-axis lines are unsupported. Verify rendering in Desktop |
 | Trend line | Power BI analytics pane approximation | Regression type is mapped where possible | Statistical behavior can differ |
 | Custom geocoding | Data category or map resource | Geographic roles and shape resources are passed through where possible | Manual review often required |
 | Linguistic schema | Culture TMDL / Q&A metadata | Synonyms and entity metadata become semantic model culture metadata | Review for Copilot and Q&A relevance |

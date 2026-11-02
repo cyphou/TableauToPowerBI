@@ -287,6 +287,89 @@ class TestBuildVisualObjects(unittest.TestCase):
                     "C", empty_ws_data, "clusteredBarChart")
                 self.assertEqual(result, expected_axes)
 
+    def test_reference_line_axis_column_uses_resolved_shelf_schema(self):
+        y_line = {
+            'formatting': {}, 'mark_encoding': {},
+            'fields': [{'name': 'Sales', 'shelf': 'rows'}],
+            'reference_lines': [{
+                'value': 12, 'axis_column': '[ds].[sum:Sales:qk]',
+            }],
+        }
+        y_objects = self.gen._build_visual_objects(
+            'Y reference', y_line, 'lineChart')
+        self.assertIn('y1AxisReferenceLine', y_objects)
+        self.assertNotIn('_unresolved_reference_lines', y_line)
+
+        x_line = {
+            'formatting': {}, 'mark_encoding': {},
+            'fields': [{'name': 'Month', 'shelf': 'columns'}],
+            'reference_lines': [{
+                'value': 12, 'axis-column': '[ds].[none:Month:nk]',
+            }],
+        }
+        x_objects = self.gen._build_visual_objects(
+            'X reference', x_line, 'lineChart')
+        self.assertIn('xAxisReferenceLine', x_objects)
+        self.assertNotIn('x1AxisReferenceLine', x_objects)
+        self.assertNotIn('y1AxisReferenceLine', x_objects)
+        self.assertNotIn('_unresolved_reference_lines', x_line)
+
+    def test_reference_line_axis_column_unresolved_or_ambiguous_fails_closed(self):
+        ambiguous_axis = {
+            'formatting': {}, 'mark_encoding': {},
+            'fields': [
+                {'name': 'Month', 'shelf': 'columns'},
+                {'name': 'Month', 'shelf': 'rows'},
+            ],
+            'reference_lines': [{
+                'value': 12, 'axis-column': '[ds].[none:Month:nk]',
+            }],
+        }
+        objects = self.gen._build_visual_objects(
+            'Ambiguous reference', ambiguous_axis, 'lineChart')
+        self.assertNotIn('xAxisReferenceLine', objects)
+        self.assertNotIn('x1AxisReferenceLine', objects)
+        self.assertNotIn('y1AxisReferenceLine', objects)
+        self.assertIn('does not resolve to one worksheet shelf',
+                      ambiguous_axis['_unresolved_reference_lines'][0]['_unresolved_reason'])
+
+        unresolved_axis = {
+            'formatting': {}, 'mark_encoding': {},
+            'fields': [{'name': 'Month', 'shelf': 'columns'}],
+            'reference_lines': [{
+                'value': 12, 'axis-column': '[ds].[none:Missing:nk]',
+            }],
+        }
+        container = {
+            'visual': {'visualType': 'lineChart', 'query': {'queryState': {}}},
+            'visualContainerObjects': {},
+        }
+        self.gen._apply_visual_formatting(container, 'Unresolved reference',
+                                          unresolved_axis)
+        self.assertNotIn('xAxisReferenceLine', container['visual']['objects'])
+        self.assertNotIn('x1AxisReferenceLine', container['visual']['objects'])
+        self.assertNotIn('y1AxisReferenceLine', container['visual']['objects'])
+        self.assertIn('reference line(s) could not be represented',
+                      container['annotations'][0]['value'])
+
+    def test_reference_line_missing_value_fails_closed_with_migration_note(self):
+        ws_data = {
+            'formatting': {}, 'mark_encoding': {},
+            'fields': [{'name': 'Month', 'shelf': 'columns'}],
+            'reference_lines': [{
+                'axis-column': '[ds].[none:Month:nk]',
+            }],
+        }
+        container = {
+            'visual': {'visualType': 'lineChart', 'query': {'queryState': {}}},
+            'visualContainerObjects': {},
+        }
+        self.gen._apply_visual_formatting(container, 'Missing value', ws_data)
+        self.assertNotIn('xAxisReferenceLine', container['visual']['objects'])
+        self.assertNotIn('x1AxisReferenceLine', container['visual']['objects'])
+        self.assertIn('missing or ambiguous',
+                      container['annotations'][0]['value'])
+
     def test_conditional_formatting_gradient(self):
         ws_data = {
             "formatting": {},
@@ -688,7 +771,7 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
         })
         self.assertEqual(projections[0]['queryRef'], f'Facts.{name}')
 
-    def _emitted_visual(self, worksheet):
+    def _emitted_payload(self, worksheet):
         with tempfile.TemporaryDirectory(dir=self.temp.name) as directory:
             self.gen._create_visual_worksheet(
                 directory, worksheet,
@@ -702,7 +785,140 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
             ]
             self.assertEqual(len(paths), 1)
             with open(paths[0], encoding='utf-8') as stream:
-                return json.load(stream)['visual']
+                return json.load(stream)
+
+    def _emitted_visual(self, worksheet):
+        return self._emitted_payload(worksheet)['visual']
+
+    def test_explicit_aggregation_false_emits_row_columns_instead_of_sums(self):
+        worksheet = self._bar()
+        worksheet['aggregation'] = {
+            'enabled': False, 'status': 'explicit', 'source_scope': 'worksheet',
+        }
+        payload = self._emitted_payload(worksheet)
+        visual = payload['visual']
+
+        self.assertEqual(visual['visualType'], 'tableEx')
+        projections = visual['query']['queryState']['Values']['projections']
+        self.assertEqual([projection['field'] for projection in projections], [
+            self._column('C'), self._column('A'), self._column('D'),
+        ])
+        self.assertTrue(all('Aggregation' not in projection['field']
+                            for projection in projections))
+        notes = ' '.join(
+            item.get('value', '') for item in payload.get('annotations', [])
+            if item.get('name') == 'MigrationNote')
+        self.assertIn('explicitly disabled', notes)
+        self.assertIn('cannot represent this unaggregated grain', notes)
+
+    def test_discrete_year_does_not_bind_the_underlying_timestamp(self):
+        self.gen._field_map['Event Date'] = ('Facts', 'Event Date')
+        self.gen._actual_bim_symbols.add(('Facts', 'Event Date'))
+        self.gen._actual_bim_column_types[('Facts', 'Event Date')] = 'datetime'
+        worksheet = self._bar()
+        worksheet['fields'].insert(0, {
+            'name': 'yr:Event Date:ok', 'shelf': 'rows',
+            'date_part': 'yr', 'is_discrete': True,
+        })
+        payload = self._emitted_payload(worksheet)
+        visual = payload['visual']
+        projections = [
+            projection
+            for role in visual['query']['queryState'].values()
+            for projection in role.get('projections', [])
+        ]
+        self.assertFalse(any(
+            projection['field'].get('Column', {}).get('Property') == 'Event Date'
+            for projection in projections))
+        self.assertIn('PBIR date-hierarchy projection schema has not been validated',
+                      ' '.join(
+                          item.get('value', '')
+                          for item in payload.get('annotations', [])
+                          if item.get('name') == 'MigrationNote'))
+
+    def test_date_part_in_filter_uses_datetime_intervals_not_integer_literals(self):
+        self.gen._field_map['Event Date'] = ('Facts', 'Event Date')
+        self.gen._actual_bim_symbols.add(('Facts', 'Event Date'))
+        self.gen._actual_bim_column_types[('Facts', 'Event Date')] = 'datetime'
+        notes = []
+        filters = self.gen._create_visual_filters([{
+            'field': 'Event Date', 'date_part': 'yr',
+            'type': 'categorical', 'values': ['2020', '2022'],
+        }], notes=notes)
+
+        self.assertEqual(len(filters), 1)
+        self.assertEqual(filters[0]['type'], 'Advanced')
+        condition = filters[0]['filter']['Where'][0]['Condition']
+        self.assertIn('Or', condition)
+        literals = json.dumps(condition)
+        self.assertIn("datetime'2020-01-01T00:00:00'", literals)
+        self.assertIn("datetime'2021-01-01T00:00:00'", literals)
+        self.assertNotIn("'2020'L", literals)
+        self.assertEqual(notes, [])
+
+    def test_repeating_date_part_filter_fails_closed_instead_of_emitting_integer(self):
+        self.gen._field_map['Event Date'] = ('Facts', 'Event Date')
+        self.gen._actual_bim_symbols.add(('Facts', 'Event Date'))
+        self.gen._actual_bim_column_types[('Facts', 'Event Date')] = 'datetime'
+        notes = []
+        filters = self.gen._create_visual_filters([{
+            'field': 'Event Date', 'date_part': 'mn',
+            'type': 'categorical', 'values': ['1', '12'],
+        }], notes=notes)
+
+        self.assertEqual(filters, [])
+        self.assertEqual(len(notes), 1)
+        self.assertIn('not emitted', notes[0])
+
+    def test_unrepresentable_natural_sort_is_reported_not_claimed(self):
+        worksheet = {'sort_orders': [
+            {'field': 'C', 'direction': 'ASC', 'sort_type': 'natural',
+             'source_element': 'natural-sort'},
+        ]}
+        visual_json = {}
+        query = {}
+        self.gen._apply_worksheet_sort(visual_json, worksheet, query)
+        self.assertNotIn('sortDefinition', query)
+        self.assertIn('not representable in PBIR sortDefinition',
+                      visual_json['annotations'][0]['value'])
+
+    def test_computed_and_alphabetic_shelf_sorts_emit_pbir_sort_fields(self):
+        worksheet = {'sort_orders': [
+            {'field': 'C', 'direction': 'DESC', 'sort_type': 'alphabetic'},
+            {'field': 'D', 'direction': 'ASC', 'sort_type': 'computed',
+             'sort_by': 'sum:A'},
+        ]}
+        query = {}
+        self.gen._apply_worksheet_sort({}, worksheet, query)
+        sorts = query['sortDefinition']['sort']
+        self.assertEqual(len(sorts), 2)
+        self.assertEqual(sorts[0]['field'], self._column('C'))
+        self.assertEqual(sorts[0]['direction'], 'Descending')
+        self.assertIn('Aggregation', sorts[1]['field'])
+        self.assertEqual(sorts[1]['direction'], 'Ascending')
+
+    def test_adhoc_clustering_is_explicitly_unsupported_and_keeps_visual_fields(self):
+        worksheet = self._bar()
+        worksheet['fields'].append({'name': 'E', 'shelf': 'detail'})
+        worksheet['clustering'] = [{
+            'adhoc': True, 'num_clusters': 'auto', 'variables': ['A', 'C'],
+        }]
+        payload = self._emitted_payload(worksheet)
+        visual = payload['visual']
+        notes = ' '.join(
+            item.get('value', '') for item in payload.get('annotations', [])
+            if item.get('name') == 'MigrationNote')
+        self.assertIn('Unsupported Tableau adhoc clustering', notes)
+        self.assertIn('not a faithful clustering result', notes)
+        bound = [
+            projection['queryRef']
+            for role in visual['query']['queryState'].values()
+            for projection in role.get('projections', [])
+        ]
+        self.assertIn('Facts.A', bound)
+        self.assertIn('Facts.C', bound)
+        self.assertIn('Facts.E', bound)
+        self.assertEqual(visual['visualType'], 'tableEx')
 
     def test_automatic_categorical_color_stacks_in_shelf_orientation(self):
         for reverse, expected in ((False, 'barChart'),
@@ -715,6 +931,7 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
                         self.gen._resolve_worksheet_visual_type(worksheet), expected)
                     visual = self._emitted_visual(worksheet)
                     self.assertEqual(visual['visualType'], expected)
+
                     state = visual['query']['queryState']
                     self.assertEqual(set(state), {'Category', 'Series', 'Y'})
                     self.assertEqual(state['Category']['projections'][0]['field'],
@@ -723,6 +940,13 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
                                      self._column('D'))
                     self._assert_aggregate(state, 'Y', 'A', 0)
                     self.assertNotIn('_override_visual_type', worksheet)
+
+    def test_default_sheet_name_title_uses_worksheet_name(self):
+        worksheet = self._bar()
+        worksheet['title'] = '<Sheet Name>'
+        visual = self._emitted_visual(worksheet)
+        title = visual['visualContainerObjects']['title'][0]['properties']['text']
+        self.assertEqual(title['expr']['Literal']['Value'], "'Untitled 731'")
 
     def test_explicit_marks_are_not_repaired(self):
         for mark in ('Bar', 'Line', 'Circle', 'Shape'):
@@ -736,6 +960,7 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
 
     def test_dual_axis_metadata_prevents_automatic_repair(self):
         for metadata in ({'dual_axis': {'enabled': True}},
+                         {'dual_axis': True},
                          {'axes': {'dual_axis': True}}):
             for factory in (self._bar, self._scatter):
                 with self.subTest(metadata=metadata, chart=factory.__name__):
@@ -744,6 +969,70 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
                     self.assertEqual(
                         self.gen._resolve_worksheet_visual_type(worksheet),
                         worksheet['chart_type'])
+
+    def _continuous_month_series(self):
+        self.gen._field_map['Event Date'] = ('Facts', 'Event Date')
+        self.gen._actual_bim_symbols.update({
+            ('Facts', 'Event Date'), ('Calendar', 'MonthStart')})
+        self.gen._actual_bim_column_types.update({
+            ('Facts', 'Event Date'): 'datetime',
+            ('Calendar', 'MonthStart'): 'datetime'})
+        self.gen._related_continuous_month_bindings = {
+            ('Facts', 'Event Date'): ('Calendar', 'MonthStart')}
+        worksheet = _extract_regression_worksheet("""
+            <workbook><worksheet name="Monthly trend"><table>
+                <cols>[ds].[tmn:Event Date:qk]</cols>
+                <rows>[ds].[sum:A:qk]</rows>
+                <view><datasource-dependencies datasource="ds">
+                    <column-instance name="[tmn:Event Date:qk]"
+                                     column="[Event Date]" derivation="Month"
+                                     type="quantitative"/>
+                </datasource-dependencies></view>
+                <panes><pane><mark class="Automatic"/><encodings>
+                    <color column="[ds].[none:D:nk]"/>
+                </encodings></pane></panes>
+            </table></worksheet></workbook>
+        """, self.temp.name)
+        worksheet['chart_type'] = 'columnChart'
+        return worksheet
+
+    def test_automatic_continuous_month_is_a_line_in_both_page_paths(self):
+        for path in ('dashboard', 'standalone'):
+            with self.subTest(path=path):
+                worksheet = self._continuous_month_series()
+                if path == 'dashboard':
+                    visual = self._emitted_visual(worksheet)
+                else:
+                    with tempfile.TemporaryDirectory(dir=self.temp.name) as directory:
+                        self.gen._create_fallback_page(directory, [worksheet], {})
+                        paths = [os.path.join(root, 'visual.json')
+                                 for root, _, files in os.walk(directory)
+                                 if 'visual.json' in files]
+                        self.assertEqual(len(paths), 1)
+                        with open(paths[0], encoding='utf-8') as stream:
+                            visual = json.load(stream)['visual']
+                self.assertEqual(visual['visualType'], 'lineChart')
+                state = visual['query']['queryState']
+                self.assertEqual(state['Category']['projections'][0]['field'], {
+                    'Column': {
+                        'Expression': {'SourceRef': {'Entity': 'Calendar'}},
+                        'Property': 'MonthStart'}})
+                self.assertEqual(state['Series']['projections'][0]['field'],
+                                 self._column('D'))
+                self._assert_aggregate(state, 'Y', 'A', 0)
+                self.assertEqual(
+                    visual['objects']['categoryAxis'][0]['properties']['axisType'],
+                    {'expr': {'Literal': {'Value': "'Continuous'"}}})
+
+    def test_continuous_month_does_not_override_explicit_or_dual_axis_marks(self):
+        for metadata in ({'original_mark_class': 'Bar'},
+                         {'original_mark_class': 'Line'},
+                         {'dual_axis': True}):
+            with self.subTest(metadata=metadata):
+                worksheet = self._continuous_month_series()
+                worksheet.update(metadata)
+                self.assertEqual(
+                    self.gen._resolve_worksheet_visual_type(worksheet), 'columnChart')
 
     def test_stack_mode_off_preserves_clustered_chart(self):
         for reverse in (False, True):
@@ -852,6 +1141,154 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
         self.assertNotIn('Region', json.dumps(state))
         self.assertNotIn('_override_visual_type', worksheet)
 
+    def test_discrete_none_pill_overrides_datasource_measure_role(self):
+        worksheet = {
+            'name': 'Discrete measure-role column',
+            'chart_type': 'matrix',
+            'fields': [
+                {'name': 'none:A', 'shelf': 'rows'},
+                {'name': 'sum:B', 'shelf': 'measure_value', 'aggregation': 'sum'},
+            ],
+        }
+
+        classified = self.gen._classify_shelf_fields([
+            {**worksheet['fields'][0], 'name': 'A',
+             '_resolved_pair': ('Facts', 'A'),
+             '_explicit_no_aggregation': True},
+        ])
+        self.assertEqual([field['name'] for field in classified['rows_dims']], ['A'])
+        state = self.gen._build_visual_query(worksheet)['queryState']
+        self.assertEqual(state['Rows']['projections'][0]['field'],
+                         self._column('A'))
+        self.assertEqual(state['Rows']['projections'][0]['queryRef'], 'Facts.A')
+
+    def test_scatter_color_is_series_and_all_axis_measures_survive(self):
+        for name in ('G', 'H'):
+            self.gen._field_map[name] = ('Facts', name)
+            self.gen._actual_bim_symbols.add(('Facts', name))
+            self.gen._actual_bim_column_types[('Facts', name)] = 'double'
+        self.gen._measure_names.update({'G', 'H'})
+        worksheet = {
+            'name': 'Scatter color and extra values',
+            'chart_type': 'scatterChart',
+            'fields': [
+                {'name': 'sum:A', 'shelf': 'columns', 'aggregation': 'sum'},
+                {'name': 'avg:B', 'shelf': 'rows', 'aggregation': 'avg'},
+                {'name': 'sum:G', 'shelf': 'rows', 'aggregation': 'sum'},
+                {'name': 'sum:H', 'shelf': 'columns', 'aggregation': 'sum'},
+                {'name': 'C', 'shelf': 'color'},
+            ],
+        }
+
+        state = self.gen._build_visual_query(worksheet)['queryState']
+        self.assertEqual(state['Series']['projections'][0]['field'],
+                         self._column('C'))
+        self.assertNotIn('Size', state)
+        tooltip_names = {
+            projection['queryRef']
+            for projection in state['Tooltips']['projections']
+        }
+        self.assertEqual(tooltip_names, {'Facts.B', 'Facts.G'})
+        self.assertEqual(state['X']['projections'][0]['queryRef'], 'Facts.A')
+        self.assertEqual(state['Y']['projections'][0]['queryRef'], 'Facts.H')
+
+    def test_scatter_color_measure_is_not_inferred_as_y_axis(self):
+        worksheet = {
+            'name': 'Quantitative color is not an axis',
+            'chart_type': 'scatterChart',
+            'fields': [
+                {'name': 'sum:A', 'shelf': 'columns', 'aggregation': 'sum'},
+                {'name': 'sum:B', 'shelf': 'color', 'aggregation': 'sum'},
+            ],
+        }
+
+        query = self.gen._build_visual_query(worksheet)
+        state = query['queryState']
+        self.assertEqual(set(state), {'Values'})
+        self.assertEqual(
+            [projection['queryRef'] for projection in state['Values']['projections']],
+            ['Facts.A', 'Facts.B'],
+        )
+        self.assertEqual(worksheet['_override_visual_type'], 'tableEx')
+        self.assertNotIn('Y', state)
+        self.assertNotIn('Size', state)
+
+    def test_scatter_color_measure_stays_tooltip_with_two_explicit_axes(self):
+        worksheet = {
+            'name': 'Two axes and quantitative color',
+            'chart_type': 'scatterChart',
+            'fields': [
+                {'name': 'sum:A', 'shelf': 'columns', 'aggregation': 'sum'},
+                {'name': 'avg:B', 'shelf': 'rows', 'aggregation': 'avg'},
+                {'name': 'sum:G', 'shelf': 'color', 'aggregation': 'sum'},
+            ],
+        }
+        self.gen._field_map['G'] = ('Facts', 'G')
+        self.gen._actual_bim_symbols.add(('Facts', 'G'))
+        self.gen._actual_bim_column_types[('Facts', 'G')] = 'double'
+        self.gen._measure_names.add('G')
+
+        state = self.gen._build_visual_query(worksheet)['queryState']
+        self.assertEqual(state['X']['projections'][0]['queryRef'], 'Facts.A')
+        self.assertEqual(state['Y']['projections'][0]['queryRef'], 'Facts.B')
+        self.assertEqual(
+            [projection['queryRef'] for projection in state['Tooltips']['projections']],
+            ['Facts.G'],
+        )
+        self.assertNotIn('Size', state)
+
+    def test_automatic_nested_discrete_shelves_with_color_measure_are_matrix(self):
+        worksheet = {
+            'name': 'Automatic crosstab',
+            'chart_type': 'clusteredBarChart',
+            'original_mark_class': 'Automatic',
+            'fields': [
+                {'name': 'none:C', 'shelf': 'rows'},
+                {'name': 'none:D', 'shelf': 'rows'},
+                {'name': 'none:E', 'shelf': 'columns'},
+                {'name': 'none:F', 'shelf': 'columns'},
+                {'name': 'sum:A', 'shelf': 'color', 'aggregation': 'sum'},
+            ],
+        }
+
+        visual = self._emitted_visual(worksheet)
+        self.assertEqual(visual['visualType'], 'matrix')
+        state = visual['query']['queryState']
+        self.assertEqual(
+            [p['field'] for p in state['Rows']['projections']],
+            [self._column('C'), self._column('D')],
+        )
+        self.assertEqual(
+            [p['field'] for p in state['Columns']['projections']],
+            [self._column('E'), self._column('F')],
+        )
+        self.assertEqual(len(state['Values']['projections']), 1)
+        self.assertEqual(state['Values']['projections'][0]['queryRef'], 'Facts.A')
+        self.assertNotIn('_override_visual_type', worksheet)
+
+
+class TestReportFilterScopeRegressions(unittest.TestCase):
+    def setUp(self):
+        self.gen = _make_generator()
+
+    def test_only_explicit_workbook_filters_are_promoted_to_report_scope(self):
+        converted = {
+            'filters': [
+                {'field': 'Region', 'worksheet': 'Unplaced Sheet',
+                 'scope': 'worksheet', 'values': ['West']},
+                {'field': 'Market', 'worksheet': 'Unplaced Sheet',
+                 'values': ['Consumer']},
+                {'field': 'Country', 'scope': 'workbook',
+                 'values': ['France']},
+            ],
+            'datasource_filters': [],
+        }
+
+        report_filters = self.gen._collect_report_scope_filters(converted)
+        self.assertEqual(report_filters, [
+            {'field': 'Country', 'scope': 'workbook', 'values': ['France']},
+        ])
+
 
 class TestScopedAggregationRegressions(unittest.TestCase):
     """Synthetic datasource provenance and semantic-query aggregate regressions."""
@@ -866,6 +1303,7 @@ class TestScopedAggregationRegressions(unittest.TestCase):
         }
         self.gen._measure_names = {'Value', 'Period'}
         self.gen._bim_measure_names = {'Value', 'Period'}
+        self.gen._actual_bim_measure_symbols = {('Foreign', 'Value')}
         self.gen._actual_bim_column_types = {
             ('Facts', 'Value'): 'double', ('Facts', 'Period'): 'dateTime',
             ('Facts', 'Label'): 'string',
@@ -1197,6 +1635,10 @@ class TestScatterAxisBindingRegressions(unittest.TestCase):
                     state['X']['projections'][0], 'Facts', 'XValue', 1)
                 self._assert_aggregate(
                     state['Y']['projections'][0], 'Facts', 'YValue', 0)
+                self.assertEqual(state['Category']['projections'][0]['queryRef'],
+                                 'Facts.XValue')
+                self.assertEqual(state['X']['projections'][0]['queryRef'],
+                                 'Avg(Facts.XValue)')
                 self.assertNotIn('_override_visual_type', worksheet)
 
     def test_tooltip_measure_does_not_become_scatter_size(self):
@@ -1244,6 +1686,21 @@ class TestScatterAxisBindingRegressions(unittest.TestCase):
             {'XValue', 'TipMeasure'},
         )
 
+    def test_shelfless_circle_tooltips_do_not_invent_scatter_axes(self):
+        worksheet = {
+            'name': 'Circle with tooltips',
+            'chart_type': 'scatterChart',
+            'original_mark_class': 'Circle',
+            'fields': [
+                {'name': 'TipMeasure', 'shelf': 'tooltip'},
+                {'name': 'Shared', 'shelf': 'tooltip'},
+            ],
+        }
+        query = self.gen._build_visual_query(worksheet)
+        self.assertEqual(set(query['queryState']), {'Values'})
+        self.assertEqual(worksheet['_override_visual_type'], 'tableEx')
+        self.assertEqual(len(query['queryState']['Values']['projections']), 2)
+
 
 class TestDiscreteMonthRegressions(unittest.TestCase):
     """Month grouping requires explicit extraction metadata and model evidence."""
@@ -1254,16 +1711,27 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
         "\tcolumn 'Period Label'\n\t\tdataType: string\n"
         "\t\tsourceColumn: MonthText\n\t\tsortByColumn: 'Period Index'\n"
         "\tcolumn 'Period Index'\n\t\tdataType: int64\n\t\tsourceColumn: MonthIndex\n"
+        "\tcolumn Year\n\t\tdataType: int64\n\t\tsourceColumn: Year\n"
+        "\tcolumn 'Month Start'\n\t\tdataType: dateTime\n\t\tsourceColumn: MonthStart\n"
         "\tpartition 'Date Lookup' = m\n\t\tmode: import\n\t\tsource =\n"
         "\t\t\tlet\n"
-        '\t\t\t\tNumbers = Table.AddColumn(Source, "MonthIndex", each Date.Month([Day]), Int64.Type),\n'
-        '\t\t\t\tNames = Table.AddColumn(Numbers, "MonthText", each Date.MonthName([Day], "en-US"), type text)\n'
+        '\t\t\t\tStarts = Table.AddColumn(Source, "MonthStart", each Date.StartOfMonth([Day]), type date),\n'
+        '\t\t\t\tNumbers = Table.AddColumn(Starts, "MonthIndex", each Date.Month([Day]), Int64.Type),\n'
+        '\t\t\t\tYears = Table.AddColumn(Numbers, "Year", each Date.Year([Day]), Int64.Type),\n'
+        '\t\t\t\tNames = Table.AddColumn(Years, "MonthText", each Date.MonthName([Day], "en-US"), type text)\n'
         "\t\t\tin Names\n"
     )
     RELATIONSHIP = (
         "relationship DateLink\n"
         "\tfromColumn: Facts.'Event Date'\n"
         "\ttoColumn: 'Date Lookup'.Day\n"
+    )
+    YEAR_RELATIONSHIP = (
+        "relationship DateLink\n"
+        "\tfromColumn: Facts.'Event Date'\n"
+        "\ttoColumn: 'Date Lookup'.Day\n"
+        "\ttoCardinality: one\n"
+        "\tisActive: true\n"
     )
 
     def setUp(self):
@@ -1278,7 +1746,8 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
         }
         self.gen._actual_bim_symbols = set(self.gen._field_map.values()) | {
             ('Date Lookup', 'Day'), ('Date Lookup', 'Period Label'),
-            ('Date Lookup', 'Period Index'),
+            ('Date Lookup', 'Period Index'), ('Date Lookup', 'Month Start'),
+            ('Date Lookup', 'Year'),
         }
         self.gen._actual_bim_column_types = {
             ('Facts', 'Event Date'): 'datetime',
@@ -1305,6 +1774,17 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
             'fields': [
                 {'name': 'mn:Event Date:nk', 'shelf': 'columns',
                  'date_part': 'month', 'is_discrete': True, **metadata},
+                {'name': 'sum:A', 'shelf': 'rows', 'aggregation': 'sum'},
+            ],
+        }
+
+    def _year_worksheet(self, **metadata):
+        return {
+            'name': 'Year trend', 'chart_type': 'lineChart',
+            'original_mark_class': 'Line',
+            'fields': [
+                {'name': 'yr:Event Date:nk', 'shelf': 'columns',
+                 'date_part': 'yr', 'is_discrete': True, **metadata},
                 {'name': 'sum:A', 'shelf': 'rows', 'aggregation': 'sum'},
             ],
         }
@@ -1344,7 +1824,7 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
         for metadata in (
                 {'is_discrete': False, 'is_continuous': True},
                 {'is_discrete': None},
-                {'date_part': None}, {'date_part': 'year'}):
+                {'date_part': None}):
             with self.subTest(metadata=metadata):
                 worksheet = self._worksheet(**metadata)
                 query = self.gen._build_visual_query(worksheet)
@@ -1355,22 +1835,49 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
                 self.assertNotIn('_discrete_month_binding', worksheet)
                 self.assertNotIn('sortDefinition', query)
 
+    def test_explicit_continuous_month_uses_calendar_month_start(self):
+        self.gen._related_month_bindings = self._index()
+        worksheet = self._worksheet(
+            date_part='tmn', is_discrete=False, is_continuous=True)
+        worksheet['fields'][0]['name'] = 'tmn:Event Date:nk'
+        query = self.gen._build_visual_query(worksheet)
+        self.assertEqual(self._category(query), {'Column': {
+            'Expression': {'SourceRef': {'Entity': 'Date Lookup'}},
+            'Property': 'Month Start',
+        }})
+        self.assertEqual(worksheet['_continuous_month_binding'],
+                         ('Date Lookup', 'Month Start'))
+        self.assertNotIn('sortDefinition', query)
+        objects = self.gen._build_visual_objects(
+            worksheet['name'], worksheet, worksheet['chart_type'])
+        self.assertEqual(
+            objects['categoryAxis'][0]['properties']['axisType'],
+            {'expr': {'Literal': {'Value': "'Continuous'"}}},
+        )
+
     def test_other_source_date_is_not_rebound_by_name_similarity(self):
         self.gen._related_month_bindings = self._index()
         worksheet = self._worksheet(name='mn:Other Date:nk')
         query = self.gen._build_visual_query(worksheet)
-        self.assertEqual(self._category(query)['Column']['Property'], 'Other Date')
+        self.assertFalse(any(
+            projection['field'].get('Column', {}).get('Property') == 'Other Date'
+            for role in query['queryState'].values()
+            for projection in role.get('projections', [])))
         self.assertNotIn('_discrete_month_binding', worksheet)
-        self.assertIn('raw date retained', worksheet['_visual_mapping_note'])
+        self.assertIn('Raw timestamps are intentionally not substituted',
+                      worksheet['_visual_mapping_note'])
 
-    def test_missing_calendar_retains_raw_date_with_review_note(self):
+    def test_missing_calendar_omits_raw_timestamp_with_review_note(self):
         worksheet = self._worksheet()
         query = self.gen._build_visual_query(worksheet)
-        self.assertEqual(self._category(query)['Column']['Property'], 'Event Date')
+        self.assertFalse(any(
+            projection['field'].get('Column', {}).get('Property') == 'Event Date'
+            for role in query['queryState'].values()
+            for projection in role.get('projections', [])))
         self.assertNotIn('_discrete_month_binding', worksheet)
         self.assertNotIn('sortDefinition', query)
-        self.assertNotIn('_override_visual_type', worksheet)
-        self.assertIn('no unique validated active calendar relationship',
+        self.assertEqual(worksheet.get('_override_visual_type'), 'tableEx')
+        self.assertIn('PBIR date-hierarchy projection schema has not been validated',
                       worksheet['_visual_mapping_note'])
 
     def test_emitted_month_sort_is_not_overwritten_by_stale_value_sort(self):
@@ -1419,6 +1926,45 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
                 self.CALENDAR.replace('\t\tdataType: int64', '\t\tdataType: string')):
             with self.subTest(calendar=calendar):
                 self.assertEqual(self._index(calendar=calendar), {})
+
+    def test_calendar_source_bindings_preserve_quotes_and_edge_whitespace(self):
+        calendar = self.CALENDAR.replace(
+            'sourceColumn: Day\n', 'sourceColumn: "\'Day\' "\n').replace(
+            'sourceColumn: MonthText\n', 'sourceColumn: " MonthText "\n').replace(
+            'sourceColumn: MonthIndex\n', 'sourceColumn: " MonthIndex "\n').replace(
+            '"MonthText"', '" MonthText "').replace(
+            '"MonthIndex"', '" MonthIndex "').replace(
+            '[Day]', '[#"\'Day\' "]')
+
+        self.assertEqual(self._index(calendar=calendar), {
+            ('Facts', 'Event Date'): ('Date Lookup', 'Period Label', 'Period Index'),
+        })
+        self.assertEqual(self.gen._related_continuous_month_bindings, {
+            ('Facts', 'Event Date'): ('Date Lookup', 'Month Start'),
+        })
+
+    def test_multiple_month_columns_on_one_calendar_are_ambiguous(self):
+        calendar = self.CALENDAR.replace(
+            "\tcolumn 'Period Index'\n",
+            "\tcolumn 'Alternate Label'\n\t\tdataType: string\n"
+            "\t\tsourceColumn: AlternateText\n\t\tsortByColumn: 'Period Index'\n"
+            "\tcolumn 'Period Index'\n").replace(
+            "\tpartition 'Date Lookup' = m\n",
+            "\tcolumn 'Alternate Start'\n\t\tdataType: dateTime\n"
+            "\t\tsourceColumn: AlternateStart\n"
+            "\tpartition 'Date Lookup' = m\n").replace(
+            "\t\t\tin Names\n",
+            '\t\t\t\t, AltLabel = Table.AddColumn(Names, "AlternateText", '
+            'each Date.MonthName([Day], "fr-FR"), type text)\n'
+            '\t\t\t\t, AltStart = Table.AddColumn(AltLabel, "AlternateStart", '
+            'each Date.StartOfMonth([Day]), type date)\n'
+            "\t\t\tin AltStart\n")
+        self.gen._actual_bim_symbols.update({
+            ('Date Lookup', 'Alternate Label'), ('Date Lookup', 'Alternate Start'),
+        })
+
+        self.assertEqual(self._index(calendar=calendar), {})
+        self.assertEqual(self.gen._related_continuous_month_bindings, {})
 
     def test_ambiguous_calendar_bindings_are_rejected(self):
         second = self.CALENDAR.replace("'Date Lookup'", "'Alternate Calendar'")
@@ -1521,6 +2067,89 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
             and 'Separate Tableau Text measure labels' in annotation.get('value', '')
             and 'Tooltips' in annotation['value']
             for annotation in payload.get('annotations', [])))
+
+    def _read_year_bindings(self, relationship):
+        path = os.path.join(self.temp.name, 'definition', 'relationships.tmdl')
+        with open(path, 'w', encoding='utf-8') as stream:
+            stream.write(relationship)
+        self.gen._read_related_month_bindings(self.temp.name)
+        return self.gen._related_year_bindings
+
+    def test_discrete_year_uses_exact_active_calendar_relationship_and_sorts(self):
+        self._index(relationship=self.YEAR_RELATIONSHIP)
+        self.assertEqual(self.gen._related_year_bindings, {
+            ('Facts', 'Event Date'): ('Date Lookup', 'Year'),
+        })
+        worksheet = self._year_worksheet()
+        query = self.gen._build_visual_query(worksheet)
+        expected = {'Column': {
+            'Expression': {'SourceRef': {'Entity': 'Date Lookup'}},
+            'Property': 'Year',
+        }}
+        self.assertEqual(self._category(query), expected)
+        self.assertEqual(worksheet['_discrete_year_binding'],
+                         ('Date Lookup', 'Year'))
+        self.assertEqual(query['sortDefinition'], {
+            'sort': [{'field': expected, 'direction': 'Ascending'}],
+            'isDefaultSort': True,
+        })
+        self.assertNotIn('_visual_mapping_note', worksheet)
+
+    def test_discrete_year_without_relationship_omits_raw_timestamp(self):
+        self._index(relationship='')
+        self.assertEqual(self.gen._related_year_bindings, {})
+        worksheet = self._year_worksheet()
+        query = self.gen._build_visual_query(worksheet)
+        self.assertFalse(any(
+            projection['field'].get('Column', {}).get('Property') == 'Event Date'
+            for role in query['queryState'].values()
+            for projection in role.get('projections', [])))
+        self.assertNotIn('_discrete_year_binding', worksheet)
+        self.assertNotIn('sortDefinition', query)
+        self.assertIn('Raw timestamps are intentionally not substituted',
+                      worksheet['_visual_mapping_note'])
+
+    def test_truncated_year_is_not_assumed_equivalent_to_discrete_year(self):
+        self._index(relationship=self.YEAR_RELATIONSHIP)
+        worksheet = self._year_worksheet(date_part='tyr')
+        worksheet['fields'][0]['name'] = 'tyr:Event Date:nk'
+        query = self.gen._build_visual_query(worksheet)
+        self.assertNotIn('_discrete_year_binding', worksheet)
+        self.assertFalse(any(
+            projection['field'].get('Column', {}).get('Property') == 'Event Date'
+            for role in query['queryState'].values()
+            for projection in role.get('projections', [])))
+        self.assertIn('Raw timestamps are intentionally not substituted',
+                      worksheet['_visual_mapping_note'])
+
+    def test_discrete_year_ambiguous_relationships_are_refused(self):
+        self._index(relationship=self.YEAR_RELATIONSHIP)
+        alternate = self.CALENDAR.replace('Date Lookup', 'Alt Calendar')
+        tables = os.path.join(self.temp.name, 'definition', 'tables')
+        with open(os.path.join(tables, 'Alt Calendar.tmdl'), 'w',
+                  encoding='utf-8') as stream:
+            stream.write(alternate)
+        self.gen._actual_bim_symbols.update({
+            ('Alt Calendar', 'Day'), ('Alt Calendar', 'Year')})
+        relationship = (
+            self.YEAR_RELATIONSHIP
+            + "relationship AlternateDateLink\n"
+            "\tfromColumn: Facts.'Event Date'\n"
+            "\ttoColumn: 'Alt Calendar'.Day\n"
+            "\ttoCardinality: one\n"
+            "\tisActive: true\n"
+        )
+        self.gen._related_year_bindings = self._read_year_bindings(relationship)
+        self.assertEqual(self.gen._related_year_bindings, {})
+        worksheet = self._year_worksheet()
+        query = self.gen._build_visual_query(worksheet)
+        self.assertNotIn('_discrete_year_binding', worksheet)
+        self.assertFalse(any(
+            projection['field'].get('Column', {}).get('Property') == 'Event Date'
+            for role in query['queryState'].values()
+            for projection in role.get('projections', [])))
+        self.assertIn('Raw timestamps are intentionally not substituted',
+                      worksheet['_visual_mapping_note'])
 
 
 class TestPublicSuperstorePipeline(unittest.TestCase):

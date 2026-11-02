@@ -266,6 +266,33 @@ class TestMapVisualBinding(unittest.TestCase):
         self.assertEqual(_bound_properties(roles['Values']),
                          ['Product Label', 'Latitude', 'Amount'])
 
+    def test_map_fallback_deduplicates_same_measure_from_multiple_shelves(self):
+        ws = self._ws([
+            {'name': 'Amount', 'shelf': 'color'},
+            {'name': 'Amount', 'shelf': 'size'},
+            {'name': 'Amount', 'shelf': 'tooltip'},
+        ])
+        roles = self._roles(self._generator(measures={'Amount'})
+                            ._build_visual_query(ws))
+        self.assertEqual(ws['_override_visual_type'], 'tableEx')
+        assert_unresolved_geography_note(self, ws['_visual_mapping_note'])
+        self.assertEqual(_bound_properties(roles['Values']), ['Amount'])
+
+    def test_fallback_preserves_different_aggregations_and_ten_unique_values(self):
+        gen = self._generator(measures={'Amount'})
+        fields = ([{'name': 'Amount', 'aggregation': 'sum'}] * 10
+                  + [{'name': 'Amount', 'aggregation': 'avg'}]
+                  + [{'name': f'Dimension {index}'} for index in range(12)])
+        ws = {}
+        roles = gen._enforce_role_contract({}, 'azureMap', ws, fields)
+        projections = roles['Values']['projections']
+        self.assertEqual(ws['_override_visual_type'], 'tableEx')
+        self.assertEqual(len(projections), 10)
+        self.assertEqual(
+            [entry['field']['Aggregation']['Function'] for entry in projections[:2]],
+            [0, 1])
+        self.assertEqual(len({entry['queryRef'] for entry in projections}), 10)
+
     def test_location_detail_keeps_azure_maps_without_coordinates(self):
         ws = self._ws([
             {'name': 'City', 'shelf': 'detail'},

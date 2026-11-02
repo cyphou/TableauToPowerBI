@@ -3,7 +3,8 @@
     python scripts/compare_source_fidelity.py SOURCE_ROOT OPENING_REPORT OUTPUT_JSON
 
 All paths and field-level evidence stay in OUTPUT_JSON outside the repository.
-No migrated project is modified.
+No migrated project is modified. Heuristic visual candidates do not establish
+worksheet-to-visual provenance or rendered parity and require review.
 """
 
 from __future__ import annotations
@@ -122,7 +123,9 @@ def compare_existing(source_root, opening_report, project_roots=()):
         if os.path.normcase(os.path.abspath(pbip)) != os.path.normcase(
                 os.path.abspath(original_pbip)):
             desktop_data = 'not_verified'
-        complete = (not gaps and not visuals['unmapped']
+        visual_coverage = visuals.get('visual_coverage', {})
+        visual_verified = visual_coverage.get('status') == 'verified'
+        complete = (visual_verified and not gaps and not visuals['unmapped']
                     and table_summary['table_match_percent'] == 100
                     and table_summary['avg_column_coverage_percent'] == 100
                     and not table_summary['sourceless_tables']
@@ -138,6 +141,9 @@ def compare_existing(source_root, opening_report, project_roots=()):
                     and not interface_gaps and desktop_data == 'verified')
         results.append({
             'report': stem, 'status': 'compared' if complete else 'needs_review',
+            'review_reasons': ([] if visual_verified else [
+                visual_coverage.get('reason') or
+                'Worksheet-to-visual coverage was not verified.']),
             'source': source, 'project': project,
             'desktop_data': desktop_data, 'interface_gaps': interface_gaps,
             'visuals': visuals, 'tables': tables, 'counts': counts, 'metadata': metadata,

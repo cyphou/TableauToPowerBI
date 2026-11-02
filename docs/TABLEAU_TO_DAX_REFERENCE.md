@@ -156,8 +156,9 @@ when reviewing a conversion. Static syntax validation does not execute DAX.
 | 3 | `COLLECT(spatial)` | `BLANK()` + comment | ❌ | Spatial aggregate — no DAX |
 | 4 | `CORR(expr1, expr2)` | `0` + migration note | 🔧 | No direct DAX; manual needed |
 | 5 | `COUNT(expression)` | `COUNT(expression)` | ✅ | → `COUNTX` for expressions |
+| — | Tableau internal `Number of Records` / `COUNT(*)` | `COUNTROWS('Table')` | ✅ | Applies to a recognized row-count binding. `SUM` of an explicitly constant-one measure reduces to `COUNTROWS` only when that identity is proven; not a rule for arbitrary sums. |
 | 6 | `COUNTA(expression)` | `COUNTA(expression)` | ✅ | |
-| 7 | `COUNTD(expression)` | `DISTINCTCOUNT(expression)` | ✅ | |
+| 7 | `COUNTD(expression)` | `DISTINCTCOUNTNOBLANK(column)` or distinct non-blank row expressions | 🔧 | Preserves an empty-table blank; multi-table expressions require review |
 | 8 | `COVAR(expr1, expr2)` | `0` + migration note | 🔧 | No direct DAX; manual needed |
 | 9 | `COVARP(expr1, expr2)` | `0` + migration note | 🔧 | No direct DAX; manual needed |
 | 10 | `MAX(expression)` | `MAX(expression)` | ✅ | → `MAXX` for expressions |
@@ -230,7 +231,7 @@ When an aggregate wraps an expression (not a single column), the converter auto-
 
 | # | Tableau | DAX | Status | Notes |
 |---|---------|-----|--------|-------|
-| 1 | `{FIXED [dim] : AGG(expr)}` | `CALCULATE(AGG(expr), ALLEXCEPT('T', 'T'[dim]))` | ✅ | |
+| 1 | `{FIXED [dim] : AGG(expr)}` | `CALCULATE(AGG(expr), ALLEXCEPT('T', 'T'[dim]))` | ✅ | Automatic only for supported patterns; this does not encode composite/range logical relationships as model relationships. Those require the explicit policy in [Known Limitations](KNOWN_LIMITATIONS.md#composite-and-range-logical-relationships); unsupported or ambiguous cases fail closed. |
 | 2 | `{INCLUDE [dim] : AGG(expr)}` | `CALCULATE(AGG(expr))` | ✅ | |
 | 3 | `{EXCLUDE [dim] : AGG(expr)}` | `CALCULATE(AGG(expr), REMOVEFILTERS('T'[dim]))` | ✅ | |
 | 4 | `{AGG(expr)}` (no dims) | `CALCULATE(AGG(expr))` | ✅ | |

@@ -19,6 +19,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -50,6 +51,31 @@ def _model_project(root, measures=("Revenue",), columns=("amount",)):
     with open(os.path.join(tables, "Sales.tmdl"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
     return root
+
+
+class TestEquivalenceReportErrors(unittest.TestCase):
+    def test_generation_failure_is_visible_without_claiming_a_report(self):
+        from powerbi_import.pbip_generator import PowerBIProjectGenerator
+
+        with tempfile.TemporaryDirectory() as root:
+            generator = PowerBIProjectGenerator(root)
+            with mock.patch('powerbi_import.equivalence_tester_v2.run_full_equivalence_suite',
+                            side_effect=ValueError('bad source')), \
+                    self.assertLogs('powerbi_import.pbip_generator', level='WARNING') as logs:
+                generator._run_equivalence_checks(root, 'Synthetic', {})
+            self.assertIn('bad source', '\n'.join(logs.output))
+            self.assertIsNone(generator._equivalence_report)
+            self.assertFalse(os.path.exists(os.path.join(root, 'equivalence_report_v2.json')))
+
+    def test_unexpected_programming_errors_are_not_silently_swallowed(self):
+        from powerbi_import.pbip_generator import PowerBIProjectGenerator
+
+        with tempfile.TemporaryDirectory() as root:
+            generator = PowerBIProjectGenerator(root)
+            with mock.patch('powerbi_import.equivalence_tester_v2.run_full_equivalence_suite',
+                            side_effect=RuntimeError('unexpected bug')):
+                with self.assertRaisesRegex(RuntimeError, 'unexpected bug'):
+                    generator._run_equivalence_checks(root, 'Synthetic', {})
 
 
 class TestItCannotClaimAnUnearnedPass(unittest.TestCase):
@@ -90,6 +116,12 @@ class TestItCannotClaimAnUnearnedPass(unittest.TestCase):
         self.assertEqual("not_run", report["status"])
         self.assertEqual(0.0, report["fidelity_percent"])
 
+    def test_empty_source_visual_fields_have_no_coverage_verdict(self):
+        passed, coverage = EquivalenceTester().test_visual_field_coverage(
+            set(), {"Amount"}, "Empty worksheet")
+        self.assertIsNone(passed)
+        self.assertIsNone(coverage)
+
 
 class TestItDetectsRealDefects(unittest.TestCase):
 
@@ -115,12 +147,7 @@ class TestItDetectsRealDefects(unittest.TestCase):
         row = [d for d in report["details"] if d["test"].startswith("row_count:")]
         self.assertEqual("not_run", row[0]["status"])
 
-    def test_coverage_measures_against_the_model_not_the_source(self):
-        """Comparing the source against itself always scores 100%.
-
-        The field below exists only in the workbook, so a self-comparison
-        cannot distinguish a complete migration from one that dropped it.
-        """
+    def test_model_name_presence_is_diagnostic_not_visual_coverage(self):
         tableau = {
             "datasources": [],
             "calculations": [],
@@ -131,10 +158,107 @@ class TestItDetectsRealDefects(unittest.TestCase):
             _model_project(td)
             report = run_full_equivalence_suite(tableau, {"project_dir": td})
         coverage = [d for d in report["details"]
-                    if d["test"].startswith("visual_coverage:")][0]
-        self.assertEqual(50.0, coverage["coverage_percent"],
-                         "a field absent from the model was not detected")
+                    if d["test"].startswith("model_name_presence:")][0]
+        self.assertEqual(["amount"], coverage["matched_model_names"])
+        self.assertEqual(["never_generated"], coverage["unmatched_model_names"])
         self.assertFalse(coverage["passed"])
+        self.assertEqual("unqualified_model_names", coverage["scope"])
+        self.assertEqual("not_run", coverage["status"])
+        self.assertNotIn("coverage_percent", coverage)
+        self.assertIsNone(report["fidelity_percent"])
+
+    def test_model_names_do_not_prove_visual_projection_coverage(self):
+        tableau = {
+            "datasources": [], "calculations": [],
+            "worksheets": [{"name": "S", "fields": [
+                {"name": "amount"}, {"name": "Revenue"}]}],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            _model_project(td)
+            visuals = os.path.join(
+                td, "P.Report", "definition", "pages", "unrelated",
+                "visuals", "v")
+            os.makedirs(visuals)
+            with open(os.path.join(visuals, "visual.json"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('{"visual": {"query": {"queryState": {}}}}')
+            report = run_full_equivalence_suite(tableau, {"project_dir": td})
+        presence, = [d for d in report["details"]
+                     if d["test"] == "model_name_presence:S"]
+        visual, = [d for d in report["details"]
+                   if d["test"] == "visual_coverage:S"]
+        self.assertEqual(["Revenue", "amount"], presence["matched_model_names"])
+        self.assertNotIn("coverage_percent", presence)
+        self.assertEqual("not_run", visual["status"])
+        self.assertFalse(visual["passed"])
+        self.assertNotIn("coverage_percent", visual)
+        self.assertIn("projection", visual["message"].lower())
+        self.assertEqual("not_run_visual_projection_equivalence",
+                         report["fidelity_percent_scope"])
+        self.assertEqual(1, report["generated_visual_artifact_count"])
+        self.assertIsNone(report["fidelity_percent"])
+
+    def test_unique_calculation_identifier_resolution_is_not_coverage(self):
+        tableau = {
+            "datasources": [],
+            "calculations": [{
+                "name": "[Calculation_1]", "caption": "Revenue",
+                "datasource_name": "source-a",
+            }],
+            "worksheets": [{"name": "S", "fields": [
+                {"name": "Calculation_1", "datasource": "source-a"}]}],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            _model_project(td)
+            report = run_full_equivalence_suite(tableau, {"project_dir": td})
+        presence, = [d for d in report["details"]
+                     if d["test"] == "model_name_presence:S"]
+        self.assertEqual(["Revenue"], presence["matched_model_names"])
+        self.assertFalse(presence["passed"])
+        self.assertEqual("not_run", presence["status"])
+        self.assertNotIn("coverage_percent", presence)
+
+    def test_ambiguous_calculation_captions_are_not_guessed(self):
+        tableau = {
+            "datasources": [],
+            "calculations": [
+                {"name": "[Calculation_1]", "caption": "Revenue",
+                 "datasource_name": "source-a"},
+                {"name": "[Calculation_1]", "caption": "Cost",
+                 "datasource_name": "source-b"},
+            ],
+            "worksheets": [{"name": "S", "fields": [
+                {"name": "Calculation_1"}]}],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            _model_project(td)
+            report = run_full_equivalence_suite(tableau, {"project_dir": td})
+        presence, = [d for d in report["details"]
+                     if d["test"] == "model_name_presence:S"]
+        self.assertEqual("not_run", presence["status"])
+        self.assertTrue(presence["ambiguous_fields"])
+        self.assertNotIn("coverage_percent", presence)
+
+    def test_datasource_resolves_colliding_calculation_identifiers(self):
+        tableau = {
+            "datasources": [],
+            "calculations": [
+                {"name": "[Calculation_1]", "caption": "Revenue",
+                 "datasource_name": "source-a"},
+                {"name": "[Calculation_1]", "caption": "Cost",
+                 "datasource_name": "source-b"},
+            ],
+            "worksheets": [{"name": "S", "fields": [
+                {"name": "Calculation_1", "datasource": "source-a"}]}],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            _model_project(td)
+            report = run_full_equivalence_suite(tableau, {"project_dir": td})
+        presence, = [d for d in report["details"]
+                     if d["test"] == "model_name_presence:S"]
+        self.assertEqual(["Revenue"], presence["matched_model_names"])
+        self.assertEqual("unqualified_model_names", presence["scope"])
+        self.assertIn("not visual field coverage", presence["message"])
 
 
 class TestPseudoFields(unittest.TestCase):
@@ -152,9 +276,10 @@ class TestPseudoFields(unittest.TestCase):
             _model_project(td)
             report = run_full_equivalence_suite(tableau, {"project_dir": td})
         coverage = [d for d in report["details"]
-                    if d["test"].startswith("visual_coverage:")]
-        self.assertEqual(100.0, coverage[0]["coverage_percent"],
-                         "pseudo-fields were counted against coverage")
+                    if d["test"].startswith("model_name_presence:")]
+        self.assertEqual(["amount"], coverage[0]["matched_model_names"],
+                         "pseudo-fields were counted as source model-name diagnostics")
+        self.assertNotIn("coverage_percent", coverage[0])
 
     def test_the_exclusion_list_is_not_empty(self):
         self.assertIn("Measure Names", _PSEUDO_FIELDS)
