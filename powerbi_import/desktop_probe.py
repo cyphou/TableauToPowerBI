@@ -1352,7 +1352,8 @@ def _refresh_ui_state(hwnd: int, owner_pid: Optional[int], *,
     try:
         # A read-only snapshot must not inherit the two-minute UI action
         # allowance and monopolize the refresh budget on a blocked provider.
-        deadline = time.monotonic() + min(_positive_timeout(timeout), 30.0)
+        budget = min(_positive_timeout(timeout), 30.0)
+        deadline = time.monotonic() + budget
     except (TypeError, ValueError, OverflowError):
         return "unavailable"
     _raise_if_owner_exited(stop_when)
@@ -1376,7 +1377,7 @@ def _refresh_ui_state(hwnd: int, owner_pid: Optional[int], *,
                 re.escape(text) for text in _PENDING_CHANGES_TEXT),
             "busy_pattern": _REFRESH_BUSY_PATTERN,
             "completed_pattern": _REFRESH_COMPLETED_PATTERN,
-        }, timeout=max(0.0, deadline - time.monotonic()))
+        }, timeout=max(0.0, min(budget, deadline - time.monotonic())))
         _raise_if_owner_exited(stop_when)
         if is_powershell_failure(observation) or observation.get("status") == "error":
             raise PowerShellFailure(observation)
@@ -1823,7 +1824,8 @@ def observe_desktop_partitions(pbip_path: str, owner_pid: Optional[int], *,
     Timeout is positive finite seconds (including fractions), capped at 60.
     """
     try:
-        deadline = time.monotonic() + min(_positive_timeout(timeout), 60.0)
+        budget = min(_positive_timeout(timeout), 60.0)
+        deadline = time.monotonic() + budget
     except (TypeError, ValueError, OverflowError):
         return _partition_observation_result(note="invalid_observer_request")
     try:
@@ -1846,7 +1848,7 @@ def observe_desktop_partitions(pbip_path: str, owner_pid: Optional[int], *,
         "tables": list(dict.fromkeys(item["table"] for item in expected)),
         "partitions": expected,
     }
-    remaining = deadline - time.monotonic()
+    remaining = min(budget, deadline - time.monotonic())
     if remaining <= 0:
         observation["note"] = "observer_timeout"
         return observation
@@ -2037,7 +2039,8 @@ def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
     Positive fractional seconds are supported without a timeout floor.
     """
     try:
-        deadline = time.monotonic() + min(_positive_timeout(timeout), 120.0)
+        budget = min(_positive_timeout(timeout), 120.0)
+        deadline = time.monotonic() + budget
     except (TypeError, ValueError, OverflowError):
         return _data_load_result("unavailable")
     tables = _m_backed_tables(pbip_path)
@@ -2048,7 +2051,7 @@ def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
         return _data_load_result("no_m_tables")
 
     request = {"owner_pid": int(owner_pid), "tables": tables}
-    remaining = deadline - time.monotonic()
+    remaining = min(budget, deadline - time.monotonic())
     if remaining <= 0:
         return _data_load_result("unavailable")
     result = run_powershell_json(

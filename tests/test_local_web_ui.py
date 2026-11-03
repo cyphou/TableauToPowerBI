@@ -13,7 +13,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import quote
 
 from web import local_server as local
@@ -245,6 +245,103 @@ class TestLocalCommands(_LocalFixture):
             self.assertIsNone(local.native_unavailable("migration"))
 
 
+class TestRejectedPostHandling(unittest.TestCase):
+    def make_handler(self, headers, body, authorized=True):
+        events = []
+
+        class TracedBody(io.BytesIO):
+            def read1(self, size=-1):
+                events.append(("read", size))
+                return super().read1(size)
+
+        handler = object.__new__(local.LocalHandler)
+        handler.headers = http.client.parse_headers(io.BytesIO(headers + b"\r\n"))
+        handler.rfile = TracedBody(body)
+        handler.connection = Mock()
+        handler._json = lambda status, payload: events.append(("response", status))
+
+        def guard(post=False):
+            if not authorized:
+                handler._json(403, {"error": "Rejected"})
+            return authorized
+
+        handler._guard = guard
+        return handler, events
+
+    def test_early_rejections_respond_before_draining_the_body(self):
+        oversized = b"x" * (local.MAX_PAYLOAD + 1)
+        cases = [
+            (403, b"Content-Length: 4\r\n", b"body", False),
+            (400, b"Transfer-Encoding: chunked\r\n", b"body", True),
+            (411, b"Content-Type: application/json\r\n", b"body", True),
+            (413, f"Content-Length: {len(oversized)}\r\n".encode(), oversized, True),
+            (415, b"Content-Length: 4\r\nContent-Type: text/plain\r\n", b"body", True),
+        ]
+        for status, headers, body, authorized in cases:
+            with self.subTest(status=status):
+                handler, events = self.make_handler(headers, body, authorized)
+                handler.do_POST()
+                self.assertEqual(events[0], ("response", status))
+                self.assertTrue(any(event[0] == "read" for event in events))
+                self.assertEqual(handler.rfile.tell(), len(body))
+
+    def test_drain_of_oversized_body_is_bounded(self):
+        body = b"x" * (local.MAX_PAYLOAD + 4096)
+        headers = f"Content-Length: {len(body)}\r\n".encode("ascii")
+        handler, events = self.make_handler(headers, body)
+
+        handler.do_POST()
+
+        self.assertEqual(events[0], ("response", 413))
+        self.assertEqual(handler.rfile.tell(), local.MAX_PAYLOAD + 1)
+
+    def test_drain_has_a_total_time_limit(self):
+        handler, events = self.make_handler(
+            b"Content-Length: 4\r\nContent-Type: text/plain\r\n", b"body")
+
+        class SlowBody(io.BytesIO):
+            def read1(self, size=-1):
+                return super().read1(1)
+
+        handler.rfile = SlowBody(b"body")
+        with patch("web.local_server.time.monotonic", side_effect=[100.0, 100.1, 101.1]):
+            handler.do_POST()
+
+        self.assertEqual(events[0], ("response", 415))
+        self.assertEqual(handler.rfile.tell(), 1)
+
+    def test_drain_timeout_never_exceeds_limit_due_to_clock_rounding(self):
+        handler, events = self.make_handler(
+            b"Content-Length: 4\r\nContent-Type: text/plain\r\n", b"body")
+        with patch("web.local_server.time.monotonic", return_value=1.03):
+            handler.do_POST()
+        self.assertEqual(events[0], ("response", 415))
+        handler.connection.settimeout.assert_called_once_with(local.REJECT_DRAIN_TIMEOUT)
+
+    def test_drain_timeout_and_disconnect_preserve_the_rejection(self):
+        for failure in (TimeoutError("private request body"),
+                        ConnectionResetError("private request body"),
+                        ConnectionAbortedError("private request body")):
+            with self.subTest(failure=type(failure).__name__):
+                handler, events = self.make_handler(
+                    b"Content-Length: 4\r\nContent-Type: text/plain\r\n", b"body")
+                handler.rfile.read1 = Mock(side_effect=failure)
+                with self.assertLogs(local.logger, level="DEBUG") as logs:
+                    handler.do_POST()
+                self.assertEqual(events[0], ("response", 415))
+                handler.rfile.read1.assert_called_once()
+                self.assertIn(type(failure).__name__, logs.output[0])
+                self.assertNotIn("private request body", logs.output[0])
+
+    def test_invalid_non_ascii_content_length_is_rejected(self):
+        handler, events = self.make_handler(
+            b"Content-Length: \xb2\r\nContent-Type: application/json\r\n", b"")
+
+        handler.do_POST()
+
+        self.assertEqual(events[0], ("response", 411))
+
+
 class TestLocalHTTP(_LocalFixture):
     def setUp(self):
         super().setUp()
@@ -406,6 +503,58 @@ class TestLocalHTTP(_LocalFixture):
                                      b" " * (local.MAX_PAYLOAD + 1), headers)[0], 413)
         self.assertEqual(self.post(self.payload(), headers={
             "Transfer-Encoding": "chunked"})[0], 400)
+        self.popen.assert_not_called()
+
+    def test_rejection_response_is_readable_while_body_drain_is_paused(self):
+        draining = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        original_drain = local.LocalHandler._drain_rejected_post
+
+        def paused_drain(handler):
+            draining.set()
+            try:
+                if not release.wait(5):
+                    raise AssertionError("Test did not release rejected-body drain")
+                original_drain(handler)
+            finally:
+                finished.set()
+
+        conn = http.client.HTTPConnection(local.HOST, self.server.server_port, timeout=5)
+        try:
+            with patch.object(local.LocalHandler, "_drain_rejected_post", paused_drain):
+                conn.request("POST", "/api/jobs", body=b"body", headers={
+                    "Origin": self.server.origin,
+                    "X-Local-Token": self.server.token,
+                    "Content-Type": "text/plain",
+                })
+                self.assertTrue(draining.wait(5))
+                response = conn.getresponse()
+                self.assertEqual(response.status, 415)
+                self.assertIn("error", json.loads(response.read()))
+                self.assertFalse(finished.is_set())
+                release.set()
+                self.assertTrue(finished.wait(5))
+        finally:
+            release.set()
+            conn.close()
+        self.popen.assert_not_called()
+
+    def test_rejected_post_responses_survive_repeated_real_connections(self):
+        authorized = {"Origin": self.server.origin, "X-Local-Token": self.server.token}
+        cases = [
+            (403, {}, b"{}"),
+            (400, {**authorized, "Transfer-Encoding": "chunked"}, b"{}"),
+            (415, {**authorized, "Content-Type": "text/plain"}, b"{}"),
+            (413, {**authorized, "Content-Type": "application/json"},
+             b" " * (local.MAX_PAYLOAD + 1)),
+        ]
+        for attempt in range(20):
+            for expected, headers, body in cases:
+                with self.subTest(attempt=attempt, status=expected):
+                    status, _, response = self.request("/api/jobs", "POST", body, headers)
+                    self.assertEqual(status, expected)
+                    self.assertIn("error", json.loads(response))
         self.popen.assert_not_called()
 
     def test_missing_invalid_and_duplicate_content_lengths_rejected(self):

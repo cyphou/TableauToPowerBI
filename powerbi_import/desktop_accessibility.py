@@ -186,7 +186,7 @@ def run_powershell_json(script: str, payload: dict, *, timeout: float,
     tooling = powershell_preflight()
     if tooling["status"] != "ready":
         return tooling
-    remaining = deadline - time.monotonic()
+    remaining = min(timeout, deadline - time.monotonic())
     if remaining <= 0:
         return _powershell_error("timed_out", "powershell_timeout")
     command = [tooling["executable"], "-NoProfile", "-NonInteractive",

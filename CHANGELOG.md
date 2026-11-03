@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- Bound native Desktop observer subprocess timeouts to their original budgets
+  even when floating-point deadline arithmetic rounds upward.
+- Send early local-browser POST rejections before a size- and time-limited
+  drain of unread request bodies, reducing connection resets on Windows.
+  Reject non-ASCII `Content-Length` digits rather than failing to parse them.
+
 - Guard opt-in Import composite equalities with source-bound typed keys and
   refresh-time one-side uniqueness. Route combined groups and their visual/DAX
   references to their proven owners, rejecting missing or ambiguous bindings

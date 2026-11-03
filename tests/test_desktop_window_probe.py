@@ -1384,6 +1384,13 @@ class TestDataVerificationFailsClosed(unittest.TestCase):
                 'tables_failed': 0, 'total_rows': 9}
         self.assertEqual(self._verify_two(full)['status'], 'verified')
 
+    def test_data_verification_does_not_exceed_budget_due_to_clock_rounding(self):
+        full = {'status': 'verified', 'tables_checked': 2,
+                'tables_nonempty': 2, 'tables_empty': 0,
+                'tables_failed': 0, 'total_rows': 9}
+        with mock.patch.object(accessibility.time, 'monotonic', return_value=4.4):
+            self.assertEqual(self._verify_two(full)['status'], 'verified')
+
     def test_missing_or_nonwindows_tooling_is_terminal_without_running_a_query(self):
         for platform, executable, cause in (
                 ('win32', None, 'powershell_not_found'),

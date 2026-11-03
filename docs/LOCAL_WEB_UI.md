@@ -125,6 +125,11 @@ for state-changing requests. Keep the loopback service available only to this
 computer. Do not substitute a remote-hosted page or expose the runner to your
 LAN.
 
+POST requests require one ASCII-decimal `Content-Length`, a JSON body of at
+most 64 KiB, and no `Transfer-Encoding`. For early rejections, the runner sends
+the response first, then drains at most 64 KiB plus one byte for at most one
+second before closing the connection.
+
 Ordinary generation does not launch Power BI Desktop or Tableau, refresh a
 remote data source, deploy a project, or perform an online parity check.
 Connection or query files in the output do not imply that a source is

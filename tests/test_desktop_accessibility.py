@@ -179,6 +179,11 @@ class TestPowerShellJsonRunner(unittest.TestCase):
             self.assertEqual(self.run_script()["cause"], "powershell_timeout")
         self.child.assert_not_called()
 
+    def test_child_timeout_never_exceeds_budget_due_to_clock_rounding(self):
+        with mock.patch.object(accessibility.time, "monotonic", return_value=4.4):
+            accessibility.run_powershell_json("synthetic", {}, timeout=60)
+        self.assertEqual(self.child.call_args.kwargs["timeout"], 60.0)
+
     def test_bom_provider_response_is_not_mislabeled_as_missing_tooling(self):
         self.child.return_value.stdout = '\ufeff {"status":"unavailable","retryable":true}\n'
         result = self.run_script()

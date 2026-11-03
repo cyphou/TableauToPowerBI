@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 import webbrowser
 import zipfile
@@ -33,6 +35,7 @@ WEB_ROOT = Path(__file__).resolve().parent
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_PAYLOAD = 64 * 1024
+REJECT_DRAIN_TIMEOUT = 1.0
 MAX_JOBS = 30
 MAX_LOG_LINES = 2000
 MAX_LOG_LINE = 4096
@@ -49,6 +52,7 @@ EXCLUDED_DIRS = {
 }
 SECRET_NAMES = {".env", "credentials.json", "secrets.json", "config.json"}
 ACTIVE = {"queued", "running"}
+logger = logging.getLogger(__name__)
 
 
 def _now():
@@ -533,6 +537,33 @@ class LocalHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _drain_rejected_post(self):
+        """Bounded drain after the response avoids resets from unread bodies."""
+        remaining = MAX_PAYLOAD + 1
+        lengths = self.headers.get_all("Content-Length", [])
+        if (not self.headers.get("Transfer-Encoding") and len(lengths) == 1
+                and len(lengths[0]) <= 10 and lengths[0].isascii()
+                and lengths[0].isdecimal()):
+            remaining = min(remaining, int(lengths[0]))
+        deadline = time.monotonic() + REJECT_DRAIN_TIMEOUT
+        try:
+            while remaining:
+                timeout = min(REJECT_DRAIN_TIMEOUT, deadline - time.monotonic())
+                if timeout <= 0:
+                    logger.debug("Timed out draining rejected request body")
+                    return
+                self.connection.settimeout(timeout)
+                chunk = self.rfile.read1(min(remaining, 8192))
+                if not chunk:
+                    return
+                remaining -= len(chunk)
+        except OSError as exc:
+            logger.debug("Could not drain rejected request body: %s", type(exc).__name__)
+
+    def _reject_post(self, status, message):
+        self._json(status, {"error": message})
+        self._drain_rejected_post()
+
     def _job(self, job_id):
         with self.server.jobs.lock:
             job = self.server.jobs.jobs.get(job_id)
@@ -613,23 +644,25 @@ class LocalHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.close_connection = True
         if not self._guard(post=True):
+            self._drain_rejected_post()
             return
         if self.headers.get("Transfer-Encoding"):
-            self._json(400, {"error": "Chunked requests are not supported"})
+            self._reject_post(400, "Chunked requests are not supported")
             return
         lengths = self.headers.get_all("Content-Length", [])
-        if len(lengths) != 1 or not lengths[0].isdigit():
-            self._json(411, {"error": "A single Content-Length is required"})
+        if (len(lengths) != 1 or not lengths[0].isascii()
+                or not lengths[0].isdecimal()):
+            self._reject_post(411, "A single Content-Length is required")
             return
         if len(lengths[0]) > 10:
-            self._json(413, {"error": "JSON payload exceeds 64 KB"})
+            self._reject_post(413, "JSON payload exceeds 64 KB")
             return
         length = int(lengths[0])
         if length > MAX_PAYLOAD:
-            self._json(413, {"error": "JSON payload exceeds 64 KB"})
+            self._reject_post(413, "JSON payload exceeds 64 KB")
             return
         if self.headers.get_content_type() != "application/json":
-            self._json(415, {"error": "Content-Type must be application/json"})
+            self._reject_post(415, "Content-Type must be application/json")
             return
         try:
             raw = self.rfile.read(length)

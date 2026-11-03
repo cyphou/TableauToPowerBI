@@ -151,6 +151,11 @@ class TestOwnedPartitionObservation(PartitionObserverFixture):
         self.assertTrue(self.run.call_args.kwargs["capture_output"])
         self.assertNotIn("source =", json.dumps(request))
 
+    def test_partition_observer_never_exceeds_its_cap_due_to_clock_rounding(self):
+        with mock.patch.object(probe.time, "monotonic", return_value=4.4):
+            self.assertEqual(self.observe(timeout=600)["status"], "observed")
+        self.assertLessEqual(self.run.call_args.kwargs["timeout"], 60.0)
+
     def test_missing_expected_table_or_partition_is_mismatch_not_partial_success(self):
         for missing_index in (0, 2):
             with self.subTest(missing_index=missing_index):
@@ -589,6 +594,11 @@ class TestRefreshSnapshotRequestBudgets(unittest.TestCase):
                 self.run.assert_called_once()
                 self.assertEqual(self.run.call_args.kwargs["timeout"], 30.0)
         self.assertTrue(all(call.args == (4242,) for call in self.dialogs.call_args_list))
+
+    def test_snapshot_never_exceeds_its_cap_due_to_clock_rounding(self):
+        self.clock.now = 2.02
+        self.assertEqual(probe._refresh_ui_state(101, 4242, timeout=300), "clear")
+        self.assertLessEqual(self.run.call_args.kwargs["timeout"], 30.0)
 
     def test_ui_provider_inventory_projects_only_process_identity_and_parent(self):
         self.assertEqual(probe._refresh_ui_state(101, 4242), "clear")
