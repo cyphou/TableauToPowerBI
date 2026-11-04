@@ -307,15 +307,20 @@ The tool converts these to iterator functions:
 | `COUNT(IF(...))` | `COUNTX('table', IF(...))` |
 
 ### Measure vs Calculated Column Classification
-The tool uses 3-factor analysis to determine if a calculation is a measure or calculated column:
+The tool uses aggregation, row context, referenced-table ownership, and Tableau
+role to classify a calculation:
 
 | Factor | Measure | Calc Column |
 |---|---|---|
 | Has aggregation (SUM, COUNT...) | ✅ | ❌ |
-| References physical columns | Optional | ✅ (needs row context) |
-| Tableau role | `measure` | `dimension` |
+| Unaggregated formula references columns from one physical table | ❌ | ✅ (needs row context) |
+| Formula has no column references | ✅ | ❌ |
 
-Rule: If no aggregation AND has column references → **calculated column** (regardless of Tableau role).
+Exception: an unaggregated Tableau `role=measure` formula that references
+columns owned by multiple physical tables remains a DAX measure. Its fields
+are evaluated in filter context, rather than scalar-looked up from a possibly
+non-unique blend key. Tableau role is a classification signal, not a blanket
+override; single-table row calculations remain calculated columns.
 
 ### Parameter Value Inlining
 When a calculated column references a literal-value measure (e.g., a Tableau parameter converted to a measure like `900`), the tool inlines the value directly into the formula since calculated columns can't reference measures in DAX.

@@ -78,8 +78,13 @@ convert_tableau_formula_to_dax(formula, column_name, table_name, calc_map, param
 ### 4. Calculated Column vs Measure Classification
 Three-factor rule:
 1. Has aggregation (SUM, COUNT...) → **measure**
-2. No aggregation + has column references → **calculated column**
+2. No aggregation + column references owned by one physical table →
+   **calculated column** when row context is needed
 3. No aggregation + no column refs → **measure**
+- Exception: an unaggregated Tableau `role=measure` formula referencing
+  columns owned by multiple physical tables stays a **measure**; aggregate its
+  fields in filter context rather than using a scalar lookup across the blend
+  key.
 - Security functions (USERNAME, USERPRINCIPALNAME) → always measures
 - Dimension-role calcs referencing only other measures → reclassify as measure
 

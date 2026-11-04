@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- Keep unaggregated Tableau `role=measure` calculations that reference
+  multiple physical tables as DAX measures, so referenced fields are evaluated
+  in filter context rather than scalar-looked up across a non-unique blend
+  key. Preserve quoted column identifiers containing embedded double quotes.
+  Single-table row calculations remain calculated columns.
 - Bound native Desktop observer subprocess timeouts to their original budgets
   even when floating-point deadline arithmetic rounds upward.
 - Send early local-browser POST rejections before a size- and time-limited

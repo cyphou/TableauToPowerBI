@@ -427,7 +427,10 @@ Power BI Desktop openability.
 2. **Deduplication** — tables are deduplicated in the extractor (`type="table"` filtering)
 3. **Calculated columns vs measures** — 3-factor classification:
    - Has aggregation (SUM, COUNT...) → measure
-   - No aggregation + has column references (needs row context) → calculated column
+   - No aggregation + column references owned by one physical table (needs
+     row context) → calculated column
+   - Unaggregated Tableau `role=measure` with references owned by multiple
+     physical tables → measure; aggregate fields in filter context
    - No aggregation + no column refs → measure (formula-only)
    - Literal-value measure references in calc columns are inlined
 4. **RELATED()** — used for cross-table refs in manyToOne relationships only

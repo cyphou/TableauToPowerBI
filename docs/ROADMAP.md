@@ -280,6 +280,22 @@ large groups. These are targeted static checks, not a full-suite result or
 native Desktop refresh, rendering, or value-parity evidence; those remain
 `not_run` unless separately verified.
 
+### Cross-table measure classification — 2026-11-04
+
+**Delivered** in commit `77e3de8`. Unaggregated Tableau `role=measure`
+calculations that reference columns owned by multiple physical tables remain
+DAX measures, so the referenced fields are evaluated in filter context instead
+of being scalar-looked-up from a potentially non-unique blend key. Calculation
+aliases resolve to their physical column owners, and quoted identifiers with
+embedded double quotes are preserved. Single-table row calculations remain
+calculated columns.
+
+Four focused classification regressions and **597 targeted DAX/TMDL tests**
+passed. A local Power BI Desktop refresh was verified, but source-page capture
+was blocked by a manual Tableau dialog. No screen comparison or semantic
+parity is claimed; refresh evidence is local and is not a general Desktop
+compatibility certification.
+
 ### Next development sequence
 
 Report #85–91 hardening adds bounded envelope/field normalization, explicit
@@ -842,10 +858,14 @@ Two things the evidence showed that the diff alone would not have:
   **rewrites nothing** — its guard never matches. A measure only reaches it if
   its converted DAX is exactly a bare column reference, but such a formula has
   no aggregation and does carry a column ref, so the classifier makes it a
-  calculated column instead. `ATTR([Region])` behaves the same. On this evidence
-  the rewriting branches look unreachable in the current pipeline, the same
-  shape as the dead `topN` branch in `visual_generator._build_visual_filters`.
-  Left in place: failing to find a trigger is not proof of unreachability.
+  calculated column instead in the single-table row-reference case.
+  `ATTR([Region])` behaves the same for a single-table reference. Since
+  2026-11-04, unaggregated Tableau `role=measure` formulas spanning multiple
+  physical tables follow the separate measure-classification exception above.
+  On this evidence the rewriting branches look unreachable in the current
+  pipeline, the same shape as the dead `topN` branch in
+  `visual_generator._build_visual_filters`. Left in place: failing to find a
+  trigger is not proof of unreachability.
 
 Seams taken since, all with re-export compatibility and a measured equivalence
 check: the relationship group (601 lines), then `tmdl_lineage` (270),

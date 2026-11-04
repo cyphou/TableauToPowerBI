@@ -622,12 +622,25 @@ If you see this error after migration, re-run with the latest version.
 - **Calculated column**: computed row by row, stored in the model. Like an added column.
 
 The tool classifies automatically:
-- Tableau `role=measure` → DAX measure
-- Tableau `role=dimension` → calculated column
+- Aggregations such as `SUM` or `COUNT` → DAX measure.
+- An unaggregated formula referencing columns from one physical table →
+   calculated column when it needs row context.
+- An unaggregated Tableau `role=measure` formula referencing columns owned by
+   multiple physical tables → DAX measure, with referenced fields evaluated in
+   the current filter context.
+- Formula-only calculations with no column references → DAX measure.
+
+Tableau role is one classification signal, not the only rule. The multi-table
+measure case avoids treating a blended measure as a calculated column that
+must scalar look up values from a non-unique key.
 
 ### Why does `RELATED()` appear in some formulas?
 
-In calculated columns, to access a column from another related table, DAX requires `RELATED('OtherTable'[column])`. The tool adds `RELATED()` automatically when the column belongs to a different table.
+In calculated columns, to access a column from another related table, DAX
+requires `RELATED('OtherTable'[column])`. The tool adds `RELATED()` automatically
+when the column belongs to a different table. Unaggregated measure-role
+calculations spanning multiple physical tables stay as measures instead; their
+fields are aggregated in filter context rather than scalar-looked up.
 
 ### What is the TMDL format?
 

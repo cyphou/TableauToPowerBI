@@ -99,7 +99,10 @@ These are real bugs that occurred during development. Review before every implem
 
 1. **Calculated columns vs measures** — 3-factor classification:
    - Has aggregation (SUM, COUNT...) → measure
-   - No aggregation + has column references → calculated column
+    - No aggregation + column references owned by one physical table →
+       calculated column when row context is needed
+    - Unaggregated Tableau `role=measure` with references owned by multiple
+       physical tables → measure; aggregate fields in filter context
    - No aggregation + no column refs → measure
 2. **RELATED()** — manyToOne cross-table refs only
 3. **LOOKUPVALUE()** — manyToMany cross-table refs only

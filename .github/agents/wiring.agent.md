@@ -57,10 +57,15 @@ generator only re-exports them, so you no longer edit it:
 
 Three-factor rule:
 1. Has aggregation (SUM, COUNT...) → **measure**
-2. No aggregation + has column references → **calculated column**
+2. No aggregation + column references owned by one physical table →
+	 **calculated column** when row context is needed
 3. No aggregation + no column refs → **measure**
 
 Additional rules:
+- An unaggregated Tableau `role=measure` formula referencing columns owned by
+	multiple physical tables stays a **measure**; aggregate its fields in filter
+	context instead of using a scalar lookup across a potentially non-unique
+	blend key.
 - Dimension-role calcs referencing only other measures → reclassify as measure
 - Security functions → always measures
 - Literal-value measures referenced in calc columns → inlined

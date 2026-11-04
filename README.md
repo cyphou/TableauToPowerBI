@@ -892,8 +892,9 @@ SharedSales/
 | Table Calc | `WINDOW_SUM / AVG / MAX / MIN` | `CALCULATE()` |
 | Iterator | `SUM(IF(...))` | `SUMX('table', IF(...))` |
 | Iterator | `AVG(IF(...))` / `COUNT(IF(...))` | `AVERAGEX(...)` / `COUNTX(...)` |
-| Cross-table | `[col]` other table (manyToOne) | `RELATED('Table'[col])` |
-| Cross-table | `[col]` other table (manyToMany) | `LOOKUPVALUE(...)` |
+| Cross-table column | `[col]` in another table (manyToOne, calculated-column row context) | `RELATED('Table'[col])` |
+| Cross-table column | `[col]` in another table (manyToMany, calculated-column row context) | `LOOKUPVALUE(...)` |
+| Cross-table measure | Unaggregated `role=measure` formula referencing multiple physical tables | DAX measure; aggregate referenced fields in filter context |
 | Security | `USERNAME()` | `USERPRINCIPALNAME()` |
 | Security | `FULLNAME()` | `USERPRINCIPALNAME()` |
 | Security | `ISMEMBEROF("group")` | `TRUE()` + RLS role per group |
