@@ -2242,6 +2242,103 @@ class TestRewriteBareMeasureReferences(unittest.TestCase):
         self.assertEqual(model, before)
 
 
+class TestCrossTableMeasureClassification(unittest.TestCase):
+    """Cross-source Tableau measures need filter-context aggregation."""
+
+    def test_internal_calculation_reference_resolves_its_table_owner(self):
+        from powerbi_import.tmdl_generator import _is_unaggregated_cross_table_measure
+
+        calc = {'role': 'measure'}
+        formula = 'IF([Calculation_Invoice] > 0.08 * [Income], [Weight], 0)'
+        column_table_map = {
+            'Invoice Total': 'Buildings',
+            'Income': 'Households',
+            'Weight': 'Households',
+        }
+
+        self.assertTrue(_is_unaggregated_cross_table_measure(
+            calc, formula, False, column_table_map,
+            {'Calculation_Invoice': 'Invoice Total'},
+        ))
+
+    def build(self, formula, column_table_map, dependent_formula=None):
+        from powerbi_import.tmdl_generator import _build_table
+
+        table = {
+            'name': 'Buildings',
+            'columns': [
+                {'name': 'Invoice', 'datatype': 'real'},
+                {'name': 'Fee', 'datatype': 'real'},
+            ],
+        }
+        connection = {'type': 'sqlserver', 'server': 'srv', 'database': 'db'}
+        calculation = {
+            'name': 'calc.Poverty Weight',
+            'caption': 'Poverty Weight',
+            'formula': formula,
+            'role': 'measure',
+            'datatype': 'real',
+        }
+        calculations = [calculation]
+        if dependent_formula:
+            calculations.append({
+                'name': 'calc.Total Poverty Weight',
+                'caption': 'Total Poverty Weight',
+                'formula': dependent_formula,
+                'role': 'measure',
+                'datatype': 'real',
+            })
+        context = {
+            'calc_map': {}, 'param_map': {},
+            'column_table_map': column_table_map,
+            'measure_names': set(), 'param_values': {},
+        }
+        return _build_table(
+            table, connection, calculations, [],
+            dax_context=context, col_metadata_map={},
+        )
+
+    def test_unaggregated_measure_spanning_tables_becomes_aggregated_measure(self):
+        result = self.build(
+            'IF([Invoice] > 0.08 * [Amount "Special" grant], [Weight], 0)',
+            {'Invoice': 'Buildings', 'Amount "Special" grant': 'Households',
+             'Weight': 'Households'},
+        )
+
+        self.assertNotIn('Poverty Weight', {c['name'] for c in result['columns']})
+        measure = next(m for m in result['measures'] if m['name'] == 'Poverty Weight')
+        self.assertEqual(
+            measure['expression'],
+            "IF(MAX('Buildings'[Invoice]) > 0.08 * "
+            "SUM('Households'[Amount \"Special\" grant]), "
+            "SUM('Households'[Weight]), 0)",
+        )
+
+    def test_dependent_calculation_is_preclassified_as_a_measure(self):
+        result = self.build(
+            'IF([Invoice] > 0.08 * [Amount "Special" grant], [Weight], 0)',
+            {'Invoice': 'Buildings', 'Amount "Special" grant': 'Households',
+             'Weight': 'Households', 'Fee': 'Buildings'},
+            '[Poverty Weight] + [Fee]',
+        )
+
+        measure_names = {measure['name'] for measure in result['measures']}
+        column_names = {column['name'] for column in result['columns']}
+        self.assertIn('Poverty Weight', measure_names)
+        self.assertIn('Total Poverty Weight', measure_names)
+        self.assertNotIn('Total Poverty Weight', column_names)
+
+    def test_single_table_row_calculation_remains_a_calculated_column(self):
+        result = self.build(
+            'IF([Invoice] > 0, [Fee], 0)',
+            {'Invoice': 'Buildings', 'Fee': 'Buildings'},
+        )
+
+        column = next(c for c in result['columns'] if c['name'] == 'Poverty Weight')
+        self.assertTrue(column.get('expression') or column.get('sourceColumn'))
+        self.assertEqual(result['measures'], [])
+
+
 class TestColumnDeduplication(unittest.TestCase):
     """Regression: duplicate columns/measures must be deduplicated.
 

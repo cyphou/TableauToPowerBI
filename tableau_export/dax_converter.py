@@ -3074,16 +3074,20 @@ def _resolve_columns(dax, table_name, column_table_map, measure_names,
         safe_table = table_name.replace("'", "''")
         return f"'{safe_table}'[{_dax_escape_col(col)}]"
 
-    # Apply column resolution ONLY outside of string literals ("..." in DAX)
-    # to avoid mangling regex patterns or other bracketed content inside strings.
-    parts = re.split(r'("(?:[^"\\]|\\.)*")', dax)
     resolved = []
-    for idx, part in enumerate(parts):
-        if idx % 2 == 1:
-            # Inside a double-quoted string literal — keep as-is
-            resolved.append(part)
-        else:
-            resolved.append(_RE_COLUMN_RESOLVE.sub(resolve_column, part))
+    cursor = 0
+    for token in _RE_NULL_PROTECTED_TOKEN.finditer(dax):
+        if cursor < token.start():
+            resolved.append(_RE_COLUMN_RESOLVE.sub(
+                resolve_column, dax[cursor:token.start()]))
+        value = token.group(0)
+        if value.startswith('[') and not (
+                token.start() > 0 and dax[token.start() - 1] == "'"):
+            value = _RE_COLUMN_RESOLVE.sub(resolve_column, value)
+        resolved.append(value)
+        cursor = token.end()
+    if cursor < len(dax):
+        resolved.append(_RE_COLUMN_RESOLVE.sub(resolve_column, dax[cursor:]))
     return ''.join(resolved)
 
 

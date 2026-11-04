@@ -848,6 +848,22 @@ from powerbi_import.tmdl_lineage import (  # noqa: E402,F401
     _normalize_column,
 )
 
+
+def _is_unaggregated_cross_table_measure(calc, formula, has_aggregation,
+                                         column_table_map, calc_map=None):
+    """Keep measure-role formulas spanning tables in filter context."""
+    if (str(calc.get('role', 'measure')).strip().casefold() != 'measure'
+            or has_aggregation):
+        return False
+    calc_map = calc_map if isinstance(calc_map, dict) else {}
+    referenced_tables = {
+        column_table_map.get(calc_map.get(ref, ref), column_table_map.get(ref))
+        for ref in re.findall(r'\[([^\]]+)\]', formula or '')
+        if (column_table_map.get(calc_map.get(ref, ref), column_table_map.get(ref)))
+    }
+    return len(referenced_tables) > 1
+
+
 # ════════════════════════════════════════════════════════════════════
 #  SEMANTIC MODEL BUILDING
 # ════════════════════════════════════════════════════════════════════
@@ -1841,6 +1857,19 @@ def _collect_semantic_context(datasources, extra_objects):
             dsn = calc.get('datasource_name', '')
             target_table = ds_main_table.get(dsn, main_table_name)
             column_table_map[caption] = target_table
+
+    # Tableau blends measure-role calculations across data tables at the
+    # view's filter context.  Keep unaggregated formulas spanning multiple
+    # table owners as measures so their fields are aggregated, not scalar-
+    # looked-up from a non-unique key in a calculated column.
+    for calc in all_calculations:
+        _, caption = _calculation_identity(calc)
+        formula = calc.get('formula', '').strip()
+        has_aggregation = bool(_agg_pat_mn.search(formula)) or bool(
+            re.search(r'\{\s*(?:FIXED|INCLUDE|EXCLUDE)\s', formula, re.IGNORECASE))
+        if caption and _is_unaggregated_cross_table_measure(
+                calc, formula, has_aggregation, column_table_map, calc_map):
+            measure_names.add(caption)
 
     return {
         'best_tables': best_tables,
@@ -3109,6 +3138,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     # Filière = Nucléaire_vrai & Réseaux_vrai & NSE_vrai) is incorrectly
     # demoted to a measure because the refs appear in calc_map/measure_names.
     group_column_names = dax_context.get('_combined_group_column_names', set())
+    column_table_map = dax_context.get('column_table_map', {})
     prelim_calc_col_captions = set(group_column_names)
     prelim_calc_col_raws = set(group_column_names)
     for _pc in calculations:
@@ -3129,6 +3159,11 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                             or _r in calc_map_ctx)):
                 _pc_has_col = True
                 break
+        _pc_cross_table_measure = _is_unaggregated_cross_table_measure(
+            _pc, _pc_formula, _pc_has_agg, column_table_map, calc_map_ctx)
+        if _pc_cross_table_measure:
+            measure_names_ctx.add(_pc_caption)
+            continue
         # A formula without aggregation that has physical column refs is a
         # calculated column regardless of Tableau's role attribute.
         _pc_is_cc = not _pc_has_agg and (
@@ -3257,6 +3292,11 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
         # Classify: calculated column or measure
         has_aggregation = bool(_agg_pattern.search(formula)) or bool(_lod_pattern.search(formula))
+        cross_table_measure = _is_unaggregated_cross_table_measure(
+            calc, formula, has_aggregation,
+            column_table_map, calc_map_ctx)
+        if cross_table_measure:
+            measure_names_ctx.add(caption)
         refs_in_formula = re.findall(r'\[([^\]]+)\]', formula)
         has_column_refs = False
         references_only_measures = True
@@ -3278,7 +3318,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 references_only_measures = False
                 break
 
-        is_calc_col = not has_aggregation and (
+        is_calc_col = not cross_table_measure and not has_aggregation and (
             numeric_row_constant or (not is_literal and (
                 role == 'dimension' or has_column_refs)))
 
