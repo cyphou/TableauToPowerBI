@@ -466,7 +466,28 @@ class PowerBIProjectGenerator:
                          output_format='pbip', paginated=False, languages=None,
                          composite_threshold=None, agg_tables='none',
                          incremental_refresh=False, incremental_refresh_months=12,
-                         parameterize=True, optimize_dax=False, time_intelligence='none'):
+                         parameterize=True, optimize_dax=False, time_intelligence='none',
+                         strict_generation=False):
+        self._partial_staging_dir = None
+        try:
+            return self._generate_project_impl(
+                report_name, converted_objects, calendar_start, calendar_end,
+                culture, model_mode, output_format, paginated, languages,
+                composite_threshold, agg_tables, incremental_refresh,
+                incremental_refresh_months, parameterize, optimize_dax,
+                time_intelligence, strict_generation)
+        finally:
+            staging = self._partial_staging_dir
+            if staging and os.path.isdir(staging):
+                shutil.rmtree(staging)
+
+    def _generate_project_impl(self, report_name, converted_objects, calendar_start=None,
+                              calendar_end=None, culture=None, model_mode='auto',
+                              output_format='pbip', paginated=False, languages=None,
+                              composite_threshold=None, agg_tables='none',
+                              incremental_refresh=False, incremental_refresh_months=12,
+                              parameterize=True, optimize_dax=False,
+                              time_intelligence='none', strict_generation=False):
         """
         Generates a complete Power BI Project
 
@@ -488,9 +509,13 @@ class PowerBIProjectGenerator:
         from powerbi_import.desktop_paths import validate_desktop_project
         validate_desktop_project(self.output_dir, report_name)
         project_dir = os.path.join(self.output_dir, report_name)
+        original_project_dir = project_dir
         os.makedirs(project_dir, exist_ok=True)
         pbip_file = os.path.join(project_dir, f"{report_name}.pbip")
+        previous_marker = None
         if os.path.isfile(pbip_file):
+            with open(pbip_file, 'rb') as handle:
+                previous_marker = handle.read()
             os.remove(pbip_file)
         print(f"\nðŸ”¨ Generating Power BI Project: {report_name}")
 
@@ -509,6 +534,7 @@ class PowerBIProjectGenerator:
         self._incremental_refresh = incremental_refresh
         self._incremental_refresh_months = incremental_refresh_months
         self._parameterize = parameterize
+        self._partial_generation = False
 
         # Preprocess model metadata using optional fidelity enhancers.
         with phase_timings.phase('fidelity_preprocess'):
@@ -524,9 +550,61 @@ class PowerBIProjectGenerator:
         # 2. Create the SemanticModel structure
         if self._output_format in ('pbip', 'tmdl'):
             with phase_timings.phase('semantic_model'):
-                sm_dir = self.create_semantic_model_structure(
-                    project_dir, report_name, converted_objects,
-                )
+                from powerbi_import.errors import PartialGenerationError
+                try:
+                    sm_dir = self.create_semantic_model_structure(
+                        project_dir, report_name, converted_objects,
+                    )
+                except PartialGenerationError as exc:
+                    if strict_generation or self._output_format != 'pbip':
+                        raise
+                    original_project_dir = project_dir
+                    original_sm = os.path.join(project_dir, f'{report_name}.SemanticModel')
+                    if os.path.exists(os.path.join(original_sm, '.pbi')):
+                        raise
+                    project_dir = self._allocate_partial_staging()
+                    self._partial_staging_dir = project_dir
+                    staged_sm = os.path.join(project_dir, f'{report_name}.SemanticModel')
+                    os.makedirs(staged_sm)
+                    for filename in ('.platform', 'definition.pbism'):
+                        shutil.copy2(os.path.join(original_sm, filename),
+                                     os.path.join(staged_sm, filename))
+                    repaired = self._prepare_selective_group_repair(converted_objects, exc)
+                    if repaired is not None:
+                        source_data = os.path.join(original_project_dir, 'Data')
+                        if os.path.isdir(source_data):
+                            shutil.copytree(source_data, os.path.join(project_dir, 'Data'))
+                        try:
+                            self.create_tmdl_model(staged_sm, report_name, repaired)
+                        except PartialGenerationError:
+                            repaired = None
+                    if repaired is None:
+                        staged_data = os.path.join(project_dir, 'Data')
+                        if os.path.isdir(staged_data):
+                            shutil.rmtree(staged_data)
+                        converted_objects = self._create_partial_repair_project(
+                            project_dir, report_name, converted_objects, exc)
+                    else:
+                        from powerbi_import.security_validator import redact_credentials
+                        diagnostic = {
+                            'schema_version': '1.0', 'status': 'partial',
+                            'validation_status': 'FAIL', 'data_retained': True,
+                            'recovery_scope': 'unaffected_model_and_visuals',
+                            'affected_objects': repaired.pop('_partial_affected_objects'),
+                            'errors': [{
+                                **exc.to_dict(), 'message': redact_credentials(str(exc)),
+                                'impact': 'The unresolved group and its directly dependent '
+                                          'worksheets are excluded. Other model objects '
+                                          'and visuals are retained.',
+                                'fix': 'Restore or map the missing group input, then '
+                                       'regenerate with --strict-generation and verify '
+                                       'the affected worksheet bindings and refresh.',
+                            }],
+                        }
+                        _write_json(os.path.join(project_dir, 'partial_generation.json'), diagnostic)
+                        self._partial_generation = True
+                        converted_objects = repaired
+                    sm_dir = os.path.join(project_dir, f'{report_name}.SemanticModel')
             print(f"  âœ“ SemanticModel created: {sm_dir}")
 
         # 3. Create the Report structure only when the source has visuals.
@@ -543,6 +621,15 @@ class PowerBIProjectGenerator:
         # 4. Create metadata
         with phase_timings.phase('metadata'):
             self.create_metadata(project_dir, report_name, converted_objects)
+            metadata_path = os.path.join(project_dir, 'migration_metadata.json')
+            with open(metadata_path, encoding='utf-8') as handle:
+                metadata = json.load(handle)
+            metadata['generation_status'] = (
+                'partial' if self._partial_generation else 'complete')
+            if self._partial_generation:
+                metadata['partial_diagnostic'] = 'partial_generation.json'
+                metadata['validation_status'] = 'FAIL'
+            _write_json(metadata_path, metadata)
         print("  âœ“ Metadata created")
 
         # 5. Create paginated report layout (if requested)
@@ -567,7 +654,33 @@ class PowerBIProjectGenerator:
         from powerbi_import.desktop_paths import validate_desktop_tree
         validate_desktop_tree(project_dir)
         with phase_timings.phase('project_manifest'):
+            partial_path = os.path.join(project_dir, 'partial_generation.json')
+            if not self._partial_generation and os.path.isfile(partial_path):
+                os.remove(partial_path)
             pbip_file = self.create_pbip_file(project_dir, report_name)
+        if self._partial_generation:
+            previous_dir = self._allocate_partial_staging()
+            os.rmdir(previous_dir)
+            os.replace(original_project_dir, previous_dir)
+            try:
+                if previous_marker is not None:
+                    with open(os.path.join(previous_dir, f'{report_name}.pbip'), 'wb') as handle:
+                        handle.write(previous_marker)
+                diagnostic_path = os.path.join(project_dir, 'partial_generation.json')
+                with open(diagnostic_path, encoding='utf-8') as handle:
+                    diagnostic = json.load(handle)
+                diagnostic['previous_output'] = {
+                    'status': 'preserved',
+                    'path': os.path.relpath(previous_dir, original_project_dir),
+                    'not_part_of_current_project': True,
+                }
+                _write_json(diagnostic_path, diagnostic)
+                os.replace(project_dir, original_project_dir)
+            except BaseException:
+                os.replace(previous_dir, original_project_dir)
+                raise
+            project_dir = original_project_dir
+            pbip_file = os.path.join(project_dir, f'{report_name}.pbip')
         print(f"  ✓ .pbip file created: {pbip_file}")
         self.last_phase_timings = phase_timings.finish()
 
@@ -575,6 +688,168 @@ class PowerBIProjectGenerator:
         print(f"   ðŸ“‚ Open in Power BI Desktop: {pbip_file}")
 
         return project_dir
+
+    def _allocate_partial_staging(self):
+        for attempt in range(20):
+            directory = os.path.join(self.output_dir, '.p' + uuid.uuid4().hex[:3])
+            try:
+                os.mkdir(directory)
+                return directory
+            except FileExistsError:
+                continue
+        raise FileExistsError('Cannot allocate an isolated partial output directory')
+
+    @staticmethod
+    def _prepare_selective_group_repair(objects, error):
+        if (getattr(error, 'recovery_kind', None) != 'unresolved_combined_group'
+                or not objects.get('dashboards') or objects.get('user_filters')):
+            return None
+        groups = [group for group in objects.get('groups', [])
+                  if (group.get('raw_name') or group.get('name')) == error.item
+                  and (not error.source or group.get('datasource') == error.source)]
+        if len(groups) != 1:
+            return None
+        group = groups[0]
+        aliases = {str(value).strip('[]') for value in (
+            group.get('name'), group.get('raw_name')) if value}
+
+        def references(value):
+            if isinstance(value, str):
+                return any(alias.casefold() in value.casefold() for alias in aliases)
+            if isinstance(value, dict):
+                return any(references(item) for item in value.values())
+            if isinstance(value, list):
+                return any(references(item) for item in value)
+            return False
+
+        for key in ('calculations', 'filters', 'actions', 'sets', 'bins',
+                    'parameters', 'hierarchies', 'datasource_filters', 'aliases',
+                    'sort_orders', 'stories', 'data_blending', 'table_extensions'):
+            if references(objects.get(key, [])):
+                return None
+        if any(references(other) for other in objects.get('groups', []) if other is not group):
+            return None
+        for datasource in objects.get('datasources', []):
+            if datasource.get('user_filters') or references(datasource):
+                return None
+        affected = set()
+        for worksheet in objects.get('worksheets', []):
+            if references(worksheet.get('filters', [])):
+                return None
+            if references(worksheet):
+                name = worksheet.get('name')
+                if not isinstance(name, str) or not name:
+                    return None
+                affected.add(name)
+        if not affected:
+            return None
+        for dashboard in objects.get('dashboards', []):
+            if references({key: value for key, value in dashboard.items() if key != 'objects'}):
+                return None
+            for obj in dashboard.get('objects', []):
+                if obj.get('type') != 'worksheetReference' and references(obj):
+                    return None
+        repaired = copy.deepcopy(objects)
+        repaired['groups'] = [other for other in repaired.get('groups', [])
+                              if (other.get('raw_name') or other.get('name')) != error.item
+                              or (error.source and other.get('datasource') != error.source)]
+        repaired['worksheets'] = [worksheet for worksheet in repaired.get('worksheets', [])
+                                  if worksheet.get('name') not in affected]
+        for dashboard in repaired['dashboards']:
+            for index, obj in enumerate(dashboard.get('objects', [])):
+                if obj.get('worksheetName') in affected:
+                    dashboard['objects'][index] = {
+                        'type': 'text', 'position': obj.get('position', {}),
+                        'content': str(obj['worksheetName'])
+                                   + ' [PARTIAL: unresolved group; see migration report]',
+                    }
+        repaired['_partial_affected_objects'] = [
+            {'type': 'group', 'name': group.get('name'), 'raw_name': group.get('raw_name'),
+             'source_fields': group.get('source_fields', []), 'status': 'excluded'},
+            *[{'type': 'worksheet', 'name': name, 'status': 'placeholder'}
+              for name in sorted(affected)],
+        ]
+        return repaired
+
+    def _create_partial_repair_project(self, project_dir, report_name, objects, error):
+        """Keep page outlines, never source rows or executable ambiguous semantics."""
+        from powerbi_import.security_validator import redact_credentials
+        from powerbi_import.tmdl_writers import _write_tmdl_files
+
+        sm_dir = os.path.join(project_dir, f'{report_name}.SemanticModel')
+        if os.path.exists(os.path.join(sm_dir, '.pbi')):
+            raise error
+        definition_dir = os.path.join(sm_dir, 'definition')
+        if os.path.isdir(definition_dir):
+            shutil.rmtree(definition_dir)
+        model = {'model': {
+            'culture': self._culture or 'en-US',
+            'tables': [{
+                'name': 'MigrationRepair',
+                'columns': [{'name': 'Status', 'dataType': 'string',
+                             'sourceColumn': 'Status'}],
+                'partitions': [{'name': 'MigrationRepair', 'mode': 'import',
+                                'source': {'type': 'm', 'expression':
+                                           '#table(type table [Status = text], {})'}}],
+            }],
+            'relationships': [], 'roles': [],
+        }}
+        _write_tmdl_files(model, sm_dir)
+        self.apply_model_context({})
+        message = redact_credentials(str(error))
+        dashboards = []
+        source_pages = objects.get('dashboards') or objects.get('worksheets') or [
+            {'name': report_name}]
+        for page in source_pages:
+            page_objects = []
+            for obj in page.get('objects', []):
+                if obj.get('type') == 'text':
+                    page_objects.append(copy.deepcopy(obj))
+                else:
+                    page_objects.append({
+                        'type': 'text', 'position': copy.deepcopy(obj.get('position', {})),
+                        'content': str(obj.get('worksheetName') or obj.get('name') or '')
+                                   + ' [PARTIAL: unavailable]',
+                    })
+            dashboards.append({'name': 'PARTIAL - ' + page.get('name', report_name),
+                               'size': copy.deepcopy(page.get('size') or
+                                                     {'width': 1280, 'height': 720}),
+                               'objects': page_objects})
+        dashboards.insert(0, {
+            'name': 'Migration Repair', 'size': {'width': 1280, 'height': 720},
+            'objects': [{'type': 'text',
+                         'position': {'x': 40, 'y': 40, 'w': 1100, 'h': 200},
+                         'content': 'PARTIAL / NOT VALIDATED - semantic model unavailable. '
+                                    'No source data retained. See partial_generation.json '
+                                    'and the migration quality report.'}],
+        })
+        self._datasource_only = False
+        diagnostic = {
+            'schema_version': '1.0', 'status': 'partial',
+            'validation_status': 'FAIL', 'data_retained': False,
+            'recovery_scope': 'data_free_page_outlines',
+            'errors': [{**error.to_dict(), 'stage': 'semantic_model',
+                        'message': message,
+                        'impact': 'All source data bindings, calculations, filters, '
+                                  'relationships, actions and security roles are excluded. '
+                                  'Page objects are non-querying text placeholders.',
+                        'fix': 'Correct the source semantics or conversion, regenerate '
+                               'with --strict-generation, and verify security, refresh '
+                               'and dependent visuals before use.'}],
+            'source_datasource_count': len(objects.get('datasources', [])),
+            'source_page_count': len(source_pages),
+            'affected_objects': [
+                {'type': key, 'name': item.get('caption') or item.get('name') or item.get('field'),
+                 'status': 'excluded'}
+                for key in ('datasources', 'worksheets', 'calculations', 'groups',
+                            'filters', 'parameters', 'actions', 'user_filters')
+                for item in objects.get(key, []) if isinstance(item, dict)
+            ],
+        }
+        _write_json(os.path.join(project_dir, 'partial_generation.json'), diagnostic)
+        self._partial_generation = True
+        logger.error('Partial repair project generated; no source data retained: %s', message)
+        return {'datasources': [], 'worksheets': [], 'dashboards': dashboards}
 
     @staticmethod
     def _has_explicit_dual_axis(ws_data):
@@ -1883,6 +2158,57 @@ class PowerBIProjectGenerator:
         }
         _write_json(os.path.join(visual_dir, 'visual.json'), visual_json, ensure_ascii=False)
 
+    @staticmethod
+    def _embed_local_image(path, resource_root=None):
+        import base64
+        import stat
+        from pathlib import Path
+        from powerbi_import.security_validator import SecurityError, is_non_local_windows_path
+
+        if is_non_local_windows_path(path):
+            raise ValueError('Non-local image paths are not read automatically')
+        candidate = Path(os.path.abspath(path))
+        for component in [*reversed(candidate.parents), candidate]:
+            if (os.path.islink(component)
+                    or getattr(os.path, 'isjunction', lambda value: False)(component)):
+                raise ValueError('Linked image paths are not read automatically')
+        upload_root = os.environ.get('TTPBI_UPLOAD_ROOT')
+        resolved = os.path.realpath(path)
+        if is_non_local_windows_path(resolved):
+            raise ValueError('Non-local image paths are not read automatically')
+        for root in (upload_root, resource_root):
+            if not root:
+                continue
+            try:
+                confined = (not is_non_local_windows_path(root)
+                            and os.path.commonpath([os.path.realpath(root), resolved])
+                            == os.path.realpath(root))
+            except ValueError:
+                confined = False
+            if not confined:
+                if upload_root:
+                    sys.audit('ttpbi.upload_denied', 'Image resource escapes private input scope')
+                    raise SecurityError('Image resource escapes private input scope')
+                raise ValueError('Image resource escapes its workbook directory')
+        mime_types = {
+            '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif', '.svg': 'image/svg+xml', '.bmp': 'image/bmp',
+            '.webp': 'image/webp', '.tif': 'image/tiff', '.tiff': 'image/tiff',
+            '.ico': 'image/x-icon',
+        }
+        mime = mime_types.get(os.path.splitext(resolved)[1].lower())
+        if not mime:
+            raise ValueError('Unsupported local image format')
+        limit = 20 * 1024 * 1024
+        info = os.stat(resolved)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError('Local image must be a regular file no larger than 20 MiB')
+        with open(resolved, 'rb') as handle:
+            payload = handle.read(limit + 1)
+        if not payload or len(payload) > limit:
+            raise ValueError('Local image is empty or larger than 20 MiB')
+        return f'data:{mime};base64,' + base64.b64encode(payload).decode('ascii')
+
     def _create_visual_image(self, visuals_dir, obj, scale_x, scale_y, visual_count):
         """Create an image visual from a Tableau image object."""
         visual_id = uuid.uuid4().hex[:8]
@@ -1892,9 +2218,16 @@ class PowerBIProjectGenerator:
         img_source = obj.get('source') or obj.get('url') or ''
         missing_resource = (obj.get('resource_missing') is True
                             or obj.get('source_exists') is False
-                            or not img_source
-                            or (os.path.isabs(img_source)
-                                and not os.path.isfile(img_source)))
+                            or not img_source)
+        resource_issue = ''
+        local_path = obj.get('resolved_source') or (
+            img_source if os.path.isabs(img_source) else None)
+        if local_path and not missing_resource:
+            try:
+                img_source = self._embed_local_image(local_path, obj.get('resource_root'))
+            except (OSError, ValueError) as exc:
+                missing_resource = True
+                resource_issue = type(exc).__name__
         if missing_resource:
             filename = os.path.basename(img_source.replace('\\', '/'))
             note = 'Source image unavailable'
@@ -1913,7 +2246,9 @@ class PowerBIProjectGenerator:
                 },
                 "annotations": [{
                     "name": "MigrationNote",
-                    "value": note + '. No replacement image was generated.',
+                    "value": note + '. No replacement image was generated.'
+                             + (f' Local resource could not be embedded ({resource_issue}).'
+                                if resource_issue else ''),
                 }],
             }
             _write_json(os.path.join(visual_dir, 'visual.json'), visual_json, ensure_ascii=False)
@@ -3720,6 +4055,16 @@ class PowerBIProjectGenerator:
                             candidates = {pair for pair in candidates
                                           if pair[0] in source_tables}
                     if len(candidates) != 1:
+                        if not candidates:
+                            from powerbi_import.tmdl_sets import (
+                                _combined_group_reference_status,
+                            )
+                            if _combined_group_reference_status(
+                                    g, converted_objects) is False:
+                                logger.warning(
+                                    "Skipping PBIR mapping for unresolved "
+                                    "unreferenced combined group %r", group_name)
+                                continue
                         raise ValueError(
                             f"Combined group {group_name!r}: expected one produced "
                             f"model column for datasource {datasource!r}, "
@@ -3960,7 +4305,7 @@ class PowerBIProjectGenerator:
                           and f.get('aggregation') in _TABLEAU_AGG_TO_PBI_FUNC
                           and not self._is_date_field(f['name']))
                       or self._is_measure_field(f['name']))
-            if f.get('_aggregation_disabled'):
+            if f.get('_aggregation_disabled') and not f.get('_preserve_scatter_axis'):
                 is_mea = False
             if discrete_date_column:
                 is_mea = False
@@ -4098,6 +4443,30 @@ class PowerBIProjectGenerator:
         return visual_type
 
     def _build_visual_query(self, ws_data):
+        query = self._build_visual_query_impl(ws_data)
+        if not query:
+            return query
+        for role in query.get('queryState', {}).values():
+            unique = []
+            for projection in role.get('projections', []):
+                if projection and not any(
+                        item['field'] == projection['field'] for item in unique):
+                    unique.append(projection)
+            _disambiguate_aggregation_query_refs(unique)
+            used_refs = set()
+            for projection in unique:
+                original_ref = projection['queryRef']
+                query_ref = original_ref
+                suffix = 2
+                while query_ref in used_refs:
+                    query_ref = f'{original_ref}__{suffix}'
+                    suffix += 1
+                projection['queryRef'] = query_ref
+                used_refs.add(query_ref)
+            role['projections'] = unique
+        return query
+
+    def _build_visual_query_impl(self, ws_data):
         """Builds a query with queryState for a visual (PBIR v4.0 format).
 
         Uses shelf-aware field classification to assign Tableau fields to
@@ -4320,18 +4689,23 @@ class PowerBIProjectGenerator:
             for field in cleaned_fields:
                 field['_aggregation_disabled'] = True
                 field['_force_column'] = True
+                field['_preserve_scatter_axis'] = (
+                    original_type == 'scatterChart'
+                    and field.get('shelf') in ('rows', 'columns'))
             note = (
                 'Tableau aggregation is explicitly disabled; source fields are '
-                'bound as per-row columns in a table.'
+                'bound as per-row columns.'
             )
-            if original_type != 'tableEx':
+            if original_type == 'scatterChart':
+                note += ' Scatter X/Y retain unaggregated columns; verify point-count limits.'
+            elif original_type != 'tableEx':
                 note += (
                     ' The original visual cannot represent this unaggregated '
                     'grain in its required measure roles.'
                 )
             previous = ws_data.get('_visual_mapping_note')
             ws_data['_visual_mapping_note'] = f'{previous} {note}' if previous else note
-            if original_type != 'tableEx':
+            if original_type not in ('tableEx', 'scatterChart'):
                 ws_data['_override_visual_type'] = 'tableEx'
                 ws_data['_visual_fallback_note'] = note
 
@@ -5308,6 +5682,8 @@ class PowerBIProjectGenerator:
         """Creates projection entry for scatter chart axes.
         Named DAX measures â†’ Measure wrapper.
         Physical columns â†’ Aggregation wrapper with shelf-aware Function ID."""
+        if field.get('_aggregation_disabled'):
+            return self._make_projection_entry(field, force_column=True)
         raw_name = field.get('name', 'Field')
         clean_name = self._clean_field_name(raw_name)
 

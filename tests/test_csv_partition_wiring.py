@@ -347,6 +347,44 @@ def _read(project, table):
         return f.read()
 
 
+class TestHyperPhysicalRenameCycles(unittest.TestCase):
+    def test_existing_targets_are_staged_before_physical_hyper_renames(self):
+        from powerbi_import.migration_quality import _hyper_m_schema_derivations
+        from powerbi_import.tmdl_generator import _hyper_physical_rename_steps
+        from tableau_export.m_query_builder import inject_m_steps
+
+        physical_map = {
+            "site_id3": "site_id",
+            "site_id": "site_id (secondary)",
+            "Geometry3": "Geometry",
+            "Geometry": "Geometry (secondary)",
+        }
+        steps = _hyper_physical_rename_steps(physical_map)
+        self.assertEqual(len(steps), 2)
+
+        expression = inject_m_steps(
+            'let\n    Source = Parquet.Document(File.Contents("snapshot.parquet")),\n'
+            '    Result = Source\nin\n    Result',
+            steps,
+        )
+        available, _added, renamed, issues = _hyper_m_schema_derivations(
+            expression, set(physical_map),
+        )
+
+        self.assertEqual(issues, [])
+        self.assertEqual(available, set(physical_map.values()))
+        self.assertEqual(renamed, set(physical_map.values()))
+        self.assertIn("Table.RenameColumns(Source", expression)
+        self.assertIn("__ttpbi_hyper_rename_0__", expression)
+        self.assertNotIn("__ttpbi_hyper_rename_0__", available)
+
+    def test_duplicate_logical_targets_are_rejected(self):
+        from powerbi_import.tmdl_generator import _hyper_physical_rename_steps
+
+        with self.assertRaisesRegex(ValueError, "duplicate logical targets"):
+            _hyper_physical_rename_steps({"raw_a": "Name", "raw_b": "Name"})
+
+
 class TestPbipNativeDataPolicy(unittest.TestCase):
     """Supported PBIP routes keep native bindings, Hyper data, and report assets distinct."""
 
@@ -3005,9 +3043,8 @@ class TestSpatialRouting(unittest.TestCase):
             with self.subTest(output_format=output_format):
                 order = []
                 names = ('_fix_twb_data_folder', '_collect_local_data_files',
-                         '_convert_hyper_to_csv_in_data', '_route_spatial_partitions',
-                         '_reconcile_csv_partitions', '_wire_shapefile_map_coordinates',
-                         '_restrict_file_partitions_to_model', '_shorten_report_artifact_path')
+                         '_convert_hyper_to_csv_in_data', '_postprocess_spatial_sources',
+                         '_shorten_report_artifact_path')
 
                 def record_step(step):
                     order.append(step)
@@ -3027,18 +3064,16 @@ class TestSpatialRouting(unittest.TestCase):
                                         output_format=output_format), NAME)
                 expected = names[:-1] if output_format == "fabric" else (
                     '_collect_local_data_files', '_convert_hyper_to_csv_in_data',
+                    '_postprocess_spatial_sources',
                     '_shorten_report_artifact_path',
                 )
                 self.assertEqual(order, list(expected))
                 if output_format == "pbip":
-                    for name in (
-                        '_fix_twb_data_folder', '_route_spatial_partitions',
-                        '_reconcile_csv_partitions', '_wire_shapefile_map_coordinates',
-                        '_restrict_file_partitions_to_model',
-                    ):
-                        hooks[name].assert_not_called()
+                    hooks['_fix_twb_data_folder'].assert_not_called()
                 else:
                     hooks["_shorten_report_artifact_path"].assert_not_called()
+                hooks['_postprocess_spatial_sources'].assert_called_once_with(
+                    os.path.join('out', NAME), NAME, output_format)
                 hooks["_collect_local_data_files"].assert_called_once_with(
                     "sample.twb", os.path.join("out", NAME), NAME,
                     hyper_only=output_format == "pbip",
@@ -3048,13 +3083,6 @@ class TestSpatialRouting(unittest.TestCase):
                     hyper_export_format="auto", hyper_export_max_rows=None,
                     output_format=output_format, quiet=False, max_zip_entry_mb=1024,
                 )
-                if output_format == "fabric":
-                    self.assertLess(order.index('_route_spatial_partitions'),
-                                    order.index('_wire_shapefile_map_coordinates'))
-                    self.assertLess(order.index('_reconcile_csv_partitions'),
-                                    order.index('_wire_shapefile_map_coordinates'))
-                    self.assertLess(order.index('_wire_shapefile_map_coordinates'),
-                                    order.index('_restrict_file_partitions_to_model'))
 
     def test_wgs84_polygon_points_join_to_map_fact_without_losing_rows(self):
         with tempfile.TemporaryDirectory() as root:
@@ -3116,14 +3144,92 @@ class TestSpatialRouting(unittest.TestCase):
                                  ('X', 'MigrationLongitude')):
                 self.assertEqual(len(roles[role]['projections']), 1)
                 self.assertEqual(roles[role]['projections'][0]['field'], {
-                    'Column': {'Expression': {'SourceRef': {'Entity': 'Facts'}},
-                               'Property': column},
+                    'Aggregation': {'Expression': {'Column': {
+                        'Expression': {'SourceRef': {'Entity': 'Facts'}},
+                        'Property': column}}, 'Function': 1},
                 })
-            self.assertEqual(roles['Category']['projections'], roles['Y']['projections'])
+            self.assertEqual(roles['Category']['projections'][0]['queryRef'],
+                             'Facts.code_insee')
             self.assertEqual(roles['Size'],
                              visual['visual']['query']['queryState']['Size'])
             self.assertEqual(migrate._wire_shapefile_map_coordinates(project, NAME),
                              {'mapped': 0, 'unmatched': 0})
+
+    def test_wgs84_approximation_promotes_only_annotated_degraded_map(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = _project(root, {
+                'Facts': _csv_partition(
+                    'facts.csv', ['code_insee', 'alternate_code', 'Commune', 'Amount']),
+                'Places': _csv_partition('zones.shp.dbf.csv', ['insee', 'nom']),
+            })
+            definition = os.path.join(project, f'{NAME}.SemanticModel', 'definition')
+            data_dir = os.path.join(project, 'Data')
+            _write(os.path.join(data_dir, 'facts.csv'),
+                     'code_insee,alternate_code,Commune,Amount\n001,999,Paris,12\n')
+            _write(os.path.join(data_dir, 'zones.shp.dbf.csv'),
+                   'insee,nom\n001,Paris\n')
+            ring = [(-1., -1.), (1., -1.), (1., 1.), (-1., 1.), (-1., -1.)]
+            polygon = (struct.pack('<I4dII', 5, -1., -1., 1., 1., 1, len(ring))
+                       + struct.pack('<I', 0)
+                       + b''.join(struct.pack('<2d', *point) for point in ring))
+            header = bytearray(100)
+            struct.pack_into('>I', header, 0, 9994)
+            struct.pack_into('<I', header, 32, 5)
+            shp_path = _write(os.path.join(data_dir, 'zones.shp'),
+                              bytes(header) + struct.pack('>2I', 1, len(polygon) // 2)
+                              + polygon)
+            _write(os.path.join(data_dir, 'zones.prj'), 'GEOGCS["GCS_WGS_1984"]')
+            for table, columns in (
+                    ('Facts', {'code_insee': 'string', 'alternate_code': 'string',
+                           'Commune': 'string', 'Amount': 'double'}),
+                    ('Places', {'insee': 'string', 'nom': 'string'})):
+                path = os.path.join(definition, 'tables', f'{table}.tmdl')
+                with open(path, 'a', encoding='utf-8') as stream:
+                    for column, data_type in columns.items():
+                        stream.write(f'\n\tcolumn {column}\n\t\tdataType: {data_type}'
+                                     f'\n\t\tsourceColumn: {column}\n')
+            _write(os.path.join(definition, 'relationships.tmdl'),
+                   'relationship location\n\tfromColumn: Facts.code_insee\n'
+                     '\ttoColumn: Places.insee\n'
+                     'relationship nonmatching\n\tfromColumn: Facts.alternate_code\n'
+                     '\ttoColumn: Places.insee\n')
+            category = {'field': {'Column': {
+                'Expression': {'SourceRef': {'Entity': 'Facts'}}, 'Property': 'Commune'}},
+                'queryRef': 'Facts.Commune', 'active': True}
+            amount = {'field': {'Aggregation': {'Expression': {'Column': {
+                'Expression': {'SourceRef': {'Entity': 'Facts'}}, 'Property': 'Amount'}}}},
+                'queryRef': 'Sum(Facts.Amount)', 'active': True}
+            visual_path = os.path.join(project, f'{NAME}.Report', 'definition',
+                                       'pages', 'page', 'visuals', 'visual', 'visual.json')
+            _write(visual_path, json.dumps({
+                'visual': {'visualType': 'tableEx', 'query': {'queryState': {
+                    'Values': {'projections': [category, amount]}}}},
+                'annotations': [{'name': 'MigrationNote', 'value':
+                                 'No resolved geographic location or coordinate pair; '
+                                 'source geography is required for this map.'}],
+            }))
+
+            result = migrate._wire_shapefile_map_coordinates(project, NAME)
+
+            self.assertEqual(result, {'mapped': 1, 'unmatched': 0})
+            with open(visual_path, encoding='utf-8') as stream:
+                visual = json.load(stream)
+            mapped_visual = visual['visual']
+            self.assertEqual(mapped_visual['visualType'], 'azureMap')
+            roles = mapped_visual['query']['queryState']
+            self.assertEqual(set(roles), {'Category', 'Tooltips', 'X', 'Y'})
+            self.assertEqual(roles['Category']['projections'][0]['queryRef'], 'Facts.Commune')
+            self.assertEqual(roles['Tooltips']['projections'][0]['queryRef'],
+                             'Sum(Facts.Amount)')
+            note = next(item['value'] for item in visual['annotations']
+                        if item.get('name') == 'MigrationNote')
+            self.assertIn('polygons and original point size/color encoding are not preserved',
+                          note)
+            self.assertTrue(os.path.isfile(shp_path))
+            from powerbi_import.migration_report import MigrationReport
+            report = MigrationReport('T')
+            migrate._add_spatial_approximation_items(report, NAME, root)
+            self.assertEqual(report.items[0]['status'], 'approximate')
 
     def test_catalog_shapefile_map_promotes_label_and_retains_extra_tooltip(self):
         with tempfile.TemporaryDirectory() as root:
@@ -3199,8 +3305,9 @@ class TestSpatialRouting(unittest.TestCase):
             for role, column in (('Y', 'MigrationLatitude'),
                                  ('X', 'MigrationLongitude')):
                 self.assertEqual(roles[role]['projections'], [{
-                    'field': {'Column': {'Expression': {'SourceRef': {'Entity': 'Facts'}},
-                                         'Property': column}},
+                    'field': {'Aggregation': {'Expression': {'Column': {
+                        'Expression': {'SourceRef': {'Entity': 'Facts'}},
+                        'Property': column}}, 'Function': 1}},
                     'queryRef': f'Facts.{column}', 'nativeQueryRef': column,
                     'active': True,
                 }])
@@ -3263,6 +3370,190 @@ class TestSpatialRouting(unittest.TestCase):
             self.assertIn('c.shp.csv"), [Delimiter=","', text)
             self.assertNotIn("Json.Document", text)
             self.assertIn('"geometry", each null', text)
+
+    def test_explicit_native_shapefile_error_routes_through_exact_local_dbf(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = _project(root, {"Places": ""})
+            data = os.path.join(project, "Data")
+            _write(os.path.join(data, "areas.shp"), b"synthetic shapefile")
+            _write(os.path.join(data, "areas.dbf"), _dbf(
+                [("insee", 5), ("surf_ha", 8)], [["001", "12.5"], ["002", "8.0"]]))
+            table_path = os.path.join(
+                project, f"{NAME}.SemanticModel", "definition", "tables", "Places.tmdl")
+            _write(table_path, '''table Places
+	column insee
+		dataType: string
+		sourceColumn: insee
+
+	column surf_ha
+		dataType: double
+		sourceColumn: surf_ha
+
+	column 'Geometry (areas.shp)'
+		dataType: string
+		sourceColumn: "Geometry (areas.shp)"
+
+	column 'Géométrie'
+		dataType: string
+		sourceColumn: "Géométrie"
+
+	partition Places = m
+		mode: import
+		source =
+				let
+					Source = error Error.Record("SourceBinding.Error", "Native shapefile is not GeoJSON. Configure a supported GeoJSON source in Power Query; native spatial data are not converted or copied during PBIP migration.", [Table="Places", SourceFile="areas.shp"]),
+					#"Renamed Columns" = Table.RenameColumns(Source, {{"Geometry (areas.shp)", "Géométrie"}}),
+					Result = #"Renamed Columns"
+				in
+					Result
+''')
+
+            stats = migrate._route_spatial_partitions(project, NAME)
+
+            self.assertEqual(stats['spatial'], 1)
+            self.assertEqual(stats['shapefile_csv'], 1)
+            self.assertEqual(stats['unresolved'], 0)
+            with open(os.path.join(data, 'areas.shp.dbf.csv'),
+                      encoding='utf-8', newline='') as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual([row['insee'] for row in rows], ['001', '002'])
+            self.assertEqual([row['surf_ha'] for row in rows], ['12.5', '8.0'])
+            text = _read(project, 'Places')
+            self.assertNotIn('SourceBinding.Error', text)
+            self.assertIn('areas.shp.dbf.csv', text)
+            self.assertIn('Table.AddColumn', text)
+            self.assertIn('"Geometry (areas.shp)"', text)
+            self.assertIn('type number', text)
+            from powerbi_import.m_validator import validate_m_query
+            from powerbi_import.openability import extract_m_partitions
+            partitions = extract_m_partitions(text)
+            self.assertEqual(len(partitions), 1)
+            self.assertEqual(validate_m_query(partitions[0][1]), [])
+
+    def test_explicit_native_shapefile_without_dbf_stays_blocked(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = _project(root, {'Places': ''})
+            _write(os.path.join(project, 'Data', 'areas.shp'), b'synthetic shapefile')
+            table_path = os.path.join(
+                project, f'{NAME}.SemanticModel', 'definition', 'tables', 'Places.tmdl')
+            _write(table_path, '''table Places
+	column insee
+		sourceColumn: insee
+
+	partition Places = m
+		mode: import
+		source =
+                let
+                    Source = error Error.Record("SourceBinding.Error", "Native shapefile is not GeoJSON.", [Table="Places", SourceFile="areas.shp"])
+                in
+                    Source
+
+	annotation PBI_ResultType = Table
+''')
+
+            stats = migrate._route_spatial_partitions(project, NAME)
+
+            self.assertEqual(stats['spatial'], 1)
+            self.assertEqual(stats['shapefile_csv'], 0)
+            self.assertEqual(stats['unresolved'], 1)
+            self.assertIn('SourceBinding.Error', _read(project, 'Places'))
+
+    def test_pbip_spatial_approximation_rebinds_only_staged_fact_csv(self):
+        with tempfile.TemporaryDirectory() as root:
+            source_dir = os.path.join(root, 'Workbook')
+            source_data = os.path.join(source_dir, 'Data')
+            _write(os.path.join(source_dir, 'workbook.twb'), '<workbook/>')
+            facts_path = _write(os.path.join(source_data, 'facts.csv'),
+                                'insee,Amount\n001,12\n')
+            _write(os.path.join(source_data, 'areas.shp'), b'synthetic shapefile')
+            _write(os.path.join(source_data, 'areas.dbf'),
+                   _dbf([('insee', 5)], [['001']]))
+            facts_query = (
+                'let\n'
+                f'    Source = Csv.Document(File.Contents("{facts_path}"), '
+                '[Delimiter=",", Encoding=65001, QuoteStyle=QuoteStyle.Csv])\n'
+                'in\n    Source')
+            error_query = (
+                'let\n'
+                '    Source = error Error.Record("SourceBinding.Error", '
+                '"Native shapefile is not GeoJSON.", '
+                '[Table="Places", SourceFile="areas.shp"])\n'
+                'in\n    Source')
+            project = _project(root, {'Facts': facts_query, 'Places': error_query})
+
+            staged = migrate._collect_local_data_files(
+                os.path.join(source_dir, 'workbook.twb'), project, NAME,
+                hyper_only=True)
+            self.assertEqual(staged['copied'], 2)
+            self.assertEqual(migrate._rebind_staged_file_partitions(project, NAME), 1)
+            self.assertIn('File.Contents(DataFolder & "\\facts.csv")',
+                          _read(project, 'Facts'))
+            with open(facts_path, encoding='utf-8') as stream:
+                self.assertEqual(stream.read(), 'insee,Amount\n001,12\n')
+
+    def test_extract_alias_reuses_parent_only_for_hash_and_column_subset_match(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = _project(root, {'unused': ''})
+            tables = os.path.join(project, f'{NAME}.SemanticModel', 'definition', 'tables')
+            parent = '''table 'Facts.csv'
+    column Code
+        dataType: string
+        sourceColumn: Code
+
+    column Amount
+        dataType: double
+        sourceColumn: Amount
+
+    partition 'Facts.csv' = m
+        mode: import
+        source =
+                let
+                    Source = Csv.Document(File.Contents(DataFolder & "\\facts.csv"), [Delimiter=",", Encoding=65001, QuoteStyle=QuoteStyle.Csv]),
+                    Result = Source
+                in
+                    Result
+
+    annotation PBI_ResultType = Table
+'''
+            parent = parent.replace('    ', '\t')
+            alias_name = 'Facts.csv_0123456789ABCDEF0123456789ABCDEF'
+            alias = f'''table '{alias_name}'
+    column Code
+        dataType: string
+        sourceColumn: Code
+
+    column Amount
+        dataType: double
+        sourceColumn: Amount
+
+    partition '{alias_name}' = m
+        mode: import
+        source =
+                error Error.Record("Migration.SourceUnavailable", "unverified", [Table="{alias_name}"])
+
+    annotation PBI_ResultType = Table
+'''
+            alias = alias.replace('    ', '\t')
+            invalid_name = 'Facts.csv_FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF'
+            invalid_alias = alias.replace(alias_name, invalid_name).replace(
+                "sourceColumn: Amount", "sourceColumn: NotInParent")
+            _write(os.path.join(tables, 'Facts.csv.tmdl'), parent)
+            _write(os.path.join(tables, f'{alias_name}.tmdl'), alias)
+            _write(os.path.join(tables, f'{invalid_name}.tmdl'), invalid_alias)
+            self.assertRegex(alias_name, r'^(.+)_([0-9A-Fa-f]{32})$')
+            self.assertIn('Migration.SourceUnavailable', alias)
+            self.assertIn('File.Contents(', parent)
+            self.assertIsNotNone(re.search(
+                r'(?m)^(\t\tsource[ \t]*=[ \t]*\n)([\s\S]*?)(?=^\tannotation[ \t])',
+                alias))
+
+            routed = migrate._route_extracted_alias_partitions(project, NAME)
+
+            self.assertEqual(routed, 1)
+            self.assertIn('Source = #"Facts.csv"', _read(project, alias_name))
+            self.assertNotIn('SourceUnavailable', _read(project, alias_name))
+            self.assertIn('MissingField.UseNull', _read(project, alias_name))
+            self.assertIn('SourceUnavailable', _read(project, invalid_name))
 
     def test_joined_suffix_columns_match_extract_on_base_name(self):
         with tempfile.TemporaryDirectory() as root:

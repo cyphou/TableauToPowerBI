@@ -22,9 +22,240 @@ from powerbi_import.tmdl_relationships import (
     _composite_key_m_expression,
     _materialize_composite_logical_relationships,
 )
-from powerbi_import.tmdl_sets import _process_sets_groups_bins
+from powerbi_import.tmdl_sets import (
+    _combined_group_reference_status,
+    _process_sets_groups_bins,
+)
 from powerbi_import.validator import ArtifactValidator
 from tableau_export.extract_tableau_data import TableauExtractor
+
+
+def test_partial_repair_project_is_data_free_and_remains_quality_fail(tmp_path, monkeypatch):
+    from powerbi_import.errors import PartialGenerationError
+    from powerbi_import.openability import check_openability
+
+    objects = {'datasources': [], 'dashboards': [{
+        'name': 'Overview', 'size': {'width': 1280, 'height': 720},
+        'objects': [{'type': 'worksheetReference', 'worksheetName': 'Orders',
+                     'position': {'x': 100, 'y': 150, 'w': 500, 'h': 300}}],
+    }]}
+    original = deepcopy(objects)
+    generator = PowerBIProjectGenerator(output_dir=str(tmp_path))
+
+    def reject_semantics(*args, **kwargs):
+        raise PartialGenerationError('Composite key requires source evidence')
+
+    monkeypatch.setattr(generator, 'create_tmdl_model', reject_semantics)
+    project = generator.generate_project('RepairProject', objects)
+    assert os.path.isfile(os.path.join(project, 'RepairProject.pbip'))
+    with open(os.path.join(project, 'partial_generation.json'), encoding='utf-8') as handle:
+        diagnostic = json.load(handle)
+    assert diagnostic['status'] == 'partial'
+    assert diagnostic['data_retained'] is False
+    assert objects == original
+    report = check_openability(project)
+    assert report.openable, report.blocking_issues
+    visual_paths = glob(os.path.join(project, '*.Report', 'definition', 'pages',
+                                     '*', 'visuals', '*', 'visual.json'))
+    assert visual_paths
+    for path in visual_paths:
+        with open(path, encoding='utf-8') as handle:
+            visual = json.load(handle)['visual']
+        assert visual['visualType'] == 'textbox'
+        assert 'query' not in visual
+    quality = build_quality_report(original, project, 'RepairProject')
+    assert quality.status == 'FAIL'
+    assert any('Composite key requires source evidence' in issue for issue in quality.blockers)
+    assert any('partial_generation.json' in priority['evidence']
+               for priority in quality.priorities)
+    from powerbi_import.evidence_package import write_evidence_package
+    import zipfile
+    archive_path = os.path.join(str(tmp_path), 'evidence.zip')
+    write_evidence_package(quality, archive_path)
+    with zipfile.ZipFile(archive_path) as archive:
+        assert 'quality/partial_generation.json' in archive.namelist()
+        payload = json.loads(archive.read('evidence_package.json'))
+    assert payload['partial_generation']['status'] == 'partial'
+    assert payload['partial_generation']['errors'][0]['message'] == diagnostic['errors'][0]['message']
+
+
+@pytest.mark.parametrize('error_type,strict', [
+    ('recoverable', True), ('unexpected', False), ('source', False),
+])
+def test_partial_mode_does_not_swallow_strict_or_unexpected_errors(
+        tmp_path, monkeypatch, error_type, strict):
+    from powerbi_import.errors import GenerationError, PartialGenerationError
+
+    expected = {'recoverable': PartialGenerationError,
+                'unexpected': RuntimeError, 'source': GenerationError}[error_type]
+    generator = PowerBIProjectGenerator(output_dir=str(tmp_path))
+
+    def reject_semantics(*args, **kwargs):
+        raise expected('Generation refused')
+
+    monkeypatch.setattr(generator, 'create_tmdl_model', reject_semantics)
+    with pytest.raises(expected):
+        generator.generate_project('StrictProject', {}, strict_generation=strict)
+    assert not list(tmp_path.rglob('*.pbip'))
+    assert not list(tmp_path.rglob('partial_generation.json'))
+
+
+def test_partial_regeneration_isolates_and_preserves_previous_artifacts(tmp_path, monkeypatch):
+    from powerbi_import.errors import PartialGenerationError
+
+    project = tmp_path / 'RepairProject'
+    retained = ['Data/source.csv', 'DAX/Old.dax', 'PowerQuery/Old.pq',
+                'lineage_map.json', 'credentials_template.json', 'user_notes.txt']
+    for relative in retained:
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('synthetic previous content', encoding='utf-8')
+    generator = PowerBIProjectGenerator(output_dir=str(tmp_path))
+    monkeypatch.setattr(generator, 'create_tmdl_model', lambda *args: (
+        _ for _ in ()).throw(PartialGenerationError('Unsupported synthetic predicate')))
+    generator.generate_project('RepairProject', {'dashboards': [{'name': 'Overview'}]})
+    with open(project / 'partial_generation.json', encoding='utf-8') as handle:
+        diagnostic = json.load(handle)
+    previous = project / diagnostic['previous_output']['path']
+    for relative in retained:
+        assert not (project / relative).exists()
+        assert (previous / relative).read_text(encoding='utf-8') == 'synthetic previous content'
+    assert (project / 'RepairProject.pbip').exists()
+
+
+def test_failed_partial_construction_does_not_replace_previous_output(tmp_path, monkeypatch):
+    from powerbi_import.errors import PartialGenerationError
+
+    project = tmp_path / 'RepairProject'
+    project.mkdir()
+    (project / 'user_notes.txt').write_text('retain me', encoding='utf-8')
+    generator = PowerBIProjectGenerator(output_dir=str(tmp_path))
+
+    def reject_model(*args):
+        raise PartialGenerationError('Unsupported synthetic predicate')
+
+    def reject_publication(*args):
+        raise OSError('Synthetic disk write failure')
+
+    monkeypatch.setattr(generator, 'create_tmdl_model', reject_model)
+    monkeypatch.setattr(generator, 'create_pbip_file', reject_publication)
+    with pytest.raises(OSError, match='Synthetic disk write failure'):
+        generator.generate_project('RepairProject', {'dashboards': [{'name': 'Overview'}]})
+    assert (project / 'user_notes.txt').read_text(encoding='utf-8') == 'retain me'
+    assert not (project / 'partial_generation.json').exists()
+    assert not list(tmp_path.glob('.p*'))
+
+
+@pytest.mark.parametrize('consumer', ['none', 'calculation', 'filter', 'security', 'parameter', 'source'])
+def test_selective_group_repair_retains_only_proven_independent_objects(tmp_path, consumer):
+    unsafe_consumer = consumer != 'none'
+    datasource = _composite_datasource()
+    datasource['relationships'] = []
+    datasource['relation_metadata'] = {}
+    healthy = {'name': 'Independent', 'chart_type': 'clusteredBarChart', 'fields': [
+        {'name': 'Code', 'shelf': 'rows'},
+        {'name': 'Amount', 'shelf': 'columns', 'aggregation': 'sum'}]}
+    affected = {'name': 'Dependent', 'chart_type': 'tableEx',
+                'fields': [{'name': 'GroupRef', 'shelf': 'rows'}]}
+    objects = {'datasources': [datasource], 'worksheets': [healthy, affected],
+               'groups': [{'name': 'Unresolved group', 'raw_name': 'GroupRef',
+                           'group_type': 'combined', 'source_fields': ['Missing', 'Code']}],
+               'dashboards': [{'name': 'Overview', 'objects': [
+                   {'type': 'worksheetReference', 'worksheetName': name,
+                    'position': {'x': 40, 'y': offset, 'w': 500, 'h': 200}}
+                   for name, offset in [('Independent', 40), ('Dependent', 300)]]}]}
+    if consumer == 'calculation':
+        objects['calculations'] = [{'name': 'Consumer', 'formula': 'COUNTD([GroupRef])'}]
+    elif consumer == 'filter':
+        objects['filters'] = [{'field': '[GroupRef]', 'values': ['synthetic']}]
+    elif consumer == 'security':
+        objects['user_filters'] = [{'name': 'Synthetic security', 'column': 'GroupRef'}]
+    elif consumer == 'parameter':
+        objects['parameters'] = [{'name': 'Synthetic selector', 'value': 'GroupRef'}]
+    elif consumer == 'source':
+        datasource['filters'] = [{'field': '[GroupRef]'}]
+    project = PowerBIProjectGenerator(output_dir=str(tmp_path)).generate_project(
+        'SelectiveRepair', objects, model_mode='import')
+    with open(os.path.join(project, 'partial_generation.json'), encoding='utf-8') as handle:
+        diagnostic = json.load(handle)
+    assert diagnostic['data_retained'] is not unsafe_consumer
+    paths = glob(os.path.join(project, '*.SemanticModel', 'definition', 'tables', '*.tmdl'))
+    assert bool(any(os.path.basename(path) == 'MigrationRepair.tmdl' for path in paths)) is unsafe_consumer
+    if not unsafe_consumer:
+        assert diagnostic['recovery_scope'] == 'unaffected_model_and_visuals'
+        assert any(item['name'] == 'Dependent' for item in diagnostic['affected_objects'])
+        visuals = []
+        for path in glob(os.path.join(project, '*.Report', 'definition', 'pages', '*',
+                                      'visuals', '*', 'visual.json')):
+            with open(path, encoding='utf-8') as handle:
+                visuals.append(json.load(handle)['visual'])
+        assert any(visual['visualType'] != 'textbox' for visual in visuals)
+
+
+def test_complete_partial_complete_transition_retracts_stale_partial_state(tmp_path, monkeypatch):
+    from powerbi_import.errors import PartialGenerationError
+
+    datasource = _composite_datasource()
+    datasource['relationships'] = []
+    datasource['relation_metadata'] = {}
+    objects = {'datasources': [datasource], 'dashboards': [{'name': 'Overview', 'objects': []}]}
+    generator = PowerBIProjectGenerator(output_dir=str(tmp_path))
+    project = generator.generate_project('Transition', objects)
+    marker = os.path.join(project, 'Transition.pbip')
+    with open(marker, 'rb') as handle:
+        original_marker = handle.read()
+    original_model = generator.create_tmdl_model
+
+    def reject_model(*args):
+        raise PartialGenerationError('Unsupported synthetic predicate')
+
+    monkeypatch.setattr(generator, 'create_tmdl_model', reject_model)
+    generator.generate_project('Transition', objects)
+    with open(os.path.join(project, 'partial_generation.json'), encoding='utf-8') as handle:
+        diagnostic = json.load(handle)
+    preserved_marker = os.path.join(project, diagnostic['previous_output']['path'], 'Transition.pbip')
+    with open(preserved_marker, 'rb') as handle:
+        assert handle.read() == original_marker
+    monkeypatch.setattr(generator, 'create_tmdl_model', original_model)
+    generator.generate_project('Transition', objects, strict_generation=True)
+    assert not os.path.exists(os.path.join(project, 'partial_generation.json'))
+    with open(os.path.join(project, 'migration_metadata.json'), encoding='utf-8') as handle:
+        assert json.load(handle)['generation_status'] == 'complete'
+    assert not glob(os.path.join(project, '*.SemanticModel', 'definition', 'tables',
+                                 'MigrationRepair.tmdl'))
+
+
+def test_partial_publication_failure_restores_previous_output(tmp_path, monkeypatch):
+    from powerbi_import.errors import PartialGenerationError
+
+    project = tmp_path / 'RollbackProject'
+    project.mkdir()
+    (project / 'user_notes.txt').write_text('retain me', encoding='utf-8')
+    generator = PowerBIProjectGenerator(output_dir=str(tmp_path))
+
+    def reject_model(*args):
+        raise PartialGenerationError('Unsupported synthetic predicate')
+
+    replace = os.replace
+    failed_once = False
+
+    def fail_publish(source, destination):
+        nonlocal failed_once
+        if (not failed_once and os.path.isdir(source)
+                and os.path.basename(source).startswith('.p')
+                and os.path.normpath(destination) == os.path.normpath(str(project))):
+            failed_once = True
+            raise OSError('Synthetic publication failure')
+        return replace(source, destination)
+
+    monkeypatch.setattr(generator, 'create_tmdl_model', reject_model)
+    monkeypatch.setattr(os, 'replace', fail_publish)
+    with pytest.raises(OSError, match='Synthetic publication failure'):
+        generator.generate_project('RollbackProject', {'dashboards': [{'name': 'Overview'}]})
+    assert failed_once
+    assert (project / 'user_notes.txt').read_text(encoding='utf-8') == 'retain me'
+    assert not (project / 'partial_generation.json').exists()
+    assert not list(tmp_path.glob('.p*'))
 
 
 def _table(name, columns):
@@ -42,6 +273,59 @@ def _table(name, columns):
             },
         }],
     }
+
+
+def test_combined_group_reference_requires_an_exact_identifier():
+    consumers = {'worksheets': [{'fields': [{'name': '[Group 1]'}]}]}
+
+    assert _combined_group_reference_status({'name': 'Group'}, consumers) is False
+    assert _combined_group_reference_status({'name': 'Group 1'}, consumers) is True
+    assert _combined_group_reference_status({'name': 'Group'}, {}) is None
+
+
+@pytest.mark.parametrize(('filter_data', 'should_raise'), [
+    ({'field': 'Combined Sensor', 'type': 'all', 'values': [],
+      'min': None, 'max': None}, False),
+    ({'field': 'Combined Sensor', 'type': 'categorical', 'values': ['sensor-1'],
+      'min': None, 'max': None}, True),
+])
+def test_combined_group_ignores_only_inert_filter_consumers(filter_data, should_raise):
+    datasource = _composite_datasource()
+    datasource['relationships'] = []
+    datasource['relation_metadata'] = {}
+    for table in datasource['tables']:
+        table['columns'].append({'name': 'Capteur', 'datatype': 'string'})
+    datasource['columns'].extend([
+        {'name': 'Capteur', 'datatype': 'string'},
+        {'name': 'Capteur', 'datatype': 'string'},
+    ])
+    group = {
+        'name': 'Combined Sensor', 'raw_name': 'Combined Sensor',
+        'datasource': 'Synthetic', 'group_type': 'combined',
+        'source_fields': ['Capteur'],
+    }
+    worksheet = {
+        'name': 'Sensor filter',
+        'fields': [{'name': 'Combined Sensor', 'shelf': 'filter', 'source': 'slices'}],
+        'filters': [filter_data],
+    }
+    extra_objects = {
+        'groups': [group], 'worksheets': [worksheet],
+        '_worksheets': [worksheet], '_datasources': [datasource],
+    }
+
+    if should_raise:
+        with pytest.raises(ValueError, match='ambiguous ownership'):
+            _build_semantic_model(
+                [datasource], extra_objects=extra_objects, model_mode='import')
+    else:
+        model = _build_semantic_model(
+            [datasource], extra_objects=extra_objects, model_mode='import')
+        assert not any(
+            column.get('name') == 'Combined Sensor'
+            for table in model['model']['tables']
+            for column in table.get('columns', [])
+        )
 
 
 def test_combined_group_with_one_remote_host_is_materialized_on_that_host():
@@ -133,6 +417,48 @@ def test_combined_group_rejects_unresolved_field_instead_of_skipping():
         )
 
     assert not any(column.get('name') == 'Incomplete' for column in fact['columns'])
+
+
+def test_unreferenced_combined_group_with_unresolved_field_is_skipped(caplog):
+    fact = _table('Facts', ['Known'])
+    model = {'model': {'tables': [fact], 'relationships': []}}
+    group = {
+        'name': 'Unused combined group',
+        'group_type': 'combined',
+        'source_fields': ['Known', 'Missing'],
+    }
+
+    with caplog.at_level('WARNING', logger='powerbi_import.tmdl_sets'):
+        _process_sets_groups_bins(
+            model,
+            {'groups': [group], 'worksheets': [], 'calculations': [], 'filters': []},
+            'Facts', {'Known': 'Facts'},
+        )
+
+    assert not any(column.get('name') == group['name'] for column in fact['columns'])
+    assert 'Skipping unresolved unreferenced combined group' in caplog.text
+
+
+def test_referenced_combined_group_with_unresolved_field_still_fails():
+    fact = _table('Facts', ['Known'])
+    model = {'model': {'tables': [fact], 'relationships': []}}
+    group = {
+        'name': 'Used combined group',
+        'group_type': 'combined',
+        'source_fields': ['Known', 'Missing'],
+    }
+
+    with pytest.raises(ValueError, match=r'Combined group.*Missing.*unresolved'):
+        _process_sets_groups_bins(
+            model,
+            {
+                'groups': [group],
+                'worksheets': [{'fields': [{'name': group['name']}]}],
+                'calculations': [],
+                'filters': [],
+            },
+            'Facts', {'Known': 'Facts'},
+        )
 
 
 def test_combined_group_rejects_field_without_a_valid_owner():
@@ -666,6 +992,21 @@ def _composite_policy(**overrides):
     return {'Synthetic': {'0': policy}}
 
 
+def _many_to_many_policy(**overrides):
+    policy = {
+        'cardinality': 'manyToMany',
+        'comparison_case_sensitive': True,
+        'comparison_exact': True,
+        'nulls_match': False,
+        'filter_direction': 'oneDirection',
+        'filter_from': 'left',
+    }
+    policy.update(overrides)
+    if policy['filter_direction'] == 'bothDirections':
+        policy.pop('filter_from', None)
+    return {'Synthetic': {'0': policy}}
+
+
 def _two_composite_datasource():
     datasource = _composite_datasource()
     rates = {
@@ -956,6 +1297,61 @@ def test_composite_relationship_requires_policy_and_never_keeps_partial_edges():
         _build_semantic_model([_composite_datasource()], model_mode='import')
 
 
+@pytest.mark.parametrize('strict', [False, True])
+def test_batch_preserves_composite_failure_with_optional_repair_project(
+        tmp_path, monkeypatch, strict):
+    import migrate
+
+    sources = tmp_path / 'sources'
+    sources.mkdir()
+    (sources / 'synthetic.twb').write_text('<workbook/>', encoding='utf-8')
+    objects = {'datasources': [_composite_datasource()], 'dashboards': [{
+        'name': 'Overview', 'objects': [],
+        'size': {'width': 1280, 'height': 720},
+    }]}
+
+    def extract(source, output_dir, **kwargs):
+        os.makedirs(output_dir, exist_ok=True)
+        for key, value in objects.items():
+            with open(os.path.join(output_dir, key + '.json'), 'w',
+                      encoding='utf-8') as handle:
+                json.dump(value, handle)
+        return True
+
+    def reject_postprocessing(*args, **kwargs):
+        pytest.fail('A data-free repair project must not collect source data')
+
+    monkeypatch.setattr(migrate, 'run_extraction', extract)
+    monkeypatch.setattr(migrate, '_stage_declared_local_sources',
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(migrate, '_collect_local_data_files', reject_postprocessing)
+    output = tmp_path / 'output'
+    result = migrate.run_batch_migration(
+        str(sources), output_dir=str(output), calendar_mode='fixed',
+        strict_generation=strict, quiet=True)
+
+    assert result == migrate.ExitCode.BATCH_PARTIAL_FAIL
+    assert bool(list(output.rglob('*.pbip'))) is not strict
+    assert bool(list(output.rglob('partial_generation.json'))) is not strict
+    quality_paths = list(output.rglob('migration_quality_*.json'))
+    assert len(quality_paths) == 1
+    with open(quality_paths[0], encoding='utf-8') as handle:
+        quality = json.load(handle)
+    assert quality['status'] == 'FAIL'
+    assert any('complete predicate has multiple equality terms' in issue
+               for issue in quality['blockers'])
+    with open(output / 'batch_quality_summary.json', encoding='utf-8') as handle:
+        summary = json.load(handle)
+    assert summary['generation_counts'] == {
+        'complete': 0, 'partial': 0 if strict else 1, 'failed': 1 if strict else 0,
+    }
+    assert next(iter(summary['workbooks'].values()))['generation_status'] == (
+        'failed' if strict else 'partial')
+    if not strict:
+        dashboard = (output / 'MIGRATION_DASHBOARD.html').read_text(encoding='utf-8')
+        assert 'PARTIAL / NOT VALIDATED' in dashboard
+
+
 def test_composite_relationship_rejects_case_insensitive_key_assumptions():
     from pytest import raises
 
@@ -1060,6 +1456,18 @@ def test_composite_key_quotes_literal_m_escape_sequences_in_source_headers():
     assert '[#"Column#(tab)Version"]' in expression
 
 
+def test_composite_key_encodes_date_and_datetime_with_invariant_formats():
+    expression = _composite_key_m_expression(
+        [('Day', 'date'), ('Timestamp', 'datetime')],
+        side='L', nulls_match=False, row_name='Row',
+    )
+
+    assert 'Date.ToText([#"Day"], [Format = "yyyy-MM-dd", Culture = "en-US"])' in expression
+    assert ('DateTime.ToText([#"Timestamp"], '
+            '[Format = "yyyy-MM-ddTHH:mm:ss.fffffff", Culture = "en-US"])') in expression
+    assert validate_m_query('let Key = ' + expression + ' in Key') == []
+
+
 def test_composite_rejects_a_dax_only_key_before_mutating_the_model():
     datasource = _composite_datasource()
     tables = [
@@ -1127,3 +1535,52 @@ def test_composite_relationship_survives_tmdl_serialization():
     assert '__TTPBI_CompositeKey_' in written
     assert 'fromCardinality: many' not in written
     assert 'toCardinality: many' not in written
+
+
+@pytest.mark.parametrize('filter_direction', ['oneDirection', 'bothDirections'])
+def test_composite_many_to_many_manifest_and_quality_warning(
+    tmp_path, monkeypatch, filter_direction):
+    datasource = _composite_datasource()
+    objects = {'datasources': [datasource], 'worksheets': [], 'dashboards': []}
+    monkeypatch.setenv(
+        'TTPBI_COMPOSITE_RELATIONSHIP_POLICIES',
+        json.dumps(_many_to_many_policy(filter_direction=filter_direction)),
+    )
+
+    project = PowerBIProjectGenerator(output_dir=str(tmp_path)).generate_project(
+        'ManyToManyProject', objects, model_mode='import')
+    semantic_model = os.path.join(project, 'ManyToManyProject.SemanticModel')
+    manifest_path = os.path.join(semantic_model, 'composite_relationships.json')
+    with open(manifest_path, encoding='utf-8') as handle:
+        manifest = json.load(handle)
+
+    relationship_path = os.path.join(
+        semantic_model, 'definition', 'relationships.tmdl')
+    with open(relationship_path, encoding='utf-8') as handle:
+        relationships = handle.read()
+    assert 'fromCardinality: many' in relationships
+    assert 'toCardinality: many' in relationships
+    assert f'crossFilteringBehavior: {filter_direction}' in relationships
+    for table_name in ('Fact', 'Lookup'):
+        table_path = os.path.join(
+            semantic_model, 'definition', 'tables', table_name + '.tmdl')
+        with open(table_path, encoding='utf-8') as handle:
+            table_definition = handle.read()
+        assert '__TTPBI_CompositeKey_' in table_definition
+        assert 'Migration.CompositeKeyNotUnique' not in table_definition
+    assert len(manifest) == 1
+    assert manifest[0]['status'] == 'approximated'
+    assert manifest[0]['key_components'] == [
+        {'left_column': 'Code', 'right_column': 'LookupCode'},
+        {'left_column': 'Version', 'right_column': 'LookupVersion'},
+    ]
+
+    quality = build_quality_report(objects, project, 'ManyToManyProject')
+    assert len(quality.composite_relationships) == 1
+    assert any('many-to-many' in warning.lower() for warning in quality.warnings)
+    assert any(priority['action_kind'] == 'verify'
+               and 'many-to-many' in priority['action'].lower()
+               for priority in quality.priorities)
+    html = quality.render_body()
+    assert 'Composite many-to-many relationships' in html
+    assert 'Validate filter propagation' in html

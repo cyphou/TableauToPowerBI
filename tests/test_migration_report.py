@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+import migrate
+
 # Ensure powerbi_import is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'powerbi_import'))
 
@@ -43,6 +45,25 @@ class TestMigrationReportBasic(unittest.TestCase):
         r.add_item('calculation', 'X', 'exact',
                     source_formula='SUM([Sales])', dax='SUM([Sales])')
         self.assertEqual(r.items[0]['source_formula'], 'SUM([Sales])')
+
+    def test_spatial_approximation_is_reported_from_visual_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            visual_path = os.path.join(
+                root, 'T', 'T.Report', 'definition', 'pages', 'page',
+                'visuals', 'visual', 'visual.json')
+            os.makedirs(os.path.dirname(visual_path), exist_ok=True)
+            note = ('WGS84 polygon representative points joined by model relationship; '
+                    '4 source rows have no geometry.')
+            with open(visual_path, 'w', encoding='utf-8') as stream:
+                json.dump({'annotations': [{'name': 'MigrationNote', 'value': note}]}, stream)
+
+            report = MigrationReport('T')
+            migrate._add_spatial_approximation_items(report, 'T', root)
+
+            self.assertEqual(len(report.items), 1)
+            self.assertEqual(report.items[0]['category'], 'spatial_geometry')
+            self.assertEqual(report.items[0]['status'], 'approximate')
+            self.assertIn('4 source rows have no geometry', report.items[0]['note'])
 
 
 class TestClassifyDax(unittest.TestCase):

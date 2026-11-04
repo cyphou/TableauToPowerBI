@@ -138,7 +138,7 @@ class TestTypedPromotionHeaderBindingEmission(unittest.TestCase):
                 self.assertEqual(validate_m_query(query), [])
 
     def test_all_six_use_the_same_generated_binding_program(self):
-        programs = []
+        programs = {}
         for case in _TYPED_PROMOTIONS:
             query = _query(case)
             promotion = _promoted_headers_step(query)
@@ -148,9 +148,13 @@ class TestTypedPromotionHeaderBindingEmission(unittest.TestCase):
             )
             self.assertEqual(promotion.count(original), 1, case[0])
             self.assertIn("Text.Trim(", promotion, case[0])
-            programs.append(promotion.replace(original, "PUBLIC_PROMOTION_PLACEHOLDER"))
-        for program in programs[1:]:
-            self.assertEqual(program, programs[0])
+            programs[case[0]] = promotion.replace(original, "PUBLIC_PROMOTION_PLACEHOLDER")
+        strict_programs = [program for connector, program in programs.items()
+                           if connector != "Excel"]
+        for program in strict_programs[1:]:
+            self.assertEqual(program, strict_programs[0])
+        self.assertIn("List.Accumulate(MissingExpectedNames", programs["Excel"])
+        self.assertIn("AmbiguousExpectedNames", programs["Excel"])
 
     def test_native_csv_binds_before_strict_projection_and_type_conversion(self):
         case = next(case for case in _TYPED_PROMOTIONS if case[0] == "CSV")
@@ -168,10 +172,26 @@ class TestTypedPromotionHeaderBindingEmission(unittest.TestCase):
         self.assertIn('Table.TransformColumnTypes(#"Selected Columns", {', query)
         self.assertNotRegex(query, r"\bColumns\s*=")
         self.assertNotIn("MissingField.Ignore", query)
-        self.assertNotIn("MissingField.UseNull", query)
         self.assertIn(
             r'File.Contents("C:\Synthetic\HeaderBinding\Data\facts.csv")', query,
         )
+        self.assertEqual(validate_m_query(query), [])
+
+    def test_excel_pads_unmatched_expected_columns_but_rejects_ambiguous_headers(self):
+        case = next(case for case in _TYPED_PROMOTIONS if case[0] == "Excel")
+        query = _query(case, columns=_columns(
+            ("Feuille", "integer"), ("F4", "real"), ("F5", "real"),
+            ("F6", "real"), ("F7", "string"), ("F8", "string"),
+        ))
+        promotion = _promoted_headers_step(query)
+        self.assertIn("List.Accumulate(MissingExpectedNames, Renamed", promotion)
+        self.assertIn("Table.AddColumn(state, name, each null)", promotion)
+        self.assertIn("else if not List.IsEmpty(AmbiguousExpectedNames) then", promotion)
+        self.assertNotIn(
+            "else if not List.IsEmpty(MissingExpectedNames) or not List.IsEmpty(AmbiguousExpectedNames)",
+            promotion,
+        )
+        self.assertIn('{"F4", type number}', query)
         self.assertEqual(validate_m_query(query), [])
 
     def test_native_excel_and_csv_keep_the_staged_header_binding_program(self):
@@ -421,7 +441,7 @@ class TestSchemaBoundPromotionGuardEmission(unittest.TestCase):
         self.assertIn("Matches = List.Transform(Missing,", expression)
         self.assertNotIn("Matches = List.Transform(Expected,", expression)
         self.assertIn(
-            "Renames = List.Transform(Matches, each {[Candidates]{0}, [ExpectedName]}),",
+            "Renames = List.Transform(Matched, each {[Candidates]{0}, [ExpectedName]}),",
             expression,
         )
         self.assertTrue(expression.endswith("else Table.RenameColumns(Promoted, Renames)"))

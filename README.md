@@ -235,6 +235,53 @@ generation path. For a CI quality exit gate, run
 `python migrate.py quality workbook.twbx --quality-strict` after generation;
 batch does not forward `--quality-strict`, so its exit status alone is not a
 quality PASS.
+
+PBIP batch generation defaults to partial recovery for explicitly identified
+unsupported semantic conversions (logical relationship endpoints, unproven
+composite relationships or logical SUM policies, and unresolved combined-group
+inputs). An unresolved combined group may be excluded selectively when its only
+consumers are directly identified worksheets: the other model objects and
+visuals remain, and affected worksheets become labelled placeholders. Any
+dependency in calculations, filters, actions, parameters or security prevents
+this selective recovery. Other model-wide failures produce a **PARTIAL / NOT
+VALIDATED repair project** with page outlines and no source data bindings or
+executable source calculations. Partial output is built in isolation; previous
+files are preserved in a sibling directory referenced by `previous_output` in
+`partial_generation.json`, never mixed into the current repair project.
+The quality JSON/HTML keeps the original error, affected objects and correction
+guidance as a blocker. Evidence ZIPs include both the structured diagnostic and
+its journal file. Partial batch runs return a nonzero
+exit, are regenerated on resume, and are excluded from native data/screenshot
+verification. Use `--strict-generation` to abort these conversions without a
+repair PBIP. Extraction, security, source-binding, Hyper and unexpected failures
+remain blocking; Fabric and shared-model generation do not use this recovery.
+
+Disaggregated scatter charts retain their chart family and bare X/Y column
+projections. Query wells deduplicate identical field expressions while keeping
+distinct aggregations under unique query references. Mapping/fallback notes are
+written as `MigrationNote` annotations; static query checks do not prove native
+point counts or rendered parity.
+
+Native refresh diagnostics retain bounded, credential-redacted text from the
+owned error UI and a separate failed-refresh screenshot when available. They
+are never certified page captures. Calculated columns containing LOOKUPVALUE or
+RELATED are checked through the same owned local engine (up to 64 columns);
+only object identities and evaluation statuses are retained, not source values.
+Missing, incomplete or failed calculation checks cannot verify a screenshot.
+Empty UI tab observations may be read again at most twice under the same page
+deadline; ambiguity, ownership changes and tooling failures remain terminal.
+An empty Parameters dependency is ignored only if the workbook declares no
+parameters and contains no effective Parameters references. Missing definitions
+with real consumers still block extraction and retain their preflight codes.
+
+Available local dashboard images are embedded as data URIs, including `.twb`
+images resolved relative to their workbook directory. They no longer depend on
+the original image file after generation. Reads are limited to regular files of
+at most 20 MiB; uploaded resources must stay inside the private upload root.
+Network shares are not probed and remote URLs are not downloaded. Missing,
+unsupported or oversized images remain explicit placeholders. Packaged `.twbx`
+images keep their separate archive-resolution and embedding path.
+
 The separate `equivalence_report_v2.json` scores offline, unqualified model-name
 presence only. Its `visual_coverage` remains `not_run` without verified
 worksheet-to-PBIR projection provenance; neither that score nor name presence
@@ -998,6 +1045,7 @@ Other rows below describe separate routes or retained parser options.
 | `--output-dir DIR` | Batch output root; defaults to `<source-folder>\migrated` |
 | `--output-format FORMAT` | Output format: `pbip` (default) or `fabric` |
 | `--dry-run` | Preview migration without writing files |
+| `--strict-generation` | Abort unsupported semantic conversion instead of emitting the default data-free partial repair PBIP; quality failures remain logged in both modes |
 | `--screenshots` / `--desktop-probe` | Opt in to Power BI opening, verified native refresh and screenshots after PBIP batch generation |
 | `--compare-desktop` | Opt in to Tableau / Power BI opening and paired captures after PBIP batch generation; mutually exclusive with `--screenshots` |
 | `--all-pages` | With a desktop mode, attempt every inventoried page with selected-tab checks before and after each capture |

@@ -870,6 +870,11 @@ def run_extraction(tableau_file, hyper_max_rows=None, output_dir=None,
             if preflight.warnings or preflight.advisories or preflight.blockers:
                 print(preflight.format_console())
             if preflight.blockers and not os.environ.get('TTPBI_FORCE'):
+                _stats.failure = _failure_diagnostic(
+                    'extraction', '; '.join(
+                        f'{issue.code}: {issue.message}' for issue in preflight.blockers))
+                _stats.failure['preflight_blocker_codes'] = [
+                    issue.code for issue in preflight.blockers]
                 logger.error("Pre-flight failed (%d blocker(s))",
                              len(preflight.blockers))
                 print("\nMigration refused. Set TTPBI_FORCE=1 to override "
@@ -1115,7 +1120,7 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
                    composite_threshold=None, agg_tables='none',
                    incremental_refresh=False, incremental_refresh_months=12,
                    parameterize=True, optimize_dax=False, time_intelligence='none',
-                   source_dir=None):
+                   source_dir=None, strict_generation=False):
     """Generate Power BI project (.pbip) from extracted data
 
     Args:
@@ -1158,7 +1163,8 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
                             incremental_refresh_months=incremental_refresh_months,
                             parameterize=parameterize,
                             optimize_dax=optimize_dax,
-                            time_intelligence=time_intelligence)
+                            time_intelligence=time_intelligence,
+                            strict_generation=strict_generation)
 
         # Collect generation stats from the output
         base_dir = output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
@@ -1288,6 +1294,7 @@ def run_migration_report(report_name, output_dir=None):
         # Add visuals (worksheets)
         if worksheets:
             report.add_visuals(worksheets)
+        _add_spatial_approximation_items(report, report_name, base_dir)
 
         # Add parameters
         if parameters:
@@ -1333,6 +1340,33 @@ def run_migration_report(report_name, output_dir=None):
     except Exception as e:
         logger.warning(f"Migration report generation failed: {e}", exc_info=True)
         return None
+
+
+def _add_spatial_approximation_items(report, report_name, output_dir):
+    """Record any rendered PBIR map deliberately reduced to WGS84 points."""
+    import glob as _glob
+
+    report_dir = os.path.join(output_dir, report_name, f'{report_name}.Report',
+                              'definition')
+    visual_paths = _glob.glob(os.path.join(
+        report_dir, 'pages', '*', 'visuals', '*', 'visual.json'))
+    notes = set()
+    for path in visual_paths:
+        try:
+            with open(path, 'r', encoding='utf-8') as stream:
+                visual = json.load(stream)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for annotation in visual.get('annotations', []):
+            if not isinstance(annotation, dict) or annotation.get('name') != 'MigrationNote':
+                continue
+            note = annotation.get('value', '')
+            if 'WGS84 polygon representative points joined by model relationship' in note:
+                notes.add(note)
+    for index, note in enumerate(sorted(notes), start=1):
+        report.add_item(
+            'spatial_geometry', f'WGS84 shapefile map {index}',
+            report.APPROXIMATE, note=note)
 
 
 def _load_json(filepath):
@@ -2150,16 +2184,25 @@ def _run_batch_config(args, desktop_options=None):
                 optimize_dax=getattr(args, 'optimize_dax', False),
                 time_intelligence=getattr(args, 'time_intelligence', 'none'),
                 source_dir=_get_extract_dir(),
+                strict_generation=getattr(args, 'strict_generation', False),
             )
             if not file_results['generation']:
                 continue
+            partial_generation = os.path.isfile(os.path.join(
+                project_dir, 'partial_generation.json'))
+            partial_has_data = False
+            if partial_generation:
+                with open(os.path.join(project_dir, 'partial_generation.json'), encoding='utf-8') as handle:
+                    partial_has_data = json.load(handle).get('data_retained') is True
+            result['partial_generation'] = partial_generation
+            result['generation_status'] = 'partial' if partial_generation else 'complete'
 
             _stats.phase = 'migration_report'
             report_summary = run_migration_report(
                 report_name=basename, output_dir=out_dir)
 
             _stats.phase = 'postprocessing'
-            if file_results.get('generation'):
+            if file_results.get('generation') and (not partial_generation or partial_has_data):
                 if tableau_file.lower().endswith('.twbx'):
                     _process_twbx_post_generation(
                         tableau_file, project_dir, basename,
@@ -2191,6 +2234,14 @@ def _run_batch_config(args, desktop_options=None):
                             or local_source_stats.get('already_present'))):
                         _set_data_folder_for_hyper_exports(
                             project_dir, basename)
+                    if not is_fabric:
+                        _rebind_staged_file_partitions(project_dir, basename)
+                    spatial_stats = _postprocess_spatial_sources(
+                        project_dir, basename,
+                        getattr(args, 'output_format', 'pbip'))
+                    if not is_fabric and spatial_stats['mapped']:
+                        report_summary = run_migration_report(
+                            report_name=basename, output_dir=out_dir)
                 if not output_is_fabric:
                     _sync_final_calendar_source_expressions(project_dir, basename)
                     _export_power_query_files(project_dir, basename)
@@ -2211,7 +2262,7 @@ def _run_batch_config(args, desktop_options=None):
                 'fidelity_status': report_summary.get('overall_score_status') if report_summary else 'not_run',
                 'metadata_path': os.path.join(project_dir, 'migration_metadata.json'),
             })
-            if (desktop_options is not None and all_ok
+            if (desktop_options is not None and all_ok and not partial_generation
                     and desktop_target is not None and desktop_pbip is not None
                     and os.path.splitext(tableau_file)[1].lower() in ('.twb', '.twbx')):
                 source_root = config_dir
@@ -2274,8 +2325,11 @@ def _run_batch_config(args, desktop_options=None):
 
     # Summary
     batch_duration = datetime.now() - batch_start
-    succeeded = sum(1 for r in results.values() if r.get('success'))
-    failed = len(results) - succeeded
+    generated = sum(1 for r in results.values() if r.get('success'))
+    partial_count = sum(1 for r in results.values()
+                        if r.get('success') and r.get('partial_generation'))
+    succeeded = generated - partial_count
+    failed = len(results) - generated
 
     # Consolidated batch HTML dashboard
     effective_output = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
@@ -2295,16 +2349,23 @@ def _run_batch_config(args, desktop_options=None):
     print_header("BATCH-CONFIG MIGRATION SUMMARY")
     print(f"  Total entries: {len(results)}")
     print(f"  Succeeded:     {succeeded}")
+    print(f"  Partial:       {partial_count}")
     print(f"  Failed:        {failed}")
     print(f"  Duration:      {batch_duration}")
     print()
     for name, res in results.items():
-        status = "[OK]" if res.get('success') else "[FAIL]"
+        status = ("[PARTIAL]" if res.get('partial_generation')
+              else "[OK]" if res.get('success') else "[FAIL]")
         fid = res.get('fidelity')
         fid_str = f"  (extracted: {fid}%)" if fid is not None else ""
         print(f"  {status} {name}{fid_str}")
 
-    exit_code = ExitCode.SUCCESS if failed == 0 else ExitCode.BATCH_PARTIAL_FAIL
+    partial_count = sum(bool(result.get('partial_generation'))
+                        for result in results.values())
+    if partial_count:
+        print(f"  Partial repair projects (not validated): {partial_count}")
+    exit_code = (ExitCode.SUCCESS if failed == 0 and not partial_count
+                 else ExitCode.BATCH_PARTIAL_FAIL)
     if desktop_options is not None:
         groups = {}
         for completed in desktop_outputs.values():
@@ -2472,7 +2533,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                              quality_policy='report', data_search_root=None,
                              model_mode='auto', hyper_export_format='auto',
                              hyper_export_max_rows=None, max_zip_entry_mb=None,
-                             quiet=False):
+                             quiet=False, strict_generation=False):
     """Migrate a single workbook — used by both sequential and parallel batch modes.
 
     For .tfl/.tflx files, delegates to _migrate_single_prep_flow() which produces
@@ -2563,7 +2624,15 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         model_mode=model_mode,
         output_format=output_format,
         source_dir=_get_extract_dir(),
+        strict_generation=strict_generation,
     )
+    partial_generation = bool(file_results.get('generation') and os.path.isfile(
+        os.path.join(workbook_output_dir, basename, 'partial_generation.json')))
+    partial_has_data = False
+    if partial_generation:
+        with open(os.path.join(workbook_output_dir, basename, 'partial_generation.json'),
+                  encoding='utf-8') as handle:
+            partial_has_data = json.load(handle).get('data_retained') is True
 
     # Step 3: Migration report
     report_summary = None
@@ -2575,7 +2644,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         )
 
     # Step 4: Extract embedded data files and Power Query M expressions from TWBX
-    if file_results.get('generation'):
+    if file_results.get('generation') and (not partial_generation or partial_has_data):
         _stats.phase = 'source_staging'
         project_dir = os.path.join(workbook_output_dir, basename)
         if tableau_file.lower().endswith('.twbx'):
@@ -2589,7 +2658,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
             _fix_twb_data_folder(project_dir, basename)
 
     # Step 4c: Sources kept beside the workbook (or linked, not embedded)
-    if file_results.get('generation'):
+    if file_results.get('generation') and (not partial_generation or partial_has_data):
         project_dir = os.path.join(workbook_output_dir, basename)
         local_source_stats = _collect_local_data_files(
             tableau_file, project_dir, basename,
@@ -2601,14 +2670,17 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
             hyper_export_max_rows=hyper_options['hyper_export_max_rows'],
             output_format=output_format, quiet=quiet,
             max_zip_entry_mb=hyper_options['max_zip_entry_mb'])
-        if output_format == 'fabric':
-            _route_spatial_partitions(project_dir, basename)
-            _reconcile_csv_partitions(project_dir, basename)
-            _wire_shapefile_map_coordinates(project_dir, basename)
-            _restrict_file_partitions_to_model(project_dir, basename)
-        elif (local_source_stats.get('copied')
-              or local_source_stats.get('already_present')):
+        if (output_format != 'fabric'
+                and (local_source_stats.get('copied')
+                     or local_source_stats.get('already_present'))):
             _set_data_folder_for_hyper_exports(project_dir, basename)
+        if output_format != 'fabric':
+            _rebind_staged_file_partitions(project_dir, basename)
+        spatial_stats = _postprocess_spatial_sources(
+            project_dir, basename, output_format)
+        if output_format != 'fabric' and spatial_stats['mapped']:
+            report_summary = run_migration_report(
+                report_name=basename, output_dir=workbook_output_dir)
         _sync_final_calendar_source_expressions(project_dir, basename)
         _export_power_query_files(project_dir, basename)
         if output_format != 'fabric':
@@ -2691,6 +2763,9 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         'metadata_path': os.path.join(workbook_output_dir, basename, 'migration_metadata.json'),
         'quality_status': quality_status,
         'quality_json': quality_json,
+        'partial_generation': partial_generation,
+        'generation_status': ('partial' if partial_generation else
+                      'complete' if all_ok else 'failed'),
         **({'error': failure['stage'], 'error_details': failure['message'],
             'failure': failure} if failure else {}),
     }
@@ -2835,8 +2910,11 @@ def _print_batch_summary(batch_results, batch_duration, migrated_root):
     Returns:
         Tuple of (succeeded_count, failed_count).
     """
-    succeeded = sum(1 for r in batch_results.values() if r['success'])
-    failed = len(batch_results) - succeeded
+    generated = sum(1 for r in batch_results.values() if r['success'])
+    partial_count = sum(1 for r in batch_results.values()
+                        if r.get('success') and r.get('partial_generation'))
+    succeeded = generated - partial_count
+    failed = len(batch_results) - generated
 
     # Separate workbook results from prep flow results
     wb_results = {k: v for k, v in batch_results.items() if not v.get('prep_flow')}
@@ -2865,6 +2943,7 @@ def _print_batch_summary(batch_results, batch_duration, migrated_root):
     if prep_results:
         print(f"  Prep flows:      {len(prep_results)}")
     print(f"  Succeeded:       {succeeded}")
+    print(f"  Partial:         {partial_count}")
     print(f"  Failed:          {failed}")
     print(f"  Duration:        {batch_duration}")
     quality_results = [r for r in wb_results.values() if r.get('quality_status')]
@@ -2879,9 +2958,15 @@ def _print_batch_summary(batch_results, batch_duration, migrated_root):
             'pass_count': quality_pass,
             'warn_count': quality_warn,
             'fail_count': quality_fail,
+            'generation_counts': {
+                'complete': succeeded, 'partial': partial_count, 'failed': failed,
+            },
             'workbooks': {
                 name: {
                     'status': result.get('quality_status'),
+                    'generation_status': ('partial' if result.get('partial_generation')
+                                          else 'complete' if result.get('success')
+                                          else 'failed'),
                     'json_path': result.get('quality_json'),
                 }
                 for name, result in wb_results.items()
@@ -2952,7 +3037,8 @@ def _print_batch_summary(batch_results, batch_duration, migrated_root):
         print(header)
         print(f"  {'-' * name_width}  {'--------':>8}  {'---------':>9}  {'-------':>7}  {'--------':>8}")
         for name, result in wb_results.items():
-            status = "OK" if result['success'] else "FAIL"
+            status = ("PARTIAL" if result.get('partial_generation')
+                      else "OK" if result['success'] else "FAIL")
             fidelity = result.get('fidelity')
             fid_str = f"{fidelity}%" if fidelity is not None else "—"
             stats = result.get('stats', {})
@@ -3075,7 +3161,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                         hyper_export_format='auto', hyper_export_max_rows=None,
                         max_zip_entry_mb=None, quiet=False,
                         desktop_options: Optional[DesktopDiagnosticOptions] = None,
-                        calendar_mode='source'):
+                        calendar_mode='source', strict_generation=False):
     """Batch migrate all .twb/.twbx files in a directory (recursive).
 
     Searches the directory tree recursively for Tableau workbooks and
@@ -3240,6 +3326,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'skip_extraction': skip_extraction,
             'quality_policy': quality_policy,
             'verify_open': verify_open,
+            'strict_generation': strict_generation,
         }
 
     def _checkpoint_config(effective):
@@ -3564,6 +3651,11 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 and recorded_inventory == _artifact_inventory(completed, out_base)
             )
             completed_path = completed[1] if completed else None
+            partial_completed = bool(completed_path and os.path.isfile(
+                os.path.join(os.path.dirname(completed_path), 'partial_generation.json')))
+            if partial_completed:
+                filtered.append(twb)
+                continue
             if inventory_matches:
                 logger.info("Resume: skipping already-completed %s", bn)
                 _write_jsonl('resume_skip', {'workbook': bn, 'pbip_path': completed_path})
@@ -3694,6 +3786,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 hyper_export_max_rows=task['hyper_export_max_rows'],
                 max_zip_entry_mb=task['max_zip_entry_mb'],
                 quiet=quiet,
+                strict_generation=strict_generation,
             )
         except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
             wb_result = {
@@ -3726,11 +3819,14 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                                  task['display_name'])
                 wb_result['failure_report_error'] = str(report_exc)
         wb_duration = (datetime.now() - wb_start_time).total_seconds()
-        status = 'success' if wb_result.get('success', False) else 'failed'
+        status = ('partial' if wb_result.get('partial_generation') else
+              'success' if wb_result.get('success', False) else 'failed')
         _set_checkpoint(task, status, wb_result, wb_duration, wb_result.get('error', ''))
         _write_jsonl('workbook_end', {
             'workbook': task['display_name'],
-            'success': wb_result.get('success', False),
+            'success': bool(wb_result.get('success') and not wb_result.get('partial_generation')),
+            'generated': bool(wb_result.get('success')),
+            'generation_status': status,
             'duration_sec': wb_duration,
             'fidelity': wb_result.get('fidelity'),
             'stats': wb_result.get('stats', {}),
@@ -3860,11 +3956,17 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         'avg_fidelity': round(sum(fidelities) / len(fidelities), 1) if fidelities else None,
     })
     try:
-        exit_code = ExitCode.SUCCESS if failed == 0 else ExitCode.BATCH_PARTIAL_FAIL
+        has_partial = any(result.get('partial_generation')
+                  for result in batch_results.values())
+        if has_partial:
+            print('  Partial repair projects were generated; quality remains FAIL. '
+                  'See partial_generation.json and migration quality reports.')
+        exit_code = (ExitCode.SUCCESS if failed == 0 and not has_partial
+                 else ExitCode.BATCH_PARTIAL_FAIL)
         if desktop_options is not None:
             for task in tasks:
                 result = batch_results.get(task['display_name'], {})
-                if (result.get('success') and
+                if (result.get('success') and not result.get('partial_generation') and
                         os.path.splitext(task['tableau_file'])[1].lower() in ('.twb', '.twbx')):
                     name = result.get('report_name') or task['basename']
                     out = result.get('output_dir') or task['workbook_output_dir']
@@ -3982,6 +4084,12 @@ def _add_batch_args(parser):
 
 def _add_migration_args(parser):
     """Add migration options (calendar, culture, format, etc.)."""
+    parser.add_argument(
+        '--strict-generation', action='store_true',
+        help='Abort unsupported semantic generation instead of emitting the default '
+             'data-free partial repair project. Extraction and security failures '
+             'always remain blocking.'
+    )
     parser.add_argument(
         '--dry-run',
         action='store_true',
@@ -8025,6 +8133,7 @@ def main():
             quiet=getattr(args, 'quiet', False),
             desktop_options=desktop_options,
             calendar_mode=getattr(args, 'calendar_mode', 'source'),
+            strict_generation=getattr(args, 'strict_generation', False),
         )
 
     # ── Single-file diagnostics only (never project generation) ──
@@ -11336,9 +11445,11 @@ def _set_data_folder_for_hyper_exports(project_dir, source_basename):
 def _referenced_data_files(model_dir):
     """Basenames the model loads through ``DataFolder & "\\name"``."""
     import glob as _glob
+    import ntpath as _ntpath
     import re as _re
     refs = set()
     pattern = _re.compile(r'DataFolder\s*&\s*"\\?([^"\\/]+)"')
+    direct_file = _re.compile(r'File\.Contents\("((?:[^"]|"")*)"\)')
     for tmdl in _glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
         try:
             with open(tmdl, 'r', encoding='utf-8') as f:
@@ -11349,12 +11460,58 @@ def _referenced_data_files(model_dir):
                         suffix = _re.sub(r'^\\{1,2}', '', match.group(1))
                         _upload_relative_path(suffix)
                 refs.update(m.group(1) for m in pattern.finditer(text))
+                for match in direct_file.finditer(text):
+                    path = match.group(1).replace('""', '"')
+                    if os.path.splitext(path)[1].lower() in {'.csv', '.shp', '.geojson'}:
+                        refs.add(_ntpath.basename(path))
+                refs.update(
+                    match.group(1).replace('""', '"')
+                    for match in _re.finditer(
+                        r'SourceFile\s*=\s*"((?:[^"]|"")*)"', text)
+                )
         except OSError:
             continue
     if _upload_root():
         for ref in refs:
             _upload_relative_path(ref)
     return sorted(refs)
+
+
+def _rebind_staged_file_partitions(project_dir, source_basename):
+    """Rebind exact staged CSV/GeoJSON files from absolute paths to DataFolder."""
+    import glob as _glob
+    import ntpath as _ntpath
+    import re as _re
+
+    data_dir = os.path.join(project_dir, 'Data')
+    model_dir = os.path.join(project_dir, f'{source_basename}.SemanticModel')
+    pattern = _re.compile(r'File\.Contents\("((?:[^"]|"")*)"\)')
+    updated = 0
+    for path in _glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
+        try:
+            with open(path, 'r', encoding='utf-8') as stream:
+                content = stream.read()
+        except OSError:
+            continue
+        def _replace(match):
+            source = match.group(1).replace('""', '"')
+            basename = _ntpath.basename(source)
+            staged = os.path.join(data_dir, basename)
+            if (os.path.splitext(basename)[1].lower() not in {'.csv', '.geojson'}
+                    or not os.path.isfile(staged)):
+                return match.group(0)
+            return f'File.Contents(DataFolder & "\\{basename}")'
+
+        rebound = pattern.sub(_replace, content)
+        if rebound == content:
+            continue
+        try:
+            with open(path, 'w', encoding='utf-8') as stream:
+                stream.write(rebound)
+            updated += 1
+        except OSError as exc:
+            logger.warning("Could not rebind staged file partition %s: %s", path, exc)
+    return updated
 
 
 def _is_generated_dir(path, names):
@@ -11658,9 +11815,10 @@ def _wire_shapefile_map_coordinates(project_dir, source_basename):
     if len(shp_files) != 1:
         return {'mapped': 0, 'unmatched': 0}
     shp_path = shp_files[0]
-    spatial_csv = shp_path + '.csv'
+    spatial_csv = next((path for path in (shp_path + '.dbf.csv', shp_path + '.csv')
+                        if os.path.isfile(path)), None)
     relationships = os.path.join(model_dir, 'relationships.tmdl')
-    if not os.path.isfile(spatial_csv) or not os.path.isfile(relationships):
+    if not spatial_csv or not os.path.isfile(relationships):
         return {'mapped': 0, 'unmatched': 0}
 
     def _name(value):
@@ -11683,15 +11841,23 @@ def _wire_shapefile_map_coordinates(project_dir, source_basename):
         with open(path, encoding='utf-8') as stream:
             visual = json.load(stream)
         notes = visual.get('annotations') or []
-        if visual.get('visual', {}).get('visualType') != 'map' or not any(
-            item.get('name') == 'MigrationNote' and
-            'Tableau-generated map coordinates' in item.get('value', '')
-            for item in notes if isinstance(item, dict)
-        ):
+        visual_type = visual.get('visual', {}).get('visualType')
+        note_values = [item.get('value', '') for item in notes
+                       if isinstance(item, dict) and item.get('name') == 'MigrationNote']
+        native_map = (visual_type == 'map' and any(
+            'Tableau-generated map coordinates' in note for note in note_values))
+        degraded_map = (visual_type in {'table', 'tableEx', 'matrix'} and any(
+            'No resolved geographic location' in note
+            and 'source geography is required for this map' in note.lower()
+            for note in note_values))
+        if not (native_map or degraded_map):
             continue
         query = visual['visual'].get('query', {}).get('queryState', {})
         size = (query.get('Size') or {}).get('projections') or []
-        if len(size) != 1:
+        values = (query.get('Values') or {}).get('projections') or []
+        if native_map and len(size) != 1:
+            continue
+        if degraded_map and not values:
             continue
         def _entity(node):
             if isinstance(node, dict):
@@ -11702,12 +11868,12 @@ def _wire_shapefile_map_coordinates(project_dir, source_basename):
             if isinstance(node, list):
                 return next((name for child in node if (name := _entity(child))), None)
             return None
-        fact_table = _entity(size[0].get('field', {}))
+        fact_table = _entity((size[0] if native_map else values[0]).get('field', {}))
         if fact_table:
-            candidates.append((path, visual, fact_table))
+            candidates.append((path, visual, fact_table, degraded_map))
     if len(candidates) != 1:
         return {'mapped': 0, 'unmatched': 0}
-    visual_path, visual, fact_table = candidates[0]
+    visual_path, visual, fact_table, degraded_map = candidates[0]
     table_files = glob.glob(os.path.join(model_dir, 'tables', '*.tmdl'))
     table_contents = {}
     for path in table_files:
@@ -11717,8 +11883,9 @@ def _wire_shapefile_map_coordinates(project_dir, source_basename):
         if match:
             table_contents[_name(match.group(1).strip())] = (path, content)
     fact_entry = table_contents.get(fact_table)
+    spatial_csv_name = os.path.basename(spatial_csv)
     spatial_entry = next(((name, content) for name, (_path, content) in table_contents.items()
-                          if os.path.basename(shp_path) + '.csv' in content), None)
+                          if spatial_csv_name in content), None)
     if not fact_entry or not spatial_entry:
         return {'mapped': 0, 'unmatched': 0}
     spatial_table = spatial_entry[0]
@@ -11744,14 +11911,29 @@ def _wire_shapefile_map_coordinates(project_dir, source_basename):
     if not sniffed:
         return {'mapped': 0, 'unmatched': 0}
     delimiter, _encoding, headers = sniffed
-    if any(name in headers for name in ('MigrationLatitude', 'MigrationLongitude')):
+    coordinate_names = ('MigrationLatitude', 'MigrationLongitude')
+    has_coordinates = all(name in headers for name in coordinate_names)
+    if any(name in headers for name in coordinate_names) and not has_coordinates:
         return {'mapped': 0, 'unmatched': 0}
-    valid_joins = [(fact_col, geo_col) for (from_table, fact_col), (to_table, geo_col) in pairs
-                   if from_table == fact_table and to_table == spatial_table
-                   and fact_col in headers and geo_col in (geo_rows[0] if geo_rows else {})]
-    if len(set(valid_joins)) != 1:
+    valid_joins = sorted({(fact_col, geo_col)
+                          for (from_table, fact_col), (to_table, geo_col) in pairs
+                          if from_table == fact_table and to_table == spatial_table
+                          and fact_col in headers and geo_col in (geo_rows[0] if geo_rows else {})})
+    with open(csv_path, encoding='utf-8-sig', newline='') as stream:
+        fact_reader = csv.DictReader(stream, delimiter=delimiter)
+        fact_rows = list(fact_reader)
+    join_scores = []
+    for candidate_fact_col, candidate_geo_col in valid_joins:
+        geo_keys = {row.get(candidate_geo_col) for row in geo_rows if row.get(candidate_geo_col)}
+        matches = sum(bool(row.get(candidate_fact_col))
+                      and row.get(candidate_fact_col) in geo_keys for row in fact_rows)
+        join_scores.append((matches, candidate_fact_col, candidate_geo_col))
+    best_score = max((score for score, _fact, _geo in join_scores), default=0)
+    best_joins = [(fact_col, geo_col) for score, fact_col, geo_col in join_scores
+                  if score == best_score and score > 0]
+    if len(best_joins) != 1:
         return {'mapped': 0, 'unmatched': 0}
-    fact_col, geo_col = valid_joins[0]
+    fact_col, geo_col = best_joins[0]
     coordinates = {}
     for row, point in zip(geo_rows, points):
         key = row.get(geo_col)
@@ -11761,12 +11943,11 @@ def _wire_shapefile_map_coordinates(project_dir, source_basename):
                 return {'mapped': 0, 'unmatched': 0}
             coordinates[key] = point
 
-    with open(csv_path, encoding='utf-8-sig', newline='') as stream:
-        reader = csv.DictReader(stream, delimiter=delimiter)
-        rows = list(reader)
-        if not reader.fieldnames or fact_col not in reader.fieldnames:
-            return {'mapped': 0, 'unmatched': 0}
-        fieldnames = list(reader.fieldnames) + ['MigrationLatitude', 'MigrationLongitude']
+    rows = fact_rows
+    fieldnames = (list(rows[0]) + [name for name in coordinate_names if name not in rows[0]]
+                  if rows else [])
+    if not fieldnames or fact_col not in fieldnames:
+        return {'mapped': 0, 'unmatched': 0}
     mapped = 0
     for row in rows:
         point = coordinates.get(row.get(fact_col))
@@ -11781,10 +11962,13 @@ def _wire_shapefile_map_coordinates(project_dir, source_basename):
     partition = re.search(r'(?m)^\tpartition\s+', fact_content)
     if not types or not partition:
         return {'mapped': 0, 'unmatched': len(rows)}
-    types_insert = (',\n\t\t\t\t\t\t{"MigrationLatitude", type number},'
-                    '\n\t\t\t\t\t\t{"MigrationLongitude", type number}')
-    fact_content = (fact_content[:types.start(2)] + types_insert +
-                    fact_content[types.start(2):])
+    existing_types = set(re.findall(r'\{"((?:[^"]|"")*)",', types.group(1)))
+    new_types = [name for name in coordinate_names if name not in existing_types]
+    if new_types:
+        types_insert = ''.join(
+            f',\n\t\t\t\t\t\t{{"{name}", type number}}' for name in new_types)
+        fact_content = (fact_content[:types.start(2)] + types_insert
+                        + fact_content[types.start(2):])
     model_columns = re.search(
         r'(#"Model Columns"\s*=\s*Table\.SelectColumns\([^\n]*?\{)([^}]*)(\},\s*MissingField\.UseNull\))',
         fact_content)
@@ -11798,21 +11982,44 @@ def _wire_shapefile_map_coordinates(project_dir, source_basename):
     partition = re.search(r'(?m)^\tpartition\s+', fact_content)
     if not partition:
         return {'mapped': 0, 'unmatched': len(rows)}
+    declared_columns = set(re.findall(r'(?m)^\tcolumn\s+([^\n]+)', fact_content))
     columns = ''.join(
         f'\tcolumn {name}\n\t\tdataType: double\n\t\tsummarizeBy: none\n'
         f'\t\tsourceColumn: {name}\n\t\tdataCategory: {category}\n\n'
         for name, category in (('MigrationLatitude', 'Latitude'),
-                               ('MigrationLongitude', 'Longitude')))
+                               ('MigrationLongitude', 'Longitude'))
+        if name not in declared_columns)
     fact_content = fact_content[:partition.start()] + columns + fact_content[partition.start():]
 
     query = visual['visual']['query']['queryState']
+    if degraded_map:
+        value_projections = (query.pop('Values', {}) or {}).get('projections') or []
+        category = next((projection for projection in value_projections
+                         if 'Column' in projection.get('field', {})
+                         and projection.get('field', {}).get('Column', {}).get(
+                             'Expression', {}).get('SourceRef', {}).get('Entity') == fact_table),
+                        None)
+        if category is None:
+            return {'mapped': 0, 'unmatched': len(rows)}
+        category = {**category, 'active': True}
+        query['Category'] = {'projections': [category]}
+        tooltips = [projection for projection in value_projections
+                    if projection.get('field') != category.get('field')]
+        if tooltips:
+            query['Tooltips'] = {'projections': tooltips}
+        for role in ('Rows', 'Columns', 'Details', 'Color', 'Latitude', 'Longitude', 'Location'):
+            query.pop(role, None)
     for role in ('Latitude', 'Longitude', 'Location', 'Color'):
         query.pop(role, None)
     for role, column in (('Y', 'MigrationLatitude'),
                          ('X', 'MigrationLongitude')):
         query[role] = {'projections': [{
-            'field': {'Column': {'Expression': {'SourceRef': {'Entity': fact_table}},
-                                 'Property': column}},
+            'field': {'Aggregation': {
+                'Expression': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': fact_table}},
+                    'Property': column}},
+                'Function': 1,
+            }},
             'queryRef': f'{fact_table}.{column}', 'nativeQueryRef': column, 'active': True,
         }]}
     if not (query.get('Category') or {}).get('projections'):
@@ -11831,7 +12038,15 @@ def _wire_shapefile_map_coordinates(project_dir, source_basename):
             if not query['Tooltips']['projections']:
                 del query['Tooltips']
         else:
-            query['Category'] = {'projections': [query['Y']['projections'][0].copy()]}
+            query['Category'] = {'projections': [{
+                'field': {'Column': {
+                    'Expression': {'SourceRef': {'Entity': fact_table}},
+                    'Property': fact_col,
+                }},
+                'queryRef': f'{fact_table}.{fact_col}',
+                'nativeQueryRef': fact_col,
+                'active': True,
+            }]}
     visual['visual']['visualType'] = 'azureMap'
     objects = visual['visual'].get('objects', {})
     objects.pop('categoryAxis', None)
@@ -11864,9 +12079,13 @@ def _wire_shapefile_map_coordinates(project_dir, source_basename):
     if map_controls:
         objects['mapControls'] = map_controls
     for note in visual['annotations']:
-        if note.get('name') == 'MigrationNote' and 'Tableau-generated map coordinates' in note.get('value', ''):
-            note['value'] = (f'WGS84 polygon representative points joined by model relationship; '
-                             f'{len(rows) - mapped} source rows have no geometry.')
+        if (note.get('name') == 'MigrationNote'
+                and ('Tableau-generated map coordinates' in note.get('value', '')
+                     or 'No resolved geographic location' in note.get('value', ''))):
+            note['value'] = (
+                'WGS84 polygon representative points joined by model relationship; '
+                'polygons and original point size/color encoding are not preserved; '
+                f'{len(rows) - mapped} source rows have no geometry.')
 
     staged_csv = None
     try:
@@ -11995,6 +12214,219 @@ def _dbf_to_csv(dbf_path, csv_path):
     return written
 
 
+def _dbf_partition_source(table_content, source_file, folder):
+    """Build a readable M source from a shapefile's exact local DBF sidecar."""
+    import re as _re
+    from powerbi_import.tmdl_writers import _parse_source_column
+
+    shapefile_path = os.path.join(folder, source_file)
+    dbf_path = os.path.splitext(shapefile_path)[0] + '.dbf'
+    csv_ref = source_file + '.dbf.csv'
+    csv_path = os.path.join(folder, csv_ref)
+    if not os.path.isfile(shapefile_path) or not os.path.isfile(dbf_path):
+        return None
+    if _dbf_to_csv(dbf_path, csv_path) is None:
+        return None
+    sniffed = _sniff_csv(csv_path)
+    if not sniffed:
+        return None
+    delimiter, encoding, headers = sniffed
+
+    schema = table_content.split('\n\tpartition ', 1)[0]
+    columns = []
+    for block in _re.split(r'(?m)^\tcolumn\s+', schema)[1:]:
+        source = _re.search(r'(?m)^\s*sourceColumn:\s*(.*?)\s*$', block)
+        if not source:
+            continue
+        data_type = _re.search(r'(?m)^\s*dataType:\s*(\w+)', block)
+        columns.append((
+            _parse_source_column(source.group(1)),
+            data_type.group(1) if data_type else 'string',
+        ))
+    if not columns:
+        return None
+
+    rename_pattern = _re.compile(
+        r'Table\.RenameColumns\(([^,]+),\s*\{\{'
+        r'"((?:[^"]|"")*)",\s*"((?:[^"]|"")*)"\}\}\)')
+    column_names = {column for column, _ in columns}
+    rename_pairs = [
+        (match.group(1), match.group(2).replace('""', '"'),
+         match.group(3).replace('""', '"'))
+        for match in rename_pattern.finditer(table_content)
+    ]
+    duplicated_targets = {
+        target for _step, source, target in rename_pairs
+        if source in column_names and target in column_names
+    }
+    duplicate_pairs = [pair for pair in rename_pairs
+                       if pair[1] in column_names and pair[2] in column_names]
+    source_columns = [(column, data_type) for column, data_type in columns
+                      if column not in duplicated_targets]
+
+    def _m_text(value):
+        return '"' + value.replace('"', '""') + '"'
+
+    def _step_name(value):
+        return '#"' + value.replace('"', '""') + '"'
+
+    lines = [
+        'Csv = Csv.Document(File.Contents(DataFolder & ' + _m_text('\\' + csv_ref)
+        + '), [Delimiter=' + _m_text(delimiter) + f', Encoding={encoding}, '
+        + 'QuoteStyle=QuoteStyle.Csv]),',
+        'Promoted = Table.PromoteHeaders(Csv, [PromoteAllScalars=true]),',
+    ]
+    previous = 'Promoted'
+    available = set(headers)
+    for index, (column, _data_type) in enumerate(source_columns):
+        if column in available:
+            continue
+        base = _re.sub(r'\s*\([^()]*\)$', '', column)
+        step = _step_name(f'Added source column {index + 1}')
+        value = (f'Record.Field(_, {_m_text(base)})' if base in available else 'null')
+        lines.append(
+            f'{step} = Table.AddColumn({previous}, {_m_text(column)}, '
+            f'each {value}, type any),')
+        previous = step
+        available.add(column)
+
+    selected = _step_name('Selected model columns')
+    names = ', '.join(_m_text(column) for column, _ in source_columns)
+    lines.append(
+        f'{selected} = Table.SelectColumns({previous}, {{{names}}}, '
+        'MissingField.UseNull),')
+    type_names = {
+        'string': 'type text', 'double': 'type number', 'decimal': 'Currency.Type',
+        'int64': 'Int64.Type', 'boolean': 'type logical', 'datetime': 'type datetime',
+        'date': 'type date',
+    }
+    type_changes = [
+        '{' + _m_text(column) + ', ' + type_names[data_type.lower()] + '}'
+        for column, data_type in source_columns if data_type.lower() in type_names
+    ]
+    if type_changes:
+        lines.append(
+            f'{_step_name("Changed types")} = Table.TransformColumnTypes('
+            f'{selected}, {{{", ".join(type_changes)}}}),')
+        result = _step_name('Changed types')
+    else:
+        result = selected
+    lines[-1] = lines[-1].rstrip(',')
+    lines.append(f'in\n    {result}')
+    return 'let\n    ' + '\n    '.join(lines), duplicate_pairs
+
+
+def _route_extracted_alias_partitions(project_dir, source_basename):
+    """Resolve hashed Tableau Extract aliases only against a verified file table."""
+    import glob as _glob
+    import re as _re
+    from powerbi_import.tmdl_writers import _parse_source_column
+
+    tables_dir = os.path.join(project_dir, f'{source_basename}.SemanticModel',
+                              'definition', 'tables')
+    tables = {}
+    for path in _glob.glob(os.path.join(tables_dir, '*.tmdl')):
+        try:
+            with open(path, 'r', encoding='utf-8') as stream:
+                content = stream.read()
+        except OSError:
+            continue
+        name_match = _re.search(
+            r"(?m)^table\s+('(?:[^']|'')*'|[^\n]+)$", content)
+        if not name_match:
+            continue
+        name = name_match.group(1).strip()
+        if name.startswith("'") and name.endswith("'"):
+            name = name[1:-1].replace("''", "'")
+        schema = content.split('\n\tpartition ', 1)[0]
+        columns = []
+        column_types = {}
+        for block in _re.split(r'(?m)^\tcolumn\s+', schema)[1:]:
+            source = _re.search(r'(?m)^\s*sourceColumn:\s*(.*?)\s*$', block)
+            if source:
+                source_column = _parse_source_column(source.group(1))
+                columns.append(source_column)
+                data_type = _re.search(r'(?m)^\s*dataType:\s*(\w+)', block)
+                column_types[source_column] = data_type.group(1) if data_type else 'string'
+        tables[name] = {
+            'path': path, 'content': content, 'columns': columns,
+            'column_types': column_types,
+        }
+
+    routed = 0
+    alias_suffix = _re.compile(r'^(.+)_([0-9A-Fa-f]{32})$')
+    for alias_name, alias in tables.items():
+        if 'Migration.SourceUnavailable' not in alias['content']:
+            continue
+        identity = alias_suffix.fullmatch(alias_name)
+        if not identity:
+            continue
+        parent = tables.get(identity.group(1))
+        if (not parent or 'Migration.SourceUnavailable' in parent['content']
+                or not parent['columns'] or not alias['columns']
+                or not _re.search(r'File\.Contents\(', parent['content'])):
+            continue
+
+        mappings = []
+        suffix = f' ({identity.group(1)})'
+        for alias_column in alias['columns']:
+            if alias_column in parent['columns']:
+                source_column = alias_column
+            elif alias_column.endswith(suffix):
+                source_column = alias_column[:-len(suffix)]
+                if source_column not in parent['columns']:
+                    mappings = []
+                    break
+            else:
+                mappings = []
+                break
+            mappings.append((alias_column, source_column,
+                             alias['column_types'].get(alias_column, 'string')))
+        if len(mappings) != len(alias['columns']):
+            continue
+
+        def _m_text(value):
+            return '"' + value.replace('"', '""') + '"'
+
+        parent_ref = '#"' + identity.group(1).replace('"', '""') + '"'
+        lines = [f'Source = {parent_ref},']
+        previous = 'Source'
+        type_names = {
+            'string': 'type text', 'double': 'type number', 'decimal': 'Currency.Type',
+            'int64': 'Int64.Type', 'boolean': 'type logical', 'datetime': 'type datetime',
+        }
+        for index, (alias_column, source_column, data_type) in enumerate(mappings):
+            if alias_column == source_column:
+                continue
+            step = f'#"Mapped alias column {index + 1}"'
+            m_type = type_names.get(data_type.lower(), 'type any')
+            lines.append(
+                f'{step} = Table.AddColumn({previous}, {_m_text(alias_column)}, '
+                f'each Record.Field(_, {_m_text(source_column)}), {m_type}),')
+            previous = step
+        selected = ', '.join(_m_text(column) for column in alias['columns'])
+        lines.append(
+            f'Result = Table.SelectColumns({previous}, {{{selected}}}, '
+            'MissingField.UseNull)')
+        expression = 'let\n    ' + '\n    '.join(lines) + '\nin\n    Result'
+        source_block = _re.search(
+            r'(?m)^(\t\tsource[ \t]*=[ \t]*\n)([\s\S]*?)(?=^\tannotation[ \t])',
+            alias['content'])
+        if not source_block:
+            continue
+        body = '\n'.join('\t\t\t\t' + line for line in expression.splitlines()) + '\n\n'
+        updated = (alias['content'][:source_block.start()]
+                   + source_block.group(1) + body
+                   + alias['content'][source_block.end():])
+        try:
+            with open(alias['path'], 'w', encoding='utf-8') as stream:
+                stream.write(updated)
+            routed += 1
+        except OSError as exc:
+            logger.warning("Could not bind extracted alias table %s: %s", alias_name, exc)
+    return routed
+
+
 def _route_spatial_partitions(project_dir, source_basename):
     """Point spatial-file partitions at data Power Query can actually read.
 
@@ -12021,6 +12453,46 @@ def _route_spatial_partitions(project_dir, source_basename):
             with open(tmdl, 'r', encoding='utf-8') as f:
                 content = f.read()
         except OSError:
+            continue
+        native_error = _re.search(
+            r'Source\s*=\s*error Error\.Record\("SourceBinding\.Error",\s*'
+            r'"Native shapefile is not GeoJSON[^\"]*",\s*'
+            r'\[Table="(?:[^"]|"")*",\s*SourceFile="((?:[^"]|"")*)"\]\)',
+            content)
+        if native_error:
+            stats['spatial'] += 1
+            ref = native_error.group(1).replace('""', '"')
+            if _upload_root():
+                _upload_relative_path(ref)
+                _confine_upload_path(os.path.join(folder, ref), folder)
+            dbf_partition = _dbf_partition_source(content, ref, folder)
+            if dbf_partition is None:
+                stats['unresolved'] += 1
+                logger.warning(
+                    "Native shapefile '%s' has no readable local .dbf; source remains unresolved",
+                    ref)
+                continue
+            source, duplicate_pairs = dbf_partition
+            line_start = content.rfind('\n', 0, native_error.start()) + 1
+            indent = content[line_start:native_error.start()]
+            replacement = 'Source = ' + source.replace('\n', '\n' + indent)
+            content = (content[:native_error.start()] + replacement
+                       + content[native_error.end():])
+            for step, source_column, target_column in duplicate_pairs:
+                rename_call = (
+                    f'Table.RenameColumns({step}, '
+                    f'{{{{"{source_column}", "{target_column}"}}}})')
+                duplicate_call = (
+                    f'Table.DuplicateColumn({step}, "{source_column}", '
+                    f'"{target_column}")')
+                content = content.replace(rename_call, duplicate_call)
+            try:
+                with open(tmdl, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                stats['shapefile_csv'] += 1
+            except OSError as exc:
+                stats['unresolved'] += 1
+                logger.warning("Could not update shapefile partition %s: %s", tmdl, exc)
             continue
         match = block.search(content)
         if not match:
@@ -12116,6 +12588,21 @@ def _route_spatial_partitions(project_dir, source_basename):
               f"shapefile(s) read from .dbf, {stats['extract_csv']} served by their extract, "
               f"{stats['unresolved']} unresolved")
     return stats
+
+
+def _postprocess_spatial_sources(project_dir, source_basename, output_format):
+    """Route readable spatial attributes and bind WGS84 map approximations."""
+    stats = _route_spatial_partitions(project_dir, source_basename)
+    stats['alias_partitions'] = _route_extracted_alias_partitions(
+        project_dir, source_basename)
+    map_stats = {'mapped': 0, 'unmatched': 0}
+    if output_format == 'fabric' or stats['shapefile_csv'] or stats['extract_csv']:
+        _reconcile_csv_partitions(project_dir, source_basename)
+    if stats['shapefile_csv']:
+        map_stats = _wire_shapefile_map_coordinates(project_dir, source_basename)
+    if output_format == 'fabric':
+        _restrict_file_partitions_to_model(project_dir, source_basename)
+    return {**stats, **map_stats}
 
 
 def _shorten_report_artifact_path(project_dir, source_basename):
@@ -12752,8 +13239,20 @@ def _collect_local_data_files(source_path, project_dir, source_basename,
     expr_path = os.path.join(model_dir, 'definition', 'expressions.tmdl')
     refs = _referenced_data_files(model_dir)
     if hyper_only:
-        refs = [ref for ref in refs
-                if os.path.splitext(ref)[1].lower() == '.hyper']
+        spatial_approximation = False
+        for tmdl in glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
+            try:
+                with open(tmdl, 'r', encoding='utf-8') as stream:
+                    text = stream.read()
+            except OSError:
+                continue
+            if ('Native shapefile is not GeoJSON' in text and 'SourceFile=' in text):
+                spatial_approximation = True
+                break
+        allowed = {'.hyper', '.shp'}
+        if spatial_approximation:
+            allowed.add('.csv')
+        refs = [ref for ref in refs if os.path.splitext(ref)[1].lower() in allowed]
         if not refs:
             return stats
     content, current = _read_data_folder(expr_path)
@@ -13330,14 +13829,14 @@ def _extract_twbx_data_files(args, source_basename):
         output_format=getattr(args, 'output_format', 'pbip'),
         quiet=getattr(args, 'quiet', False),
         max_zip_entry_mb=options['max_zip_entry_mb'])
-    if getattr(args, 'output_format', 'pbip') == 'fabric':
-        _route_spatial_partitions(project_dir, source_basename)
-        _reconcile_csv_partitions(project_dir, source_basename)
-        _wire_shapefile_map_coordinates(project_dir, source_basename)
-        _restrict_file_partitions_to_model(project_dir, source_basename)
-    elif (local_source_stats.get('copied')
-          or local_source_stats.get('already_present')):
+    output_format = getattr(args, 'output_format', 'pbip')
+    if (output_format != 'fabric'
+            and (local_source_stats.get('copied')
+                 or local_source_stats.get('already_present'))):
         _set_data_folder_for_hyper_exports(project_dir, source_basename)
+    if output_format != 'fabric':
+        _rebind_staged_file_partitions(project_dir, source_basename)
+    _postprocess_spatial_sources(project_dir, source_basename, output_format)
     _sync_final_calendar_source_expressions(project_dir, source_basename)
     _export_power_query_files(project_dir, source_basename)
     if getattr(args, 'output_format', 'pbip') != 'fabric':

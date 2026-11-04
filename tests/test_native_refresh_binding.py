@@ -201,6 +201,38 @@ class RefreshBindingFixture(unittest.TestCase):
 
 
 class TestLooseWorkbookRefreshBinding(RefreshBindingFixture):
+    def test_loose_csv_rebases_stale_data_directory_and_detects_local_delimiter(self):
+        attributes = dict(_CSV_ATTRIBUTES)
+        attributes.pop('separator')
+        attributes['directory'] = r'C:\Legacy\MigrationWorkspace\OldProject\Data'
+        for named in (False, True):
+            with self.subTest(named=named):
+                tag = 'stale_csv_directory_named' if named else 'stale_csv_directory_direct'
+                source = self._source(
+                    _build_refresh_binding_datasource([
+                        ('NativeFacts', attributes, '[source#csv]'),
+                    ], named=named),
+                    os.path.join('original', tag, 'source_workbook.twb'))
+                native = self._put(
+                    os.path.join('original', tag, 'Data', 'source.csv'),
+                    'ID;Amount\n17;3.5\n')
+
+                datasource, _ = self._extract_metadata(source, tag)
+                table, = datasource['tables']
+                for connection in (datasource['connection'], table['connection_details']):
+                    details = connection['details']
+                    self.assertEqual(details['directory'], 'Data')
+                    self.assertEqual(details['delimiter'], ';')
+                query = generate_power_query_m(
+                    table['connection_details'], table, use_original_file_paths=True)
+                self._assert_native_literal(query, f'File.Contents("{native}")')
+                self.assertIn('Delimiter=";"', query)
+
+                project, contents = self._import_tmdl(datasource, tag)
+                self.assertIn(f'File.Contents("{native}")', contents['NativeFacts'])
+                self.assertIn('Delimiter=";"', contents['NativeFacts'])
+                self._assert_no_native_copy(project, {'source.csv'})
+
     def test_original_loose_twb_base_survives_json_m_and_import_tmdl_without_payload_io(self):
         payload = b"ID,Amount\n17,3.5\n"
         for named in (False, True):
@@ -1163,8 +1195,18 @@ class TestNativeSchemaBoundHeaderMetadata(RefreshBindingFixture):
             self.assertIn('Item="Exact",Kind="Sheet"', content)
             self.assertNotIn("Table.SelectColumns(", content)
             self.assertIn('Table.TransformColumnTypes(#"Promoted Headers", {', content)
+            self.assertRegex(
+                content,
+                r'else if not List\.IsEmpty\(AmbiguousExpectedNames\) then\s+'
+                r'error Error\.Record\("HeaderMatch\.Error",',
+            )
+            self.assertRegex(
+                content,
+                r'WithMissing = List\.Accumulate\(MissingExpectedNames, Renamed,\s+'
+                r'\(state, name\) => Table\.AddColumn\(state, name, each null\)\)',
+            )
             self.assertLess(
-                content.index("else Table.RenameColumns(Promoted, Renames)"),
+                content.index("WithMissing = List.Accumulate("),
                 content.index("Table.TransformColumnTypes("),
             )
             self.assertEqual(datasource, before)

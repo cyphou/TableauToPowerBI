@@ -13,6 +13,7 @@ from powerbi_import.errors import (
     ExtractionError,
     GenerationError,
     MigrationError,
+    PartialGenerationError,
     ValidationError,
 )
 
@@ -50,6 +51,15 @@ class TestHierarchy(unittest.TestCase):
 
 
 class TestContext(unittest.TestCase):
+    def test_partial_error_records_missing_evidence_without_defaulting_its_policy(self):
+        error = PartialGenerationError(
+            'Unsupported predicate', source='Synthetic', recovery_kind='logical_sum_policy',
+            required_evidence=['row_scopes', 'case_encoding_verified'])
+        self.assertEqual(error.to_dict()['required_evidence'],
+                         ['row_scopes', 'case_encoding_verified'])
+        self.assertEqual(error.to_dict()['source'], 'Synthetic')
+        self.assertEqual(error.to_dict()['recovery_kind'], 'logical_sum_policy')
+
     def test_message_only(self):
         err = ConversionError("unbalanced brackets")
         self.assertEqual(err.message, "unbalanced brackets")

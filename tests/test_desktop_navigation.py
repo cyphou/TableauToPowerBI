@@ -2235,6 +2235,29 @@ class TestNativePageCaptureIdentity(unittest.TestCase):
         self.assertEqual(result["attempt_count"], 1)
         self.assertEqual(list(self.shot.parent.iterdir()), [self.shot])
 
+    def test_empty_pre_capture_observation_can_be_reobserved_without_reselecting(self):
+        empty = {'status': 'inaccessible', 'selected': None, 'discovered': []}
+        self.select.side_effect = [_verified(), empty, _verified(), _verified()]
+        result = navigation.capture_document_tab(
+            11, 42, 'Synthetic Page', str(self.shot), timeout=5)
+        self.assertEqual(result['status'], 'captured')
+        self.assertEqual(len(result['ui_observation_retries']), 1)
+        self.assertEqual(result['ui_observation_retries'][0]['phase'], 'pre_capture_selection')
+        self.assertTrue(all(call.kwargs.get('verify_only')
+                            for call in self.select.call_args_list[1:]))
+        self.assertEqual(result['attempt_count'], 1)
+
+    def test_empty_ui_reobservation_is_bounded_and_never_promoted_to_verified(self):
+        empty = {'status': 'inaccessible', 'selected': None, 'discovered': []}
+        self.select.side_effect = [_verified(), empty, empty, empty]
+        result = navigation.capture_document_tab(
+            11, 42, 'Synthetic Page', str(self.shot), timeout=5)
+        self.assertEqual(result['status'], 'inaccessible')
+        self.assertEqual(len(result['ui_observation_retries']), 2)
+        self.assertEqual(self.select.call_count, 4)
+        self.capture.assert_not_called()
+        self.assertFalse(self.shot.exists())
+
     def test_rebuilt_menu_item_ids_preserve_exact_document_and_checked_page_identity(self):
         observations = [_menu_verified(build=build) for build in range(3)]
         observations[0].update(

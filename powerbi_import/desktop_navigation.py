@@ -1852,6 +1852,33 @@ def capture_document_tab(hwnd: int, pid: int, name: str, screenshot_path: str,
                           failure_phase=phase)
             return result
 
+        def observe_tab(*, verify_only=False, **options):
+            for attempt in range(3):
+                observation = select_document_tab(
+                    hwnd, pid, name, timeout=remaining(),
+                    **({'verify_only': True} if verify_only else {}), **options)
+                transient = (
+                    observation.get('status') in {'inaccessible', 'unavailable'}
+                    and observation.get('cause') in {None, 'ui_unreadable', 'partial_provider_observation'}
+                    and observation.get('provider') != 'tableau_window_menu'
+                    and not observation.get('selected')
+                    and isinstance(observation.get('discovered'), list)
+                    and not observation.get('discovered')
+                    and observation.get('action_attempted') is not True
+                    and not is_powershell_failure(observation)
+                    and observation.get('retryable') is not False
+                )
+                if not transient or attempt == 2 or remaining() <= 0:
+                    return observation
+                if desktop_window.window_process_id(hwnd) != pid:
+                    return {'status': 'error', 'cause': 'window_ownership_changed',
+                            'retryable': False}
+                result.setdefault('ui_observation_retries', []).append({
+                    'phase': phase, 'attempt': attempt + 1, 'observation': observation,
+                })
+                time.sleep(min(0.1, remaining()))
+            return observation
+
         if shot.suffix.lower() != ".png":
             raise ValueError("Screenshot destination must have .png extension")
         if shot.exists() or shot.is_symlink():
@@ -1861,7 +1888,7 @@ def capture_document_tab(hwnd: int, pid: int, name: str, screenshot_path: str,
         if remaining() <= 0:
             return expired()
         phase = "selection"
-        evidence = select_document_tab(hwnd, pid, name, timeout=remaining())
+        evidence = observe_tab()
         result["selection"] = evidence
         if evidence["status"] != "verified":
             return fail(evidence)
@@ -1879,8 +1906,7 @@ def capture_document_tab(hwnd: int, pid: int, name: str, screenshot_path: str,
                 phase = "pre_capture_selection"
                 if desktop_window.window_process_id(hwnd) != pid:
                     return fail({}, cause="window_ownership_changed")
-                pre = select_document_tab(
-                    hwnd, pid, name, timeout=remaining(), verify_only=True, **verify_options)
+                pre = observe_tab(verify_only=True, **verify_options)
                 # Preserve a failed PRE query too; initial selection stays intact.
                 result["pre_capture_selection"] = pre
                 if pre.get("status") != "verified":
@@ -1912,8 +1938,7 @@ def capture_document_tab(hwnd: int, pid: int, name: str, screenshot_path: str,
                 if capture.get("status") != "captured" and not transient:
                     return fail(capture)
                 phase = "post_capture_selection"
-                post = select_document_tab(
-                    hwnd, pid, name, timeout=remaining(), verify_only=True, **verify_options)
+                post = observe_tab(verify_only=True, **verify_options)
                 attempt["post_capture_selection"] = post
                 result["post_capture_selection"] = post
                 if post.get("status") != "verified":

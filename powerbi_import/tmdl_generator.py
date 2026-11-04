@@ -34,6 +34,7 @@ import sys
 from powerbi_import.tableau_identity import (
     calculation_identity as _calculation_identity,
 )
+from powerbi_import.calc_column_utils import is_numeric_row_constant
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,57 @@ def _has_exact_hyper_identity(identity):
         and all(isinstance(identity.get(key), str) and identity[key]
                 for key in fields)
     )
+
+
+def _hyper_physical_rename_steps(physical_to_logical):
+    """Build collision-safe M steps for a physical-to-logical Hyper mapping."""
+    if not isinstance(physical_to_logical, dict) or not physical_to_logical:
+        return []
+
+    targets = [str(logical) for logical in physical_to_logical.values()]
+    target_keys = [target.casefold() for target in targets]
+    if len(set(target_keys)) != len(target_keys):
+        raise ValueError(
+            "Hyper physical-to-logical mapping has duplicate logical targets")
+
+    renames = {
+        str(physical): str(logical)
+        for physical, logical in physical_to_logical.items()
+        if physical != logical
+    }
+    if not renames:
+        return []
+
+    target_names = {target.casefold() for target in renames.values()}
+    blocked_sources = sorted(
+        (physical for physical in renames if physical.casefold() in target_names),
+        key=str.casefold,
+    )
+    if not blocked_sources:
+        _, expression = m_transform_rename(renames)
+        return [('#"Renamed Hyper Columns"', expression)]
+
+    occupied = {str(name).casefold() for name in physical_to_logical} | set(target_keys)
+    staged_names = {}
+    for index, physical in enumerate(blocked_sources):
+        candidate = f"__ttpbi_hyper_rename_{index}__"
+        suffix = 2
+        while candidate.casefold() in occupied:
+            candidate = f"__ttpbi_hyper_rename_{index}_{suffix}__"
+            suffix += 1
+        occupied.add(candidate.casefold())
+        staged_names[physical] = candidate
+
+    _, stage_expression = m_transform_rename(staged_names)
+    final_renames = {
+        staged_names.get(physical, physical): logical
+        for physical, logical in renames.items()
+    }
+    _, final_expression = m_transform_rename(final_renames)
+    return [
+        ('#"Staged Hyper Rename Sources"', stage_expression),
+        ('#"Renamed Hyper Columns"', final_expression),
+    ]
 
 
 _MODEL_MODE_ALIASES = {
@@ -542,12 +594,22 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
     # Step 2c: Write TMDL files (clears column/measure data afterward)
     _write_tmdl_files(model, output_dir)
 
+    composite_relationship_migrations = model.get(
+        '_composite_relationship_migrations', [])
+    if composite_relationship_migrations:
+        os.makedirs(output_dir, exist_ok=True)
+        with open(os.path.join(output_dir, 'composite_relationships.json'),
+                  'w', encoding='utf-8') as handle:
+            json.dump(composite_relationship_migrations, handle, indent=2,
+                      ensure_ascii=False)
+
     # Step 3: Return pre-computed stats
     stats = {
         'tables': len(tables),
         'columns': total_columns,
         'measures': total_measures,
         'relationships': len(rels),
+        'composite_relationship_migrations': composite_relationship_migrations,
         'hierarchies': total_hierarchies,
         'roles': len(model.get('model', {}).get('roles', [])),
         'actual_bim_measures': actual_bim_measures,
@@ -884,6 +946,7 @@ def _prepare_logical_relationship_measures(ctx, datasources, extra_objects, mode
     Missing evidence and independently used pair scalars fail before healing.
     """
     from powerbi_import.tmdl_dax_postprocess import compile_logical_relationship_sum
+    from powerbi_import.errors import PartialGenerationError
 
     policies = extra_objects.get('logical_relationship_policies')
     if policies is None:
@@ -947,7 +1010,10 @@ def _prepare_logical_relationship_measures(ctx, datasources, extra_objects, mode
         for index, rel in non_equi:
             aliases = [rel.get(side, {}).get('tables', []) for side in ('left', 'right')]
             if any(len(side) != 1 for side in aliases):
-                raise ValueError(f"Unsupported logical endpoints in datasource {dsn}")
+                raise PartialGenerationError(
+                    f"Unsupported logical endpoints in datasource {dsn}", source=dsn,
+                    recovery_kind='logical_endpoints', required_evidence=[
+                        'Explicit left/right endpoint table mapping preserving the full predicate'])
             left, right = aliases[0][0], aliases[1][0]
             hosts = [ctx['table_rename_map'].get((dsn, a), a) for a in (left, right)]
             model.setdefault('_logical_predicate_pairs', []).append(hosts)
@@ -966,11 +1032,16 @@ def _prepare_logical_relationship_measures(ctx, datasources, extra_objects, mode
             required = ('contains_case_sensitive', 'comparison_case_sensitive',
                         'case_encoding_verified', 'unmatched_left', 'row_scopes')
             if any(key not in policy for key in required) or policy.get('case_encoding_verified') is not True:
-                raise ValueError(
+                raise PartialGenerationError(
                     f"Logical SUM in {dsn} requires explicit logical_relationship_policies: "
                     "four lineage-preserving row_scopes, unmatched_left, source CONTAINS/"
                     "comparison case policies and case_encoding_verified=True. Inspect "
-                    "source/context filters and source string collisions; do not guess.")
+                    "source/context filters and source string collisions; do not guess.",
+                    source=dsn, recovery_kind='logical_sum_policy',
+                    required_evidence=[key for key in required
+                                       if key not in policy or (
+                                           key == 'case_encoding_verified'
+                                           and policy.get(key) is not True)])
             bindings, types, refs = {}, {}, {}
             for alias, host in zip((left, right), hosts):
                 entry = ctx['best_tables'].get(host)
@@ -1590,7 +1661,7 @@ def _collect_semantic_context(datasources, extra_objects):
         r'VAR|VARP|PERCENTILE|ATTR|CORR|COVAR|COVARP|COLLECT)\s*\(',
         re.IGNORECASE)
     for calc in all_calculations:
-        _, caption = _calculation_identity(calc)
+        raw, caption = _calculation_identity(calc)
         if not caption:
             continue
         role = calc.get('role', 'measure')
@@ -1601,7 +1672,11 @@ def _collect_semantic_context(datasources, extra_objects):
         # attribute is unreliable: role='measure' only means the field was
         # placed on a measure shelf, not that the formula is aggregated.
         has_col_brackets = bool(formula and '[' in formula)
-        is_calc_col = not has_agg and (role == 'dimension' or has_col_brackets)
+        is_calc_col = not has_agg and (
+            role == 'dimension' or has_col_brackets
+            or is_numeric_row_constant(calc, set(param_map) | set(param_map.values())))
+        if raw in param_map or caption in param_map.values():
+            is_calc_col = False
         if not is_calc_col:
             measure_names.add(caption)
     measure_names.update(param_map.values())
@@ -1751,12 +1826,16 @@ def _collect_semantic_context(datasources, extra_objects):
         formula = calc.get('formula', '').strip()
         if not formula:
             continue
-        _, caption = _calculation_identity(calc)
+        raw, caption = _calculation_identity(calc)
         if not caption or caption in column_table_map:
             continue
         has_agg = bool(_agg_pat.search(formula))
         has_col_refs = bool(re.search(r'\[', formula))
-        is_calc_col = (role == 'dimension') or (role == 'measure' and not has_agg and has_col_refs)
+        is_calc_col = ((role == 'dimension')
+                       or (role == 'measure' and not has_agg and has_col_refs)
+                       or is_numeric_row_constant(calc, set(param_map) | set(param_map.values())))
+        if raw in param_map or caption in param_map.values():
+            is_calc_col = False
         if is_calc_col:
             # Route to the datasource's main table
             dsn = calc.get('datasource_name', '')
@@ -1880,16 +1959,11 @@ def _create_semantic_tables(model, ctx, datasources, extra_objects=None):
                 f'[Table = "{table_literal}", Identity = "{identity_json}"])'
             )
             m_query_override = f'let\n    Source = {pending_error}\nin\n    Source'
-            physical_renames = {
-                physical: logical
-                for physical, logical in (table.get('cols_physical_map') or {}).items()
-                if physical != logical
-            }
-            if physical_renames:
-                _, rename_expression = m_transform_rename(physical_renames)
-                m_query_override = inject_m_steps(m_query_override, [
-                    ('#"Renamed Hyper Columns"', rename_expression),
-                ])
+            physical_rename_steps = _hyper_physical_rename_steps(
+                table.get('cols_physical_map') or {})
+            if physical_rename_steps:
+                m_query_override = inject_m_steps(
+                    m_query_override, physical_rename_steps)
         elif (str(table_conn.get('type', '')).lower() in ('hyper', 'extract', 'dataengine')
               and not m_query_override
               and str(model.get('_model_mode', '')).lower() != 'directlake'):
@@ -2982,6 +3056,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     calc_map_ctx = dax_context.get('calc_map', {})
     param_values = dax_context.get('param_values', {})
     measure_names_ctx = dax_context.get('measure_names', set())
+    parameter_names = (set(dax_context.get('param_map', {}))
+                       | set(dax_context.get('param_map', {}).values()))
 
     # Pair-grain measures are already compiled from source provenance.
     generic_calculations = []
@@ -3039,6 +3115,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         _pc_name, _pc_caption = _calculation_identity(_pc)
         _pc_formula = _pc.get('formula', '').strip()
         _pc_role = _pc.get('role', 'measure')
+        _pc_numeric_constant = is_numeric_row_constant(_pc, parameter_names)
         _pc_is_literal = _pc_formula and '[' not in _pc_formula
         _pc_has_agg = bool(_agg_pattern.search(_pc_formula)) or bool(_lod_pattern.search(_pc_formula))
         # Check for physical column refs (refs not in calc_map/measure_names)
@@ -3054,9 +3131,9 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 break
         # A formula without aggregation that has physical column refs is a
         # calculated column regardless of Tableau's role attribute.
-        _pc_is_cc = (not _pc_is_literal) and not _pc_has_agg and (
-            _pc_role == 'dimension' or _pc_has_col
-        )
+        _pc_is_cc = not _pc_has_agg and (
+            _pc_numeric_constant or (not _pc_is_literal and (
+                _pc_role == 'dimension' or _pc_has_col)))
         if _pc_is_cc:
             prelim_calc_col_captions.add(_pc_caption)
             prelim_calc_col_raws.add(_pc_name)
@@ -3176,6 +3253,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
         # Determine if it's a simple literal (parameter) -> measure
         is_literal = formula and '[' not in formula
+        numeric_row_constant = is_numeric_row_constant(calc, parameter_names)
 
         # Classify: calculated column or measure
         has_aggregation = bool(_agg_pattern.search(formula)) or bool(_lod_pattern.search(formula))
@@ -3200,14 +3278,15 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 references_only_measures = False
                 break
 
-        is_calc_col = (not is_literal) and not has_aggregation and (
-            role == 'dimension' or has_column_refs
-        )
+        is_calc_col = not has_aggregation and (
+            numeric_row_constant or (not is_literal and (
+                role == 'dimension' or has_column_refs)))
 
         # If a calc references ONLY other measures/calcs
         # (no physical columns), it must be a measure — calc columns
         # cannot reference measures in DAX.
-        if is_calc_col and not has_column_refs and references_only_measures:
+        if (is_calc_col and not numeric_row_constant and not has_column_refs
+            and references_only_measures):
             is_calc_col = False
             # Update prelim sets and measure_names so downstream calcs see
             # correct classification

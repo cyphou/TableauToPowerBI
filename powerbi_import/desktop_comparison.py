@@ -256,6 +256,19 @@ def _complete_data_checks(data: Any) -> bool:
         return False
     if data["status"] == "partial" and not (nonempty > 0 and empty > 0):
         return False
+    calculations = data.get('calculation_checks')
+    if calculations is not None:
+        if (not isinstance(calculations, dict) or calculations.get('status') != 'verified'
+                or type(calculations.get('requested')) is not int
+                or type(calculations.get('checked')) is not int
+                or calculations['requested'] <= 0
+                or calculations['requested'] != calculations['checked']):
+            return False
+        results = calculations.get('results')
+        if (not isinstance(results, list) or len(results) != calculations['checked']
+                or any(not isinstance(item, dict) or item.get('status') != 'verified'
+                       for item in results)):
+            return False
     return True
 
 
@@ -800,6 +813,7 @@ def _pbi_capture(pbip: str, shot: Path, timeout: float,
             verify_data=True, refresh=True, refresh_timeout=refresh_timeout)
         # Retain ownership and raw diagnostics even if conversion/gating fails.
         for key in ("pid", "pbip_path", "refresh", "data_load", "native_error", "executable",
+                "refresh_failure_screenshot",
                     "screenshot_data_verified", "window_title", "screenshot_blank"):
             evidence[key] = getattr(report, key, None)
         evidence.update(probe_status=report.status, probe_note=report.note,

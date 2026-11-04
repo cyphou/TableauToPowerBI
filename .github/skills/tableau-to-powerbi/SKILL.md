@@ -215,3 +215,7 @@ Only the owning agent modifies each file; read access is universal. See
   have the user type the secret directly into the terminal.
 - Generated artifacts under `artifacts/` and auto-generated dashboards
   (`docs/zero_error_dashboard.html`) are build output — do not stage them in commits.
+
+<!-- demo-studio:integration:start -->
+For requested demos or presentations, follow [the Demo Studio guide](../../../docs/DEMO_STUDIO.md); this Skill's domain rules, tool restrictions and evidence gates remain authoritative.
+<!-- demo-studio:integration:end -->

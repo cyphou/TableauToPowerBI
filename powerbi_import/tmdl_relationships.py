@@ -66,10 +66,22 @@ def _composite_key_m_expression(terms, *, side, nulls_match, row_name):
         elif normalized in ('boolean', 'bool', 'logical'):
             value = f'if {reference} then "1" else "0"'
             type_tag = 'B'
+        elif normalized in ('date', 'date32'):
+            value = (
+                f'Date.ToText({reference}, '
+                '[Format = "yyyy-MM-dd", Culture = "en-US"])'
+            )
+            type_tag = 'D'
+        elif normalized in ('datetime', 'datetime2', 'timestamp'):
+            value = (
+                f'DateTime.ToText({reference}, '
+                '[Format = "yyyy-MM-ddTHH:mm:ss.fffffff", Culture = "en-US"])'
+            )
+            type_tag = 'T'
         else:
             raise ValueError(
                 f"Composite equality key type {data_type!r} is unsupported; "
-                "use matching string, integer, or boolean columns.")
+                "use matching text, integer, boolean, date, or datetime columns.")
         name = f'__ttpbi_value_{index}'
         encoded.append((name, value, type_tag, reference))
 
@@ -107,6 +119,10 @@ def _composite_key_type(value):
         return 'integer'
     if normalized in ('boolean', 'bool', 'logical'):
         return 'boolean'
+    if normalized in ('date', 'date32'):
+        return 'date'
+    if normalized in ('datetime', 'datetime2', 'timestamp'):
+        return 'datetime'
     return None
 
 
@@ -166,19 +182,42 @@ def _materialize_composite_logical_relationships(model, extra_objects):
             if not isinstance(raw_policy, dict):
                 raise TypeError(
                     f"Composite relationship policy {ds_name}[{index}] must be an object")
-            required = {
-                'one_side', 'comparison_case_sensitive', 'comparison_exact',
-                'nulls_match', 'filter_direction',
-            }
-            if set(raw_policy) != required:
-                raise ValueError(
-                    f"Composite relationship policy {ds_name}[{index}] must contain "
-                    "only one_side, comparison_case_sensitive, comparison_exact, "
-                    "nulls_match, and filter_direction")
-            if raw_policy.get('one_side') not in ('left', 'right'):
-                raise ValueError(
-                    f"Composite relationship policy {ds_name}[{index}] one_side "
-                    "must be 'left' or 'right'")
+            many_to_many = raw_policy.get('cardinality') == 'manyToMany'
+            if many_to_many:
+                required = {
+                    'cardinality', 'comparison_case_sensitive', 'comparison_exact',
+                    'nulls_match', 'filter_direction',
+                }
+                filter_direction = raw_policy.get('filter_direction')
+                if filter_direction == 'oneDirection':
+                    required.add('filter_from')
+                elif filter_direction != 'bothDirections':
+                    raise ValueError(
+                        f"Composite relationship {ds_name}[{index}] requires an "
+                        "explicit oneDirection or bothDirections filter policy")
+                if set(raw_policy) != required:
+                    raise ValueError(
+                        f"Composite relationship policy {ds_name}[{index}] must "
+                        f"contain exactly {sorted(required)!r}")
+                if (filter_direction == 'oneDirection'
+                        and raw_policy.get('filter_from') not in ('left', 'right')):
+                    raise ValueError(
+                        f"Composite relationship policy {ds_name}[{index}] "
+                        "filter_from must be 'left' or 'right'")
+            else:
+                required = {
+                    'one_side', 'comparison_case_sensitive', 'comparison_exact',
+                    'nulls_match', 'filter_direction',
+                }
+                if set(raw_policy) != required:
+                    raise ValueError(
+                        f"Composite relationship policy {ds_name}[{index}] must contain "
+                        "only one_side, comparison_case_sensitive, comparison_exact, "
+                        "nulls_match, and filter_direction")
+                if raw_policy.get('one_side') not in ('left', 'right'):
+                    raise ValueError(
+                        f"Composite relationship policy {ds_name}[{index}] one_side "
+                        "must be 'left' or 'right'")
             if raw_policy.get('comparison_case_sensitive') is not True:
                 raise ValueError(
                     f"Composite relationship {ds_name}[{index}] requires verified "
@@ -192,7 +231,7 @@ def _materialize_composite_logical_relationships(model, extra_objects):
                 raise TypeError(
                     f"Composite relationship policy {ds_name}[{index}] must explicitly "
                     "declare whether null tuples match")
-            if raw_policy.get('filter_direction') != 'oneDirection':
+            if not many_to_many and raw_policy.get('filter_direction') != 'oneDirection':
                 raise ValueError(
                     f"Composite relationship {ds_name}[{index}] supports only an "
                     "explicit oneDirection filter policy")
@@ -276,17 +315,24 @@ def _materialize_composite_logical_relationships(model, extra_objects):
                 raise ValueError(
                     f"Composite relationship {ds_name}[{index}] has mismatched "
                     "key component types")
-            one_table = left_table if raw_policy['one_side'] == 'left' else right_table
-            many_table = right_table if raw_policy['one_side'] == 'left' else left_table
+            one_table = None if many_to_many else (
+                left_table if raw_policy['one_side'] == 'left' else right_table)
+            many_table = None if many_to_many else (
+                right_table if raw_policy['one_side'] == 'left' else left_table)
             plans.append({
                 'datasource': ds_name, 'index': index,
                 'left_table': left_table, 'right_table': right_table,
                 'left_terms': left_terms, 'right_terms': right_terms,
                 'one_table': one_table, 'many_table': many_table,
-                'one_terms': left_terms if raw_policy['one_side'] == 'left'
-                else right_terms,
-                'many_terms': right_terms if raw_policy['one_side'] == 'left'
-                else left_terms,
+                'one_terms': None if many_to_many else (
+                    left_terms if raw_policy['one_side'] == 'left' else right_terms),
+                'many_terms': None if many_to_many else (
+                    right_terms if raw_policy['one_side'] == 'left' else left_terms),
+                'key_components': [
+                    {'left_column': left_name, 'right_column': right_name}
+                    for left_name, right_name in pairs
+                ],
+                'cardinality': 'manyToMany' if many_to_many else 'manyToOne',
                 'policy': raw_policy,
             })
         unknown_indices = set(ds_policies) - matched_policy_indices
@@ -352,14 +398,23 @@ def _materialize_composite_logical_relationships(model, extra_objects):
             partitions[table_name] = table_partitions[0]
             planned_columns.setdefault(table_name, set()).update(key_names)
 
-        one = tables[plan['one_table']]
-        many = tables[plan['many_table']]
         expressions = {}
-        for table, terms, side in (
+        many_to_many = plan['cardinality'] == 'manyToMany'
+        if many_to_many:
+            keyed_tables = (
+                (tables[plan['left_table']], plan['left_terms'], 'L'),
+                (tables[plan['right_table']], plan['right_terms'], 'R'),
+            )
+        else:
+            one = tables[plan['one_table']]
+            many = tables[plan['many_table']]
+            keyed_tables = (
                 (one, plan['one_terms'],
                  'L' if plan['one_table'] == plan['left_table'] else 'R'),
                 (many, plan['many_terms'],
-                 'L' if plan['many_table'] == plan['left_table'] else 'R')):
+                 'L' if plan['many_table'] == plan['left_table'] else 'R'),
+            )
+        for table, terms, side in keyed_tables:
             expressions[table['name']] = _composite_key_m_expression(
                 terms, side=side,
                 nulls_match=plan['policy']['nulls_match'],
@@ -377,7 +432,7 @@ def _materialize_composite_logical_relationships(model, extra_objects):
                 (f'#"TTPBI Remove Composite Row {tag}"', (
                     f'Table.RemoveColumns({{prev}}, {{"{row_name}"}})')),
             ]
-            if table is one:
+            if not many_to_many and table is one:
                 steps.append((f'#"TTPBI Composite Key Check {tag}"', (
                     f'let __rows = {{prev}}, '
                     f'__distinct = Table.RowCount(Table.Distinct(__rows, {{"{key_name}"}})) '
@@ -406,9 +461,46 @@ def _materialize_composite_logical_relationships(model, extra_objects):
 
     for plan in prepared:
         key_name = plan['key_name']
-        one = tables[plan['one_table']]
-        many = tables[plan['many_table']]
-        for table in (one, many):
+        many_to_many = plan['cardinality'] == 'manyToMany'
+        if many_to_many:
+            left = tables[plan['left_table']]
+            right = tables[plan['right_table']]
+            relationship_from = left
+            relationship_to = right
+            filter_direction = plan['policy']['filter_direction']
+            if filter_direction == 'oneDirection':
+                filter_source = left if plan['policy']['filter_from'] == 'left' else right
+                relationship_from = right if filter_source is left else left
+                relationship_to = filter_source
+            relationship = {
+                'name': str(uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"ttpbi:composite:{plan['datasource']}:{plan['index']}:"
+                    f"{relationship_from['name']}:{relationship_to['name']}",
+                )),
+                'fromTable': relationship_from['name'],
+                'fromColumn': key_name,
+                'toTable': relationship_to['name'],
+                'toColumn': key_name,
+                'fromCardinality': 'many', 'toCardinality': 'many',
+                'joinType': 'left', 'crossFilteringBehavior': filter_direction,
+                '_explicit_composite_cardinality': True,
+            }
+        else:
+            one = tables[plan['one_table']]
+            many = tables[plan['many_table']]
+            relationship = {
+                'name': str(uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"ttpbi:composite:{plan['datasource']}:{plan['index']}:"
+                    f"{plan['many_table']}:{plan['one_table']}",
+                )),
+                'fromTable': plan['many_table'], 'fromColumn': key_name,
+                'toTable': plan['one_table'], 'toColumn': key_name,
+                'joinType': 'left', 'crossFilteringBehavior': 'oneDirection',
+                '_source_cardinality_verified': True,
+            }
+        for table in ((left, right) if many_to_many else (one, many)):
             table['columns'].append({
                 'name': key_name, 'dataType': 'String',
                 'sourceColumn': key_name, 'summarizeBy': 'none',
@@ -420,17 +512,27 @@ def _materialize_composite_logical_relationships(model, extra_objects):
             [plan['left_table'], plan['right_table']])
         model.setdefault('_logical_equality_compiled_pairs', []).append(
             [plan['left_table'], plan['right_table']])
-        model.setdefault('_materialized_composite_relationships', []).append({
-            'name': str(uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"ttpbi:composite:{plan['datasource']}:{plan['index']}:"
-                f"{plan['many_table']}:{plan['one_table']}",
-            )),
-            'fromTable': plan['many_table'], 'fromColumn': key_name,
-            'toTable': plan['one_table'], 'toColumn': key_name,
-            'joinType': 'left', 'crossFilteringBehavior': 'oneDirection',
-            '_source_cardinality_verified': True,
-        })
+        model.setdefault('_materialized_composite_relationships', []).append(relationship)
+        if many_to_many:
+            model.setdefault('_composite_relationship_migrations', []).append({
+                'datasource': plan['datasource'],
+                'relationship_index': plan['index'],
+                'cardinality': 'manyToMany',
+                'left_table': plan['left_table'],
+                'right_table': plan['right_table'],
+                'key_components': plan['key_components'],
+                'filter_direction': filter_direction,
+                'filter_from': plan['policy'].get('filter_from'),
+                'nulls_match': plan['policy']['nulls_match'],
+                'comparison_case_sensitive': plan['policy']['comparison_case_sensitive'],
+                'comparison_exact': plan['policy']['comparison_exact'],
+                'status': 'approximated',
+                'note': (
+                    'Power BI filters through an encoded composite many-to-many '
+                    'relationship. Validate filter propagation, duplicate-key '
+                    'aggregations, and measures against the Tableau workbook.'
+                ),
+            })
 
 
 def _enforce_hybrid_relationship_constraints(model):
@@ -451,6 +553,8 @@ def _enforce_hybrid_relationship_constraints(model):
 
 def _create_and_validate_relationships(model, datasources):
     """Phase 4: Create, deduplicate, validate, and fix type mismatches in relationships."""
+    from powerbi_import.errors import PartialGenerationError
+
     seen_rels = set()
     protected_pairs = {
         frozenset(pair) for pair in model.get('_logical_predicate_pairs', [])
@@ -560,10 +664,14 @@ def _create_and_validate_relationships(model, datasources):
                         "Skipped lossy legacy equality projection for compiled "
                         "logical pair %s / %s", *endpoints)
                     continue
-                raise ValueError(
+                raise PartialGenerationError(
                     logical_pair_error(
                         source_rel, endpoints,
-                        predicates[0] if len(predicates) == 1 else {}))
+                        predicates[0] if len(predicates) == 1 else {}),
+                    source=ds.get('name'), recovery_kind='logical_relationship_predicate',
+                    required_evidence=[
+                        'Complete source predicate', 'Verified source key cardinality',
+                        'Verified case and null-safe composite key encoding'])
             relationships.append(source_rel)
         rels = _build_relationships(relationships)
         for rel in rels:
@@ -1089,6 +1197,8 @@ def _detect_many_to_many(model, datasources):
         table_col_counts[tname] = len(table.get('columns', []))
 
     for rel in model['model']['relationships']:
+        if rel.pop('_explicit_composite_cardinality', False):
+            continue
         if rel.pop('_source_cardinality_verified', False):
             rel['fromCardinality'] = 'many'
             rel['toCardinality'] = 'one'

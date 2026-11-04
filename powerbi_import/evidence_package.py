@@ -30,6 +30,7 @@ def build_evidence_package(report: Any) -> Dict[str, Any]:
         "status": payload.get("status", "UNVERIFIED"),
         "handoff_status": payload.get("handoff_status", "UNVERIFIED"),
         "pipeline_failure": payload.get("pipeline_failure", {}),
+        "partial_generation": payload.get("partial_generation", {}),
         "summary": summary,
         "certification": certification,
         "release_readiness": release_readiness,
@@ -87,7 +88,14 @@ def write_evidence_package(report: Any, output_path: str, extra_files: list[str]
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("evidence_package.json", json.dumps(payload, indent=2, ensure_ascii=False))
         archive.writestr("README.txt", readme)
-        for file_path in extra_files or []:
+        files = list(extra_files or [])
+        raw_report = report.to_dict() if hasattr(report, 'to_dict') else dict(report)
+        project_dir = raw_report.get('openability', {}).get('project_dir')
+        if project_dir and payload.get('partial_generation'):
+            diagnostic = os.path.join(project_dir, 'partial_generation.json')
+            if diagnostic not in files:
+                files.append(diagnostic)
+        for file_path in files:
             if not file_path or not os.path.isfile(file_path):
                 continue
             arcname = os.path.join("quality", os.path.basename(file_path))

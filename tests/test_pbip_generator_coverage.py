@@ -796,10 +796,11 @@ class TestBuildVisualQuery(unittest.TestCase):
                 }},
                 'Function': function,
             }},
-            'queryRef': 'Sales.Amount',
+            'queryRef': query_ref,
             'nativeQueryRef': 'Amount',
             'active': True,
-        } for function in (1, 3, 4)])
+        } for function, query_ref in (
+            (1, 'Avg(Sales.Amount)'), (3, 'Min(Sales.Amount)'), (4, 'Sales.Amount'))])
         self.assertEqual(roles['Y']['projections'][0]['field'], {
             'Aggregation': {
                 'Expression': {'Column': {
@@ -4761,6 +4762,125 @@ class TestCreateVisualTextbox(unittest.TestCase):
 
 class TestCreateVisualImage(unittest.TestCase):
     """Image visual with source URL."""
+
+    def test_available_local_image_is_embedded_and_survives_source_removal(self):
+        import base64
+        import binascii
+        import struct
+        import zlib
+
+        def chunk(kind, payload):
+            return (struct.pack('!I', len(payload)) + kind + payload
+                    + struct.pack('!I', binascii.crc32(kind + payload) & 0xffffffff))
+
+        image_bytes = (b'\x89PNG\r\n\x1a\n'
+                       + chunk(b'IHDR', struct.pack('!IIBBBBB', 1, 1, 8, 2, 0, 0, 0))
+                       + chunk(b'IDAT', zlib.compress(b'\x00\xff\x00\x00'))
+                       + chunk(b'IEND', b''))
+        with tempfile.TemporaryDirectory() as root:
+            source = os.path.join(root, 'available image.png')
+            with open(source, 'wb') as handle:
+                handle.write(image_bytes)
+            visuals = os.path.join(root, 'visuals')
+            generator = _make_generator()
+            generator._create_visual_image(visuals, {'source': source}, 1, 1, 0)
+            os.remove(source)
+            visual_path = os.path.join(visuals, os.listdir(visuals)[0], 'visual.json')
+            with open(visual_path, encoding='utf-8') as handle:
+                visual = json.load(handle)['visual']
+            value = visual['objects']['general'][0]['properties']['imageUrl']['expr']['Literal']['Value']
+            self.assertEqual(value, "'data:image/png;base64,"
+                             + base64.b64encode(image_bytes).decode('ascii') + "'")
+            self.assertNotIn(source, value)
+            self.assertFalse(getattr(generator, '_embedded_image_paths', {}))
+
+    def test_relative_twb_image_resolves_from_workbook_not_working_directory(self):
+        from tableau_export.dashboard_extractor import extract_dashboard_objects
+        import xml.etree.ElementTree as ET
+        with tempfile.TemporaryDirectory() as root:
+            workbook = os.path.join(root, 'synthetic.twb')
+            with open(workbook, 'w', encoding='utf-8') as handle:
+                handle.write('<workbook/>')
+            os.makedirs(os.path.join(root, 'Assets'))
+            source = os.path.join(root, 'Assets', 'logo.svg')
+            with open(source, 'wb') as handle:
+                handle.write(b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>')
+            dashboard = ET.fromstring(
+                '<dashboard><zones><zone type="bitmap" id="1" param="Assets/logo.svg" '
+                'x="0" y="0" w="40" h="40"/></zones></dashboard>')
+            image = extract_dashboard_objects(dashboard, workbook_path=workbook)[0]
+            self.assertEqual(image['resolved_source'], os.path.realpath(source))
+            generator = _make_generator(output_dir=os.path.join(root, 'output'))
+            objects = {
+                'datasources': [{
+                    'name': 'Synthetic',
+                    'connection': {'type': 'SQL Server', 'server': 'localhost',
+                                   'database': 'synthetic'},
+                    'tables': [{'name': 'Facts', 'columns': [
+                        {'name': 'ID', 'datatype': 'integer'}]}],
+                }],
+                'dashboards': [{'name': 'Images', 'size': {'width': 640, 'height': 480},
+                                'objects': [image]}],
+            }
+            project = generator.generate_project('PortableImage', objects)
+            os.remove(source)
+            paths = list(Path(project).glob('*.Report/definition/pages/*/visuals/*/visual.json'))
+            self.assertEqual(len(paths), 1)
+            path = paths[0]
+            with open(path, encoding='utf-8') as handle:
+                visual = json.load(handle)['visual']
+            literal = visual['objects']['general'][0]['properties']['imageUrl']['expr']['Literal']['Value']
+            self.assertTrue(literal.startswith("'data:image/svg+xml;base64,"))
+            self.assertNotIn(root, literal)
+
+    def test_upload_image_outside_private_root_is_rejected_before_reading(self):
+        from powerbi_import.security_validator import SecurityError
+        with tempfile.TemporaryDirectory() as root:
+            private = os.path.join(root, 'private')
+            os.mkdir(private)
+            outside = os.path.join(root, 'outside.png')
+            with patch.dict(os.environ, {'TTPBI_UPLOAD_ROOT': private}), \
+                    patch('builtins.open') as read:
+                with self.assertRaises(SecurityError):
+                    _make_generator()._embed_local_image(outside)
+            read.assert_not_called()
+
+    def test_missing_local_image_remains_an_explicit_placeholder(self):
+        with tempfile.TemporaryDirectory() as root:
+            generator = _make_generator()
+            visuals = os.path.join(root, 'visuals')
+            generator._create_visual_image(
+                visuals, {'source': os.path.join(root, 'missing.png')}, 1, 1, 0)
+            path = os.path.join(visuals, os.listdir(visuals)[0], 'visual.json')
+            with open(path, encoding='utf-8') as handle:
+                visual = json.load(handle)
+            self.assertEqual(visual['visual']['visualType'], 'textbox')
+            self.assertIn('Source image unavailable', visual['annotations'][0]['value'])
+
+    def test_oversized_local_image_is_not_read(self):
+        from types import SimpleNamespace
+        with patch('os.stat', return_value=SimpleNamespace(st_mode=0o100644,
+                                                         st_size=21 * 1024 * 1024)), \
+                patch('builtins.open') as read:
+            with self.assertRaisesRegex(ValueError, '20 MiB'):
+                _make_generator()._embed_local_image(os.path.abspath('synthetic.png'))
+        read.assert_not_called()
+
+    def test_nonlocal_image_path_is_not_probed(self):
+        with patch('os.stat') as probe, patch('builtins.open') as read:
+            with self.assertRaisesRegex(ValueError, 'Non-local'):
+                PowerBIProjectGenerator._embed_local_image(r'\\example.invalid\share\logo.png')
+        probe.assert_not_called()
+        read.assert_not_called()
+
+    def test_linked_local_image_is_not_read(self):
+        source = os.path.abspath('synthetic-linked.png')
+        with patch('os.path.islink', side_effect=lambda path: os.fspath(path) == source), \
+                patch('os.stat') as probe, patch('builtins.open') as read:
+            with self.assertRaisesRegex(ValueError, 'Linked'):
+                PowerBIProjectGenerator._embed_local_image(source)
+        probe.assert_not_called()
+        read.assert_not_called()
 
     def test_creates_image_visual(self):
         gen = _make_generator()

@@ -90,6 +90,61 @@ def _read_csv_header_from_twbx(twbx_path, directory, filename):
     return None
 
 
+def _resolve_loose_twb_csv_source(twbx_path, directory, filename, *,
+                                  read_header=False, encoding='utf-8'):
+    """Resolve a copied ``Data`` sibling for a loose TWB's stale absolute path.
+
+    Only an absent absolute directory whose leaf is ``Data`` may be rebased,
+    and only when the exact relative file exists beneath the workbook folder.
+    Existing external locations and unresolved references remain untouched.
+    """
+    original_directory = str(directory or '')
+    if (not twbx_path
+            or os.path.splitext(twbx_path)[1].lower() != '.twb'
+            or not os.path.isfile(twbx_path)
+            or zipfile.is_zipfile(twbx_path)):
+        return original_directory, None
+
+    filename = str(filename or '')
+    if not filename or os.path.isabs(filename):
+        return original_directory, None
+
+    workbook_dir = os.path.abspath(os.path.dirname(twbx_path))
+    if original_directory and os.path.isabs(original_directory):
+        if os.path.isdir(original_directory):
+            candidate_dir = original_directory
+            effective_directory = original_directory
+        elif os.path.basename(os.path.normpath(original_directory)).casefold() == 'data':
+            candidate_dir = os.path.join(workbook_dir, 'Data')
+            effective_directory = 'Data'
+        else:
+            return original_directory, None
+    else:
+        candidate_dir = os.path.normpath(os.path.join(workbook_dir, original_directory))
+        effective_directory = original_directory
+
+    candidate = os.path.normpath(os.path.join(candidate_dir, filename))
+    try:
+        root_identity = os.path.normcase(os.path.realpath(workbook_dir))
+        candidate_identity = os.path.normcase(os.path.realpath(candidate))
+        within_workbook = os.path.commonpath((root_identity, candidate_identity)) == root_identity
+    except (OSError, ValueError):
+        within_workbook = False
+    if not within_workbook or not os.path.isfile(candidate):
+        return original_directory, None
+
+    header = None
+    if read_header:
+        try:
+            with open(candidate, 'rb') as stream:
+                raw = stream.readline(65537)
+            if len(raw) <= 65536:
+                header = raw.decode(encoding or 'utf-8', errors='replace').strip()
+        except (OSError, LookupError):
+            pass
+    return effective_directory, header
+
+
 def _extract_col_local_name_map(datasource_elem):
     """Build mapping of Tableau local-names to their parent table names.
 
@@ -2855,8 +2910,14 @@ def _parse_connection_class(inner_conn, named_conn=None, twbx_path=None):
         csv_filename = inner_conn.get('filename', '')
         csv_directory = inner_conn.get('directory', '')
         delimiter = inner_conn.get('separator', '')
+        csv_directory, local_header = _resolve_loose_twb_csv_source(
+            twbx_path, csv_directory, csv_filename,
+            read_header=not delimiter,
+            encoding=inner_conn.get('charset', 'utf-8'))
         if not delimiter:
             header = _read_csv_header_from_twbx(twbx_path, csv_directory, csv_filename)
+            if header is None:
+                header = local_header
             delimiter = _detect_csv_delimiter(header) if header else ','
         return _with_native_source_context({
             'type': 'CSV',
@@ -2943,6 +3004,10 @@ def _build_connection_map(datasource_elem, twbx_path=None):
 
 def extract_connection_details(datasource_elem, twbx_path=None):
     """Extracts connection details (Excel, SQL, etc.)"""
+    loose_twb_context = (
+        twbx_path if os.path.splitext(str(twbx_path or ''))[1].lower() == '.twb'
+        else None
+    )
     connection_elem = datasource_elem.find('.//connection[@class="federated"]')
     if connection_elem is None:
         connection_elem = datasource_elem.find('.//connection')
@@ -2956,14 +3021,17 @@ def extract_connection_details(datasource_elem, twbx_path=None):
             # Add provenance separately: do not introduce packaged CSV reads
             # into this previously metadata-only connection path.
             return _with_native_source_context(
-                _parse_connection_class(inner_conn, named_conn),
+                _parse_connection_class(
+                    inner_conn, named_conn, twbx_path=loose_twb_context),
                 inner_conn, twbx_path)
 
     # Direct connection (no named-connection wrapper) — e.g. sqlproxy
     conn_class = connection_elem.get('class', '')
     if conn_class and conn_class != 'federated':
         return _with_native_source_context(
-            _parse_connection_class(connection_elem), connection_elem, twbx_path)
+            _parse_connection_class(
+                connection_elem, twbx_path=loose_twb_context),
+            connection_elem, twbx_path)
 
     return {'type': 'Unknown', 'details': {}}
 
@@ -2987,6 +3055,19 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
 
     # Phase 1: Collect all physical tables
     raw_tables = {}  # name -> best table dict
+    excel_explicit_schema_tables = set()
+    excel_connection_names = {
+        named_conn.get('name', '')
+        for named_conn in datasource_elem.findall('.//named-connection')
+        if named_conn.get('name', '')
+        and named_conn.find('.//connection') is not None
+        and named_conn.find('.//connection').get('class', '') == 'excel-direct'
+    }
+    excel_relation_ids = {
+        id(relation)
+        for connection in datasource_elem.findall('.//connection[@class="excel-direct"]')
+        for relation in connection.findall('.//relation')
+    }
 
     for relation in datasource_elem.findall('.//relation'):
         # ONLY physical tables, NOT joins
@@ -2999,6 +3080,13 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
             continue
 
         conn_ref = relation.get('connection', '')
+        connection_type = connection_map.get(conn_ref, {}).get('type', '')
+        has_excel_explicit_schema = (
+            bool(relation.findall('./columns/column'))
+            and (connection_type == 'Excel'
+                 or conn_ref in excel_connection_names
+                 or id(relation) in excel_relation_ids)
+        )
 
         columns = []
         for col_elem in relation.findall('./columns/column'):
@@ -3029,6 +3117,10 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
                 'caption': relation.get('caption', ''),
                 'source_table': relation.get('table', '').strip('[]'),
             }
+            if has_excel_explicit_schema:
+                excel_explicit_schema_tables.add(table_name)
+            else:
+                excel_explicit_schema_tables.discard(table_name)
 
     # Phase 2: For tables with no nested columns (SQL Server, etc.),
     # populate from datasource-level <cols> mapping + <column> elements.
@@ -3196,7 +3288,8 @@ def extract_tables_with_columns(datasource_elem, connection_map=None):
     # Phase 4: Merge missing datasource-level physical declarations into the
     # sole table, including partially populated schemas. With multiple tables,
     # declarations without ownership evidence must not be assigned.
-    if len(raw_tables) == 1:
+    if (len(raw_tables) == 1
+            and next(iter(raw_tables)) not in excel_explicit_schema_tables):
         table = next(iter(raw_tables.values()))
         existing_names = {col['name'] for col in table['columns']}
         ordinal = len(table['columns'])

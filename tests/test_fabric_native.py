@@ -318,12 +318,32 @@ class TestCalcColumnUtils:
         assert len(cc) == 0
         assert len(measures) == 0
 
-    def test_classify_literal_as_measure(self):
+    def test_classify_numeric_literal_as_column(self):
         from powerbi_import.calc_column_utils import classify_calculations
         calcs = [{'name': 'lit', 'formula': '42', 'role': 'measure', 'datatype': 'integer'}]
         cc, measures = classify_calculations(calcs)
-        assert len(cc) == 0
-        assert len(measures) == 1
+        assert len(cc) == 1
+        assert cc[0]['spark_type'] == 'INT'
+        assert len(measures) == 0
+
+    def test_literal_parameters_and_context_functions_stay_scalar(self):
+        from powerbi_import.calc_column_utils import classify_calculations
+        for metadata in ({'is_parameter': True}, {'domain_type': 'any'},
+                         {'datasource_name': 'Parameters'}):
+            cc, measures = classify_calculations([
+                {'name': 'Threshold', 'formula': '42', 'role': 'measure', **metadata}])
+            assert not cc
+            assert len(measures) == 1
+        for formula in ('"Caption"', 'TODAY()', 'NOW()', 'USERNAME()', 'SUM([Amount])'):
+            cc, measures = classify_calculations([
+                {'name': 'Scalar', 'formula': formula, 'role': 'measure'}])
+            assert not cc
+            assert len(measures) == 1
+
+    def test_numeric_parameter_identity_preserves_inner_brackets(self):
+        from powerbi_import.calc_column_utils import is_numeric_row_constant
+        assert not is_numeric_row_constant(
+            {'name': '[Metric [raw]]', 'formula': '42'}, {'Metric [raw]'})
 
     def test_sanitize_calc_col_name(self):
         from powerbi_import.calc_column_utils import sanitize_calc_col_name

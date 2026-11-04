@@ -406,7 +406,7 @@ class TestBuildTableCalcClassification(unittest.TestCase):
             any(c.get('name') == 'SalesGroup' for c in result.get('columns', []))
         )
 
-    def test_inline_literal_measure_in_calc_col(self):
+    def test_inline_literal_parameter_in_calc_col(self):
         """L1257: literal-value measure inlined into calc column formula."""
         calcs = [
             {
@@ -424,7 +424,7 @@ class TestBuildTableCalcClassification(unittest.TestCase):
                 'datatype': 'string',
             },
         ]
-        dax_extra = {'measure_names': {'Threshold'}}
+        dax_extra = {'measure_names': {'Threshold'}, 'param_map': {'Threshold': 'Threshold'}}
         result = self._build(calcs, extra_dax=dax_extra)
         # The literal "100" measure should be inlined into the calc column
         # We just check that both exist without errors

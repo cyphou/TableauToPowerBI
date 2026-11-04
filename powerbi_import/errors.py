@@ -17,6 +17,7 @@ __all__ = [
     "ExtractionError",
     "ConversionError",
     "GenerationError",
+    "PartialGenerationError",
     "ValidationError",
     "ConfigurationError",
     "DeploymentError",
@@ -74,6 +75,20 @@ class GenerationError(MigrationError):
     """TMDL, PBIR, or Fabric artifact generation failed."""
 
     stage = "generation"
+
+
+class PartialGenerationError(GenerationError, ValueError):
+    """An unsupported semantic conversion can yield an explicitly partial project."""
+
+    def __init__(self, message, *, item=None, source=None, recovery_kind=None,
+                 required_evidence=None):
+        super().__init__(message, item=item, source=source)
+        self.recovery_kind = recovery_kind
+        self.required_evidence = list(required_evidence or [])
+
+    def to_dict(self):
+        return {**super().to_dict(), 'recovery_kind': self.recovery_kind,
+                'required_evidence': list(self.required_evidence)}
 
 
 class ValidationError(MigrationError):

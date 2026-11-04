@@ -66,6 +66,96 @@ class TestDatasourceTableNaming(unittest.TestCase):
         self.assertNotIn('Sheet1 (Sheet1 (SrcA))', context['best_tables'])
 
 
+class TestNumericRowConstants(unittest.TestCase):
+    def test_numeric_literals_are_columns_in_context_and_model(self):
+        for literal in ('1', '42', '-2', '0.5', '1e2'):
+            with self.subTest(literal=literal):
+                calculation = {
+                    'name': '[RowConstant]', 'caption': 'Row Constant',
+                    'formula': literal, 'role': 'measure', 'datatype': 'real',
+                    'datasource_name': 'Synthetic',
+                }
+                datasources = [{
+                    'name': 'Synthetic',
+                    'connection': {'type': 'SQL Server', 'server': 'localhost',
+                                   'database': 'synthetic'},
+                    'tables': [{'name': 'Facts', 'columns': [
+                        {'name': 'Lot', 'datatype': 'string'}]}],
+                    'calculations': [calculation],
+                }]
+                context = _collect_semantic_context(datasources, {})
+                self.assertNotIn('Row Constant', context['measure_names'])
+                self.assertEqual(context['column_table_map'].get('Row Constant'), 'Facts')
+                model = _build_semantic_model(datasources)
+                table = next(table for table in model['model']['tables']
+                             if table['name'] == 'Facts')
+                self.assertTrue(any(column['name'] == 'Row Constant'
+                                    for column in table['columns']))
+                self.assertFalse(any(measure['name'] == 'Row Constant'
+                                     for measure in table['measures']))
+
+
+    def test_numeric_constant_can_feed_row_calculations_and_aggregates(self):
+        calculations = [{
+            'name': '[RowConstant]', 'caption': 'Row Constant', 'formula': '1',
+            'role': 'measure', 'datatype': 'integer', 'datasource_name': 'Synthetic',
+        }, {
+            'name': '[Dependent]', 'caption': 'Dependent', 'formula': '[RowConstant] + [Amount]',
+            'role': 'measure', 'datatype': 'real', 'datasource_name': 'Synthetic',
+        }]
+        for aggregation in ('SUM', 'AVG', 'MIN', 'MAX', 'COUNTD'):
+            calculations.append({
+                'name': f'[{aggregation}Rows]', 'caption': f'{aggregation} Rows',
+                'formula': f'{aggregation}([RowConstant])', 'role': 'measure',
+                'datatype': 'real', 'datasource_name': 'Synthetic',
+            })
+        model = _build_semantic_model([{
+            'name': 'Synthetic',
+            'connection': {'type': 'SQL Server', 'server': 'localhost', 'database': 'synthetic'},
+            'tables': [{'name': 'Facts', 'columns': [{'name': 'Amount', 'datatype': 'real'}]}],
+            'calculations': calculations,
+        }])
+        table = next(table for table in model['model']['tables'] if table['name'] == 'Facts')
+        self.assertIn('Dependent', {column['name'] for column in table['columns']})
+        measures = {measure['name']: measure['expression'] for measure in table['measures']}
+        self.assertNotIn('Row Constant', measures)
+        for aggregation in ('SUM', 'AVG', 'MIN', 'MAX', 'COUNTD'):
+            expression = measures[f'{aggregation} Rows']
+            self.assertTrue("'Facts'[Row Constant]" in expression
+                            or (aggregation == 'SUM' and expression == "COUNTROWS('Facts')"),
+                            expression)
+
+    def test_declared_numeric_parameter_stays_scalar(self):
+        calculation = {
+            'name': '[Threshold]', 'caption': 'Threshold', 'formula': '42',
+            'role': 'measure', 'datatype': 'integer', 'datasource_name': 'Synthetic',
+        }
+        datasources = [{
+            'name': 'Synthetic',
+            'connection': {'type': 'SQL Server', 'server': 'localhost', 'database': 'synthetic'},
+            'tables': [{'name': 'Facts', 'columns': [{'name': 'Lot', 'datatype': 'string'}]}],
+            'calculations': [calculation],
+        }]
+        extra = {'parameters': [{
+            'name': '[Parameters].[Threshold]', 'caption': 'Threshold',
+            'datatype': 'integer', 'domain_type': 'any', 'value': '42',
+        }]}
+        context = _collect_semantic_context(datasources, extra)
+        self.assertIn('Threshold', context['measure_names'])
+        self.assertNotIn('Threshold', context['column_table_map'])
+        model = _build_semantic_model(datasources, extra_objects=extra)
+        self.assertFalse(any(column['name'] == 'Threshold'
+                             for table in model['model']['tables']
+                             for column in table.get('columns', [])))
+        self.assertTrue(any(measure['name'] == 'Threshold' and measure['expression'] == '42'
+                            for table in model['model']['tables']
+                            for measure in table.get('measures', [])))
+        calculation['role'] = 'dimension'
+        context = _collect_semantic_context(datasources, extra)
+        self.assertIn('Threshold', context['measure_names'])
+        self.assertNotIn('Threshold', context['column_table_map'])
+
+
 class TestCombinedGroupMonthTruncation(unittest.TestCase):
 
     def test_month_truncation_keeps_year_in_m_and_dax_keys(self):
@@ -284,8 +374,9 @@ class TestCalculationIdentitySemanticContext(unittest.TestCase):
         }])
         dax = context['dax_context']
         self.assertEqual(dax['param_values'], {'Number of Records': '1'})
-        self.assertEqual(dax['measure_names'], {'Number of Records'})
-        self.assertEqual(context['measure_names'], {'Number of Records'})
+        self.assertEqual(dax['measure_names'], set())
+        self.assertEqual(context['measure_names'], set())
+        self.assertEqual(dax['column_table_map']['Number of Records'], 'table')
         self.assertEqual(dax['calc_map'], {})
         self.assertNotIn('[Number of Records]', dax['param_values'])
         self.assertNotIn('[Number of Records]', dax['measure_names'])
@@ -321,7 +412,8 @@ class TestCalculationIdentitySemanticContext(unittest.TestCase):
                 context = self.context([calculation])['dax_context']
                 self.assertEqual(context['calc_map'], {})
                 self.assertEqual(context['param_values'], {'Number of Records': '1'})
-                self.assertEqual(context['measure_names'], {'Number of Records'})
+                self.assertEqual(context['measure_names'], set())
+                self.assertEqual(context['column_table_map']['Number of Records'], 'table')
 
     def test_explicit_accented_and_punctuation_captions_are_preserved(self):
         context = self.context([
@@ -331,7 +423,9 @@ class TestCalculationIdentitySemanticContext(unittest.TestCase):
         self.assertEqual(context['calc_map'], {
             'Calculation_101': 'Écart %', 'Calculation_202': 'CA/Qté'})
         self.assertEqual(context['param_values'], {'Écart %': '1', 'CA/Qté': '2'})
-        self.assertEqual(context['measure_names'], {'Écart %', 'CA/Qté'})
+        self.assertEqual(context['measure_names'], set())
+        for caption in ('Écart %', 'CA/Qté'):
+            self.assertEqual(context['column_table_map'][caption], 'table')
 
     def test_genuine_bracket_symbols_in_different_explicit_captions_survive(self):
         context = self.context([
@@ -341,7 +435,9 @@ class TestCalculationIdentitySemanticContext(unittest.TestCase):
         self.assertEqual(context['calc_map'], {
             'Calculation_101': '[Budget]', 'Calculation_202': 'CA [HT]'})
         self.assertEqual(context['param_values'], {'[Budget]': '1', 'CA [HT]': '2'})
-        self.assertEqual(context['measure_names'], {'[Budget]', 'CA [HT]'})
+        self.assertEqual(context['measure_names'], set())
+        for caption in ('[Budget]', 'CA [HT]'):
+            self.assertEqual(context['column_table_map'][caption], 'table')
         self.assertNotIn('Budget', context['param_values'])
         self.assertNotIn('CA HT', context['measure_names'])
 
@@ -351,7 +447,8 @@ class TestCalculationIdentitySemanticContext(unittest.TestCase):
         }])['dax_context']
         self.assertEqual(context['calc_map'], {})
         self.assertEqual(context['param_values'], {'Metric [raw]': '1'})
-        self.assertEqual(context['measure_names'], {'Metric [raw]'})
+        self.assertEqual(context['measure_names'], set())
+        self.assertEqual(context['column_table_map']['Metric [raw]'], 'table')
 
 
 class TestLogicalRelationshipIntegration(unittest.TestCase):

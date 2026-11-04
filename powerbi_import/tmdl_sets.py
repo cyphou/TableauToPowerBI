@@ -59,6 +59,122 @@ def _combined_group_identity(group):
     return hashlib.sha256(encoded).hexdigest()
 
 
+_COMBINED_GROUP_CONSUMER_KEYS = frozenset({
+    '_datasources', 'datasources', '_worksheets', 'worksheets', 'calculations',
+    'filters', 'actions', 'dashboards', 'user_filters', 'datasource_filters',
+    'sort_orders', 'sets', 'bins', 'parameters', 'aliases', 'data_blending',
+    'custom_sql', 'table_extensions', 'published_datasources', 'stories',
+    'hierarchies', 'custom_geocoding',
+})
+
+
+def _iter_nested_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str):
+                yield key
+            yield from _iter_nested_strings(item)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            yield from _iter_nested_strings(item)
+
+
+def _is_non_restrictive_filter(filter_data):
+    return (
+        isinstance(filter_data, dict)
+        and filter_data.get('type') in ('all', '', None)
+        and not filter_data.get('values')
+        and filter_data.get('min') is None
+        and filter_data.get('max') is None
+    )
+
+
+def _filter_field_name(filter_data):
+    field = filter_data.get('field', '') if isinstance(filter_data, dict) else ''
+    if not isinstance(field, str):
+        return ''
+    bracketed = re.findall(r'\[([^\]]+)\]', field)
+    return (bracketed[-1] if bracketed else field.strip('[]')).casefold()
+
+
+def _combined_group_reference_status(group, extra_objects):
+    aliases = {
+        str(value).strip().casefold()
+        for value in (group.get('name'), group.get('raw_name'))
+        if isinstance(value, str) and value.strip()
+    }
+    if not aliases:
+        return None
+
+    identifier_aliases = set()
+    for alias in aliases:
+        bracketed = re.findall(r'\[([^\]]+)\]', alias)
+        identifier_aliases.add(bracketed[-1] if bracketed else alias.strip('[]'))
+
+    consumer_context_available = False
+    for key in _COMBINED_GROUP_CONSUMER_KEYS:
+        if key not in extra_objects:
+            continue
+        consumer_context_available = True
+        consumer_data = extra_objects[key]
+        if key in ('filters', 'datasource_filters') and isinstance(consumer_data, list):
+            consumer_data = [
+                filter_data for filter_data in consumer_data
+                if not _is_non_restrictive_filter(filter_data)
+            ]
+        elif key in ('worksheets', '_worksheets') and isinstance(consumer_data, list):
+            worksheets = []
+            for worksheet in consumer_data:
+                if not isinstance(worksheet, dict):
+                    worksheets.append(worksheet)
+                    continue
+                worksheet_copy = dict(worksheet)
+                worksheet_filters = worksheet.get('filters', [])
+                inert_names = {
+                    _filter_field_name(filter_data)
+                    for filter_data in worksheet_filters
+                    if _is_non_restrictive_filter(filter_data)
+                }
+                active_names = {
+                    _filter_field_name(filter_data)
+                    for filter_data in worksheet_filters
+                    if not _is_non_restrictive_filter(filter_data)
+                }
+                inert_names.difference_update(active_names)
+                for field_key in ('fields', 'slices'):
+                    fields = worksheet.get(field_key)
+                    if isinstance(fields, list):
+                        worksheet_copy[field_key] = [
+                            field for field in fields
+                            if not (
+                                isinstance(field, dict)
+                                and field.get('shelf') == 'filter'
+                                and isinstance(field.get('name'), str)
+                                and field['name'].strip('[]').casefold() in inert_names
+                            )
+                        ]
+                if isinstance(worksheet_filters, list):
+                    worksheet_copy['filters'] = [
+                        filter_data for filter_data in worksheet_filters
+                        if not _is_non_restrictive_filter(filter_data)
+                    ]
+                worksheets.append(worksheet_copy)
+            consumer_data = worksheets
+        for text in _iter_nested_strings(consumer_data):
+            normalized = text.casefold()
+            for alias in identifier_aliases:
+                bracketed_ref = r'\[' + re.escape(alias) + r'\]'
+                bare_ref = (r'(?<![\w])' + re.escape(alias)
+                            + r'(?![\w]|\s+[\w])')
+                if (re.search(bracketed_ref, normalized)
+                        or normalized.strip() == alias
+                        or re.search(bare_ref, normalized)):
+                    return True
+    return False if consumer_context_available else None
+
+
 def _combined_source_field_refs(group):
     fields = group.get('source_fields')
     if not isinstance(fields, list) or not fields:
@@ -99,6 +215,8 @@ def _combined_datasource_table_scope(model, extra_objects, group, *, allow_unres
 def _combined_field_owners(model, extra_objects, group, column_table_map,
                            *, allow_unresolved=False, register_aliases=True):
     """Resolve each combined-field input to a uniquely evidenced table."""
+    from powerbi_import.errors import PartialGenerationError
+
     _, has_source_refs = _combined_source_field_refs(group)
     owners = {}
     table_fields = {}
@@ -155,9 +273,12 @@ def _combined_field_owners(model, extra_objects, group, column_table_map,
                 raise ValueError(
                     f"Combined group {group.get('name')!r}: source field "
                     f"{raw!r} has ambiguous ownership in {sorted(candidates)!r}")
-            raise ValueError(
+            raise PartialGenerationError(
                 f"Combined group {group.get('name')!r}: source field "
-                f"{raw!r} is unresolved in the model")
+                f"{raw!r} is unresolved in the model",
+                item=group.get('raw_name') or group.get('name'),
+                source=group.get('datasource'), recovery_kind='unresolved_combined_group',
+                required_evidence=[f'Explicit source-column binding for {raw!r}'])
         owner = next(iter(candidates))
         mapped = column_table_map.get(field)
         if (mapped and mapped != owner
@@ -258,8 +379,16 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
 
         if is_combined:
             source_refs, has_source_refs = _combined_source_field_refs(g)
-            field_owners = _combined_field_owners(
-                model, extra_objects, g, column_table_map)
+            try:
+                field_owners = _combined_field_owners(
+                    model, extra_objects, g, column_table_map)
+            except ValueError as exc:
+                if _combined_group_reference_status(g, extra_objects) is False:
+                    logger.warning(
+                        "Skipping unresolved unreferenced combined group %r: %s",
+                        group_name, exc)
+                    continue
+                raise
             if field_owners is None:
                 raise ValueError(
                     f"Combined group {group_name!r}: source field ownership is unresolved")

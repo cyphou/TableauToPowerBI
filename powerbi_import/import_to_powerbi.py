@@ -34,7 +34,8 @@ class PowerBIImporter:
                    model_mode='auto', output_format='pbip', languages=None,
                    composite_threshold=None, agg_tables='none',
                    incremental_refresh=False, incremental_refresh_months=12,
-                   parameterize=True, optimize_dax=False, time_intelligence='none'):
+                   parameterize=True, optimize_dax=False, time_intelligence='none',
+                   strict_generation=False):
         """
         Import all extracted objects and generate Power BI project
 
@@ -87,7 +88,8 @@ class PowerBIImporter:
                                           incremental_refresh_months=incremental_refresh_months,
                                           parameterize=parameterize,
                                           optimize_dax=optimize_dax,
-                                          time_intelligence=time_intelligence)
+                                          time_intelligence=time_intelligence,
+                                          strict_generation=strict_generation)
 
         print()
         print("=" * 80)
@@ -165,7 +167,7 @@ class PowerBIImporter:
                                  languages=None, composite_threshold=None, agg_tables='none',
                                  incremental_refresh=False, incremental_refresh_months=12,
                                  parameterize=True, optimize_dax=False,
-                                 time_intelligence='none'):
+                                 time_intelligence='none', strict_generation=False):
         """Generate a Power BI Project (.pbip)
 
         Args:
@@ -206,7 +208,8 @@ class PowerBIImporter:
                                                        incremental_refresh_months=incremental_refresh_months,
                                                        parameterize=parameterize,
                                                        optimize_dax=optimize_dax,
-                                                       time_intelligence=time_intelligence)
+                                                       time_intelligence=time_intelligence,
+                                                       strict_generation=strict_generation)
             self.last_generation_timings = generator.last_phase_timings
             print(f"  [OK] Power BI Project created: {project_path}")
 

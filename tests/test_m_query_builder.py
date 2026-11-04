@@ -1677,6 +1677,19 @@ class TestFileSourceBindingRegressions(unittest.TestCase):
                     self.assertNotIn("File.Contents", query)
                     self.assertNotIn("#table(", query)
 
+    def test_native_shapefile_error_preserves_exact_source_reference(self):
+        query = generate_power_query_m(
+            {"type": "GeoJSON", "details": {
+                "filename": 'communes "new".shp',
+                "directory": "Data",
+            }},
+            {"name": "Places", "columns": []},
+            use_original_file_paths=True,
+        )
+        self.assertIn('SourceBinding.Error', query)
+        self.assertIn('SourceFile="communes ""new"".shp"', query)
+        self.assertNotIn('File.Contents', query)
+
     def test_inherited_excel_binding_warns_and_keeps_exact_relation(self):
         with self.assertLogs("m_query_builder", level="WARNING") as captured:
             query = generate_power_query_m(

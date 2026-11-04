@@ -87,6 +87,29 @@ def _write_twbx(tmp: str, twb_body: bytes = _MINIMAL_TWB,
 # ════════════════════════════════════════════════════════════════════
 
 class TestResultObject(unittest.TestCase):
+    def test_empty_unused_parameter_dependency_does_not_block(self):
+        body = _MINIMAL_TWB.replace(
+            b"<worksheet name='Sheet1'/>",
+            b"<worksheet name='Sheet1'><datasource-dependencies datasource='Parameters'/></worksheet>")
+        with tempfile.TemporaryDirectory() as root:
+            result = run_preflight(_write_twb(root, body=body))
+        self.assertFalse(any(item.code == 'missing_datasource_reference'
+                             for item in result.blockers))
+
+    def test_empty_parameter_dependency_with_real_reference_still_blocks(self):
+        for consumer in (
+                b'<table><cols>[Parameters].[Missing]</cols></table>',
+                b'<filter datasource="Parameters" column="[Missing]"/>',
+                b'<column name="Calculation"><calculation formula="[Parameters].[Missing]"/></column>'):
+            with self.subTest(consumer=consumer), tempfile.TemporaryDirectory() as root:
+                body = _MINIMAL_TWB.replace(
+                    b"<worksheet name='Sheet1'/>",
+                    b"<worksheet name='Sheet1'><datasource-dependencies datasource='Parameters'/>"
+                    + consumer + b'</worksheet>')
+                result = run_preflight(_write_twb(root, body=body))
+                self.assertTrue(any(item.code == 'missing_datasource_reference'
+                                    for item in result.blockers))
+
     def test_empty_result_ok(self):
         r = PreflightResult(path='x')
         self.assertTrue(r.ok)
@@ -287,13 +310,13 @@ class TestInlineVirtualParameters(unittest.TestCase):
                     self.assertTrue(result.ok, msg=result.format_console())
                     self.assertEqual(result.blockers, [])
 
-    def test_bare_parameters_dependency_is_still_a_blocker(self):
+    def test_bare_unused_parameters_dependency_is_not_a_physical_source(self):
         for packaged in (False, True):
             with self.subTest(packaged=packaged):
                 result = self._run_dependencies(
                     [('Parameters', [])], packaged=packaged,
                 )
-                self._assert_missing_dependency(result, 'Parameters')
+                self.assertTrue(result.ok, msg=result.format_console())
 
     def test_parameter_columns_require_nonempty_names_and_domain_markers(self):
         invalid_columns = (

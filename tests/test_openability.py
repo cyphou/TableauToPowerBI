@@ -195,7 +195,7 @@ class TestOpenability(unittest.TestCase):
                         "verified_scope", "refresh_verification", "limitation",
                         "diagnostics"):
                 self.assertIn(key, data)
-            self.assertEqual(len(data["checks"]), 23)
+            self.assertEqual(len(data["checks"]), 24)
             self.assertEqual(data["verified_scope"], "static_project_checks")
             self.assertEqual(data["refresh_verification"], "not_run")
             self.assertIn("Desktop loading and refresh were not run",
@@ -216,13 +216,54 @@ class TestOpenability(unittest.TestCase):
                                      "tmdl_partitions", "power_query", "dax",
                                      "generated_content", "report_content",
                                      "manifest_coherence",
-                                     "semantic_validation", "executable_dax", "visual_bindings", "references", "report_structure", "schema",
+                                     "semantic_validation", "lookupvalue_ambiguity",
+                                     "executable_dax", "visual_bindings", "references", "report_structure", "schema",
                                      "calc_column_dependencies",
                                      "path_length",
                                      "bookmarks_index",
                                      "literal_grammar",
                                      "data_files_present", "model_column_projection",
                                      "pbip_contract", "refresh_diagnostics"})
+
+    def test_lookupvalue_non_unique_search_is_a_non_blocking_warning(self):
+        with tempfile.TemporaryDirectory() as root:
+            _write_project(root, tmdl_text=(
+                "table Sales\n"
+                "\tcolumn Key\n"
+                "\tcolumn 'Result' = LOOKUPVALUE(Lookup[Value], "
+                "Lookup[Key], Sales[Key])\n"
+                "\tpartition Sales = m\n\t\tmode: import\n\t\tsource =\n"
+                "\t\t\t\tlet Source = 1 in Source\n"
+            ))
+            model_dir = os.path.join(root, "P.SemanticModel", "definition")
+            with open(os.path.join(model_dir, "relationships.tmdl"), "w",
+                      encoding="utf-8") as handle:
+                handle.write(
+                    "relationship r1\n"
+                    "\tfromColumn: Sales.Key\n"
+                    "\ttoColumn: Lookup.Key\n"
+                    "\tfromCardinality: many\n"
+                    "\ttoCardinality: many\n"
+                )
+            tables_dir = os.path.join(model_dir, "tables")
+            with open(os.path.join(tables_dir, "Lookup.tmdl"), "w",
+                      encoding="utf-8") as handle:
+                handle.write(
+                    "table Lookup\n\tcolumn Key\n\tcolumn Value\n"
+                    "\tpartition Lookup = m\n\t\tmode: import\n\t\tsource =\n"
+                    "\t\t\t\tlet Source = 1 in Source\n")
+
+            report = check_openability(root)
+
+        check = next(c for c in report.checks
+                     if c.name == "lookupvalue_ambiguity")
+        self.assertFalse(check.ok)
+        self.assertEqual(check.severity, "warning")
+        self.assertTrue(any("not declared as a unique key" in issue
+                            for issue in check.issues))
+        self.assertTrue(report.openable, report.blocking_issues)
+        self.assertTrue(any("lookupvalue_ambiguity" in issue
+                            for issue in report.warnings))
 
     def test_refresh_diagnostics_are_advisory_not_a_runtime_verdict(self):
         with tempfile.TemporaryDirectory() as d:

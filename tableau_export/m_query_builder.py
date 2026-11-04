@@ -159,14 +159,14 @@ def _build_type_changes(columns):
     return entries
 
 
-def _promote_headers_with_schema(table_ref, columns):
+def _promote_headers_with_schema(table_ref, columns, *, missing_as_null=False):
     """Promote headers and reconcile only missing declared source names.
 
     Exact ordinal matches reserve their raw headers, including intentional
     whitespace. Only otherwise-unclaimed headers may match an unchanged
-    expected name through M's default Unicode-aware Text.Trim. Ambiguous or
-    missing matches fail at refresh without disclosing row or endpoint values.
-    No schema means ordinary promotion, with no inferred renames.
+    expected name through M's default Unicode-aware Text.Trim. Ambiguous matches
+    fail; Excel may opt to pad truly missing names with nulls. No schema means
+    ordinary promotion, with no inferred renames.
     """
     promotion = f'Table.PromoteHeaders({table_ref}, [PromoteAllScalars=true])'
     if not columns:
@@ -174,6 +174,24 @@ def _promote_headers_with_schema(table_ref, columns):
     if any(not isinstance(col.get('name'), str) for col in columns):
         raise ValueError("Declared source header names must be text.")
     expected = ', '.join(_m_header_literal(col['name']) for col in columns)
+    if missing_as_null:
+        missing_guard = '''else if not List.IsEmpty(AmbiguousExpectedNames) then
+            error Error.Record("HeaderMatch.Error",
+                "Source headers must uniquely match the declared source column names.",
+                [MissingExpectedNames = MissingExpectedNames, AmbiguousExpectedNames = AmbiguousExpectedNames])'''
+        result_expression = '''else
+            let
+                Renamed = Table.RenameColumns(Promoted, Renames),
+                WithMissing = List.Accumulate(MissingExpectedNames, Renamed,
+                    (state, name) => Table.AddColumn(state, name, each null))
+            in
+                WithMissing'''
+    else:
+        missing_guard = '''else if not List.IsEmpty(MissingExpectedNames) or not List.IsEmpty(AmbiguousExpectedNames) then
+            error Error.Record("HeaderMatch.Error",
+                "Source headers must uniquely match the declared source column names.",
+                [MissingExpectedNames = MissingExpectedNames, AmbiguousExpectedNames = AmbiguousExpectedNames])'''
+        result_expression = 'else Table.RenameColumns(Promoted, Renames)'
     return f'''let
         Expected = {{{expected}}},
         BlankExpectedNames = List.Select(Expected, each Text.Trim(_) = ""),
@@ -192,22 +210,20 @@ def _promote_headers_with_schema(table_ref, columns):
             List.Select(Matches, each List.Count([Candidates]) = 0), each [ExpectedName]),
         AmbiguousExpectedNames = List.Transform(
             List.Select(Matches, each List.Count([Candidates]) > 1), each [ExpectedName]),
-        Renames = List.Transform(Matches, each {{[Candidates]{{0}}, [ExpectedName]}}),
+        Matched = List.Select(Matches, each List.Count([Candidates]) = 1),
+        Renames = List.Transform(Matched, each {{[Candidates]{{0}}, [ExpectedName]}}),
         RenameSources = List.Transform(Renames, each _{{0}})
     in
         if not List.IsEmpty(BlankExpectedNames) or not List.IsEmpty(DuplicateExpectedNames) then
             error Error.Record("HeaderSchema.Error",
                 "Declared source column names must be nonblank and unique.",
                 [BlankExpectedNames = BlankExpectedNames, DuplicateExpectedNames = DuplicateExpectedNames])
-        else if not List.IsEmpty(MissingExpectedNames) or not List.IsEmpty(AmbiguousExpectedNames) then
-            error Error.Record("HeaderMatch.Error",
-                "Source headers must uniquely match the declared source column names.",
-                [MissingExpectedNames = MissingExpectedNames, AmbiguousExpectedNames = AmbiguousExpectedNames])
+        {missing_guard}
         else if List.Count(List.Distinct(RenameSources, Comparer.Ordinal)) <> List.Count(Renames) then
             error Error.Record("HeaderMatch.Error",
                 "Source header matches must be one-to-one.",
                 [ExpectedNames = Missing])
-        else Table.RenameColumns(Promoted, Renames)'''
+        {result_expression}'''
 
 
 def _append_type_step(m_query, columns, prev_step='#"Promoted Headers"'):
@@ -226,13 +242,16 @@ def _append_type_step(m_query, columns, prev_step='#"Promoted Headers"'):
 
 # ── Per-connector generators ─────────────────────────────────────────────────
 
-def _gen_m_source_error(table_name, message):
+def _gen_m_source_error(table_name, message, *, source_file=None):
     """Emit an explicit refresh error rather than a fabricated file binding."""
     logger.warning("Source binding unavailable for table %r: %s", table_name, message)
+    source_metadata = (
+        f', SourceFile={_m_literal(source_file)}' if source_file else ''
+    )
     return (
         'let\n'
         f'    Source = error Error.Record("SourceBinding.Error", {_m_literal(message)}, '
-        f'[Table={_m_literal(table_name)}])\n'
+        f'[Table={_m_literal(table_name)}{source_metadata}])\n'
         'in\n    Source'
     )
 
@@ -358,7 +377,8 @@ def _gen_m_excel(details, table_name, columns, *, use_original_file_paths=False)
     m_query += f'    // Source Excel: {label}\n'
     m_query += f'    Source = Excel.Workbook({contents}, null, true),\n'
     m_query += f'    {safe_step} = Source{{[Item="{sheet_name}",Kind="Sheet"]}}[Data],\n'
-    m_query += f'    #"Promoted Headers" = {_promote_headers_with_schema(safe_step, columns)},\n'
+    m_query += (f'    #"Promoted Headers" = '
+                f'{_promote_headers_with_schema(safe_step, columns, missing_as_null=True)},\n')
     return _append_type_step(m_query, columns)
 
 
@@ -519,6 +539,7 @@ def _gen_m_geojson(details, table_name, columns, *, use_original_file_paths=Fals
             'Native shapefile is not GeoJSON. Configure a supported GeoJSON '
             'source in Power Query; native spatial data are not converted or '
             'copied during PBIP migration.',
+            source_file=details.get('filename'),
         )
     label, contents = _file_contents(
         table_name, details.get('filename', 'file.geojson'),

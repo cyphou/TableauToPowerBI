@@ -623,6 +623,56 @@ class TestGenerateProject(unittest.TestCase):
         pbip_path = os.path.join(self.output_dir, "Test", "Test.pbip")
         self.assertTrue(os.path.exists(pbip_path))
 
+    def test_numeric_row_constant_retains_each_shelf_aggregation(self):
+        calculation = {
+            'name': '[RowConstant]', 'caption': 'Row Constant', 'formula': '1',
+            'role': 'measure', 'datatype': 'integer', 'datasource_name': 'Sample',
+        }
+        self.objects['calculations'] = [calculation]
+        self.objects['datasources'][0]['calculations'] = [calculation]
+        self.objects['dashboards'] = []
+        self.objects['worksheets'] = [
+            _extract_regression_worksheet(f"""
+                <workbook><worksheets><worksheet name="{aggregation} per category">
+                  <table><view><datasource-dependencies datasource="Sample">
+                    <column name="[Category]" role="dimension" datatype="string" />
+                    <column name="[RowConstant]" caption="Row Constant" role="measure"
+                            datatype="integer"><calculation class="tableau" formula="1" /></column>
+                  </datasource-dependencies></view>
+                  <rows>[Sample].[none:Category:nk]</rows>
+                  <cols>[Sample].[{aggregation}:RowConstant:qk]</cols>
+                  <panes><pane><mark class="Text" /></pane></panes></table>
+                </worksheet></worksheets></workbook>
+            """, self.output_dir)
+            for aggregation in ('sum', 'avg', 'min', 'max', 'ctd')
+        ]
+        self._generate()
+        functions = []
+        countd_measure = self.gen._countd_measure_bindings[('Data', 'Row Constant')]
+        countd_projections = []
+        for root, _, files in os.walk(os.path.join(self.output_dir, 'Test', 'Test.Report')):
+            if 'visual.json' not in files:
+                continue
+            with open(os.path.join(root, 'visual.json'), encoding='utf-8') as stream:
+                visual = json.load(stream)['visual']
+            state = visual.get('query', {}).get('queryState', {})
+            for well in state.values():
+                for projection in well.get('projections', []):
+                    field = projection['field']
+                    self.assertNotEqual(field.get('Measure', {}).get('Property'), 'Row Constant')
+                    if field.get('Measure', {}).get('Property') == countd_measure:
+                        countd_projections.append(field['Measure'])
+                    aggregate = field.get('Aggregation', {})
+                    if aggregate.get('Expression', {}).get('Column', {}).get('Property') == 'Row Constant':
+                        functions.append(aggregate['Function'])
+        self.assertEqual(sorted(functions), [0, 1, 3, 4])
+        self.assertEqual(len(countd_projections), 1)
+        from dax_converter import tableau_countd_column
+        table_path = os.path.join(self.output_dir, 'Test', 'Test.SemanticModel',
+                                  'definition', 'tables', 'Data.tmdl')
+        with open(table_path, encoding='utf-8') as stream:
+            self.assertIn(tableau_countd_column('Data', 'Row Constant'), stream.read())
+
     def test_project_creates_report_dir(self):
         self._generate()
         report_dir = os.path.join(self.output_dir, "Test", "Test.Report")
@@ -810,6 +860,60 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
             if item.get('name') == 'MigrationNote')
         self.assertIn('explicitly disabled', notes)
         self.assertIn('cannot represent this unaggregated grain', notes)
+
+    def test_disaggregated_scatter_keeps_bare_column_axes_and_color(self):
+        worksheet = self._scatter()
+        worksheet['chart_type'] = 'scatterChart'
+        worksheet['original_mark_class'] = 'Circle'
+        worksheet['aggregation'] = {'enabled': False, 'status': 'explicit'}
+        worksheet['fields'] = worksheet['fields'][:2] + [
+            {'name': 'C', 'shelf': 'color'}]
+        payload = self._emitted_payload(worksheet)
+        visual = payload['visual']
+        self.assertEqual(visual['visualType'], 'scatterChart')
+        state = visual['query']['queryState']
+        self.assertEqual(state['X']['projections'][0]['field'], self._column('A'))
+        self.assertEqual(state['Y']['projections'][0]['field'], self._column('B'))
+        self.assertEqual(state['Series']['projections'][0]['field'], self._column('C'))
+        self.assertNotIn('Values', state)
+        notes = ' '.join(item.get('value', '') for item in payload.get('annotations', []))
+        self.assertIn('explicitly disabled', notes)
+
+    def test_grid_fallback_deduplicates_repeated_shelf_fields(self):
+        worksheet = self._bar()
+        worksheet['aggregation'] = {'enabled': False, 'status': 'explicit'}
+        worksheet['fields'] = [
+            {'name': 'C', 'shelf': 'columns'},
+            {'name': 'D', 'shelf': 'rows'},
+            {'name': 'D', 'shelf': 'color'},
+        ]
+        payload = self._emitted_payload(worksheet)
+        visual = payload['visual']
+        self.assertEqual(visual['visualType'], 'tableEx')
+        for role in visual['query']['queryState'].values():
+            refs = [projection['queryRef'] for projection in role['projections']]
+            self.assertEqual(len(refs), len(set(refs)), refs)
+        self.assertTrue(any(item.get('name') == 'MigrationNote'
+                            for item in payload.get('annotations', [])))
+
+    def test_grid_with_value_and_repeated_color_has_unique_well_references(self):
+        worksheet = self._bar()
+        worksheet['fields'] = [
+            {'name': 'C', 'shelf': 'columns'},
+            {'name': 'D', 'shelf': 'columns'},
+            {'name': 'A', 'shelf': 'rows', 'aggregation': 'sum'},
+            {'name': 'D', 'shelf': 'color'},
+        ]
+        visual = self._emitted_visual(worksheet)
+        state = visual['query']['queryState']
+        self.assertTrue(state)
+        for role in state.values():
+            projections = role['projections']
+            refs = [projection['queryRef'] for projection in projections]
+            self.assertEqual(len(refs), len(set(refs)), refs)
+        self.assertTrue(any(
+            projection['field'].get('Aggregation', {}).get('Function') == 0
+            for role in state.values() for projection in role['projections']))
 
     def test_discrete_year_does_not_bind_the_underlying_timestamp(self):
         self.gen._field_map['Event Date'] = ('Facts', 'Event Date')

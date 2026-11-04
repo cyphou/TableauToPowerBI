@@ -397,6 +397,27 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertIn('summary', report.visual_mappings)
         self.assertEqual(report.visual_mappings['summary']['status_counts']['approximation'], 16)
 
+    def test_lookupvalue_ambiguity_reaches_report_as_advisory_priority(self):
+        from powerbi_import.openability import CheckResult, OpenabilityReport
+
+        issue = (
+            "LOOKUPVALUE ambiguity risk: 'Sales'[Result] searches "
+            "'Lookup'[Key], which is not declared as a unique key."
+        )
+        report = self._build(openability=OpenabilityReport(
+            project_dir='project', checks=[CheckResult(
+                'lookupvalue_ambiguity', False, 'warning', [issue])]))
+
+        self.assertEqual(report.status, 'WARN')
+        self.assertTrue(report.openability['openable'])
+        self.assertIn(issue, report.warnings)
+        priority = next(item for item in report.priorities
+                        if item['action'] == issue)
+        self.assertEqual(priority['priority'], 'P2')
+        self.assertEqual(priority['action_kind'], 'verify')
+        self.assertEqual(priority['owner'], 'DAX')
+        self.assertIn('domain-approved aggregation', priority['fix'])
+
     def test_sampled_or_capped_hyper_manifest_cannot_receive_clean_full_data_handoff(self):
         cases = (
             {"row_count": 2, "total_rows": 37, "max_rows": 2,

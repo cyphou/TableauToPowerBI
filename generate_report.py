@@ -157,6 +157,7 @@ def _build_report_summary_rows(reports, metadata):
         rows.append({
             "artifact_name": name,
             "artifact_type": "tableau_report",
+            "generation_status": meta.get('generation_status', 'not_recorded'),
             "sources_count": int(sources or 0),
             "tables_count": int(tables or 0),
             "measures_count": int(measures or 0),
@@ -181,6 +182,7 @@ def _write_summary_csv(csv_path, rows):
         "visuals_count",
         "visuals_with_values_count",
         "visuals_with_dax_measures_count",
+        "generation_status",
     ]
     os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
     with open(csv_path, "w", encoding="utf-8", newline="") as fh:
@@ -515,7 +517,9 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
         if total_visuals:
             visuals_with_measure = min(visuals_with_measure, total_visuals)
         mig_rows.append([
-            f'<strong>{esc(name)}</strong>',
+            f'<strong>{esc(name)}</strong>' + (
+                ' ' + badge('PARTIAL / NOT VALIDATED', 'warn')
+                if m.get('generation_status') == 'partial' else ''),
             fidelity_bar(fid),
             esc(s.get('total_items') if s.get('total_items') is not None else _em),
             f'<span class="text-success fw-bold">{esc(s.get("exact") if s.get("exact") is not None else _em)}</span>',
@@ -739,6 +743,8 @@ def generate_html(assessments, reports, metadata, lineage=None, pbi_validation=N
 
         # Workbook card with collapsible detail
         badge_html = badge(score) if score != "N/A" else ""
+        if m.get('generation_status') == 'partial':
+            badge_html += ' ' + badge('PARTIAL / NOT VALIDATED', 'warn')
         fid_html = fidelity_bar(fid)
         html += f"""
 <div class="card">

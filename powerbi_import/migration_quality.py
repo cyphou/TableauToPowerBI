@@ -109,6 +109,8 @@ class MigrationQualityReport:
     ai_summary: str = ""
     ai_source: str = "none"
     pipeline_failure: Dict[str, Any] = field(default_factory=dict)
+    partial_generation: Dict[str, Any] = field(default_factory=dict)
+    composite_relationships: list[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -148,6 +150,8 @@ class MigrationQualityReport:
             "review": self.review,
             "handoff_status": self.handoff_status,
             "pipeline_failure": self.pipeline_failure,
+            "partial_generation": self.partial_generation,
+            "composite_relationships": self.composite_relationships,
         }
 
     def save_json(self, path: str) -> str:
@@ -179,6 +183,26 @@ class MigrationQualityReport:
         html += self._render_obj(self.openability_confidence)
         html += self._raw_details(self.openability_confidence)
         html += section_close()
+        if self.composite_relationships:
+            html += section_open(
+                "quality-composite-relationships",
+                text("Composite many-to-many relationships",
+                     "Relations composites plusieurs-à-plusieurs"),
+                "!",
+            )
+            html += "<p>" + ui(text(
+                "These are generated approximations, not a parity guarantee. "
+                "Validate filter propagation, duplicate-key aggregations, and "
+                "measures against Tableau.",
+                "Ces relations sont des approximations générées, pas une garantie "
+                "de parité. Vérifiez la propagation des filtres, les agrégations "
+                "sur clés dupliquées et les mesures par rapport à Tableau.",
+            )) + "</p>"
+            for relationship in self.composite_relationships:
+                title = (f"{relationship.get('left_table', '')} / "
+                         f"{relationship.get('right_table', '')}")
+                html += f"<h4>{esc(title)}</h4>" + self._render_obj(relationship)
+            html += section_close()
         if self.hyper_import:
             hyper_status = self.hyper_import.get("status", "unverified")
             html += section_open(
@@ -738,6 +762,8 @@ def _openability_confidence(openability: Dict[str, Any], fabric: Dict[str, Any],
 #: note    evidence or coverage information; nothing to act on
 _FINDING_ACTIONS = {
     "openability": ("repair", "Visual / Orchestrator"),
+    "partial_generation": ("repair", "Semantic / DAX"),
+    "composite_relationship": ("verify", "Semantic"),
     "fabric_bundle": ("repair", "Fabric"),
     "fabric_runtime": ("note", "Deployer"),
     "tables_missing": ("repair", "Semantic / Wiring"),
@@ -747,6 +773,7 @@ _FINDING_ACTIONS = {
     "parameter_coverage": ("repair", "Semantic"),
     "semantic_static": ("repair", "Semantic / DAX"),
     "semantic_runtime": ("repair", "Semantic / DAX"),
+    "lookupvalue_ambiguity": ("verify", "DAX"),
     "countd_fallback": ("repair", "DAX"),
     "assessment_failures": ("decide", "Assessor"),
     "assessment_red": ("decide", "Assessor"),
@@ -939,6 +966,25 @@ def _review_evidence(project_dir: str) -> Dict[str, Any]:
         "dimensions": (cycles[-1].get("scorecard", {}) if cycles else {}),
         "coaching": coaching,
     }
+
+
+def _composite_relationship_evidence(project_dir: str) -> list[Dict[str, Any]]:
+    """Read generated composite M:M relationship evidence from model sidecars."""
+    relationships = []
+    for path in sorted(Path(project_dir).glob("*.SemanticModel/composite_relationships.json")):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                records = json.load(handle)
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(records, list):
+            continue
+        evidence_file = os.path.relpath(path, project_dir).replace(os.sep, "/")
+        for record in records:
+            if not isinstance(record, dict) or record.get("cardinality") != "manyToMany":
+                continue
+            relationships.append({**record, "evidence_file": evidence_file})
+    return relationships
 
 
 def _record_review_findings(review: Dict[str, Any], findings: "_Findings") -> None:
@@ -4252,7 +4298,59 @@ def build_quality_report(extracted: Dict, project_dir: str,
     findings = _Findings()
     blockers = findings.blockers
     warnings = findings.warnings
+    composite_relationships = _composite_relationship_evidence(project_dir)
+    for relationship in composite_relationships:
+        key_description = "; ".join(
+            f"{item.get('left_column', '')} = {item.get('right_column', '')}"
+            for item in relationship.get('key_components', [])
+            if isinstance(item, dict)
+        )
+        findings.add(
+            "composite_relationship",
+            "Composite many-to-many relationship generated for "
+            f"{relationship.get('left_table', '')} / "
+            f"{relationship.get('right_table', '')}"
+            + (f" on {key_description}" if key_description else "")
+            + "; filter and measure parity requires validation.",
+            blocker=False,
+            fix="Compare filter propagation and representative measures against "
+                "Tableau, including duplicate-key and null cases.",
+            evidence=[relationship.get("evidence_file", "")],
+        )
+    partial = {}
+    partial_path = os.path.join(project_dir, 'partial_generation.json')
+    if os.path.isfile(partial_path):
+        try:
+            with open(partial_path, encoding='utf-8') as handle:
+                partial = json.load(handle)
+            errors = partial['errors']
+            if not isinstance(errors, list) or not errors:
+                raise ValueError('Partial generation diagnostic has no errors')
+            for error in errors:
+                findings.add(
+                    'partial_generation',
+                    'PARTIAL / NOT VALIDATED: ' + error['message']
+                    + ' Impact: ' + error['impact'], blocker=True,
+                    fix=error['fix'] + (
+                        ' Required evidence: ' + ', '.join(error['required_evidence'])
+                        if error.get('required_evidence') else ''),
+                    evidence=['partial_generation.json'])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            findings.add('partial_generation',
+                         f'Partial generation diagnostic is unreadable: {exc}',
+                         blocker=True, evidence=['partial_generation.json'])
     hyper_sampling = _hyper_sampling_evidence(extracted or {}, project_dir)
+    for check in openability_dict.get("checks", []):
+        if check.get("name") != "lookupvalue_ambiguity" or check.get("ok", True):
+            continue
+        for issue in check.get("issues", []):
+            findings.add(
+                "lookupvalue_ambiguity",
+                issue,
+                blocker=False,
+                fix="Verify the lookup key against source rows. Add a missing business key, "
+                    "or use a domain-approved aggregation; then revalidate the model.",
+            )
     if fabric_evidence.get("status") == "not_present":
         hyper_import = build_hyper_import_evidence(
             extracted or {}, project_dir)
@@ -4523,6 +4621,8 @@ def build_quality_report(extracted: Dict, project_dir: str,
     evidence_manifest["hyper_import"] = hyper_import
     return MigrationQualityReport(
         report_name=report_name,
+        partial_generation=partial,
+        composite_relationships=composite_relationships,
         assessment=_assessment_dict(assessment),
         assessment_evidence=assessment_evidence,
         recovery=recovery,

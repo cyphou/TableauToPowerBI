@@ -778,6 +778,7 @@ class TestRefreshWindowVerification(unittest.TestCase):
                                    return_value=4242), \
                  mock.patch.object(dp, "_recent_matches", return_value=[]), \
                  mock.patch.object(dp, "_capture_dialogs"), \
+                 mock.patch.object(dp, "_capture_refresh_failure") as failure_capture, \
                  mock.patch.object(dp, "refresh_report", return_value=refresh), \
                  mock.patch.object(dp, "verify_desktop_data") as recount, \
                  mock.patch.object(dp, "_wait_for_render") as render, \
@@ -791,6 +792,11 @@ class TestRefreshWindowVerification(unittest.TestCase):
                     os.path.join(root, "capture.png"), verify_data=True,
                     refresh=True, capture_unverified=capture_unverified)
         self.assertFalse(crashed)
+        if status in {'refresh_error', 'calculation_error'}:
+            failure_capture.assert_called_once_with(
+                report, 101, 4242, mock.ANY, stop_when=mock.ANY)
+        else:
+            failure_capture.assert_not_called()
         recount.assert_not_called()
         return report, data, capture, render, state
 
@@ -827,7 +833,7 @@ class TestRefreshWindowVerification(unittest.TestCase):
         report, data, capture, render, state = self.watch(
             "verified", late_state="refresh_error")
         render.assert_called_once()
-        state.assert_called_once_with(101, 4242, stop_when=mock.ANY)
+        state.assert_called_once_with(101, 4242, stop_when=mock.ANY, diagnostics=[])
         capture.assert_called_once()
         self.assertEqual(report.refresh["status"], "refresh_error")
         self.assertEqual(report.data_load, data)
@@ -850,7 +856,7 @@ class TestRefreshWindowVerification(unittest.TestCase):
                 self.assertIs(report.screenshot_data_verified, False)
                 self.assertEqual(report.note, dp.REFRESH_LIMITATION)
                 render.assert_called_once()
-                state.assert_called_once_with(101, 4242, stop_when=mock.ANY)
+                state.assert_called_once_with(101, 4242, stop_when=mock.ANY, diagnostics=[])
                 # Retain diagnostic imagery, never certify it as refreshed data.
                 capture.assert_called_once()
                 self.assertEqual(report.screenshot, "synthetic.png")
@@ -884,7 +890,7 @@ class TestRefreshWindowVerification(unittest.TestCase):
         self.assertFalse(report.screenshot_data_verified)
         self.assertEqual(report.data_load, data)
         render.assert_called_once()
-        observation.assert_called_once_with(101, 4242, stop_when=mock.ANY)
+        observation.assert_called_once_with(101, 4242, stop_when=mock.ANY, diagnostics=[])
         capture.assert_called_once()
 
 

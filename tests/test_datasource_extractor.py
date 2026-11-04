@@ -1156,6 +1156,46 @@ class TestExtractTablesWithColumns(unittest.TestCase):
         self.assertEqual(len(tables), 1)
         self.assertEqual(len(tables[0]['columns']), 2)
 
+    def test_excel_explicit_relation_schema_excludes_stale_ds_columns(self):
+        xml = '''
+        <datasource>
+          <connection class="federated">
+            <named-connection name="excel_connection">
+              <connection class="excel-direct" filename="synthetic.xlsx" />
+            </named-connection>
+            <relation type="table" name="Sheet1" connection="excel_connection"
+                      table="[Sheet1$]">
+              <columns>
+                <column name="Feuille" datatype="string" />
+              </columns>
+            </relation>
+          </connection>
+          <column name="[F4]" datatype="string" role="dimension" hidden="true" />
+        </datasource>
+        '''
+        tables = extract_tables_with_columns(ET.fromstring(xml))
+
+        self.assertEqual(len(tables), 1)
+        self.assertEqual([column['name'] for column in tables[0]['columns']], ['Feuille'])
+
+    def test_excel_relation_without_explicit_schema_uses_ds_columns_fallback(self):
+        xml = '''
+        <datasource>
+          <connection class="federated">
+            <named-connection name="excel_connection">
+              <connection class="excel-direct" filename="synthetic.xlsx" />
+            </named-connection>
+            <relation type="table" name="Sheet1" connection="excel_connection"
+                      table="[Sheet1$]" />
+          </connection>
+          <column name="[Feuille]" datatype="string" />
+        </datasource>
+        '''
+        tables = extract_tables_with_columns(ET.fromstring(xml))
+
+        self.assertEqual(len(tables), 1)
+        self.assertEqual([column['name'] for column in tables[0]['columns']], ['Feuille'])
+
     def test_deduplication_keeps_most_columns(self):
         """Duplicate table names keep the version with more columns."""
         xml = '''

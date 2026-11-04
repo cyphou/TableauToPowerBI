@@ -1187,10 +1187,11 @@ class ArtifactValidator:
                     # Check if search column is a known key
                     if (search_table, search_col) not in key_columns:
                         issues.append(
-                            f"LOOKUPVALUE ambiguity: '{current_table}'[{col_name}] "
-                            f"searches '{search_table}'[{search_col}] which is not "
-                            f"a unique key — PBI may error with 'single value "
-                            f"cannot be determined' ({basename})"
+                            f"LOOKUPVALUE ambiguity risk: '{current_table}'[{col_name}] "
+                            f"searches '{search_table}'[{search_col}], which is not "
+                            f"declared as a unique key. If a key maps to multiple "
+                            f"distinct result values, column evaluation may fail; "
+                            f"static validation does not inspect source rows ({basename})"
                         )
 
         return issues

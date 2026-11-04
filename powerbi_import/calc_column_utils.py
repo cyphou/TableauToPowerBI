@@ -15,6 +15,7 @@ import re
 from .fabric_constants import AGG_PATTERN as _AGG_PATTERN
 from .fabric_constants import SPARK_TYPE_MAP
 from .pyspark_converter import convert_to_pyspark, todo_statement, with_column_statement
+from .tableau_identity import calculation_identity
 
 _CALC_SPARK_TYPE = {k: v for k, v in SPARK_TYPE_MAP.items()
                     if k in ('string', 'integer', 'int64', 'real',
@@ -26,15 +27,32 @@ def calc_spark_type(datatype):
     return _CALC_SPARK_TYPE.get(datatype, 'STRING')
 
 
+def is_numeric_row_constant(calc, parameter_names=()):
+    """Recognize explicit numeric row values without reclassifying parameters."""
+    if (calc.get('is_parameter') or calc.get('param-domain-type')
+            or calc.get('param_domain_type') or calc.get('domain_type')
+            or calc.get('datasource_name') == 'Parameters' or calc.get('type') == 'parameter'
+            or calc.get('class') == 'parameter'):
+        return False
+    aliases = {calc.get('name') or '', *calculation_identity(calc)} - {''}
+    if any(alias in parameter_names for alias in aliases):
+        return False
+    formula = (calc.get('formula') or '').strip()
+    return bool(re.fullmatch(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?', formula))
+
+
 def is_calc_column_candidate(calc):
     """Return True when a calculation is a row-level expression.
 
-    A calculated column needs a formula that refers to at least one field and
-    either is a dimension or contains no aggregation function.
+    Explicit numeric literals are row values unless declared as parameters.
+    Other candidates refer to a field and either are dimensions or contain no
+    aggregation function.
     """
     formula = (calc.get('formula') or '').strip()
     if not formula:
         return False
+    if is_numeric_row_constant(calc):
+        return True
     is_literal = '[' not in formula
     has_aggregation = bool(_AGG_PATTERN.search(formula))
     return (not is_literal) and (

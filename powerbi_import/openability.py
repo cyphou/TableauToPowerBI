@@ -424,6 +424,19 @@ def _check_semantic_validation(project_dir) -> CheckResult:
     return CheckResult("semantic_validation", not issues, "error", issues)
 
 
+def _check_lookupvalue_ambiguity(project_dir) -> CheckResult:
+    """Warn when LOOKUPVALUE searches a column not declared as a unique key."""
+    try:
+        from powerbi_import.validator import ArtifactValidator
+    except Exception as exc:  # noqa: BLE001 - preflight must return a check result
+        return CheckResult("lookupvalue_ambiguity", False, "warning", [str(exc)])
+    issues = []
+    model_dirs = glob.glob(os.path.join(project_dir, "*.SemanticModel"))
+    for model_dir in model_dirs:
+        issues.extend(ArtifactValidator.validate_lookupvalue_ambiguity(model_dir))
+    return CheckResult("lookupvalue_ambiguity", not issues, "warning", issues)
+
+
 def _check_executable_tmdl_dax(project_dir) -> CheckResult:
     """Validate DAX beyond measures, including columns and RLS definitions."""
     try:
@@ -1176,6 +1189,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_power_query(project_dir),
         _check_dax(project_dir),
         _check_semantic_validation(project_dir),
+        _check_lookupvalue_ambiguity(project_dir),
         _check_calc_column_dependencies(project_dir),
         _check_path_length(project_dir),
         _check_bookmarks_index(project_dir),

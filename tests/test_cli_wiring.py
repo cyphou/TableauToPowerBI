@@ -176,6 +176,13 @@ class TestTelemetryDashboard(unittest.TestCase):
 class TestCLIArguments(unittest.TestCase):
     """Test new CLI flags are recognized."""
 
+    def test_partial_generation_is_default_with_strict_opt_in(self):
+        from migrate import _build_argument_parser
+        parser = _build_argument_parser()
+        self.assertFalse(parser.parse_args(['--batch', 'sources']).strict_generation)
+        self.assertTrue(parser.parse_args(
+            ['--batch', 'sources', '--strict-generation']).strict_generation)
+
     def test_compare_flag(self):
         from migrate import _build_argument_parser
         parser = _build_argument_parser()

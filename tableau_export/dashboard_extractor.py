@@ -227,8 +227,14 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
                 'position': pos,
                 'layout': layout_mode
             }
-            if _image_resource_missing(img_src, workbook_path, archive_member) is True:
+            resource_missing = _image_resource_missing(img_src, workbook_path, archive_member)
+            if resource_missing is True:
                 image['resource_missing'] = True
+            elif resource_missing is False and not zipfile.is_zipfile(workbook_path):
+                root = os.path.realpath(os.path.dirname(os.path.abspath(workbook_path)))
+                image['resolved_source'] = os.path.realpath(os.path.join(
+                    root, *img_src.replace('\\', '/').split('/')))
+                image['resource_root'] = root
             objects.append(image)
             continue
 

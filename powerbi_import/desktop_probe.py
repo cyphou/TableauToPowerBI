@@ -284,6 +284,30 @@ try {
                     $command.Dispose()
                 }
             }
+            if ($request.calculation_checks) {
+                $result.calculation_checks = @()
+                foreach ($check in $request.calculation_checks) {
+                    $escapedTable = ([string]$check.table).Replace("'", "''")
+                    $escapedColumn = ([string]$check.column).Replace(']', ']]')
+                    $command = $connection.CreateCommand()
+                    $command.CommandTimeout = 8
+                    $command.CommandText = "EVALUATE ROW(`"Values`", COUNTROWS(VALUES('$escapedTable'[$escapedColumn])))"
+                    $reader = $null
+                    $checkStatus = 'failed'
+                    try {
+                        $reader = $command.ExecuteReader()
+                        if ($reader.Read()) { $checkStatus = 'verified' }
+                    }
+                    catch { $checkStatus = 'failed' }
+                    finally {
+                        if ($reader) { $reader.Dispose() }
+                        $command.Dispose()
+                    }
+                    $result.calculation_checks += @{
+                        table=[string]$check.table; column=[string]$check.column; status=$checkStatus
+                    }
+                }
+            }
             if ($result.tables_failed -gt 0) { $result.status = 'query_failed' }
             elseif ($result.tables_checked -gt 0 -and
                     $result.tables_nonempty -eq $result.tables_checked) {
@@ -320,6 +344,7 @@ class DesktopProbeReport:
     screenshot: Optional[str] = None
     screenshot_blank: Optional[bool] = None
     dialog_screenshot: Optional[str] = None
+    refresh_failure_screenshot: Optional[str] = None
     screenshot_data_verified: Optional[bool] = None
     dialogs: List[str] = field(default_factory=list)
     native_error: dict = field(default_factory=dict)
@@ -720,6 +745,21 @@ def _capture_dialogs(report, screenshot_path, allowed_pids, *, stop_when=None) -
     report.dialog_screenshot = screenshot
 
 
+def _capture_refresh_failure(report, hwnd, owner_pid, screenshot_path, *, stop_when=None):
+    if not screenshot_path or (stop_when is not None and stop_when()):
+        return
+    if desktop_window.window_process_id(hwnd) != owner_pid:
+        return
+    base, extension = os.path.splitext(screenshot_path)
+    target = base + '.refresh_error' + (extension or '.png')
+    os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
+    screenshot = desktop_window.capture_window(hwnd, target)
+    if ((stop_when is not None and stop_when())
+            or desktop_window.window_process_id(hwnd) != owner_pid):
+        return
+    report.refresh_failure_screenshot = screenshot
+
+
 def _safe_output_path(path: str) -> bool:
     """Return false when an existing path component is a symbolic link."""
     current = os.path.abspath(path)
@@ -900,6 +940,9 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         # A refresh failure surfaces as an owned popup; keep its picture.
         _capture_dialogs(report, screenshot_path, allowed_pids,
                          stop_when=process_exited)
+        if report.refresh.get('status') in {'refresh_error', 'calculation_error'}:
+            _capture_refresh_failure(report, window.hwnd, owner_pid, screenshot_path,
+                                     stop_when=process_exited)
 
     rc = observe_exit()
     if rc is not None:
@@ -941,7 +984,8 @@ def _watch_window(report, proc, pbip_path, start, timeout,
             # Rendering can take long enough for a late refresh failure to surface.
             try:
                 state = _refresh_ui_state(
-                    window.hwnd, owner_pid, stop_when=process_exited)
+                    window.hwnd, owner_pid, stop_when=process_exited,
+                    diagnostics=report.refresh.setdefault('diagnostics', []))
             except _DesktopOwnerExited:
                 rc = observe_exit()
                 if rc is not None:
@@ -1266,7 +1310,11 @@ foreach ($e in $elements) {
     $r = $e.Current.BoundingRectangle
     if ($r.Width -le 0 -or $r.Height -le 0) { continue }
     $name = $e.Current.Name
-    if ($name -match $request.error_pattern) { $out.status = 'refresh_error'; break }
+    if ($name -match $request.error_pattern) {
+        $out.status = 'refresh_error'
+        $out.error_message = $name.Substring(0, [Math]::Min(2048, $name.Length))
+        break
+    }
     if ($request.owned_dialog -and $name -match $request.attention_pattern) {
         $out.status = 'manual_attention'; break
     }
@@ -1345,7 +1393,8 @@ def _raise_if_owner_exited(stop_when):
 
 def _refresh_ui_state(hwnd: int, owner_pid: Optional[int], *,
                       timeout: float = 30.0,
-                      stop_when: Optional[Callable[[], bool]] = None) -> str:
+                      stop_when: Optional[Callable[[], bool]] = None,
+                      diagnostics: Optional[list] = None) -> str:
     """Inspect the report and only its process-owned visible popup windows."""
     if not owner_pid:
         return "unavailable"
@@ -1387,6 +1436,17 @@ def _refresh_ui_state(hwnd: int, owner_pid: Optional[int], *,
             raise PowerShellFailure({
                 "status": "error", "cause": "uia_result_invalid",
                 "note": "uia_result_invalid", "retryable": False})
+        if observation.get('status') == 'refresh_error' and diagnostics is not None:
+            from powerbi_import.security_validator import redact_credentials
+            message = observation.get('error_message')
+            detail = {
+                'status': 'refresh_error', 'owner_pid': owner_pid,
+                'hwnd': handle, 'source': 'owned_visible_ui',
+                'message': redact_credentials(message[:2048])
+                if isinstance(message, str) else 'Refresh error observed; provider supplied no details.',
+            }
+            if detail not in diagnostics:
+                diagnostics.append(detail)
         states.append(observation.get("status", "unavailable"))
     for state in ("refresh_error", "manual_attention", "pending_changes", "busy", "unavailable"):
         if state in states:
@@ -1575,7 +1635,8 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result,
     if remaining() <= 0:
         return finish()
     initial_state = _refresh_ui_state(
-        hwnd, owner_pid, timeout=remaining(), stop_when=stop_when)
+        hwnd, owner_pid, timeout=remaining(), stop_when=stop_when,
+        diagnostics=result.setdefault('diagnostics', []))
     result["ui_state"] = {
         "initial": initial_state, "readiness": initial_state,
         "readiness_checks": 1, "observed_progress": False,
@@ -1594,7 +1655,8 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result,
         if remaining() <= 0:
             return finish()
         ready_state = _refresh_ui_state(
-            hwnd, owner_pid, timeout=remaining(), stop_when=stop_when)
+            hwnd, owner_pid, timeout=remaining(), stop_when=stop_when,
+            diagnostics=result['diagnostics'])
         result["ui_state"]["readiness"] = ready_state
         result["ui_state"]["readiness_checks"] += 1
     if remaining() <= 0:
@@ -1638,7 +1700,8 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result,
         if remaining() <= 0:
             break
         before = _refresh_ui_state(
-            hwnd, owner_pid, timeout=remaining(), stop_when=stop_when)
+            hwnd, owner_pid, timeout=remaining(), stop_when=stop_when,
+            diagnostics=result['diagnostics'])
         observed_progress = observed_progress or before == "busy"
         result["ui_state"].update(
             before=before, observed_progress=observed_progress)
@@ -1678,6 +1741,15 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result,
         result["data_load"] = data
         if is_powershell_failure(data):
             raise PowerShellFailure(data)
+        if data.get('calculation_checks', {}).get('status') == 'failed':
+            result.update(status='calculation_error', completion_basis='none',
+                          note='One or more calculated columns failed native evaluation.')
+            result['diagnostics'].extend(
+                {'status': 'calculation_error', 'table': item['table'],
+                 'column': item['column'], 'message': 'Calculated column evaluation failed.'}
+                for item in data['calculation_checks']['results']
+                if item['status'] != 'verified')
+            return finish()
         if remaining() <= 0:
             break
         partitions = (
@@ -1692,7 +1764,8 @@ def _refresh_report_impl(hwnd, pbip_path, owner_pid, *, timeout, poll, result,
         if remaining() <= 0:
             break
         after = _refresh_ui_state(
-            hwnd, owner_pid, timeout=remaining(), stop_when=stop_when)
+            hwnd, owner_pid, timeout=remaining(), stop_when=stop_when,
+            diagnostics=result['diagnostics'])
         observed_progress = observed_progress or after == "busy"
         result["ui_state"].update(
             after=after, observed_progress=observed_progress)
@@ -2030,6 +2103,34 @@ def _compare_partition_freshness(before: dict, after: dict) -> dict:
     return result
 
 
+def _risky_calculated_columns(pbip_path):
+    model_dirs = glob.glob(os.path.join(os.path.dirname(os.path.abspath(pbip_path)), '*.SemanticModel'))
+    if len(model_dirs) != 1:
+        return None
+    checks = []
+    definition = re.compile(r"^\s*column\s+(?:'((?:[^']|'')+)'|([^\s=]+))\s*=\s*(.+)$")
+    for path in sorted(glob.glob(os.path.join(model_dirs[0], 'definition', 'tables', '*.tmdl'))):
+        try:
+            with open(path, encoding='utf-8') as handle:
+                text = handle.read()
+        except (OSError, UnicodeError):
+            return None
+        tables = _TMDL_TABLE_RE.findall(text)
+        if len(tables) != 1:
+            return None
+        table = tables[0].strip()
+        if table.startswith("'") and table.endswith("'"):
+            table = table[1:-1].replace("''", "'")
+        for line in text.splitlines():
+            match = definition.match(line)
+            if match and re.search(r'\b(?:LOOKUPVALUE|RELATED)\s*\(', match[3], re.IGNORECASE):
+                column = match[1].replace("''", "'") if match[1] else match[2]
+                check = {'table': table, 'column': column}
+                if check not in checks:
+                    checks.append(check)
+    return checks
+
+
 def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
                         timeout: float = 60.0) -> dict:
     """Verify M-backed tables through the Analysis Services engine owned by HWND.
@@ -2051,6 +2152,11 @@ def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
         return _data_load_result("no_m_tables")
 
     request = {"owner_pid": int(owner_pid), "tables": tables}
+    calculation_checks = _risky_calculated_columns(pbip_path)
+    if calculation_checks is None or len(calculation_checks) > 64:
+        return {**_data_load_result('unavailable'), 'cause': 'calculation_checks_incomplete'}
+    if calculation_checks:
+        request['calculation_checks'] = calculation_checks
     remaining = min(budget, deadline - time.monotonic())
     if remaining <= 0:
         return _data_load_result("unavailable")
@@ -2088,6 +2194,24 @@ def verify_desktop_data(pbip_path: str, owner_pid: Optional[int], *,
             raise ValueError
         if values["status"] == "query_failed" and not values["tables_failed"]:
             raise ValueError
+        if calculation_checks:
+            observed = result.get('calculation_checks')
+            if (not isinstance(observed, list) or len(observed) != len(calculation_checks)
+                    or any(not isinstance(item, dict) for item in observed)):
+                raise ValueError
+            expected = {(item['table'], item['column']) for item in calculation_checks}
+            identities = [(item.get('table'), item.get('column')) for item in observed]
+            if (len(set(identities)) != len(identities) or set(identities) != expected
+                    or any(item.get('status') not in {'verified', 'failed'} for item in observed)):
+                raise ValueError
+            checked = [{key: item[key] for key in ('table', 'column', 'status')} for item in observed]
+            failed = any(item['status'] == 'failed' for item in checked)
+            values['calculation_checks'] = {
+                'status': 'failed' if failed else 'verified',
+                'requested': len(calculation_checks), 'checked': len(checked), 'results': checked,
+            }
+            if failed:
+                values['status'] = 'query_failed'
         return values
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return {**_data_load_result("unavailable"), "cause": "data_result_invalid",

@@ -16,8 +16,9 @@ Every calculation ends up as one of:
 * a *measure*: kept in the semantic model because it is not row-level
   (aggregates, level-of-detail expressions, table calculations, user functions,
   formulas that read no field, formulas that read a measure);
-* inlined: parameters and constant calculations are substituted where they are
-  referenced, frozen at their migration-time value.
+* inlined: parameters and scalar label calculations are substituted where they
+    are referenced, frozen at their migration-time value. Explicit numeric row
+    constants are materialised in a table from their datasource instead.
 
 Nothing in the plan was executed on Spark.
 """
@@ -31,6 +32,7 @@ from typing import Any, NamedTuple
 from .calc_column_utils import (
     calc_spark_type,
     is_calc_column_candidate,
+    is_numeric_row_constant,
     sanitize_calc_col_name,
 )
 from .fabric_naming import sanitize_column_name, sanitize_table_name
@@ -378,8 +380,11 @@ class _Planner:
                 self._by_internal[scope].setdefault(internal.casefold(), calc)
             self._by_caption[scope].setdefault(caption.casefold(), calc)
 
-    @staticmethod
-    def _first_state(raw, formula, caption):
+    def _first_state(self, raw, formula, caption):
+        parameter = (self.params.get(_strip_brackets(raw.get('name')))
+                     or self.params.get(caption))
+        if parameter is not None:
+            return 'literal', '', parameter
         if contains_lod(formula):
             return 'measure', 'level-of-detail expression (kept as a DAX measure)', None
         if is_calc_column_candidate(raw):
@@ -479,6 +484,7 @@ class _Planner:
         return min(common, key=lambda delta: (-len(tables[delta].columns), tables[delta].order))
 
     def _plan_one(self, calc):
+        numeric_row_constant = is_numeric_row_constant({'formula': calc.formula})
         sets = []
         for qualifier, name in collect_field_refs(calc.formula):
             if qualifier is not None:
@@ -488,7 +494,10 @@ class _Planner:
                 sets.append(set(hit.tables))
             elif hit.kind == 'calc' and hit.calc.planned is not None and hit.calc.planned.delta_table:
                 sets.append({hit.calc.planned.delta_table})
-        table = self._best_table(set.intersection(*sets) if sets else set())
+        candidates = set.intersection(*sets) if sets else set()
+        if numeric_row_constant:
+            candidates = {table.delta for table in self.registry.scope_tables(calc.scope)}
+        table = self._best_table(candidates)
         resolver = _Resolver(self, calc, table)
         conv = convert_to_pyspark(calc.formula, resolver)
         if not conv.ok:
@@ -498,7 +507,7 @@ class _Planner:
             else:
                 self._pending(calc, conv.reason, table)
             return
-        if not conv.columns:
+        if not conv.columns and not numeric_row_constant:
             self._measure(calc, 'references no row-level field (kept as a DAX measure)')
             return
         if table is None:

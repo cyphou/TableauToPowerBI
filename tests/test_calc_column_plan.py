@@ -112,6 +112,32 @@ def test_plan_calculated_columns_scope_and_multi_table_resolution(sample_plan_da
     assert 'Scoped' in pending or any(col.caption == 'Scoped' for col in plan.columns)
 
 
+def test_numeric_row_constants_materialise_in_their_datasource(sample_plan_data):
+    sample_plan_data['calculations'] = [
+        {'name': '[RowConstant]', 'caption': 'Row Constant', 'formula': '1',
+         'datatype': 'integer', 'role': 'measure', 'datasource_name': 'Other DS'},
+        {'name': '[Dependent]', 'caption': 'Dependent', 'formula': '[RowConstant] + [Amount]',
+         'datatype': 'real', 'role': 'measure', 'datasource_name': 'Other DS'},
+    ]
+    plan = plan_calculated_columns(sample_plan_data)
+    assert not plan.measures
+    assert len(plan.columns) == 2
+    for column in plan.columns:
+        assert column.materialised, column.reason
+        assert column.delta_table == 'extra'
+    assert 'F.lit(1)' in plan.columns[0].statement
+    assert 'F.col("row_constant")' in plan.columns[1].statement
+
+
+def test_declared_numeric_parameter_is_not_a_fabric_column(sample_plan_data):
+    sample_plan_data['calculations'] = [{
+        'name': '[Threshold]', 'caption': 'Threshold', 'formula': '10',
+        'datatype': 'integer', 'role': 'measure', 'datasource_name': 'Other DS',
+    }]
+    plan = plan_calculated_columns(sample_plan_data)
+    assert not plan.columns
+
+
 def test_lakehouse_and_notebook_integration(tmp_path, sample_plan_data):
     project_dir = tmp_path / 'fabric_out'
     project_dir.mkdir()

@@ -318,6 +318,20 @@ def _check_xml_coherence(root: Optional[ET.Element], result: PreflightResult) ->
             result.add(severity, code, f"Duplicate {label} name: {name!r}",
                        "Rename the duplicate Tableau objects before migration")
 
+    parameter_reference = re.compile(r'\[Parameters\]\s*\.\s*\[', re.IGNORECASE)
+    parameters_used = any(
+        parameter_reference.search(value or '')
+        or (key == 'datasource' and value == 'Parameters'
+            and node.tag != 'datasource-dependencies')
+        for node in root.iter()
+        for key, value in list(node.attrib.items()) + [('text', node.text or '')]
+    )
+    parameters_declared = any(
+        node.tag == 'parameter' or node.get('param-domain-type')
+        or (node.tag == 'datasource-dependencies'
+            and node.get('datasource') == 'Parameters' and bool(list(node)))
+        for node in root.iter()
+    )
     for dependency in root.iter("datasource-dependencies"):
         ref = dependency.attrib.get("datasource", "")
         # Tableau may declare its virtual Parameters datasource inline here,
@@ -330,7 +344,12 @@ def _check_xml_coherence(root: Optional[ET.Element], result: PreflightResult) ->
             and all(column.get("name") and column.get("param-domain-type")
                     for column in columns)
         )
-        if ref and ref not in datasources and not virtual_parameters:
+        unused_parameters = (
+            ref == 'Parameters' and not list(dependency)
+            and not (dependency.text or '').strip()
+            and not parameters_used and not parameters_declared
+        )
+        if ref and ref not in datasources and not virtual_parameters and not unused_parameters:
             result.add(BLOCKER, "missing_datasource_reference",
                        f"Worksheet references missing datasource {ref!r}",
                        "Restore the datasource or update the worksheet dependency")

@@ -74,6 +74,89 @@ def _state3_first_load_baseline():
     return result
 
 
+class TestRefreshErrorEvidence(unittest.TestCase):
+    def test_capture_gate_rejects_failed_or_incomplete_calculation_evidence(self):
+        from powerbi_import.desktop_comparison import _complete_data_checks
+
+        counts = probe._data_load_result('verified', checked=1, nonempty=1, rows=3)
+        for checks in (
+                {'status': 'failed', 'requested': 1, 'checked': 1, 'results': []},
+                {'status': 'verified', 'requested': 2, 'checked': 1, 'results': []},
+                {'status': 'verified', 'requested': 1, 'checked': 1,
+                 'results': [{'status': 'failed'}]}):
+            with self.subTest(checks=checks):
+                self.assertFalse(_complete_data_checks({**counts, 'calculation_checks': checks}))
+
+    def test_native_risky_column_results_must_be_complete_and_exact(self):
+        for outcome in ('verified', 'failed', 'missing', 'unrelated'):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as root:
+                project = Path(root)
+                pbip = project / 'P.pbip'
+                pbip.write_text('{}', encoding='utf-8')
+                tables = project / 'P.SemanticModel' / 'definition' / 'tables'
+                tables.mkdir(parents=True)
+                (tables / 'Facts.tmdl').write_text(
+                    "table 'Facts''One'\n"
+                    "\tcolumn 'Risk' = LOOKUPVALUE('Lookup'[Value], 'Lookup'[Key], [Key])\n"
+                    "\tpartition Facts = m\n\t\tmode: import\n\t\tsource = let x=1 in x\n",
+                    encoding='utf-8')
+                self.assertEqual(probe._risky_calculated_columns(str(pbip)), [
+                    {'table': "Facts'One", 'column': 'Risk'}])
+                response = probe._data_load_result('verified', checked=1, nonempty=1, rows=3)
+                if outcome != 'missing':
+                    response['calculation_checks'] = [{
+                        'table': "Facts'One", 'column': 'Other' if outcome == 'unrelated' else 'Risk',
+                        'status': 'failed' if outcome == 'failed' else 'verified',
+                        'source_values': 'must not propagate',
+                    }]
+                with mock.patch.object(probe.desktop_window, 'IS_WINDOWS', True), \
+                        mock.patch.object(probe, 'run_powershell_json', return_value=response) as execute:
+                    result = probe.verify_desktop_data(str(pbip), 4242)
+                request = execute.call_args.args[1]
+                self.assertEqual(request['calculation_checks'], [
+                    {'table': "Facts'One", 'column': 'Risk'}])
+                self.assertNotIn('must not propagate', json.dumps(result))
+                if outcome in {'missing', 'unrelated'}:
+                    self.assertEqual(result['status'], 'unavailable')
+                else:
+                    self.assertEqual(result['status'], 'query_failed' if outcome == 'failed' else 'verified')
+                    self.assertEqual(result['calculation_checks']['status'], outcome)
+
+    def test_ui_error_details_are_bounded_and_redacted(self):
+        details = []
+        with mock.patch.object(probe.desktop_window, 'dialog_windows', return_value=[]), \
+                mock.patch.object(probe, '_run_uia', return_value={
+                    'status': 'refresh_error',
+                    'error_message': 'Refresh failed; password=public-test-password',
+                    'unexpected_metadata': 'must not propagate',
+                }):
+            state = probe._refresh_ui_state(101, 4242, diagnostics=details)
+        self.assertEqual(state, 'refresh_error')
+        self.assertEqual(len(details), 1)
+        self.assertEqual(details[0]['source'], 'owned_visible_ui')
+        self.assertNotIn('public-test-password', json.dumps(details))
+        self.assertNotIn('must not propagate', json.dumps(details))
+
+    def test_failed_refresh_capture_never_becomes_a_verified_page(self):
+        report = probe.DesktopProbeReport(pbip_path='synthetic.pbip')
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.object(probe.desktop_window, 'window_process_id', return_value=4242), \
+                mock.patch.object(probe.desktop_window, 'capture_window',
+                                  return_value='failure.png') as capture:
+            probe._capture_refresh_failure(report, 101, 4242, str(Path(root) / 'page.png'))
+        self.assertEqual(report.refresh_failure_screenshot, 'failure.png')
+        self.assertIsNone(report.screenshot)
+        self.assertFalse(report.screenshot_data_verified)
+        self.assertTrue(capture.call_args.args[1].endswith('.refresh_error.png'))
+
+    def test_failure_capture_refuses_changed_owner(self):
+        report = probe.DesktopProbeReport(pbip_path='synthetic.pbip')
+        with mock.patch.object(probe.desktop_window, 'window_process_id', return_value=9999), \
+                mock.patch.object(probe.desktop_window, 'capture_window') as capture:
+            probe._capture_refresh_failure(report, 101, 4242, 'page.png')
+        capture.assert_not_called()
+
+
 class PartitionObserverFixture(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
