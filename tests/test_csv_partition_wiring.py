@@ -1473,6 +1473,8 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
                 "directory": "unavailable-native-source", "separator": ",",
             })
             named_connections.append(native_ref)
+        native_collection = ET.SubElement(
+            native_root, "relation", {"type": "collection"})
 
         member = "Data/Extracts/federated_synthetic.hyper"
         extract = ET.SubElement(datasource, "extract", {"enabled": "true"})
@@ -1497,6 +1499,10 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
             obj = ET.SubElement(objects, "object", {"id": f"object-{index}"})
             native_props = ET.SubElement(obj, "properties", {"context": ""})
             native = ET.SubElement(native_props, "relation", {
+                "name": logical_name, "type": "table", "connection": native_ref,
+                "table": f"[{logical_name}$]",
+            })
+            ET.SubElement(native_collection, "relation", {
                 "name": logical_name, "type": "table", "connection": native_ref,
                 "table": f"[{logical_name}$]",
             })
@@ -1538,11 +1544,13 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
         return datasource
 
     def _extract_multi_object_graph(self, object_count=2, *, unpair_last=False,
-                                    add_independent=False):
+                                    add_independent=False, mutate=None):
         from tableau_export.datasource_extractor import extract_datasource
 
         datasource = self._multi_object_graph_datasource(
             object_count, unpair_last=unpair_last)
+        if mutate is not None:
+            mutate(datasource)
         if add_independent:
             import xml.etree.ElementTree as ET
             independent = ET.SubElement(datasource, "relation", {
@@ -1760,6 +1768,18 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
             [table["cols_physical_map"] for table in extracted["tables"]],
             [{f"raw_field_{index}": f"Field {index}"} for index in range(3)],
         )
+        model_tables = self._model([extracted])["model"]["tables"]
+        self.assertEqual([table["name"] for table in model_tables],
+                         ["Data 0", "Data 1", "Data 2"])
+        self.assertEqual(
+            [table["hyper_identity"] for table in model_tables],
+            [table["hyper_identity"] for table in extracted["tables"]],
+        )
+        self.assertTrue(all(
+            "Migration.HyperIdentityRequired"
+            not in table["partitions"][0]["source"]["expression"]
+            for table in model_tables
+        ))
 
     def test_unpaired_multi_object_extract_fails_closed_and_keeps_independent_table(self):
         extracted = self._extract_multi_object_graph(
@@ -1769,8 +1789,69 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
         self.assertIn("Independent", by_name)
         self.assertEqual(by_name["Independent"]["columns"][0]["name"], "lookup_id")
         self.assertIn("Data 0", by_name)
+        self.assertEqual(set(by_name), {
+            "Data 0", "Data 1", "Independent",
+            "alias_00000000-0000-4000-8000-000000000001",
+            "alias_00000000-0000-4000-8000-000000000002",
+        })
         self.assertTrue(all("hyper_identity" not in table
                     for table in extracted["tables"]))
+
+    def test_multi_object_context_extract_rejects_mismatched_collection_leaves(self):
+        def remove_native_collection(datasource):
+            native_root = datasource.find("connection")
+            native_root.remove(native_root.find("relation[@type='collection']"))
+
+        def remove_native_collection_leaf(datasource):
+            native_collection = datasource.find(
+                "connection/relation[@type='collection']")
+            native_collection.remove(native_collection.find("relation"))
+
+        def remove_hyper_collection(datasource):
+            extract_connection = datasource.find("extract/connection")
+            extract_connection.remove(
+                extract_connection.find("relation[@type='collection']"))
+
+        def add_unpaired_hyper_collection_leaf(datasource):
+            import xml.etree.ElementTree as ET
+            hyper_collection = datasource.find(
+                "extract/connection/relation[@type='collection']")
+            ET.SubElement(hyper_collection, "relation", {
+                "name": "unpaired-alias", "type": "table",
+                "table": "[Extract].[unpaired-alias]",
+            })
+
+        def change_native_leaf_table(datasource):
+            native_leaf = datasource.find(
+                "connection/relation[@type='collection']/relation")
+            native_leaf.set("table", "[Different Data$]")
+
+        def change_object_extract_table(datasource):
+            physical = datasource.find(
+                "object-graph/objects/object/properties[@context='extract']/relation")
+            physical.set("table", "[Extract].[different-physical]")
+
+        mutations = (
+            ("missing native collection", remove_native_collection),
+            ("missing native leaf", remove_native_collection_leaf),
+            ("missing Hyper collection", remove_hyper_collection),
+            ("extra Hyper leaf", add_unpaired_hyper_collection_leaf),
+            ("same-count native mismatch", change_native_leaf_table),
+            ("same-count Hyper mismatch", change_object_extract_table),
+        )
+        expected_names = {
+            "Data 0", "Data 1",
+            "alias_00000000-0000-4000-8000-000000000001",
+            "alias_00000000-0000-4000-8000-000000000002",
+        }
+        for label, mutation in mutations:
+            with self.subTest(shape=label):
+                extracted = self._extract_multi_object_graph(2, mutate=mutation)
+                self.assertEqual({table["name"] for table in extracted["tables"]},
+                                 expected_names)
+                self.assertTrue(all(
+                    "hyper_identity" not in table for table in extracted["tables"]
+                ))
 
     def test_object_graph_rejects_incomplete_or_ambiguous_extract_shapes(self):
         def find_extract(datasource):

@@ -55,11 +55,14 @@ alone cannot establish a binding. Derived groups require explicit membership
 metadata: hidden Tableau clustering without recoverable declarations is not
 reconstructed from the physical Hyper columns.
 
-Multi-object object-graph extracts are bound only by complete one-to-one
-pairing between collection leaves and object native/extract relations. Physical
-identity comes from each extract relation, not the connection's `Extract`
-marker. Missing or ambiguous pairs stay unbound; this bounded path is not a
-general fallback for arbitrary relation graphs.
+Multi-object object-graph extracts are bound only when the federated root has
+exactly one native `collection` and the enabled Hyper extract has exactly one
+Hyper `collection`. Each collection's leaves must pair one-to-one with the
+matching object-context relations: native leaves with `context=""` relations,
+Hyper leaves with `context="extract"` relations. Physical identity comes from
+each extract relation, not the connection's `Extract` marker. Missing, extra,
+duplicate, or mismatched collections/leaves stay unbound; this bounded path is
+not a general fallback for arbitrary relation graphs.
 
 Hyper verification reads absolute paths stored in the generated project (the
 `Migration_HyperIdentity` annotation, `Data/hyper_exports.json`, the `DataFolder`

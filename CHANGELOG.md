@@ -14,10 +14,13 @@
 - Add synthetic regressions for four Excel-backed date sources and for
   contiguous, disjoint, All and excluded year filters. This does not certify
   production-workbook refresh or visual parity.
-- Bind multi-object packaged Hyper collections only when every physical leaf
-  is uniquely paired with an object's native and extract table declarations
-  and exact physical identity. Collapse only validated staging aliases;
-  incomplete or ambiguous graphs remain unbound.
+- Bind multi-object packaged Hyper extracts only when the federated source has
+  one native collection and the extract has one Hyper collection, with each
+  collection's leaves exactly paired to the corresponding object relations.
+  Require exact physical identity before collapsing staging aliases; incomplete
+  or ambiguous graphs remain unbound. Synthetic two- and three-object coverage
+  includes mismatched and missing-collection controls; production-workbook and
+  Desktop refresh behavior were not verified in this run.
 - Generate composite relationship keys in one row scope and statically
   recognize the generated index column, exact text-encoding enum values, and
   uniqueness guard. Dynamic or unrecognized M shapes remain fail-closed.

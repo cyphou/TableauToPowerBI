@@ -319,6 +319,16 @@ full-suite or corpus result. The production workbook from the report was not
 available in this run; no native Desktop refresh, screenshot, loaded-row
 count, or value/visual parity is claimed.
 
+**Follow-up — dual-context collections (2026-11-05).** The binder now requires
+exactly one native collection under the federated root and one Hyper collection
+under the active extract. It validates each collection's leaves independently
+against the corresponding object-context relations before mutating tables.
+Synthetic two- and three-object paths are covered through model generation;
+negative controls cover absent collections, unpaired leaves, and same-count
+identity mismatches. The focused Hyper/extraction suites passed 315 tests. The
+production workbook described in the report was not available in this
+workspace; no production migration or Desktop refresh is claimed.
+
 ### Calendar bounds and date-part filters — 2026-11-05
 
 **Delivered in the current worktree.** Calendar dependency screening now ignores

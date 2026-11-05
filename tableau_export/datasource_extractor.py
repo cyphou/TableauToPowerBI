@@ -1786,6 +1786,16 @@ def _bind_multi_object_context_extract(datasource_elem, tables, twbx_path, membe
             or len(graphs) != 1):
         return False
     root, graph = roots[0], graphs[0]
+    native_collections = [relation for relation in children(root, 'relation')
+                          if relation.get('type') == 'collection']
+    if len(native_collections) != 1:
+        return False
+    native_collection = native_collections[0]
+    native_collection_leaves = children(native_collection, 'relation')
+    if not native_collection_leaves or any(
+            leaf.get('type') != 'table' or children(leaf, 'relation')
+            for leaf in native_collection_leaves):
+        return False
     if graph.tag.rsplit('}', 1)[-1].startswith(
             '_.fcp.ObjectModelEncapsulateLegacy.false...'):
         return False
@@ -1801,6 +1811,13 @@ def _bind_multi_object_context_extract(datasource_elem, tables, twbx_path, membe
                          if tag(e) == 'named-connection']
     object_ids, native_aliases, physical_aliases = set(), set(), set()
     native_relations, physical_relations, pairs = [], [], []
+    native_leaf_by_name = {}
+    for leaf in native_collection_leaves:
+        name = leaf.get('name', '')
+        if (not name or name in native_leaf_by_name
+                or not leaf.get('connection') or not leaf.get('table')):
+            return False
+        native_leaf_by_name[name] = leaf
 
     def sole_direct_table(props):
         relations = [e for e in _active_extract_elements(props)
@@ -1831,6 +1848,11 @@ def _bind_multi_object_context_extract(datasource_elem, tables, twbx_path, membe
 
         native_alias, physical_alias = native.get('name', ''), physical.get('name', '')
         native_ref = native.get('connection', '')
+        native_leaf = native_leaf_by_name.get(native_alias)
+        if (native_leaf is None
+                or native_leaf.get('connection') != native_ref
+                or native_leaf.get('table') != native.get('table')):
+            return False
         native_connections = [e for e in named_connections
                               if e.get('name') == native_ref]
         physical_identity = _hyper_table_parts(physical.get('table', ''))
@@ -1862,6 +1884,9 @@ def _bind_multi_object_context_extract(datasource_elem, tables, twbx_path, membe
         pairs.append((native_alias, physical_alias, native_ref, native.get('table'),
                       physical_identity))
 
+    if set(native_leaf_by_name) != native_aliases:
+        return False
+
     leaf_by_name = {}
     for leaf in collection_leaves:
         name = leaf.get('name', '')
@@ -1882,16 +1907,19 @@ def _bind_multi_object_context_extract(datasource_elem, tables, twbx_path, membe
 
     # Every active relation must use the supported table/collection shape;
     # paired aliases may occur only at their exact source and object parents.
-    expected_relations = set(
-        [collection, *collection_leaves, *native_relations, *physical_relations])
+    expected_relations = set([
+        native_collection, *native_collection_leaves,
+        collection, *collection_leaves, *native_relations, *physical_relations,
+    ])
     paired_aliases = native_aliases | physical_aliases
     counts = {alias: 0 for alias in paired_aliases}
     for relation in active:
         if tag(relation) != 'relation':
             continue
-        if relation is collection:
+        if relation in (native_collection, collection):
+            expected_parent = root if relation is native_collection else connection
             if (relation.get('type') != 'collection'
-                    or parents.get(relation) is not connection):
+                    or parents.get(relation) is not expected_parent):
                 return False
             continue
         if (relation.get('type') != 'table' or not relation.get('name')
@@ -1917,8 +1945,7 @@ def _bind_multi_object_context_extract(datasource_elem, tables, twbx_path, membe
                                               if p.get('context') == 'extract']):
             return False
         counts[name] += 1
-    if any(counts[alias] != (1 if alias in native_aliases else 2)
-           for alias in paired_aliases):
+    if any(counts[alias] != 2 for alias in paired_aliases):
         return False
 
     table_matches = {
