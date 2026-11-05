@@ -1459,6 +1459,104 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
             archive.writestr(self.identity["archive_member"], b"synthetic catalog fixture")
         return extract_datasource(datasource, self.identity["workbook"])
 
+    def _multi_object_graph_datasource(self, object_count=2, *, unpair_last=False):
+        import xml.etree.ElementTree as ET
+
+        datasource = ET.Element("datasource", {"name": "multi-object-source"})
+        native_root = ET.SubElement(datasource, "connection", {"class": "federated"})
+        named_connections = []
+        for index in range(object_count):
+            native_ref = f"native-ref-{index}"
+            named = ET.SubElement(native_root, "named-connection", {"name": native_ref})
+            ET.SubElement(named, "connection", {
+                "class": "textscan", "filename": f"missing-{index}.csv",
+                "directory": "unavailable-native-source", "separator": ",",
+            })
+            named_connections.append(native_ref)
+
+        member = "Data/Extracts/federated_synthetic.hyper"
+        extract = ET.SubElement(datasource, "extract", {"enabled": "true"})
+        extract_connection = ET.SubElement(extract, "connection", {
+            "class": "hyper", "dbname": member,
+            "schema": "Extract", "tablename": "Extract",
+        })
+        collection = ET.SubElement(extract_connection, "relation", {"type": "collection"})
+        metadata_records = ET.SubElement(extract_connection, "metadata-records")
+        cols = ET.SubElement(extract_connection, "cols")
+
+        graph = ET.SubElement(datasource, "object-graph")
+        objects = ET.SubElement(graph, "objects")
+        for index in range(object_count):
+            logical_name = f"Data {index}"
+            guid = f"00000000-0000-4000-8000-{index + 1:012d}"
+            physical_alias = f"alias_{guid}"
+            local_name = f"Field {index}"
+            remote_name = f"raw_field_{index}"
+            native_ref = named_connections[index]
+
+            obj = ET.SubElement(objects, "object", {"id": f"object-{index}"})
+            native_props = ET.SubElement(obj, "properties", {"context": ""})
+            native = ET.SubElement(native_props, "relation", {
+                "name": logical_name, "type": "table", "connection": native_ref,
+                "table": f"[{logical_name}$]",
+            })
+            native_columns = ET.SubElement(native, "columns")
+            ET.SubElement(native_columns, "column", {
+                "name": local_name, "datatype": "integer", "ordinal": "0",
+            })
+
+            physical_props = ET.SubElement(obj, "properties", {"context": "extract"})
+            physical = ET.SubElement(physical_props, "relation", {
+                "name": physical_alias, "type": "table",
+                "table": f"[Extract].[{physical_alias}]",
+            })
+            physical_columns = ET.SubElement(physical, "columns")
+            ET.SubElement(physical_columns, "column", {
+                "name": remote_name, "datatype": "integer", "ordinal": "0",
+            })
+            ET.SubElement(collection, "relation", {
+                "name": physical_alias, "type": "table",
+                "table": f"[Extract].[{physical_alias}]",
+            })
+
+            record = ET.SubElement(metadata_records, "metadata-record", {"class": "column"})
+            for key, value in (
+                    ("parent-name", f"[{physical_alias}]"),
+                    ("remote-name", remote_name), ("local-name", f"[{local_name}]"),
+                    ("local-type", "integer"), ("ordinal", "0"),
+                    ("contains-null", "true")):
+                ET.SubElement(record, key).text = value
+            ET.SubElement(cols, "map", {
+                "key": f"[{local_name}]",
+                "value": f"[{physical_alias}].[{remote_name}]",
+            })
+
+        if unpair_last:
+            last_object = objects[-1]
+            last_object.remove(last_object.find("properties[@context='extract']"))
+
+        return datasource
+
+    def _extract_multi_object_graph(self, object_count=2, *, unpair_last=False,
+                                    add_independent=False):
+        from tableau_export.datasource_extractor import extract_datasource
+
+        datasource = self._multi_object_graph_datasource(
+            object_count, unpair_last=unpair_last)
+        if add_independent:
+            import xml.etree.ElementTree as ET
+            independent = ET.SubElement(datasource, "relation", {
+                "name": "Independent", "type": "table", "table": "[Lookup]",
+            })
+            columns = ET.SubElement(independent, "columns")
+            ET.SubElement(columns, "column", {
+                "name": "lookup_id", "datatype": "integer", "ordinal": "0",
+            })
+        with zipfile.ZipFile(self.identity["workbook"], "w") as archive:
+            archive.writestr("Data/Extracts/federated_synthetic.hyper",
+                             b"synthetic catalog fixture")
+        return extract_datasource(datasource, self.identity["workbook"])
+
     def _model(self, datasources=None, extra=None):
         import io
         from contextlib import redirect_stdout
@@ -1599,6 +1697,80 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
         self.assertIn("Table.PromoteHeaders(Csv.Document(", bound)
         self.assertIn('{"Identifier", Int64.Type}', bound)
         self.assertIn(self.filename, bound)
+
+    def test_multi_object_context_extract_binds_two_distinct_physical_relations(self):
+        extracted = self._extract_multi_object_graph(2)
+
+        self.assertEqual([table["name"] for table in extracted["tables"]], ["Data 0", "Data 1"])
+        for index, table in enumerate(extracted["tables"]):
+            physical_alias = (
+                f"alias_00000000-0000-4000-8000-{index + 1:012d}"
+            )
+            self.assertEqual(table["hyper_identity"], {
+                "workbook": os.path.abspath(self.identity["workbook"]),
+                "archive_member": "Data/Extracts/federated_synthetic.hyper",
+                "schema": "Extract", "table": physical_alias,
+            })
+            self.assertEqual(table["cols_physical_map"], {
+                f"raw_field_{index}": f"Field {index}",
+            })
+
+        model_tables = self._model([extracted])["model"]["tables"]
+        self.assertEqual([table["name"] for table in model_tables], ["Data 0", "Data 1"])
+        written = os.path.join(self.root, "written")
+        for index, table in enumerate(model_tables):
+            expected_identity = {
+                "workbook": os.path.abspath(self.identity["workbook"]),
+                "archive_member": "Data/Extracts/federated_synthetic.hyper",
+                "schema": "Extract",
+                "table": f"alias_00000000-0000-4000-8000-{index + 1:012d}",
+            }
+            self.assertEqual(set(table["hyper_identity"]), {
+                "workbook", "archive_member", "schema", "table",
+            })
+            self.assertEqual(table["hyper_identity"], expected_identity)
+            expression = table["partitions"][0]["source"]["expression"]
+            self.assertNotIn("Migration.HyperIdentityRequired", expression)
+
+            content = self._content(table)
+            annotations = re.findall(
+                r"(?m)^\s*annotation Migration_HyperIdentity = (.+?)\s*$",
+                content,
+            )
+            self.assertEqual(len(annotations), 1)
+            self.assertEqual(json.loads(annotations[0]), expected_identity)
+            for filename in os.listdir(written):
+                os.remove(os.path.join(written, filename))
+
+    def test_multi_object_context_extract_supports_three_objects(self):
+        extracted = self._extract_multi_object_graph(3)
+
+        self.assertEqual([table["name"] for table in extracted["tables"]],
+                         ["Data 0", "Data 1", "Data 2"])
+        self.assertEqual(
+            [table["hyper_identity"] for table in extracted["tables"]],
+            [{
+                "workbook": os.path.abspath(self.identity["workbook"]),
+                "archive_member": "Data/Extracts/federated_synthetic.hyper",
+                "schema": "Extract",
+                "table": f"alias_00000000-0000-4000-8000-{index + 1:012d}",
+            } for index in range(3)],
+        )
+        self.assertEqual(
+            [table["cols_physical_map"] for table in extracted["tables"]],
+            [{f"raw_field_{index}": f"Field {index}"} for index in range(3)],
+        )
+
+    def test_unpaired_multi_object_extract_fails_closed_and_keeps_independent_table(self):
+        extracted = self._extract_multi_object_graph(
+            2, unpair_last=True, add_independent=True)
+
+        by_name = {table["name"]: table for table in extracted["tables"]}
+        self.assertIn("Independent", by_name)
+        self.assertEqual(by_name["Independent"]["columns"][0]["name"], "lookup_id")
+        self.assertIn("Data 0", by_name)
+        self.assertTrue(all("hyper_identity" not in table
+                    for table in extracted["tables"]))
 
     def test_object_graph_rejects_incomplete_or_ambiguous_extract_shapes(self):
         def find_extract(datasource):

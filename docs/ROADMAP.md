@@ -296,6 +296,29 @@ was blocked by a manual Tableau dialog. No screen comparison or semantic
 parity is claimed; refresh evidence is local and is not a general Desktop
 compatibility certification.
 
+### Hyper multi-object identity and composite M proof — 2026-11-04
+
+**Delivered in the current worktree.** A fail-closed binder now pairs every
+physical leaf in an active Hyper `collection` with its exact object-graph
+extract relation and native logical relation. It reads physical identity from
+each relation, validates all pairs before mutation, preserves unrelated
+tables, and removes only validated staging aliases. Two- and three-object
+fixtures cover exact four-key identity propagation through extraction and
+TMDL, plus an unpaired-object rejection.
+
+The composite-key M producer now emits a single row scope. Static Hyper schema
+inference recognizes only the generated `Table.AddIndexColumn` shape, the exact
+`TextEncoding.Utf8` and `BinaryEncoding.Hex` enum members, and the narrowly
+structured uniqueness guard that returns its unchanged proven input or raises
+`Error.Record`. Dynamic keys and other conditional table expressions remain
+unverified and fail closed.
+
+**Evidence boundary:** 429 targeted tests across extraction, Hyper import,
+composite relationships, and migration-quality analysis passed. This is not a
+full-suite or corpus result. The production workbook from the report was not
+available in this run; no native Desktop refresh, screenshot, loaded-row
+count, or value/visual parity is claimed.
+
 ### Next development sequence
 
 Report #85–91 hardening adds bounded envelope/field normalization, explicit

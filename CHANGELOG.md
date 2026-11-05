@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- Bind multi-object packaged Hyper collections only when every physical leaf
+  is uniquely paired with an object's native and extract table declarations
+  and exact physical identity. Collapse only validated staging aliases;
+  incomplete or ambiguous graphs remain unbound.
+- Generate composite relationship keys in one row scope and statically
+  recognize the generated index column, exact text-encoding enum values, and
+  uniqueness guard. Dynamic or unrecognized M shapes remain fail-closed.
 - Keep unaggregated Tableau `role=measure` calculations that reference
   multiple physical tables as DAX measures, so referenced fields are evaluated
   in filter context rather than scalar-looked up across a non-unique blend

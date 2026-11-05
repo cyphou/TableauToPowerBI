@@ -954,6 +954,9 @@ def _bind_packaged_hyper_identities(datasource_elem, tables, twbx_path):
         return
     if _bind_physical_extract_join(datasource_elem, tables, twbx_path, members):
         return
+    if _bind_multi_object_context_extract(
+            datasource_elem, tables, twbx_path, members):
+        return
 
     # A relational native context may only bind as a complete materialized
     # object OR the explicitly paired per-table extract join proven above.
@@ -1724,6 +1727,255 @@ def _bind_physical_extract_join(datasource_elem, tables, twbx_path, members):
                 'not declared in the extract (sample: %s); native metadata is retained '
                 'and required join/calculation lineage was validated',
                 alias, len(excluded), ', '.join(str(name) for name in excluded[:5]))
+    return True
+
+
+def _bind_multi_object_context_extract(datasource_elem, tables, twbx_path, members):
+    """Bind every physical alias in a Hyper collection to its object context."""
+    tag = _extract_context_tag
+
+    def children(elem, name):
+        return [child for child in elem if tag(child) == name]
+
+    active = list(_active_extract_elements(datasource_elem))
+    parents = {child: parent for parent in active for child in parent}
+
+    def within(elem, ancestor):
+        parent = parents.get(elem)
+        while parent is not None:
+            if parent is ancestor:
+                return True
+            parent = parents.get(parent)
+        return False
+
+    extracts = children(datasource_elem, 'extract')
+    active_extracts = [e for e in active if tag(e) == 'extract']
+    if (len(extracts) != 1 or active_extracts != extracts
+            or extracts[0].get('enabled', '').lower() != 'true'):
+        return False
+    extract = extracts[0]
+    connections = children(extract, 'connection')
+    if len(connections) != 1 or connections[0].get('class') != 'hyper':
+        return False
+    connection = connections[0]
+    if any(e is not connection and within(e, extract)
+           for e in active if tag(e) == 'connection'):
+        return False
+    member = connection.get('dbname', '')
+    schema = connection.get('schema', '')
+    if (not member.lower().endswith('.hyper') or members.count(member) != 1
+            or not schema):
+        return False
+    collections = children(connection, 'relation')
+    if (len(collections) != 1 or collections[0].get('type') != 'collection'):
+        return False
+    collection = collections[0]
+    collection_leaves = children(collection, 'relation')
+    if not collection_leaves or any(
+            leaf.get('type') != 'table' or children(leaf, 'relation')
+            for leaf in collection_leaves):
+        return False
+    hyper_relations = [e for e in active
+                       if tag(e) == 'relation' and within(e, connection)]
+    if set(hyper_relations) != {collection, *collection_leaves}:
+        return False
+
+    roots = children(datasource_elem, 'connection')
+    graphs = children(datasource_elem, 'object-graph')
+    if (len(roots) != 1 or roots[0].get('class') != 'federated'
+            or len(graphs) != 1):
+        return False
+    root, graph = roots[0], graphs[0]
+    if graph.tag.rsplit('}', 1)[-1].startswith(
+            '_.fcp.ObjectModelEncapsulateLegacy.false...'):
+        return False
+    objects_nodes = children(graph, 'objects')
+    if len(objects_nodes) != 1:
+        return False
+    objects = children(objects_nodes[0], 'object')
+    graph_objects = [e for e in _active_extract_elements(graph) if tag(e) == 'object']
+    if len(objects) < 2 or set(graph_objects) != set(objects):
+        return False
+
+    named_connections = [e for e in _active_extract_elements(root)
+                         if tag(e) == 'named-connection']
+    object_ids, native_aliases, physical_aliases = set(), set(), set()
+    native_relations, physical_relations, pairs = [], [], []
+
+    def sole_direct_table(props):
+        relations = [e for e in _active_extract_elements(props)
+                     if tag(e) == 'relation']
+        if (len(relations) != 1 or relations[0] not in list(props)
+                or relations[0].get('type') != 'table'
+                or children(relations[0], 'relation')):
+            return None
+        return relations[0]
+
+    for obj in objects:
+        object_id = obj.get('id', '')
+        if not object_id or object_id in object_ids:
+            return False
+        object_ids.add(object_id)
+        properties = children(obj, 'properties')
+        if (len(properties) != 2
+                or any('context' not in prop.attrib for prop in properties)
+                or sorted(prop.get('context', '') for prop in properties)
+                != ['', 'extract']):
+            return False
+        native_props = next(p for p in properties if p.get('context') == '')
+        extract_props = next(p for p in properties if p.get('context') == 'extract')
+        native = sole_direct_table(native_props)
+        physical = sole_direct_table(extract_props)
+        if native is None or physical is None:
+            return False
+
+        native_alias, physical_alias = native.get('name', ''), physical.get('name', '')
+        native_ref = native.get('connection', '')
+        native_connections = [e for e in named_connections
+                              if e.get('name') == native_ref]
+        physical_identity = _hyper_table_parts(physical.get('table', ''))
+        if (not native_alias or not native_ref or not native.get('table')
+                or not physical_alias or physical_alias == native_alias
+                or physical.get('connection', '')
+                or physical_identity is None or not all(physical_identity)
+                or physical_identity[0] != schema
+                or len(native_connections) != 1):
+            return False
+        if (native_alias in native_aliases or native_alias in physical_aliases
+                or physical_alias in native_aliases or physical_alias in physical_aliases):
+            return False
+
+        named = native_connections[0]
+        owner = parents.get(named)
+        if not (owner is root or (
+                owner is not None and tag(owner) == 'named-connections'
+                and parents.get(owner) is root)):
+            return False
+        native_connections = children(named, 'connection')
+        if len(native_connections) != 1 or not native_connections[0].get('class'):
+            return False
+
+        native_aliases.add(native_alias)
+        physical_aliases.add(physical_alias)
+        native_relations.append(native)
+        physical_relations.append(physical)
+        pairs.append((native_alias, physical_alias, native_ref, native.get('table'),
+                      physical_identity))
+
+    leaf_by_name = {}
+    for leaf in collection_leaves:
+        name = leaf.get('name', '')
+        identity = _hyper_table_parts(leaf.get('table', ''))
+        if (not name or name in leaf_by_name or identity is None
+            or not all(identity) or identity[0] != schema
+            or leaf.get('connection', '')):
+            return False
+        leaf_by_name[name] = (leaf, identity)
+    if len(leaf_by_name) != len(objects) or set(leaf_by_name) != physical_aliases:
+        return False
+    if len({identity for _, identity in leaf_by_name.values()}) != len(collection_leaves):
+        return False
+    for physical, (_, physical_identity) in zip(physical_relations, [
+            leaf_by_name[alias] for _, alias, _, _, _ in pairs]):
+        if _hyper_table_parts(physical.get('table', '')) != physical_identity:
+            return False
+
+    # Every active relation must use the supported table/collection shape;
+    # paired aliases may occur only at their exact source and object parents.
+    expected_relations = set(
+        [collection, *collection_leaves, *native_relations, *physical_relations])
+    paired_aliases = native_aliases | physical_aliases
+    counts = {alias: 0 for alias in paired_aliases}
+    for relation in active:
+        if tag(relation) != 'relation':
+            continue
+        if relation is collection:
+            if (relation.get('type') != 'collection'
+                    or parents.get(relation) is not connection):
+                return False
+            continue
+        if (relation.get('type') != 'table' or not relation.get('name')
+                or not relation.get('table')):
+            return False
+        name = relation.get('name', '')
+        if name not in paired_aliases:
+            if parents.get(relation) is not datasource_elem:
+                return False
+            continue
+        if relation not in expected_relations:
+            return False
+        if relation in collection_leaves and parents.get(relation) is not collection:
+            return False
+        if relation in native_relations and (
+                parents.get(relation) not in [p for obj in objects
+                                              for p in children(obj, 'properties')
+                                              if p.get('context') == '']):
+            return False
+        if relation in physical_relations and (
+                parents.get(relation) not in [p for obj in objects
+                                              for p in children(obj, 'properties')
+                                              if p.get('context') == 'extract']):
+            return False
+        counts[name] += 1
+    if any(counts[alias] != (1 if alias in native_aliases else 2)
+           for alias in paired_aliases):
+        return False
+
+    table_matches = {
+        alias: [table for table in tables if table.get('name') == alias]
+        for alias in paired_aliases
+    }
+    if any(len(matches) != 1 for matches in table_matches.values()):
+        return False
+    staging_tables = [table_matches[alias][0] for alias in physical_aliases]
+    logical_tables = [table_matches[alias][0] for alias in native_aliases]
+    if (len(staging_tables) != len(objects) or len(logical_tables) != len(objects)
+            or set(map(id, staging_tables)) & set(map(id, logical_tables))):
+        return False
+    fields = _declared_hyper_relation_fields(
+        datasource_elem, connection, physical_relations, staging_tables)
+
+    pending = []
+    for native_alias, physical_alias, _, _, physical_identity in pairs:
+        identity = {
+            'workbook': os.path.abspath(twbx_path),
+            'archive_member': member,
+            'schema': physical_identity[0],
+            'table': physical_identity[1],
+        }
+        logical = table_matches[native_alias][0]
+        staging = table_matches[physical_alias][0]
+        if (logical.get('hyper_identity') not in (None, identity)
+                or staging.get('hyper_identity') not in (None, identity)):
+            return False
+        validated_map = fields[physical_alias]['mapping']
+        staging_map = staging.get('cols_physical_map') or {}
+        logical_map = logical.get('cols_physical_map') or {}
+        if (not isinstance(validated_map, dict) or not validated_map
+                or not isinstance(staging_map, dict)
+                or not isinstance(logical_map, dict)
+                or any(not isinstance(remote, str) or not remote
+                       or not isinstance(local, str) or not local
+                       for mapping in (validated_map, staging_map, logical_map)
+                       for remote, local in mapping.items())):
+            return False
+        if any(validated_map.get(remote) != local
+               for remote, local in staging_map.items()):
+            return False
+        merged_map = dict(logical_map)
+        for remote, local in validated_map.items():
+            if remote in merged_map and merged_map[remote] != local:
+                return False
+            merged_map[remote] = local
+        pending.append((logical, staging, identity, merged_map))
+
+    # Every declaration and map is now proven. Preserve logical table fields and
+    # remove only the staging aliases explicitly paired above.
+    for logical, _, identity, merged_map in pending:
+        logical['hyper_identity'] = identity
+        logical['cols_physical_map'] = merged_map
+    staging_ids = {id(staging) for _, staging, _, _ in pending}
+    tables[:] = [table for table in tables if id(table) not in staging_ids]
     return True
 
 

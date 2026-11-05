@@ -59,6 +59,14 @@ requires each migrated table's Import partition to read its matching staged
 CSV/Parquet file. It does not select a file by similar columns or filenames,
 or switch sources after an export failure.
 
+For object-graph extracts containing multiple physical tables, binding is
+supported only when every collection leaf has one unambiguous object context,
+native relation, and exact extract relation identity. The connection's
+`tablename="Extract"` marker is not used as a physical table name. Missing,
+duplicate, conflicting, or unsupported declarations remain unbound; this
+static identity check does not prove a successful export, Desktop refresh, or
+value parity.
+
 The reader chain uses optional `tableauhyperapi`, then SQLite for compatible
 files, then a bounded header scan for metadata. PBIP full export requires a
 complete reader; header/sample rows cannot substitute for it. Missing full

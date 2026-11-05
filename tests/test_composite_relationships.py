@@ -1069,7 +1069,10 @@ def test_composite_relationship_uses_encoded_key_and_refresh_uniqueness_check():
         expression = table['partitions'][0]['source']['expression']
         assert validate_m_query(expression) == []
         assert 'Binary.ToText(Text.ToBinary' in expression
-        assert 'Text.Length(__ttpbi_value_0)' in expression
+        assert '"S" & Text.From(Text.Length(Binary.ToText(Text.ToBinary(' in expression
+        assert '"I" & Text.From(Text.Length(' in expression
+        assert 'Number.ToText([#"' in expression
+        assert '], "0", "en-US")' in expression
         assert 'Table.RemoveColumns' in expression
         if table['name'] == relationship['toTable']:
             assert 'Migration.CompositeKeyNotUnique' in expression
@@ -1418,6 +1421,79 @@ def test_composite_relationships_on_one_table_keep_every_generated_key():
         key = relation['fromColumn']
         assert any(column['name'] == key for column in fact['columns'])
         assert f'"{key}"' in expression
+
+
+def test_composite_relationship_key_m_is_accepted_by_hyper_schema_derivation():
+    from powerbi_import.migration_quality import _hyper_m_schema_derivations
+
+    model = _build_semantic_model(
+        [_composite_datasource()],
+        extra_objects={'composite_relationship_policies': _composite_policy()},
+        model_mode='import',
+    )
+    key_name = model['model']['relationships'][0]['fromColumn']
+    raw_columns_by_table = {
+        table['name']: {
+            column['sourceColumn'] for column in table['columns']
+            if (column.get('name') != key_name
+                and isinstance(column.get('sourceColumn'), str))
+        }
+        for table in model['model']['tables']
+    }
+    for table in model['model']['tables']:
+        table['columns'] = [
+            column for column in table['columns'] if column.get('name') != key_name]
+        raw_columns = raw_columns_by_table[table['name']]
+        table['partitions'][0]['source']['expression'] = (
+            'let\n'
+            '    Source = Table.PromoteHeaders(Csv.Document('
+            f'File.Contents("{table["name"]}.csv"), '
+            f'[Delimiter = ",", Encoding = 65001, '
+            f'QuoteStyle = QuoteStyle.Csv, Columns = {len(raw_columns)}]))\n'
+            'in\n'
+            '    Source'
+        )
+    model['model']['relationships'] = [
+        relationship for relationship in model['model']['relationships']
+        if relationship.get('fromColumn') != key_name
+        and relationship.get('toColumn') != key_name]
+
+    _materialize_composite_logical_relationships(
+        model, {'composite_relationship_policies': _composite_policy()})
+
+    derivations = []
+    for table in model['model']['tables']:
+        expression = table['partitions'][0]['source']['expression']
+        available, _added, _renamed, issues = _hyper_m_schema_derivations(
+            expression, raw_columns_by_table[table['name']])
+        derivations.append((table['name'], available, issues))
+
+    for table_name, available, issues in derivations:
+        assert issues == [], f"{table_name} generated M issues: {issues}"
+        assert key_name in available, (
+            f"{table_name} generated M does not prove key {key_name!r}")
+
+    guarded_table = next(
+        table for table in model['model']['tables']
+        if 'then error Error.Record(' in table['partitions'][0]['source']['expression'])
+    guarded_expression = guarded_table['partitions'][0]['source']['expression']
+    raw_columns = raw_columns_by_table[guarded_table['name']]
+
+    non_raising_error = guarded_expression.replace(
+        'then error Error.Record(', 'then Error.Record(', 1)
+    assert non_raising_error != guarded_expression
+    _available, _added, _renamed, issues = _hyper_m_schema_derivations(
+        non_raising_error, raw_columns)
+    assert issues, 'Non-raising composite-key failure branch was accepted'
+
+    literal_key_columns = f'Table.Distinct(__rows, {{"{key_name}"}})'
+    dynamic_key_columns = 'Table.Distinct(__rows, {__key_columns})'
+    dynamic_key_expression = guarded_expression.replace(
+        literal_key_columns, dynamic_key_columns, 1)
+    assert dynamic_key_expression != guarded_expression
+    _available, _added, _renamed, issues = _hyper_m_schema_derivations(
+        dynamic_key_expression, raw_columns)
+    assert issues, 'Dynamic composite-key column list was accepted'
 
 
 def test_composite_rejects_multiple_partitions_without_mutating_the_model():

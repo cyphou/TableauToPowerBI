@@ -82,33 +82,26 @@ def _composite_key_m_expression(terms, *, side, nulls_match, row_name):
             raise ValueError(
                 f"Composite equality key type {data_type!r} is unsupported; "
                 "use matching text, integer, boolean, date, or datetime columns.")
-        name = f'__ttpbi_value_{index}'
-        encoded.append((name, value, type_tag, reference))
+        encoded.append((value, type_tag, reference))
 
-    declarations = []
     segments = []
-    for name, value, type_tag, _ in encoded:
-        declarations.append(f'{name} = {value}')
+    for value, type_tag, _ in encoded:
         segments.append(
-            f'"{type_tag}" & Text.From(Text.Length({name}), "en-US") '
-            f'& ":" & {name}'
+            f'"{type_tag}" & Text.From(Text.Length({value}), "en-US") '
+            f'& ":" & {value}'
         )
     serialized = ' & '.join(segments)
-    null_test = ' or '.join(f'{reference} = null'
-                            for _, _, _, reference in encoded)
+    null_test = ' or '.join(f'{reference} = null' for _, _, reference in encoded)
     if nulls_match:
         serialized = ' & '.join(
             f'(if {reference} = null then "N0:" else {segment})'
-            for (_, _, _, reference), segment in zip(encoded, segments)
+            for (_, _, reference), segment in zip(encoded, segments)
         )
         result = serialized
     else:
         null_value = f'"N:{side}:" & Text.From([#"{row_name}"], "en-US")'
         result = f'if {null_test} then {null_value} else {serialized}'
-    return (
-        f'let {", ".join(declarations)} '
-        f'in {result}'
-    )
+    return result
 
 
 def _composite_key_type(value):
@@ -428,7 +421,7 @@ def _materialize_composite_logical_relationships(model, extra_objects):
                     f'Table.AddIndexColumn({{prev}}, "{row_name}", 0, 1, Int64.Type)')),
                 (f'#"TTPBI Composite Key {tag}"', (
                     f'Table.AddColumn({{prev}}, "{key_name}", each '
-                    f'{expressions[table["name"]]}, type text)')),
+                    f'({expressions[table["name"]]}), type text)')),
                 (f'#"TTPBI Remove Composite Row {tag}"', (
                     f'Table.RemoveColumns({{prev}}, {{"{row_name}"}})')),
             ]

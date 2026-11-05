@@ -2492,6 +2492,13 @@ def _hyper_m_schema_derivations(
             return "number", text
         return None
 
+    def literal_integer(value: list[_HyperMToken]) -> Optional[int]:
+        scalar = literal_scalar(value)
+        if (scalar is None or scalar[0] != "number"
+                or re.fullmatch(r"[+-]?\d+", scalar[1]) is None):
+            return None
+        return int(scalar[1])
+
     def row_dependencies(value: list[_HyperMToken],
                          available: dict[str, str], label: str) -> bool:
         value = _hyper_m_unwrap(value)
@@ -2554,6 +2561,10 @@ def _hyper_m_schema_derivations(
             "Int64", "Currency", "Percentage", "Day", "Week", "RoundingMode",
             "Precision", "RelativePosition", "Comparer", "Occurrence", "Order",
         }
+        scalar_enum_members = {
+            "TextEncoding": {"Utf8"},
+            "BinaryEncoding": {"Hex"},
+        }
         scalar_constructors = {
             "#date", "#datetime", "#datetimezone", "#time", "#duration",
         }
@@ -2571,11 +2582,21 @@ def _hyper_m_schema_derivations(
             following = expression[index + 1] if index + 1 < len(expression) else None
             dotted = any(item is not None and item.kind == "symbol"
                          and item.value == "." for item in (previous, following))
+            enum_member = (
+                token.value in scalar_enum_members
+                and following is not None and following.kind == "symbol"
+                and following.value == "."
+                and index + 2 < len(expression)
+                and expression[index + 2].kind == "word"
+                and expression[index + 2].value
+                in scalar_enum_members[token.value]
+            )
             if (following is not None and following.kind == "symbol"
                     and following.value == "."
                     and not (previous is not None and previous.kind == "symbol"
                              and previous.value == ".")
-                    and token.value not in scalar_namespaces):
+                    and token.value not in scalar_namespaces
+                    and not enum_member):
                 issues.append(
                     f"{label}: qualified scalar dependency {token.value!r} "
                     "is not supported by static inference")
@@ -2679,6 +2700,96 @@ def _hyper_m_schema_derivations(
         return _HyperMSchema(
             "lookup", {name: "literal" for name in names}, literal_rows=values)
 
+    def composite_uniqueness_guard(
+            value: list[_HyperMToken], depth: int
+            ) -> Optional[_HyperMSchema]:
+        """Accept only the generated fail-fast composite-key table guard."""
+        try:
+            guard = _hyper_m_root_let(value)
+        except _HyperMParseError:
+            return None
+        if guard is None:
+            return None
+        _in_index, guard_bindings, guard_body = guard
+        guard_body = _hyper_m_unwrap(guard_body)
+        if (len(guard_bindings) != 2 or not guard_body
+                or not _hyper_m_active_word(guard_body[0], "if")):
+            return None
+        try:
+            then_index, else_index = _hyper_m_conditional_bounds(guard_body, 0)
+        except _HyperMParseError:
+            return None
+
+        def binding_reference(expression: list[_HyperMToken]
+                              ) -> Optional[str]:
+            expression = _hyper_m_unwrap(expression)
+            if (len(expression) == 1
+                    and expression[0].kind in {"word", "qident"}):
+                return expression[0].value
+            return None
+
+        binding_names = set(guard_bindings)
+        candidates = []
+        for scalar_name, expression in guard_bindings.items():
+            count_call = _hyper_m_outer_call(expression)
+            if count_call is None or count_call[0] != "Table.RowCount":
+                continue
+            count_args = count_call[1]
+            if len(count_args) != 1:
+                continue
+            distinct_call = _hyper_m_outer_call(count_args[0])
+            if (distinct_call is None
+                    or distinct_call[0] != "Table.Distinct"
+                    or len(distinct_call[1]) != 2):
+                continue
+            table_name = binding_reference(distinct_call[1][0])
+            key_items = _hyper_m_literal_list(distinct_call[1][1])
+            if table_name not in binding_names or table_name == scalar_name \
+                    or not key_items:
+                continue
+            keys = [literal_text(item) for item in key_items]
+            if (any(key is None for key in keys)
+                    or len(set(keys)) != len(keys)):
+                continue
+            candidates.append((scalar_name, table_name, keys))
+        if len(candidates) != 1:
+            return None
+        scalar_name, table_name, keys = candidates[0]
+        if binding_names != {scalar_name, table_name}:
+            return None
+
+        condition = _hyper_m_unwrap(guard_body[1:then_index])
+        if (len(condition) < 4
+                or binding_reference(condition[:1]) != scalar_name
+                or condition[1].kind != "symbol" or condition[1].value != "<"
+                or condition[2].kind != "symbol" or condition[2].value != ">"):
+            return None
+        row_count = _hyper_m_outer_call(condition[3:])
+        if (row_count is None or row_count[0] != "Table.RowCount"
+                or len(row_count[1]) != 1
+                or binding_reference(row_count[1][0]) != table_name):
+            return None
+
+        failure = _hyper_m_unwrap(guard_body[then_index + 1:else_index])
+        if not failure or not _hyper_m_active_word(failure[0], "error"):
+            return None
+        error_call = _hyper_m_outer_call(failure[1:])
+        if (error_call is None or error_call[0] != "Error.Record"
+                or len(error_call[1]) != 3):
+            return None
+        if binding_reference(guard_body[else_index + 1:]) != table_name:
+            return None
+
+        table_expression = guard_bindings[table_name]
+        if _hyper_m_references(table_expression, binding_names):
+            return None
+        state = infer(table_expression, depth + 1)
+        if state is None or state.kind != "table":
+            return None
+        if set(keys) - set(state.columns):
+            return None
+        return state
+
     def infer(value: list[_HyperMToken], depth: int = 0) -> Optional[_HyperMSchema]:
         value = _hyper_m_unwrap(value)
         if depth > 128:
@@ -2699,6 +2810,9 @@ def _hyper_m_schema_derivations(
             visiting.remove(name)
             cache[name] = state
             return state
+        guarded = composite_uniqueness_guard(value, depth)
+        if guarded is not None:
+            return guarded
         if value and _hyper_m_active_word(value[0], "try"):
             issues.append(
                 "table/source-level try fallback prevents proof that the "
@@ -2715,7 +2829,8 @@ def _hyper_m_schema_derivations(
             "File.Contents": {1, 2}, "Binary.Buffer": {1},
             "Csv.Document": {1, 2}, "Parquet.Document": {1},
             "Table.PromoteHeaders": {1, 2}, "Table.RenameColumns": {2, 3},
-            "Table.AddColumn": {3, 4}, "Table.SelectColumns": {2, 3},
+            "Table.AddColumn": {3, 4}, "Table.AddIndexColumn": {4, 5},
+            "Table.SelectColumns": {2, 3},
             "Table.RemoveColumns": {2, 3}, "Table.ReorderColumns": {2, 3},
             "Table.TransformColumnTypes": {2, 3}, "Table.NestedJoin": {5, 6},
             "Table.ExpandTableColumn": {3, 4}, "Table.ReplaceValue": {5},
@@ -2782,6 +2897,33 @@ def _hyper_m_schema_derivations(
                         output[new] = "renamed"
                         if old in nested:
                             nested[new] = nested.pop(old)
+        elif method == "Table.AddIndexColumn":
+            name = literal_text(args[1])
+            initial = literal_integer(args[2])
+            increment = literal_integer(args[3])
+            index_type = _hyper_m_unwrap(args[4]) if len(args) == 5 else []
+            supported_type = (
+                len(args) == 4
+                or (len(index_type) == 3
+                    and index_type[0].kind == "word"
+                    and index_type[0].value == "Int64"
+                    and index_type[1].kind == "symbol"
+                    and index_type[1].value == "."
+                    and index_type[2].kind == "word"
+                    and index_type[2].value == "Type")
+            )
+            if (name is None or initial is None or increment is None
+                    or not supported_type):
+                issues.append(
+                    "Table.AddIndexColumn requires an explicit unique name, "
+                    "integer initial value/increment, and optional Int64.Type")
+                return None
+            if name in output:
+                issues.append(
+                    f"Table.AddIndexColumn target {name!r} already exists "
+                    "in its input")
+                return None
+            output[name] = "added"
         elif method == "Table.AddColumn":
             name = literal_text(args[1]) if len(args) >= 2 else None
             if name is None or len(args) < 3:
