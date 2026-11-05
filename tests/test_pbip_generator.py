@@ -840,7 +840,7 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
     def _emitted_visual(self, worksheet):
         return self._emitted_payload(worksheet)['visual']
 
-    def test_explicit_aggregation_false_emits_row_columns_instead_of_sums(self):
+    def test_explicit_aggregation_false_keeps_numeric_chart_axes(self):
         worksheet = self._bar()
         worksheet['aggregation'] = {
             'enabled': False, 'status': 'explicit', 'source_scope': 'worksheet',
@@ -848,18 +848,20 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
         payload = self._emitted_payload(worksheet)
         visual = payload['visual']
 
-        self.assertEqual(visual['visualType'], 'tableEx')
-        projections = visual['query']['queryState']['Values']['projections']
-        self.assertEqual([projection['field'] for projection in projections], [
-            self._column('C'), self._column('A'), self._column('D'),
-        ])
-        self.assertTrue(all('Aggregation' not in projection['field']
-                            for projection in projections))
+        self.assertEqual(visual['visualType'], 'barChart')
+        state = visual['query']['queryState']
+        self.assertEqual(set(state), {'Category', 'Series', 'Y'})
+        self.assertEqual(state['Category']['projections'][0]['field'],
+                         self._column('C'))
+        self.assertEqual(state['Series']['projections'][0]['field'],
+                         self._column('D'))
+        self.assertEqual(state['Y']['projections'][0]['field'],
+                         self._column('A'))
         notes = ' '.join(
             item.get('value', '') for item in payload.get('annotations', [])
             if item.get('name') == 'MigrationNote')
         self.assertIn('explicitly disabled', notes)
-        self.assertIn('cannot represent this unaggregated grain', notes)
+        self.assertIn('remain unaggregated', notes)
 
     def test_disaggregated_scatter_keeps_bare_column_axes_and_color(self):
         worksheet = self._scatter()
@@ -2324,6 +2326,19 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
             'sort': [{'field': expected, 'direction': 'Ascending'}],
             'isDefaultSort': True,
         })
+        self.assertNotIn('_visual_mapping_note', worksheet)
+
+    def test_discrete_year_accepts_omitted_default_relationship_properties(self):
+        self._index(relationship=self.RELATIONSHIP)
+        self.assertEqual(self.gen._related_year_bindings, {
+            ('Facts', 'Event Date'): ('Date Lookup', 'Year'),
+        })
+        worksheet = self._year_worksheet()
+        query = self.gen._build_visual_query(worksheet)
+        self.assertEqual(self._category(query), {'Column': {
+            'Expression': {'SourceRef': {'Entity': 'Date Lookup'}},
+            'Property': 'Year',
+        }})
         self.assertNotIn('_visual_mapping_note', worksheet)
 
     def test_discrete_year_without_relationship_omits_raw_timestamp(self):

@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- Preserve native chart types when Tableau aggregation is explicitly disabled:
+  numeric axis columns remain unaggregated in value roles, while unsupported
+  role combinations still fall back to an annotated table. Treat omitted TMDL
+  relationship properties as their active/many-to-one defaults when validating
+  discrete Year bindings to a derived Calendar.
 - Derive Calendar bounds from generated Excel source queries when table-name
   matches occur only in M comments; retain fail-closed handling for actual
   semantic-table references. Configured calendar_start/calendar_end values,

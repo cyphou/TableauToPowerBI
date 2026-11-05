@@ -4305,7 +4305,8 @@ class PowerBIProjectGenerator:
                           and f.get('aggregation') in _TABLEAU_AGG_TO_PBI_FUNC
                           and not self._is_date_field(f['name']))
                       or self._is_measure_field(f['name']))
-            if f.get('_aggregation_disabled') and not f.get('_preserve_scatter_axis'):
+            if (f.get('_aggregation_disabled')
+                    and not f.get('_preserve_unaggregated_axis')):
                 is_mea = False
             if discrete_date_column:
                 is_mea = False
@@ -4689,8 +4690,8 @@ class PowerBIProjectGenerator:
             for field in cleaned_fields:
                 field['_aggregation_disabled'] = True
                 field['_force_column'] = True
-                field['_preserve_scatter_axis'] = (
-                    original_type == 'scatterChart'
+                field['_preserve_unaggregated_axis'] = (
+                    original_type not in ('table', 'tableEx')
                     and field.get('shelf') in ('rows', 'columns'))
             note = (
                 'Tableau aggregation is explicitly disabled; source fields are '
@@ -4700,14 +4701,11 @@ class PowerBIProjectGenerator:
                 note += ' Scatter X/Y retain unaggregated columns; verify point-count limits.'
             elif original_type != 'tableEx':
                 note += (
-                    ' The original visual cannot represent this unaggregated '
-                    'grain in its required measure roles.'
+                    ' Numeric axis columns remain unaggregated in chart value '
+                    'roles; verify mark grain and row-count behavior.'
                 )
             previous = ws_data.get('_visual_mapping_note')
             ws_data['_visual_mapping_note'] = f'{previous} {note}' if previous else note
-            if original_type not in ('tableEx', 'scatterChart'):
-                ws_data['_override_visual_type'] = 'tableEx'
-                ws_data['_visual_fallback_note'] = note
 
         adhoc_clustering = any(
             item.get('adhoc') for item in (ws_data.get('clustering') or [])
@@ -5559,14 +5557,15 @@ class PowerBIProjectGenerator:
                 continuous_bindings.setdefault(source, set()).update(
                     continuous_candidates)
             # Year is only interchangeable with a discrete Tableau year when
-            # the exact physical DateTime source column has an explicit active
+            # the exact physical DateTime source column has an active
             # many-to-one relationship to a generated Calendar date, and that
-            # Calendar's integer Year is derived from that date in M.
-            strict_active = bool(active and active.group(1).lower() == 'true')
+            # Calendar's integer Year is derived from that date in M. TMDL
+            # omits isActive=true and toCardinality=one when they are defaults.
+            strict_active = not active or active.group(1).lower() == 'true'
             source_type = str(source_column_types.get(source, '')).lower()
             year_candidates = calendar_years.get(target)
-            if (strict_active and cardinality
-                    and cardinality.group(1).lower() == 'one'
+            if (strict_active
+                    and (not cardinality or cardinality.group(1).lower() == 'one')
                     and source_type == 'datetime'
                     and year_candidates):
                 year_bindings.setdefault(source, set()).update(year_candidates)
@@ -5625,14 +5624,46 @@ class PowerBIProjectGenerator:
             previous = ws_data.get('_visual_mapping_note')
             ws_data['_visual_mapping_note'] = f'{previous}; {text}' if previous else text
 
+        unaggregated_numeric_columns = set()
+        column_types = getattr(self, '_actual_bim_column_types', {}) or {}
+        field_map = getattr(self, '_field_map', {}) or {}
+        for field in all_fields:
+            if (not field.get('_aggregation_disabled')
+                    or field.get('shelf') not in ('rows', 'columns')):
+                continue
+            pair = field.get('_resolved_pair') or field_map.get(
+                self._clean_field_name(field.get('name', '')))
+            if not pair:
+                continue
+            column_type = str(column_types.get(pair, '')).lower()
+            if (column_type in _NUMERIC_MODEL_TYPES
+                    and not self._is_bim_measure_symbol(
+                        pair[0], pair[1], field.get('name', ''),
+                        prefer_column=True)):
+                unaggregated_numeric_columns.add(pair)
+
+        def is_unaggregated_numeric_column(projection):
+            column = projection.get('field', {}).get('Column')
+            if not column:
+                return False
+            source = column.get('Expression', {}).get('SourceRef', {})
+            pair = (source.get('Entity'), column.get('Property'))
+            return pair in unaggregated_numeric_columns
+
         for role in _MEASURE_ONLY_ROLES.get(visual_type, ()):
             body = query_state.get(role)
             if not body:
                 continue
-            kept = [p for p in body['projections'] if 'Column' not in p['field']]
+            kept = [
+                projection for projection in body['projections']
+                if ('Column' not in projection['field']
+                    or is_unaggregated_numeric_column(projection))
+            ]
             if len(kept) != len(body['projections']):
                 dropped = [p['queryRef'].split('.', 1)[-1]
-                           for p in body['projections'] if 'Column' in p['field']]
+                           for p in body['projections']
+                           if ('Column' in p['field']
+                               and not is_unaggregated_numeric_column(p))]
                 note(f'{role} accepts only aggregated values; '
                      f'non-numeric field(s) left unbound: {", ".join(dropped)}')
             if kept:
