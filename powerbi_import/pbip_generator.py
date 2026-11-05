@@ -6586,6 +6586,13 @@ class PowerBIProjectGenerator:
                         notes.append(reason)
                     continue
 
+                merged_intervals = []
+                for start, end in sorted(set(intervals)):
+                    if merged_intervals and merged_intervals[-1][1] == start:
+                        merged_intervals[-1] = (merged_intervals[-1][0], end)
+                    else:
+                        merged_intervals.append((start, end))
+
                 left = {
                     _field_kind: {
                         "Expression": {"SourceRef": {"Source": "t"}},
@@ -6608,14 +6615,29 @@ class PowerBIProjectGenerator:
                         }},
                     }}
 
-                condition = interval_condition(intervals[0])
-                for interval in intervals[1:]:
+                condition = interval_condition(merged_intervals[0])
+                for interval in merged_intervals[1:]:
                     condition = {"Or": {
                         "Left": condition,
                         "Right": interval_condition(interval),
                     }}
                 if f.get('exclude', False):
                     condition = {"Not": {"Expression": condition}}
+                where = [{"Condition": condition}]
+                if len(merged_intervals) == 1 and not f.get('exclude', False):
+                    start, end = merged_intervals[0]
+                    where = [
+                        {"Condition": {"Comparison": {
+                            "ComparisonKind": 2,
+                            "Left": left,
+                            "Right": {"Literal": {"Value": start}},
+                        }}},
+                        {"Condition": {"Comparison": {
+                            "ComparisonKind": 3,
+                            "Left": left,
+                            "Right": {"Literal": {"Value": end}},
+                        }}},
+                    ]
                 visual_filters.append({
                     "name": f"Filter_{uuid.uuid4().hex[:8]}",
                     "type": "Advanced",
@@ -6628,7 +6650,7 @@ class PowerBIProjectGenerator:
                     "filter": {
                         "Version": 2,
                         "From": [{"Name": "t", "Entity": entity, "Type": 0}],
-                        "Where": [{"Condition": condition}],
+                        "Where": where,
                     },
                 })
                 continue

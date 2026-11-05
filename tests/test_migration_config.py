@@ -19,12 +19,52 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from powerbi_import.config.migration_config import MigrationConfig, load_config
+import migrate
 
 
 def _make_args(**kwargs):
     """Create an argparse.Namespace with given values (others absent)."""
     return argparse.Namespace(**kwargs)
 
+
+class TestApplyConfigFile(unittest.TestCase):
+    def test_calendar_defaults_in_config_are_applied_only_when_present(self):
+        configs = (
+            ("nested", {"model": {"calendar_start": 2020, "calendar_end": 2030}}, (2020, 2030)),
+            ("flat", {"calendar_start": 2020, "calendar_end": 2030}, (2020, 2030)),
+            ("absent", {"model": {}}, (None, None)),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for name, config, expected in configs:
+                with self.subTest(config_shape=name):
+                    config_path = os.path.join(temp_dir, f"{name}.json")
+                    with open(config_path, "w", encoding="utf-8") as config_file:
+                        json.dump(config, config_file)
+                    args = argparse.Namespace(
+                        config=config_path,
+                        tableau_file=None,
+                        prep=None,
+                        output_dir=None,
+                        mode=None,
+                        hyper_export_format=None,
+                        hyper_export_max_rows=None,
+                        max_zip_entry_mb=None,
+                        culture=None,
+                        calendar_start=None,
+                        calendar_end=None,
+                        output_format="pbip",
+                        rollback=False,
+                        verbose=False,
+                        log_file=None,
+                        skip_extraction=False,
+                        skip_conversion=False,
+                        dry_run=False,
+                    )
+
+                    migrate._apply_config_file(args)
+
+                    self.assertEqual(args.calendar_start, expected[0])
+                    self.assertEqual(args.calendar_end, expected[1])
 
 class TestHyperConfigurationOptions(unittest.TestCase):
     def test_export_cap_format_and_zip_limit_survive_args_and_config_roundtrip(self):

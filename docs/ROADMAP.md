@@ -7,7 +7,7 @@ Fabric-native artifacts. Static local validation is the release gate. Semantic
 execution, refresh and deployment evidence remain `not_run` unless an
 authorized environment proves otherwise.
 
-## Current priorities — 2026-10-23
+## Current priorities — 2026-11-05
 
 Latest delivered UI baseline: commit `12e921e` on `main`, following the
 engine/recovery work in `8cd63b2`. The local browser runner and PowerShell
@@ -318,6 +318,27 @@ composite relationships, and migration-quality analysis passed. This is not a
 full-suite or corpus result. The production workbook from the report was not
 available in this run; no native Desktop refresh, screenshot, loaded-row
 count, or value/visual parity is claimed.
+
+### Calendar bounds and date-part filters — 2026-11-05
+
+**Delivered in the current worktree.** Calendar dependency screening now ignores
+M comments while retaining actual bare and quoted table references. A synthetic
+four-source Excel regression covers filenames matching table names and verifies
+that the generated Calendar uses independent source copies rather than silently
+using only the 2020–2030 baseline. Explicit `calendar_start`/`calendar_end` keys
+in a config file, including values equal to 2020/2030, are honored; omitted
+bounds retain that baseline and widen to include available source dates. The
+example config omits these optional overrides.
+
+Date-part filters merge adjacent half-open intervals only. A contiguous year
+selection emits the exact two-bound range; disjoint selections retain their OR
+semantics, explicit `All` remains a no-op, and exclusions retain `Not`. Dynamic
+or invalid date-part values continue to fail closed.
+
+**Evidence boundary:** 235 targeted tests across migration config, Calendar CLI
+modes, notebook API, Calendar generation, and PBIR filter generation passed in
+this validation run. The reported production workbooks were not available;
+Desktop refresh, screenshots, and value/visual parity remain `not_run`.
 
 ### Next development sequence
 

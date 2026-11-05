@@ -5523,8 +5523,20 @@ def _apply_config_file(args):
     if not args.config:
         return
     try:
-        from powerbi_import.config.migration_config import load_config
-        config = load_config(filepath=args.config, args=args)
+        from powerbi_import.config.migration_config import MigrationConfig
+        config_path = os.path.abspath(args.config)
+        with open(config_path, 'r', encoding='utf-8') as config_file:
+            config_data = json.load(config_file)
+        config = MigrationConfig(config_data).merge_with_args(args)
+        model_config = config_data.get('model', {})
+        calendar_start_is_configured = (
+            'calendar_start' in config_data
+            or isinstance(model_config, dict) and 'calendar_start' in model_config
+        )
+        calendar_end_is_configured = (
+            'calendar_end' in config_data
+            or isinstance(model_config, dict) and 'calendar_end' in model_config
+        )
         # Apply config values only where the caller did not supply a CLI value.
         if not args.tableau_file and config.tableau_file:
             args.tableau_file = config.tableau_file
@@ -5542,9 +5554,9 @@ def _apply_config_file(args):
             args.max_zip_entry_mb = config.max_zip_entry_mb
         if not args.culture and config.culture != 'en-US':
             args.culture = config.culture
-        if args.calendar_start is None and config.calendar_start != 2020:
+        if args.calendar_start is None and calendar_start_is_configured:
             args.calendar_start = config.calendar_start
-        if args.calendar_end is None and config.calendar_end != 2030:
+        if args.calendar_end is None and calendar_end_is_configured:
             args.calendar_end = config.calendar_end
         if args.output_format == 'pbip' and config.output_format != 'pbip':
             args.output_format = config.output_format

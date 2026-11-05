@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- Derive Calendar bounds from generated Excel source queries when table-name
+  matches occur only in M comments; retain fail-closed handling for actual
+  semantic-table references. Configured calendar_start/calendar_end values,
+  including 2020/2030, are honored when present; omitted bounds retain the
+  2020–2030 baseline and widen to include available source dates. Merge only
+  adjacent date-part intervals into an exact range; disjoint selections keep
+  their OR semantics, and explicit All remains a no-op.
+- Add synthetic regressions for four Excel-backed date sources and for
+  contiguous, disjoint, All and excluded year filters. This does not certify
+  production-workbook refresh or visual parity.
 - Bind multi-object packaged Hyper collections only when every physical leaf
   is uniquely paired with an object's native and extract table declarations
   and exact physical identity. Collapse only validated staging aliases;

@@ -960,6 +960,133 @@ class TestAutomaticShelfRegressions(unittest.TestCase):
         self.assertNotIn("'2020'L", literals)
         self.assertEqual(notes, [])
 
+    def test_consecutive_year_date_filter_collapses_to_one_datetime_range(self):
+        self.gen._field_map['Event Date'] = ('Facts', 'Event Date')
+        self.gen._actual_bim_symbols.add(('Facts', 'Event Date'))
+        self.gen._actual_bim_column_types[('Facts', 'Event Date')] = 'datetime'
+        filters = self.gen._create_visual_filters([{
+            'field': 'Event Date', 'date_part': 'yr',
+            'type': 'categorical',
+            'values': [str(year) for year in range(1992, 2020)],
+        }])
+
+        self.assertEqual(len(filters), 1)
+        self.assertEqual(filters[0]['type'], 'Advanced')
+        where = filters[0]['filter']['Where']
+        self.assertEqual(len(where), 2)
+        self.assertLessEqual(len(where), 2)
+        self.assertNotIn('Or', json.dumps(where))
+
+        comparisons = [item['Condition']['Comparison'] for item in where]
+        self.assertLessEqual(len(comparisons), 2)
+        self.assertEqual([item['ComparisonKind'] for item in comparisons], [2, 3])
+        self.assertEqual(
+            [item['Right']['Literal']['Value'] for item in comparisons],
+            ["datetime'1992-01-01T00:00:00'", "datetime'2020-01-01T00:00:00'"],
+        )
+
+    def test_consecutive_month_date_filter_collapses_to_half_open_range(self):
+        self.gen._field_map['Event Date'] = ('Facts', 'Event Date')
+        self.gen._actual_bim_symbols.add(('Facts', 'Event Date'))
+        self.gen._actual_bim_column_types[('Facts', 'Event Date')] = 'datetime'
+        filters = self.gen._create_visual_filters([{
+            'field': 'Event Date', 'date_part': 'month',
+            'type': 'categorical', 'values': ['2020-10', '2020-11', '2020-12'],
+        }])
+
+        self.assertEqual(len(filters), 1)
+        self.assertEqual(filters[0]['type'], 'Advanced')
+        where = filters[0]['filter']['Where']
+        self.assertEqual(len(where), 2)
+        self.assertNotIn('Or', json.dumps(where))
+        comparisons = [item['Condition']['Comparison'] for item in where]
+        self.assertEqual([item['ComparisonKind'] for item in comparisons], [2, 3])
+        self.assertEqual(
+            [item['Right']['Literal']['Value'] for item in comparisons],
+            ["datetime'2020-10-01T00:00:00'", "datetime'2021-01-01T00:00:00'"],
+        )
+
+    def test_date_part_all_filter_without_values_emits_no_visual_filter(self):
+        self.gen._field_map['Event Date'] = ('Facts', 'Event Date')
+        self.gen._actual_bim_symbols.add(('Facts', 'Event Date'))
+        self.gen._actual_bim_column_types[('Facts', 'Event Date')] = 'datetime'
+
+        filters = self.gen._create_visual_filters([{
+            'field': 'Event Date', 'date_part': 'yr',
+            'type': 'all', 'values': [],
+        }])
+
+        self.assertEqual(filters, [])
+
+    def test_excluded_consecutive_year_date_filter_preserves_not_and_merged_range(self):
+        self.gen._field_map['Event Date'] = ('Facts', 'Event Date')
+        self.gen._actual_bim_symbols.add(('Facts', 'Event Date'))
+        self.gen._actual_bim_column_types[('Facts', 'Event Date')] = 'datetime'
+        filters = self.gen._create_visual_filters([{
+            'field': 'Event Date', 'date_part': 'yr',
+            'type': 'categorical',
+            'values': [str(year) for year in range(1992, 2020)],
+            'exclude': True,
+        }])
+
+        self.assertEqual(len(filters), 1)
+        self.assertEqual(filters[0]['type'], 'Advanced')
+        where = filters[0]['filter']['Where']
+        self.assertEqual(len(where), 1)
+        self.assertEqual(where[0]['Condition'], {
+            'Not': {'Expression': {
+                'And': {
+                    'Left': {'Comparison': {
+                        'ComparisonKind': 2,
+                        'Left': {
+                            'Column': {
+                                'Expression': {'SourceRef': {'Source': 't'}},
+                                'Property': 'Event Date',
+                            },
+                        },
+                        'Right': {'Literal': {
+                            'Value': "datetime'1992-01-01T00:00:00'",
+                        }},
+                    }},
+                    'Right': {'Comparison': {
+                        'ComparisonKind': 3,
+                        'Left': {
+                            'Column': {
+                                'Expression': {'SourceRef': {'Source': 't'}},
+                                'Property': 'Event Date',
+                            },
+                        },
+                        'Right': {'Literal': {
+                            'Value': "datetime'2020-01-01T00:00:00'",
+                        }},
+                    }},
+                },
+            }},
+        })
+
+    def test_excluded_disjoint_year_date_filter_preserves_gap_under_not(self):
+        self.gen._field_map['Event Date'] = ('Facts', 'Event Date')
+        self.gen._actual_bim_symbols.add(('Facts', 'Event Date'))
+        self.gen._actual_bim_column_types[('Facts', 'Event Date')] = 'datetime'
+        filters = self.gen._create_visual_filters([{
+            'field': 'Event Date', 'date_part': 'yr',
+            'type': 'categorical', 'values': ['2020', '2022'],
+            'exclude': True,
+        }])
+
+        self.assertEqual(len(filters), 1)
+        where = filters[0]['filter']['Where']
+        self.assertEqual(len(where), 1)
+        condition = where[0]['Condition']
+        self.assertIn('Not', condition)
+        expression = condition['Not']['Expression']
+        self.assertIn('Or', expression)
+        serialized = json.dumps(expression)
+        self.assertIn("datetime'2020-01-01T00:00:00'", serialized)
+        self.assertIn("datetime'2021-01-01T00:00:00'", serialized)
+        self.assertIn("datetime'2022-01-01T00:00:00'", serialized)
+        self.assertIn("datetime'2023-01-01T00:00:00'", serialized)
+
     def test_repeating_date_part_filter_fails_closed_instead_of_emitting_integer(self):
         self.gen._field_map['Event Date'] = ('Facts', 'Event Date')
         self.gen._actual_bim_symbols.add(('Facts', 'Event Date'))

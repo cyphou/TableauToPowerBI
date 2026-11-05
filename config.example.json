@@ -28,11 +28,9 @@
     "// culture": "IETF locale tag for the semantic model (default: en-US)",
     "culture": "en-US",
 
-    "// calendar_start": "Start year for the auto-generated Calendar table (default: 2020)",
-    "calendar_start": 2020,
+    "// calendar_start": "Optional fixed Calendar start year; omit to use 2020 baseline, widened for source dates",
 
-    "// calendar_end": "End year for the auto-generated Calendar table (default: 2030)",
-    "calendar_end": 2030,
+    "// calendar_end": "Optional fixed Calendar end year; omit to use 2030 baseline, widened for source dates",
 
     "// rollback": "If true, backup existing .pbip project before overwriting",
     "rollback": false,

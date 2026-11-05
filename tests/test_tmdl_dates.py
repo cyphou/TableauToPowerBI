@@ -12,6 +12,7 @@ from unittest.mock import patch
 from powerbi_import.tmdl_dates import (
     _add_date_table,
     _refresh_calendar_source_expressions,
+    _runtime_calendar_dates,
     _worksheet_date_usage,
 )
 from powerbi_import.tmdl_writers import _write_tmdl_files
@@ -110,6 +111,102 @@ class TestCalendarMonthStart(unittest.TestCase):
         self.assertIn(
             'Table.Column(#"Calendar Source First.Event Date", '
             '" Date\'s ""physical"" ")', expression)
+
+    def test_runtime_calendar_dates_declines_real_semantic_table_reference(self):
+        model = _model()
+        model['model']['tables'][1]['name'] = 'Lookup'
+        model['model']['tables'][0]['partitions'][0]['source']['expression'] = (
+            'let Source = #"Lookup" in Source')
+
+        result = _runtime_calendar_dates(model, [('First', 'Event Date')])
+
+        self.assertEqual(result, '')
+        self.assertFalse(any(
+            expression.get('_calendar_source_table')
+            for expression in model['model']['expressions']))
+
+    def test_runtime_calendar_date_bindings_do_not_collide_after_concatenation(self):
+        model = _model()
+        first, second = model['model']['tables']
+        first['name'] = 'A.B'
+        first['columns'][0]['name'] = 'C'
+        first['columns'][0]['sourceColumn'] = 'C'
+        second['name'] = 'A'
+        second['columns'][0]['name'] = 'B.C'
+        second['columns'][0]['sourceColumn'] = 'B.C'
+
+        result = _runtime_calendar_dates(model, [('A.B', 'C'), ('A', 'B.C')])
+
+        steps = re.findall(
+            r'(?m)^    (#[^\r\n]+) = List\.RemoveNulls\(List\.Transform\(\n'
+            r'        Table\.Column\((#[^,\r\n]+), "((?:[^"]|"")*)"\),\n'
+            r'        each Date\.From\(_\)\)\),$',
+            result,
+        )
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(len({identifier for identifier, _, _ in steps}), 2)
+        self.assertEqual(
+            [(query, column) for _, query, column in steps],
+            [('#"Calendar Source A.B.C"', 'C'), ('#"Calendar Source A.B.C 2"', 'B.C')],
+        )
+
+    def test_excel_filename_comments_do_not_block_runtime_calendar_dates(self):
+        from tableau_export.m_query_builder import _gen_m_excel
+
+        names = ("Orders", "Reviews", "Shipments", "Returns")
+        model = {"model": {
+            "name": "ExcelSources", "culture": "en-US", "relationships": [],
+            "expressions": [],
+            "tables": [{
+                "name": name,
+                "columns": [{
+                    "name": "Event Date", "dataType": "DateTime",
+                    "sourceColumn": "Event Date",
+                }],
+                "measures": [],
+                "partitions": [{
+                    "name": name, "mode": "import", "source": {
+                        "type": "m",
+                        "expression": _gen_m_excel(
+                                {"filename": f"{name}.xlsx", "_source_table": name}, name,
+                            [{"name": "Event Date", "datatype": "date"}],
+                        ),
+                    },
+                }],
+            } for name in names],
+        }}
+
+        with redirect_stdout(io.StringIO()):
+            _add_date_table(model)
+
+        calendar = next(t for t in model["model"]["tables"] if t["name"] == "Calendar")
+        bounds = calendar["_calendar_bounds"]
+        expression = calendar["partitions"][0]["source"]["expression"]
+        source_queries = bounds["source_queries"]
+        self.assertEqual(bounds["mode"], "source")
+        self.assertEqual(len(source_queries), 4)
+        self.assertEqual(len(set(source_queries)), 4)
+        self.assertIn(
+            "Date.StartOfYear(List.Min(List.Combine({SourceDates, {#date(2020, 1, 1)}})))",
+            expression,
+        )
+        self.assertIn(
+            "Date.EndOfYear(List.Max(List.Combine({SourceDates, {#date(2030, 12, 31)}})))",
+            expression,
+        )
+        self.assertIn(
+            "SourceDates = List.Combine({"
+            + ", ".join(f'#"{name}.Event Date Dates"' for name in names)
+            + "})",
+            expression,
+        )
+        copied_sources = {
+            item["_calendar_source_table"]: item["name"]
+            for item in model["model"]["expressions"]
+            if item.get("_calendar_source_table")
+        }
+        self.assertEqual(set(copied_sources), set(names))
+        self.assertEqual(set(copied_sources.values()), set(source_queries))
 
 
 class TestCalendarGenerationIntegration(unittest.TestCase):

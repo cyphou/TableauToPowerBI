@@ -9,6 +9,8 @@ Extracted from ``tmdl_generator``, which re-exports these names.
 import re
 from datetime import date, datetime
 
+from .m_validator import _strip_comments_only
+
 # Well-known date table names (any language)
 _DATE_TABLE_NAMES = {
     # English
@@ -250,13 +252,16 @@ def _runtime_calendar_dates(model, candidates):
     def references(expression, names):
         if isinstance(expression, list):
             expression = '\n'.join(expression)
-        # Retain quoted identifiers, remove string literals (e.g. source paths).
+        # Ignore comments and ordinary strings, but retain quoted identifiers.
+        expression = _strip_comments_only(expression)
         code = re.sub(r'#"(?:[^"]|"")*"|"(?:[^"]|"")*"',
                       lambda match: match.group(0) if match.group(0).startswith('#') else '',
                       expression)
-        return any(re.search(r'(?<![\w])(?:#"' + re.escape(name.replace('"', '""'))
-                             + r'"|' + re.escape(name) + r')(?![\w])', code)
-                   for name in names)
+        return any(
+            re.search(r'(?<![\w])#"' + re.escape(name.replace('"', '""'))
+                      + r'"(?![\w])', code)
+            or re.search(r'(?<![\w#"])' + re.escape(name) + r'(?![\w"])', code)
+            for name in names)
 
     for expression in model['model'].get('expressions', []):
         if references(expression.get('expression', ''), ['Calendar']):
@@ -279,7 +284,6 @@ def _runtime_calendar_dates(model, candidates):
         if (source.get('type') != 'm' or partition.get('mode', 'import') != 'import'
                 or not expression or references(expression, list(tables) + ['Calendar'])):
             continue
-        identifier = '#"' + (tname + '.' + cname + ' Dates').replace('"', '""') + '"'
         model_column = next(
             col for col in tables[tname].get('columns', []) if col.get('name') == cname)
         source_column = model_column.get('sourceColumn')
@@ -291,6 +295,14 @@ def _runtime_calendar_dates(model, candidates):
             query_name = f'{base_name} {suffix}'
             suffix += 1
         reserved.add(query_name.casefold())
+        binding_base = tname + '.' + cname + ' Dates'
+        binding_name = binding_base
+        suffix = 2
+        while binding_name.casefold() in reserved:
+            binding_name = f'{binding_base} {suffix}'
+            suffix += 1
+        reserved.add(binding_name.casefold())
+        identifier = '#"' + binding_name.replace('"', '""') + '"'
         shared.append({'name': query_name, 'kind': 'm', 'expression': expression,
                        '_calendar_source_table': tname})
         query_ref = '#"' + query_name.replace('"', '""') + '"'
