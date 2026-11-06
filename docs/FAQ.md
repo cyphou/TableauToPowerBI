@@ -34,6 +34,54 @@ file association is configured. Generation and static validation do not
 guarantee native loading, refresh or visual parity. See the
 [project opening and setup guide](POWERBI_PROJECT_GUIDE.md).
 
+### Where are partial artifacts when a batch fails?
+
+Fresh ordinary PBIP workbook batches, including `--batch-config`, recover
+independent objects after supported refusals by default:
+
+```powershell
+python migrate.py batch .\workbooks --output-dir .\output
+```
+
+For an incomplete workbook, inspect its generated project directory's
+`Salvage/` folder, not an older `.pbip`:
+
+1. Read `salvage_manifest.json` for the extraction/generation failure and the
+   diagnostic-only `incomplete` / `FAIL` result.
+2. Read `inventory.json` to map numeric filenames to source objects and reasons.
+   `recovered` means unvalidated converter text was written, not that it runs;
+   `blocked` means no fragment could be produced with the available context;
+   `not_attempted` means the diagnostic-safe policy did not attempt conversion.
+3. Review any `.dax` and `.pq` fragments alongside their numbered source JSON
+   and `model_metadata.json`. A retained raw formula does not guarantee a DAX
+   fragment: ambiguous ownership or cross-table context may prevent conversion.
+   The batch-owned extraction directory also retains incremental JSON and
+   `extraction_salvage.json`; it is not a complete generation input on failure.
+4. Correct the source declarations or unsupported expressions and rerun a fresh
+   batch. Incomplete recovery remains nonzero and withholds the `.pbip`
+   completion marker; do not treat fragments as a resumable or validated project.
+
+Before a recovery attempt, prior project, extraction and current quality/evidence
+outputs are archived under `.migration_previous` in the workbook output directory.
+Those files are previous-attempt evidence, not current success. Credentials are
+scrubbed from recovery diagnostics, but retained formulas and metadata can still
+be confidential; review them before sharing.
+
+To stop on recoverable extraction or semantic refusals without salvage:
+
+```powershell
+python migrate.py batch .\workbooks --output-dir .\output --strict-generation
+```
+
+`--salvage-partial` is an explicit compatibility alias for default recovery;
+do not combine it with `--strict-generation`. Desktop diagnostics,
+`--skip-extraction`, shared-model, standalone Prep, Fabric and inspection routes
+keep their legacy defaults, not automatic salvage. Explicitly requesting
+incompatible salvage is an error. Security refusals remain fatal in all modes;
+recovery never executes source queries or invents Hyper bindings/relationships.
+See the [recovery architecture](ARCHITECTURE.md#diagnostic-recovery-boundary)
+and [scope limits](KNOWN_LIMITATIONS.md#diagnostic-salvage-default-recovery).
+
 ### Do I need to install Python dependencies?
 
 No. The core migration uses only the Python standard library (xml, json, os, uuid, re, etc.).

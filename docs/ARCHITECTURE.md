@@ -146,6 +146,45 @@ For environments without Mermaid rendering:
               +-------------------------------+
 ```
 
+## Diagnostic recovery boundary
+
+The normal extraction-to-generation path above describes complete inputs.
+Fresh ordinary PBIP workbook batch and batch-config routes instead retain
+diagnostics on supported refusals by default. This is a separate failure path,
+not relaxed model validation or a guarantee of partial PBIP generation:
+
+| Boundary | Producer and retained evidence |
+|----------|--------------------------------|
+| Safe input parsing | Security checks precede object recovery; XXE, archive traversal and path-containment refusals remain fatal |
+| Independent extraction | `TableauExtractor` isolates supported datasource/stage refusals, checkpoints successful objects and writes `extraction_salvage.json`; incomplete extraction does not enter normal generation |
+| Diagnostic conversion | `migrate._write_partial_salvage()` calls `recover_diagnostic_semantics()` on parsed extraction objects, independently of successful TMDL writing |
+| Diagnostic output | `<Project>/Salvage/` contains an inventory, scrubbed source/model JSON and eligible numbered `.dax`/`.pq` fragments; unresolved context may leave only source metadata |
+| Completion | `salvage_manifest.json` records `incomplete`, `diagnostic_only: true`, `validation_status: FAIL` and the withheld completion marker; the workbook fails and the batch returns nonzero |
+
+Diagnostic conversion neither reads source rows nor executes M/DAX. It does not
+infer missing Hyper identities, physical bindings or relationships. Fragment
+statuses (`recovered`, `blocked`, `not_attempted`) describe retention/conversion,
+not validation; all recovered text remains unvalidated. Incremental extraction
+checkpoints are diagnostics, not proof that all extraction stages completed.
+Recovery serialization scrubs credentials without changing live model semantics;
+retained business formulas and metadata still require a sharing review.
+
+Before a recovery-enabled attempt, the batch archives prior project, owned
+extraction and current quality/evidence files under `.migration_previous`, so
+previous success is not mistaken for current output. Archive confinement checks
+reject unsafe ownership boundaries and link/junction paths.
+
+`--strict-generation` disables salvage and stops supported recoverable
+extraction refusals as well as unsupported semantic generation.
+`--salvage-partial` explicitly requests the default policy; the two CLI flags
+are mutually exclusive. Automatic salvage does not extend to Desktop
+diagnostics, skip-extraction, shared-model, standalone Prep, Fabric or inspection
+routes, which retain their legacy behavior. Explicit incompatible requests fail.
+Neither recovery nor strict mode establishes Desktop, refresh, saved-state,
+value-parity or deployment evidence. See the
+[operator triage procedure](FAQ.md#where-are-partial-artifacts-when-a-batch-fails)
+and [limitations](KNOWN_LIMITATIONS.md#diagnostic-salvage-default-recovery).
+
 ## Automatic storage mode and Hyper export
 
 For PBIP generation, select the source independently for each datasource,

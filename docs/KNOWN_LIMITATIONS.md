@@ -110,6 +110,13 @@ failures can retain independent `.dax`, `.pq`, per-object source JSON and
 unvalidated: recovery does not guess Hyper bindings or relationships, read
 source data or execute source queries.
 
+Source metadata retention is not a promise of conversion: unresolved field
+ownership, cross-table context and incomplete connections can block fragments;
+Hyper/published bindings and connectors without a diagnostic-safe contract may
+be `not_attempted`. Credential scrubbing does not make business formulas or
+metadata public. Review recovery files before sharing. See the
+[artifact triage procedure](FAQ.md#where-are-partial-artifacts-when-a-batch-fails).
+
 `<Project>\Salvage\inventory.json` records recovered, blocked and not-attempted
 items; `salvage_manifest.json` marks diagnostic-only, incomplete output with
 `validation_status: FAIL` and the `.pbip` completion marker withheld. A partial

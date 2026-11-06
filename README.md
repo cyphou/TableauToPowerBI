@@ -297,6 +297,8 @@ Fabric, shared-model, standalone Prep or inspection modes: their legacy
 defaults remain valid, including the existing partial repair fallback where
 applicable. Explicitly requesting incompatible salvage is an error.
 `--dry-run` writes nothing. See the
+[partial-artifact triage procedure](docs/FAQ.md#where-are-partial-artifacts-when-a-batch-fails)
+and
 [diagnostic salvage limitations](docs/KNOWN_LIMITATIONS.md#diagnostic-salvage-default-recovery);
 no Desktop, native refresh or runtime validation is established by recovery.
 

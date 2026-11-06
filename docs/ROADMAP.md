@@ -352,7 +352,7 @@ Desktop refresh, screenshots, and value/visual parity remain `not_run`.
 
 ### Next development sequence
 
-**In progress in the current worktree, bounded default recovery:** supported
+**Done: bounded default recovery, committed in `fdb34ac`:** supported
 fresh ordinary PBIP workbook folder batch and batch-config use partial recovery
 by default. `--salvage-partial` remains an explicit compatibility alias (flat or
 nested migration config supported). `--strict-generation` disables salvage and
@@ -369,6 +369,9 @@ their legacy defaults, including the partial repair fallback where applicable;
 explicitly incompatible salvage errors. Shared-model and standalone Prep salvage
 remain unimplemented. See the
 [scope and limitations](KNOWN_LIMITATIONS.md#diagnostic-salvage-default-recovery).
+Operator guidance now documents the
+[artifact triage workflow](FAQ.md#where-are-partial-artifacts-when-a-batch-fails)
+and [recovery boundary](ARCHITECTURE.md#diagnostic-recovery-boundary).
 This source review does not close N3 or N5 or add release/corpus acceptance;
 Desktop, native refresh and runtime validation remain `not_run` for this slice.
 

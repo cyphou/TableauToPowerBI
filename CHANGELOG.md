@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Document partial-artifact triage, recovery inventory statuses and strict-mode
+  usage in the FAQ and architecture guide; distinguish retained source metadata
+  from convertible fragments, and reconcile the roadmap's delivered recovery
+  status without claiming native runtime validation.
 - Fix confined relative-CSV workbook uploads failing during spatial
   postprocessing because an unused default DataFolder points outside the job
   boundary; spatial-source confinement remains enforced.
