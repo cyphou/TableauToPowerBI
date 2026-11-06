@@ -633,6 +633,7 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         'table_rename_map': model.get('_table_rename_map', {}),
         'measure_rename_map': model.get('_measure_rename_map', {}),
         'column_rename_map': model.get('_column_rename_map', {}),
+        'calendar_date_key_sources': model.get('_calendar_date_key_sources', []),
         'countd_measure_bindings': model.get('_countd_measure_bindings', {}),
         'quick_table_calc_bindings': model.get('_quick_table_calc_bindings', {}),
         'unsupported_quick_table_calcs': model.get('_unsupported_quick_table_calcs', {}),
@@ -1287,6 +1288,7 @@ def _materialize_calendar_date_keys(model):
     tables = {table.get('name', ''): table
               for table in model.get('model', {}).get('tables', [])}
     date_grain_sources = set()
+    date_key_sources = []
     table_renames = model.get('_table_rename_map', {})
     column_renames = model.get('_column_rename_map', {})
     for datasource in model.get('_datasources', []):
@@ -1349,6 +1351,12 @@ def _materialize_calendar_date_keys(model):
             }],
         })
         relationship['fromColumn'] = key_name
+        date_key_sources.append({
+            'table': table.get('name', ''),
+            'date_key': key_name,
+            'source_column': source_name,
+        })
+    model['_calendar_date_key_sources'] = date_key_sources
 
 
 def _generate_aggregation_tables(model):

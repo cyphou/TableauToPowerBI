@@ -1781,6 +1781,73 @@ class TestHyperPlaceholderHandshakeRegressions(unittest.TestCase):
             for table in model_tables
         ))
 
+    def test_multi_object_hyper_join_uses_proven_native_to_physical_aliases(self):
+        import xml.etree.ElementTree as ET
+
+        def add_join(datasource):
+            graph = datasource.find("object-graph")
+            relationships = ET.SubElement(graph, "relationships")
+            relationship = ET.SubElement(relationships, "relationship", {
+                "type": "inner",
+            })
+            equality = ET.SubElement(relationship, "expression", {"op": "="})
+            ET.SubElement(equality, "expression", {"op": "[Field 0]"})
+            ET.SubElement(equality, "expression", {"op": "[Field 1]"})
+            ET.SubElement(relationship, "first-end-point", {
+                "object-id": "object-0",
+            })
+            ET.SubElement(relationship, "second-end-point", {
+                "object-id": "object-1",
+            })
+
+        for object_count in (2, 3):
+            with self.subTest(object_count=object_count):
+                extracted = self._extract_multi_object_graph(
+                    object_count, mutate=add_join)
+                self.assertEqual(
+                    [table["name"] for table in extracted["tables"]],
+                    [f"Data {index}" for index in range(object_count)],
+                )
+                self.assertEqual(
+                    [table["hyper_identity"]["table"]
+                     for table in extracted["tables"]],
+                    [f"alias_00000000-0000-4000-8000-{index + 1:012d}"
+                     for index in range(object_count)],
+                )
+                self.assertEqual(extracted["relationships"], [{
+                    "type": "inner",
+                    "left": {"table": "Data 0", "column": "Field 0"},
+                    "right": {"table": "Data 1", "column": "Field 1"},
+                }])
+
+    def test_multi_object_hyper_join_rejects_unpaired_native_qualifier(self):
+        import xml.etree.ElementTree as ET
+        from tableau_export.datasource_extractor import ExtractionError
+
+        def add_unpaired_join(datasource):
+            graph = datasource.find("object-graph")
+            relationships = ET.SubElement(graph, "relationships")
+            relationship = ET.SubElement(relationships, "relationship", {
+                "type": "inner",
+            })
+            equality = ET.SubElement(relationship, "expression", {"op": "="})
+            ET.SubElement(equality, "expression", {
+                "op": "[unpaired-native-alias].[Field 0]",
+            })
+            ET.SubElement(equality, "expression", {"op": "[Field 1]"})
+            ET.SubElement(relationship, "first-end-point", {
+                "object-id": "object-0",
+            })
+            ET.SubElement(relationship, "second-end-point", {
+                "object-id": "object-1",
+            })
+
+        with self.assertRaisesRegex(
+                ExtractionError,
+                "no unambiguous declared extract lineage: "
+                "unpaired-native-alias.Field 0"):
+            self._extract_multi_object_graph(2, mutate=add_unpaired_join)
+
     def test_unpaired_multi_object_extract_fails_closed_and_keeps_independent_table(self):
         extracted = self._extract_multi_object_graph(
             2, unpair_last=True, add_independent=True)

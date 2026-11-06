@@ -1151,7 +1151,10 @@ class PowerBIProjectGenerator:
             # role='measure' metadata â€” a calculated column like DATEDIFF()
             # has role='measure' in Tableau but is a column in the BIM model.
             self.apply_model_context(stats)
-            self._related_month_bindings = self._read_related_month_bindings(sm_dir)
+            self._related_month_bindings = self._read_related_month_bindings(
+                sm_dir,
+                date_key_sources=stats.get('calendar_date_key_sources'),
+            )
 
             # Write lineage map alongside the project for traceability
             lineage = stats.get('lineage')
@@ -5393,7 +5396,7 @@ class PowerBIProjectGenerator:
                 return query_state_result
         return {"queryState": query_state}
 
-    def _read_related_month_bindings(self, project_dir):
+    def _read_related_month_bindings(self, project_dir, date_key_sources=None):
         """Find model date-part bindings proved by generated M and relationships."""
         from powerbi_import.tmdl_writers import _parse_source_column
 
@@ -5569,6 +5572,27 @@ class PowerBIProjectGenerator:
                     and source_type == 'datetime'
                     and year_candidates):
                 year_bindings.setdefault(source, set()).update(year_candidates)
+
+        # A generated day-grain key has an exact source-column lineage from
+        # TMDL generation. Reuse that evidence for Tableau date pills, which
+        # still resolve to the preserved physical timestamp field.
+        for date_key_source in date_key_sources or ():
+            if not isinstance(date_key_source, dict):
+                continue
+            table_name = date_key_source.get('table')
+            date_key = date_key_source.get('date_key')
+            source_column = date_key_source.get('source_column')
+            if not all(isinstance(value, str) and value for value in (
+                    table_name, date_key, source_column)):
+                continue
+            derived = (table_name, date_key)
+            original = (table_name, source_column)
+            if derived not in symbols or original not in symbols:
+                continue
+            for binding_map in (bindings, continuous_bindings, year_bindings):
+                candidates = binding_map.get(derived)
+                if candidates:
+                    binding_map.setdefault(original, set()).update(candidates)
 
         self._related_continuous_month_bindings = {
             source: next(iter(candidates))

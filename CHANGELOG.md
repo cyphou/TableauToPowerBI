@@ -9,6 +9,13 @@
   role combinations still fall back to an annotated table. Treat omitted TMDL
   relationship properties as their active/many-to-one defaults when validating
   discrete Year bindings to a derived Calendar.
+- Preserve the physical-to-date-grain lineage of generated Calendar keys for
+  report axis binding, so discrete Year and supported month pills resolve from
+  the original Tableau date field. Unbound date-part shelves remain omitted
+  with a MigrationNote in the emitted visual.
+- Validate packaged Hyper join predicates that use logical object aliases by
+  translating only through the already-proven native-to-physical object pairs;
+  unknown aliases remain fail-closed.
 - Derive Calendar bounds from generated Excel source queries when table-name
   matches occur only in M comments; retain fail-closed handling for actual
   semantic-table references. Configured calendar_start/calendar_end values,

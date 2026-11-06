@@ -2748,6 +2748,10 @@ class TestReproducibleSemanticModelFixes(unittest.TestCase):
         date_key = facts['columns'][1]
         self.assertIn('DATE(YEAR', date_key['expression'])
         self.assertIn('DAY(', date_key['expression'])
+        self.assertEqual(model['_calendar_date_key_sources'], [{
+            'table': 'Facts', 'date_key': 'Created At (Date)',
+            'source_column': 'Created At',
+        }])
 
     def test_multi_object_hyper_tables_keep_exact_identities(self):
         from contextlib import redirect_stdout

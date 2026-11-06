@@ -1133,7 +1133,8 @@ def _extract_formula_references(formula):
             yield tuple(p.replace(']]', ']') for p in re.findall(bracket, token.group()))
 
 
-def _validate_extract_join_references(datasource_elem, fields, tables, *, main_source=False):
+def _validate_extract_join_references(datasource_elem, fields, tables, *,
+                                     main_source=False, native_to_physical=None):
     """Require declared snapshot lineage for executable joins and calculations.
 
     Native schema history is not a snapshot field requirement. Only exact
@@ -1142,6 +1143,7 @@ def _validate_extract_join_references(datasource_elem, fields, tables, *, main_s
     """
     local_names = {alias: {c['name'] for c in value['columns']}
                    for alias, value in fields.items()}
+    native_to_physical = native_to_physical or {}
     owners = {}
     for table in tables:
         for column in table.get('columns', []) + fields[table['name']]['columns']:
@@ -1180,6 +1182,8 @@ def _validate_extract_join_references(datasource_elem, fields, tables, *, main_s
         if len(parts) == 2:
             if parts[0] in fields:
                 alias = parts[0]
+            elif parts[0] in native_to_physical:
+                alias = native_to_physical[parts[0]]
             elif parts[0] not in (datasource_elem.get('name'), datasource_elem.get('caption')):
                 fail(kind, '.'.join(parts), item)
         elif len(parts) != 1:
@@ -1233,7 +1237,8 @@ def _physical_extract_join_fields(datasource_elem, connection, physical_leaves, 
 
 
 def _declared_hyper_relation_fields(datasource_elem, connection, physical_leaves,
-                                    tables, *, main_source=False):
+                                    tables, *, main_source=False,
+                                    native_to_physical=None):
     """Read fields only from a proven relation's owning source scope.
 
     Source metadata explicitly declares alias, physical/local names and types.
@@ -1417,7 +1422,9 @@ def _declared_hyper_relation_fields(datasource_elem, connection, physical_leaves
         fields[alias]['excluded_native_columns'] = sorted(
             set(names) - local_names[alias] - calculated, key=str)
     if not main_source:
-        _validate_extract_join_references(datasource_elem, fields, tables)
+        _validate_extract_join_references(
+            datasource_elem, fields, tables,
+            native_to_physical=native_to_physical)
     return fields
 
 
@@ -1960,7 +1967,9 @@ def _bind_multi_object_context_extract(datasource_elem, tables, twbx_path, membe
             or set(map(id, staging_tables)) & set(map(id, logical_tables))):
         return False
     fields = _declared_hyper_relation_fields(
-        datasource_elem, connection, physical_relations, staging_tables)
+        datasource_elem, connection, physical_relations, staging_tables,
+        native_to_physical={native: physical
+                            for native, physical, *_ in pairs})
 
     pending = []
     for native_alias, physical_alias, _, _, physical_identity in pairs:

@@ -1990,7 +1990,7 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
         self.gen._measure_names = {'A'}
         self.gen._bim_measure_names = set()
 
-    def _index(self, calendar=None, relationship=None):
+    def _index(self, calendar=None, relationship=None, date_key_sources=None):
         definition = os.path.join(self.temp.name, 'definition')
         tables = os.path.join(definition, 'tables')
         os.makedirs(tables, exist_ok=True)
@@ -1998,7 +1998,8 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
             stream.write(self.CALENDAR if calendar is None else calendar)
         with open(os.path.join(definition, 'relationships.tmdl'), 'w', encoding='utf-8') as stream:
             stream.write(self.RELATIONSHIP if relationship is None else relationship)
-        return self.gen._read_related_month_bindings(self.temp.name)
+        return self.gen._read_related_month_bindings(
+            self.temp.name, date_key_sources=date_key_sources)
 
     def _worksheet(self, **metadata):
         return {
@@ -2341,6 +2342,43 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
         }})
         self.assertNotIn('_visual_mapping_note', worksheet)
 
+    def test_discrete_date_parts_bind_through_generated_date_key(self):
+        date_key = ('Facts', 'Event Date (Date)')
+        self.gen._actual_bim_symbols.add(date_key)
+        self.gen._actual_bim_column_types[date_key] = 'datetime'
+        relationship = self.YEAR_RELATIONSHIP.replace(
+            "Facts.'Event Date'", "Facts.'Event Date (Date)'")
+        self.gen._related_month_bindings = self._index(
+            relationship=relationship,
+            date_key_sources=[{
+                'table': 'Facts', 'date_key': 'Event Date (Date)',
+                'source_column': 'Event Date',
+            }],
+        )
+
+        expected_year = ('Date Lookup', 'Year')
+        expected_month = ('Date Lookup', 'Period Label', 'Period Index')
+        expected_continuous_month = ('Date Lookup', 'Month Start')
+        self.assertEqual(self.gen._related_year_bindings[date_key], expected_year)
+        self.assertEqual(
+            self.gen._related_year_bindings[('Facts', 'Event Date')],
+            expected_year)
+        self.assertEqual(
+            self.gen._related_month_bindings[('Facts', 'Event Date')],
+            expected_month)
+        self.assertEqual(
+            self.gen._related_continuous_month_bindings[
+                ('Facts', 'Event Date')],
+            expected_continuous_month)
+
+        worksheet = self._year_worksheet()
+        query = self.gen._build_visual_query(worksheet)
+        self.assertEqual(self._category(query), {'Column': {
+            'Expression': {'SourceRef': {'Entity': 'Date Lookup'}},
+            'Property': 'Year',
+        }})
+        self.assertNotIn('_visual_mapping_note', worksheet)
+
     def test_discrete_year_without_relationship_omits_raw_timestamp(self):
         self._index(relationship='')
         self.assertEqual(self.gen._related_year_bindings, {})
@@ -2354,6 +2392,32 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
         self.assertNotIn('sortDefinition', query)
         self.assertIn('Raw timestamps are intentionally not substituted',
                       worksheet['_visual_mapping_note'])
+
+    def test_unbound_discrete_year_note_is_written_to_visual_json(self):
+        self._index(relationship='')
+        worksheet = self._year_worksheet()
+        visuals = os.path.join(self.temp.name, 'unbound-year-visuals')
+        self.gen._create_visual_worksheet(
+            visuals, worksheet,
+            {'worksheetName': worksheet['name'], 'position': {}},
+            1, 1, 0, [worksheet], {},
+        )
+        visual_paths = [
+            os.path.join(root, filename)
+            for root, _, files in os.walk(visuals)
+            for filename in files if filename == 'visual.json'
+        ]
+        self.assertEqual(len(visual_paths), 1)
+        with open(visual_paths[0], encoding='utf-8') as stream:
+            payload = json.load(stream)
+        notes = [annotation.get('value', '')
+                 for annotation in payload.get('annotations', [])
+                 if annotation.get('name') == 'MigrationNote']
+        self.assertTrue(any(
+            'Discrete Tableau date-part projection was not emitted' in note
+            and 'Raw timestamps are intentionally not substituted' in note
+            for note in notes
+        ))
 
     def test_truncated_year_is_not_assumed_equivalent_to_discrete_year(self):
         self._index(relationship=self.YEAR_RELATIONSHIP)
