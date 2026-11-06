@@ -50,7 +50,8 @@ def _vocabulary():
         try:
             TableauExtractor(workbook, output_dir=out).extract_all()
             for filename in os.listdir(out):
-                if not filename.endswith('.json'):
+                if (not filename.endswith('.json')
+                        or filename == 'extraction_salvage.json'):
                     continue
                 kind = filename[:-len('.json')]
                 try:
@@ -94,6 +95,15 @@ class TestInventoryReadsWhatTheExtractorWrites(_ContractBase):
                         if filename.endswith('.json')
                     }
                     self.assertTrue(expected <= actual)
+                    with open(os.path.join(out, 'extraction_salvage.json'),
+                              encoding='utf-8') as fh:
+                        manifest = json.load(fh)
+                    self.assertEqual(manifest['status'], 'complete')
+                    self.assertIsInstance(manifest['diagnostics'], dict)
+                    self.assertIsInstance(manifest['recovered'], list)
+                    self.assertTrue(manifest['recovered'])
+                    self.assertEqual(manifest['blocked'], [])
+                    self.assertEqual(manifest['not_attempted'], [])
                 finally:
                     shutil.rmtree(out, ignore_errors=True)
 

@@ -31,6 +31,8 @@ Example configuration file (migration_config.json):
     "migration": {
         "skip_extraction": false,
         "skip_conversion": false,
+        "salvage_partial": true,
+        "strict_generation": false,
         "hyper_export_format": "auto",
         "hyper_export_max_rows": null,
         "max_zip_entry_mb": null,
@@ -47,6 +49,8 @@ import copy
 import json
 import logging
 import os
+
+from powerbi_import.errors import ConfigurationError
 
 logger = logging.getLogger('tableau_to_powerbi.config')
 
@@ -74,6 +78,8 @@ _DEFAULTS = {
     'migration': {
         'skip_extraction': False,
         'skip_conversion': False,
+        'salvage_partial': True,
+        'strict_generation': False,
         'dry_run': False,
         'rollback': False,
         'verbose': False,
@@ -117,6 +123,8 @@ class MigrationConfig:
                 'calendar_end': ('model', 'calendar_end'),
                 'skip_extraction': ('migration', 'skip_extraction'),
                 'skip_conversion': ('migration', 'skip_conversion'),
+                'salvage_partial': ('migration', 'salvage_partial'),
+                'strict_generation': ('migration', 'strict_generation'),
                 'dry_run': ('migration', 'dry_run'),
                 'rollback': ('migration', 'rollback'),
                 'verbose': ('migration', 'verbose'),
@@ -201,6 +209,16 @@ class MigrationConfig:
             data['migration']['skip_extraction'] = True
         if hasattr(args, 'skip_conversion') and args.skip_conversion:
             data['migration']['skip_conversion'] = True
+        for key in ('salvage_partial', 'strict_generation'):
+            value = getattr(args, key, None)
+            if value is not None:
+                if not isinstance(value, bool):
+                    raise ConfigurationError(f'{key} must be a boolean')
+                data['migration'][key] = value
+        if getattr(args, 'salvage_partial', None) is True:
+            data['migration']['strict_generation'] = False
+        if getattr(args, 'strict_generation', None) is True:
+            data['migration']['salvage_partial'] = False
         if hasattr(args, 'dry_run') and args.dry_run:
             data['migration']['dry_run'] = True
         if hasattr(args, 'rollback') and args.rollback:
@@ -234,6 +252,13 @@ class MigrationConfig:
         # retain the CLI's precedence when the user explicitly selects auto.
         if getattr(args, 'mode', None) is not None:
             result['model']['mode'] = args.mode
+        for key in ('salvage_partial', 'strict_generation'):
+            if getattr(args, key, None) is not None:
+                result['migration'][key] = cli_config._config['migration'][key]
+        if getattr(args, 'salvage_partial', None) is True:
+            result['migration']['strict_generation'] = False
+        if getattr(args, 'strict_generation', None) is True:
+            result['migration']['salvage_partial'] = False
         for key in (
                 'max_zip_entry_mb', 'hyper_export_format',
                 'hyper_export_max_rows'):
@@ -309,6 +334,20 @@ class MigrationConfig:
     @property
     def skip_extraction(self):
         return self._config['migration']['skip_extraction']
+
+    @property
+    def salvage_partial(self):
+        value = self._config['migration']['salvage_partial']
+        if not isinstance(value, bool):
+            raise ConfigurationError('salvage_partial must be a boolean')
+        return value
+
+    @property
+    def strict_generation(self):
+        value = self._config['migration']['strict_generation']
+        if not isinstance(value, bool):
+            raise ConfigurationError('strict_generation must be a boolean')
+        return value
 
     @property
     def dry_run(self):

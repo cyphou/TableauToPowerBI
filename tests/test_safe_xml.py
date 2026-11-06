@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -12,6 +13,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 
 from extract_tableau_data import TableauExtractor
+from powerbi_import.security_validator import SecurityError
 from safe_xml import (
     ExtractionWarning,
     ExtractionWarningCode,
@@ -67,6 +69,23 @@ class TestSafeXmlHelpers(unittest.TestCase):
 
 
 class TestExtractorWarnings(unittest.TestCase):
+    def test_zip_traversal_is_fatal_before_reading_valid_workbook(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = os.path.join(tmpdir, 'extract', 'nested')
+            os.makedirs(output_dir)
+            twbx_path = os.path.join(tmpdir, 'unsafe.twbx')
+            with zipfile.ZipFile(twbx_path, 'w') as zf:
+                zf.writestr('ok.twb', '<workbook/>')
+                zf.writestr('../../evil.twb', '<workbook/>')
+
+            ext = TableauExtractor(twbx_path, output_dir=output_dir)
+            with mock.patch.object(zipfile.ZipFile, 'open') as open_member:
+                with self.assertRaisesRegex(SecurityError, 'path traversal'):
+                    ext.read_tableau_file()
+            open_member.assert_not_called()
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, 'evil.twb')))
+            self.assertEqual(os.listdir(output_dir), [])
+
     def test_zip_traversal_records_warning(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             twbx_path = os.path.join(tmpdir, 'warn.twbx')
@@ -74,7 +93,8 @@ class TestExtractorWarnings(unittest.TestCase):
                 zf.writestr('../../evil.twb', '<workbook/>')
                 zf.writestr('ok.twb', '<workbook/>')
 
-            ext = TableauExtractor(twbx_path, output_dir=tmpdir)
+            ext = TableauExtractor(
+                twbx_path, output_dir=tmpdir, salvage_partial=False)
             xml = ext.read_tableau_file()
             self.assertIsNotNone(xml)
             codes = {w.get('code') for w in ext.extraction_warnings}

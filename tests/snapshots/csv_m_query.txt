@@ -24,7 +24,8 @@ let
             List.Select(Matches, each List.Count([Candidates]) = 0), each [ExpectedName]),
         AmbiguousExpectedNames = List.Transform(
             List.Select(Matches, each List.Count([Candidates]) > 1), each [ExpectedName]),
-        Renames = List.Transform(Matches, each {[Candidates]{0}, [ExpectedName]}),
+        Matched = List.Select(Matches, each List.Count([Candidates]) = 1),
+        Renames = List.Transform(Matched, each {[Candidates]{0}, [ExpectedName]}),
         RenameSources = List.Transform(Renames, each _{0})
     in
         if not List.IsEmpty(BlankExpectedNames) or not List.IsEmpty(DuplicateExpectedNames) then

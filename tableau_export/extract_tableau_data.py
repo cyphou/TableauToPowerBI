@@ -58,7 +58,10 @@ try:
     from powerbi_import.errors import ConfigurationError, ExtractionError
     from powerbi_import.security_validator import (
         SecurityError,
+        _validate_zip_member,
         get_zip_entry_limit_mb,
+        redact_credentials,
+        redact_m_credentials,
         safe_parse_xml,
         safe_zip_extract_member,
     )
@@ -66,7 +69,10 @@ except ModuleNotFoundError:
     from errors import ConfigurationError, ExtractionError
     from security_validator import (
         SecurityError,
+        _validate_zip_member,
         get_zip_entry_limit_mb,
+        redact_credentials,
+        redact_m_credentials,
         safe_parse_xml,
         safe_zip_extract_member,
     )
@@ -345,8 +351,12 @@ class TableauExtractor:
     )
 
     def __init__(self, tableau_file, output_dir=None, hyper_max_rows=None,
-                 max_zip_entry_mb=None):
+                 max_zip_entry_mb=None, *, salvage_partial=True):
+        """Recover independent objects by default; False enables strict extraction."""
+        if not isinstance(salvage_partial, bool):
+            raise ConfigurationError('salvage_partial must be a boolean')
         self.max_zip_entry_mb = get_zip_entry_limit_mb(max_zip_entry_mb)
+        self.salvage_partial = salvage_partial
         self.tableau_file = tableau_file
         self.output_dir = output_dir or os.environ.get('TTPBI_EXTRACT_DIR', 'tableau_export/')
         self.workbook_data = {}
@@ -354,6 +364,9 @@ class TableauExtractor:
         self.hyper_max_rows = hyper_max_rows or 20
         self._xml_node_cache = {}
         self._datasource_source_selections = {}
+        self._salvage_inventory = None
+        self._salvage_datasources = {}
+        self._blocked_datasource_nodes = set()
 
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -382,10 +395,22 @@ class TableauExtractor:
         def normalize(parent):
             for index, child in enumerate(list(parent)):
                 if child.tag.rsplit('}', 1)[-1] == 'datasource':
-                    selected, selection = select_native_database_context(
-                        child, self.tableau_file)
+                    try:
+                        selected, selection = select_native_database_context(
+                            child, self.tableau_file)
+                    except ExtractionError as exc:
+                        if not self._is_salvage_refusal(exc):
+                            raise
+                        self._blocked_datasource_nodes.add(child)
+                        self._block_salvage_item(
+                            self._salvage_datasources[child], 'normalization', exc)
+                        self._save_salvage_checkpoint()
+                        continue
                     if selection is not None:
                         parent[index] = selected
+                        if self._salvage_inventory is not None:
+                            self._salvage_datasources[selected] = (
+                                self._salvage_datasources.pop(child))
                         child = selected
                         self._datasource_source_selections[child] = selection
                 normalize(child)
@@ -398,6 +423,257 @@ class TableauExtractor:
             return extract_datasource(
                 datasource, twbx_path=self.tableau_file, source_selection=selection)
         return extract_datasource(datasource, twbx_path=self.tableau_file)
+
+    def _is_salvage_refusal(self, error):
+        """Only domain-only chains qualify, never wrapped security/I/O defects."""
+        if self._salvage_inventory is None:
+            return False
+        seen = set()
+        pending = [error]
+        while pending:
+            error = pending.pop()
+            if id(error) in seen:
+                continue
+            seen.add(id(error))
+            if not isinstance(error, ExtractionError):
+                return False
+            pending.extend(cause for cause in (error.__cause__, error.__context__)
+                           if cause is not None)
+        return True
+
+    _SALVAGE_IDENTIFIER_KEYS = frozenset({
+        'name', 'caption', 'datasource', 'datasource_name', 'datasource_caption',
+        'table', 'table_name', 'column', 'column_name', 'field', 'field_name',
+        'remote_name', 'local_name', 'sourceColumn', 'source_table',
+        'datatype', 'data_type', 'type', 'role', 'class',
+    })
+    _SALVAGE_IDENTIFIER_MAPS = frozenset({
+        'col_local_name_map', 'col_type_map', 'field_local_name_map',
+        'cols_physical_map',
+    })
+    _SALVAGE_CREDENTIAL_KEY = re.compile(
+        r'^(?:password|passwd|pwd|secret|token|credential|credentials|'
+        r'authorization|api.?key|access.?key|account.?key|private.?key|'
+        r'client.?secret|username|user.?id|uid)$', re.IGNORECASE)
+    _SALVAGE_SECRET_ASSIGNMENT = re.compile(
+        r'(\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|'
+        r'account[_-]?key|private[_-]?key|client[_-]?secret|username|user\s*id|uid)'
+        r'\s*["\']?\s*[=:]\s*)'
+        r'(?:"(?:[^"]|"")*"|\'(?:[^\']|\'\')*\'|[^\s;,"\'<>]+)',
+        re.IGNORECASE)
+
+    def _scrub_salvage(self, value, *, preserve_identifiers=False,
+                       preserve_references=False):
+        if isinstance(value, dict):
+            scrubbed = {}
+            for key, item in value.items():
+                if isinstance(key, str) and self._SALVAGE_CREDENTIAL_KEY.fullmatch(key):
+                    scrubbed[key] = '***REDACTED***'
+                elif (preserve_identifiers and key in self._SALVAGE_IDENTIFIER_KEYS
+                      and isinstance(item, str)):
+                    scrubbed[key] = item
+                elif (preserve_identifiers and key in self._SALVAGE_IDENTIFIER_MAPS
+                      and isinstance(item, dict)):
+                    scrubbed[key] = {
+                        name: identifier if isinstance(identifier, str)
+                        else self._scrub_salvage(
+                            identifier, preserve_identifiers=preserve_identifiers)
+                        for name, identifier in item.items()
+                    }
+                else:
+                    scrubbed[key] = self._scrub_salvage(
+                        item, preserve_identifiers=preserve_identifiers,
+                        preserve_references=preserve_identifiers
+                        and key in ('formula', 'expression'))
+            return scrubbed
+        if isinstance(value, (list, tuple)):
+            return [self._scrub_salvage(
+                item, preserve_identifiers=preserve_identifiers) for item in value]
+        if isinstance(value, str):
+            cache = self._salvage_scrub_cache
+            cache_key = (value, preserve_references)
+            if cache_key in cache:
+                return cache[cache_key]
+            value = self._SALVAGE_SECRET_ASSIGNMENT.sub(
+                lambda match: match.group(1) + '"***REDACTED***"', value)
+            if preserve_references:
+                # Tableau bracket references are identities, not string literals.
+                parts = re.split(
+                    r'("(?:[^"]|"")*"|\'(?:[^\']|\'\')*\'|\[(?:[^\]]|\]\])*\])',
+                    value)
+                result = ''.join(
+                    part if index % 2 and part.startswith('[')
+                    else self._scrub_salvage(part)
+                    for index, part in enumerate(parts))
+            else:
+                for secret in self._salvage_secrets:
+                    value = value.replace(secret, '***REDACTED***')
+                result = redact_credentials(redact_m_credentials(value))
+            cache[cache_key] = result
+            return result
+        return value
+
+    def _block_salvage_item(self, item, phase, error):
+        item.update(status='blocked', phase=phase, error={
+            'type': type(error).__name__,
+            'message': self._scrub_salvage(str(error)),
+        })
+        logger.warning("Partial extraction blocked %s: %s",
+                       self._scrub_salvage(item['name']), item['error']['message'])
+
+    def _save_salvage_checkpoint(self, complete=False, *, datasource=None,
+                                 save_objects=True):
+        inventory = self._salvage_inventory
+        assert inventory is not None
+        if datasource is not None:
+            # Raw datasource payloads are append-only until final deduplication.
+            self._salvage_datasource_json.append(json.dumps(
+                self._scrub_salvage(datasource, preserve_identifiers=True),
+                indent=2, ensure_ascii=False))
+            path = os.path.join(self.output_dir, 'datasources.json')
+            with open(path, 'w', encoding='utf-8') as stream:
+                stream.write('[\n' + ',\n'.join(self._salvage_datasource_json) + '\n]')
+        elif save_objects:
+            self.save_extractions(changed_only=True)
+        report = {
+            'status': 'complete' if complete else 'incomplete',
+            'diagnostics': self._salvage_diagnostics,
+        }
+        for status in ('recovered', 'blocked', 'not_attempted'):
+            report[status] = [
+                {key: value for key, value in item.items() if key != 'status'}
+                for item in inventory if item['status'] == status
+            ]
+            for item in report[status]:
+                if item['kind'] == 'datasource':
+                    item['name'] = self._scrub_salvage(item['name'])
+        path = os.path.join(self.output_dir, 'extraction_salvage.json')
+        with open(path, 'w', encoding='utf-8') as stream:
+            stream.write(json.dumps(report, indent=2, ensure_ascii=False))
+
+    def _extract_all_salvage(self, root):
+        """Recover declarations, not bindings, from safely parsed source XML.
+
+        Inventory entries identify stages or datasource document-order indexes.
+        Blocked entries carry phase/error; not_attempted entries may carry a
+        dependency reason. Recovery does not imply executable source or parity.
+        """
+        stages = [
+            ('normalization', lambda: self._normalize_datasource_contexts(root)),
+            ('datasources', lambda: self.extract_datasources(root)),
+            ('worksheets', lambda: self.extract_worksheets(root)),
+            ('dashboards', lambda: self.extract_dashboards(root)),
+            ('calculations', lambda: self.extract_calculations(root)),
+            ('cross_datasource_calculations', self._resolve_cross_datasource_calcs),
+            ('parameters', lambda: self.extract_parameters(root)),
+            ('filters', lambda: self.extract_filters(root)),
+            ('stories', lambda: self.extract_stories(root)),
+            ('actions', lambda: self.extract_workbook_actions(root)),
+            ('sets', lambda: self.extract_sets(root)),
+            ('groups', lambda: self.extract_groups(root)),
+            ('bins', lambda: self.extract_bins(root)),
+            ('hierarchies', lambda: self.extract_hierarchies(root)),
+            ('sort_orders', lambda: self.extract_sort_orders(root)),
+            ('aliases', lambda: self.extract_aliases(root)),
+            ('custom_sql', lambda: self.extract_custom_sql(root)),
+            ('user_filters', lambda: self.extract_user_filters(root)),
+            ('datasource_filters', lambda: self.extract_datasource_filters(root)),
+            ('custom_geocoding', lambda: self.extract_custom_geocoding(root)),
+            ('published_datasources', lambda: self.extract_published_datasources(root)),
+            ('data_blending', lambda: self.extract_data_blending(root)),
+            ('hyper_files', self.extract_hyper_metadata),
+            ('table_extensions', lambda: self.extract_table_extensions(root)),
+            ('linguistic_schema', lambda: self.extract_linguistic_schema(root)),
+        ]
+        self.workbook_data = {}
+        self._blocked_datasource_nodes = set()
+        self._salvage_datasources = {}
+        self._salvage_inventory = [
+            {'kind': 'stage', 'name': name, 'status': 'not_attempted'}
+            for name, _ in stages
+        ]
+        def column_declarations(element):
+            declarations = []
+            for column in element.findall('.//column'):
+                declaration = {key: column.get(key, '') for key in
+                               ('name', 'caption', 'datatype', 'role', 'type')}
+                calculation = column.find('calculation')
+                if calculation is not None:
+                    declaration['formula'] = _extract_calculation_formula(
+                        calculation, column.get('name', ''))
+                declarations.append(declaration)
+            return declarations
+
+        secrets = set()
+        sensitive_key = re.compile(
+            r'password|passwd|pwd|secret|token|credential|authorization|'
+            r'api.?key|access.?key|account.?key|private.?key|username|'
+            r'user.?id|^uid$', re.IGNORECASE)
+        for element in root.iter():
+            if element.text and sensitive_key.search(element.tag):
+                secrets.add(element.text)
+            for key, value in element.attrib.items():
+                if value and sensitive_key.search(key):
+                    secrets.add(value)
+        self._salvage_secrets = sorted(secrets, key=len, reverse=True)
+        self._salvage_scrub_cache = {}
+        self._salvage_datasource_json = []
+        self._salvage_saved_objects = {}
+        diagnostics = {'datasources': [], 'worksheets': [], 'dashboards': []}
+        for index, datasource in enumerate(root.findall('.//datasource')):
+            item = {'kind': 'datasource', 'index': index,
+                    'name': datasource.get('name', ''), 'status': 'not_attempted'}
+            self._salvage_inventory.append(item)
+            self._salvage_datasources[datasource] = item
+            diagnostics['datasources'].append({
+                'index': index, 'name': datasource.get('name', ''),
+                'caption': datasource.get('caption', ''),
+                'columns': column_declarations(datasource),
+                'relations': [
+                    {key: relation.get(key, '') for key in ('name', 'type', 'table')}
+                    for relation in datasource.findall('.//relation')
+                ],
+            })
+        for collection, tag in (('worksheets', 'worksheet'), ('dashboards', 'dashboard')):
+            diagnostics[collection] = [
+                {'name': element.get('name', ''),
+                 'columns': column_declarations(element)}
+                for element in _find_collection_items(root, collection, tag)
+            ]
+        self._salvage_diagnostics = self._scrub_salvage(diagnostics)
+        self._save_salvage_checkpoint()
+        for item, (_, extract) in zip(self._salvage_inventory[:len(stages)], stages):
+            # Missing sources cannot prove that a shared Hyper member is unused.
+            if item['name'] == 'hyper_files' and self._blocked_datasource_nodes:
+                item['reason'] = 'Datasource bindings incomplete; Hyper reads not attempted'
+                self._save_salvage_checkpoint()
+                continue
+            try:
+                extract()
+            except ExtractionError as exc:
+                if not self._is_salvage_refusal(exc):
+                    raise
+                self._block_salvage_item(item, item['name'], exc)
+                self.workbook_data.pop(item['name'], None)
+            else:
+                if (item['name'] in ('normalization', 'datasources')
+                        and any(ds['status'] == 'blocked'
+                                for ds in self._salvage_datasources.values())):
+                    item.update(status='blocked', phase=item['name'],
+                                reason='One or more datasource declarations were refused')
+                elif (item['name'] in self.EXTRACTION_OUTPUT_TYPES
+                      and item['name'] not in self.workbook_data):
+                    item.update(status='blocked', phase=item['name'],
+                                reason='Required extraction output was not produced')
+                else:
+                    item['status'] = 'recovered'
+            self._save_salvage_checkpoint()
+        complete = all(item['status'] == 'recovered'
+                       for item in self._salvage_inventory)
+        self._save_salvage_checkpoint(complete=complete)
+        print("Extraction complete" if complete else
+              "Extraction incomplete; see extraction_salvage.json")
+        return complete
 
     def extract_all(self):
         """Extracts all objects from the Tableau workbook"""
@@ -427,6 +703,8 @@ class TableauExtractor:
             root = wrapper
 
         self._clear_xml_node_cache()
+        if self.salvage_partial:
+            return self._extract_all_salvage(root)
         self._normalize_datasource_contexts(root)
 
         # Extract the different objects
@@ -501,6 +779,10 @@ class TableauExtractor:
                 return content.decode('utf-8-sig')
             # Packaged file (ZIP) — with ZIP slip protection
             with zipfile.ZipFile(self.tableau_file, 'r') as z:
+                if self.salvage_partial:
+                    for name in z.namelist():
+                        _validate_zip_member(
+                            z, name, self.output_dir, self.max_zip_entry_mb)
                 for name in z.namelist():
                     # ZIP slip defense: reject path traversal entries
                     normalized = name.replace('\\', '/')
@@ -817,7 +1099,18 @@ class TableauExtractor:
             })
 
         for datasource in self._findall_root_cached(root, './/datasource'):
-            ds_data = self._extract_datasource_with_selection(datasource)
+            if datasource in self._blocked_datasource_nodes:
+                continue
+            try:
+                ds_data = self._extract_datasource_with_selection(datasource)
+            except ExtractionError as exc:
+                if not self._is_salvage_refusal(exc):
+                    raise
+                self._blocked_datasource_nodes.add(datasource)
+                self._block_salvage_item(
+                    self._salvage_datasources[datasource], 'extraction', exc)
+                self._save_salvage_checkpoint(save_objects=False)
+                continue
             action_fields = action_fields_by_datasource.get(
                 ds_data.get('name', ''), [])
             if action_fields:
@@ -832,6 +1125,10 @@ class TableauExtractor:
                 ]
                 ds_data['action_pseudo_fields'] = action_fields
             raw_datasources.append(ds_data)
+            if self._salvage_inventory is not None:
+                self._salvage_datasources[datasource]['status'] = 'recovered'
+                self.workbook_data['datasources'] = list(raw_datasources)
+                self._save_salvage_checkpoint(datasource=ds_data)
 
         # Deduplicate: keep the richest DS by name
         best_ds = {}  # ds_name -> ds_data
@@ -870,7 +1167,7 @@ class TableauExtractor:
         seen_names = set()
 
         existing_datasources = self.workbook_data.get('datasources') or []
-        if existing_datasources:
+        if existing_datasources or (self.salvage_partial and 'datasources' in self.workbook_data):
             # Fast path: reuse already extracted datasource payloads and avoid
             # re-running extract_datasource over the same XML subtree.
             source_datasources = existing_datasources
@@ -3785,7 +4082,7 @@ class TableauExtractor:
     # materializing the entire JSON string in memory.
     _STREAM_THRESHOLD_BYTES = 50 * 1024 * 1024
 
-    def save_extractions(self):
+    def save_extractions(self, *, changed_only=False):
         """Saves extractions to JSON.
 
         Uses streaming writes for large arrays (>50 MB estimated) to
@@ -3800,17 +4097,31 @@ class TableauExtractor:
             if isinstance(obj, time):
                 return obj.isoformat()
             if hasattr(obj, '__str__'):
-                return str(obj)
+                text = str(obj)
+                return (self._scrub_salvage(text)
+                        if getattr(self, '_salvage_inventory', None) is not None else text)
             raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
         for obj_type, data in self.workbook_data.items():
+            saved = getattr(self, '_salvage_saved_objects', None)
+            if (changed_only and saved is not None and obj_type in saved
+                    and data == saved[obj_type]):
+                continue
+            original = data
+            if getattr(self, '_salvage_inventory', None) is not None:
+                # Checkpoints are diagnostics; never rewrite the live model.
+                data = self._scrub_salvage(data, preserve_identifiers=True)
             output_path = os.path.join(self.output_dir, f'{obj_type}.json')
             estimated_size = self._estimate_json_size(data)
             if isinstance(data, list) and estimated_size > self._STREAM_THRESHOLD_BYTES:
                 self._stream_json_array(output_path, data, _json_default)
             else:
                 with open(output_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False, default=_json_default)
+                    f.write(json.dumps(
+                        data, indent=2, ensure_ascii=False, default=_json_default))
+            if changed_only and saved is not None:
+                # Equality against a detached snapshot also detects nested edits.
+                saved[obj_type] = deepcopy(original)
             print(f"  → {output_path}")
 
     @staticmethod

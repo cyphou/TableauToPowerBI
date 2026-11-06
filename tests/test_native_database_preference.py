@@ -509,7 +509,8 @@ class NativeDatabaseFixture(unittest.TestCase):
     def _extract(self, workbook, tag):
         metadata = self.root / "metadata" / tag
         extractor = extract_tableau_data.TableauExtractor(
-            workbook, output_dir=str(metadata), hyper_max_rows=1)
+            workbook, output_dir=str(metadata), hyper_max_rows=1,
+            salvage_partial=False)
         with redirect_stdout(io.StringIO()):
             self.assertTrue(extractor.extract_all())
         extracted = {
@@ -970,7 +971,8 @@ class TestNativeDatabaseLineageFailures(NativeDatabaseFixture):
                                     datasource_extractor.extract_datasource(xml, workbook)
                                 else:
                                     extract_tableau_data.TableauExtractor(
-                                        workbook, output_dir=str(metadata)).extract_all()
+                                        workbook, output_dir=str(metadata),
+                                        salvage_partial=False).extract_all()
                             self.assertEqual(raised.exception.source, "native_database")
                     self.assertFalse((metadata / "datasources.json").exists())
                 self.assertEqual(ET.tostring(xml), original)
@@ -1026,7 +1028,8 @@ class TestNativeDatabaseExplicitParserMetadata(NativeDatabaseFixture):
                                     datasource_extractor.extract_datasource(xml, workbook)
                                 else:
                                     extract_tableau_data.TableauExtractor(
-                                        workbook, output_dir=str(metadata)).extract_all()
+                                        workbook, output_dir=str(metadata),
+                                        salvage_partial=False).extract_all()
                             self.assertEqual(raised.exception.source, "native_database")
                             self.assertIn(missing, str(raised.exception).lower())
                     self.assertFalse((metadata / "datasources.json").exists())

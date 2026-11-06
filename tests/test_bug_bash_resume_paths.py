@@ -92,10 +92,13 @@ def test_batch_resume_uses_generated_identity_without_extract_or_generate(
     for hook in (
             '_stage_declared_local_sources', '_fix_twb_data_folder',
             '_collect_local_data_files', '_convert_hyper_to_csv_in_data',
-            '_route_spatial_partitions', '_reconcile_csv_partitions',
+            '_reconcile_csv_partitions',
             '_wire_shapefile_map_coordinates', '_restrict_file_partitions_to_model',
             '_sync_final_calendar_source_expressions', '_export_power_query_files'):
         monkeypatch.setattr(migrate, hook, mock.Mock())
+    monkeypatch.setattr(migrate, '_route_spatial_partitions', mock.Mock(return_value={
+        'spatial': 0, 'shapefile_csv': 0, 'extract_csv': 0, 'unresolved': 0,
+    }))
     # No extracted quality report is needed for the resume identity contract.
     from import_to_powerbi import PowerBIImporter
     monkeypatch.setattr(PowerBIImporter, '_load_converted_objects', lambda self: {})
@@ -413,7 +416,7 @@ class TestHyperSingleCheckpointOptions(TestCase):
 _BATCH_HOOKS = (
     '_stage_declared_local_sources', '_fix_twb_data_folder',
     '_collect_local_data_files', '_convert_hyper_to_csv_in_data',
-    '_route_spatial_partitions', '_reconcile_csv_partitions',
+    '_reconcile_csv_partitions',
     '_wire_shapefile_map_coordinates', '_restrict_file_partitions_to_model',
     '_sync_final_calendar_source_expressions', '_export_power_query_files')
 
@@ -434,6 +437,9 @@ def batch_case(tmp_path, short_tmp, monkeypatch):
     monkeypatch.setattr(migrate, 'run_batch_html_dashboard', mock.Mock())
     for hook in _BATCH_HOOKS:
         monkeypatch.setattr(migrate, hook, mock.Mock())
+    monkeypatch.setattr(migrate, '_route_spatial_partitions', mock.Mock(return_value={
+        'spatial': 0, 'shapefile_csv': 0, 'extract_csv': 0, 'unresolved': 0,
+    }))
     from import_to_powerbi import PowerBIImporter
     monkeypatch.setattr(PowerBIImporter, '_load_converted_objects', lambda self: {})
     options = dict(batch_dir=str(source_dir), output_dir=output, verify_open=False)
@@ -908,10 +914,9 @@ class TestEffectiveWorkbookCheckpointConfig(TestCase):
         self._skip()
 
     def test_quality_policy_change_invalidates_and_reaches_quality_builder(self):
-        from import_to_powerbi import PowerBIImporter
         objects = {'datasources': [{'name': 'Orders'}]}
         report = mock.Mock(status='passed')
-        with mock.patch.object(PowerBIImporter, '_load_converted_objects',
+        with mock.patch.object(migrate, '_load_salvage_extraction',
                                return_value=objects), \
                 mock.patch('powerbi_import.migration_quality.build_quality_report',
                            return_value=report) as quality, \
@@ -1615,7 +1620,7 @@ def test_batch_input_unavailable_at_start_never_enters_worker(
     assert case.worker.call_args.kwargs['tableau_file'] == str(preceding)
     case.extract.assert_called_once_with(
         str(preceding), output_dir=case.generate.call_args.kwargs['source_dir'],
-        max_zip_entry_mb=1024)
+        max_zip_entry_mb=1024, salvage_partial=True)
     case.generate.assert_called_once()
     case.prep.assert_not_called()
     failed = case.entry()

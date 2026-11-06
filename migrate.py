@@ -824,10 +824,11 @@ def print_step(step_num, total_steps, text):
 
 
 def run_extraction(tableau_file, hyper_max_rows=None, output_dir=None,
-                   max_zip_entry_mb=None):
+                   max_zip_entry_mb=None, salvage_partial=False):
     """Run Tableau extraction with path validation."""
     _stats.phase = 'extraction'
     _stats.failure = None
+    deferred_blockers = []
     max_zip_entry_mb = get_zip_entry_limit_mb(max_zip_entry_mb)
     if _upload_root():
         _confine_upload_path(tableau_file, _upload_root())
@@ -869,7 +870,16 @@ def run_extraction(tableau_file, hyper_max_rows=None, output_dir=None,
             preflight = run_preflight(tableau_file)
             if preflight.warnings or preflight.advisories or preflight.blockers:
                 print(preflight.format_console())
-            if preflight.blockers and not os.environ.get('TTPBI_FORCE'):
+            recoverable_codes = {
+                'unsupported_connector', 'duplicate_worksheet_name',
+                'duplicate_dashboard_name', 'missing_datasource_reference',
+                'missing_worksheet_reference', 'missing_navigation_target',
+            }
+            deferred_blockers = ([issue.code for issue in preflight.blockers]
+                                 if salvage_partial else [])
+            fatal_blockers = [issue for issue in preflight.blockers
+                              if not salvage_partial or issue.code not in recoverable_codes]
+            if fatal_blockers and (salvage_partial or not os.environ.get('TTPBI_FORCE')):
                 _stats.failure = _failure_diagnostic(
                     'extraction', '; '.join(
                         f'{issue.code}: {issue.message}' for issue in preflight.blockers))
@@ -881,6 +891,8 @@ def run_extraction(tableau_file, hyper_max_rows=None, output_dir=None,
                       "(at your own risk).")
                 return False
         except Exception:
+            if salvage_partial:
+                raise
             # Pre-flight is advisory only — never block on its own bugs
             logger.debug("Pre-flight check raised", exc_info=True)
 
@@ -893,8 +905,18 @@ def run_extraction(tableau_file, hyper_max_rows=None, output_dir=None,
 
         extractor = TableauExtractor(
             tableau_file, output_dir=output_dir, hyper_max_rows=hyper_max_rows,
-            max_zip_entry_mb=max_zip_entry_mb)
+            max_zip_entry_mb=max_zip_entry_mb,
+            salvage_partial=salvage_partial)
         success = extractor.extract_all()
+        if salvage_partial and deferred_blockers:
+            inventory_path = os.path.join(extractor.output_dir, 'extraction_salvage.json')
+            with open(inventory_path, encoding='utf-8') as stream:
+                inventory = json.load(stream)
+            inventory['status'] = 'incomplete'
+            inventory['blocked'].extend(
+                {'kind': 'preflight', 'name': code} for code in deferred_blockers)
+            _atomic_write_json(inventory_path, inventory)
+            success = False
 
         if success:
             # Collect extraction counts from saved JSON files
@@ -1987,6 +2009,22 @@ def _run_check_drift(args):
     return ExitCode.SUCCESS
 
 
+def _resolve_salvage_policy(salvage_partial=None, strict_generation=False,
+                            skip_extraction=False, desktop_options=None,
+                            output_format='pbip'):
+    if salvage_partial is not None and type(salvage_partial) is not bool:
+        raise ConfigurationError('salvage_partial must be a boolean')
+    if type(strict_generation) is not bool:
+        raise ConfigurationError('strict_generation must be a boolean')
+    if strict_generation:
+        return False
+    supported = not skip_extraction and desktop_options is None and output_format == 'pbip'
+    if salvage_partial is True and not supported:
+        raise ConfigurationError(
+            '--salvage-partial requires fresh PBIP extraction without Desktop diagnostics')
+    return supported if salvage_partial is None else salvage_partial
+
+
 def _run_batch_config(args, desktop_options=None):
     """Run migrations using a JSON batch configuration file.
 
@@ -2006,6 +2044,7 @@ def _run_batch_config(args, desktop_options=None):
     if desktop_options is None:
         desktop_options = _desktop_options_from_args(args)
     _validate_desktop_options(desktop_options, getattr(args, 'output_format', 'pbip'))
+    salvage_partial = getattr(args, 'salvage_partial', None)
     config_path = args.batch_config
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -2071,6 +2110,13 @@ def _run_batch_config(args, desktop_options=None):
         culture = entry.get('culture', args.culture)
         paginated = entry.get('paginated', getattr(args, 'paginated', False))
         try:
+            entry_salvage = _resolve_salvage_policy(
+                salvage_partial, getattr(args, 'strict_generation', None) or False,
+                skip, desktop_options, getattr(args, 'output_format', 'pbip'))
+            if os.path.splitext(tableau_file)[1].lower() not in ('.twb', '.twbx'):
+                if salvage_partial is True and not getattr(args, 'strict_generation', False):
+                    raise ConfigurationError('--salvage-partial requires workbook batch input')
+                entry_salvage = False
             cal_start, cal_end = _resolve_calendar_bounds(
                 entry.get('calendar_start', args.calendar_start),
                 entry.get('calendar_end', args.calendar_end),
@@ -2135,6 +2181,7 @@ def _run_batch_config(args, desktop_options=None):
             'tableau_file': tableau_file, 'basename': basename,
             'workbook_output_dir': project_root,
             'output_format': getattr(args, 'output_format', 'pbip'),
+            'extraction_root': os.path.join(project_root, '.migration_extract'),
             'extract_dir': (_get_extract_dir() if skip else os.path.join(
                 project_root, '.migration_extract',
                 basename + os.path.splitext(tableau_file)[1])),
@@ -2143,6 +2190,28 @@ def _run_batch_config(args, desktop_options=None):
         results[basename] = result
         try:
             _stats.phase = 'extraction'
+            if entry_salvage:
+                if skip:
+                    raise ConfigurationError('--salvage-partial requires fresh extraction')
+                _prepare_salvage_attempt(task)
+                os.makedirs(task['extract_dir'], exist_ok=True)
+                _extract_dir_local.path = task['extract_dir']
+                result.update(_migrate_single_workbook(
+                    tableau_file, basename, project_root, basename, False,
+                    (prep if os.path.isabs(prep) else os.path.join(config_dir, prep)) if prep else None,
+                    cal_start, cal_end, culture,
+                    verify_open=getattr(args, 'verify_open', True),
+                    output_format=task['output_format'],
+                    quality_policy=getattr(args, 'quality_policy', 'report'),
+                    model_mode=model_mode, **hyper_options,
+                    quiet=getattr(args, 'quiet', False),
+                    strict_generation=getattr(args, 'strict_generation', None) or False,
+                    salvage_partial=True, paginated=paginated,
+                    composite_threshold=getattr(args, 'composite_threshold', None),
+                    agg_tables=getattr(args, 'agg_tables', 'none'),
+                    optimize_dax=getattr(args, 'optimize_dax', False),
+                    time_intelligence=getattr(args, 'time_intelligence', 'none')))
+                continue
             if not skip:
                 os.makedirs(task['extract_dir'], exist_ok=True)
                 _extract_dir_local.path = task['extract_dir']
@@ -2291,7 +2360,7 @@ def _run_batch_config(args, desktop_options=None):
         finally:
             try:
                 result['stats'] = _stats.to_dict()
-                result['stages'] = {
+                result['stages'] = result.get('stages') or {
                     'validation' if stage == 'openability' else stage:
                     'completed' if ok else 'failed'
                     for stage, ok in file_results.items() if ok is not None
@@ -2527,13 +2596,108 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
     }
 
 
+def _prepare_salvage_attempt(task):
+    root = os.path.abspath(task['workbook_output_dir'])
+    project_dir = os.path.join(root, task['basename'])
+    targets = [(root, project_dir)]
+    if task.get('extract_dir'):
+        extraction_root = task.get('extraction_root')
+        if not extraction_root:
+            raise ConfigurationError('Unsafe salvage output boundary: missing extraction owner',
+                                     source=task['extract_dir'])
+        extraction_root = os.path.abspath(extraction_root)
+        source_parent = os.path.dirname(os.path.abspath(task['tableau_file']))
+        relative = os.path.relpath(source_parent, task.get('search_root', source_parent))
+        expected_root = os.path.abspath(os.path.join(
+            os.path.dirname(extraction_root), relative))
+        expected_target = os.path.abspath(os.path.join(
+            extraction_root, relative,
+            task['basename'] + os.path.splitext(task['tableau_file'])[1]))
+        if (os.path.basename(extraction_root) != '.migration_extract'
+                or relative == os.pardir or relative.startswith(os.pardir + os.sep)
+                or os.path.normcase(expected_root) != os.path.normcase(root)
+                or os.path.normcase(expected_target) != os.path.normcase(
+                    os.path.abspath(task['extract_dir']))):
+            raise ConfigurationError('Unsafe salvage output boundary: extraction ownership mismatch',
+                                     source=task['extract_dir'])
+        targets.append((extraction_root, task['extract_dir']))
+    targets.extend((root, os.path.join(root, name)) for name in (
+        f"migration_quality_{task['basename']}.json",
+        f"migration_quality_{task['basename']}.html",
+        f"evidence_package_{task['basename']}.zip",
+    ))
+    existing = []
+    for boundary, target in targets:
+        absolute = os.path.abspath(target)
+        resolved = os.path.realpath(target)
+        if (os.path.commonpath([boundary, absolute]) != boundary
+                or os.path.commonpath([boundary, resolved]) != boundary
+                or resolved == boundary
+                or os.path.commonpath([resolved, os.path.realpath(task['tableau_file'])]) == resolved):
+            raise ConfigurationError('Unsafe salvage output boundary', source=target)
+        ancestor = absolute
+        while True:
+            if os.path.islink(ancestor) or os.path.isjunction(ancestor):
+                raise ConfigurationError('Unsafe salvage output boundary', source=target)
+            parent = os.path.dirname(ancestor)
+            if parent == ancestor:
+                break
+            ancestor = parent
+        if os.path.lexists(target):
+            existing.append(target)
+    if existing:
+        history = os.path.join(root, '.migration_previous')
+        if (os.path.commonpath([root, os.path.realpath(history)]) != root
+            or os.path.islink(history) or os.path.isjunction(history)):
+            raise ConfigurationError('Unsafe salvage archive boundary', source=history)
+        os.makedirs(history, exist_ok=True)
+        archive = tempfile.mkdtemp(prefix='attempt-', dir=history)
+        for index, target in enumerate(existing):
+            shutil.move(target, os.path.join(archive, f'{index:02d}-' + os.path.basename(target)))
+
+
+def _load_salvage_extraction(source_dir):
+    from tableau_export.extract_tableau_data import TableauExtractor
+
+    objects = {}
+    for name in TableauExtractor.EXTRACTION_OUTPUT_TYPES:
+        path = os.path.join(source_dir, name + '.json')
+        if os.path.isfile(path):
+            with open(path, encoding='utf-8') as stream:
+                objects[name] = json.load(stream)
+    return objects
+
+
+def _write_partial_salvage(project_dir, extracted_objects, extraction_inventory=None,
+                           failure=None):
+    from powerbi_import.tmdl_generator import recover_diagnostic_semantics
+
+    diagnostic_objects = dict(extracted_objects)
+    if extraction_inventory:
+        diagnostic_objects['extraction_diagnostics'] = extraction_inventory
+    salvage_dir = os.path.join(project_dir, 'Salvage')
+    inventory = recover_diagnostic_semantics(diagnostic_objects, salvage_dir)
+    report = {
+        'status': 'incomplete', 'validation_status': 'FAIL',
+        'diagnostic_only': True, 'completion_marker': 'withheld',
+        'extraction': extraction_inventory,
+        'semantic_fragments': inventory,
+        'failure': failure,
+        'not_attempted': ['source_execution', 'desktop', 'deployment'],
+    }
+    _atomic_write_json(os.path.join(salvage_dir, 'salvage_manifest.json'), report)
+    return os.path.join(salvage_dir, 'salvage_manifest.json')
+
+
 def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, display_name,
                              skip_extraction, wb_prep, wb_cal_start, wb_cal_end, wb_culture,
                              verify_open=True, output_format='pbip',
                              quality_policy='report', data_search_root=None,
                              model_mode='auto', hyper_export_format='auto',
                              hyper_export_max_rows=None, max_zip_entry_mb=None,
-                             quiet=False, strict_generation=False):
+                             quiet=False, strict_generation=False, salvage_partial=None,
+                             paginated=False, composite_threshold=None, agg_tables='none',
+                             optimize_dax=False, time_intelligence='none'):
     """Migrate a single workbook — used by both sequential and parallel batch modes.
 
     For .tfl/.tflx files, delegates to _migrate_single_prep_flow() which produces
@@ -2556,6 +2720,10 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     if _is_prep_standalone:
         return _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, display_name)
 
+    salvage_partial = _resolve_salvage_policy(
+        salvage_partial, strict_generation, skip_extraction,
+        output_format=output_format)
+
     # This name is then used unchanged by staging, generation, reports,
     # partition repairs, quality checks and metadata paths.
     try:
@@ -2572,8 +2740,27 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     if not skip_extraction:
         file_results['extraction'] = run_extraction(
             tableau_file, output_dir=_get_extract_dir(),
-            max_zip_entry_mb=hyper_options['max_zip_entry_mb'])
+            max_zip_entry_mb=hyper_options['max_zip_entry_mb'],
+            salvage_partial=salvage_partial)
         if not file_results['extraction']:
+            extraction_manifest = os.path.join(_get_extract_dir(), 'extraction_salvage.json')
+            if salvage_partial and not _stats.failure and os.path.isfile(extraction_manifest):
+                with open(extraction_manifest, encoding='utf-8') as stream:
+                    extraction_inventory = json.load(stream)
+                if extraction_inventory.get('status') == 'incomplete':
+                    extracted_objects = _load_salvage_extraction(_get_extract_dir())
+                    failure = _failure_diagnostic('extraction', 'Object extraction was refused; diagnostic recovery only.')
+                    salvage_path = _write_partial_salvage(
+                        os.path.join(workbook_output_dir, basename), extracted_objects,
+                        extraction_inventory, failure)
+                    return {
+                        'success': False, 'partial_generation': True,
+                        'generation_status': 'incomplete', 'error': 'extraction',
+                        'failure': failure, 'salvage_manifest': salvage_path,
+                        'report_name': basename, 'output_dir': workbook_output_dir,
+                        'stages': {'extraction': 'failed', 'generation': 'not_run',
+                                   'diagnostic_recovery': 'completed'},
+                    }
             logger.warning("Extraction failed for %s, skipping", display_name)
             return {'success': False, 'error': 'extraction', 'report_name': basename,
                     'error_details': (_stats.failure or {}).get(
@@ -2585,8 +2772,9 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                     'metadata_path': os.path.join(workbook_output_dir, basename, 'migration_metadata.json')}
         try:
             from import_to_powerbi import PowerBIImporter
-            extracted_objects = PowerBIImporter(
-                source_dir=_get_extract_dir())._load_converted_objects()
+            extracted_objects = (
+                _load_salvage_extraction(_get_extract_dir()) if salvage_partial
+                else PowerBIImporter(source_dir=_get_extract_dir())._load_converted_objects())
         except (ImportError, OSError, ValueError) as exc:
             logger.warning("Could not snapshot extraction for %s: %s", display_name, exc)
     else:
@@ -2624,7 +2812,12 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         model_mode=model_mode,
         output_format=output_format,
         source_dir=_get_extract_dir(),
-        strict_generation=strict_generation,
+        strict_generation=strict_generation or salvage_partial,
+        paginated=paginated,
+        composite_threshold=composite_threshold,
+        agg_tables=agg_tables,
+        optimize_dax=optimize_dax,
+        time_intelligence=time_intelligence,
     )
     partial_generation = bool(file_results.get('generation') and os.path.isfile(
         os.path.join(workbook_output_dir, basename, 'partial_generation.json')))
@@ -2633,6 +2826,20 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         with open(os.path.join(workbook_output_dir, basename, 'partial_generation.json'),
                   encoding='utf-8') as handle:
             partial_has_data = json.load(handle).get('data_retained') is True
+
+    if salvage_partial and (not file_results['generation'] or partial_generation):
+        failure = _stats.failure or _failure_diagnostic(
+            'generation', 'Semantic generation is incomplete; fragments are diagnostic only.')
+        salvage_path = _write_partial_salvage(
+            os.path.join(workbook_output_dir, basename), extracted_objects, failure=failure)
+        return {
+            'success': False, 'partial_generation': True,
+            'generation_status': 'incomplete', 'error': 'generation',
+            'failure': failure, 'salvage_manifest': salvage_path,
+            'report_name': basename, 'output_dir': workbook_output_dir,
+            'stages': {'extraction': 'completed', 'generation': 'failed',
+                       'diagnostic_recovery': 'completed'},
+        }
 
     # Step 3: Migration report
     report_summary = None
@@ -2659,6 +2866,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
 
     # Step 4c: Sources kept beside the workbook (or linked, not embedded)
     if file_results.get('generation') and (not partial_generation or partial_has_data):
+        _stats.phase = 'postprocessing'
         project_dir = os.path.join(workbook_output_dir, basename)
         local_source_stats = _collect_local_data_files(
             tableau_file, project_dir, basename,
@@ -3161,7 +3369,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                         hyper_export_format='auto', hyper_export_max_rows=None,
                         max_zip_entry_mb=None, quiet=False,
                         desktop_options: Optional[DesktopDiagnosticOptions] = None,
-                        calendar_mode='source', strict_generation=False):
+                        calendar_mode='source', strict_generation=False, salvage_partial=None):
     """Batch migrate all .twb/.twbx files in a directory (recursive).
 
     Searches the directory tree recursively for Tableau workbooks and
@@ -3190,6 +3398,9 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
         int: Structured migration exit; 8 for diagnostics-only failure.
     """
     _validate_desktop_options(desktop_options, output_format)
+    requested_salvage = salvage_partial
+    salvage_partial = _resolve_salvage_policy(
+        salvage_partial, strict_generation, skip_extraction, desktop_options, output_format)
     if not os.path.isdir(batch_dir):
         print(f"Error: Batch directory not found: {batch_dir}")
         return 1
@@ -3289,6 +3500,11 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
 
     def _resolve_workbook_config(tableau_file):
         rel_path = os.path.normpath(os.path.relpath(tableau_file, batch_dir))
+        workbook_salvage = salvage_partial
+        if os.path.splitext(tableau_file)[1].lower() not in ('.twb', '.twbx'):
+            if requested_salvage is True and not strict_generation:
+                raise ConfigurationError('--salvage-partial requires workbook batch input')
+            workbook_salvage = False
         entry = manifest_lookup.get(rel_path, {})
         if not entry:
             entry = manifest_lookup.get(
@@ -3327,6 +3543,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'quality_policy': quality_policy,
             'verify_open': verify_open,
             'strict_generation': strict_generation,
+            'salvage_partial': workbook_salvage,
         }
 
     def _checkpoint_config(effective):
@@ -3707,6 +3924,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'display_name': display_name,
             **workbook_configs[tableau_file],
             'search_root': batch_dir,
+            'extraction_root': os.path.join(migrated_root, '.migration_extract'),
             'extract_dir': (
                 os.path.join(migrated_root, '.migration_extract',
                              os.path.relpath(tableau_file, batch_dir))
@@ -3787,6 +4005,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 max_zip_entry_mb=task['max_zip_entry_mb'],
                 quiet=quiet,
                 strict_generation=strict_generation,
+                salvage_partial=task['salvage_partial'],
             )
         except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
             wb_result = {
@@ -3860,6 +4079,8 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                         task['basename'] + os.path.splitext(task['tableau_file'])[1])
                     task['extract_dir'] = extract_dir
             if extract_dir:
+                if task['salvage_partial']:
+                    _prepare_salvage_attempt(task)
                 os.makedirs(extract_dir, exist_ok=True)
                 _extract_dir_local.path = extract_dir
             display_name, result = _run_task_in_context(task)
@@ -4084,11 +4305,17 @@ def _add_batch_args(parser):
 
 def _add_migration_args(parser):
     """Add migration options (calendar, culture, format, etc.)."""
-    parser.add_argument(
-        '--strict-generation', action='store_true',
-        help='Abort unsupported semantic generation instead of emitting the default '
-             'data-free partial repair project. Extraction and security failures '
-             'always remain blocking.'
+    recovery_policy = parser.add_mutually_exclusive_group()
+    recovery_policy.add_argument(
+        '--salvage-partial', action='store_true', default=None,
+        help='Explicitly request default partial recovery for fresh PBIP batch '
+             'generation: retain independent objects and diagnostic DAX/M/model '
+             'fragments. Incomplete runs fail; security checks always apply.'
+    )
+    recovery_policy.add_argument(
+        '--strict-generation', action='store_true', default=None,
+        help='Disable partial recovery: stop on recoverable extraction refusal '
+             'and unsupported semantic generation. Security failures are always fatal.'
     )
     parser.add_argument(
         '--dry-run',
@@ -5384,6 +5611,12 @@ Common options:
   --mode MODE         Use auto (default), import, directquery, or composite
   --hyper-export-format FMT  PBIP auto: CSV <=10 MiB, Parquet >10 MiB
   --hyper-export-max-rows N  Diagnostic/Fabric cap; PBIP Hyper rejects caps
+    --strict-generation  Stop on recoverable refusals; disable partial recovery
+    --salvage-partial    Explicit recovery request (default for fresh PBIP batch)
+
+Fresh PBIP workbook batches recover independent objects and diagnostic DAX/M/model
+fragments by default. Incomplete output fails without a PBIP completion marker.
+Security checks always apply. Other modes retain their existing defaults.
 
 Optional native Desktop diagnostics (Windows + installed apps):
   --screenshots       Open/refresh Power BI locally and capture (alias --desktop-probe)
@@ -5527,7 +5760,10 @@ def _apply_config_file(args):
         config_path = os.path.abspath(args.config)
         with open(config_path, 'r', encoding='utf-8') as config_file:
             config_data = json.load(config_file)
-        config = MigrationConfig(config_data).merge_with_args(args)
+        config = MigrationConfig(config_data)
+        config.salvage_partial
+        config.strict_generation
+        config = config.merge_with_args(args)
         model_config = config_data.get('model', {})
         calendar_start_is_configured = (
             'calendar_start' in config_data
@@ -5552,6 +5788,18 @@ def _apply_config_file(args):
             args.hyper_export_max_rows = config.hyper_export_max_rows
         if args.max_zip_entry_mb is None:
             args.max_zip_entry_mb = config.max_zip_entry_mb
+        migration_config = config_data.get('migration', {})
+        config.salvage_partial
+        config.strict_generation
+        if getattr(args, 'strict_generation', None) is True:
+            args.salvage_partial = False
+        elif getattr(args, 'salvage_partial', None) is True:
+            args.strict_generation = False
+        else:
+            for key in ('salvage_partial', 'strict_generation'):
+                if key in config_data or (isinstance(migration_config, dict)
+                                          and key in migration_config):
+                    setattr(args, key, getattr(config, key))
         if not args.culture and config.culture != 'en-US':
             args.culture = config.culture
         if args.calendar_start is None and calendar_start_is_configured:
@@ -7872,6 +8120,25 @@ def main():
     except ConfigurationError as exc:
         parser.error(str(exc))
 
+    args.strict_generation = bool(getattr(args, 'strict_generation', False))
+    if args.strict_generation:
+        args.salvage_partial = False
+
+    if getattr(args, 'salvage_partial', None) is True:
+        source = getattr(args, 'tableau_file', None)
+        incompatible = any(getattr(args, name, None) for name in (
+            'shared_model', 'add_to_model', 'remove_from_model', 'assess',
+            'quality_report', 'parity', 'parity_strict', 'bulk_assess',
+            'global_assess', 'prep_lineage', 'wizard', 'web_ui', 'server',
+            'deploy_bundle', 'check_drift', 'check_hyper', 'm_emitter_matrix',
+        ))
+        batch_request = (getattr(args, 'batch', None)
+                         or getattr(args, 'batch_config', None)
+                         or getattr(args, 'manifest', None)
+                         or source and os.path.isdir(source))
+        if incompatible or not batch_request:
+            parser.error('--salvage-partial requires folder batch or --batch-config generation')
+
     try:
         desktop_options = _desktop_options_from_args(args)
     except ConfigurationError as exc:
@@ -8146,6 +8413,7 @@ def main():
             desktop_options=desktop_options,
             calendar_mode=getattr(args, 'calendar_mode', 'source'),
             strict_generation=getattr(args, 'strict_generation', False),
+            salvage_partial=getattr(args, 'salvage_partial', None),
         )
 
     # ── Single-file diagnostics only (never project generation) ──
@@ -12452,9 +12720,7 @@ def _route_spatial_partitions(project_dir, source_basename):
     import re as _re
     stats = {'spatial': 0, 'shapefile_csv': 0, 'extract_csv': 0, 'unresolved': 0}
     model_dir = os.path.join(project_dir, f'{source_basename}.SemanticModel')
-    _, folder = _read_data_folder(os.path.join(model_dir, 'definition', 'expressions.tmdl'))
-    if not folder or not os.path.isdir(folder):
-        return stats
+    folder = None
     block = _re.compile(
         r'Source\s*=\s*(?:try\s+)?Json\.Document\(File\.Contents\(DataFolder\s*&\s*"\\{0,2}([^"]+)"\)\)'
         r'(?:\s+otherwise\s+#table\(\{([^}]*)\},\s*\{\s*\}\))?,')
@@ -12471,6 +12737,13 @@ def _route_spatial_partitions(project_dir, source_basename):
             r'"Native shapefile is not GeoJSON[^\"]*",\s*'
             r'\[Table="(?:[^"]|"")*",\s*SourceFile="((?:[^"]|"")*)"\]\)',
             content)
+        if not native_error and not block.search(content):
+            continue
+        if folder is None:
+            _, folder = _read_data_folder(os.path.join(
+                model_dir, 'definition', 'expressions.tmdl'))
+            if not folder or not os.path.isdir(folder):
+                return stats
         if native_error:
             stats['spatial'] += 1
             ref = native_error.group(1).replace('""', '"')

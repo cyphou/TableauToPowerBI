@@ -236,8 +236,9 @@ generation path. For a CI quality exit gate, run
 batch does not forward `--quality-strict`, so its exit status alone is not a
 quality PASS.
 
-PBIP batch generation defaults to partial recovery for explicitly identified
-unsupported semantic conversions (logical relationship endpoints, unproven
+On legacy-default routes described below, PBIP batch generation retains partial
+repair for explicitly identified unsupported semantic conversions (logical
+relationship endpoints, unproven
 composite relationships or logical SUM policies, and unresolved combined-group
 inputs). An unresolved combined group may be excluded selectively when its only
 consumers are directly identified worksheets: the other model objects and
@@ -253,8 +254,51 @@ guidance as a blocker. Evidence ZIPs include both the structured diagnostic and
 its journal file. Partial batch runs return a nonzero
 exit, are regenerated on resume, and are excluded from native data/screenshot
 verification. Use `--strict-generation` to abort these conversions without a
-repair PBIP. Extraction, security, source-binding, Hyper and unexpected failures
-remain blocking; Fabric and shared-model generation do not use this recovery.
+repair PBIP. Outside the default diagnostic recovery below, extraction refusals
+remain blocking. Security, source-binding, Hyper and unexpected failures remain
+blocking; Fabric and shared-model generation do not use this repair fallback.
+
+Fresh ordinary PBIP workbook folder batches recover supported refusals by
+default, including `--batch-config`; no salvage flag is needed:
+
+```powershell
+# Default: retain diagnostic fragments after supported refusals
+python migrate.py batch .\workbooks --output-dir .\output
+
+# Strict: disable salvage and stop on recoverable extraction refusals too
+python migrate.py batch .\workbooks --output-dir .\output --strict-generation
+
+# Explicit compatibility alias for the default recovery policy
+python migrate.py batch .\workbooks --output-dir .\output --salvage-partial
+```
+
+`--salvage-partial` remains an explicit compatibility alias. An explicit
+`--config` file also accepts
+`{"salvage_partial": true}` or `{"migration": {"salvage_partial": true}}`.
+`--strict-generation` disables salvage, stops supported recoverable extraction
+refusals and preserves strict semantic generation without a repair PBIP.
+Explicit CLI strict wins over a salvage config default; explicitly passing
+both `--strict-generation` and `--salvage-partial` is a configuration error.
+Known object-level preflight refusals and datasource normalization/extraction
+refusals can retain incremental JSON and raw refused declarations/formulas
+after safe XML parsing; security blockers remain fatal. Complete, safe inputs
+still generate normally; incomplete extraction does **not** produce a PBIP.
+Semantic guard failures retain independent `.dax`, `.pq` and source/model JSON
+without requiring TMDL generation. Recovery never guesses Hyper bindings or
+relationships, or executes source queries.
+
+`<Project>\Salvage\inventory.json` and `salvage_manifest.json` identify
+diagnostic-only, unvalidated, incomplete output with a `FAIL` manifest verdict.
+Partial failures remain nonzero with no `.pbip` completion marker. Before a
+recovery attempt, prior project, extraction and current quality/evidence outputs are
+preserved under `.migration_previous`; stale files are not reused.
+Automatic recovery does not apply to Desktop diagnostics, `--skip-extraction`,
+Fabric, shared-model, standalone Prep or inspection modes: their legacy
+defaults remain valid, including the existing partial repair fallback where
+applicable. Explicitly requesting incompatible salvage is an error.
+`--dry-run` writes nothing. See the
+[diagnostic salvage limitations](docs/KNOWN_LIMITATIONS.md#diagnostic-salvage-default-recovery);
+no Desktop, native refresh or runtime validation is established by recovery.
 
 Disaggregated scatter charts retain their chart family and bare X/Y column
 projections. Query wells deduplicate identical field expressions while keeping
@@ -1046,7 +1090,8 @@ Other rows below describe separate routes or retained parser options.
 | `--output-dir DIR` | Batch output root; defaults to `<source-folder>\migrated` |
 | `--output-format FORMAT` | Output format: `pbip` (default) or `fabric` |
 | `--dry-run` | Preview migration without writing files |
-| `--strict-generation` | Abort unsupported semantic conversion instead of emitting the default data-free partial repair PBIP; quality failures remain logged in both modes |
+| `--salvage-partial` | Explicit compatibility alias for default fresh ordinary PBIP workbook batch/batch-config recovery; incompatible routes error; incomplete output remains failed |
+| `--strict-generation` | Disable salvage and stop recoverable extraction refusals as well as unsupported semantic conversion; overrides salvage config, conflicts with explicit CLI `--salvage-partial` |
 | `--screenshots` / `--desktop-probe` | Opt in to Power BI opening, verified native refresh and screenshots after PBIP batch generation |
 | `--compare-desktop` | Opt in to Tableau / Power BI opening and paired captures after PBIP batch generation; mutually exclusive with `--screenshots` |
 | `--all-pages` | With a desktop mode, attempt every inventoried page with selected-tab checks before and after each capture |

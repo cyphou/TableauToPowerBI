@@ -321,6 +321,65 @@ class TestLocalSourceConfinement(UploadTreeTestCase):
             with self.assertRaises(ValueError):
                 migrate._read_data_folder(expr)
 
+    def test_nonspatial_csv_does_not_inspect_unused_external_datafolder(self):
+        outside = tempfile.TemporaryDirectory(prefix='unused_datafolder_')
+        self.addCleanup(outside.cleanup)
+        project = os.path.join(self.root, 'project')
+        definition = os.path.join(project, 'source.SemanticModel', 'definition')
+        expr = _write(os.path.join(definition, 'expressions.tmdl'),
+                      f'expression DataFolder = "{outside.name}"\n')
+        content = (
+            'table Input\n'
+            '\tpartition Input = m\n'
+            '\t\tsource = let\n'
+            '\t\t\tSource = Csv.Document(File.Contents("Data/input.csv"))\n'
+            '\t\tin Source\n')
+        table = _write(os.path.join(definition, 'tables', 'Input.tmdl'), content)
+        with (
+            patch.dict(os.environ, {'TTPBI_UPLOAD_ROOT': self.root}),
+            patch.object(migrate, '_read_data_folder',
+                         wraps=migrate._read_data_folder) as read_folder,
+            forbid_native_payload_io([expr]) as attempts,
+        ):
+            stats = migrate._route_spatial_partitions(project, 'source')
+        read_folder.assert_not_called()
+        self.assertEqual(attempts, [])
+        self.assertEqual(stats, {
+            'spatial': 0, 'shapefile_csv': 0, 'extract_csv': 0, 'unresolved': 0})
+        with open(table, encoding='utf-8') as stream:
+            self.assertEqual(stream.read(), content)
+
+    def test_spatial_partition_rejects_external_datafolder_before_payload_io(self):
+        outside = tempfile.TemporaryDirectory(prefix='spatial_datafolder_')
+        self.addCleanup(outside.cleanup)
+        payloads = [
+            _write(os.path.join(outside.name, name), 'external synthetic payload')
+            for name in ('input.geojson', 'input.shp', 'input.dbf')
+        ]
+        project = os.path.join(self.root, 'project')
+        definition = os.path.join(project, 'source.SemanticModel', 'definition')
+        _write(os.path.join(definition, 'expressions.tmdl'),
+               f'expression DataFolder = "{outside.name}"\n')
+        for source in (
+            'Json.Document(File.Contents(DataFolder & "input.geojson")),',
+            'error Error.Record("SourceBinding.Error", '
+            '"Native shapefile is not GeoJSON", '
+            '[Table="Input", SourceFile="input.shp"])',
+        ):
+            with self.subTest(source=source):
+                content = f'table Input\n\tSource = {source}\n'
+                table = _write(
+                    os.path.join(definition, 'tables', 'Input.tmdl'), content)
+                with (
+                    patch.dict(os.environ, {'TTPBI_UPLOAD_ROOT': self.root}),
+                    forbid_native_payload_io(payloads) as attempts,
+                ):
+                    with self.assertRaises(migrate.UploadSecurityError):
+                        migrate._route_spatial_partitions(project, 'source')
+                self.assertEqual(attempts, [])
+                with open(table, encoding='utf-8') as stream:
+                    self.assertEqual(stream.read(), content)
+
 
 class TestUploadCopyAuditGuard(UploadTreeTestCase):
     def _run_guarded(self, output_dir, body, *args):

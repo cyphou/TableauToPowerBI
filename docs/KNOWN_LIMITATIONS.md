@@ -88,6 +88,45 @@ successful export does not establish spatial or visual parity.
 
 ## Generation Limitations
 
+### Diagnostic salvage (default recovery)
+
+Partial recovery is the default for supported fresh ordinary PBIP workbook
+folder batches and `--batch-config`. `--salvage-partial` remains an explicit
+compatibility alias; explicit `--config` accepts a boolean flat `salvage_partial`
+or nested `migration.salvage_partial`. `--strict-generation` disables salvage,
+stops supported recoverable extraction refusals and keeps strict semantic
+generation without a repair PBIP. Explicit CLI strict overrides a salvage
+config default; explicitly passing both CLI flags is a configuration error.
+This is diagnostic retention, not a readiness mode or permission to bypass
+integrity guards.
+
+After safe XML parsing, known object-level preflight refusals and refused
+datasource normalization/extraction may be isolated. Incremental stage JSON and
+raw refused declarations/formulas are retained as diagnostics, with credential
+redaction. Security blockers remain fatal. Complete, safe extraction continues
+to normal generation; incomplete extraction produces no PBIP. Semantic guard
+failures can retain independent `.dax`, `.pq`, per-object source JSON and
+`model_metadata.json` without depending on TMDL generation. Recovered text is
+unvalidated: recovery does not guess Hyper bindings or relationships, read
+source data or execute source queries.
+
+`<Project>\Salvage\inventory.json` records recovered, blocked and not-attempted
+items; `salvage_manifest.json` marks diagnostic-only, incomplete output with
+`validation_status: FAIL` and the `.pbip` completion marker withheld. A partial
+failure remains nonzero, not a successful or resumable completion. Prior project, extraction
+and current quality/evidence outputs are preserved under `.migration_previous`
+before the recovery attempt, never reused as current evidence.
+
+Automatic recovery requires fresh ordinary PBIP workbook extraction.
+Desktop diagnostics, `--skip-extraction`, Fabric, shared-model, standalone Prep
+and inspection modes retain their legacy defaults, including the existing
+`PartialGenerationError` repair fallback where applicable. These valid routes
+do not become errors merely because ordinary batch recovery is automatic;
+explicitly requesting incompatible salvage is an error. Shared-model and
+standalone Prep salvage are not implemented. `--dry-run` makes no writes.
+No Desktop opening, native refresh or runtime validation was performed for this
+documentation update; recovery itself establishes none of them.
+
 ### Automatic storage mode
 
 Source selection precedes storage mode: an eligible explicit original database

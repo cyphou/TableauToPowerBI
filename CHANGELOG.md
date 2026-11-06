@@ -4,6 +4,25 @@
 
 ## Unreleased
 
+- Fix confined relative-CSV workbook uploads failing during spatial
+  postprocessing because an unused default DataFolder points outside the job
+  boundary; spatial-source confinement remains enforced.
+- Make partial recovery the default for supported fresh ordinary PBIP workbook
+  folder batches and batch-config; retain `--salvage-partial` as an explicit
+  compatibility alias, also configurable as flat `salvage_partial` or nested
+  `migration.salvage_partial`. `--strict-generation` disables salvage and stops
+  recoverable extraction refusals as well as unsupported semantic generation.
+  CLI strict overrides a salvage config default; explicit CLI strict plus
+  salvage is an error. Retain incremental extraction diagnostics after
+  supported object refusals and independent DAX/M/source-model fragments after
+  semantic guard failures; security blockers remain fatal. Archive prior
+  project/extraction/current quality/evidence outputs in `.migration_previous`
+  rather than reusing stale files. Incomplete recovery is diagnostic-only,
+  unvalidated and `FAIL`, returns nonzero and withholds the `.pbip` completion
+  marker; incomplete extraction is not a PBIP. Desktop, skip-extraction,
+  Fabric, shared-model, standalone Prep and inspection routes keep their legacy
+  defaults; explicitly incompatible salvage errors. No Desktop, native refresh
+  or runtime validation is claimed.
 - Preserve native chart types when Tableau aggregation is explicitly disabled:
   numeric axis columns remain unaggregated in value roles, while unsupported
   role combinations still fall back to an annotated table. Treat omitted TMDL

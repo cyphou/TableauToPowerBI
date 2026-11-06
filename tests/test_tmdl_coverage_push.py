@@ -25,6 +25,7 @@ Covers edge cases in:
 - _write_roles_tmdl (migration_note annotation)
 """
 
+import copy
 import os
 import shutil
 import sys
@@ -33,6 +34,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+from powerbi_import.errors import PartialGenerationError
 from powerbi_import.tmdl_generator import (
     _auto_date_hierarchies,
     _build_table,
@@ -700,12 +702,18 @@ class TestSetsAndCombinedGroups(unittest.TestCase):
             }],
             'bins': [],
             '_datasources': [],
+            'worksheets': [{'fields': [{'name': '[CrossGrp]'}]}],
         }
-        # OtherCol maps to a different table
-        with self.assertRaisesRegex(ValueError, "OtherCol.*unresolved"):
+        column_table_map = {'Region': 'Sales', 'OtherCol': 'Products'}
+        original_model = copy.deepcopy(model)
+        original_mapping = column_table_map.copy()
+        with self.assertRaisesRegex(
+                PartialGenerationError, "OtherCol.*unresolved") as raised:
             _process_sets_groups_bins(
-                model, extra, 'Sales',
-                {'Region': 'Sales', 'OtherCol': 'Products'})
+                model, extra, 'Sales', column_table_map)
+        self.assertEqual(raised.exception.recovery_kind, 'unresolved_combined_group')
+        self.assertEqual(model, original_model)
+        self.assertEqual(column_table_map, original_mapping)
 
 
 # ═══════════════════════════════════════════════════════════════════════

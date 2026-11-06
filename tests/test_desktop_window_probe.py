@@ -1322,6 +1322,9 @@ class TestReportShape(unittest.TestCase):
 class TestDataVerificationFailsClosed(unittest.TestCase):
 
     def setUp(self):
+        self.enterContext(mock.patch(
+            'powerbi_import.desktop_probe._risky_calculated_columns',
+            return_value=[]))
         self.enterContext(mock.patch.object(
             accessibility, 'sys', SimpleNamespace(platform='win32')))
         self.resolver = self.enterContext(mock.patch.object(

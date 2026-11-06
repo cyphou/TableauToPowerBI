@@ -636,32 +636,50 @@ class TestArtifactScanning:
 class TestExtractZipSlipIntegration:
     """Integration test: extraction rejects malicious .twbx archives."""
 
-    def test_twbx_with_traversal_skipped(self, tmp_path):
-        """A .twbx with a path traversal entry should skip it gracefully."""
+    def test_twbx_with_traversal_is_fatal(self, tmp_path):
+        """Traversal must abort before even a valid workbook is read."""
         twbx_path = str(tmp_path / "malicious.twbx")
         with zipfile.ZipFile(twbx_path, 'w') as zf:
-            # Malicious entry
-            zf.writestr("../../../evil.txt", "evil content")
             # Valid entry
             zf.writestr("workbook.twb", "<workbook version='1.0'/>")
+            # Malicious entry
+            zf.writestr("../../../evil.txt", "evil content")
+
+        from unittest.mock import patch
 
         from extract_tableau_data import TableauExtractor
-        extractor = TableauExtractor(twbx_path, output_dir=str(tmp_path / "output"))
-        content = extractor.read_tableau_file()
-        # Should read the valid .twb, skipping the malicious entry
-        assert content is not None
-        assert "workbook" in content
 
-    def test_twbx_only_traversal_returns_none(self, tmp_path):
-        """A .twbx with ONLY path traversal entries should return None."""
+        from powerbi_import.security_validator import (
+            SecurityError as ExtractionSecurityError,
+        )
+        extractor = TableauExtractor(twbx_path, output_dir=str(tmp_path / "output"))
+        with patch.object(zipfile.ZipFile, 'open') as open_member:
+            with pytest.raises(ExtractionSecurityError, match="path traversal"):
+                extractor.read_tableau_file()
+        open_member.assert_not_called()
+        assert not hasattr(extractor, '_workbook_archive_member')
+        assert list((tmp_path / "output").rglob('*')) == []
+
+    def test_twbx_only_traversal_is_fatal(self, tmp_path):
+        """Traversal-only archives must raise rather than return None."""
         twbx_path = str(tmp_path / "all_bad.twbx")
         with zipfile.ZipFile(twbx_path, 'w') as zf:
             zf.writestr("../../../evil.twb", "<workbook/>")
 
+        from unittest.mock import patch
+
         from extract_tableau_data import TableauExtractor
+
+        from powerbi_import.security_validator import (
+            SecurityError as ExtractionSecurityError,
+        )
         extractor = TableauExtractor(twbx_path, output_dir=str(tmp_path / "output"))
-        content = extractor.read_tableau_file()
-        assert content is None
+        with patch.object(zipfile.ZipFile, 'open') as open_member:
+            with pytest.raises(ExtractionSecurityError, match="path traversal"):
+                extractor.read_tableau_file()
+        open_member.assert_not_called()
+        assert not hasattr(extractor, '_workbook_archive_member')
+        assert list((tmp_path / "output").rglob('*')) == []
 
     def test_post_generation_twbx_rejects_traversal(self, tmp_path):
         """Validate all archive paths before writing any packaged payload."""

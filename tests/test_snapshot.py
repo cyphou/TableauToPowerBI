@@ -134,6 +134,14 @@ class TestMQuerySnapshots(SnapshotTestCase):
             {'name': 'value', 'datatype': 'real'},
         ]}
         result = generate_power_query_m(conn, table)
+        self.assertIn(
+            "else if not List.IsEmpty(MissingExpectedNames) "
+            "or not List.IsEmpty(AmbiguousExpectedNames) then\n"
+            '            error Error.Record("HeaderMatch.Error",',
+            result,
+        )
+        self.assertNotIn("Table.AddColumn(", result)
+        self.assertNotIn("MissingField.Ignore", result)
         self.assertMatchesSnapshot(result, 'csv_m_query.txt')
 
     def test_bigquery_m_query(self):

@@ -352,6 +352,26 @@ Desktop refresh, screenshots, and value/visual parity remain `not_run`.
 
 ### Next development sequence
 
+**In progress in the current worktree, bounded default recovery:** supported
+fresh ordinary PBIP workbook folder batch and batch-config use partial recovery
+by default. `--salvage-partial` remains an explicit compatibility alias (flat or
+nested migration config supported). `--strict-generation` disables salvage and
+stops recoverable extraction refusals as well as unsupported semantic generation;
+CLI strict overrides a salvage config default, while explicitly passing both CLI
+flags is an error. Supported object refusals retain incremental
+extraction diagnostics; semantic guard failures retain independent fragments
+without requiring TMDL. Incomplete recovery remains diagnostic-only,
+unvalidated, `FAIL` and nonzero with the `.pbip` completion marker withheld, not a
+readiness gate. Prior outputs are archived in `.migration_previous`; security
+guards and credential scrubbing remain active. Desktop diagnostics,
+skip-extraction, Fabric, shared-model, standalone Prep and inspection routes keep
+their legacy defaults, including the partial repair fallback where applicable;
+explicitly incompatible salvage errors. Shared-model and standalone Prep salvage
+remain unimplemented. See the
+[scope and limitations](KNOWN_LIMITATIONS.md#diagnostic-salvage-default-recovery).
+This source review does not close N3 or N5 or add release/corpus acceptance;
+Desktop, native refresh and runtime validation remain `not_run` for this slice.
+
 Report #85–91 hardening adds bounded envelope/field normalization, explicit
 unsupported-shape inventory, exact TMDL binding strings, final failure evidence
 and an optional source-independent Calendar range. It does not implement the

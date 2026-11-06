@@ -21,14 +21,18 @@ only after confirming the change is intentional.
 
 import os
 import sys
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from scripts.generate_pixel_fixtures import (  # noqa: E402
+    _iter_visual_files,
     _load_json,
     build_snapshot_for_workbook,
+    migrate_workbook,
+    snapshot_project,
 )
 from tests.fixture_corpus import (  # noqa: E402
     describe,
@@ -69,6 +73,50 @@ def _assert_standalone_inventory(test, twb_path, snapshot):
     test.assertGreater(added[0]['fields'], 0)
 
 
+def _assert_date_area_binding(test, twb_path, project):
+    """Verify the source year pill and value survive without consulting the golden."""
+    root = ET.parse(twb_path).getroot()
+    areas = [
+        worksheet for worksheet in root.findall('./worksheets/worksheet')
+        if worksheet.find("./table/panes/pane/mark[@class='Area']") is not None
+    ]
+    test.assertEqual(len(areas), 1)
+    table = areas[0].find('table')
+    dependencies = table.find('./view/datasource-dependencies')
+    instances = {
+        instance.attrib['name']: instance
+        for instance in dependencies.findall('column-instance')
+    }
+    columns = {
+        column.attrib['name']: column for column in dependencies.findall('column')
+    }
+    date_pill = instances[table.findtext('cols').rsplit('.', 1)[-1]]
+    test.assertEqual(date_pill.get('derivation'), 'Year')
+    test.assertEqual(date_pill.get('type'), 'ordinal')
+    date_column = columns[date_pill.attrib['column']]
+    test.assertIn(date_column.get('datatype'), {'date', 'datetime'})
+    test.assertEqual(date_column.get('role'), 'dimension')
+    value_pill = instances[table.findtext('rows').rsplit('.', 1)[-1]]
+    value_column = columns[value_pill.attrib['column']]
+    test.assertEqual(value_column.get('role'), 'measure')
+    expected_value = value_column.get('caption') or value_column.attrib['name'].strip('[]')
+
+    generated = [
+        _load_json(path)['visual'] for path in _iter_visual_files(project)
+    ]
+    area_visuals = [visual for visual in generated if visual['visualType'] == 'areaChart']
+    test.assertEqual(len(area_visuals), len(areas))
+    query = area_visuals[0]['query']['queryState']
+    test.assertEqual(set(query), {'Category', 'Y'})
+    test.assertEqual(len(query['Category']['projections']), 1)
+    test.assertEqual(len(query['Y']['projections']), 1)
+    category = query['Category']['projections'][0]['field']['Column']
+    test.assertEqual(category['Expression']['SourceRef']['Entity'], 'Calendar')
+    test.assertEqual(category['Property'], date_pill.attrib['derivation'])
+    value = query['Y']['projections'][0]['field']['Measure']
+    test.assertEqual(value['Property'], expected_value)
+
+
 def _make_case(fid, twb_path):
     def _test(self):
         twb = os.path.basename(twb_path)
@@ -76,7 +124,13 @@ def _make_case(fid, twb_path):
             self.skipTest(f"sample workbook not found: {twb}")
         golden = _load_json(golden_path(fid))
         self.assertIsNotNone(golden, f"missing golden fixture for {twb}")
-        snapshot = build_snapshot_for_workbook(twb)
+        if fid == 'wb_95130d10':
+            with tempfile.TemporaryDirectory(prefix='pixel_golden_') as output:
+                project = migrate_workbook(twb_path, output)
+                _assert_date_area_binding(self, twb_path, project)
+                snapshot = snapshot_project(project)
+        else:
+            snapshot = build_snapshot_for_workbook(twb)
         if fid in _STANDALONE_GOLDEN_IDS:
             _assert_standalone_inventory(self, twb_path, snapshot)
         self.assertEqual(

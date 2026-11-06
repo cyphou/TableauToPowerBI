@@ -175,6 +175,7 @@ def test_successful_retry_removes_obsolete_failure_artifact(tmp_path):
 
     def succeed(**kwargs):
         project = output / kwargs["basename"]
+        project.mkdir(parents=True, exist_ok=True)
         (project / f"{kwargs['basename']}.pbip").write_text("{}", encoding="utf-8")
         return {"success": True, "report_name": kwargs["basename"]}
 

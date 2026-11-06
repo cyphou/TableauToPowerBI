@@ -1129,7 +1129,13 @@ class TestHyperOptionWiring(unittest.TestCase):
             stack.enter_context(redirect_stdout(io.StringIO()))
             self.assertEqual(migrate._run_batch_config(args), migrate.ExitCode.SUCCESS)
         self.assertEqual(extraction.call_args.kwargs["max_zip_entry_mb"], 3)
+        self.assertIs(extraction.call_args.kwargs["salvage_partial"], True)
         self.assertEqual(generation.call_args.kwargs["model_mode"], "import")
+        self.assertIs(generation.call_args.kwargs["strict_generation"], True)
+        self.assertEqual(
+            generation.call_args.kwargs["source_dir"],
+            extraction.call_args.kwargs["output_dir"],
+        )
         self.assertEqual(post.call_args.kwargs["hyper_export_format"], "csv")
         self.assertEqual(post.call_args.kwargs["hyper_export_max_rows"], 7)
 

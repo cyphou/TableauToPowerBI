@@ -338,6 +338,281 @@ def _apply_dax_optimization(model):
     return rewritten
 
 
+def recover_diagnostic_semantics(extracted_objects, output_dir):
+    """Write incomplete, unvalidated fragments from an already parsed extraction.
+
+    This opt-in diagnostic does not build a semantic model, read source files,
+    infer bindings/relationships, or write TMDL/PBIP artifacts. Returns the same
+    scrubbed inventory written to inventory.json; model_metadata.json retains
+    source metadata, including formulas for blocked objects. Fragment filenames
+    are numeric keys with .json (source), .dax, or .pq extensions. Use a fresh,
+    current-run diagnostic directory; existing files are never overwritten.
+    Filesystem failures propagate. Recovered means text, not semantic validity.
+    """
+    from m_query_builder import (
+        _clean_sheet_name,
+        _sql_source_identity,
+        native_database_binding_issues,
+    )
+
+    from powerbi_import.errors import ConfigurationError
+    from powerbi_import.security_validator import (
+        redact_credentials,
+        redact_m_credentials,
+    )
+
+    if not isinstance(extracted_objects, dict):
+        raise ConfigurationError(
+            "Diagnostic recovery requires a parsed extraction dictionary",
+            source='recover_diagnostic_semantics')
+
+    sensitive_key = re.compile(
+        r'password|passwd|pwd|secret|token|apikey|accesskey|accountkey|'
+        r'privatekey|authorization|credential|connectionstring|'
+        r'sharedaccesssignature|signature|^sig$|^sas$|^uid$|^userid$|^username$', re.I)
+    credential_assignment = re.compile(
+        r'''(?P<prefix>\b(?:password|passwd|pwd|(?:client[_ -]?)?secret|'''
+        r'''(?:api|access|account|private)[_ -]?key|(?:access[_ -]?|refresh[_ -]?)?token|'''
+        r'''authorization|credentials?|sharedaccesssignature|signature|sig|sas|'''
+        r'''uid|user[_ ]?id|username)\b["']?\s*[:=]\s*)'''
+        r'''(?P<value>"(?:\\.|""|[^"\\])*"|'(?:\\.|''|[^'\\])*'|[^\s,;}\]]+)''',
+        re.I)
+    embedded_credentials = re.compile(
+        r'\b(?:Bearer|Basic)\s+([A-Za-z0-9._~+/\-=]+)|'
+        r'\b[a-z][a-z0-9+.-]*://([^/\s@]+:[^/\s@]+)@|'
+        r'(-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----.*?'
+        r'-----END (?:[A-Z]+ )?PRIVATE KEY-----)', re.I | re.S)
+    secrets = set()
+
+    def collect_secrets(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if sensitive_key.search(re.sub(r'[^a-z0-9]', '', str(key).lower())):
+                    if isinstance(child, (str, int, float)) and str(child):
+                        secrets.add(str(child))
+                    elif isinstance(child, (list, dict)):
+                        collect_secret_values(child)
+                collect_secrets(str(key))
+                collect_secrets(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_secrets(child)
+        elif isinstance(value, str):
+            for match in credential_assignment.finditer(value):
+                secret = match['value'].strip('"\'')
+                if secret:
+                    secrets.add(secret)
+            for match in embedded_credentials.finditer(value):
+                secrets.update(part for part in match.groups() if part)
+
+    def collect_secret_values(value):
+        if isinstance(value, dict):
+            for child in value.values():
+                collect_secret_values(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_secret_values(child)
+        elif isinstance(value, (str, int, float)) and str(value):
+            secrets.add(str(value))
+
+    collect_secrets(extracted_objects)
+    ordered_secrets = sorted(secrets, key=len, reverse=True)
+    known_credentials = re.compile(
+        r'\*\*\*REDACTED\*\*\*'
+        + ''.join('|' + re.escape(secret) for secret in ordered_secrets))
+
+    def scrub(value, *, scrub_keys=True):
+        if isinstance(value, dict):
+            return {
+                (scrub(str(key)) if scrub_keys else key): (
+                    '***REDACTED***'
+                    if sensitive_key.search(re.sub(r'[^a-z0-9]', '', str(key).lower()))
+                    else scrub(child, scrub_keys=scrub_keys))
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [scrub(child, scrub_keys=scrub_keys) for child in value]
+        if isinstance(value, str):
+            value = credential_assignment.sub(
+                lambda match: match['prefix'] + '"***REDACTED***"', value)
+            value = embedded_credentials.sub(
+                lambda match: match.group().replace(
+                    next(part for part in match.groups() if part), '***REDACTED***'),
+                value)
+            value = redact_credentials(redact_m_credentials(value))
+            return known_credentials.sub('***REDACTED***', value)
+        return value
+
+    objects = scrub(extracted_objects, scrub_keys=False)
+    assert isinstance(objects, dict), "Scrubbing a parsed extraction must preserve its dictionary shape"
+    inventory = {
+        'diagnostic_only': True, 'validation': 'unvalidated',
+        'completeness': 'incomplete', 'source_execution': 'not_attempted',
+        'model_generation': 'not_attempted',
+        'notice': 'Recovered text is not a valid or complete Power BI project.',
+        'metadata_file': 'model_metadata.json', 'items': [],
+    }
+    os.makedirs(output_dir, exist_ok=True)
+
+    def write_json(filename, value):
+        with open(os.path.join(output_dir, filename), 'x', encoding='utf-8') as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+
+    write_json('model_metadata.json', {
+        'diagnostic_only': True, 'validation': 'unvalidated',
+        'completeness': 'incomplete', 'extracted_objects': scrub(objects),
+    })
+
+    def recover(kind, source, datasource=None):
+        key = f"{len(inventory['items']) + 1:06d}"
+        item = {
+            'key': key, 'kind': kind, 'status': 'blocked',
+            'validation': 'unvalidated', 'source_file': key + '.json',
+        }
+        inventory['items'].append(item)
+        write_json(key + '.json', {
+            'diagnostic_only': True, 'validation': 'unvalidated',
+            'completeness': 'incomplete', 'source': scrub(source),
+            'datasource_name': (datasource or {}).get('name'),
+        })
+        if not isinstance(source, dict):
+            item['reason'] = 'Source object is not a dictionary; retained as metadata.'
+            return
+        try:
+            if kind == 'calculation':
+                formula = source.get('formula')
+                if not isinstance(formula, str) or not formula.strip():
+                    item['reason'] = 'No nonempty source formula.'
+                    return
+                tables = (datasource or {}).get('tables', [])
+                owners = {}
+                table_names = [table.get('name') for table in tables
+                               if isinstance(table, dict)]
+                for table in tables:
+                    if not isinstance(table, dict) or not table.get('name'):
+                        continue
+                    for column in table.get('columns', []):
+                        if isinstance(column, dict) and not column.get('calculation'):
+                            owners.setdefault(column.get('name'), []).append(table['name'])
+                referenced_tables = set()
+                for reference in _extract_formula_references(formula):
+                    matches = owners.get(reference[0], set()) if len(reference) == 1 else set()
+                    if len(matches) != 1:
+                        item['reason'] = 'Unresolved or ambiguous field identity; raw formula retained.'
+                        return
+                    referenced_tables.update(matches)
+                if (len(referenced_tables) > 1
+                        or any(table_names.count(name) != 1 for name in referenced_tables)):
+                    item['reason'] = 'Ambiguous table identity or cross-table context; no relationship inferred.'
+                    return
+                table_name = next(iter(referenced_tables), '')
+                text = convert_tableau_formula_to_dax(
+                    formula, column_name=source.get('name', ''),
+                    table_name=table_name, calc_datatype=source.get('datatype'),
+                    is_calc_column=source.get('role') == 'dimension',
+                    validate_output=False, fallback_on_invalid=False)
+                extension = '.dax'
+            else:
+                if not datasource:
+                    item['reason'] = 'No datasource context.'
+                    return
+                connection = source.get('connection_details')
+                if not connection:
+                    reference = source.get('connection')
+                    connection_map = datasource.get('connection_map') or {}
+                    if reference:
+                        connection = connection_map.get(reference)
+                    elif not connection_map:
+                        connection = datasource.get('connection')
+                    else:
+                        item['reason'] = 'No explicit per-table connection; no binding inferred.'
+                        return
+                if not isinstance(connection, dict):
+                    item['reason'] = 'Unresolved source connection.'
+                    return
+                connector = str(connection.get('type', '')).strip().casefold()
+                if ('hyper_identity' in source or connector in _HYPER_SOURCE_CONNECTORS
+                        or connector in {'tableau server', 'sqlproxy'}):
+                    item['reason'] = 'Hyper/published binding not attempted; no identity or export inferred.'
+                    item['status'] = 'not_attempted'
+                    return
+                missing = native_database_binding_issues(connection)
+                details = connection.get('details') or {}
+                if not isinstance(source.get('name'), str) or not source['name'].strip():
+                    item['reason'] = 'Missing explicit table name; no model identity inferred.'
+                    return
+                if missing is not None:
+                    relation = source.get('source_table')
+                    if missing or not isinstance(relation, str) or not relation.strip():
+                        item['reason'] = 'Incomplete explicit database/table binding; metadata retained.'
+                        return
+                    schema, physical_name = _sql_source_identity(
+                        dict(details, _source_table=relation), '', '')
+                    if not schema or not physical_name:
+                        item['reason'] = 'Unresolved physical schema/table; no default identity inferred.'
+                        return
+                elif connector in {'excel', 'csv', 'json', 'xml', 'pdf', 'geojson'}:
+                    if not details.get('filename') or (
+                            connector == 'excel' and (
+                                not source.get('source_table')
+                                or not _clean_sheet_name(source['source_table'], ''))):
+                        item['reason'] = 'Incomplete explicit file/table binding; metadata retained.'
+                        return
+                else:
+                    item['status'] = 'not_attempted'
+                    item['reason'] = 'Connector has no diagnostic-safe binding contract.'
+                    return
+                text = generate_power_query_m(
+                    connection, source, use_original_file_paths=True)
+                extension = '.pq'
+            if not isinstance(text, str) or not text.strip():
+                item['reason'] = 'Converter returned no formula; raw source retained.'
+                return
+            text = scrub(text)
+            item['fragment_file'] = key + extension
+            with open(os.path.join(output_dir, key + extension), 'x', encoding='utf-8') as stream:
+                stream.write('// DIAGNOSTIC ONLY: unvalidated, incomplete; not executed.\n' + text)
+            item['status'] = 'recovered'
+        except OSError:
+            raise
+        except Exception as exc:  # Isolate independent diagnostic conversions; retain every failure.
+            item['reason'] = scrub(f'{type(exc).__name__}: {exc}')
+
+    datasources = objects.get('datasources', [])
+    if isinstance(datasources, list):
+        for datasource in datasources:
+            if not isinstance(datasource, dict):
+                recover('datasource', datasource)
+                continue
+            for field, kind in (('calculations', 'calculation'), ('tables', 'table')):
+                values = datasource.get(field, [])
+                if isinstance(values, list):
+                    for source in values:
+                        recover(kind, source, datasource)
+                else:
+                    recover(kind, values, datasource)
+    else:
+        recover('datasource', datasources)
+    calculations = objects.get('calculations', [])
+    if isinstance(calculations, list):
+        for calculation in calculations:
+            matches = [
+                datasource for datasource in datasources
+                if isinstance(datasource, dict) and isinstance(calculation, dict)
+                and calculation.get('datasource_name')
+                and datasource.get('name') == calculation['datasource_name']
+            ] if isinstance(datasources, list) else []
+            recover('calculation', calculation, matches[0] if len(matches) == 1 else None)
+    else:
+        recover('calculation', calculations)
+    inventory['counts'] = {
+        status: sum(item['status'] == status for item in inventory['items'])
+        for status in ('recovered', 'blocked', 'not_attempted')
+    }
+    write_json('inventory.json', inventory)
+    return inventory
+
+
 def generate_tmdl(datasources, report_name, extra_objects, output_dir,
                   calendar_start=None, calendar_end=None, culture=None,
                   model_mode='auto', languages=None,

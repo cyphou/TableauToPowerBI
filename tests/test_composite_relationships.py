@@ -1301,7 +1301,7 @@ def test_composite_relationship_requires_policy_and_never_keeps_partial_edges():
 
 
 @pytest.mark.parametrize('strict', [False, True])
-def test_batch_preserves_composite_failure_with_optional_repair_project(
+def test_batch_preserves_composite_failure_with_optional_salvage_diagnostics(
         tmp_path, monkeypatch, strict):
     import migrate
 
@@ -1334,8 +1334,17 @@ def test_batch_preserves_composite_failure_with_optional_repair_project(
         strict_generation=strict, quiet=True)
 
     assert result == migrate.ExitCode.BATCH_PARTIAL_FAIL
-    assert bool(list(output.rglob('*.pbip'))) is not strict
-    assert bool(list(output.rglob('partial_generation.json'))) is not strict
+    assert not list(output.rglob('*.pbip'))
+    assert not list(output.rglob('partial_generation.json'))
+    salvage_paths = list(output.rglob('salvage_manifest.json'))
+    assert bool(salvage_paths) is not strict
+    if not strict:
+        assert len(salvage_paths) == 1
+        salvage = json.loads(salvage_paths[0].read_text(encoding='utf-8'))
+        assert salvage['diagnostic_only'] is True
+        assert salvage['validation_status'] == 'FAIL'
+        assert salvage['completion_marker'] == 'withheld'
+        assert 'complete predicate has multiple equality terms' in salvage['failure']['message']
     quality_paths = list(output.rglob('migration_quality_*.json'))
     assert len(quality_paths) == 1
     with open(quality_paths[0], encoding='utf-8') as handle:
@@ -1346,13 +1355,15 @@ def test_batch_preserves_composite_failure_with_optional_repair_project(
     with open(output / 'batch_quality_summary.json', encoding='utf-8') as handle:
         summary = json.load(handle)
     assert summary['generation_counts'] == {
-        'complete': 0, 'partial': 0 if strict else 1, 'failed': 1 if strict else 0,
+        'complete': 0, 'partial': 0, 'failed': 1,
     }
     assert next(iter(summary['workbooks'].values()))['generation_status'] == (
         'failed' if strict else 'partial')
     if not strict:
-        dashboard = (output / 'MIGRATION_DASHBOARD.html').read_text(encoding='utf-8')
-        assert 'PARTIAL / NOT VALIDATED' in dashboard
+        assert not list(output.rglob('*.tmdl'))
+        consolidated = (output / 'MIGRATION_QUALITY_CONSOLIDATED.html').read_text(
+            encoding='utf-8')
+        assert 'FAIL' in consolidated
 
 
 def test_composite_relationship_rejects_case_insensitive_key_assumptions():
