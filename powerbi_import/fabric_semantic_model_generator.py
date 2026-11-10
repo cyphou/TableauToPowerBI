@@ -24,6 +24,7 @@ import os
 # Import the existing tmdl_generator from the same package
 from . import tmdl_generator
 from .fabric_item import logical_id, write_platform
+from .tmdl_relationships import preflight_physical_joins
 
 
 class FabricSemanticModelGenerator:
@@ -38,7 +39,6 @@ class FabricSemanticModelGenerator:
         self.lakehouse_id = lakehouse_id or logical_id(model_name, 'Lakehouse')
         self.workspace_id = workspace_id or logical_id(model_name, 'Workspace')
         self.sm_dir = os.path.join(project_dir, f'{model_name}.SemanticModel')
-        os.makedirs(self.sm_dir, exist_ok=True)
 
     def generate(self, extracted, calendar_start=None, calendar_end=None,
                  culture=None, languages=None):
@@ -60,6 +60,11 @@ class FabricSemanticModelGenerator:
             dict with generation statistics.
         """
         datasources = extracted.get('datasources', [])
+        # This generator is also callable independently of the project
+        # orchestrator, so reject unsupported source joins before making the
+        # SemanticModel item directory.
+        preflight_physical_joins(datasources, provenance_retained=True)
+
         extra_objects = {
             'sets': extracted.get('sets', []),
             'groups': extracted.get('groups', []),

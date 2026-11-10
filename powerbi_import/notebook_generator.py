@@ -17,7 +17,9 @@ from .calc_column_plan import plan_calculated_columns
 from .fabric_item import logical_id, write_platform
 from .fabric_naming import make_python_var as _make_var_name
 from .fabric_naming import sanitize_table_name as _sanitize_table_name
-from .fabric_sources import is_file_connection, table_connection
+from .fabric_sources import (
+    is_file_connection, preflight_fabric_ingestion, table_connection,
+)
 from .pyspark_converter import todo_statement
 
 # Connection type → PySpark read snippet
@@ -247,7 +249,6 @@ class NotebookGenerator:
         self.lakehouse_id = lakehouse_id or logical_id(project_name, 'Lakehouse')
         self.workspace_id = workspace_id or logical_id(project_name, 'Workspace')
         self.notebook_dir = os.path.join(project_dir, f'{project_name}.Notebook')
-        os.makedirs(self.notebook_dir, exist_ok=True)
 
     def generate(self, extracted_data):
         """Generate PySpark notebooks from extracted Tableau data.
@@ -263,9 +264,11 @@ class NotebookGenerator:
             transformations; ``calc_columns_pending`` those left as TODO.
         """
         datasources = extracted_data.get('datasources', [])
+        preflight_fabric_ingestion(datasources)
         custom_sql = extracted_data.get('custom_sql', [])
         calculations = extracted_data.get('calculations', [])
 
+        os.makedirs(self.notebook_dir, exist_ok=True)
         plan = plan_calculated_columns(extracted_data)
 
         etl_cells = self._generate_etl_cells(datasources, custom_sql)
@@ -373,16 +376,21 @@ class NotebookGenerator:
             table_name = table_info['name']
             conn = table_info['connection']
             conn_type = conn.get('type', 'Unknown')
+            normalized_type = str(conn_type).strip().lower()
             details = conn.get('details', {})
             table_var = _make_var_name(table_name)
             lh_table = _sanitize_table_name(table_name)
 
             cells.append(_markdown_cell(f'### Table: `{table_name}` ({conn_type})'))
 
-            template = _SPARK_READ_TEMPLATES.get(conn_type, '')
+            # File staging uploads the canonical table CSV, not necessarily
+            # the original filename recorded on the Tableau connection.
+            template_type = {'csv': 'CSV', 'excel': 'Excel'}.get(
+                normalized_type, conn_type)
+            template = _SPARK_READ_TEMPLATES.get(template_type, '')
             if template:
                 filename = details.get('filename', '')
-                if conn_type == 'Excel':
+                if template_type in ('CSV', 'Excel'):
                     filename = f'{lh_table}.csv'
                 code = template.format(
                     table_var=table_var,

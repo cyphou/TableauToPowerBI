@@ -290,10 +290,88 @@ retain workbook table identity and take precedence over a preexisting
 datasource-wide override, so the TMDL partition consumes the bound M query.
 Globally colliding workbook table names are rejected for bound overrides.
 
+Parsed Prep outputs carry `prep_provenance` (flow basename, output node ID and
+ancestor node identities). Successful workbook bindings retain that record
+under `prep_bindings[].provenance`, alongside the target table, output and actual
+match method. `prep_binding_coverage` summarizes the validated plan. These
+records do not contain connection details or full expressions.
+The migration quality JSON and HTML use this evidence for a Prep-to-Power BI
+comparison against the generated internal lineage graph: output to Power Query
+partition/model table, then statically represented calculations and visuals.
+Unused outputs and unrelated local tables remain separate from bound targets;
+manual Script/Prediction steps are not relabeled as converted logic. Missing
+or non-unique generated targets remain unresolved or ambiguous. This comparison
+does not execute M/DAX or establish row/value parity.
+
+Prep M queries include a default-on metadata comment block with the flow,
+emitted node and recorded ancestor steps; manual steps carry a review warning.
+Labels are bounded and screened before inclusion, so unsafe or unavailable
+identities can be omitted. New comments do not copy expressions, connection
+properties or data values; object names may nevertheless be sensitive.
+The comments describe conversion records, not proof of equivalent execution.
+
 Standalone `.tfl/.tflx` **batch** migration still exports M expressions, source
 definitions and lineage/assessment artifacts; it does **not** produce a PBIP.
 Missing workbook datasource JSON in `--prep` mode is an error, not an implicit
 standalone conversion. Static JSON/TMDL checks do not execute M or verify refresh.
+
+### Hyper source rebind
+
+Prep Hyper inputs are not read or sampled. Each Hyper input must be explicitly
+rebound to a supported original non-Hyper connector; without a complete
+rebind, conversion fails closed rather than emitting a sample or empty-source
+fallback. Supply the same JSON map with standalone batch export or workbook
+integration:
+
+```powershell
+.venv\Scripts\python.exe migrate.py batch .\prep_flows `
+  --prep-source-map .\prep-source-map.json
+.venv\Scripts\python.exe migrate.py batch .\workbooks --prep .\flow.tfl `
+  --prep-source-map .\prep-source-map.json
+```
+
+The JSON root is an object keyed by the exact normalized TFL input node ID.
+Each value is a flat object with `class` and `table` required, plus the
+connector's source details. Only these fields are accepted:
+`class`, `server`, `port`, `dbname`, `database`, `schema`, `filename`,
+`directory`, `warehouse`, `project`, `dataset`, and `table`.
+At least one of `server`, `dbname`, `database`, `filename`, `directory`,
+`warehouse`, `project`, or `dataset` must identify the source. `port` may be a
+string or integer; other values must be strings. The connector must be
+supported and must not be `hyper` or `extract`.
+
+Example (replace the node ID and source details with the flow's actual
+metadata):
+
+```json
+{
+  "hyper-input-node-id": {
+    "class": "sqlserver",
+    "server": "sql.example.invalid",
+    "database": "Sales",
+    "schema": "dbo",
+    "table": "Orders"
+  }
+}
+```
+
+The map describes source identity only; **never include passwords, tokens,
+connection strings with embedded credentials, or other secrets**. Configure
+authentication through the appropriate Power Query/Power BI connection
+experience. Duplicate JSON keys, unknown or non-Hyper node IDs, missing
+Hyper-node entries, unsupported fields/connectors, or credential patterns
+are errors. This explicit rebind does not establish that the source matches
+the Hyper extract or prove refresh/value parity.
+
+### Script and Prediction status
+
+Script and Prediction steps remain manual placeholders. Their warning columns
+and `prep_manual_steps` metadata identify work that was not converted; they are
+not generated Script/Prediction calculations. With no other failures, these
+manual steps produce `YELLOW` / `manual_review_required`. Warning-only
+assessments produce `YELLOW` / `review_required`; `complete` is reserved for
+warning-free conversion. Conversion failures are `RED` / `error`.
+Workbook-integrated `--prep` also prints a manual, non-complete warning.
 
 ---
 
@@ -309,7 +387,7 @@ standalone conversion. Static JSON/TMDL checks do not execute M or verify refres
 | 6 | Connect to Cloud (Snowflake) | `Snowflake.Databases()` | ✅ | Warehouse/schema navigation |
 | 7 | Connect to Cloud (BigQuery) | `GoogleBigQuery.Database()` | ✅ | Project/dataset navigation |
 | 8 | Connect to Published Data Source | Dataflow / Shared Dataset | 🔧 | Manual Power BI dataflow setup |
-| 9 | Connect to Tableau Extract (.hyper) | Reconnect to original source | 🔧 | .hyper not readable by Power Query |
+| 9 | Connect to Tableau Extract (.hyper) | Explicitly rebind to original source | 🔧 | Use `--prep-source-map`; Hyper is never sampled or used as a fallback |
 | 10 | Data Interpreter | Automatic in Excel connector | ✅ | Power BI auto-detects tables |
 | 11 | Wildcard Union (file pattern) | `Folder.Files()` + filter | 🆕 | Pattern-based file loading |
 
@@ -375,7 +453,7 @@ standalone conversion. Static JSON/TMDL checks do not execute M or verify refres
 | 2 | String calculated field | `Table.AddColumn()` | 🆕 | `Table.AddColumn(Source, "Full Name", each [First] & " " & [Last])` |
 | 3 | Date calculated field | `Table.AddColumn()` | 🆕 | `Table.AddColumn(Source, "Year", each Date.Year([OrderDate]))` |
 | 4 | Conditional (IF) | `Table.AddColumn()` | 🆕 | `Table.AddColumn(Source, "Tier", each if [Sales] > 1000 then "High" else "Low")` |
-| 5 | LOD Expression (FIXED) | DAX `CALCULATE(AGG, ALLEXCEPT())` | ✅ | Handled in DAX, not M |
+| 5 | LOD Expression (FIXED) | Manual review | 🔧 | Prep calculated expressions use the M converter; workbook DAX LOD conversion is separate and guarded |
 | 6 | Row number | `Table.AddIndexColumn()` | 🆕 | `Table.AddIndexColumn(Source, "RowNum", 1, 1)` |
 | 7 | RANK / RANK_PERCENTILE | `Table.AddIndexColumn()` + sort | 🆕 | Sort then index |
 | 8 | Tableau functions in Prep | `Table.AddColumn()` with M functions | 🆕 | See §11 Function Mapping |
@@ -571,7 +649,7 @@ schemas described in the scope contract above.
 
 | # | Tableau Prep Operation | Power Query M Equivalent | Status | Notes |
 |---|----------------------|-------------------------|--------|-------|
-| 1 | Save to .hyper extract | Power BI Import mode | ✅ | Data loaded into model |
+| 1 | Save to .hyper extract | Power Query M / source definitions | 🔧 | Standalone Prep emits artifacts, not a model; loading and refresh require separate verification |
 | 2 | Publish to Tableau Server | Power BI dataflow / dataset | 🔧 | Manual publish setup |
 | 3 | Save to CSV | Power BI export / dataflow | 🔧 | |
 | 4 | Save to Database | DirectQuery or dataflow | 🔧 | |
@@ -585,7 +663,7 @@ These transformations can appear inside `.twb` files (Tableau Desktop Data Sourc
 
 | # | TWB XML Element | Power Query M Step | Status | Notes |
 |---|----------------|-------------------|--------|-------|
-| 1 | `<relation type='join'>` | TMDL relationship | ✅ | Extracted to relationships.tmdl |
+| 1 | `<relation type='join'>` | TMDL relationship for supported predicates | 🔧 | Unsupported physical joins require a proven pre-joined source; a relationship alone does not establish row-level parity |
 | 2 | `<relation type='union'>` | `Table.Combine()` | 🆕 | Detected and converted |
 | 3 | `<_.fcp.ObjectModelEncapsulatePivot>` | `Table.Unpivot()` | 🆕 | Pivot in data source pane |
 | 4 | `<column ... hidden='true'>` | `Table.RemoveColumns()` | 🆕 | Hidden columns removed |

@@ -8,7 +8,15 @@ generation pipeline (BIM model + TMDL + PBIR report).
 import json
 import logging
 import os
+import sys
 import uuid
+from copy import deepcopy
+
+# The generator modules also support legacy top-level imports. Make them
+# available when this importer is loaded through its public package path.
+_module_dir = os.path.dirname(os.path.abspath(__file__))
+if _module_dir not in sys.path:
+    sys.path.insert(0, _module_dir)
 
 from pbip_generator import PowerBIProjectGenerator
 from telemetry import PhaseTimingCollector
@@ -20,6 +28,162 @@ def _write_json_file(path, data):
     """Write a JSON file with consistent formatting."""
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _preflight_fabric_datasources(datasources):
+    """Check the active source trees before publishing any Fabric artifacts."""
+    from powerbi_import.fabric_sources import preflight_fabric_ingestion
+    from powerbi_import.tmdl_relationships import preflight_physical_joins
+
+    # The join check also looks across datasources, so it needs a re-iterable
+    # collection even when a caller supplies a generator.
+    datasources = tuple(datasources or ())
+    preflight_physical_joins(datasources, provenance_retained=True)
+    preflight_fabric_ingestion(datasources)
+
+
+def _shared_native_hyper_provenance(all_converted_objects):
+    """Remember native bindings whose historical identities passed preflight."""
+    from powerbi_import.fabric_sources import table_connection
+
+    provenance = []
+    for objects in all_converted_objects:
+        for datasource in objects.get('datasources', []):
+            for table in datasource.get('tables', []):
+                if table.get('hyper_identity') is not None:
+                    provenance.append(deepcopy({
+                        'name': table.get('name'),
+                        'source_table': table.get('source_table'),
+                        'connection': table_connection(datasource, table),
+                        'hyper_identity': table['hyper_identity'],
+                        'source_selection': datasource.get('source_selection'),
+                    }))
+    return provenance
+
+
+def _retain_shared_native_bindings(merged, provenance):
+    """Keep inactive Hyper history without treating it as the active source."""
+    from powerbi_import.fabric_sources import table_connection
+
+    for datasource in merged.get('datasources', []):
+        for table in datasource.get('tables', []):
+            identity = table.get('hyper_identity')
+            if identity is None:
+                continue
+            matches = [
+                original for original in provenance
+                if original['hyper_identity'] == identity
+                and original['name'] == table.get('name')
+                and original['source_table'] == table.get('source_table')
+                and original['connection'] == table_connection(datasource, table)
+            ]
+            # An unmatched or ambiguous projection remains subject to the
+            # normal merged-source preflight, which refuses active Hyper.
+            if not matches or any(match != matches[0] for match in matches[1:]):
+                continue
+            if ('_fabric_historical_hyper_identity' in table
+                    or '_fabric_native_source_selection' in table):
+                continue
+            table['_fabric_historical_hyper_identity'] = table.pop('hyper_identity')
+            table['_fabric_native_source_selection'] = matches[0]['source_selection']
+
+
+def _fabric_project_path(results, project_name, *, include_report=True):
+    """Require a complete, locally validated Fabric project on disk."""
+    if not isinstance(results, dict):
+        raise RuntimeError("Fabric generation did not return a project result")
+    project_path = results.get('project_path')
+    validation = results.get('validation')
+    if (not project_path or not os.path.isdir(project_path)
+            or not isinstance(validation, dict)
+            or validation.get('valid') is not True):
+        raise RuntimeError("Fabric generation did not return a locally validated project")
+    from powerbi_import.fabric_validator import FabricProjectValidator
+
+    actual_validation = FabricProjectValidator.validate(
+        project_path, project_name, include_report=include_report)
+    if not isinstance(actual_validation, dict) or actual_validation.get('valid') is not True:
+        raise RuntimeError("Fabric generation did not produce a valid project on disk")
+    return project_path
+
+
+def _mark_shared_fabric_evidence_incomplete(project_dir, fabric_results, workbook_names):
+    """Keep model-only evidence distinct from the unchecked shared report set."""
+    from powerbi_import.atomic_file import atomic_write_text
+
+    metadata_path = os.path.join(project_dir, 'fabric_project_metadata.json')
+    evidence_path = os.path.join(project_dir, 'fabric_evidence.json')
+    with open(metadata_path, encoding='utf-8') as stream:
+        metadata = json.load(stream)
+    original = metadata.get('fabric_evidence')
+    if not isinstance(original, dict):
+        raise RuntimeError("Fabric generation did not publish its model evidence")
+
+    reason = (
+        "Shared Fabric output contains workbook-specific thin reports; "
+        "the single-report Fabric validator does not validate that report set."
+    )
+    evidence = deepcopy(original)
+    original_validation = original.get('validation') or {}
+    validation = {
+        'valid': None,
+        'status': 'not_run',
+        'errors': [],
+        'warnings': [*(original_validation.get('warnings') or []), reason],
+        'artifacts_checked': 0,
+    }
+    if 'hyper_source_selection' in original_validation:
+        validation['hyper_source_selection'] = deepcopy(
+            original_validation['hyper_source_selection'])
+    evidence.update({
+        'status': 'not_run',
+        'confidence': 'UNVERIFIED',
+        'scope': 'unknown',
+        'requested_scope': 'fabric_shared_model_and_thin_reports',
+        'scope_diagnostic': reason,
+        'validation': validation,
+        'report_validation': 'not_run',
+        'model_generation_evidence': deepcopy(original),
+        'thin_reports': {
+            'validation': 'not_run',
+            'expected_workbooks': list(workbook_names),
+        },
+    })
+    evidence.pop('generation_evidence', None)
+    for artifact in (evidence.get('artifacts') or {}).values():
+        if isinstance(artifact, dict):
+            artifact['status'] = 'not_run'
+            artifact['dependency_status'] = 'not_run'
+
+    # The generator's five-item validation is still useful, but it does not
+    # cover the subsequently generated thin reports.
+    for item in (metadata.get('validation'), metadata.get('quality')):
+        if isinstance(item, dict):
+            item['scope'] = 'fabric_model_only'
+            item['report_validation'] = 'not_run'
+    manifest = metadata.get('evidence_manifest')
+    if isinstance(manifest, dict):
+        for key in ('validation', 'environment'):
+            item = manifest.get(key)
+            if isinstance(item, dict):
+                item['scope'] = 'fabric_model_only'
+                item['report_validation'] = 'not_run'
+    metadata['fabric_evidence'] = evidence
+    metadata['shared_bundle_validation'] = {
+        'scope': 'fabric_shared_model_and_thin_reports',
+        'status': 'not_run',
+        'valid': None,
+        'reason': reason,
+    }
+
+    # Publish both conservative records before creating any thin report.
+    # If publication fails, no reports have yet been generated.
+    atomic_write_text(
+        metadata_path, json.dumps(metadata, indent=2, ensure_ascii=False))
+    atomic_write_text(
+        evidence_path, json.dumps(evidence, indent=2, ensure_ascii=False))
+    fabric_results['fabric_evidence'] = evidence
+    return evidence
 
 
 class PowerBIImporter:
@@ -40,9 +204,10 @@ class PowerBIImporter:
         Import all extracted objects and generate Power BI project
 
         Args:
-            generate_pbip: If True, generates Power BI Projects (.pbip)
+            generate_pbip: If True, generates the requested output format.
             report_name: Override report name (defaults to dashboard name or 'Report')
-            output_dir: Custom output directory for .pbip projects
+            output_dir: Custom output directory for generated projects.
+            output_format: 'pbip' (default) or 'fabric'.
             calendar_start: Start year for Calendar table (default: 2020)
             calendar_end: End year for Calendar table (default: 2030)
             culture: Override culture/locale for semantic model
@@ -97,8 +262,12 @@ class PowerBIImporter:
         print("=" * 80)
         print()
         if generate_pbip:
-            print("[OK] Power BI Projects (.pbip) generated automatically")
-            print("   Open the .pbip files in Power BI Desktop")
+            if output_format == 'fabric':
+                print("[OK] Fabric project generated with local static validation")
+                print("   Fabric refresh and deployment were not run")
+            else:
+                print("[OK] Power BI Projects (.pbip) generated automatically")
+                print("   Open the .pbip files in Power BI Desktop")
             print()
 
         importer_report = import_timings.finish()
@@ -168,7 +337,7 @@ class PowerBIImporter:
                                  incremental_refresh=False, incremental_refresh_months=12,
                                  parameterize=True, optimize_dax=False,
                                  time_intelligence='none', strict_generation=False):
-        """Generate a Power BI Project (.pbip)
+        """Generate a Power BI project or a Fabric-native project.
 
         Args:
             report_name: Name of the report
@@ -178,6 +347,53 @@ class PowerBIImporter:
             calendar_end: End year for Calendar table
             culture: Override culture/locale
         """
+
+        if output_format == 'fabric':
+            unsupported = [
+                name for name, requested in (
+                    ('model_mode', model_mode not in (None, 'auto')),
+                    ('paginated', paginated),
+                    ('composite_threshold', composite_threshold is not None),
+                    ('agg_tables', agg_tables != 'none'),
+                    ('incremental_refresh', incremental_refresh),
+                    ('incremental_refresh_months', incremental_refresh_months != 12),
+                    ('parameterize', parameterize is not True),
+                    ('optimize_dax', optimize_dax),
+                    ('time_intelligence', time_intelligence != 'none'),
+                    ('strict_generation', strict_generation),
+                ) if requested
+            ]
+            if unsupported:
+                raise ValueError(
+                    "Fabric generation does not support these options: "
+                    + ', '.join(unsupported))
+
+            print("\n  Generating Fabric project...")
+            try:
+                from powerbi_import.fabric_project_generator import FabricProjectGenerator
+
+                _preflight_fabric_datasources(converted_objects.get('datasources', []))
+                projects_dir = os.path.abspath(
+                    output_dir or os.path.join('artifacts', 'fabric_projects', 'migrated'))
+                generator = FabricProjectGenerator(output_dir=projects_dir)
+                results = generator.generate_project(
+                    project_name=report_name,
+                    extracted_data=converted_objects,
+                    calendar_start=calendar_start,
+                    calendar_end=calendar_end,
+                    culture=culture,
+                    languages=languages,
+                )
+                project_path = _fabric_project_path(results, report_name)
+                self.last_generation_timings = generator.last_phase_timings
+                print(f"  [OK] Fabric project created: {project_path}")
+            except Exception as e:
+                print(f"  [ERROR] Error generating Fabric project: {str(e)}")
+                raise
+            return
+
+        if output_format != 'pbip':
+            raise ValueError(f"Unsupported output format: {output_format}")
 
         print("\n  Generating Power BI Project (.pbip)...")
 
@@ -273,6 +489,23 @@ class PowerBIImporter:
             validate_thin_report_fields,
         )
         from powerbi_import.thin_report_generator import ThinReportGenerator
+
+        premerge_unverified_hyper_sources = None
+        native_hyper_provenance = []
+        if output_format == 'fabric':
+            from powerbi_import.fabric_sources import preflight_fabric_ingestion
+
+            # Merging can deduplicate a file and an active Hyper table and lose
+            # the latter's identity. Check every original source, not the
+            # merged projection, regardless of workbook order.
+            premerge_unverified_hyper_sources = preflight_fabric_ingestion(
+                ds for objects in all_converted_objects
+                for ds in objects.get('datasources', [])
+            )
+            # Any table identity surviving that check is historical under a
+            # proven native selection, not an active Hyper binding.
+            native_hyper_provenance = _shared_native_hyper_provenance(
+                all_converted_objects)
 
         print("=" * 64)
         print("  SHARED SEMANTIC MODEL MIGRATION")
@@ -372,6 +605,12 @@ class PowerBIImporter:
         if lineage_annotations:
             merged['_lineage_annotations'] = lineage_annotations
 
+        if output_format == 'fabric':
+            _retain_shared_native_bindings(merged, native_hyper_provenance)
+            # The Fabric generator checks the merged sources as well. Perform
+            # the same checks here before this orchestrator creates directories.
+            _preflight_fabric_datasources(merged.get('datasources', []))
+
         # 3. Determine output directory
         if output_dir:
             projects_dir = os.path.abspath(output_dir)
@@ -388,6 +627,7 @@ class PowerBIImporter:
 
         # 4. Generate the shared semantic model (or full Fabric project)
         fabric_results: dict = {}
+        shared_fabric_evidence = None
         # Name index of the generated model; thin reports resolve their fields
         # against it so that visuals match the model's own names.
         model_context = None
@@ -410,13 +650,18 @@ class PowerBIImporter:
                 culture=culture,
                 languages=languages,
                 include_report=False,
+                premerge_unverified_hyper_sources=premerge_unverified_hyper_sources,
             )
             sm_dir = os.path.join(
                 project_dir,
                 f"{model_name}.SemanticModel",
             )
             # The Fabric generator places all artifacts inside project_dir
-            fabric_project_path = fabric_results.get('project_path', project_dir)
+            fabric_project_path = _fabric_project_path(
+                fabric_results, model_name, include_report=False)
+            if workbook_names:
+                shared_fabric_evidence = _mark_shared_fabric_evidence_incomplete(
+                    fabric_project_path, fabric_results, workbook_names)
             model_context = fabric_results.get('artifacts', {}).get('semantic_model')
             # Also set sm_dir to wherever the SemanticModel was generated
             for dirpath, dirnames, _files in os.walk(fabric_project_path):
@@ -505,6 +750,8 @@ class PowerBIImporter:
                 'strict_thin_report_failed': True,
                 'orphaned_issue_count': orphaned_issue_count,
                 'thin_report_max_orphans': thin_report_max_orphans,
+                **({'fabric_evidence': shared_fabric_evidence}
+                   if shared_fabric_evidence is not None else {}),
             }
 
         # 6. Save artifacts (assessment, config, lineage, HTML report)
@@ -543,6 +790,8 @@ class PowerBIImporter:
             'manifest': manifest,
             'orphaned_issue_count': orphaned_issue_count,
             'thin_report_max_orphans': thin_report_max_orphans,
+            **({'fabric_evidence': shared_fabric_evidence}
+               if shared_fabric_evidence is not None else {}),
         }
 
     def _create_model_explorer_report(self, project_dir, model_name):

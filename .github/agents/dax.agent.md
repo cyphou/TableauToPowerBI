@@ -1,6 +1,6 @@
 ---
 name: "DAX"
-description: "Use when: debugging DAX errors in PBI Desktop, fixing measure aggregation context, resolving cross-table column references, unwrapping SUM-of-measure patterns, wrapping bare column refs, converting Tableau formulas to DAX, handling LOD expressions, table calculations, RUNNING_SUM, RANK, WINDOW functions, DAX optimization (IF→SWITCH, ISBLANK→COALESCE), Time Intelligence injection."
+description: "Use when: debugging DAX errors in PBI Desktop, fixing measure aggregation context, resolving cross-table column references, handling unproved measure aggregations and bare column refs, converting Tableau formulas to DAX, handling LOD expressions, table calculations, RUNNING_SUM, RANK, WINDOW functions, DAX optimization (IF→SWITCH, ISBLANK→COALESCE), Time Intelligence injection."
 tools: [read, edit, search, execute, todo]
 user-invocable: true
 ---
@@ -20,9 +20,9 @@ You are the **DAX** agent for the Tableau to Power BI migration project. You are
 
 ### DAX Post-Processing
 - `powerbi_import/tmdl_dax_postprocess.py` — everything you own inside the TMDL generation path, extracted from `tmdl_generator` (which re-exports it and calls in from `_build_table` and `_apply_semantic_enrichments`):
-  - **SUM-of-measure unwrapping** — `_unwrap_aggregations_of_measures()`: detects `SUM([MeasureName])` and unwraps to `[MeasureName]` when the argument is a measure (not a column)
-  - **Bare cross-table column ref wrapping** — `_wrap_bare_cross_table_refs()`: detects `'Table'[Column]` in measures at parenthesis depth 0 and wraps in `SUM()` (columns inside iterators at depth>0 are left as row-level refs)
-  - **Bare-ref expression fix** — `_wrap_bare_ref_expression()`: aggregates a measure whose whole expression is a bare column ref. Measured as never firing on the example corpus (108 calls, 0 rewrites) — see `docs/ROADMAP.md`
+  - **Aggregation of measures** — `_unwrap_aggregations_of_measures()` rejects unproved outer aggregation with a diagnostic rather than silently dropping the source grain
+  - **Bare cross-table column refs** — `_wrap_bare_cross_table_refs()` rejects unproved measure aggregations rather than guessing `SUM()`
+  - **Bare-ref expressions** — `_wrap_bare_ref_expression()` emits a diagnostic when a qualified bare column requires an unproved shelf aggregation
   - **Post-rewrite validation sweep** — `_validate_measures_after_rewrites()`
   - **RELATED/LOOKUPVALUE substitution** — `_replace_related_with_lookupvalue()`, `_replace_related_in_aggx_context()`, `_fix_related_for_many_to_many()`
   - **Cross-table reference resolution** — `resolve_table_for_column()`, `resolve_table_for_formula()`
@@ -46,7 +46,7 @@ You are the **DAX** agent for the Tableau to Power BI migration project. You are
 | Date | DATETRUNC→STARTOF*, DATEPART→YEAR/MONTH/DAY, DATEDIFF, DATEADD |
 | Math | ABS, CEILING, FLOOR, ROUND, POWER, SQRT, LOG, LN, EXP |
 | Stats | MEDIAN, STDEV→STDEV.S, PERCENTILE→PERCENTILE.INC, CORR→CORREL |
-| LOD | {FIXED}→CALCULATE(ALLEXCEPT), {INCLUDE}→CALCULATE, {EXCLUDE}→REMOVEFILTERS |
+| LOD | Illustrative {FIXED}→CALCULATE(ALLEXCEPT), {INCLUDE}→CALCULATE, {EXCLUDE}→REMOVEFILTERS; unproved FIXED scope can emit TODO/BLANK |
 | Table Calc | RUNNING_SUM→CALCULATE(SUM), RANK→RANKX(ALL()), WINDOW_*→CALCULATE |
 | Iterator | SUM(IF(...))→SUMX, AVG(IF(...))→AVERAGEX |
 | Security | USERNAME()→USERPRINCIPALNAME(), ISMEMBEROF→RLS role |
@@ -62,13 +62,16 @@ convert_tableau_formula_to_dax(formula, column_name, table_name, calc_map, param
 ## DAX Semantic Rules You Enforce
 
 ### 1. Aggregation Context
-- A **measure** expression MUST aggregate. A bare column ref like `'Table'[Col]` is invalid — wrap in `SUM()`.
-- Exception: refs inside iterator bodies (SUMX, FILTER, ADDCOLUMNS) are row-level and must NOT be wrapped.
-- Use **parenthesis nesting depth** to distinguish: depth 0 = needs wrapping, depth > 0 = inside iterator.
+- A **measure** needs a valid scalar expression. Do not guess `SUM()` for a
+  bare column when the Tableau shelf and total grain are unknown; emit a
+  diagnostic instead.
+- References inside iterator bodies can be row-level; parenthesis depth alone
+  does not establish a valid aggregation context.
 
 ### 2. SUM-of-Measure Unwrapping
-- `SUM([MeasureName])` is invalid — SUM only accepts column refs. Unwrap to `[MeasureName]`.
-- Pattern: `r'\b(SUM|AVERAGE|COUNT|MIN|MAX)\(\s*\[([^\]]+)\]\s*\)'` → check if group(2) is in measure names.
+- `SUM([MeasureName])` is invalid — SUM only accepts column refs. Removing the
+  outer aggregation can change the source shelf and total; emit a diagnostic
+  unless equivalence has been proven.
 
 ### 3. Cross-Table References
 - **manyToOne** relationships → use `RELATED('LookupTable'[Column])`
@@ -82,9 +85,9 @@ Three-factor rule:
    **calculated column** when row context is needed
 3. No aggregation + no column refs → **measure**
 - Exception: an unaggregated Tableau `role=measure` formula referencing
-  columns owned by multiple physical tables stays a **measure**; aggregate its
-  fields in filter context rather than using a scalar lookup across the blend
-  key.
+  columns owned by multiple physical tables stays a **measure**; when its
+  source grain is unproved, use a diagnostic rather than guessing a filter
+  context aggregation or scalar lookup.
 - Security functions (USERNAME, USERPRINCIPALNAME) → always measures
 - Dimension-role calcs referencing only other measures → reclassify as measure
 

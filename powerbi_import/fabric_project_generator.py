@@ -22,12 +22,14 @@ from .evidence_manifest import build_evidence_manifest
 from .fabric_evidence import build_fabric_evidence
 from .fabric_item import build_item_registry, logical_id
 from .fabric_semantic_model_generator import FabricSemanticModelGenerator
+from .fabric_sources import preflight_fabric_ingestion
 from .fabric_validator import FabricProjectValidator
 from .lakehouse_generator import LakehouseGenerator
 from .notebook_generator import NotebookGenerator
 from .pipeline_generator import PipelineGenerator
 from .telemetry import PhaseTimingCollector
 from .thin_report_generator import ThinReportGenerator
+from .tmdl_relationships import preflight_physical_joins
 
 
 def _json_default(obj):
@@ -72,7 +74,8 @@ class FabricProjectGenerator:
     def generate_project(self, project_name, extracted_data,
                          calendar_start=None, calendar_end=None,
                          culture=None, languages=None,
-                         include_report=True):
+                         include_report=True, *,
+                         premerge_unverified_hyper_sources=None):
         """Generate all Fabric artifacts for a migrated Tableau workbook.
 
         Args:
@@ -86,10 +89,29 @@ class FabricProjectGenerator:
             include_report: Generate a report for the supplied workbook content.
                 Shared-model callers disable this and generate workbook-specific
                 thin reports separately.
+            premerge_unverified_hyper_sources: Optional diagnostic count from
+                preflighting all original datasources before a shared-model
+                merge. It does not replace that preflight or prove source
+                selection; it preserves uncertainty that a merge can discard.
 
         Returns:
             dict with project_path and per-artifact stats.
         """
+        # Check the supplied datasource trees before creating any item.
+        # This path retains their provenance; shared-model callers must also
+        # preflight the original sources before merging discards that provenance.
+        preflight_physical_joins(
+            extracted_data.get('datasources', []), provenance_retained=True)
+        unverified_hyper_sources = preflight_fabric_ingestion(
+            extracted_data.get('datasources', []))
+        if premerge_unverified_hyper_sources is not None:
+            if (type(premerge_unverified_hyper_sources) is not int
+                    or premerge_unverified_hyper_sources < 0):
+                raise ValueError(
+                    'premerge_unverified_hyper_sources must be a nonnegative integer')
+            unverified_hyper_sources = max(
+                unverified_hyper_sources, premerge_unverified_hyper_sources)
+
         project_dir = os.path.join(self.output_dir, project_name)
         phase_timings = PhaseTimingCollector().start()
         os.makedirs(project_dir, exist_ok=True)
@@ -103,6 +125,13 @@ class FabricProjectGenerator:
             'generated_at': datetime.now().isoformat(),
             'artifacts': {},
         }
+        if unverified_hyper_sources:
+            results['fabric_ingestion'] = {
+                'hyper_source_selection': {
+                    'status': 'not_run',
+                    'unverified_datasources': unverified_hyper_sources,
+                },
+            }
 
         # 1. Lakehouse
         print(f"  [1/{artifact_count}] Generating Lakehouse...")
@@ -221,7 +250,9 @@ class FabricProjectGenerator:
             validation=results['quality'],
             environment=results['quality'],
         )
-        fabric_evidence = build_fabric_evidence(project_dir, project_name)
+        fabric_evidence = build_fabric_evidence(
+            project_dir, project_name, include_report=include_report,
+            unverified_hyper_sources=unverified_hyper_sources)
         results['fabric_evidence'] = fabric_evidence
 
         # Write project metadata

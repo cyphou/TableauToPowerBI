@@ -114,26 +114,42 @@ class MigrationSession:
     # ── DAX Preview & Editing ─────────────────────────────────
 
     def preview_dax(self):
-        """Preview DAX conversions for all calculations.
+        """Preview DAX conversions for all calculations without executing DAX.
+
+        ``exact`` means no issue was detected by these static checks; it is
+        not proof of source equivalence, refresh behavior, or execution.
 
         Returns:
             list[dict]: Per-calculation Tableau→DAX mapping with accuracy.
         """
         extracted = self._require_loaded()
 
-        from tableau_export.dax_converter import convert_tableau_formula_to_dax
+        from tableau_export.dax_converter import (
+            _SOURCE_TOKEN,
+            _prepare_source_expression,
+            _protect_source_tokens,
+            _strip_tableau_comments,
+            convert_tableau_formula_to_dax,
+        )
 
         calculations = extracted.get('calculations', [])
         datasources = extracted.get('datasources', [])
         # Build column_table_map from datasources
         col_table_map = {}
-        for ds in datasources:
-            for tbl in ds.get('tables', []):
+        column_owners = {}
+        table_contexts = {}
+        for ds_index, ds in enumerate(datasources):
+            for table_index, tbl in enumerate(ds.get('tables', [])):
                 tname = tbl.get('name', '')
+                table_id = (ds_index, table_index)
+                columns = set()
                 for col in tbl.get('columns', []):
                     cname = col.get('name', '')
                     if cname:
                         col_table_map[cname] = tname
+                        columns.add(cname)
+                        column_owners.setdefault(cname, set()).add(table_id)
+                table_contexts[table_id] = (tname, columns)
 
         results = []
         for calc in calculations:
@@ -148,10 +164,44 @@ class MigrationSession:
             if name in self._dax_overrides:
                 dax = self._dax_overrides[name]
                 status = 'overridden'
-            elif any(kw in dax.lower() for kw in ('blank(', '0 /* ', 'todo', '/* no dax')):
-                status = 'approximated'
             else:
-                status = 'exact'
+                source = _strip_tableau_comments(formula).strip()
+                masked, _ = _protect_source_tokens(source)
+                unproven_lod = bool(re.search(
+                    r'\{\s*(?:FIXED|INCLUDE|EXCLUDE)\b', masked, re.IGNORECASE))
+                refs = {
+                    token[1:-1].replace(']]', ']')
+                    for token in (match.group() for match in _SOURCE_TOKEN.finditer(source))
+                    if token.startswith('[')
+                }
+                owners = set()
+                missing_context = False
+                for ref in refs:
+                    candidates = column_owners.get(ref, set())
+                    if len(candidates) != 1:
+                        missing_context = True
+                    else:
+                        owners.update(candidates)
+                if len(owners) > 1:
+                    missing_context = True
+                table_name, table_columns = ('Table', set())
+                if len(owners) == 1:
+                    table_name, table_columns = table_contexts[next(iter(owners))]
+                    if not table_name:
+                        missing_context = True
+
+                # Ask the converter's source-grain checker using explicit
+                # columns, but keep the original raw preview unchanged.
+                _, grain_issue = _prepare_source_expression(
+                    source, table_name=table_name or 'Table',
+                    column_table_map=col_table_map, measure_names=set(),
+                    is_calc_column=False, table_columns=table_columns,
+                    calc_datatype=calc.get('datatype'), verified_row_scope=None)
+                placeholder = any(
+                    kw in dax.lower() for kw in ('blank(', '0 /* ', 'todo', '/* no dax'))
+                status = ('approximated' if
+                          unproven_lod or missing_context or grain_issue or placeholder
+                          else 'exact')
 
             results.append({
                 'name': name,
@@ -449,7 +499,7 @@ class MigrationSession:
             }.get(st, 0.75)
             note = ''
             if st == 'approximated':
-                note = 'Manual review recommended — placeholder/partial DAX'
+                note = 'Manual review recommended — unverified context, grain, or placeholder DAX'
             elif st == 'overridden':
                 note = 'User override active'
             rows.append({

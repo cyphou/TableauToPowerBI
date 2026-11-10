@@ -293,6 +293,79 @@ class TestPreviewDax(unittest.TestCase):
         self.assertEqual(ts['dax_formula'], 'CUSTOM_DAX()')
         self.assertEqual(ts['status'], 'overridden')
 
+    def test_simple_formula_remains_exact_in_preview(self):
+        s = self._make_session_with_data()
+        s._extracted['calculations'] = [
+            {'name': 'Simple', 'formula': 'SUM([Sales])'},
+        ]
+        preview, = s.preview_dax()
+        self.assertEqual(preview['name'], 'Simple')
+        self.assertEqual(preview['status'], 'exact')
+        self.assertEqual(preview['dax_formula'], "SUM('Orders'[Sales])")
+        self.assertEqual(s.list_approximated(), [])
+
+    def test_fixed_allexcept_override_is_labeled_overridden(self):
+        s = self._make_session_with_data()
+        s._extracted['calculations'] = [
+            {'name': 'Fixed', 'formula': '{ FIXED [Region] : SUM([Sales]) }'},
+        ]
+        override = "CALCULATE(SUM('Orders'[Sales]), ALLEXCEPT('Orders', 'Orders'[Region]))"
+        s.edit_dax('Fixed', override)
+        preview, = s.preview_dax()
+        self.assertEqual(preview['name'], 'Fixed')
+        self.assertEqual(preview['status'], 'overridden')
+        self.assertEqual(preview['dax_formula'], override)
+        self.assertEqual(s.list_approximated(), [])
+
+    def test_unproven_fixed_is_approximated_but_simple_formula_and_override_are_not(self):
+        s = self._make_session_with_data()
+        s._extracted['datasources'][0]['tables'][0]['columns'].append(
+            {'name': 'Region'})
+        s._extracted['calculations'] = [
+            {'name': 'Fixed', 'formula': '{ FIXED [Region] : SUM([Sales]) }'},
+            {'name': 'Simple', 'formula': 'SUM([Sales])'},
+        ]
+        preview = {row['name']: row for row in s.preview_dax()}
+        self.assertRegex(preview['Fixed']['dax_formula'],
+                         r'(?i)(ALLEXCEPT\s*\(|TODO:)')
+        self.assertEqual(preview['Fixed']['status'], 'approximated')
+        self.assertEqual(preview['Simple']['status'], 'exact')
+        self.assertEqual(preview['Simple']['dax_formula'], "SUM('Orders'[Sales])")
+        self.assertEqual([row['name'] for row in s.list_approximated()], ['Fixed'])
+
+        # A user-supplied DAX override is explicitly labeled as such, not
+        # presented as an automatically proven exact conversion.
+        override = "CALCULATE(SUM('Orders'[Sales]), ALLEXCEPT('Orders', 'Orders'[Region]))"
+        s.edit_dax('Fixed', override)
+        overridden = {row['name']: row for row in s.preview_dax()}
+        self.assertEqual(overridden['Fixed']['status'], 'overridden')
+        self.assertEqual(overridden['Fixed']['dax_formula'], override)
+        self.assertEqual(overridden['Simple'], preview['Simple'])
+        self.assertEqual(s.list_approximated(), [])
+
+    def test_allexcept_text_and_comments_are_not_function_calls(self):
+        s = self._make_session_with_data()
+        s._extracted['calculations'] = [
+            {'name': 'Literal', 'formula': '"ALLEXCEPT("'},
+            {'name': 'Comment', 'formula': 'SUM([Sales])'},
+            {'name': 'Call', 'formula': '{ FIXED [Region] : SUM([Sales]) }'},
+        ]
+        literal = '"ALLEXCEPT("'
+        commented = "SUM('Orders'[Sales]) /* ALLEXCEPT('Orders', 'Orders'[Region]) */"
+        function_call = (
+            "CALCULATE(SUM('Orders'[Sales]), ALLEXCEPT('Orders', 'Orders'[Region]))")
+        # The real Tableau converter discards Tableau comments.  Supply a
+        # DAX comment at the classifier boundary to exercise that distinction.
+        with patch('tableau_export.dax_converter.convert_tableau_formula_to_dax',
+                   side_effect=[literal, commented, function_call]):
+            preview = {row['name']: row for row in s.preview_dax()}
+        self.assertEqual(preview['Literal']['dax_formula'], literal)
+        self.assertEqual(preview['Comment']['dax_formula'], commented)
+        self.assertEqual(preview['Call']['dax_formula'], function_call)
+        self.assertEqual(preview['Literal']['status'], 'exact')
+        self.assertEqual(preview['Comment']['status'], 'exact')
+        self.assertEqual(preview['Call']['status'], 'approximated')
+
 
 class TestPreviewM(unittest.TestCase):
     """Test M query preview with mock extracted data."""

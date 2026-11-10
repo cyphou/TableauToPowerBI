@@ -93,21 +93,28 @@ class TestPromoteMeasureDependentCalcColumns(unittest.TestCase):
         self.assertEqual(_promote_measure_dependent_calc_columns(t), [])
         self.assertEqual(len(t["columns"]), 1)
 
-    def test_call_sites_aggregating_the_promoted_name_are_repaired(self):
+    def test_aggregation_of_promoted_measure_without_grain_is_diagnostic(self):
         # Another measure read the column as MIN('Sales'[Weighted]); once the
-        # column is a measure that aggregation is invalid, and the existing
-        # unwrap pass has to strip it.
+        # column is promoted, stripping MIN would silently change its source
+        # shelf/total grain.  An unproven rewrite must remain diagnostic.
         t = _table(
             [{"name": "Weighted", "expression": "[Total] * 'Sales'[Amount]",
               "isCalculated": True}],
             [{"name": "Total", "expression": "SUM('Sales'[Amount])"},
              {"name": "Grand", "expression": "CALCULATE(MIN('Sales'[Weighted]), ALL('Sales'))"}],
         )
-        _promote_measure_dependent_calc_columns(t)
+        promoted = _promote_measure_dependent_calc_columns(t)
+        self.assertEqual([name for name, _ in promoted], ["Weighted"])
+        self.assertNotIn("Weighted", {column["name"] for column in t["columns"]})
+        self.assertIn("Weighted", {measure["name"] for measure in t["measures"]})
         _unwrap_aggregations_of_measures(t)
         grand = [m for m in t["measures"] if m["name"] == "Grand"][0]
-        self.assertNotIn("MIN(", grand["expression"])
-        self.assertIn("[Weighted]", grand["expression"])
+        self.assertRegex(
+            grand["expression"],
+            r"(?is)^/\*\s*TODO: DAX conversion validation failed\b"
+            r"[^*]*\baggregation\b[^*]*\bshelf\b[^*]*\bgrain\b"
+            r"[^*]*\*/\s*BLANK\(\)\s*$",
+        )
 
 
 if __name__ == "__main__":

@@ -419,19 +419,24 @@ class TestTableauBackgroundBorder(unittest.TestCase):
         apply({}, visual_obj)
         self.assertNotIn('background', visual_obj.get('objects', {}))
         self.assertNotIn('border', visual_obj.get('objects', {}))
+        self.assertNotIn('background', visual_obj.get('visualContainerObjects', {}))
+        self.assertNotIn('border', visual_obj.get('visualContainerObjects', {}))
 
     def test_background_color_applied(self):
         apply = self._import_apply()
         worksheet = {'formatting': {'background_color': '#F5F5F5'}}
         visual_obj = {"objects": {}}
         apply(worksheet, visual_obj)
-        self.assertIn('background', visual_obj['objects'])
-        bg_props = visual_obj['objects']['background'][0]['properties']
+        self.assertNotIn('background', visual_obj['objects'])
+        self.assertNotIn('border', visual_obj['objects'])
+        self.assertIn('background', visual_obj['visualContainerObjects'])
+        bg_props = visual_obj['visualContainerObjects']['background'][0]['properties']
         self.assertEqual(bg_props['show']['expr']['Literal']['Value'], 'true')
         self.assertEqual(
             bg_props['color']['solid']['color']['expr']['Literal']['Value'],
             "'#F5F5F5'",
         )
+        self.assertEqual(bg_props['transparency']['expr']['Literal']['Value'], '0D')
 
     def test_border_applied_with_color_and_width(self):
         apply = self._import_apply()
@@ -446,14 +451,23 @@ class TestTableauBackgroundBorder(unittest.TestCase):
         }
         visual_obj = {"objects": {}}
         apply(worksheet, visual_obj)
-        self.assertIn('border', visual_obj['objects'])
-        bp = visual_obj['objects']['border'][0]['properties']
+        self.assertNotIn('background', visual_obj['objects'])
+        self.assertNotIn('border', visual_obj['objects'])
+        self.assertIn('border', visual_obj['visualContainerObjects'])
+        bp = visual_obj['visualContainerObjects']['border'][0]['properties']
         self.assertEqual(bp['show']['expr']['Literal']['Value'], 'true')
         self.assertEqual(
             bp['color']['solid']['color']['expr']['Literal']['Value'],
             "'#333333'",
         )
-        self.assertEqual(bp['radius']['expr']['Literal']['Value'], '2.0D')
+        self.assertEqual(bp['width']['expr']['Literal']['Value'], '2.0D')
+        self.assertNotIn('radius', bp)
+        notes = [
+            note.get('value', '') for note in visual_obj.get('annotations', [])
+            if note.get('name') == 'MigrationNote'
+        ]
+        self.assertTrue(any('2pt' in note and 'unit' in note.lower()
+                            and 'unverified' in note.lower() for note in notes), notes)
 
     def test_border_skipped_when_style_none(self):
         apply = self._import_apply()
@@ -463,15 +477,34 @@ class TestTableauBackgroundBorder(unittest.TestCase):
         visual_obj = {"objects": {}}
         apply(worksheet, visual_obj)
         self.assertNotIn('border', visual_obj['objects'])
+        self.assertNotIn('border', visual_obj.get('visualContainerObjects', {}))
 
     def test_does_not_overwrite_existing_background(self):
         apply = self._import_apply()
         worksheet = {'formatting': {'background_color': '#FFFFFF'}}
         existing = [{"properties": {"show": {"expr": {"Literal": {"Value": "false"}}}}}]
-        visual_obj = {"objects": {"background": existing}}
+        visual_obj = {"objects": {}, "visualContainerObjects": {"background": existing}}
         apply(worksheet, visual_obj)
         # Existing background preserved, not overwritten
-        self.assertIs(visual_obj['objects']['background'], existing)
+        self.assertIs(visual_obj['visualContainerObjects']['background'], existing)
+        self.assertEqual(existing, [{
+            "properties": {"show": {"expr": {"Literal": {"Value": "false"}}}},
+        }])
+        self.assertNotIn('background', visual_obj['objects'])
+
+    def test_does_not_overwrite_existing_container_border(self):
+        apply = self._import_apply()
+        worksheet = {'formatting': {'worksheet_style': {
+            'border-style': 'solid', 'border-color': '#333333', 'border-width': '2pt',
+        }}}
+        existing = [{"properties": {"show": {"expr": {"Literal": {"Value": "false"}}}}}]
+        visual_obj = {"objects": {}, "visualContainerObjects": {"border": existing}}
+        apply(worksheet, visual_obj)
+        self.assertIs(visual_obj['visualContainerObjects']['border'], existing)
+        self.assertEqual(existing, [{
+            "properties": {"show": {"expr": {"Literal": {"Value": "false"}}}},
+        }])
+        self.assertNotIn('border', visual_obj['objects'])
 
     def test_invalid_color_ignored(self):
         apply = self._import_apply()
@@ -479,6 +512,7 @@ class TestTableauBackgroundBorder(unittest.TestCase):
         visual_obj = {"objects": {}}
         apply(worksheet, visual_obj)
         self.assertNotIn('background', visual_obj['objects'])
+        self.assertNotIn('background', visual_obj.get('visualContainerObjects', {}))
 
 
 # ── Tableau Æ line-break sentinel artifact ─────────────────────────

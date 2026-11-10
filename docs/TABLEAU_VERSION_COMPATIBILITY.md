@@ -54,7 +54,7 @@ See [known limitations](KNOWN_LIMITATIONS.md) and the
 | Feature | Introduced | Support |
 |---------|-----------|---------|
 | Basic calculated fields | All | ✅ |
-| FIXED LOD expressions | 2015.x | ✅ → CALCULATE(AGG, ALLEXCEPT) |
+| FIXED LOD expressions | 2015.x | ⚠️ Scope and grain require proof; unverified cases can emit TODO/BLANK |
 | INCLUDE LOD expressions | 2015.x | ✅ → CALCULATE(AGG) |
 | EXCLUDE LOD expressions | 2015.x | ✅ → CALCULATE(AGG, REMOVEFILTERS) |
 | Nested LOD | All | ⚠️ Approximated |

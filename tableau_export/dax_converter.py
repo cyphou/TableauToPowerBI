@@ -57,8 +57,6 @@ def sanitize_param_brackets(name):
 
 _SIMPLE_FUNCTION_MAP = [
     # User/security functions
-    (r'\bUSERNAME\s*\(\s*\)', 'USERPRINCIPALNAME()'),
-    (r'\bFULLNAME\s*\(\s*\)', 'USERPRINCIPALNAME()'),
     (r'\bUSERDOMAIN\s*\(\s*\)', '""  /* USERDOMAIN: no DAX equivalent — use RLS roles */'),
 
     # Null/logic
@@ -211,6 +209,11 @@ _RE_NEWLINES = re.compile(r'[\r\n]+\s*')
 _RE_NULL_PROTECTED_TOKEN = re.compile(
     r'''"(?:[^"\\]|\\.|"")*"|'(?:[^'\\]|\\.|'')*'|\[(?:[^\]]|\]\])*\]'''
 )
+_RE_SECURITY_IDENTITY_TOKEN = re.compile(
+    _RE_NULL_PROTECTED_TOKEN.pattern
+    + r'|(?P<identity>\b(?:USERNAME|FULLNAME)\s*\(\s*\))',
+    re.IGNORECASE,
+)
 _RE_TABLEAU_OPERATOR = re.compile(
     _RE_NULL_PROTECTED_TOKEN.pattern + r'|(?P<operator>!=|==|\bOR\b|\bAND\b)',
     re.IGNORECASE,
@@ -288,7 +291,9 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
                                     compute_using=None, table_columns=None,
                                     bool_columns=None,
                                     validate_output=False,
-                                    fallback_on_invalid=False):
+                                    fallback_on_invalid=False,
+                                    verified_row_scope=None,
+                                    verified_fixed_scope=None):
     """
     Converts a Tableau formula to DAX with context resolution.
 
@@ -308,6 +313,13 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         compute_using: list of dimension names for table calc addressing/partitioning
         validate_output: If True, run Phase 3 DAX validation on output
         fallback_on_invalid: If True and validation fails, return TODO/BLANK fallback
+        verified_row_scope: Optional semantic-owner evidence for a narrowly
+            supported, single-table SUM of a row expression. See
+            ``_check_source_grain``; absent evidence never implies a row bag,
+            shelf aggregation, or grand-total policy.
+        verified_fixed_scope: Optional semantic-owner proof for a dedicated
+            SUM of a single-table FIXED MIN at distinct FIXED-key grain. See
+            ``_compile_verified_fixed_sum``. No proof is inferred here.
 
     Returns:
         str: Valid DAX formula
@@ -350,9 +362,53 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # === Phase 1: Resolve Tableau references ===
     dax = _resolve_references(dax, calc_map, param_map, is_calc_column, param_values)
 
+    # A FIXED value is not, in general, a measure at the visual's grain.
+    # Neither a column-to-table map nor ALLEXCEPT proves source filter order,
+    # shelf aggregation, or the subtotal/grand-total grain. In particular,
+    # removing the FIXED dimensions in a multi-table expression is wrong.
+    masked, restore = _protect_source_tokens(dax)
+    if verified_fixed_scope is not None and re.search(
+            r'\{\s*FIXED\b', masked, re.IGNORECASE):
+        fixed_sum = _compile_verified_fixed_sum(
+            masked, restore, table_name=table_name,
+            column_table_map=column_table_map, measure_names=measure_names,
+            table_columns=table_columns, is_calc_column=is_calc_column,
+            scope=verified_fixed_scope)
+        if fixed_sum is None:
+            return _unsupported_conversion(
+                'FIXED SUM requires verified source filter scope, physical '
+                'dimension grain, shelf aggregation and total grain')
+        if validate_output:
+            try:
+                from powerbi_import.dax_validator import validate_dax_expression
+                if validate_dax_expression(fixed_sum):
+                    return _unsupported_conversion(
+                        'verified FIXED SUM failed DAX expression validation')
+            except (ImportError, OSError, ValueError):
+                return _unsupported_conversion(
+                    'verified FIXED SUM could not be validated')
+        return fixed_sum
+    if table_columns is not None and re.search(r'\{\s*FIXED\b', masked, re.IGNORECASE):
+        return _unsupported_conversion(
+            'FIXED requires verified source filter scope, dimension grain, '
+            'shelf aggregation and total grain')
+    if _aggregate_contains_lod(masked):
+        return _unsupported_conversion(
+            'aggregation of a level-of-detail expression requires its source '
+            'shelf and total grain')
+
     # === Phase 2: Convert CASE/WHEN → SWITCH(), IF/THEN → IF() ===
-    dax = _convert_case_structure(dax)
-    dax = _convert_if_structure(dax)
+    # The structural regexes must not see keywords in strings or field names.
+    dax = restore(_convert_if_structure(_convert_case_structure(masked)))
+
+    dax, grain_issue = _prepare_source_expression(
+        dax, table_name=table_name, column_table_map=column_table_map,
+        measure_names=measure_names, is_calc_column=is_calc_column,
+        table_columns=table_columns, calc_datatype=calc_datatype,
+        verified_row_scope=verified_row_scope,
+    )
+    if grain_issue:
+        return _unsupported_conversion(grain_issue)
 
     # === Phase 3: Convert Tableau functions → DAX ===
 
@@ -405,6 +461,15 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         dax,
     )
 
+    # Map identity calls without modifying string literals or identifiers that
+    # happen to contain their names. The RLS caller must independently verify
+    # the physical field binding and Tableau-to-Power BI identity mapping.
+    dax = _RE_SECURITY_IDENTITY_TOKEN.sub(
+        lambda match: 'USERPRINCIPALNAME()' if match.group('identity')
+        else match.group(0),
+        dax,
+    )
+
     # 3b. Apply all simple function mappings (table-driven)
     for compiled_pattern, replacement in _COMPILED_FUNCTION_MAP:
         dax = compiled_pattern.sub(replacement, dax)
@@ -419,7 +484,14 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_ifnull(dax)
 
     # 3d. LOD Expressions → CALCULATE
-    dax = _convert_lod_expressions(dax, table_name, column_table_map)
+    dax = _convert_lod_expressions(
+        dax, table_name, column_table_map,
+        allow_unverified_fixed=table_columns is None,
+    )
+    masked_lod, _ = _protect_source_tokens(dax)
+    if '/* TODO: DAX conversion validation failed for ' in masked_lod:
+        return _unsupported_conversion(
+            'level-of-detail expression requires verified source and target grain')
 
     # 3e. WINDOW_xxx table calculations
     dax = _convert_window_functions(dax, table_name, compute_using=compute_using,
@@ -525,6 +597,807 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
             )
 
     return dax
+
+
+def _unsupported_conversion(reason):
+    """Return the existing, auditable conversion-failure marker.
+
+    Reasons are static diagnostics, not source text or identifiers. In
+    particular they cannot terminate the DAX comment or leak a formula.
+    """
+    logger.warning("Unsupported Tableau calculation: %s", reason)
+    return ('/* TODO: DAX conversion validation failed for measure: '
+            + reason + ' */ BLANK()')
+
+
+def _protect_source_tokens(text):
+    """Hide quoted values and bracketed identifiers from structural regexes."""
+    prefix = '__tableau_token_'
+    while prefix.casefold() in text.casefold():
+        prefix = '_' + prefix
+    tokens = []
+
+    def protect(match):
+        tokens.append(match.group(0))
+        return f'{prefix}{len(tokens) - 1}__'
+
+    masked = _RE_NULL_PROTECTED_TOKEN.sub(protect, text)
+    pattern = re.compile(re.escape(prefix) + r'(\d+)__')
+
+    def restore(value):
+        return pattern.sub(lambda match: tokens[int(match.group(1))], value)
+
+    return masked, restore
+
+
+def _aggregate_contains_lod(masked):
+    """Detect an aggregate enclosing an LOD without inspecting literal tokens."""
+    stack = []
+    for pos, char in enumerate(masked):
+        if char == '(':
+            end = pos
+            while end and masked[end - 1].isspace():
+                end -= 1
+            start = end
+            while start and (masked[start - 1].isalnum() or masked[start - 1] == '_'):
+                start -= 1
+            stack.append(masked[start:end].upper())
+        elif char == ')':
+            if stack:
+                stack.pop()
+        elif char == '{' and any(name in _SOURCE_AGGREGATES for name in stack):
+            if re.match(r'\s*(?:FIXED|INCLUDE|EXCLUDE)\b|'
+                        r'\s*(?:SUM|AVG|AVERAGE|MIN|MAX|COUNT|COUNTD|MEDIAN)\s*\(',
+                        masked[pos + 1:], re.IGNORECASE):
+                return True
+    return False
+
+
+class _SourceExpressionError(ValueError):
+    pass
+
+
+_SOURCE_TOKEN = re.compile(
+    r'\s+|' + _RE_NULL_PROTECTED_TOKEN.pattern
+    + r'|#[^#]*#'
+    + r'|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'
+    + r'|[^\W\d]\w*(?:\.[^\W\d]\w*)*'
+    + r'|==|!=|<>|<=|>=|&&|\|\||[()+\-*/^&=<>!,]',
+    re.UNICODE,
+)
+
+
+class _SourceExpressionParser:
+    """Bounded scalar grammar for source grain and nullable-logic checks.
+
+    It is intentionally not a general DAX parser. An expression requiring a
+    nullable rewrite or row-grain decision that it cannot parse fails closed.
+    """
+
+    _precedence = {
+        'OR': 10, '||': 10, 'AND': 20, '&&': 20,
+        '=': 30, '==': 30, '!=': 30, '<>': 30,
+        '<': 30, '<=': 30, '>': 30, '>=': 30,
+        '&': 40, '+': 50, '-': 50, '*': 60, '/': 60, '^': 80,
+    }
+
+    def __init__(self, text):
+        self.tokens = []
+        end = 0
+        for match in _SOURCE_TOKEN.finditer(text):
+            if match.start() != end:
+                raise _SourceExpressionError("Unsupported source token")
+            end = match.end()
+            if not match.group().isspace():
+                self.tokens.append(match.group())
+        if end != len(text) or len(self.tokens) > 4000:
+            raise _SourceExpressionError("Unsupported or oversized source expression")
+        self.pos = 0
+
+    def peek(self):
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else ''
+
+    def take(self, expected=None):
+        token = self.peek()
+        if not token or (expected is not None and token != expected):
+            raise _SourceExpressionError("Incomplete source expression")
+        self.pos += 1
+        return token
+
+    def parse(self):
+        result = self.expression()
+        if self.peek():
+            raise _SourceExpressionError("Unsupported trailing source expression")
+        return result
+
+    def expression(self, minimum=0):
+        token = self.take()
+        upper = token.upper()
+        if token in ('+', '-') or upper == 'NOT':
+            node = ('unary', upper, self.expression(25 if upper == 'NOT' else 70))
+        elif token == '(':
+            node = ('group', self.expression())
+            self.take(')')
+        elif token.startswith('['):
+            node = ('ref', token, None, token[1:-1].replace(']]', ']'))
+        elif token.startswith(("'", '"')) or token.startswith('#'):
+            if token.startswith("'") and self.peek().startswith('['):
+                col = self.take()
+                node = ('ref', token + col, token[1:-1].replace("''", "'"),
+                        col[1:-1].replace(']]', ']'))
+            else:
+                node = ('atom', token)
+        elif re.fullmatch(r'[^\W\d]\w*(?:\.[^\W\d]\w*)*', token, re.UNICODE):
+            if self.peek().startswith('['):
+                col = self.take()
+                node = ('ref', token + col, token,
+                        col[1:-1].replace(']]', ']'))
+            elif self.peek() == '(':
+                self.take('(')
+                args = []
+                if self.peek() != ')':
+                    while True:
+                        if self.peek() in (',', ')'):
+                            args.append(('missing',))
+                        else:
+                            args.append(self.expression())
+                        if self.peek() != ',':
+                            break
+                        self.take(',')
+                self.take(')')
+                node = ('call', token, tuple(args))
+            else:
+                node = ('atom', token)
+        elif re.fullmatch(r'(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?', token):
+            node = ('atom', token)
+        else:
+            raise _SourceExpressionError("Unsupported source operand")
+
+        while self.peek() and self.peek().upper() in self._precedence:
+            operator = self.peek().upper()
+            priority = self._precedence[operator]
+            if priority < minimum:
+                break
+            self.take()
+            node = ('op', operator, node, self.expression(priority + 1))
+        return node
+
+
+_SOURCE_AGGREGATES = frozenset({
+    'SUM', 'AVG', 'AVERAGE', 'MIN', 'MAX', 'COUNT', 'COUNTD', 'COUNTA',
+    'MEDIAN', 'STDEV', 'STDEVP', 'VAR', 'VARP', 'PERCENTILE', 'ATTR',
+})
+_SOURCE_COMPARISONS = frozenset({'=', '==', '!=', '<>', '<', '<=', '>', '>='})
+_SOURCE_BOOLEAN = frozenset({'AND', 'OR', '&&', '||'})
+
+
+def _source_children(node):
+    if node[0] == 'call':
+        return node[2]
+    if node[0] == 'op':
+        return node[2:]
+    if node[0] in ('unary', 'group'):
+        return node[-1:]
+    return ()
+
+
+def _source_walk(node):
+    yield node
+    for child in _source_children(node):
+        yield from _source_walk(child)
+
+
+def _ungroup_source(node):
+    while node[0] == 'group':
+        node = node[1]
+    return node
+
+
+def _compile_verified_fixed_sum(masked, restore, *, table_name, column_table_map,
+                                measure_names, table_columns, is_calc_column,
+                                scope):
+    """Compile only an explicitly proven SUM of single-table FIXED MIN.
+
+    The semantic owner must supply all of the following, for *every* target
+    use including cross-filtering, security and totals:
+
+    * ``table``, ``fixed_dimensions``, ``value_column`` and
+      ``physical_fields`` identify actual columns in one physical table;
+    * ``source_filters`` and ``target_filters`` are explicit lists of filter
+      records, each with nonempty ``id`` and ``predicate`` strings (an empty
+      list states that none exist). ``filter_policy`` is
+      ``target_context_equals_fixed_input_per_key``;
+    * ``view_grains`` lists every verified view grain, each a subset of the
+      FIXED dimensions, and includes the explicitly verified grand total
+      ``[]``. ``total_grain`` is ``[]`` and ``total_aggregation`` is
+      ``SUM_DISTINCT_FIXED_KEYS``;
+    * ``shelf_aggregation`` is ``SUM`` for a bare FIXED, or ``AGG`` for an
+      explicit ``SUM({FIXED ...})``. ``value_type`` is ``numeric``;
+    * the eight ``*_verified`` assertions below are literal booleans. They
+      cover the row bag, physical bindings, fixed-key domain and collation,
+      source/target filters, numeric/NULL behavior, all view and total uses,
+      and target engine support.
+
+    Filter records document the proof; this function does not install or
+    independently verify filters. A bare assertion is not evidence that a
+    workbook or a future interaction satisfies the contract.
+    """
+    if (not isinstance(scope, dict) or is_calc_column or table_columns is None
+            or not isinstance(table_columns, (list, tuple, set, frozenset))
+            or any(not isinstance(name, str) or not name for name in table_columns)
+            or scope.get('table') != table_name):
+        return None
+    match = re.fullmatch(
+        r'\s*(?:(?P<outer>SUM)\s*\(\s*)?'
+        r'\{\s*FIXED\s+(?P<dims>[^:{}()]+)\s*:\s*'
+        r'MIN\s*\(\s*(?P<value>[^(){}:]+?)\s*\)\s*\}'
+        r'\s*(?(outer)\))\s*',
+        masked, re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    if scope.get('shelf_aggregation') != ('AGG' if match.group('outer') else 'SUM'):
+        return None
+    if (scope.get('value_type') != 'numeric'
+            or scope.get('filter_policy') != 'target_context_equals_fixed_input_per_key'
+            or scope.get('total_grain') != []
+            or scope.get('total_aggregation') != 'SUM_DISTINCT_FIXED_KEYS'):
+        return None
+    if not all(scope.get(key) is True for key in (
+            'source_row_bag_verified', 'physical_fields_verified',
+            'fixed_key_domain_verified', 'filter_equivalence_verified',
+            'group_key_and_blank_equivalence_verified',
+            'numeric_and_null_equivalence_verified',
+            'all_target_uses_and_totals_verified', 'engine_support_verified')):
+        return None
+    for key in ('source_filters', 'target_filters'):
+        filters = scope.get(key)
+        if not isinstance(filters, list) or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get('id'), str) or not item['id'].strip()
+                or not isinstance(item.get('predicate'), str) or not item['predicate'].strip()
+                for item in filters):
+            return None
+
+    try:
+        dimensions = [
+            _ungroup_source(_SourceExpressionParser(restore(part)).parse())
+            for part in match.group('dims').split(',')
+        ]
+        value = _ungroup_source(
+            _SourceExpressionParser(restore(match.group('value'))).parse())
+    except (_SourceExpressionError, RecursionError):
+        return None
+    if (not dimensions or len(dimensions) > 32
+            or any(node[0] != 'ref' for node in dimensions)
+            or value[0] != 'ref'):
+        return None
+    names = [node[3] for node in dimensions]
+    if (len({name.casefold() for name in names}) != len(names)
+            or scope.get('fixed_dimensions') != names
+            or scope.get('value_column') != value[3]):
+        return None
+    physical = scope.get('physical_fields')
+    if (not isinstance(physical, list) or any(not isinstance(n, str) or not n
+                                              for n in physical)):
+        return None
+    physical, available = set(physical), set(table_columns)
+    measures = {name.casefold() for name in measure_names if isinstance(name, str)}
+    for node in [*dimensions, value]:
+        owner, name = node[2], node[3]
+        if (name not in physical or name not in available or name.casefold() in measures
+                or (owner is not None and owner != table_name)
+                or (owner is None and name in column_table_map
+                    and column_table_map[name] != table_name)):
+            return None
+
+    view_grains = scope.get('view_grains')
+    if (not isinstance(view_grains, list) or not view_grains or [] not in view_grains
+            or any(not isinstance(grain, list)
+                   or any(not isinstance(name, str) for name in grain)
+                   or len(set(grain)) != len(grain)
+                   or not set(grain).issubset(names)
+                   for grain in view_grains)):
+        return None
+    table = "'" + table_name.replace("'", "''") + "'"
+
+    def column(name):
+        return table + '[' + name.replace(']', ']]') + ']'
+
+    keys = ', '.join(column(name) for name in names)
+    return f"SUMX(SUMMARIZE({table}, {keys}), CALCULATE(MIN({column(value[3])})))"
+
+
+def compile_verified_fixed_dimension(formula, *, table_name, table_columns,
+                                     verified_scope, column_table_map=None,
+                                     measure_names=None, calc_map=None):
+    """Compile a narrowly verified FIXED ratio for *internal refresh use only*.
+
+    The returned expression is intended to be inlined into a calculated
+    dimension; it is not evidence that the FIXED is a valid public measure
+    on another shelf or at totals. The semantic owner must independently
+    establish that the consuming dimension and its nullable logic are safe.
+
+    Supported source shape: ``{FIXED keys : SUM(num) / SUM(den)}``, optionally
+    with ``NULLIF(SUM(den), 0)``. All fields must be physical columns of one
+    Import table. ``verified_scope`` must explicitly provide:
+
+    * ``table``, ``target_dimension``, ``fixed_dimensions``,
+      ``numerator_column``, ``denominator_column``, ``physical_fields``,
+      ``numeric_columns``, ``storage_mode='import'`` and
+      ``execution_scope='refresh_calculated_column_only'``;
+    * ``source_filters`` and ``target_refresh_filters``, lists of nonempty
+      ``{'id': ..., 'predicate': ...}`` records, or explicit empty lists;
+      ``filter_policy='source_fixed_scope_equals_target_refresh_per_key'``;
+    * literal-True assertions ``source_row_bag_verified``,
+      ``physical_fields_verified``, ``fixed_key_and_nulls_verified``,
+      ``numeric_and_null_equivalence_verified``, ``filter_equivalence_verified``,
+      ``all_security_and_contexts_verified`` and ``engine_support_verified``.
+
+    These are caller assertions, not automatically discovered evidence. In
+    particular, report-time context filters and RLS must not change the
+    source FIXED value relative to its refresh-time materialization.
+    """
+    def unsupported():
+        return {
+            'status': 'unsupported',
+            'reason': ('FIXED dimension requires proven physical refresh grain, '
+                       'source filter and security scope, and nullable behavior'),
+        }
+
+    scope = verified_scope
+    if (not isinstance(formula, str) or not isinstance(table_name, str)
+            or not table_name or not isinstance(scope, dict)
+            or not isinstance(table_columns, (list, tuple, set, frozenset))
+            or any(not isinstance(name, str) or not name for name in table_columns)
+            or scope.get('table') != table_name
+            or scope.get('storage_mode') != 'import'
+            or scope.get('execution_scope') != 'refresh_calculated_column_only'
+            or scope.get('filter_policy') != 'source_fixed_scope_equals_target_refresh_per_key'
+            or not isinstance(scope.get('target_dimension'), str)
+            or not scope['target_dimension'].strip()):
+        return unsupported()
+    if not all(scope.get(key) is True for key in (
+            'source_row_bag_verified', 'physical_fields_verified',
+            'fixed_key_and_nulls_verified', 'numeric_and_null_equivalence_verified',
+            'filter_equivalence_verified', 'all_security_and_contexts_verified',
+            'engine_support_verified')):
+        return unsupported()
+    for key in ('source_filters', 'target_refresh_filters'):
+        filters = scope.get(key)
+        if not isinstance(filters, list) or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get('id'), str) or not item['id'].strip()
+                or not isinstance(item.get('predicate'), str) or not item['predicate'].strip()
+                for item in filters):
+            return unsupported()
+    for key in ('physical_fields', 'numeric_columns'):
+        fields = scope.get(key)
+        if (not isinstance(fields, list)
+                or any(not isinstance(name, str) or not name for name in fields)):
+            return unsupported()
+
+    text = _resolve_references(
+        _strip_tableau_comments(formula).strip(), calc_map or {}, {},
+        False, {})
+    masked, restore = _protect_source_tokens(text)
+    match = re.fullmatch(
+        r'\s*\{\s*FIXED\s+(?P<dims>[^:{}()]+)\s*:\s*'
+        r'(?P<body>[^{}]+)\}\s*',
+        masked, re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return unsupported()
+    try:
+        dimensions = [
+            _ungroup_source(_SourceExpressionParser(restore(part)).parse())
+            for part in match.group('dims').split(',')
+        ]
+        body = _ungroup_source(
+            _SourceExpressionParser(restore(match.group('body'))).parse())
+    except (_SourceExpressionError, RecursionError):
+        return unsupported()
+    if (not dimensions or len(dimensions) > 32
+            or any(node[0] != 'ref' for node in dimensions)
+            or body[0] != 'op' or body[1] != '/'):
+        return unsupported()
+
+    def summed_ref(node):
+        node = _ungroup_source(node)
+        if node[0] != 'call' or node[1].upper() != 'SUM' or len(node[2]) != 1:
+            return None
+        ref = _ungroup_source(node[2][0])
+        return ref if ref[0] == 'ref' else None
+
+    numerator = summed_ref(body[2])
+    denominator_node = _ungroup_source(body[3])
+    strict_nullif = False
+    if (denominator_node[0] == 'call'
+            and denominator_node[1].upper() == 'NULLIF'):
+        if len(denominator_node[2]) != 2:
+            return unsupported()
+        zero = _ungroup_source(denominator_node[2][1])
+        if zero[0] != 'atom' or not re.fullmatch(r'0+(?:\.0+)?', zero[1]):
+            return unsupported()
+        strict_nullif = True
+        denominator_node = denominator_node[2][0]
+    denominator = summed_ref(denominator_node)
+    if numerator is None or denominator is None:
+        return unsupported()
+    names = [node[3] for node in dimensions]
+    if (len({name.casefold() for name in names}) != len(names)
+            or scope.get('fixed_dimensions') != names
+            or scope.get('numerator_column') != numerator[3]
+            or scope.get('denominator_column') != denominator[3]
+            or numerator[3] not in scope['numeric_columns']
+            or denominator[3] not in scope['numeric_columns']):
+        return unsupported()
+    physical, available = set(scope['physical_fields']), set(table_columns)
+    owners = column_table_map or {}
+    measures = {name.casefold() for name in (measure_names or ())
+                if isinstance(name, str)}
+    for node in [*dimensions, numerator, denominator]:
+        owner, name = node[2], node[3]
+        if (name not in physical or name not in available or name.casefold() in measures
+                or (owner is not None and owner != table_name)
+                or (owner is None and name in owners and owners[name] != table_name)):
+            return unsupported()
+
+    table = "'" + table_name.replace("'", "''") + "'"
+
+    def column(name):
+        return table + '[' + name.replace(']', ']]') + ']'
+
+    num = f"SUM({column(numerator[3])})"
+    den = f"SUM({column(denominator[3])})"
+    if strict_nullif:
+        den = f"IF(({den}) == (0), BLANK(), ({den}))"
+    keys = ', '.join(column(name) for name in names)
+    expression = f"CALCULATE(DIVIDE({num}, {den}), ALLEXCEPT({table}, {keys}))"
+    try:
+        from powerbi_import.dax_validator import validate_dax_expression
+        if validate_dax_expression(expression):
+            return unsupported()
+    except (ImportError, OSError, ValueError):
+        return unsupported()
+    return {
+        'status': 'supported',
+        'expression': expression,
+        'target_dimension': scope['target_dimension'],
+        'fixed_dimensions': names,
+        'execution_scope': 'refresh_calculated_column_only',
+    }
+
+
+def _check_source_grain(root, table_name, column_table_map, measure_names,
+                        is_calc_column, table_columns, verified_row_scope):
+    """Check row and shelf grain before any MAX/SUM/iterator guesses.
+
+    The optional scope is an explicit semantic assertion, not an inference:
+    ``table``, ``source_row_bag_verified``, ``filter_context_verified``,
+    ``comparison_policy_verified``, ``numeric_result_verified``,
+    ``shelf_aggregation='AGG'`` and ``total_grain='source_rows'``. Only a
+    root SUM of a single-table scalar expression uses it. The table must
+    already carry the source row bag and the current/total filter contexts.
+    """
+    local_columns = set(table_columns or ())
+
+    def binding(ref):
+        _, _, owner, name = ref
+        if name in measure_names and not (owner == table_name and name in local_columns):
+            return 'measure', None
+        if owner:
+            return 'column', owner
+        if name in local_columns:
+            return 'column', table_name
+        return 'column', column_table_map.get(name, table_name)
+
+    bare = []
+    force_nullable_arithmetic = False
+
+    def visit(node):
+        nonlocal force_nullable_arithmetic
+        if node[0] == 'ref':
+            if binding(node)[0] == 'column':
+                bare.append(node)
+            return None
+        if node[0] == 'call' and node[1].upper() in _SOURCE_AGGREGATES:
+            args = node[2]
+            if len(args) != 1:
+                return ('aggregate argument or grain is not established'
+                        if table_columns is not None else None)
+            argument = _ungroup_source(args[0])
+            if argument[0] == 'ref':
+                if (table_columns is not None and node[1].upper() != 'ATTR'
+                        and binding(argument)[0] == 'measure'):
+                    return ('aggregation of a calculation requires its source '
+                            'shelf and total grain')
+                return None
+            refs = [part for part in _source_walk(argument) if part[0] == 'ref']
+            explicit_owners = {
+                binding(ref)[1] for ref in refs
+                if binding(ref)[0] == 'column'
+                and (ref[2] is not None or ref[3] in column_table_map
+                     or ref[3] in local_columns)
+            }
+            if len(explicit_owners) > 1:
+                return 'row aggregation spans tables without a proven source row bag'
+            if (table_columns is not None
+                    and any(binding(ref)[0] == 'measure' for ref in refs)):
+                return ('aggregation of a calculation requires its source '
+                        'shelf and total grain')
+            # The raw translation API has historically accepted expressions
+            # without a model/row-context contract. Do not invent a diagnostic
+            # from that absence; generation supplies table_columns explicitly.
+            if table_columns is None:
+                return None
+            if any(part[0] == 'call' and part[1].upper() in _SOURCE_AGGREGATES
+                   for part in _source_walk(argument)):
+                return 'nested aggregates require an explicit source grain'
+            owners = {binding(ref)[1] for ref in refs}
+            if len(owners) > 1:
+                return 'row aggregation spans tables without a proven source row bag'
+            scope = verified_row_scope if isinstance(verified_row_scope, dict) else {}
+            verified = (
+                node is _ungroup_source(root)
+                and node[1].upper() == 'SUM'
+                and len(owners) == 1
+                and scope.get('table') == next(iter(owners))
+                and all(scope.get(key) is True for key in (
+                    'source_row_bag_verified', 'filter_context_verified',
+                    'comparison_policy_verified', 'numeric_result_verified'))
+                and scope.get('shelf_aggregation') == 'AGG'
+                and scope.get('total_grain') == 'source_rows'
+                and all(ref[2] is not None or ref[3] in column_table_map
+                        or ref[3] in local_columns for ref in refs)
+            )
+            supported_calls = {'IF', 'IIF', 'ISNULL', 'IFNULL', 'ZN',
+                               'NULLIF', 'BLANK', 'TRUE', 'FALSE'}
+            if not verified or any(
+                    part[0] == 'call' and part[1].upper() not in supported_calls
+                    for part in _source_walk(argument)):
+                return ('row aggregation requires a verified source row bag, '
+                        'shelf aggregation and total grain')
+            force_nullable_arithmetic = True
+            return None
+        for child in _source_children(node):
+            issue = visit(child)
+            if issue:
+                return issue
+        return None
+
+    issue = visit(root)
+    if issue:
+        return issue, False
+    if bare:
+        if not is_calc_column and table_columns is not None:
+            return ('unaggregated row expression requires source row scope, '
+                    'shelf aggregation and total grain'), False
+        # Calculated-column cross-table references must remain RELATED so the
+        # semantic model's relationship validation can inspect them. In
+        # particular, replacing a remote combined-group reference with a
+        # BLANK here would bypass its required active-to-one path check.
+        if is_calc_column and table_columns is not None and any(
+               part[0] == 'ref' and binding(part)[0] == 'measure'
+               for part in _source_walk(root)):
+            return 'row expression mixes a measure with physical columns', False
+    return None, force_nullable_arithmetic
+
+
+def _render_nullable_source(root, text, calc_datatype, force_arithmetic):
+    """Lower Tableau nullable booleans without DAX BLANK coercion."""
+    nodes = list(_source_walk(root))
+    needs_logic = any(
+        (node[0] == 'op' and node[1] in _SOURCE_COMPARISONS | _SOURCE_BOOLEAN)
+        or (node[0] == 'unary' and node[1] == 'NOT')
+        or (node[0] == 'call' and node[1].upper() in ('IIF', 'AND', 'OR', 'NOT'))
+        for node in nodes
+    )
+    if not needs_logic and not force_arithmetic:
+        return text
+
+    # The converter has no operand types with which to distinguish a numeric
+    # plus from Tableau string concatenation inside a string-valued formula.
+    if ((calc_datatype or '').lower() in ('string', 'str')
+            and any(node[0] == 'op' and node[1] == '+' for node in nodes)):
+        raise _SourceExpressionError("String and numeric addition need operand types")
+
+    safe_comparison_calls = _SOURCE_AGGREGATES | {
+        'IF', 'IIF', 'ISNULL', 'IFNULL', 'ZN', 'NULLIF',
+        'BLANK', 'TRUE', 'FALSE', 'TODAY', 'NOW', 'PI',
+        'USERNAME', 'FULLNAME',
+    }
+    for node in nodes:
+        if (node[0] == 'call' and node[1].upper() in ('USERNAME', 'FULLNAME')
+                and node[2]):
+            raise _SourceExpressionError("Identity function takes no arguments")
+        if node[0] == 'op' and node[1] in _SOURCE_COMPARISONS:
+            for operand in node[2:]:
+                if any(part[0] == 'call'
+                       and part[1].upper() not in safe_comparison_calls
+                       for part in _source_walk(operand)):
+                    raise _SourceExpressionError(
+                        "Comparison operand has unverified null semantics")
+        if node[0] == 'call' and node[1].upper() == 'IIF' and len(node[2]) not in (3, 4):
+            raise _SourceExpressionError("IIF requires three or four arguments")
+
+    prefix = '__TableauNullable'
+    while prefix.casefold() in text.casefold():
+        prefix = '_' + prefix
+    counter = 0
+
+    def variable():
+        nonlocal counter
+        name = f'{prefix}{counter}'
+        counter += 1
+        return name
+
+    def binary_vars(left, right, body):
+        a, b = variable(), variable()
+        return f'(VAR {a} = {left} VAR {b} = {right} RETURN {body(a, b)})'
+
+    def nonempty_string_literal(node):
+        node = _ungroup_source(node)
+        if node[0] != 'atom':
+            return False
+        token = node[1]
+        return (len(token) > 2 and token[0] in ('"', "'")
+                and token[-1] == token[0])
+
+    def small_nonnegative_integer(node):
+        node = _ungroup_source(node)
+        if node[0] != 'atom' or not re.fullmatch(r'\d{1,9}', node[1]):
+            return None
+        return int(node[1])
+
+    def numeric_literal(node):
+        node = _ungroup_source(node)
+        return (node[0] == 'atom'
+                and re.fullmatch(r'(?:\d+(?:\.\d*)?|\.\d+)'
+                                 r'(?:[eE][+-]?\d+)?', node[1]) is not None)
+
+    def sum_of_field(node):
+        node = _ungroup_source(node)
+        return (node[0] == 'call' and node[1].upper() == 'SUM'
+                and len(node[2]) == 1
+                and _ungroup_source(node[2][0])[0] == 'ref')
+
+    def coalesced_conditional_count(node):
+        """Only COUNT(IF/SWITCH(...)) is explicitly lowered to COALESCE(..., 0)."""
+        node = _ungroup_source(node)
+        if node[0] != 'call' or node[1].upper() != 'COUNT' or len(node[2]) != 1:
+            return False
+        argument = _ungroup_source(node[2][0])
+        return argument[0] == 'call' and argument[1].upper() in ('IF', 'SWITCH')
+
+    def truth_condition(node):
+        """Only IF's direct condition may collapse unknown to not-TRUE."""
+        node = _ungroup_source(node)
+        if node[0] == 'op' and node[1] in _SOURCE_COMPARISONS:
+            left, right = render(node[2]), render(node[3])
+            operator = {'==': '=', '!=': '<>'}.get(node[1], node[1])
+            # A NULL compared to a nonempty string literal is UNKNOWN in
+            # Tableau but FALSE under DAX's loose equality. Both choose IF's
+            # else branch. Do not apply this to empty strings, <>/NOT, IIF,
+            # or comparisons whose UNKNOWN result is itself observable.
+            if operator == '=' and (
+                    (_ungroup_source(node[2])[0] == 'ref'
+                     and nonempty_string_literal(node[3]))
+                    or (_ungroup_source(node[3])[0] == 'ref'
+                        and nonempty_string_literal(node[2]))):
+                return f'{left} = {right}'
+            # Likewise, BLANK coerces to zero for a direct numeric IF test.
+            # Keep this restricted to small integer literals whose comparison
+            # with zero is false; the nullable result must not escape the IF.
+            left_ref = _ungroup_source(node[2])[0] == 'ref'
+            right_ref = _ungroup_source(node[3])[0] == 'ref'
+            left_int = small_nonnegative_integer(node[2])
+            right_int = small_nonnegative_integer(node[3])
+            safe_numeric_test = (
+                (left_ref and right_int is not None
+                 and (operator == '>' or (right_int > 0 and operator in ('>=', '='))))
+                or (right_ref and left_int is not None
+                    and (operator == '<' or (left_int > 0 and operator in ('<=', '='))))
+            )
+            if safe_numeric_test:
+                return f'{left} {operator} {right}'
+            return binary_vars(
+                left, right,
+                lambda a, b: (f'NOT(ISBLANK({a})) && NOT(ISBLANK({b})) '
+                              f'&& ({a} {operator} {b})'))
+        return render(node)
+
+    def render(node):
+        kind = node[0]
+        if kind in ('atom', 'ref'):
+            value = node[1]
+            return value + '()' if kind == 'atom' and value.upper() in ('TRUE', 'FALSE') else value
+        if kind == 'missing':
+            return ''
+        if kind == 'group':
+            return '(' + render(node[1]) + ')'
+        if kind == 'unary':
+            value = render(node[2])
+            name = variable()
+            body = f'NOT({name})' if node[1] == 'NOT' else f'{node[1]}({name})'
+            return f'(VAR {name} = {value} RETURN IF(ISBLANK({name}), BLANK(), {body}))'
+        if kind == 'op':
+            operator, left, right = node[1], render(node[2]), render(node[3])
+            if (operator == '/' and coalesced_conditional_count(node[2])
+                    and coalesced_conditional_count(node[3])):
+                # Both inputs become numeric zero rather than BLANK. DIVIDE
+                # still returns BLANK for an empty/zero denominator.
+                return f'DIVIDE({left}, {right})'
+            if (operator == '*'
+                    and ((sum_of_field(node[2]) and numeric_literal(node[3]))
+                         or (numeric_literal(node[2]) and sum_of_field(node[3])))):
+                # SUM of a field and a numeric literal are numeric operands;
+                # DAX multiplication itself preserves BLANK on either side.
+                return f'{left} * {right}'
+            if operator in _SOURCE_BOOLEAN:
+                def boolean(a, b):
+                    if operator in ('AND', '&&'):
+                        return (f'IF(NOT(ISBLANK({a})) && NOT({a}), FALSE(), '
+                                f'IF(NOT(ISBLANK({b})) && NOT({b}), FALSE(), '
+                                f'IF(ISBLANK({a}) || ISBLANK({b}), BLANK(), TRUE())))')
+                    return (f'IF(NOT(ISBLANK({a})) && {a}, TRUE(), '
+                            f'IF(NOT(ISBLANK({b})) && {b}, TRUE(), '
+                            f'IF(ISBLANK({a}) || ISBLANK({b}), BLANK(), FALSE())))')
+                return binary_vars(left, right, boolean)
+            mapped = {'==': '=', '!=': '<>'}.get(operator, operator)
+            def scalar(a, b):
+                expression = f'DIVIDE({a}, {b})' if mapped == '/' else f'({a} {mapped} {b})'
+                return f'IF(ISBLANK({a}) || ISBLANK({b}), BLANK(), {expression})'
+            return binary_vars(left, right, scalar)
+        name = node[1]
+        args = node[2]
+        upper = name.upper()
+        if upper == 'IF' and len(args) in (2, 3):
+            return name + '(' + ', '.join(
+                [truth_condition(args[0])] + [render(arg) for arg in args[1:]]
+            ) + ')'
+        if upper == 'IIF':
+            condition = render(args[0])
+            var = variable()
+            unknown = render(args[3]) if len(args) == 4 else 'BLANK()'
+            return (f'(VAR {var} = {condition} RETURN IF(ISBLANK({var}), {unknown}, '
+                    f'IF({var}, {render(args[1])}, {render(args[2])})))')
+        if upper in ('AND', 'OR') and len(args) == 2:
+            return render(('op', upper, args[0], args[1]))
+        if upper == 'NOT' and len(args) == 1:
+            return render(('unary', 'NOT', args[0]))
+        return name + '(' + ', '.join(render(arg) for arg in args) + ')'
+
+    return render(root)
+
+
+def _prepare_source_expression(text, *, table_name, column_table_map,
+                               measure_names, is_calc_column, table_columns,
+                               calc_datatype, verified_row_scope):
+    """Fail closed on unknown row grain; otherwise preserve nullable logic."""
+    try:
+        root = _SourceExpressionParser(text).parse()
+        issue, force_arithmetic = _check_source_grain(
+            root, table_name, column_table_map, measure_names,
+            is_calc_column, table_columns, verified_row_scope)
+        if issue:
+            return text, issue
+        return _render_nullable_source(root, text, calc_datatype, force_arithmetic), None
+    except (_SourceExpressionError, RecursionError):
+        masked, _ = _protect_source_tokens(text)
+        if (table_columns is None
+                and re.search(r'\{\s*(?:FIXED|INCLUDE|EXCLUDE)\b', masked, re.IGNORECASE)
+                and not re.search(r'==|!=|<>|<=|>=|[=<>]|\b(?:AND|OR|NOT|IIF)\b',
+                                  masked, re.IGNORECASE)):
+            # Preserve the context-free legacy LOD translation, with its
+            # explicit warning. Model generation takes the guarded path.
+            return text, None
+        if (re.search(r'==|!=|<>|<=|>=|[=<>]|\b(?:AND|OR|NOT|IIF)\b',
+                      masked, re.IGNORECASE)
+                or re.search(r'\b(?:SUM|AVG|AVERAGE|MIN|MAX|COUNT|COUNTD)\s*\(',
+                             masked, re.IGNORECASE)):
+            return text, 'nullable expression or aggregation is outside the verified grammar'
+        return text, None
 
 
 # ── Literal and comment handling ─────────────────────────────────────────────
@@ -832,7 +1705,10 @@ def _convert_case_structure(text):
 
         # Parse WHEN value THEN result pairs
         parts = re.split(r'\bWHEN\b', when_block, flags=re.IGNORECASE)
-        switch_args = [expr]
+        # CASE compares each WHEN using Tableau's nullable comparison rules.
+        # The source-expression pass below lowers these comparisons to
+        # three-valued DAX; SWITCH(TRUE(), ...) then selects only TRUE.
+        switch_args = ['TRUE()']
         else_val = None
 
         for part in parts:
@@ -853,7 +1729,7 @@ def _convert_case_structure(text):
             if then_match:
                 when_val = part[:then_match.start()].strip()
                 then_val = part[then_match.end():].strip()
-                switch_args.append(when_val)
+                switch_args.append(f'({expr}) = ({when_val})')
                 switch_args.append(then_val)
 
         if else_val:
@@ -1730,12 +2606,21 @@ def _convert_attr(dax, measure_names=None):
 
 
 def _convert_iif(dax):
-    """IIF(test, then, else, [unknown]) → IF(test, then, else)"""
+    """Preserve IIF's separate unknown branch, including its implicit NULL."""
+    prefix = '__TableauIifCondition'
+    while prefix.casefold() in dax.casefold():
+        prefix = '_' + prefix
+    counter = 0
+
     def _xf(args, inner):
-        if len(args) >= 3:
-            return f'IF({args[0].strip()}, {args[1].strip()}, {args[2].strip()})'
-        if len(args) == 2:
-            return f'IF({args[0].strip()}, {args[1].strip()}, BLANK())'
+        nonlocal counter
+        if len(args) in (3, 4):
+            var = f'{prefix}{counter}'
+            counter += 1
+            unknown = args[3].strip() if len(args) == 4 else 'BLANK()'
+            return (f'(VAR {var} = {args[0].strip()} RETURN '
+                    f'IF(ISBLANK({var}), {unknown}, '
+                    f'IF({var}, {args[1].strip()}, {args[2].strip()})))')
         return f'IIF({inner})'
     return _transform_func_call(dax, 'IIF', _xf)
 
@@ -2401,9 +3286,61 @@ def _convert_string_concat(dax):
     return ''.join(result)
 
 
+def _dax_qualified_column_spans(text):
+    """Find quoted DAX columns, excluding strings and comments."""
+    i = 0
+    while i < len(text):
+        if text.startswith('//', i):
+            end = text.find('\n', i + 2)
+            i = len(text) if end < 0 else end
+        elif text.startswith('/*', i):
+            end = text.find('*/', i + 2)
+            i = len(text) if end < 0 else end + 2
+        elif text[i] == '"':
+            i += 1
+            while i < len(text):
+                if text[i] == '"' and i + 1 < len(text) and text[i + 1] == '"':
+                    i += 2
+                elif text[i] == '"':
+                    i += 1
+                    break
+                else:
+                    i += 1
+        elif text[i] in ("'", '['):
+            start = i
+            close = "'" if text[i] == "'" else ']'
+            i += 1
+            while i < len(text):
+                if text[i] == close and i + 1 < len(text) and text[i + 1] == close:
+                    i += 2
+                elif text[i] == close:
+                    i += 1
+                    break
+                else:
+                    i += 1
+            else:
+                return
+            if close != "'" or i >= len(text) or text[i] != '[':
+                continue
+            table = text[start + 1:i - 1].replace("''", "'")
+            i += 1
+            col_start = i
+            while i < len(text):
+                if text[i] == ']' and i + 1 < len(text) and text[i + 1] == ']':
+                    i += 2
+                elif text[i] == ']':
+                    yield start, i + 1, table, text[col_start:i].replace(']]', ']')
+                    i += 1
+                    break
+                else:
+                    i += 1
+        else:
+            i += 1
+
+
 def _infer_iteration_table(inner_expr, default_table):
-    """Infer the best table to iterate over from column references."""
-    tables = re.findall(r"'([^']+)'\[", inner_expr)
+    """Infer a table only after the caller has established the row grain."""
+    tables = [table for _, _, table, _ in _dax_qualified_column_spans(inner_expr)]
     if not tables:
         return default_table
     counts = {}
@@ -2460,26 +3397,26 @@ def _wrap_cross_table_related(inner_expr, iter_table):
                     return text[j + 1:end].upper()
         return ''
 
-    def _replacer(m):
-        full = m.group(0)
-        tbl = m.group(1)
+    result = inner_expr
+    for start, end, tbl, _ in reversed(list(_dax_qualified_column_spans(inner_expr))):
         if tbl == iter_table:
-            return full
+            continue
         # Check if already wrapped in RELATED
-        prefix_start = max(0, m.start() - 8)
-        prefix = inner_expr[prefix_start:m.start()].rstrip()
+        prefix_start = max(0, start - 8)
+        prefix = inner_expr[prefix_start:start].rstrip()
         if prefix.upper().endswith('RELATED('):
-            return full
+            continue
         # Skip if the ref is a direct argument to a function that requires
         # bare 'T'[col] refs (ALLEXCEPT, REMOVEFILTERS, ALL, ...).
-        if _enclosing_func(inner_expr, m.start()) in _BARE_REF_FUNCS:
-            return full
-        return f"RELATED({full})"
+        if _enclosing_func(inner_expr, start) in _BARE_REF_FUNCS:
+            continue
+        result = result[:start] + f"RELATED({inner_expr[start:end]})" + result[end:]
+    return result
 
-    return re.sub(r"'([^']+)'\[([^\]]*(?:\]\][^\]]*)*)\]", _replacer, inner_expr)
 
-
-_BARE_COL_REF_RE = re.compile(r"^\s*'[^']+'\[[^\[\]]+\]\s*$")
+_BARE_COL_REF_RE = re.compile(
+    r"^\s*'(?:[^']|'')+'\[(?:[^\]]|\]\])+\]\s*$"
+)
 
 
 def _is_bare_column_ref(ref):
@@ -2495,53 +3432,66 @@ def _is_bare_column_ref(ref):
     return bool(_BARE_COL_REF_RE.match(ref))
 
 
-def _convert_lod_expressions(dax, table_name, column_table_map):
-    """Convert LOD expressions: {FIXED/INCLUDE/EXCLUDE dims : AGG} → CALCULATE.
-
-    Uses a recursive descent parser to handle arbitrary nesting depth.
-    Nested LODs like ``{FIXED [A] : {INCLUDE [B] : {EXCLUDE [C] : SUM([X])}}}``
-    are resolved inside-out naturally via recursion.
-    """
+def _convert_lod_expressions(dax, table_name, column_table_map,
+                             allow_unverified_fixed=True):
+    """Convert legacy LOD forms; generation must not assume a FIXED grain."""
+    masked, _ = _protect_source_tokens(dax)
+    if not allow_unverified_fixed and re.search(r'\{\s*FIXED\b', masked, re.IGNORECASE):
+        return _unsupported_conversion(
+            'FIXED requires verified source filter scope, dimension grain, '
+            'shelf aggregation and total grain')
+    if _aggregate_contains_lod(masked):
+        return _unsupported_conversion(
+            'aggregation of a level-of-detail expression requires its source '
+            'shelf and total grain')
 
     def _resolve_dims(dims_str, default_table):
-        dims = [d.strip().strip('[]') for d in dims_str.split(',') if d.strip()]
-        refs = []
-        for d in dims:
-            t = column_table_map.get(d, default_table)
-            refs.append(f"'{t}'[{d}]")
+        masked_dims, restore_dims = _protect_source_tokens(dims_str)
+        dims, refs = [], []
+        for part in masked_dims.split(','):
+            if not part.strip():
+                continue
+            node = _ungroup_source(_SourceExpressionParser(restore_dims(part)).parse())
+            if node[0] != 'ref':
+                raise _SourceExpressionError("LOD dimension is not a physical field")
+            _, _, owner, name = node
+            table = owner or column_table_map.get(name, default_table)
+            dims.append(name)
+            refs.append("'" + table.replace("'", "''") + "'["
+                        + name.replace(']', ']]') + ']')
         return dims, refs
 
     def _convert_single_lod(keyword, dims_str, agg_str):
-        """Convert one LOD node into its DAX CALCULATE equivalent.
-
-        When a LOD dimension is itself a calculation that resolved to a
-        non-bare-column expression (e.g. ``LOOKUPVALUE(...)``,
-        ``IF/SWITCH``, parameter-driven branch), ``ALLEXCEPT`` /
-        ``REMOVEFILTERS`` cannot accept it. We fall back to a coarser
-        ``ALL('table')`` filter (FIXED) or drop the partition (EXCLUDE)
-        to preserve DAX validity. The grand-total semantic may differ
-        from per-group partitioning, but the model will load.
-        """
-        dims, dim_refs = _resolve_dims(dims_str, table_name)
+        """Convert one legacy LOD node without dropping complex dimensions."""
+        try:
+            _, dim_refs = _resolve_dims(dims_str, table_name)
+        except (_SourceExpressionError, RecursionError):
+            return _unsupported_conversion(
+                'level-of-detail dimensions require physical field bindings')
         if keyword == 'FIXED':
+            owners = {
+                owner for ref in dim_refs
+                for _, _, owner, _ in _dax_qualified_column_spans(ref)
+            }
+            if len(owners) > 1:
+                return _unsupported_conversion(
+                    'cross-table FIXED requires verified source filter scope, '
+                    'dimension grain, shelf aggregation and total grain')
+            logger.warning(
+                'FIXED raw translation has unverified filter, shelf and total grain; '
+                'semantic generation requires explicit evidence')
             if dim_refs:
-                if not all(_is_bare_column_ref(r) for r in dim_refs):
-                    return f"CALCULATE({agg_str}, ALL('{table_name}'))"
-                allexcept_table = column_table_map.get(dims[0], table_name)
-                dim_tables = set(column_table_map.get(d, table_name) for d in dims)
-                if len(dim_tables) == 1:
-                    return f"CALCULATE({agg_str}, ALLEXCEPT('{allexcept_table}', {', '.join(dim_refs)}))"
-                else:
-                    filters = ', '.join(f"REMOVEFILTERS({ref})" for ref in dim_refs)
-                    return f"CALCULATE({agg_str}, {filters})"
-            else:
-                return f"CALCULATE({agg_str}, ALL('{table_name}'))"
-        elif keyword == 'INCLUDE':
+                owner = next(iter(owners), table_name).replace("'", "''")
+                return f"CALCULATE({agg_str}, ALLEXCEPT('{owner}', {', '.join(dim_refs)}))"
+            owner = table_name.replace("'", "''")
+            return f"CALCULATE({agg_str}, ALL('{owner}'))"
+        if keyword == 'INCLUDE':
             return f"CALCULATE({agg_str})"
         elif keyword == 'EXCLUDE':
             if dim_refs:
                 if not all(_is_bare_column_ref(r) for r in dim_refs):
-                    return f"CALCULATE({agg_str})"
+                    return _unsupported_conversion(
+                        'level-of-detail dimensions require physical field bindings')
                 return f"CALCULATE({agg_str}, REMOVEFILTERS({', '.join(dim_refs)}))"
             else:
                 return f"CALCULATE({agg_str})"
@@ -2638,48 +3588,6 @@ def _convert_lod_expressions(dax, table_name, column_table_map):
             match = _RE_LOD_NO_DIM.search(dax, start + len(replacement))
         else:
             break
-
-    # Clean up redundant AGG(CALCULATE(...)) patterns produced when an LOD
-    # is used inside an aggregation like SUM({FIXED …}).
-    # E.g. SUM(CALCULATE(MAX([X]), ALLEXCEPT(…))) → CALCULATE(MAX([X]), ALLEXCEPT(…))
-    for agg_func in ('SUM', 'AVERAGE', 'MIN', 'MAX', 'COUNT',
-                     'DISTINCTCOUNT', 'DISTINCTCOUNTNOBLANK', 'MEDIAN'):
-        pattern = re.compile(rf'\b{agg_func}\s*\(\s*CALCULATE\s*\(', re.IGNORECASE)
-        m = pattern.search(dax)
-        while m:
-            # Find balanced parens for the outer AGG(
-            outer_start = m.start()
-            paren_start = dax.index('(', outer_start)
-            depth = 1
-            j = paren_start + 1
-            while j < len(dax) and depth > 0:
-                if dax[j] == '(':
-                    depth += 1
-                elif dax[j] == ')':
-                    depth -= 1
-                j += 1
-            if depth == 0:
-                inner_content = dax[paren_start + 1:j - 1].strip()
-                # Only collapse if the inner content is a single CALCULATE call
-                if inner_content.startswith('CALCULATE(') and inner_content.endswith(')'):
-                    # Check balanced — ensure it's just one CALCULATE
-                    calc_depth = 0
-                    is_single = True
-                    for ci, cc in enumerate(inner_content):
-                        if cc == '(':
-                            calc_depth += 1
-                        elif cc == ')':
-                            calc_depth -= 1
-                        if calc_depth == 0 and ci < len(inner_content) - 1:
-                            rest = inner_content[ci + 1:].strip()
-                            if rest:
-                                is_single = False
-                            break
-                    if is_single:
-                        dax = dax[:outer_start] + inner_content + dax[j:]
-                        m = pattern.search(dax, outer_start)
-                        continue
-            m = pattern.search(dax, m.end())
 
     return dax
 
@@ -3212,7 +4120,8 @@ def _convert_agg_if_to_aggx(dax_text, table_name):
                 inner = dax_text[paren_pos + 1:pos - 1]
                 iter_table = _infer_iteration_table(inner, table_name)
                 inner = _wrap_cross_table_related(inner, iter_table)
-                replacement = f"{aggx}('{iter_table}', {inner})"
+                safe_table = iter_table.replace("'", "''")
+                replacement = f"{aggx}('{safe_table}', {inner})"
                 if agg == 'COUNT':
                     # Tableau COUNT is zero when every conditional value is
                     # NULL (or the input is empty); DAX COUNTX returns BLANK.
@@ -3440,9 +4349,9 @@ def _convert_agg_expr_to_aggx(dax_text, table_name):
 
     def _is_single_column(expr):
         """True when *expr* is a bare column reference like 'T'[Col] or [Col]."""
-        if re.match(r"^'[^']*'\[[^\]]*\]$", expr):
+        if _RE_COUNTD_COLUMN.fullmatch(expr):
             return True
-        if re.match(r"^\[[^\]]*\]$", expr):
+        if re.fullmatch(r"\[(?:[^\]]|\]\])+\]", expr):
             return True
         return False
 
@@ -3490,7 +4399,8 @@ def _convert_agg_expr_to_aggx(dax_text, table_name):
 
                 iter_table = _infer_iteration_table(inner, table_name)
                 inner = _wrap_cross_table_related(inner, iter_table)
-                replacement = f"{aggx}('{iter_table}', {inner})"
+                safe_table = iter_table.replace("'", "''")
+                replacement = f"{aggx}('{safe_table}', {inner})"
                 dax = dax[:m.start()] + replacement + dax[pos:]
         return dax
 

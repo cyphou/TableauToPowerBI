@@ -14,8 +14,10 @@ import logging
 import os
 import re
 import time
+import unicodedata
 import uuid
 
+from powerbi_import.security_validator import redact_credentials, redact_m_credentials
 from powerbi_import.tmdl_m_conversion import (
     _fix_m_if_else_balance,
     _strip_m_inline_comments,
@@ -25,6 +27,17 @@ from powerbi_import.tmdl_m_conversion import (
 _DRIVE_ROOTED = re.compile(r'^[A-Za-z]:\\')
 
 logger = logging.getLogger(__name__)
+
+# Unlike a credential assignment, an identity may contain a bare secret after
+# a keyword. Err on the side of omitting the whole identity, including when
+# keywords are joined to underscores or other identifier characters.
+_DAX_SENSITIVE_IDENTITY = re.compile(
+    r'password|passwd|pwd|secret|token|credential|authorization|bearer|'
+    r'api[\s_-]*key|access[\s_-]*key|account[\s_-]*key|'
+    r'private[\s_-]*key|user[\s_-]*id|connection[\s_-]*string|'
+    r'shared[\s_-]*access[\s_-]*signature',
+    re.IGNORECASE,
+)
 
 
 def _quote_name(name):
@@ -1090,6 +1103,14 @@ def _generate_measure_description(measure):
     measure_name = measure.get('name', 'Measure')
     expression = measure.get('expression', '')
     original_formula = measure.get('_original_formula', '')
+    # An imported TMDL expression can already contain our serialized comment.
+    # Do not let a subsequent description preview copy that metadata into the
+    # existing Copilot annotation.
+    if isinstance(expression, str) and expression.startswith(
+            '/* Tableau calculation; migrated to DAX'):
+        comment_end = expression.find('*/ ')
+        if comment_end >= 0:
+            expression = expression[comment_end + 3:]
 
     parts = []
     if original_formula:
@@ -1223,10 +1244,62 @@ def _write_table_tmdl(tables_dir, table):
         f.write(content)
 
 
+def _dax_with_tableau_comment(expression, item):
+    """Add bounded source identity only at serialization, never to the model.
+
+    Descriptions, formulas, connection metadata and arbitrary warnings are not
+    safe to reproduce here. Reject, rather than partially copy, identifiers
+    containing control characters, DAX punctuation or comment delimiters.
+    This also keeps bracket-based reference scanners from seeing false refs.
+    """
+    identity = item.get('_tableau_calculation_identity')
+    if not isinstance(expression, str) or not expression or not isinstance(identity, dict):
+        return expression
+    marker = '/* Tableau calculation; migrated to DAX'
+    if expression.lstrip().startswith(marker):
+        return expression
+
+    def safe_identity(value):
+        if not isinstance(value, str) or not value or len(value) > 130:
+            return ''
+        if value.startswith('[') and value.endswith(']'):
+            value = value[1:-1]
+        if not value or len(value) > 128:
+            return ''
+        # Check both the original and compatibility-normalized spelling so
+        # full-width credential keywords cannot evade the same safeguards.
+        normalized = unicodedata.normalize('NFKC', value)
+        if any(redact_credentials(text) != text or redact_m_credentials(text) != text
+               or _DAX_SENSITIVE_IDENTITY.search(text)
+               for text in (value, normalized)):
+            return ''
+        # Unicode letters, numbers and combining marks support names such as
+        # "Bénéfice" without permitting delimiters, controls or line breaks.
+        if not all(char in ' _-' or unicodedata.category(char)[0] in 'LNM'
+                   for char in value):
+            return ''
+        return value.strip()
+
+    identifier = safe_identity(identity.get('name'))
+    caption = safe_identity(identity.get('caption'))
+    if not identifier and not caption:
+        return expression
+    fields = ['Tableau calculation', 'migrated to DAX']
+    if caption:
+        fields.append('name: ' + caption)
+    if identifier and identifier != caption:
+        fields.append('identifier: ' + identifier)
+    if expression.lstrip().startswith('/* TODO: DAX conversion validation failed for '):
+        fields.append('warning: conversion validation failed; review DAX')
+    return '/* ' + '; '.join(fields) + ' */ ' + expression
+
+
 def _write_measure(lines, measure):
     """Write a measure in TMDL."""
     mname = _quote_name(measure.get('name', 'Measure'))
     expression = measure.get('expression') or '0'
+    if measure.get('expression'):
+        expression = _dax_with_tableau_comment(expression, measure)
 
     if '\n' in expression:
         lines.append(f"\tmeasure {mname} = ```")
@@ -1332,6 +1405,7 @@ def _write_column(lines, column):
     is_calculated = column.get('isCalculated', False)
 
     if is_calculated and expression:
+        expression = _dax_with_tableau_comment(expression, column)
         if '\n' in expression:
             lines.append(f"\tcolumn {cname_quoted} = ```")
             for expr_line in expression.split('\n'):

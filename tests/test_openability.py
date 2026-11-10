@@ -122,6 +122,105 @@ class TestExtract(unittest.TestCase):
 
 # ── check_openability ───────────────────────────────────────────────
 
+class TestNativeQueryRefs(unittest.TestCase):
+    @staticmethod
+    def projection(function=None, native_ref="Metric"):
+        column = {"Column": {
+            "Expression": {"SourceRef": {"Entity": "Sales"}},
+            "Property": "A",
+        }}
+        field = (column if function is None else {"Aggregation": {
+            "Expression": column, "Function": function,
+        }})
+        return {
+            "field": field,
+            "queryRef": "Sales.A" if function is None else f"Agg{function}(Sales.A)",
+            "nativeQueryRef": native_ref,
+        }
+
+    def check(self, root, state):
+        _write_project(root, _tmdl_with_m(["let x=1 in x"]), visual={
+            "$schema": "x", "name": "v1",
+            "visual": {"visualType": "tableEx", "query": {"queryState": state}},
+        })
+        report = check_openability(root)
+        check = next(item for item in report.checks if item.name == "native_query_refs")
+        return report, check
+
+    def test_different_aggregations_with_same_native_ref_block(self):
+        with tempfile.TemporaryDirectory() as root:
+            report, check = self.check(root, {"Values": {"projections": [
+                self.projection(0), self.projection(1),
+            ]}})
+            self.assertFalse(check.ok)
+            self.assertEqual(check.severity, "error")
+            self.assertFalse(report.openable)
+            self.assertIn("Metric", " ".join(check.issues))
+            self.assertIn("visual.json", " ".join(check.issues))
+            self.assertIn("Values", " ".join(check.issues))
+            payload = json.loads(json.dumps(report.to_dict()))
+            self.assertGreater(payload["blocking_count"], 0)
+            self.assertTrue(any("native_query_refs" in issue
+                                for issue in payload["blocking_issues"]))
+            self.assertEqual(payload["refresh_verification"], "not_run")
+
+    def test_identical_bare_projections_still_block(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, check = self.check(root, {"Values": {"projections": [
+                self.projection(), self.projection(),
+            ]}})
+            self.assertFalse(check.ok)
+
+    def test_collision_is_visual_wide_not_role_local(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, check = self.check(root, {
+                "Category": {"projections": [self.projection()]},
+                "Y2": {"projections": [self.projection(1)]},
+            })
+            self.assertFalse(check.ok)
+            issues = " ".join(check.issues)
+            self.assertIn("Category", issues)
+            self.assertIn("Y2", issues)
+
+    def test_same_field_with_unique_native_refs_passes(self):
+        with tempfile.TemporaryDirectory() as root:
+            report, check = self.check(root, {"Values": {"projections": [
+                self.projection(0, "Sum Metric"),
+                self.projection(1, "Average Metric"),
+            ]}})
+            self.assertTrue(check.ok, check.issues)
+            self.assertTrue(report.openable, report.blocking_issues)
+
+    def test_same_native_ref_in_separate_visuals_is_valid(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.check(root, {"Values": {"projections": [self.projection()]}})
+            original = os.path.join(
+                root, "P.Report", "definition", "pages", "p1", "visuals", "v1", "visual.json")
+            second = os.path.join(os.path.dirname(os.path.dirname(original)), "v2")
+            os.makedirs(second)
+            with open(original, encoding="utf-8") as handle:
+                visual = json.load(handle)
+            visual["name"] = "v2"
+            with open(os.path.join(second, "visual.json"), "w", encoding="utf-8") as handle:
+                json.dump(visual, handle)
+            report = check_openability(root)
+            check = next(item for item in report.checks if item.name == "native_query_refs")
+            self.assertTrue(check.ok, check.issues)
+
+    def test_optional_native_refs_and_nonquery_visuals_remain_valid(self):
+        with tempfile.TemporaryDirectory() as root:
+            projection = self.projection()
+            del projection["nativeQueryRef"]
+            _, check = self.check(root, {"Values": {"projections": [projection]}})
+            self.assertTrue(check.ok, check.issues)
+            _write_project(root, visual={
+                "$schema": "x", "name": "v1", "visual": {"visualType": "textbox"},
+            })
+            check = next(item for item in check_openability(root).checks
+                         if item.name == "native_query_refs")
+            self.assertTrue(check.ok, check.issues)
+
+
 class TestOpenability(unittest.TestCase):
     def test_clean_project_openable(self):
         with tempfile.TemporaryDirectory() as d:
@@ -195,7 +294,7 @@ class TestOpenability(unittest.TestCase):
                         "verified_scope", "refresh_verification", "limitation",
                         "diagnostics"):
                 self.assertIn(key, data)
-            self.assertEqual(len(data["checks"]), 24)
+            self.assertEqual(len(data["checks"]), 25)
             self.assertEqual(data["verified_scope"], "static_project_checks")
             self.assertEqual(data["refresh_verification"], "not_run")
             self.assertIn("Desktop loading and refresh were not run",
@@ -217,7 +316,7 @@ class TestOpenability(unittest.TestCase):
                                      "generated_content", "report_content",
                                      "manifest_coherence",
                                      "semantic_validation", "lookupvalue_ambiguity",
-                                     "executable_dax", "visual_bindings", "references", "report_structure", "schema",
+                                     "executable_dax", "visual_bindings", "native_query_refs", "references", "report_structure", "schema",
                                      "calc_column_dependencies",
                                      "path_length",
                                      "bookmarks_index",

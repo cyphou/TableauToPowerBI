@@ -1640,7 +1640,7 @@ def _build_calc_map_from_tmdl(report_name, output_dir=None):
     return calc_map
 
 
-def run_prep_flow(prep_file, datasources_json=None):
+def run_prep_flow(prep_file, datasources_json=None, source_map=None):
     """Parse Tableau Prep flow and merge transforms into extracted datasources.
 
     Reads the Prep flow (.tfl/.tflx), converts all steps to Power Query M,
@@ -1676,7 +1676,8 @@ def run_prep_flow(prep_file, datasources_json=None):
         from prep_flow_parser import merge_prep_with_workbook, parse_prep_flow
 
         # Parse the Prep flow
-        prep_datasources = parse_prep_flow(prep_file)
+        prep_datasources = (parse_prep_flow(prep_file) if source_map is None
+                    else parse_prep_flow(prep_file, source_map=source_map))
         if not prep_datasources:
             raise ValueError("Prep flow produced zero outputs")
         if not any(ds.get('m_query_override', '').strip() for ds in prep_datasources):
@@ -1727,7 +1728,7 @@ def run_prep_flow(prep_file, datasources_json=None):
         return False
 
 
-def run_standalone_prep(prep_file):
+def run_standalone_prep(prep_file, source_map=None):
     """Migrate a standalone Tableau Prep flow (.tfl/.tflx) without a workbook.
 
     Parses the Prep flow, converts all steps to Power Query M, and writes
@@ -1755,7 +1756,8 @@ def run_standalone_prep(prep_file):
         from prep_flow_parser import parse_prep_flow
 
         # Parse the Prep flow → list of datasource dicts with M queries
-        prep_datasources = parse_prep_flow(prep_file)
+        prep_datasources = (parse_prep_flow(prep_file) if source_map is None
+                    else parse_prep_flow(prep_file, source_map=source_map))
         if not prep_datasources:
             logger.error("Standalone Prep flow produced zero outputs")
             print("\nError: Standalone Prep flow produced zero outputs")
@@ -2037,7 +2039,7 @@ def _run_batch_config(args, desktop_options=None):
         ]
 
     Supported keys per entry:
-        file (required), prep, output_dir, culture, calendar_start,
+        file (required), prep, prep_source_map, output_dir, culture, calendar_start,
         calendar_end, calendar_mode, mode/model_mode, hyper_export_format,
         hyper_export_max_rows, max_zip_entry_mb, paginated, skip_extraction
     """
@@ -2106,6 +2108,10 @@ def _run_batch_config(args, desktop_options=None):
         # Per-entry overrides (fall back to CLI args)
         skip = entry.get('skip_extraction', args.skip_extraction)
         prep = entry.get('prep', args.prep)
+        prep_source_map = entry.get(
+            'prep_source_map', getattr(args, 'prep_source_map', None))
+        if prep_source_map and not os.path.isabs(prep_source_map):
+            prep_source_map = os.path.join(config_dir, prep_source_map)
         out_dir = entry.get('output_dir', args.output_dir)
         culture = entry.get('culture', args.culture)
         paginated = entry.get('paginated', getattr(args, 'paginated', False))
@@ -2210,7 +2216,8 @@ def _run_batch_config(args, desktop_options=None):
                     composite_threshold=getattr(args, 'composite_threshold', None),
                     agg_tables=getattr(args, 'agg_tables', 'none'),
                     optimize_dax=getattr(args, 'optimize_dax', False),
-                    time_intelligence=getattr(args, 'time_intelligence', 'none')))
+                    time_intelligence=getattr(args, 'time_intelligence', 'none'),
+                    prep_source_map=prep_source_map))
                 continue
             if not skip:
                 os.makedirs(task['extract_dir'], exist_ok=True)
@@ -2227,7 +2234,9 @@ def _run_batch_config(args, desktop_options=None):
             if prep:
                 _stats.phase = 'prep'
                 ppath = prep if os.path.isabs(prep) else os.path.join(config_dir, prep)
-                file_results['prep'] = run_prep_flow(ppath)
+                file_results['prep'] = (
+                    run_prep_flow(ppath) if prep_source_map is None
+                    else run_prep_flow(ppath, source_map=prep_source_map))
                 if not file_results['prep']:
                     continue
 
@@ -2449,7 +2458,8 @@ def _run_batch_config(args, desktop_options=None):
     return exit_code
 
 
-def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, display_name):
+def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, display_name,
+                              source_map=None):
     """Migrate a standalone .tfl/.tflx — produces lineage, Power Query M, and source exports.
 
     Instead of generating a full .pbip project (which would be empty for prep flows),
@@ -2477,7 +2487,9 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
     print(f"  Flow: {tableau_file}")
 
     try:
-        profile = _pfa.analyze_flow(tableau_file, include_m_queries=True)
+        profile = (_pfa.analyze_flow(tableau_file, include_m_queries=True)
+                   if source_map is None else _pfa.analyze_flow(
+                       tableau_file, include_m_queries=True, source_map=source_map))
     except (ValueError, OSError, KeyError) as exc:
         logger.warning("Failed to analyze %s: %s", display_name, exc)
         print(f"  ⚠ Analysis failed: {exc}")
@@ -2697,7 +2709,8 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                              hyper_export_max_rows=None, max_zip_entry_mb=None,
                              quiet=False, strict_generation=False, salvage_partial=None,
                              paginated=False, composite_threshold=None, agg_tables='none',
-                             optimize_dax=False, time_intelligence='none'):
+                             optimize_dax=False, time_intelligence='none',
+                             prep_source_map=None):
     """Migrate a single workbook — used by both sequential and parallel batch modes.
 
     For .tfl/.tflx files, delegates to _migrate_single_prep_flow() which produces
@@ -2718,7 +2731,12 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     # ── Standalone Prep flow: lineage + M + sources (no .pbip) ──
     _is_prep_standalone = os.path.splitext(tableau_file)[1].lower() in ('.tfl', '.tflx')
     if _is_prep_standalone:
-        return _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, display_name)
+        if prep_source_map is None:
+            return _migrate_single_prep_flow(
+                tableau_file, basename, workbook_output_dir, display_name)
+        return _migrate_single_prep_flow(
+            tableau_file, basename, workbook_output_dir, display_name,
+            source_map=prep_source_map)
 
     salvage_partial = _resolve_salvage_policy(
         salvage_partial, strict_generation, skip_extraction,
@@ -2781,8 +2799,11 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         file_results['extraction'] = True
 
     # Step 1b: Prep flow (optional)
+    prep_datasources = None
     if wb_prep:
-        file_results['prep'] = run_prep_flow(wb_prep)
+        file_results['prep'] = (run_prep_flow(wb_prep) if prep_source_map is None
+                                else run_prep_flow(
+                                    wb_prep, source_map=prep_source_map))
         if not file_results['prep']:
             logger.error("Prep flow failed for %s; migration aborted", display_name)
             return {'success': False, 'error': 'prep', 'report_name': basename,
@@ -2793,6 +2814,14 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                         'prep', f"Prep flow parsing or merge failed: {wb_prep}"),
                     'stages': {'extraction': 'completed', 'prep': 'failed',
                                'generation': 'not_run'}}
+        if extracted_objects:
+            datasource_path = os.path.join(_get_extract_dir(), 'datasources.json')
+            try:
+                with open(datasource_path, 'r', encoding='utf-8') as handle:
+                    prep_datasources = json.load(handle)
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                logger.warning("Could not snapshot post-Prep datasources for %s: %s",
+                               display_name, exc)
 
     # Uploaded PBIP remains validation-only; local PBIP copies packaged Excel.
     _stats.phase = 'source_staging'
@@ -2905,6 +2934,19 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                 logger.error("Hyper Import gate failed for %s: %s",
                              display_name, exc)
 
+    if (file_results.get('generation') and output_format == 'pbip'
+            and not partial_generation and extracted_objects
+            and (extracted_objects.get('worksheets') or extracted_objects.get('dashboards'))):
+        try:
+            from powerbi_import.powerbi_internal_lineage import (
+                write_powerbi_lineage_artifacts,
+            )
+            write_powerbi_lineage_artifacts(
+                os.path.join(workbook_output_dir, basename))
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("Static Power BI lineage graph was not refreshed for %s: %s",
+                           display_name, exc)
+
     if file_results.get('generation') and verify_open:
         _stats.phase = 'validation'
         project_dir = os.path.join(workbook_output_dir, basename)
@@ -2917,8 +2959,11 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         try:
             from powerbi_import.migration_quality import build_quality_report
             project_dir = os.path.join(workbook_output_dir, basename)
+            quality_input = dict(extracted_objects)
+            if prep_datasources is not None:
+                quality_input['prep_datasources'] = prep_datasources
             quality_report = build_quality_report(
-                extracted_objects, project_dir, basename,
+                quality_input, project_dir, basename,
                 source_path=tableau_file,
                 prep_flow=bool(wb_prep),
                 quality_policy=quality_policy)
@@ -3361,7 +3406,8 @@ def _run_full_lineage(batch_results, migrated_root):
     return lineage
 
 
-def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extraction=False,
+def run_batch_migration(batch_dir, output_dir=None, prep_file=None, prep_source_map=None,
+                        skip_extraction=False,
                         calendar_start=None, calendar_end=None, culture=None,
                         parallel=None, resume=False, jsonl_log=None, manifest=None,
                         full_lineage=False, verify_open=True, output_format='pbip',
@@ -3532,6 +3578,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
             'wb_cal_start': wb_cal_start,
             'wb_cal_end': wb_cal_end,
             'wb_prep': entry.get('prep', prep_file),
+            'prep_source_map': entry.get('prep_source_map', prep_source_map),
             'output_format': output_format,
             'model_mode': _resolve_model_mode(wb_mode),
             **_resolve_hyper_options(
@@ -3549,8 +3596,11 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
     def _checkpoint_config(effective):
         config = dict(effective)
         requested_prep = config.pop('wb_prep')
+        requested_source_map = config.pop('prep_source_map')
         config['prep_file'] = None
         config['prep_signature'] = None
+        config['prep_source_map'] = None
+        config['prep_source_map_signature'] = None
         if requested_prep:
             try:
                 config['prep_file'] = os.path.abspath(requested_prep)
@@ -3566,6 +3616,21 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                     requested_prep)
                 # No stable sentinel may validate an earlier success. Leave
                 # source failure reporting to the isolated migration worker.
+                return None
+        if requested_source_map:
+            try:
+                config['prep_source_map'] = os.path.abspath(requested_source_map)
+                config['prep_source_map_signature'] = _source_signature(
+                    requested_source_map)
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Could not sign Prep source map %s; forcing regeneration: %s",
+                    requested_source_map, exc)
+                return None
+            if not config['prep_source_map_signature']:
+                logger.warning(
+                    "Could not read Prep source map %s; forcing regeneration",
+                    requested_source_map)
                 return None
         # Source selection changed: prefer an explicitly bound native database.
         config['signature_version'] = 7
@@ -4006,6 +4071,7 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, skip_extract
                 quiet=quiet,
                 strict_generation=strict_generation,
                 salvage_partial=task['salvage_partial'],
+                prep_source_map=task['prep_source_map'],
             )
         except Exception as exc:  # noqa: BLE001 - isolate one bad workbook
             wb_result = {
@@ -4275,6 +4341,13 @@ def _add_batch_args(parser):
         metavar='DIR',
         default=None,
         help='Batch migrate all .twb/.twbx files in the specified directory'
+    )
+
+    parser.add_argument(
+        '--prep-source-map',
+        metavar='FILE',
+        default=None,
+        help='JSON map binding Tableau Prep Hyper input nodes to their original sources'
     )
 
     parser.add_argument(
@@ -8392,6 +8465,7 @@ def main():
             batch_dir=args.batch,
             output_dir=args.output_dir,
             prep_file=args.prep,
+            prep_source_map=getattr(args, 'prep_source_map', None),
             skip_extraction=args.skip_extraction,
             calendar_start=args.calendar_start,
             calendar_end=args.calendar_end,
@@ -8466,7 +8540,9 @@ def _run_single_inspection(args):
         if getattr(args, 'resolve_published_ds', False):
             _resolve_published_datasources(args)
     if args.prep:
-        results['prep'] = run_prep_flow(args.prep)
+        prep_source_map = getattr(args, 'prep_source_map', None)
+        results['prep'] = (run_prep_flow(args.prep) if prep_source_map is None
+                           else run_prep_flow(args.prep, source_map=prep_source_map))
         if not results['prep']:
             logger.error("Prep flow parsing or merge failed; inspection aborted")
             return ExitCode.EXTRACTION_FAILED
@@ -14486,8 +14562,17 @@ def _run_single_migration_impl(args):
         return ExitCode.GENERAL_ERROR
     checkpoint_path = os.path.join(
         out_base, f'.{source_basename}.migration_checkpoint.json')
+    prep_source_map = getattr(args, 'prep_source_map', None)
+    try:
+        prep_source_map_signature = (
+            MigrationCheckpoint.hash_file(prep_source_map)
+            if prep_source_map else None)
+    except OSError:
+        prep_source_map_signature = ''
     checkpoint_config = {
         'prep': getattr(args, 'prep', None),
+        'prep_source_map': prep_source_map,
+        'prep_source_map_signature': prep_source_map_signature,
         'output_format': getattr(args, 'output_format', 'pbip'),
         'calendar_start': getattr(args, 'calendar_start', None),
         'calendar_end': getattr(args, 'calendar_end', None),
@@ -14562,7 +14647,11 @@ def _run_single_migration_impl(args):
         if checkpoint_reused:
             results['extraction'] = True
         elif _is_prep_standalone:
-            results['extraction'] = run_standalone_prep(args.tableau_file)
+            prep_source_map = getattr(args, 'prep_source_map', None)
+            results['extraction'] = (
+                run_standalone_prep(args.tableau_file)
+                if prep_source_map is None else
+                run_standalone_prep(args.tableau_file, source_map=prep_source_map))
         else:
             results['extraction'] = run_extraction(
                 args.tableau_file,

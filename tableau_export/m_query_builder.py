@@ -8,6 +8,7 @@ Each connector type has its own generator function dispatched via _M_GENERATORS.
 import logging
 import ntpath
 import re
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,90 @@ def _m_escape_string(value):
     is produced for a value containing a literal quote.
     """
     return (value or '').replace('"', '""')
+
+
+_M_COMMENT_IDENTITY_LIMIT = 120
+_M_COMMENT_SENSITIVE = re.compile(
+    r'password|passwd|secret|token|credential|authorization|bearer|'
+    r'api[\s_.-]*key|access[\s_.-]*key|account[\s_.-]*key|'
+    r'private[\s_.-]*key|client[\s_.-]*secret|user[\s_.-]*(?:id|name)|'
+    r'(?:^|[^a-z0-9])(?:pwd|uid)(?:$|[^a-z0-9])',
+    re.IGNORECASE,
+)
+_M_COMMENT_SQL = re.compile(r'\b(?:select|from|where|join)\b', re.IGNORECASE)
+
+
+def safe_m_comment_identity(value, *, source_relation=False):
+    """Return a bounded, identifier-like metadata label, or ``''`` to omit it.
+
+    Only pass identities explicitly supplied by the source, never formulas,
+    connection properties or data values. Screening is conservative and is
+    not a guarantee that an arbitrary name cannot itself be a secret.
+    Redaction is used for detection only, never on executable M.
+    ``source_relation`` permits Tableau's bracketed physical identifiers.
+    """
+    if not isinstance(value, str) or not value or len(value) > _M_COMMENT_IDENTITY_LIMIT:
+        return ''
+    if value != value.strip() or unicodedata.normalize('NFKC', value) != value:
+        return ''
+
+    from powerbi_import.security_validator import redact_credentials, redact_m_credentials
+
+    if (redact_credentials(value) != value or redact_m_credentials(value) != value
+            or _M_COMMENT_SENSITIVE.search(value) or _M_COMMENT_SQL.search(value)):
+        return ''
+    punctuation = ' _-.' + ('[]#$' if source_relation else '')
+    for char in value:
+        category = unicodedata.category(char)
+        if not (category[0] in ('L', 'N', 'M') or char in punctuation):
+            return ''
+    if not any(char.isalnum() for char in value):
+        return ''
+    return value
+
+
+def annotate_m_provenance(m_query, *, source_relation=None, prep_flow=None,
+                          prep_output=None, prep_step=None):
+    """Add explicit, metadata-only provenance to a generated M let expression.
+
+    Callers must supply actual source/Prep names, not formulas, connection
+    properties, field values, or inferred bindings. Missing metadata is omitted.
+    Reapplying the same annotations is idempotent. Non-let queries are left
+    untouched; no attempt is made to parse or rewrite authored M.
+    """
+    if not isinstance(m_query, str) or not m_query.startswith('let\n'):
+        return m_query
+    labels = (
+        ('Tableau source relation', source_relation),
+        ('Tableau Prep flow', prep_flow),
+        ('Tableau Prep output', prep_output),
+        ('Tableau Prep step', prep_step),
+    )
+    existing = set(m_query.splitlines())
+    comments = []
+    for label, value in labels:
+        value = safe_m_comment_identity(
+            value, source_relation=label == 'Tableau source relation')
+        if value:
+            line = f'    // {label}: {value}'
+            if line not in existing:
+                comments.append(line)
+    if not comments:
+        return m_query
+    return 'let\n' + '\n'.join(comments) + '\n' + m_query[4:]
+
+
+def _source_relation_comment(query, generator, source_table):
+    """Describe only a physical relation actually used by the emitter."""
+    if generator not in _DATABASE_REQUIRED_DETAILS and generator is not _gen_m_excel:
+        # File emitters already describe their source; some ignore source_table.
+        return query
+    if not isinstance(source_table, str) or not source_table.strip():
+        return query
+    # Do not mistake paths, SQL/formula text or connection strings for names.
+    if re.search(r'[\\/;=()]|\b(select|from|where|join)\b', source_table, re.I):
+        return query
+    return annotate_m_provenance(query, source_relation=source_table)
 
 
 def _m_literal(value):
@@ -1705,7 +1790,8 @@ def generate_power_query_m(connection, table, *, use_original_file_paths=False):
         if use_original_file_paths and generator in (
                 _gen_m_excel, _gen_m_csv, _gen_m_geojson,
                 _gen_m_json, _gen_m_xml, _gen_m_pdf):
-            return generator(details, table_name, columns, use_original_file_paths=True)
+            query = generator(details, table_name, columns, use_original_file_paths=True)
+            return _source_relation_comment(query, generator, source_table)
         database_source = generator in _DATABASE_REQUIRED_DETAILS
         query_columns = (
             [dict(column, name=column.get('sourceColumn') or column['name'])
@@ -1730,7 +1816,7 @@ def generate_power_query_m(connection, table, *, use_original_file_paths=False):
         query = generator(details, query_table, query_columns)
         if database_source:
             query = _normalize_native_database_columns(query, columns)
-        return query
+        return _source_relation_comment(query, generator, source_table)
 
     # Fallback — pass conn_type through details for the message
     details_copy = dict(details)

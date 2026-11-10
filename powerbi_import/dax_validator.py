@@ -284,6 +284,11 @@ def validate_dax_expression(expr: str) -> List[str]:
     original = str(expr)
     if '/*' in original and '*/' not in original:
         issues.append('unterminated block comment')
+    # A syntactically valid BLANK fallback is not a successful conversion.
+    # Mask literals/identifiers so a quoted example is not a diagnostic.
+    if re.search(r'/\*\s*TODO:\s*DAX conversion validation failed\b',
+                 mask_literal_spans(original), re.IGNORECASE):
+        issues.append('unsupported DAX conversion placeholder')
     issues.extend(_check_quotes(text))
     issues.extend(_check_balanced(text))
     issues.extend(_check_datediff(text))

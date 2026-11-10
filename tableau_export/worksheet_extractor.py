@@ -9,6 +9,7 @@ Owned by **@extractor**.
 
 import re
 
+from dashboard_extractor import _coalesce_transparency, extract_dashboard_formatting
 from extract_primitives import (
     _MARK_ENCODINGS,
     _clean_field_ref,
@@ -16,6 +17,213 @@ from extract_primitives import (
     _read_filter_condition,
     _strip_brackets,
 )
+
+
+_LABEL_REF_PART = r'\[(?:[^\]]|\]\])+\]'
+_LABEL_REF_TOKEN = re.compile(rf'<({_LABEL_REF_PART}(?:\.{_LABEL_REF_PART})*)>')
+_LABEL_REF_WITH_SPACE = re.compile(
+    rf'(\s*)({_LABEL_REF_PART}(?:\.{_LABEL_REF_PART})*)(\s*)')
+_XML_SPACE = '{http://www.w3.org/XML/1998/namespace}space'
+
+
+def _local_name(element):
+    if element is None or not isinstance(element.tag, str):
+        return ''
+    return element.tag.rsplit('}', 1)[-1].split(':')[-1]
+
+
+def _mark_label_owner(formatted, parents, worksheet):
+    """Find explicit mark-label context, excluding titles and tooltips."""
+    owner = None
+    parent = parents.get(formatted)
+    while parent is not None and parent is not worksheet:
+        tag = _local_name(parent)
+        if tag in ('title', 'tooltip'):
+            return None
+        if owner is None:
+            if tag in ('mark-label', 'mark-labels'):
+                owner = parent
+            elif (tag == 'label'
+                  and _local_name(parents.get(parent))
+                  in ('encodings', 'pane', 'mark', 'marks')):
+                owner = parent
+            elif (tag == 'text'
+                  and _local_name(parents.get(parent)) == 'encodings'):
+                owner = parent
+        parent = parents.get(parent)
+    return owner if parent is worksheet else None
+
+
+def _split_label_reference_tokens(pieces):
+    """Split explicit <[Tableau].[ref]> tokens, even across run boundaries."""
+    result = []
+    literals = []
+
+    def flush_literals():
+        if not literals:
+            return
+        text = ''.join(literals)
+        spans = []
+        offset = 0
+        for literal in literals:
+            spans.append((offset, offset + len(literal), literal))
+            offset += len(literal)
+        span_index = 0
+
+        def append_slice(start, end):
+            nonlocal span_index
+            while span_index < len(spans) and spans[span_index][1] <= start:
+                span_index += 1
+            while span_index < len(spans) and spans[span_index][0] < end:
+                left, right, literal = spans[span_index]
+                lo, hi = max(start, left), min(end, right)
+                if lo < hi:
+                    result.append({
+                        'type': 'literal', 'text': literal[lo - left:hi - left],
+                    })
+                if right > end:
+                    break
+                span_index += 1
+
+        start = 0
+        for match in _LABEL_REF_TOKEN.finditer(text):
+            append_slice(start, match.start())
+            result.append({'type': 'field', 'reference': match.group(1)})
+            start = match.end()
+        append_slice(start, len(text))
+        literals.clear()
+
+    for kind, value in pieces:
+        if kind == 'literal':
+            literals.append(value)
+        else:
+            flush_literals()
+            result.append({'type': 'field', 'reference': value})
+    flush_literals()
+    return result
+
+
+def _formatted_label_runs(formatted):
+    """Read mixed run text and explicit field nodes without cleaning text."""
+    pieces = []
+
+    def append_text(text, in_run, preserve_space, standalone=False):
+        if text and (in_run or preserve_space or standalone or text.strip()):
+            pieces.append(('literal', text))
+
+    def visit(element, in_run=False, preserve_space=False):
+        tag = _local_name(element)
+        space = element.get(_XML_SPACE)
+        if space == 'preserve':
+            preserve_space = True
+        elif space == 'default':
+            preserve_space = False
+        in_run = in_run or tag == 'run'
+
+        if tag == 'field':
+            reference = next((element.get(attr) for attr in
+                              ('column', 'reference', 'ref', 'name')
+                              if element.get(attr)), None)
+            if reference is not None:
+                pieces.append(('field', reference))
+                return
+            if element.text and not len(element):
+                match = _LABEL_REF_WITH_SPACE.fullmatch(element.text)
+                if match is not None:
+                    if match.group(1):
+                        pieces.append(('literal', match.group(1)))
+                    pieces.append(('field', match.group(2)))
+                    if match.group(3):
+                        pieces.append(('literal', match.group(3)))
+                    return
+
+        append_text(element.text, in_run, preserve_space,
+                    standalone=element is formatted and not len(element))
+        for child in element:
+            visit(child, in_run, preserve_space)
+            append_text(child.tail, in_run, preserve_space)
+
+    visit(formatted)
+    return _split_label_reference_tokens(pieces)
+
+
+def _label_source_path(element, parents, worksheet):
+    """A local-name, 1-based XML path that distinguishes multiple templates."""
+    parts = []
+    while element is not worksheet:
+        parent = parents.get(element)
+        if parent is None:
+            break
+        tag = _local_name(element)
+        siblings = [child for child in parent if _local_name(child) == tag]
+        parts.append(f'{tag}[{siblings.index(element) + 1}]')
+        element = parent
+    return '/'.join(reversed(parts))
+
+
+def extract_formatted_labels(worksheet):
+    """Preserve mark-label templates without mixing separate pane templates.
+
+    A single template uses ``formatted_label_runs``. Multiple templates are
+    kept as separate ``formatted_label_blocks`` with source paths and pane
+    identities; concatenating them would invent a label that Tableau did not
+    declare. A single template on a multi-pane worksheet also retains its scope.
+    """
+    parents = {child: parent for parent in worksheet.iter() for child in parent}
+    blocks = []
+    panes = [element for element in worksheet.iter()
+             if (_local_name(element) == 'pane'
+                 and _local_name(parents.get(element)) == 'panes')]
+    for formatted in worksheet.iter():
+        if (_local_name(formatted) != 'formatted-text'
+                or _mark_label_owner(formatted, parents, worksheet) is None):
+            continue
+        block = {
+            'source_path': _label_source_path(formatted, parents, worksheet),
+            'runs': _formatted_label_runs(formatted),
+        }
+        parent = parents.get(formatted)
+        while parent is not None and parent is not worksheet:
+            if _local_name(parent) == 'pane':
+                pane_parent = parents.get(parent)
+                if pane_parent is not None:
+                    siblings = [child for child in pane_parent
+                                if _local_name(child) == 'pane']
+                    block['pane_index'] = siblings.index(parent)
+                if parent.get('id'):
+                    block['pane_id'] = parent.get('id')
+                break
+            parent = parents.get(parent)
+        blocks.append(block)
+    if not blocks:
+        return {}
+    if len(blocks) == 1:
+        result = {'formatted_label_runs': blocks[0]['runs']}
+        if len(panes) > 1:
+            result['formatted_label_blocks'] = blocks
+        return result
+    return {'formatted_label_blocks': blocks}
+
+
+def has_explicit_worksheet_background(worksheet):
+    """Whether a worksheet pane declares a fill, including an unknown one."""
+    for element in worksheet.iter():
+        tag = _local_name(element)
+        if not (tag == 'pane'
+                or (tag == 'style-rule' and element.get('element') == 'pane')):
+            continue
+        for name in element.attrib:
+            attr = name.rsplit('}', 1)[-1].split(':')[-1]
+            if (attr in ('background', 'fill')
+                    or attr.startswith(('fill-', 'background-'))):
+                return True
+        for fmt in element:
+            if _local_name(fmt) == 'format':
+                attr = fmt.get('attr', '')
+                if (attr in ('background', 'fill')
+                        or attr.startswith(('fill-', 'background-'))):
+                    return True
+    return False
 
 
 def build_field_provenance(root):
@@ -360,22 +568,38 @@ def extract_worksheet_filters(worksheet):
 
 def extract_formatting(element):
     """Extracts formatting information (colors, fonts, backgrounds, borders)"""
+    if _local_name(element) == 'dashboard':
+        return extract_dashboard_formatting(element)
+
     formatting = {}
+    pane_style_transparencies = []
 
     # Extract styles from <style-rule>
-    for style_rule in element.findall('.//style-rule'):
+    for style_rule in element.iter():
+        if style_rule is element or _local_name(style_rule) != 'style-rule':
+            continue
         rule_element = style_rule.get('element', '')
-        format_elem = style_rule.find('.//format')
-        if format_elem is not None:
-            attrs = dict(format_elem.attrib)
+        if rule_element == 'pane':
+            for name, value in style_rule.attrib.items():
+                if name.rsplit('}', 1)[-1].split(':')[-1] == 'background-transparency':
+                    pane_style_transparencies.append(value)
+        formats = [fmt for fmt in style_rule.iter() if _local_name(fmt) == 'format']
+        if formats:
+            attrs = dict(formats[0].attrib)
             if attrs:
                 formatting[rule_element] = attrs
         # Also collect all format children (some style-rules have multiple formats)
-        for fmt in style_rule.findall('.//format'):
+        for fmt in formats:
             attr_name = fmt.get('attr', '')
             attr_val = fmt.get('value', '')
+            if rule_element == 'pane' and attr_name == 'background-transparency':
+                pane_style_transparencies.append(attr_val)
             if attr_name and attr_val and rule_element:
                 formatting.setdefault(rule_element, {})[attr_name] = attr_val
+
+    if pane_style_transparencies:
+        formatting.setdefault('pane', {})['background-transparency'] = \
+            _coalesce_transparency(pane_style_transparencies)
 
     # Extract format encodings from <format>
     for fmt in element.findall('.//format'):
@@ -384,10 +608,48 @@ def extract_formatting(element):
         if field and fmt_str:
             formatting.setdefault('field_formats', {})[field] = fmt_str
 
-    # Background color
-    for pane_fmt in element.findall('.//pane/format'):
-        if pane_fmt.get('attr') == 'fill-color':
-            formatting['background_color'] = pane_fmt.get('value', '')
+    # Preserve the pane's explicit fill and independent transparency verbatim.
+    background_attrs = {
+        'fill-color': 'background_color',
+        'background-color': 'background_color',
+        'background-transparency': 'background_transparency',
+    }
+    pane_transparencies = []
+    for pane in element.iter():
+        if _local_name(pane) != 'pane':
+            continue
+        direct = {}
+        conflicts = set()
+        for name, value in pane.attrib.items():
+            attr = name.rsplit('}', 1)[-1].split(':')[-1]
+            key = background_attrs.get(attr)
+            if key is not None:
+                if key == 'background_transparency':
+                    pane_transparencies.append(value)
+                    continue
+                if key in direct and direct[key] != value:
+                    conflicts.add(key)
+                else:
+                    direct[key] = value
+                    formatting[key] = value
+        for pane_fmt in pane:
+            if _local_name(pane_fmt) != 'format':
+                continue
+            key = background_attrs.get(pane_fmt.get('attr', ''))
+            if key is not None:
+                value = pane_fmt.get('value', '')
+                if key == 'background_transparency':
+                    pane_transparencies.append(value)
+                    continue
+                if key in direct and direct[key] != value:
+                    conflicts.add(key)
+                formatting[key] = value
+        for key in conflicts:
+            # Keep an explicit unknown override, not an inherited/default fill.
+            formatting[key] = ''
+    if pane_transparencies:
+        formatting['background_transparency'] = \
+            _coalesce_transparency(pane_transparencies)
 
     # Table/header formatting depth (font sizes, weights, colors, borders, banding)
     for fmt_attr in ('font-size', 'font-family', 'font-weight', 'font-color',

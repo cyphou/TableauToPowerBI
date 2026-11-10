@@ -26,6 +26,7 @@ from prep_flow_parser import (
     _PREP_CONNECTION_MAP,
     _get_node_type,
     _topological_sort,
+    _validate_prep_source_map,
     get_prep_node_kind,
     read_prep_flow,
 )
@@ -159,7 +160,8 @@ class FlowProfile:
 #  EXTRACTION HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _extract_inputs(nodes: dict, connections: dict) -> List[FlowInput]:
+def _extract_inputs(nodes: dict, connections: dict,
+                    source_map: dict = None) -> List[FlowInput]:
     """Collect all input nodes from the flow."""
     inputs = []
     for nid, node in (nodes or {}).items():
@@ -169,7 +171,8 @@ def _extract_inputs(nodes: dict, connections: dict) -> List[FlowInput]:
         conn_id = node.get('connectionId', '')
         conn_def = (connections or {}).get(conn_id) or {}
         conn_attrs = {**(conn_def.get('connectionAttributes') or {}),
-                      **(node.get('connectionAttributes') or {})}
+                      **(node.get('connectionAttributes') or {}),
+                      **((source_map or {}).get(nid) or {})}
 
         conn_class = str(conn_attrs.get('class') or '').lower()
         conn_type = _PREP_CONNECTION_MAP.get(conn_class, conn_class)
@@ -350,8 +353,17 @@ def _extract_transforms(sorted_ids: list, nodes: dict) -> List[FlowTransform]:
                 details['aggregate_columns'] = anames
         elif sem in ('Pivot', 'SuperPivot', 'SuperUnpivotExtended'):
             details['pivot_type'] = node.get('pivotType', '')
-        elif sem in ('Script', 'RunScript', 'TabPy', 'RunCommand'):
-            details['script_type'] = node.get('scriptType', node.get('language', 'unknown'))
+        elif ttype in ('Script', 'Prediction'):
+            details['conversion_status'] = 'manual'
+            details['manual_reason'] = (
+                'Script logic is not auto-converted' if ttype == 'Script'
+                else 'Prediction logic is not auto-converted')
+            if ttype == 'Script':
+                details['script_type'] = node.get(
+                    'scriptType', node.get('language', 'unknown'))
+
+        if ttype in ('Script', 'Prediction'):
+            details['manual'] = True
 
         # Capture input/output column names when present
         fields = _field_names(node)
@@ -490,7 +502,7 @@ def _count_calcs(nodes: dict) -> int:
 
 def _assess_flow(inputs, outputs, transforms, join_count, union_count,
                  script_count, calc_count, dag_depth, node_count,
-                 unsupported_diagnostics=None) -> Dict[str, Any]:
+                 unsupported_diagnostics=None, source_binding_error='') -> Dict[str, Any]:
     """Produce a readiness assessment for one prep flow.
 
     Returns dict with grade (GREEN/YELLOW/RED), items list, and summary.
@@ -512,6 +524,25 @@ def _assess_flow(inputs, outputs, transforms, join_count, union_count,
     else:
         items.append({'category': 'script', 'status': 'pass',
                       'detail': 'No Script nodes'})
+
+    manual_steps = [
+        {
+            'node_id': transform.node_id,
+            'name': transform.name,
+            'type': transform.transform_type,
+            'status': 'manual',
+        }
+        for transform in transforms
+        if transform.transform_type in ('Script', 'Prediction')
+    ]
+    if manual_steps:
+        items.append({
+            'category': 'manual_conversion',
+            'status': 'warn',
+            'detail': (
+                f'{len(manual_steps)} Script/Prediction step(s) remain manual '
+                'placeholders; their calculations were not converted'),
+        })
 
     # Join complexity
     if join_count > 3:
@@ -555,6 +586,12 @@ def _assess_flow(inputs, outputs, transforms, join_count, union_count,
             'detail': f'{len(unsupported_diagnostics)} unsupported Prep shape(s) '
                       'block conversion; inspect diagnostics',
         })
+    if source_binding_error:
+        items.append({
+            'category': 'source_binding',
+            'status': 'fail',
+            'detail': source_binding_error,
+        })
 
     # Grade
     fail_count = sum(1 for it in items if it['status'] == 'fail')
@@ -565,13 +602,22 @@ def _assess_flow(inputs, outputs, transforms, join_count, union_count,
         grade = 'YELLOW'
     else:
         grade = 'GREEN'
+    status = (
+        'error' if grade == 'RED'
+        else 'manual_review_required' if manual_steps
+        else 'review_required' if grade == 'YELLOW'
+        else 'complete'
+    )
 
     return {
         'grade': grade,
+        'status': status,
         'items': items,
         'pass_count': sum(1 for it in items if it['status'] == 'pass'),
         'warn_count': warn_count,
         'fail_count': fail_count,
+        'manual_steps': manual_steps,
+        'manual_step_count': len(manual_steps),
     }
 
 
@@ -579,7 +625,8 @@ def _assess_flow(inputs, outputs, transforms, join_count, union_count,
 #  PUBLIC API
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def analyze_flow(filepath: str, include_m_queries: bool = False) -> FlowProfile:
+def analyze_flow(filepath: str, include_m_queries: bool = False,
+                 *, source_map=None) -> FlowProfile:
     """Parse one TFL/TFLX and extract full metadata.
 
     Args:
@@ -588,6 +635,8 @@ def analyze_flow(filepath: str, include_m_queries: bool = False) -> FlowProfile:
             Failures set assessment['conversion_error'] to a nonempty message,
             assessment['grade'] to RED, and assessment['status'] to error.
             Analysis-only profiles omit conversion_error.
+        source_map: Optional node-ID keyed original-source bindings for Hyper
+            inputs. May be an in-memory object or a path to a JSON file.
 
     Returns:
         FlowProfile with inputs, outputs, transforms, DAG stats
@@ -595,13 +644,20 @@ def analyze_flow(filepath: str, include_m_queries: bool = False) -> FlowProfile:
     flow = read_prep_flow(filepath)
     nodes = flow.get('nodes', {})
     connections = flow.get('connections', {})
+    source_binding_error = ''
+    validated_source_map = {}
+    try:
+        validated_source_map = _validate_prep_source_map(
+            source_map, nodes, connections)
+    except (OSError, ValueError) as exc:
+        source_binding_error = f'{type(exc).__name__}: {exc}'
     diagnostics = [
         dict(item) for item in (flow.get('_prep_diagnostics') or [])
         if isinstance(item, dict)
     ]
 
     sorted_ids = _topological_sort(nodes)
-    inputs = _extract_inputs(nodes, connections)
+    inputs = _extract_inputs(nodes, connections, validated_source_map)
     outputs = _extract_outputs(nodes)
     transforms = _extract_transforms(sorted_ids, nodes)
     node_graph, edge_count = _build_node_graph(nodes)
@@ -619,8 +675,11 @@ def analyze_flow(filepath: str, include_m_queries: bool = False) -> FlowProfile:
     conversion_error = ''
     if include_m_queries:
         try:
+            if source_binding_error:
+                raise ValueError(source_binding_error)
             from prep_flow_parser import parse_prep_flow
-            datasources = parse_prep_flow(filepath)
+            datasources = parse_prep_flow(
+                filepath, source_map=validated_source_map)
             if not datasources:
                 raise ValueError('Prep conversion produced zero outputs')
             for ds in datasources:
@@ -652,7 +711,13 @@ def analyze_flow(filepath: str, include_m_queries: bool = False) -> FlowProfile:
         inputs, outputs, transforms, join_count, union_count, script_count,
         calc_count, dag_depth, len(nodes),
         unsupported_diagnostics=diagnostics if not include_m_queries else [],
+        source_binding_error=(
+            source_binding_error if not include_m_queries else ''),
     )
+    if source_binding_error and not include_m_queries:
+        assessment['source_binding_error'] = source_binding_error
+    elif not include_m_queries and not assessment.get('manual_step_count'):
+        assessment['status'] = 'analysis_only'
     if diagnostics:
         assessment['unsupported_diagnostics'] = diagnostics
     if conversion_error:

@@ -21,6 +21,7 @@ Supported step types:
 - Output: PublishExtract, SaveToFile, SaveToDatabase
 """
 
+import heapq
 import json
 import logging
 import os
@@ -36,7 +37,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 from m_query_builder import (
     _M_GENERATORS,
     _m_literal,
-    generate_m_from_hyper,
     generate_power_query_m,
     inject_m_steps,
     m_transform_add_column,
@@ -64,6 +64,7 @@ from m_query_builder import (
     m_transform_union,
     m_transform_unpivot,
     m_transform_upper,
+    safe_m_comment_identity,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,134 @@ def _prep_m_connection_type(conn_type):
     if resolved not in _M_GENERATORS:
         raise ValueError(f'unsupported connector {conn_type!r}')
     return resolved
+
+
+_PREP_SOURCE_MAP_FIELDS = {
+    'class', 'server', 'port', 'dbname', 'database', 'schema', 'filename',
+    'directory', 'warehouse', 'project', 'dataset', 'table',
+}
+
+
+def _unique_json_object(pairs):
+    """Reject duplicate keys so a source binding cannot be silently replaced."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f'duplicate key {key!r}')
+        result[key] = value
+    return result
+
+
+def load_prep_source_map(source_map):
+    """Load a node-ID keyed source map from a JSON path or an in-memory object."""
+    if source_map is None:
+        return {}
+    if isinstance(source_map, (str, os.PathLike)):
+        try:
+            with open(source_map, 'r', encoding='utf-8') as handle:
+                source_map = json.load(handle, object_pairs_hook=_unique_json_object)
+        except json.JSONDecodeError as exc:
+            raise ValueError('Prep source map must contain valid JSON') from exc
+    if not isinstance(source_map, dict):
+        raise ValueError('Prep source map must be a JSON object keyed by node ID')
+
+    normalized = {}
+    for node_id, attributes in source_map.items():
+        if not isinstance(node_id, str) or not node_id.strip():
+            raise ValueError('Prep source map node IDs must be nonempty strings')
+        if not isinstance(attributes, dict):
+            raise ValueError(
+                f'Prep source map entry for {node_id!r} must be an object')
+        unknown = set(attributes) - _PREP_SOURCE_MAP_FIELDS
+        if unknown:
+            raise ValueError(
+                f'Prep source map entry for {node_id!r} has unsupported fields: '
+                f'{sorted(unknown)!r}')
+        if not isinstance(attributes.get('class'), str) or not attributes['class'].strip():
+            raise ValueError(
+                f'Prep source map entry for {node_id!r} requires a connector class')
+        if not isinstance(attributes.get('table'), str) or not attributes['table'].strip():
+            raise ValueError(
+                f'Prep source map entry for {node_id!r} requires a table')
+        for key, value in attributes.items():
+            if key == 'port':
+                if isinstance(value, bool) or not isinstance(value, (str, int)):
+                    raise ValueError(
+                        f'Prep source map field {key!r} for {node_id!r} must be text or an integer')
+            elif not isinstance(value, str):
+                raise ValueError(
+                    f'Prep source map field {key!r} for {node_id!r} must be text')
+        source_fields = (
+            'server', 'dbname', 'database', 'filename', 'directory',
+            'warehouse', 'project', 'dataset',
+        )
+        if not any(str(attributes.get(key, '')).strip() for key in source_fields):
+            raise ValueError(
+                f'Prep source map entry for {node_id!r} requires source details')
+
+        try:
+            from powerbi_import.security_validator import scan_for_credentials
+        except ImportError as exc:
+            raise RuntimeError(
+                'Prep source-map credential validation is unavailable') from exc
+        credential_in_value = any(
+            scan_for_credentials(str(value))
+            or re.search(r'(?:^|//)[^/@:\s]+:[^/@\s]+@', str(value))
+            for value in attributes.values()
+        )
+        if credential_in_value:
+            raise ValueError(
+                f'Prep source map entry for {node_id!r} must not contain credentials')
+        normalized[node_id] = dict(attributes)
+    return normalized
+
+
+def _prep_connection_attributes(node, connections, source_override=None):
+    """Combine the flow's connection metadata with an explicit source rebind."""
+    conn_id = node.get('connectionId', '')
+    conn_def = _as_dict(connections.get(conn_id))
+    conn_attrs = _as_dict(conn_def.get('connectionAttributes'))
+    node_conn_attrs = _as_dict(node.get('connectionAttributes'))
+    return {**conn_attrs, **node_conn_attrs, **(source_override or {})}
+
+
+def _validate_prep_source_map(source_map, nodes, connections):
+    """Validate rebinds against the exact Hyper input nodes in a normalized flow."""
+    source_map = load_prep_source_map(source_map)
+    hyper_node_ids = set()
+    for node_id, node in nodes.items():
+        if get_prep_node_kind(node) != 'input':
+            continue
+        attributes = _prep_connection_attributes(node, connections)
+        connection_class = str(attributes.get('class') or '').strip().lower()
+        if connection_class in ('hyper', 'extract'):
+            hyper_node_ids.add(node_id)
+
+    unknown = set(source_map) - set(nodes)
+    if unknown:
+        raise ValueError(
+            f'Prep source map references unknown nodes: {sorted(unknown)!r}')
+    non_hyper = set(source_map) - hyper_node_ids
+    if non_hyper:
+        raise ValueError(
+            f'Prep source map entries must target Hyper input nodes: '
+            f'{sorted(non_hyper)!r}')
+    missing = hyper_node_ids - set(source_map)
+    if missing:
+        raise ValueError(
+            f'Hyper Prep input node(s) require explicit source-map entries: '
+            f'{sorted(missing)!r}')
+
+    for node_id, attributes in source_map.items():
+        connection_class = attributes['class'].strip().lower()
+        if connection_class in ('hyper', 'extract'):
+            raise ValueError(
+                f'Prep source map entry for {node_id!r} must name the original '
+                'non-Hyper connector')
+        connection_type = _PREP_CONNECTION_MAP.get(
+            connection_class, connection_class)
+        _prep_m_connection_type(connection_type)
+    return source_map
 
 
 # Prep data type → Power Query M type
@@ -1301,7 +1430,7 @@ def _as_list(value):
 #  INPUT NODE → CONNECTION + TABLE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _parse_input_node(node, connections):
+def _parse_input_node(node, connections, source_override=None):
     """
     Parse an input node into a connection dict and table dict
     compatible with generate_power_query_m().
@@ -1309,13 +1438,8 @@ def _parse_input_node(node, connections):
     Returns:
         (connection_dict, table_dict)
     """
-    conn_id = node.get('connectionId', '')
-    conn_def = _as_dict(connections.get(conn_id))
-    conn_attrs = _as_dict(conn_def.get('connectionAttributes'))
-    node_conn_attrs = _as_dict(node.get('connectionAttributes'))
-
-    # Merge connection-level and node-level attributes
-    all_attrs = {**conn_attrs, **node_conn_attrs}
+    all_attrs = _prep_connection_attributes(
+        node, connections, source_override=source_override)
 
     # Map Prep connection class to m_query_builder type
     conn_class = (all_attrs.get('class') or '').strip().lower()
@@ -2574,7 +2698,7 @@ def _parse_pivot_node(node):
 #  MAIN FLOW PARSER — CONVERTS ENTIRE FLOW TO DATASOURCES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def parse_prep_flow(filepath, simple_join_policies=None):
+def parse_prep_flow(filepath, simple_join_policies=None, *, source_map=None):
     """
     Parse a Tableau Prep flow file and convert to datasource definitions
     compatible with the Power BI generation pipeline.
@@ -2586,6 +2710,8 @@ def parse_prep_flow(filepath, simple_join_policies=None):
         filepath: Path to .tfl or .tflx file
         simple_join_policies: Optional node-keyed semantic attestations. When
             omitted, TTPBI_PREP_SIMPLE_JOIN_POLICIES supplies the same JSON.
+        source_map: Optional node-ID keyed original-source bindings for Hyper
+            inputs. May be an in-memory object or a path to a JSON file.
 
     Returns:
         list of datasource dicts, each with:
@@ -2613,6 +2739,7 @@ def parse_prep_flow(filepath, simple_join_policies=None):
         )
     nodes = _as_dict(flow.get('nodes', {}))
     connections = _as_dict(flow.get('connections', {}))
+    source_map = _validate_prep_source_map(source_map, nodes, connections)
     simple_join_ids = {
         nid for nid, node in nodes.items()
         if node.get('_prep_simple_join_dialect') == _PREP_SIMPLE_JOIN_DIALECT
@@ -2647,16 +2774,23 @@ def parse_prep_flow(filepath, simple_join_policies=None):
     for nid in sorted_ids:
         _process_prep_node(
             nid, nodes, connections, node_results, secondary_branch_ids,
-            simple_join_policies=simple_join_policies)
+            simple_join_policies=simple_join_policies, source_map=source_map)
 
     # Collect output nodes into datasources
-    return _collect_prep_datasources(
-        sorted_ids, nodes, node_results, secondary_branch_ids
+    datasources = _collect_prep_datasources(
+        sorted_ids, nodes, node_results, secondary_branch_ids,
+        flow_name=os.path.basename(os.fspath(filepath).replace('\\', '/')),
     )
+    for datasource in datasources:
+        datasource['m_query_override'] = add_prep_provenance_comments(
+            datasource['m_query_override'], datasource.get('prep_provenance'),
+            ordered_node_ids=sorted_ids,
+        )
+    return datasources
 
 
 def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_ids,
-                       simple_join_policies=None):
+                       simple_join_policies=None, source_map=None):
     """Process one input/transform/output node and store its result."""
     nodes = _as_dict(nodes)
     connections = _as_dict(connections)
@@ -2666,13 +2800,26 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
     node_name = node.get('name', nid[:8])
 
     if base_type == 'input':
-        _process_input_node(nid, node, connections, node_results, node_name)
+        _process_input_node(
+            nid, node, connections, node_results, node_name,
+            source_map=source_map)
 
     elif base_type == 'transform':
         upstream_ids = _find_upstream_nodes(nodes, nid)
         _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                                 node_results, secondary_branch_ids, node_name,
                                 simple_join_policies=simple_join_policies)
+        if nid in node_results:
+            manual_steps = []
+            seen_manual_ids = set()
+            for upstream_id in [*upstream_ids, nid]:
+                result = node_results.get(upstream_id, {})
+                for step in result.get('prep_manual_steps', []):
+                    step_id = step.get('node_id')
+                    if step_id and step_id not in seen_manual_ids:
+                        seen_manual_ids.add(step_id)
+                        manual_steps.append(step)
+            node_results[nid]['prep_manual_steps'] = manual_steps
         _declared_schema(
             node, node_results[nid], f'transform {nid!r}',
             project=node.get('_prep_simple_join_dialect')
@@ -2700,41 +2847,23 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
         )
 
 
-def _process_input_node(nid, node, connections, node_results, node_name):
-    """Process an input node: parse connection and generate base M query.
-
-    For Hyper connections, attempts to read actual schema/data via
-    ``hyper_reader`` to produce a richer M expression.
-    """
+def _process_input_node(nid, node, connections, node_results, node_name,
+                        source_map=None):
+    """Process an input node using its original binding or explicit rebind."""
     node = _as_dict(node)
     connections = _as_dict(connections)
     if _get_node_type(node) in ('PublishedDataSource', 'LoadPublishedDataSource'):
         _process_transform_node(nid, node, {}, [], _get_node_type(node),
                                 node_results, set(), node_name)
         return
-    connection, table = _parse_input_node(node, connections)
+    connection, table = _parse_input_node(
+        node, connections, source_override=(source_map or {}).get(nid))
     conn_type = connection.get('type', '')
 
-    m_query = None
-    # For hyper sources, try to read actual data first
-    if conn_type.lower() in ('hyper', 'extract'):
-        filename = connection.get('details', {}).get('filename', '')
-        if filename:
-            try:
-                from hyper_reader import read_hyper
-                result = _as_dict(read_hyper(filename, max_rows=20))
-                hyper_tables = _as_list(result.get('tables', []))
-                if hyper_tables:
-                    m_query = generate_m_from_hyper(
-                        hyper_tables, table.get('name'))
-            except (ImportError, OSError, KeyError, ValueError) as exc:
-                logger.debug('Hyper read failed for %s: %s', node_name, exc)
-
-    if m_query is None:
-        # Keep lineage metadata stable while dispatching to an actual builder
-        # connector (CSV instead of textscan, PostgreSQL instead of postgres).
-        m_connection = {**connection, 'type': _prep_m_connection_type(conn_type)}
-        m_query = generate_power_query_m(m_connection, table)
+    # Keep lineage metadata stable while dispatching to an actual builder
+    # connector (CSV instead of textscan, PostgreSQL instead of postgres).
+    m_connection = {**connection, 'type': _prep_m_connection_type(conn_type)}
+    m_query = generate_power_query_m(m_connection, table)
 
     node_results[nid] = {
         'connection': connection,
@@ -3092,12 +3221,21 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 f'manual migration required */", type text)'
             )
             m_query = inject_m_steps(upstream['m_query'], [comment_step])
+            manual_step = {
+                'node_id': nid,
+                'name': node_name,
+                'type': 'Script',
+                'status': 'manual',
+                'reason': 'Script logic is not auto-converted',
+            }
             node_results[nid] = {
                 **upstream,
                 'name': node_name,
                 'm_query': m_query,
                 'fields': _schema(upstream.get('fields', []) + [
                     {'name': '__script_warning', 'type': 'string'}], 'script warning'),
+                'prep_manual_steps': [
+                    *upstream.get('prep_manual_steps', []), manual_step],
             }
             print(
                 f"    ⚠ Script step ({script_lang}): {node_name} "
@@ -3115,6 +3253,13 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 'use Power BI AutoML or Python visual */", type text)'
             )
             m_query = inject_m_steps(upstream['m_query'], [comment_step])
+            manual_step = {
+                'node_id': nid,
+                'name': node_name,
+                'type': 'Prediction',
+                'status': 'manual',
+                'reason': 'Prediction logic is not auto-converted',
+            }
             node_results[nid] = {
                 **upstream,
                 'name': node_name,
@@ -3122,6 +3267,8 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                 'fields': _schema(upstream.get('fields', []) + [
                     {'name': '__prediction_warning', 'type': 'string'}],
                     'prediction warning'),
+                'prep_manual_steps': [
+                    *upstream.get('prep_manual_steps', []), manual_step],
             }
             print(f"    ⚠ Prediction step: {node_name} — manual migration required")
 
@@ -3185,12 +3332,14 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
         )
 
 
-def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_ids):
+def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_ids,
+                             flow_name=''):
     """Collect node results into datasource definitions for the PBI pipeline."""
     nodes = _as_dict(nodes)
     node_results = _as_dict(node_results)
     secondary_branch_ids = set(secondary_branch_ids or [])
     datasources = []
+    emitted_node_ids = []
     output_count = 0
     explicit_outputs = [nid for nid, node in nodes.items()
                         if get_prep_node_kind(node) == 'output']
@@ -3253,8 +3402,10 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
                 'is_prep_source': True,
                 'prep_role': 'secondary',
                 'prep_dependencies': result.get('prep_dependencies', []),
+                'prep_manual_steps': list(result.get('prep_manual_steps', [])),
             }
             datasources.append(datasource)
+            emitted_node_ids.append(sec_id)
             print(f"    + Secondary table emitted: {table_name}")
 
     # Then collect output nodes
@@ -3290,8 +3441,10 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
                 'prep_role': 'output',
                 'prep_dependencies': result.get('prep_dependencies', []),
                 'prep_output_type': result.get('prep_output_type', ''),
+                'prep_manual_steps': list(result.get('prep_manual_steps', [])),
             }
             datasources.append(datasource)
+            emitted_node_ids.append(nid)
             output_count += 1
 
     # If no output nodes, use all leaf nodes (nodes with no outgoing edges)
@@ -3327,15 +3480,142 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
                     'is_prep_source': True,
                     'prep_role': 'output',
                     'prep_dependencies': result.get('prep_dependencies', []),
+                    'prep_manual_steps': list(result.get('prep_manual_steps', [])),
                 }
                 datasources.append(datasource)
+                emitted_node_ids.append(nid)
                 output_count += 1
 
     if not output_count:
         raise ValueError(
             'Prep flow produced zero outputs (no resolved explicit output or leaf)'
         )
+
+    # Inventory only the normalized graph that actually fed each emitted query.
+    # Do not copy node payloads: they may contain sources, formulas or credentials.
+    upstream = {nid: set() for nid in nodes}
+    for nid, node in nodes.items():
+        for edge in node.get('nextNodes', []):
+            upstream[edge['nextNodeId']].add(nid)
+    for datasource, output_id in zip(datasources, emitted_node_ids):
+        ancestors = set()
+        pending = [output_id]
+        while pending:
+            nid = pending.pop()
+            if nid not in ancestors:
+                ancestors.add(nid)
+                pending.extend(upstream[nid])
+        manual_ids = {
+            step.get('node_id')
+            for step in node_results[output_id].get('prep_manual_steps', [])
+        }
+        datasource['prep_provenance'] = {
+            'flow': flow_name,
+            'output_node_id': output_id,
+            'output_name': datasource['tables'][0]['name'],
+            'nodes': [
+                {
+                    'id': nid,
+                    'name': nodes[nid].get('name', nid[:8]),
+                    'kind': get_prep_node_kind(nodes[nid]),
+                    'upstream_ids': sorted(upstream[nid]),
+                    'status': 'manual' if nid in manual_ids else 'converted',
+                }
+                for nid in sorted(ancestors)
+            ],
+        }
     return datasources
+
+
+_PREP_COMMENT_BEGIN = '    // Tableau Prep provenance (metadata only)'
+_PREP_COMMENT_END = '    // End Tableau Prep provenance'
+
+
+def _prep_comment_identity(value):
+    """Apply the shared safe identity policy with Prep's placeholder labels."""
+    if (not isinstance(value, str) or not value
+            or not any(char.isprintable() and not char.isspace() for char in value)):
+        return '(unavailable)'
+    return safe_m_comment_identity(value) or '[omitted]'
+
+
+def add_prep_provenance_comments(m_query, provenance, *, ordered_node_ids=None):
+    """Add metadata-only Prep comments to an emitted query, exactly once.
+
+    ``ordered_node_ids`` is the flow's topological order; provenance is scoped
+    to the emitted node and its ancestors. No expression text is rewritten.
+    This helper can also be used at a final emission boundary if required.
+    """
+    if not isinstance(m_query, str) or not isinstance(provenance, dict):
+        return m_query
+    match = re.match(r'\A(\s*let)(?=\s)', m_query)
+    if not match:
+        return m_query
+    suffix = m_query[match.end():]
+    # Replace only our own leading block. This makes repeated calls idempotent
+    # and permits a caller to refresh metadata without touching executable M.
+    prior = re.match(
+        r'\n' + re.escape(_PREP_COMMENT_BEGIN) + r'\n'
+        r'(?:    // [^\r\n]*\n)*?' + re.escape(_PREP_COMMENT_END) + r'\n',
+        suffix,
+    )
+    if prior:
+        suffix = suffix[prior.end():]
+
+    nodes = provenance.get('nodes', [])
+    nodes = [node for node in nodes if isinstance(node, dict)] if isinstance(nodes, list) else []
+    # Independent branches have no execution order relative to one another.
+    # Break ties by node ID rather than input dictionary order so the same
+    # graph produces the same comments under equivalent serializations.
+    if nodes and all(isinstance(node.get('id'), str)
+                     and isinstance(node.get('upstream_ids'), list)
+                     for node in nodes):
+        by_id = {node['id']: node for node in nodes}
+        if len(by_id) == len(nodes):
+            parents = {
+                nid: {parent for parent in node['upstream_ids']
+                      if isinstance(parent, str) and parent in by_id}
+                for nid, node in by_id.items()
+            }
+            children = {nid: [] for nid in by_id}
+            for nid, parent_ids in parents.items():
+                for parent in parent_ids:
+                    children[parent].append(nid)
+            ready = [nid for nid, parent_ids in parents.items() if not parent_ids]
+            heapq.heapify(ready)
+            ordered = []
+            while ready:
+                nid = heapq.heappop(ready)
+                ordered.append(by_id[nid])
+                for child in children[nid]:
+                    parents[child].remove(nid)
+                    if not parents[child]:
+                        heapq.heappush(ready, child)
+            if len(ordered) == len(nodes):
+                nodes = ordered
+    elif ordered_node_ids is not None:
+        rank = {node_id: index for index, node_id in enumerate(ordered_node_ids)}
+        nodes.sort(key=lambda node: rank.get(node.get('id'), len(rank)))
+    lines = [
+        _PREP_COMMENT_BEGIN,
+        '    // Flow: ' + _prep_comment_identity(provenance.get('flow')),
+        '    // Emitted node: ' + _prep_comment_identity(provenance.get('output_name'))
+        + ' (id: ' + _prep_comment_identity(provenance.get('output_node_id')) + ')',
+        '    // Steps are conversion records, not evidence of semantic equivalence.',
+    ]
+    if any(node.get('status') == 'manual' for node in nodes):
+        lines.append('    // Warning: manual steps require migration review.')
+    for node in nodes:
+        status = 'manual' if node.get('status') == 'manual' else 'converted'
+        kind = node.get('kind')
+        kind = kind if kind in ('input', 'transform', 'output') else 'node'
+        lines.append(
+            '    // Step: ' + _prep_comment_identity(node.get('name'))
+            + ' (id: ' + _prep_comment_identity(node.get('id'))
+            + '; kind: ' + kind + '; status: ' + status + ')'
+        )
+    lines.append(_PREP_COMMENT_END)
+    return m_query[:match.end()] + '\n' + '\n'.join(lines) + '\n' + suffix
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3508,7 +3788,7 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources, *, return_report
                         f'Workbook table {name!r} references absent Prep columns '
                         f'{missing!r}'
                     )
-            plan.append((ds_index, table_index, candidate))
+            plan.append((ds_index, table_index, candidate, method))
             used.add(candidate)
             coverage['matched'].append(
                 {**identity, 'output': outputs[candidate], 'method': method}
@@ -3523,7 +3803,7 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources, *, return_report
         )
     if not plan:
         reject('No exact Prep bindings found for workbook sources')
-    for ds_index, table_index, _ in plan:
+    for ds_index, table_index, _, _ in plan:
         name = twb_datasources[ds_index]['tables'][table_index]['name']
         if len(table_names[name.casefold()]) != 1:
             reject(
@@ -3554,7 +3834,7 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources, *, return_report
                 needed.add(index)
                 queries.append(prep_datasources[index])
     merged = deepcopy(twb_datasources)
-    for ds_index, table_index, index in plan:
+    for ds_index, table_index, index, _ in plan:
         ds = merged[ds_index]
         table = ds['tables'][table_index]
         prep = prep_datasources[index]
@@ -3574,5 +3854,20 @@ def merge_prep_with_workbook(prep_datasources, twb_datasources, *, return_report
         merged.append(deepcopy(prep_datasources[index]))
         coverage['secondary_queries'].append(prep_datasources[index]['tables'][0]['name'])
     coverage['status'] = 'complete'
+    # The validated binding plan is the authority for target names and methods.
+    # Publish metadata only after every binding and dependency has succeeded.
+    # A workbook may itself be a prior merge result: never retain old run records.
+    for ds in merged:
+        ds.pop('prep_bindings', None)
+        ds.pop('prep_binding_coverage', None)
+    for ds_index, table_index, index, method in plan:
+        prep = prep_datasources[index]
+        merged[ds_index].setdefault('prep_bindings', []).append({
+            'table': merged[ds_index]['tables'][table_index]['name'],
+            'output': outputs[index],
+            'method': method,
+            'provenance': deepcopy(prep.get('prep_provenance', {})),
+        })
+    merged[0]['prep_binding_coverage'] = deepcopy(coverage)
     print('    Prep binding coverage: ' + json.dumps(coverage, ensure_ascii=False))
     return (merged, coverage) if return_report else merged

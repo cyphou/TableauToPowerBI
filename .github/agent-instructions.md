@@ -102,7 +102,8 @@ These are real bugs that occurred during development. Review before every implem
     - No aggregation + column references owned by one physical table →
        calculated column when row context is needed
     - Unaggregated Tableau `role=measure` with references owned by multiple
-       physical tables → measure; aggregate fields in filter context
+       physical tables → measure; unproved row/aggregation grain emits a
+       diagnostic `TODO`/`BLANK()` rather than guessed aggregation
    - No aggregation + no column refs → measure
 2. **RELATED()** — manyToOne cross-table refs only
 3. **LOOKUPVALUE()** — manyToMany cross-table refs only

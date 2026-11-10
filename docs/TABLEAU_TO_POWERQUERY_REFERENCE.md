@@ -133,15 +133,20 @@ metadata or explicit configuration; no alternate file or field is substituted.
 
 ## 5. Relationship / Join Properties
 
+These entries describe relationship metadata, not a row-preserving physical
+join. A relationship alone does not reproduce join multiplicity, outer-join
+nulls or calculation grain. Filter direction and cardinality require review
+against the source data.
+
 | # | Tableau Property | Semantic Model (TMDL) | Status | Notes |
 |---|-----------------|----------------------|--------|-------|
-| 1 | Join type: `inner` | `crossFilteringBehavior: oneDirection` | ✅ | |
-| 2 | Join type: `left` | `crossFilteringBehavior: oneDirection` | ✅ | |
-| 3 | Join type: `right` | `crossFilteringBehavior: oneDirection` | ✅ | Reversed direction |
-| 4 | Join type: `full` | `crossFilteringBehavior: bothDirections` | ✅ | manyToMany |
-| 5 | Join columns (from/to) | TMDL relationship `fromColumn`/`toColumn` | ✅ | |
-| 6 | Cardinality (auto-detected) | `manyToOne` / `manyToMany` | ✅ | Based on column count ratio |
-| 7 | Cross-table references | `RELATED()` / `LOOKUPVALUE()` | ✅ | Inferred from DAX refs |
+| 1 | Join type: `inner` | Model relationship | ⚠️ | Not an inner row join |
+| 2 | Join type: `left` | Model relationship | ⚠️ | Does not materialize unmatched left rows |
+| 3 | Join type: `right` | Model relationship | ⚠️ | Does not materialize unmatched right rows |
+| 4 | Join type: `full` | Model relationship | ⚠️ | Does not reproduce a full outer join; final filter direction may be adjusted |
+| 5 | Join columns (from/to) | TMDL relationship `fromColumn`/`toColumn` | ⚠️ | Applicable only when the represented predicate supports the selected endpoints |
+| 6 | Cardinality (auto-detected) | `manyToOne` / `manyToMany` | ⚠️ | Column-count heuristic, not verified source-key uniqueness |
+| 7 | Cross-table references | `RELATED()` / `LOOKUPVALUE()` | ⚠️ | Requires a valid relationship and appropriate row context |
 
 ---
 

@@ -141,6 +141,11 @@ _NON_DIRECTQUERY_FILE_CONNECTORS = frozenset({
 })
 
 
+def _calculation_alias_key(value):
+    """Normalize a target calculation name for case-insensitive PBI collisions."""
+    return value.casefold() if isinstance(value, str) else ''
+
+
 def _normalize_model_mode(model_mode):
     """Canonicalize supported storage modes rather than silently defaulting."""
     if model_mode is None or (isinstance(model_mode, str) and not model_mode.strip()):
@@ -1159,6 +1164,9 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
     """
     if extra_objects is None:
         extra_objects = {}
+
+    from powerbi_import.tmdl_relationships import preflight_physical_joins
+    preflight_physical_joins(datasources, provenance_retained=True)
 
     model_mode = _normalize_model_mode(model_mode)
     effective_culture = culture or "en-US"
@@ -3773,7 +3781,12 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 "name": caption,
                 "expression": dax_formula,
                 "formatString": _get_format_string(datatype),
-                "displayFolder": _get_display_folder(datatype, role)
+                "displayFolder": _get_display_folder(datatype, role),
+                "_tableau_calculation_identity": {
+                    "name": calc.get('name', ''),
+                    "caption": calc.get('caption', ''),
+                    "datasource_name": calc.get('datasource_name', ''),
+                },
             }
             # Propagate description from Tableau (if extracted)
             calc_desc = calc.get('description', '')

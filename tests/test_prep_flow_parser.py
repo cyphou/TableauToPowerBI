@@ -23,6 +23,7 @@ from tests.prep_flow_fixtures import (
     operation,
     output,
     source,
+    split_generated_prep_metadata,
     write_flow,
 )
 
@@ -776,6 +777,116 @@ class TestParseInputNode(unittest.TestCase):
         self.assertEqual(conn['type'], 'postgres')
         self.assertEqual(conn['details']['server'], 'localhost')
         self.assertEqual(conn['details']['database'], 'mydb')
+
+
+class TestHyperInputRebinding(unittest.TestCase):
+    """Hyper inputs require an explicit, credential-free original source."""
+
+    def _flow(self):
+        hyper = _input_node(
+            'Extract', 'hyper', fields=[{'name': 'ID', 'type': 'integer'}],
+            next_ids=['out'])
+        hyper['nodeType'] = '.v1.LoadHyper'
+        hyper['connectionAttributes'] = {
+            'class': 'hyper', 'filename': 'extract.hyper', 'table': 'Extract',
+        }
+        return _make_flow(
+            {'hyper': hyper, 'out': _output_node('PublishedSales')},
+            {'hyper': {'connectionAttributes': {
+                'class': 'hyper', 'filename': 'extract.hyper',
+            }}},
+        )
+
+    def test_unmapped_hyper_input_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = write_flow(td, self._flow())
+            with self.assertRaisesRegex(ValueError, 'require explicit source-map'):
+                parse_prep_flow(path)
+
+    def test_json_source_map_rebinds_without_hyper_sample(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = write_flow(td, self._flow())
+            mapping_path = os.path.join(td, 'prep-source-map.json')
+            with open(mapping_path, 'w', encoding='utf-8') as handle:
+                json.dump({
+                    'hyper': {
+                        'class': 'sqlserver',
+                        'server': 'warehouse.example',
+                        'dbname': 'Sales',
+                        'schema': 'dbo',
+                        'table': 'Orders',
+                    },
+                }, handle)
+
+            datasources = parse_prep_flow(path, source_map=mapping_path)
+            output_ds = next(ds for ds in datasources if ds['prep_role'] == 'output')
+            self.assertEqual(output_ds['connections'][0]['type'], 'sqlserver')
+            self.assertIn(
+                'Sql.Database("warehouse.example", "Sales")',
+                output_ds['m_query_override'])
+            self.assertIn('[Schema="dbo", Item="Orders"]', output_ds['m_query_override'])
+            self.assertNotIn('extract.hyper', output_ds['m_query_override'])
+
+    def test_source_map_rejects_unknown_fields_and_non_hyper_nodes(self):
+        with tempfile.TemporaryDirectory() as td:
+            hyper_path = write_flow(td, self._flow())
+            with self.assertRaisesRegex(ValueError, 'unsupported fields'):
+                parse_prep_flow(hyper_path, source_map={
+                    'hyper': {
+                        'class': 'sqlserver', 'server': 'warehouse.example',
+                        'database': 'Sales', 'table': 'Orders',
+                        'password': 'not-accepted',
+                    },
+                })
+
+            csv_flow = _make_flow({
+                'input': _input_node(next_ids=['out']),
+                'out': _output_node('PublishedSales'),
+            })
+            csv_path = write_flow(td, csv_flow, 'csv.tfl')
+            with self.assertRaisesRegex(ValueError, 'must target Hyper input'):
+                parse_prep_flow(csv_path, source_map={
+                    'input': {
+                        'class': 'sqlserver', 'server': 'warehouse.example',
+                        'database': 'Sales', 'table': 'Orders',
+                    },
+                })
+
+    def test_source_map_rejects_duplicate_json_keys(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = write_flow(td, self._flow())
+            mapping_path = os.path.join(td, 'duplicate.json')
+            with open(mapping_path, 'w', encoding='utf-8') as handle:
+                handle.write(
+                    '{"hyper":{"class":"sqlserver","server":"one",'
+                    '"database":"Sales","table":"Orders"},'
+                    '"hyper":{"class":"postgres","server":"two",'
+                    '"database":"Sales","table":"Orders"}}')
+            with self.assertRaisesRegex(ValueError, 'duplicate key'):
+                parse_prep_flow(path, source_map=mapping_path)
+
+    def test_source_map_rejects_credentials_and_hyper_rebinding(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = write_flow(td, self._flow())
+            for binding in [
+                {
+                    'class': 'sqlserver', 'server': 'warehouse.example',
+                    'database': 'Sales;password=SensitiveValue',
+                    'table': 'Orders',
+                },
+                {
+                    'class': 'sqlserver',
+                    'server': 'postgres://user:secret@warehouse.example',
+                    'database': 'Sales', 'table': 'Orders',
+                },
+                {
+                    'class': 'hyper', 'server': 'warehouse.example',
+                    'database': 'Sales', 'table': 'Orders',
+                },
+            ]:
+                with self.subTest(binding=binding):
+                    with self.assertRaisesRegex(ValueError, 'credentials|original'):
+                        parse_prep_flow(path, source_map={'hyper': binding})
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2195,9 +2306,11 @@ class TestPrepContainerReports81To83(unittest.TestCase):
                     path = write_flow(directory, flow, filename, member)
                     self.assertEqual(read_prep_flow(path), expected_graph)
                     queries = [ds['m_query_override'] for ds in parse_prep_flow(path)]
+                    comparable = [split_generated_prep_metadata(query, filename)
+                                  for query in queries]
                     if expected_queries is None:
-                        expected_queries = queries
-                    self.assertEqual(queries, expected_queries)
+                        expected_queries = comparable
+                    self.assertEqual(comparable, expected_queries)
                     self.assert_actual_chain(queries[0])
 
 

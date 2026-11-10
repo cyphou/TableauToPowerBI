@@ -25,6 +25,15 @@ from powerbi_import.tmdl_generator import generate_tmdl
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
 
 
+_GENERATED_DAX_PROVENANCE = re.compile(
+    r"^/\* Tableau calculation; migrated to DAX"
+    r"(?=; (?:name|identifier): )"
+    r"(?:; name: [\w -]+)?"
+    r"(?:; identifier: [\w -]+)?"
+    r"(?:; warning: conversion validation failed; review DAX)? \*/ "
+)
+
+
 def _split_arguments(text):
     """Split only at top-level commas, respecting DAX strings and references."""
     tokens = re.finditer(r'"(?:[^"]|"")*"|\'(?:[^\']|\'\')*\''
@@ -47,6 +56,7 @@ def _split_arguments(text):
 def _evaluate(expression, rows, measures=None, row=None):
     """Execute just the scalar/ALLEXCEPT subset used by these regressions."""
     expression = expression.strip()
+    expression = _GENERATED_DAX_PROVENANCE.sub("", expression, count=1)
     measures = measures or {}
     while expression.startswith("(") and expression.endswith(")"):
         # Strip grouping only when its closing parenthesis ends the expression.
@@ -302,6 +312,19 @@ class TestAuditFixedSourceToOutput(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "Unsupported"):
             _evaluate("1 / 0", [])
 
+    def test_oracle_accepts_only_generated_provenance_not_arbitrary_comments(self):
+        prefix = "/* Tableau calculation; migrated to DAX; name: Group ratio; identifier: ratio */ "
+        self.assertEqual(_evaluate(prefix + "DIVIDE(6, 2)", []), 3)
+        for expression in (
+            prefix + "1 / 0",
+            "/* unrelated */ 1",
+            "/* Tableau calculation; migrated to DAX; other: ratio */ 1",
+            prefix + "/* unrelated */ 1",
+        ):
+            with self.subTest(expression=expression):
+                with self.assertRaisesRegex(AssertionError, "Unsupported"):
+                    _evaluate(expression, [])
+
     def test_converted_fixed_aggregate_division_executes_undefined_as_blank(self):
         for nullif in (False, True):
             source = _datasource("unused.csv", nullif)["calculations"][0]["formula"]
@@ -398,6 +421,11 @@ class TestAuditFixedSourceToOutput(unittest.TestCase):
         self.assertNotRegex(content, r"(?m)^\tmeasure 'Group band' =")
         classifier = _serialized_dax(content, "column", "Group band")
         ratio = _serialized_dax(content, "measure", "Group ratio")
+        prefix = "/* Tableau calculation; migrated to DAX; name: Group ratio; identifier: ratio */ "
+        self.assertTrue(ratio.startswith(prefix), ratio)
+        self.assertEqual(_GENERATED_DAX_PROVENANCE.sub("", ratio, count=1),
+                         ratio[len(prefix):])
+        self.assertTrue(ratio[len(prefix):].startswith("CALCULATE(DIVIDE("), ratio)
         self.assertIn("ALLEXCEPT('Facts', 'Facts'[Entity])", classifier)
         # Refresh-time grouping must be self-contained. A measure call here
         # creates an unsafe dependency/context-transition closure and fails the
@@ -500,6 +528,7 @@ class TestAuditFinalPowerQueryExport(unittest.TestCase):
                     # run real post-generation synchronization/export through
                     # the batch entry point.
                     with patch.object(migrate, "run_generation", return_value=True), \
+                            patch("powerbi_import.powerbi_internal_lineage.write_powerbi_lineage_artifacts"), \
                             patch.object(migrate, "run_migration_report", return_value={}):
                         result = migrate._migrate_single_workbook(
                             tableau_file=str(workbook), basename=NAME,

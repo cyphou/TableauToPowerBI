@@ -100,9 +100,9 @@ output and is not forwarded.
 | Flag | Purpose |
 |------|---------|
 | `--max-zip-entry-mb N` | Positive per-entry uncompressed limit in MiB; explicit option > `TTPBI_MAX_ZIP_ENTRY_MB` > 1024 MiB |
-| `--mode {auto,import,directquery,composite}` | After source selection: retained Hyper/import-only files use Import, capable selected native databases use DirectQuery; `import` overrides storage mode, not the database-first source choice. No native row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Retained Hyper still exports data |
-| `--hyper-export-format {auto,csv,parquet}` | PBIP `auto`: Hyper strictly > 10 MiB requires native Parquet, otherwise CSV; Fabric `auto` remains CSV |
-| `--hyper-export-max-rows N` | Positive limited diagnostic/Fabric staging cap; explicit option > `TTPBI_HYPER_EXPORT_MAX_ROWS`. A resolved cap is rejected for a full PBIP Hyper migration |
+| `--mode {auto,import,directquery,composite}` | After source selection: retained Hyper/import-only files use Import, capable selected native databases use DirectQuery; `import` overrides storage mode, not the database-first source choice. No native row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Retained Hyper is exported for PBIP |
+| `--hyper-export-format {auto,csv,parquet}` | PBIP `auto`: Hyper strictly > 10 MiB requires native Parquet, otherwise CSV. Fabric currently refuses Hyper detected as active or unresolved |
+| `--hyper-export-max-rows N` | Positive limited diagnostic/staging cap; explicit option > `TTPBI_HYPER_EXPORT_MAX_ROWS`. A resolved cap is rejected for a full PBIP Hyper migration and is not proof of complete Fabric ingestion |
 
 Invalid limits are errors, not silent defaults. Omitting the flag does not
 remove an environment cap: clear it before a full PBIP Hyper migration.
@@ -135,7 +135,8 @@ Loose native files and packaged non-Excel files are not copied; keep or configur
 their original bindings. Power BI retrieves native rows at refresh.
 Update absolute Excel paths when moving output and keep source-bearing copies
 and ZIPs out of repositories. This does not disable Tableau metadata extraction or Hyper
-CSV/Parquet exports. Fabric retains its separate staging contract.
+CSV/Parquet exports. Fabric has a separate file-staging path and refuses Hyper
+detected as active or unresolved until complete ingestion binding is established.
 
 ## Performance baselines
 

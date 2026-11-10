@@ -22,7 +22,9 @@ from .calc_column_utils import (
 from .fabric_item import logical_id, write_platform
 from .fabric_naming import sanitize_query_name as _sanitize_query_name
 from .fabric_naming import sanitize_table_name as _sanitize_table_name
-from .fabric_sources import is_file_connection, table_connection
+from .fabric_sources import (
+    is_file_connection, preflight_fabric_ingestion, table_connection,
+)
 
 # Import m_query_builder from tableau_export (sibling package)
 _parent = os.path.join(os.path.dirname(os.path.dirname(__file__)))
@@ -59,7 +61,6 @@ class DataflowGenerator:
         self.lakehouse_id = lakehouse_id or logical_id(project_name, 'Lakehouse')
         self.workspace_id = workspace_id or logical_id(project_name, 'Workspace')
         self.dataflow_dir = os.path.join(project_dir, f'{project_name}.Dataflow')
-        os.makedirs(self.dataflow_dir, exist_ok=True)
 
     def generate(self, extracted_data):
         """Generate Dataflow Gen2 definition from extracted Tableau data.
@@ -72,7 +73,9 @@ class DataflowGenerator:
             Dict with generation stats {'queries': int, 'calc_columns': int}
         """
         datasources = extracted_data.get('datasources', [])
+        preflight_fabric_ingestion(datasources)
         custom_sql = extracted_data.get('custom_sql', [])
+        os.makedirs(self.dataflow_dir, exist_ok=True)
 
         generate_power_query_m = _get_m_query_builder()
 
@@ -256,6 +259,7 @@ class DataflowGenerator:
 
     def _write_mashup_document(self, queries):
         """Write the combined Power Query M mashup document."""
+        os.makedirs(self.dataflow_dir, exist_ok=True)
         mashup_path = os.path.join(self.dataflow_dir, 'mashup.pq')
         with open(mashup_path, 'w', encoding='utf-8') as f:
             f.write('// Dataflow Gen2 Mashup Document\n')
@@ -345,6 +349,8 @@ class DataflowGenerator:
         Returns:
             dict: {queries: int, prep_steps: int}
         """
+        if extracted_data:
+            preflight_fabric_ingestion(extracted_data.get('datasources', []))
         prep_datasources = prep_flow_data.get('datasources', [])
 
         queries = []
@@ -405,6 +411,7 @@ class DataflowGenerator:
 
         # Build and write Dataflow definition
         dataflow_def = self._build_dataflow_definition(queries)
+        os.makedirs(self.dataflow_dir, exist_ok=True)
         def_path = os.path.join(self.dataflow_dir, 'dataflow_definition.json')
         with open(def_path, 'w', encoding='utf-8') as f:
             json.dump(dataflow_def, f, indent=2, ensure_ascii=False)

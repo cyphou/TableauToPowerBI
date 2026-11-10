@@ -258,30 +258,104 @@ class TestSingleMigrationHelpers(unittest.TestCase):
 
     def test_fabric_generation_uses_package_imports(self):
         import migrate
-        extracted = {'datasources': [{'name': 'Orders'}], 'dashboards': []}
-        generated = {
-            'project_path': os.path.join('out', 'FabricReport'),
-            'artifacts': {'semantic_model': {}},
+        from powerbi_import.fabric_project_generator import FabricProjectGenerator
+        from powerbi_import.fabric_validator import FabricProjectValidator
+
+        # A real, locally validated bundle, not a simulated runtime refresh.
+        extracted = {
+            'datasources': [{
+                'name': 'OrdersSource',
+                'connection': {'type': 'CSV', 'details': {'filename': 'orders.csv'}},
+                'tables': [{
+                    'name': 'Orders', 'type': 'table', 'source_table': 'orders.csv',
+                    'columns': [{'name': 'OrderID', 'datatype': 'integer'}],
+                }],
+                'relationships': [], 'calculations': [],
+            }],
+            'dashboards': [], 'worksheets': [],
         }
+        real_generate = FabricProjectGenerator.generate_project
+        stats = migrate.MigrationStats()
+        with tempfile.TemporaryDirectory() as output_dir:
+            with patch(
+                    'powerbi_import.import_to_powerbi.PowerBIImporter._load_converted_objects',
+                    return_value=extracted) as load, patch(
+                    'powerbi_import.fabric_project_generator.FabricProjectGenerator.generate_project',
+                    autospec=True, side_effect=real_generate) as generate, \
+                    patch.object(migrate, '_stats', stats), \
+                    patch('sys.stdout', new_callable=StringIO):
+                success = migrate._run_fabric_generation(
+                    report_name='FabricReport', output_dir=output_dir
+                )
 
-        with patch(
-                'powerbi_import.import_to_powerbi.PowerBIImporter._load_converted_objects',
-                return_value=extracted), patch(
-                'powerbi_import.fabric_project_generator.FabricProjectGenerator.generate_project',
-                return_value=generated) as generate, patch('os.path.exists', return_value=True):
-            success = migrate._run_fabric_generation(
-                report_name='FabricReport', output_dir='out'
-            )
+            self.assertTrue(success, stats.failure)
+            load.assert_called_once_with()
+            generate.assert_called_once()
+            args, kwargs = generate.call_args
+            self.assertEqual(len(args), 1)
+            self.assertIsInstance(args[0], FabricProjectGenerator)
+            self.assertEqual(args[0].output_dir, output_dir)
+            self.assertEqual(kwargs, {
+                'project_name': 'FabricReport',
+                'extracted_data': extracted,
+                'calendar_start': None,
+                'calendar_end': None,
+                'culture': None,
+                'languages': None,
+            })
+            project = os.path.join(output_dir, 'FabricReport')
+            validation = FabricProjectValidator.validate(project, 'FabricReport')
+            self.assertTrue(validation['valid'], validation['errors'])
+            self.assertEqual(validation['artifacts_checked'], 6)
+            self.assertEqual(stats.pbip_path, project)
+            self.assertIsNone(stats.failure)
+            self.assertEqual(stats.tmdl_tables, 1)
 
-        self.assertTrue(success)
-        generate.assert_called_once_with(
-            project_name='FabricReport',
-            extracted_data=extracted,
-            calendar_start=None,
-            calendar_end=None,
-            culture=None,
-            languages=None,
-        )
+    def test_fabric_generation_rejects_fake_success_without_a_valid_project(self):
+        import migrate
+        from powerbi_import.fabric_validator import FabricProjectValidator
+
+        extracted = {'datasources': [{'name': 'Orders'}], 'dashboards': []}
+        for scenario in ('missing-project-and-validation', 'empty-project-claims-valid'):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as output_dir:
+                project = os.path.join(output_dir, 'FabricReport')
+                generated = {
+                    'project_path': project,
+                    'artifacts': {'semantic_model': {'tables': 123}},
+                }
+                if scenario == 'empty-project-claims-valid':
+                    os.makedirs(project)
+                    generated['validation'] = {'valid': True}
+                    self.assertFalse(
+                        FabricProjectValidator.validate(project, 'FabricReport')['valid'])
+                stats = migrate.MigrationStats()
+                with patch(
+                        'powerbi_import.import_to_powerbi.PowerBIImporter._load_converted_objects',
+                        return_value=extracted) as load, patch(
+                        'powerbi_import.fabric_project_generator.FabricProjectGenerator.generate_project',
+                        return_value=generated) as generate, \
+                        patch.object(migrate, '_stats', stats), \
+                        patch('sys.stdout', new_callable=StringIO) as stdout:
+                    success = migrate._run_fabric_generation(
+                        report_name='FabricReport', output_dir=output_dir
+                    )
+
+                self.assertFalse(success)
+                load.assert_called_once_with()
+                generate.assert_called_once_with(
+                    project_name='FabricReport', extracted_data=extracted,
+                    calendar_start=None, calendar_end=None, culture=None, languages=None,
+                )
+                self.assertEqual(stats.pbip_path, '')
+                self.assertEqual(stats.tmdl_tables, 0)
+                self.assertEqual(stats.failure['stage'], 'generation')
+                self.assertEqual(stats.failure['error'], 'RuntimeError')
+                expected = ('did not return a locally validated project'
+                            if scenario == 'missing-project-and-validation'
+                            else 'did not produce a valid project on disk')
+                self.assertIn(expected, stats.failure['message'])
+                self.assertIn(expected, stdout.getvalue())
+                self.assertNotIn('Fabric project generated successfully', stdout.getvalue())
 
     def test_fabric_output_routes_deployment_to_fabric(self):
         import migrate
@@ -367,6 +441,7 @@ class TestSingleMigrationHelpers(unittest.TestCase):
                 patch('migrate.run_generation', return_value=True), \
                 patch('migrate.run_migration_report', return_value={}), \
                 patch('migrate._fix_twb_data_folder'), \
+                patch('powerbi_import.powerbi_internal_lineage.write_powerbi_lineage_artifacts'), \
                 patch('migrate._run_openability_gate', return_value=False) as gate:
             result = migrate._migrate_single_workbook(
                 tableau_file='test.twb',
@@ -390,6 +465,7 @@ class TestSingleMigrationHelpers(unittest.TestCase):
                 patch('migrate.run_generation', return_value=True), \
                 patch('migrate.run_migration_report', return_value={}), \
                 patch('migrate._fix_twb_data_folder'), \
+                patch('powerbi_import.powerbi_internal_lineage.write_powerbi_lineage_artifacts'), \
                 patch('migrate._run_openability_gate') as gate:
             result = migrate._migrate_single_workbook(
                 tableau_file='test.twb',

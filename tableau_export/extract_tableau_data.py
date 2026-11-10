@@ -250,9 +250,11 @@ from extract_primitives import _read_filter_condition  # noqa: E402,F401
 from worksheet_extractor import (  # noqa: E402,F401
     build_field_provenance,
     extract_formatting,
+    extract_formatted_labels,
     extract_tooltips,
     extract_worksheet_fields,
     extract_worksheet_filters,
+    has_explicit_worksheet_background,
 )
 
 
@@ -879,6 +881,7 @@ class TableauExtractor:
                 'dynamic_title': self.extract_dynamic_title(worksheet),
                 'analytics_stats': self.extract_analytics_pane_stats(worksheet),
             }
+            ws_data.update(self.extract_formatted_labels(worksheet))
             for pane in ws_data['dual_axis'].get('panes', []):
                 for field in ws_data['fields']:
                     if (field.get('name') == pane['field']
@@ -1048,6 +1051,12 @@ class TableauExtractor:
             filt.get('column', '') for filt in root.findall('.//filter')
             if filt.get('class', '').lower() in ('quantitative', 'range')
         }
+        worksheet_backgrounds = {
+            worksheet.get('name', '')
+            for worksheet in _find_collection_items(root, 'worksheets', 'worksheet')
+            if worksheet.get('name', '')
+            and has_explicit_worksheet_background(worksheet)
+        }
 
         for dashboard in _find_collection_items(root, 'dashboards', 'dashboard'):
             size_elem = safe_find(dashboard, 'size')
@@ -1064,7 +1073,9 @@ class TableauExtractor:
                     'width': db_width,
                     'height': db_height,
                 },
-                'objects': self.extract_dashboard_objects(dashboard),
+                'objects': self.extract_dashboard_objects(
+                    dashboard, worksheet_backgrounds=worksheet_backgrounds),
+                'formatting': self.extract_formatting(dashboard),
                 'filters': self.extract_dashboard_filters(dashboard),
                 'parameters': self.extract_dashboard_parameters(dashboard),
                 'theme': self.extract_theme(dashboard),
@@ -1781,6 +1792,9 @@ class TableauExtractor:
     def extract_tooltips(self, worksheet):
         return extract_tooltips(worksheet)
 
+    def extract_formatted_labels(self, worksheet):
+        return extract_formatted_labels(worksheet)
+
 
     def extract_actions(self, worksheet):
         """Extracts actions referenced in this worksheet"""
@@ -1790,10 +1804,23 @@ class TableauExtractor:
 
     # Dashboard extraction lives in dashboard_extractor; these delegate so
     # extractor.extract_*(dashboard) keeps working.
-    def extract_dashboard_objects(self, dashboard):
+    def extract_dashboard_objects(self, dashboard, worksheet_backgrounds=None):
+        if worksheet_backgrounds is None:
+            worksheet_backgrounds = set()
+            for worksheet in self.workbook_data.get('worksheets', []):
+                formatting = worksheet.get('formatting') or {}
+                pane = formatting.get('pane') or {}
+                if ('background_color' in formatting
+                        or 'background_transparency' in formatting
+                        or any(
+                            attr in ('fill', 'background')
+                            or attr.startswith(('fill-', 'background-'))
+                            for attr in (*pane, pane.get('attr', '')))):
+                    worksheet_backgrounds.add(worksheet.get('name', ''))
         objects = extract_dashboard_objects(
             dashboard, workbook_path=self.tableau_file,
-            archive_member=getattr(self, '_workbook_archive_member', ''))
+            archive_member=getattr(self, '_workbook_archive_member', ''),
+            worksheet_backgrounds=worksheet_backgrounds)
         for obj in objects:
             if (obj.get('type') == 'filter_control'
                     and obj.get('param') in getattr(self, '_range_filter_refs', set())):

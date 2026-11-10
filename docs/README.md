@@ -19,6 +19,7 @@ the maintained Tableau to Power BI documentation by the task you want to finish.
 | 💻 Automate a folder of workbooks | [Operator manual](USER_MANUAL.md) | `python migrate.py batch .\workbooks --output-dir .\output`; a one-workbook folder is valid |
 | 🗄️ Choose Import or DirectQuery | [Source-mode decision diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export) | Review Hyper export rules and the explicit Import override |
 | 🔎 Check the generated result | [Review checklist](MIGRATION_CHECKLIST.md) | Configure sources, verify refresh, save/reopen, then compare values and visuals |
+| Trace Prep outputs into Power BI | [Quality evidence](USER_MANUAL.md#run-quality-evidence) | Review static Prep bindings and the adjacent internal lineage JSON/HTML; refresh and value parity are separate checks |
 | 🧰 Add Microsoft's static PBIR check | [Optional authoring validation](POWERBI_PROJECT_GUIDE.md#optional-microsoft-pbir-validation) | Validate the generated `.Report` separately; no Node/MCP dependency is added to core migration |
 | 🚀 Publish with authorization | [Deployment guide](DEPLOYMENT_GUIDE.md) | Preview separately; generation does not deploy or prove runtime readiness |
 

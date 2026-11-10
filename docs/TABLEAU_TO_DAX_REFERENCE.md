@@ -231,7 +231,7 @@ When an aggregate wraps an expression (not a single column), the converter auto-
 
 | # | Tableau | DAX | Status | Notes |
 |---|---------|-----|--------|-------|
-| 1 | `{FIXED [dim] : AGG(expr)}` | `CALCULATE(AGG(expr), ALLEXCEPT('T', 'T'[dim]))` | ✅ | Automatic only for supported patterns; this does not encode composite/range logical relationships as model relationships. Those require the explicit policy in [Known Limitations](KNOWN_LIMITATIONS.md#composite-and-range-logical-relationships); unsupported or ambiguous cases fail closed. |
+| 1 | `{FIXED [dim] : AGG(expr)}` | Illustrative: `CALCULATE(AGG(expr), ALLEXCEPT('T', 'T'[dim]))` | ⚠️ | Source filter order, shelf aggregation and total grain require proof. Unverified cases can emit a diagnostic `TODO`/`BLANK()` rather than an equivalent value. Composite/range logical relationships require the explicit policy in [Known Limitations](KNOWN_LIMITATIONS.md#composite-and-range-logical-relationships). |
 | 2 | `{INCLUDE [dim] : AGG(expr)}` | `CALCULATE(AGG(expr))` | ✅ | |
 | 3 | `{EXCLUDE [dim] : AGG(expr)}` | `CALCULATE(AGG(expr), REMOVEFILTERS('T'[dim]))` | ✅ | |
 | 4 | `{AGG(expr)}` (no dims) | `CALCULATE(AGG(expr))` | ✅ | |

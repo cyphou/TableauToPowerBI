@@ -8,6 +8,7 @@ column resolution, AGG→AGGX, and cleanup.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -139,15 +140,44 @@ class TestStandaloneNullRegression(unittest.TestCase):
         self.assertIn("'Table'[End Date]", result)
 
     def test_nested_date_if_call_final_null(self):
-        result = convert_tableau_formula_to_dax(
+        from tests.test_reported_dax_semantics import _EmittedDax
+
+        call_form = (
             "IF([Start Date] <= TODAY(), [Start Date], "
             "IF([End Date] <= TODAY(), [End Date], NULL))"
         )
-        self.assertEqual(
-            result,
-            "IF('Table'[Start Date] <= TODAY(), 'Table'[Start Date], "
-            "IF('Table'[End Date] <= TODAY(), 'Table'[End Date], BLANK()))",
+        source_form = (
+            "IF [Start Date] <= TODAY() THEN [Start Date] "
+            "ELSE IF [End Date] <= TODAY() THEN [End Date] "
+            "ELSE NULL END END"
         )
+        result = convert_tableau_formula_to_dax(call_form)
+        self.assertEqual(
+            result, convert_tableau_formula_to_dax(source_form))
+        self.assertTrue(result.endswith(", BLANK()))"), result)
+        self.assertEqual(result.count("BLANK()"), 1)
+        for field in ("Start Date", "End Date"):
+            # The variable containing each nullable date must itself be
+            # guarded, not merely an unrelated value in the expression.
+            binding = re.search(
+                rf"\bVAR\s+([A-Za-z_]\w*)\s*=\s*'Table'\[{field}\]", result)
+            self.assertIsNotNone(binding, result)
+            self.assertRegex(
+                result, rf"\bNOT\s*\(\s*ISBLANK\(\s*{binding[1]}\s*\)\s*\)")
+
+        # A strict, deliberately limited interpreter evaluates emitted DAX
+        # with TODAY replaced by an ordered synthetic date.  This is bounded
+        # evidence, not execution in a native Power BI engine.
+        oracle = _EmittedDax(result.replace("TODAY()", "100"))
+        for start, end, expected in (
+            (None, 90, 90), (None, 110, None), (90, 80, 90),
+            (110, 80, 80), (None, None, None), (110, None, None),
+            (100, 110, 100),
+        ):
+            with self.subTest(start=start, end=end):
+                row = {"Start Date": start, "End Date": end}
+                self.assertEqual(
+                    oracle.evaluate({"Table": []}, row={"Table": row}), expected)
 
     def test_standalone_null_is_case_insensitive(self):
         for formula in ("NULL", "null", "Null", "nUlL", " \tNuLl\n"):
@@ -364,18 +394,31 @@ class TestNullifRegression(unittest.TestCase):
             "{ FIXED [Group] : SUM("
             "{ FIXED [Group], [Item] : SUM([Amount]) }) }, 0)"
         )
-        inner = (
-            "CALCULATE(SUM('Facts'[Amount]), "
-            "ALLEXCEPT('Facts', 'Facts'[Group], 'Facts'[Item]))"
+        # With duplicates, iterating the raw rows can count the inner FIXED
+        # value repeatedly.  If the outer grain is Group/Item, these two
+        # possible interpretations already disagree (25 versus 45).
+        rows = [("A", "X", 10), ("A", "X", 10), ("A", "Y", 5)]
+        by_item = {}
+        for group, item, amount in rows:
+            by_item[(group, item)] = by_item.get((group, item), 0) + amount
+        self.assertEqual(sum(by_item.values()), 25)
+        self.assertEqual(sum(by_item[(group, item)] for group, item, _ in rows), 45)
+
+        # The diagnostic is not a successful migration: there is no proof of
+        # the source shelf/total grain that would justify either interpretation.
+        expression = convert_tableau_formula_to_dax(formula, table_name="Facts")
+        self.assertRegex(
+            expression,
+            r"(?is)^/\*\s*TODO: DAX conversion validation failed\b"
+            r"[^*]*\blevel-of-detail\b[^*]*\bgrain\b[^*]*\*/\s*BLANK\(\)\s*$",
         )
-        denominator = (
-            f"CALCULATE(SUMX('Facts', {inner}), "
-            "ALLEXCEPT('Facts', 'Facts'[Group]))"
-        )
+        self.assertIn("source", expression.lower())
+        self.assertNotIn("SUMX(", expression.upper())
+        # Preserve the independent NULLIF contract: BLANK and zero must be
+        # compared strictly even though the nested FIXED conversion is blocked.
         self.assertEqual(
-            convert_tableau_formula_to_dax(formula, table_name="Facts"),
-            f"DIVIDE(SUM('Facts'[Amount]), IF(({denominator}) == (0), "
-            f"BLANK(), ({denominator})))",
+            _convert_nullif("NULLIF([Denominator], 0)"),
+            "IF(([Denominator]) == (0), BLANK(), ([Denominator]))",
         )
 
 

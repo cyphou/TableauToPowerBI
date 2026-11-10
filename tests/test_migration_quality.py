@@ -1,5 +1,6 @@
 """Tests for the unified deterministic migration quality report."""
 
+import csv
 import html
 import json
 import os
@@ -7,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
 from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import patch
@@ -37,6 +39,48 @@ class _ComparisonAnchors(HTMLParser):
         href = dict(attrs).get("href", "")
         if tag == "a" and href.endswith("/comparison.html"):
             self.hrefs.append(href)
+
+
+class _SourceTargetFindingRows(HTMLParser):
+    """Read the visible cells of the source/target finding table."""
+
+    def __init__(self, document):
+        super().__init__()
+        self.rows = []
+        self.translations = {}
+        self._in_table = False
+        self._row = None
+        self._cell = None
+        self.feed(document)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "table" and attrs.get("id") == "quality-source-target-findings":
+            self._in_table = True
+        elif self._in_table and tag == "tr":
+            self._row = []
+        elif self._in_table and tag == "td":
+            self._cell = []
+        elif self._in_table and self._cell is not None:
+            if tag == "br":
+                self._cell.append(" ")
+            elif "data-i18n-en" in attrs:
+                self.translations[attrs["data-i18n-en"]] = attrs.get("data-i18n-fr")
+
+    def handle_data(self, data):
+        if self._in_table and self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag):
+        if self._in_table and tag == "td" and self._cell is not None:
+            self._row.append("".join(self._cell).strip())
+            self._cell = None
+        elif self._in_table and tag == "tr" and self._row is not None:
+            if self._row:
+                self.rows.append(self._row)
+            self._row = None
+        elif self._in_table and tag == "table":
+            self._in_table = False
 
 
 class TestMigrationQualityDesktopComparisonLinks(unittest.TestCase):
@@ -323,7 +367,10 @@ class _Openability:
     blocking_issues = []
 
     def to_dict(self):
-        return {"openable": self.openable}
+        return {
+            "openable": self.openable,
+            "blocking_issues": list(self.blocking_issues),
+        }
 
 
 class _FabricValidator:
@@ -346,6 +393,214 @@ class _Gateway:
     def complete(self, prompt, system=None):
         self.calls.append((prompt, system))
         return _LLMResult()
+
+
+def _write_scannable_quality_fixture(project_dir):
+    """A real, minimal target table and a complete single-table extraction."""
+    tables = Path(project_dir, "Demo.SemanticModel", "definition", "tables")
+    tables.mkdir(parents=True)
+    (tables / "Sales.tmdl").write_text(
+        "table Sales\n"
+        "\tcolumn Amount\n"
+        "\t\tdataType: double\n"
+        "\t\tsourceColumn: Amount\n",
+        encoding="utf-8",
+    )
+    # A complete one-table inventory has no relationships.  Represent that
+    # explicitly on both sides rather than treating a missing file as proof.
+    (tables.parent / "relationships.tmdl").write_text("", encoding="utf-8")
+    return {
+        "datasources": [{
+            "name": "Synthetic",
+            "tables": [{"name": "Sales",
+                        "columns": [{"name": "Amount", "datatype": "real"}]}],
+            "calculations": [], "relationships": [],
+            "relation_metadata": {
+                "version": 1,
+                "physical_relations": [{"type": "table", "name": "Sales",
+                                        "children": []}],
+                "logical_tables": [], "logical_relationships": [],
+            },
+        }],
+    }
+
+
+_R4_FIXED_TARGET = (
+    "CALCULATE(SUM('Sales'[Amount]), ALLEXCEPT('Sales', 'Sales'[Region]))"
+)
+
+
+def _write_r4_quality_fixture(project_dir, *, explicit_outer=False):
+    """A FIXED source calculation and a statically identifiable target measure."""
+    extracted = _write_scannable_quality_fixture(project_dir)
+    datasource = extracted["datasources"][0]
+    datasource["tables"][0]["columns"].append(
+        {"name": "Region", "datatype": "string"})
+    formula = "{FIXED [Region] : SUM([Amount])}"
+    if explicit_outer:
+        formula = f"SUM({formula})"
+    datasource["calculations"].append({
+        "name": "[fixed_id]", "caption": "Regional Sales",
+        "formula": formula, "role": "measure", "datatype": "real",
+        "datasource_name": "Synthetic",
+    })
+    target = Path(project_dir, "Demo.SemanticModel", "definition", "tables", "Sales.tmdl")
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\tcolumn Region\n\t\tdataType: string\n\t\tsourceColumn: Region\n"
+            "\tmeasure 'Regional Sales' = "
+            "/* Tableau calculation; migrated to DAX; "
+            "name: Regional Sales; identifier: fixed_id */ "
+            f"{_R4_FIXED_TARGET}\n"
+        )
+    return extracted
+
+
+def _write_scannable_semantic_fixture(project_dir):
+    """Consistent source rows, extraction identities and target M/TMDL."""
+    extracted = _write_scannable_quality_fixture(project_dir)
+    csv_path = Path(project_dir, "sales.csv")
+    csv_path.write_text("Amount\n5\n7\n", encoding="utf-8")
+    datasource = extracted["datasources"][0]
+    datasource["connection"] = {"type": "CSV", "details": {"filename": str(csv_path)}}
+    datasource["tables"][0]["source_table"] = csv_path.name
+    datasource["calculations"] = [
+        {"name": "[sales_total]", "caption": "Sales_total",
+         "formula": "SUM([Amount])", "role": "measure", "datatype": "real"},
+        {"name": "[order_count]", "caption": "Order_count",
+         "formula": "COUNT([Amount])", "role": "measure", "datatype": "integer"},
+    ]
+    target = Path(project_dir, "Demo.SemanticModel", "definition", "tables", "Sales.tmdl")
+    m_path = str(csv_path).replace('"', '""')
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\n\tmeasure Sales_total = /* Tableau calculation; migrated to DAX; "
+            "name: Sales_total; identifier: sales_total */ SUM('Sales'[Amount])\n"
+            "\tmeasure Order_count = /* Tableau calculation; migrated to DAX; "
+            "name: Order_count; identifier: order_count */ "
+            "COALESCE(COUNT('Sales'[Amount]), 0)\n"
+            "\tpartition Sales = m\n"
+            "\t\tmode: import\n"
+            "\t\tsource =\n"
+            "\t\t\tlet\n"
+            f'\t\t\t\tSource = Csv.Document(File.Contents("{m_path}"), '
+            '[Delimiter=",", Encoding=65001]),\n'
+            "\t\t\t\tHeaders = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),\n"
+            '\t\t\t\tTyped = Table.TransformColumnTypes(Headers, {{"Amount", type number}})\n'
+            "\t\t\tin\n"
+            "\t\t\t\tTyped\n"
+        )
+    return extracted, csv_path
+
+
+def _write_relationship_quality_fixture(project_dir, *, inferred=None):
+    """Two source tables and one legacy, unannotated target relationship."""
+    extracted = _write_scannable_quality_fixture(project_dir)
+    datasource = extracted["datasources"][0]
+    datasource["tables"][0]["columns"].append(
+        {"name": "Key", "datatype": "integer"})
+    datasource["tables"].append({
+        "name": "Lookup", "columns": [{"name": "Key", "datatype": "integer"}],
+    })
+    datasource["relation_metadata"]["physical_relations"].append(
+        {"type": "table", "name": "Lookup", "children": []})
+    relationship = {
+        "left": {"table": "Sales", "column": "Key"},
+        "right": {"table": "Lookup", "column": "Key"},
+    }
+    if inferred is not None:
+        relationship["inferred"] = inferred
+    datasource["relationships"].append(relationship)
+
+    definition = Path(project_dir, "Demo.SemanticModel", "definition")
+    with (definition / "tables" / "Sales.tmdl").open("a", encoding="utf-8") as handle:
+        handle.write("\tcolumn Key\n\t\tdataType: int64\n\t\tsourceColumn: Key\n")
+    (definition / "tables" / "Lookup.tmdl").write_text(
+        "table Lookup\n\tcolumn Key\n\t\tdataType: int64\n\t\tsourceColumn: Key\n",
+        encoding="utf-8",
+    )
+    (definition / "relationships.tmdl").write_text(
+        "relationship legacy-id\n"
+        "\tfromColumn: Sales.Key\n"
+        "\ttoColumn: Lookup.Key\n",
+        encoding="utf-8",
+    )
+    return extracted
+
+
+class TestQualityTmdlSourceColumnBindings(unittest.TestCase):
+    """Bounded static TMDL scanning; no TOM, Desktop or data refresh."""
+
+    def test_literal_quotes_apostrophes_and_quoted_edge_spaces_survive(self):
+        from powerbi_import.migration_quality import _quality_model_objects
+
+        cases = [
+            ("InnerDoubleQuotes", 'Order "Date"', 'Order "Date"'),
+            ("WrappedDoubleQuotes", '"Order ""Date"""', 'Order "Date"'),
+            ("Apostrophe", "O'Brien", "O'Brien"),
+            ("LiteralApostrophePair", "'literal'", "'literal'"),
+            ("EdgeSpaces", '"  Order Date  "', "  Order Date  "),
+            ("TrimmedControl", "Order Date", "Order Date"),
+            ("LiteralOuterQuotes", '"""quoted"""', '"quoted"'),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            tables = Path(tmp, "Demo.SemanticModel", "definition", "tables")
+            tables.mkdir(parents=True)
+            path = tables / "Sales.tmdl"
+            lines = ["table Sales"]
+            for name, raw, _expected in cases:
+                lines.extend([
+                    f"\tcolumn {name}", "\t\tdataType: string",
+                    f"\t\tsourceColumn: {raw}",
+                ])
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            objects, scan = _quality_model_objects(
+                tmp, model_name="Demo.SemanticModel")
+
+        self.assertEqual(scan["status"], "static_evidence")
+        self.assertEqual(scan["files_found"], 1)
+        self.assertEqual(scan["objects_scanned"], len(cases))
+        self.assertEqual(scan["malformed"], [])
+        self.assertEqual(scan["source_column_diagnostics"], [])
+        columns = {obj["name"]: obj for obj in objects}
+        self.assertEqual(set(columns), {name for name, _, _ in cases})
+        for name, raw, expected in cases:
+            with self.subTest(binding=name):
+                column = columns[name]
+                self.assertEqual(column["kind"], "column")
+                self.assertEqual(column["table"], "Sales")
+                self.assertEqual(column["source_column"], expected)
+                self.assertEqual(
+                    lines[column["source_column_line"] - 1],
+                    f"\t\tsourceColumn: {raw}",
+                )
+        self.assertNotEqual(
+            columns["EdgeSpaces"]["source_column"],
+            columns["TrimmedControl"]["source_column"],
+        )
+
+    def test_malformed_enclosing_quotes_do_not_become_a_successful_binding(self):
+        from powerbi_import.migration_quality import _quality_model_objects
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tables = Path(tmp, "Demo.SemanticModel", "definition", "tables")
+            tables.mkdir(parents=True)
+            (tables / "Sales.tmdl").write_text(
+                'table Sales\n\tcolumn Bad\n\t\tdataType: string\n'
+                '\t\tsourceColumn: "bad "quoted" value"\n',
+                encoding="utf-8",
+            )
+            objects, scan = _quality_model_objects(
+                tmp, model_name="Demo.SemanticModel")
+
+        self.assertEqual(scan["status"], "partial")
+        self.assertEqual(scan["objects_scanned"], 1)
+        self.assertEqual(
+            [diagnostic["code"] for diagnostic in scan["source_column_diagnostics"]],
+            ["invalid_source_column"],
+        )
+        self.assertIsNone(objects[0]["source_column"])
 
 
 class TestMigrationQuality(unittest.TestCase):
@@ -376,8 +631,443 @@ class TestMigrationQuality(unittest.TestCase):
                 semantic_fixture_path=semantic_fixture_path,
             )
 
+    def _build_scannable(self, **kwargs):
+        """Supply real static source/model evidence without changing other inputs."""
+        self.assertNotIn('project_dir', kwargs)
+        self.assertNotIn('extracted', kwargs)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        extracted = _write_scannable_quality_fixture(temporary.name)
+        report = self._build(project_dir=temporary.name, extracted=extracted, **kwargs)
+        evidence = report.semantic_context['source_target_evidence']
+        self.assertTrue(evidence['source_available'])
+        self.assertEqual(evidence['model_scan']['status'], 'static_evidence')
+        self.assertEqual(evidence['physical_joins']['status'], 'static_evidence')
+        relationships = evidence['relationship_provenance']
+        self.assertEqual(relationships['target_relationship_scan'], 'static_evidence')
+        self.assertEqual(relationships['target_relationships_scanned'], 0)
+        self.assertEqual(relationships['source_candidate_scan'], 'static_evidence')
+        self.assertEqual(relationships['inferred_input_candidates'], 0)
+        self.assertEqual(evidence['status'], 'static_evidence')
+        self.assertEqual(evidence['runtime'], 'not_run')
+        return report
+
+    def _assert_r4_scope_unproven(self, report):
+        evidence = report.semantic_context['source_target_evidence']
+        self.assertTrue(evidence['source_available'])
+        self.assertEqual(evidence['model_scan']['status'], 'static_evidence')
+        self.assertEqual(evidence['runtime'], 'not_run')
+        self.assertEqual(
+            evidence['calculation_mapping']['bounded_r3_r6_objects_scanned'], 1)
+        check = next(item for item in evidence['checks']
+                     if item['name'] == 'dax_r4_fixed_outer_aggregation')
+        self.assertEqual(check['status'], 'partial')
+        self.assertIn('binding and actual use are not_run', check['scope'])
+        self.assertIn('Missing candidates do not prove the calculation is unused',
+                      check['scope'])
+        self.assertEqual(report.validation_contract['semantic']['execution_status'],
+                         'not_run')
+        self.assertFalse(report.validation_contract['release_ready'])
+        return evidence
+
+    def _assert_r4_candidate_is_unverified(self, finding, expected_candidates):
+        self.assertEqual(finding['family'], 'R4')
+        self.assertEqual(finding['disposition'], 'not_run')
+        self.assertEqual(finding['runtime'], 'not_run')
+        self.assertEqual(finding['worksheet_binding_status'], 'not_run')
+        self.assertEqual(finding['source_resolution'], 'explicit_annotation')
+        self.assertEqual(finding['candidate_worksheet_aggregations'], expected_candidates)
+        self.assertEqual(finding['source_path'],
+                         'datasources[0].calculations[0].formula')
+        self.assertIn(finding['source_path'], finding['source_paths'])
+        self.assertIn('datasources[0].tables[0].columns[1]', finding['source_paths'])
+        self.assertIn(finding['target_path'], finding['evidence'])
+        for path in finding['source_paths'] + finding['evidence']:
+            self.assertFalse(path.startswith('worksheets['), path)
+
+    def test_r4_worksheet_name_and_namespace_matches_remain_candidates(self):
+        identities = (
+            ('caption-only', {'name': 'Regional Sales'}),
+            ('caption-with-namespace', {'name': 'Regional Sales',
+                                        'datasource': 'Synthetic'}),
+            ('id-without-namespace', {'name': '[fixed_id]'}),
+            ('matching-id-and-namespace', {'name': '[fixed_id]',
+                                           'datasource': 'Synthetic'}),
+        )
+        for identity, field in identities:
+            for policy, severity, status in (
+                    ('report', 'warning', 'WARN'),
+                    ('production', 'blocker', 'FAIL')):
+                with self.subTest(identity=identity, policy=policy):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        extracted = _write_r4_quality_fixture(tmp)
+                        extracted['worksheets'] = [{
+                            'name': 'Sheet',
+                            'fields': [{**field, 'shelf': 'rows', 'aggregation': 'SUM'}],
+                        }]
+                        report = self._build(project_dir=tmp, extracted=extracted,
+                                             quality_policy=policy)
+                    evidence = self._assert_r4_scope_unproven(report)
+                    findings = [item for item in evidence['findings']
+                                if item['code'] == 'dax_r4_fixed_outer_aggregation_risk']
+                    self.assertEqual(len(findings), 1)
+                    finding = findings[0]
+                    self._assert_r4_candidate_is_unverified(finding, [{
+                        'source_path': 'worksheets[0].fields[0]',
+                        'aggregation': 'sum', 'binding_status': 'not_run',
+                    }])
+                    self.assertFalse(finding['explicit_outer_aggregation'])
+                    self.assertIn('unverified (not_run)', finding['message'])
+                    self.assertEqual(finding['severity'], severity)
+                    self.assertEqual(report.status, status)
+                    messages = report.warnings if policy == 'report' else report.blockers
+                    self.assertIn(finding['message'], messages)
+
+    def test_r4_absent_or_ambiguous_candidates_do_not_prove_non_use(self):
+        for case in ('ambiguous-caption', 'wrong-namespace', 'measure-values',
+                     'missing-worksheets', 'empty-worksheets', 'empty-fields'):
+            with self.subTest(case=case):
+                with tempfile.TemporaryDirectory() as tmp:
+                    extracted = _write_r4_quality_fixture(tmp)
+                    field = {'name': '[fixed_id]', 'datasource': 'Synthetic',
+                             'shelf': 'rows', 'aggregation': 'SUM'}
+                    if case == 'ambiguous-caption':
+                        duplicate = deepcopy(extracted['datasources'][0]['calculations'][0])
+                        duplicate['name'] = '[other_id]'
+                        extracted['datasources'][0]['calculations'].append(duplicate)
+                        field['name'] = 'Regional Sales'
+                    elif case == 'wrong-namespace':
+                        field['datasource'] = 'Different datasource'
+                    elif case == 'measure-values':
+                        field['shelf'] = 'measure_value'
+                    if case != 'missing-worksheets':
+                        extracted['worksheets'] = (
+                            [] if case == 'empty-worksheets' else [{
+                                'name': 'Sheet',
+                                'fields': [] if case == 'empty-fields' else [field],
+                            }])
+                    report = self._build(project_dir=tmp, extracted=extracted)
+                evidence = self._assert_r4_scope_unproven(report)
+                self.assertFalse(any(
+                    item['code'] == 'dax_r4_fixed_outer_aggregation_risk'
+                    for item in evidence['findings']))
+                checks = {item['name']: item['status'] for item in evidence['checks']}
+                self.assertEqual(checks['exhaustive_dax_equivalence'], 'not_run')
+                self.assertEqual(checks['paired_source_target_execution'], 'not_run')
+
+    def test_r4_explicit_outer_aggregation_is_independent_of_worksheet_candidates(self):
+        for case in ('missing-worksheets', 'wrong-namespace', 'measure-values',
+                     'matching-candidate'):
+            for policy, severity, status in (
+                    ('report', 'warning', 'WARN'),
+                    ('production', 'blocker', 'FAIL')):
+                with self.subTest(case=case, policy=policy):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        extracted = _write_r4_quality_fixture(tmp, explicit_outer=True)
+                        if case != 'missing-worksheets':
+                            field = {'name': '[fixed_id]', 'datasource': 'Synthetic',
+                                     'shelf': 'rows', 'aggregation': 'SUM'}
+                            if case == 'wrong-namespace':
+                                field['datasource'] = 'Different datasource'
+                            elif case == 'measure-values':
+                                field['shelf'] = 'measure_value'
+                            extracted['worksheets'] = [{'name': 'Sheet', 'fields': [field]}]
+                        report = self._build(project_dir=tmp, extracted=extracted,
+                                             quality_policy=policy)
+                    evidence = self._assert_r4_scope_unproven(report)
+                    findings = [item for item in evidence['findings']
+                                if item['code'] == 'dax_r4_fixed_outer_aggregation_risk']
+                    self.assertEqual(len(findings), 1)
+                    finding = findings[0]
+                    expected = ([{'source_path': 'worksheets[0].fields[0]',
+                                  'aggregation': 'sum', 'binding_status': 'not_run'}]
+                                if case == 'matching-candidate' else [])
+                    self._assert_r4_candidate_is_unverified(finding, expected)
+                    self.assertTrue(finding['explicit_outer_aggregation'])
+                    self.assertIn('source formula explicitly aggregates FIXED',
+                                  finding['message'])
+                    self.assertEqual(finding['severity'], severity)
+                    self.assertEqual(report.status, status)
+                    messages = report.warnings if policy == 'report' else report.blockers
+                    self.assertIn(finding['message'], messages)
+
+    def test_r4_json_and_consolidated_html_label_worksheet_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            extracted = _write_r4_quality_fixture(tmp)
+            extracted['worksheets'] = [{
+                'name': 'Sheet',
+                'fields': [{'name': '[fixed_id]', 'datasource': 'Synthetic',
+                            'shelf': 'rows', 'aggregation': 'SUM'}],
+            }]
+            report = self._build(project_dir=tmp, extracted=extracted)
+            report_path = Path(tmp, 'migration_quality_Demo.json')
+            html_path = Path(tmp, 'migration_quality_consolidated.html')
+            report.save_json(str(report_path))
+            build_consolidated_quality_html([str(report_path)], str(html_path))
+            saved = json.loads(report_path.read_text(encoding='utf-8'))
+            evidence = saved['semantic_context']['source_target_evidence']
+            findings = [item for item in evidence['findings']
+                        if item['code'] == 'dax_r4_fixed_outer_aggregation_risk']
+            self.assertEqual(len(findings), 1)
+            finding = findings[0]
+            self._assert_r4_candidate_is_unverified(finding, [{
+                'source_path': 'worksheets[0].fields[0]',
+                'aggregation': 'sum', 'binding_status': 'not_run',
+            }])
+            self.assertEqual(saved['status'], 'WARN')
+            self.assertFalse(finding['explicit_outer_aggregation'])
+            self.assertEqual(saved['validation_contract']['semantic']['execution_status'],
+                             'not_run')
+            self.assertFalse(saved['validation_contract']['release_ready'])
+
+            table = _SourceTargetFindingRows(html_path.read_text(encoding='utf-8'))
+            candidate_path = 'worksheets[0].fields[0]'
+            rows = [row for row in table.rows if candidate_path in row[2]]
+            self.assertEqual(len(rows), 1)
+            severity, disposition, message, source_path, target_path, _ = rows[0]
+            self.assertEqual((severity, disposition), ('warning', 'not_run'))
+            self.assertIn('Candidate worksheet fields (binding not_run):', message)
+            self.assertIn(f'{candidate_path} (sum)', message)
+            self.assertEqual(source_path, finding['source_path'])
+            self.assertEqual(target_path, finding['target_path'])
+            self.assertNotIn(candidate_path, source_path)
+            self.assertEqual(
+                table.translations['Candidate worksheet fields (binding not_run): '],
+                'Champs de feuille candidats (liaison not_run) : ')
+
+    def test_r4_finding_uses_only_the_report_selected_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            extracted = _write_r4_quality_fixture(tmp)
+            extracted['worksheets'] = [{
+                'name': 'Sheet',
+                'fields': [{'name': '[fixed_id]', 'datasource': 'Synthetic',
+                            'shelf': 'rows', 'aggregation': 'SUM'}],
+            }]
+            root = Path(tmp)
+            shutil.copytree(root / 'Demo.SemanticModel', root / 'Other.SemanticModel')
+            other_table = root / 'Other.SemanticModel' / 'definition' / 'tables' / 'Sales.tmdl'
+            other_text = other_table.read_text(encoding='utf-8')
+            self.assertIn(_R4_FIXED_TARGET, other_text)
+            other_table.write_text(
+                other_text.replace(_R4_FIXED_TARGET, "SUM('Sales'[Amount])"),
+                encoding='utf-8')
+            descriptor = root / 'Demo.Report' / 'definition.pbir'
+            descriptor.parent.mkdir()
+            for selected in ('Other', 'Demo'):
+                with self.subTest(selected_model=selected):
+                    descriptor.write_text(json.dumps({
+                        'datasetReference': {'byPath': {
+                            'path': f'../{selected}.SemanticModel'}},
+                    }), encoding='utf-8')
+                    report = self._build(project_dir=tmp, extracted=extracted)
+                    evidence = self._assert_r4_scope_unproven(report)
+                    self.assertEqual(evidence['target_model']['status'], 'static_evidence')
+                    self.assertEqual(evidence['target_model']['method'], 'report_bypath')
+                    self.assertEqual(evidence['target_model']['model_name'],
+                                     f'{selected}.SemanticModel')
+                    findings = [item for item in evidence['findings']
+                                if item['code'] == 'dax_r4_fixed_outer_aggregation_risk']
+                    if selected == 'Other':
+                        self.assertEqual(findings, [])
+                    else:
+                        self.assertEqual(len(findings), 1)
+                        self._assert_r4_candidate_is_unverified(findings[0], [{
+                            'source_path': 'worksheets[0].fields[0]',
+                            'aggregation': 'sum', 'binding_status': 'not_run',
+                        }])
+                        self.assertTrue(findings[0]['target_path'].startswith(
+                            'Demo.SemanticModel/'))
+                        self.assertFalse(any('Other.SemanticModel/' in path
+                                             for path in findings[0]['evidence']))
+
+    def test_inferred_input_is_only_a_candidate_for_legacy_target_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            extracted = _write_relationship_quality_fixture(tmp, inferred=True)
+            report = self._build(project_dir=tmp, extracted=extracted)
+
+        self.assertEqual(report.status, 'WARN')
+        self.assertFalse(report.blockers)
+        evidence = report.semantic_context['source_target_evidence']
+        provenance = evidence['relationship_provenance']
+        self.assertEqual(evidence['status'], 'partial')
+        self.assertEqual(evidence['runtime'], 'not_run')
+        self.assertEqual(provenance['status'], 'partial')
+        self.assertEqual(provenance['target_model'], 'Demo.SemanticModel')
+        self.assertEqual(provenance['target_relationship_scan'], 'static_evidence')
+        self.assertEqual(provenance['target_relationships_scanned'], 1)
+        self.assertEqual(provenance['source_candidate_scan'], 'static_evidence')
+        self.assertEqual(provenance['inferred_input_candidates'], 1)
+        self.assertEqual(provenance['origin_status'], 'not_run')
+        findings = [item for item in evidence['findings']
+                    if item['code'] == 'relationship_origin_unverified']
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding['disposition'], 'not_run')
+        self.assertEqual(finding['severity'], 'warning')
+        self.assertEqual(finding['origin_status'], 'not_run')
+        self.assertEqual(finding['candidate_match'], 'endpoint_names_only')
+        self.assertEqual(finding['candidate_source_paths'],
+                         ['datasources[0].relationships[0]'])
+        self.assertEqual(finding['target_path'],
+                         'Demo.SemanticModel/definition/relationships.tmdl:1')
+        self.assertIn('only a candidate', finding['message'])
+        self.assertIn(finding['message'], report.warnings)
+
+    def test_declared_and_legacy_relationships_do_not_claim_inferred_origin(self):
+        for source_inventory in ('declared', 'unmarked', 'empty'):
+            with self.subTest(source_inventory=source_inventory):
+                with tempfile.TemporaryDirectory() as tmp:
+                    extracted = _write_relationship_quality_fixture(
+                        tmp, inferred=False if source_inventory == 'declared' else None)
+                    if source_inventory == 'empty':
+                        extracted['datasources'][0]['relationships'] = []
+                    report = self._build(project_dir=tmp, extracted=extracted)
+                self.assertEqual(report.status, 'WARN')
+                self.assertFalse(report.blockers)
+                evidence = report.semantic_context['source_target_evidence']
+                provenance = evidence['relationship_provenance']
+                self.assertEqual(provenance['source_candidate_scan'], 'static_evidence')
+                self.assertEqual(provenance['inferred_input_candidates'], 0)
+                self.assertEqual(provenance['target_relationship_scan'], 'static_evidence')
+                self.assertEqual(provenance['target_relationships_scanned'], 1)
+                self.assertEqual(provenance['origin_status'], 'not_run')
+                findings = [item for item in evidence['findings']
+                            if item['code'].startswith('relationship_origin_')]
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0]['code'], 'relationship_origin_unverified')
+                self.assertEqual(findings[0]['disposition'], 'not_run')
+                self.assertEqual(findings[0]['candidate_source_paths'], [])
+                self.assertEqual(findings[0]['candidate_match'], 'not_run')
+                self.assertIn('origin is unverified', findings[0]['message'])
+                self.assertIn(findings[0]['message'], report.warnings)
+
+    def test_missing_or_malformed_relationship_inventories_warn_not_run(self):
+        for problem in ('missing-target', 'malformed-target',
+                        'missing-source', 'invalid-inferred-marker'):
+            with self.subTest(problem=problem):
+                with tempfile.TemporaryDirectory() as tmp:
+                    extracted = _write_scannable_quality_fixture(tmp)
+                    relationship_file = Path(
+                        tmp, 'Demo.SemanticModel', 'definition', 'relationships.tmdl')
+                    if problem == 'missing-target':
+                        relationship_file.unlink()
+                    elif problem == 'malformed-target':
+                        relationship_file.write_text(
+                            'relationship broken\n\tfromColumn: Sales.Amount\n'
+                            '\ttoColumn: ???\n', encoding='utf-8')
+                    elif problem == 'missing-source':
+                        del extracted['datasources'][0]['relationships']
+                    else:
+                        extracted['datasources'][0]['relationships'] = [{
+                            'inferred': 'true',
+                            'left': {'table': 'Sales', 'column': 'Amount'},
+                            'right': {'table': 'Lookup', 'column': 'Key'},
+                        }]
+                    report = self._build(project_dir=tmp, extracted=extracted)
+                self.assertEqual(report.status, 'WARN')
+                self.assertFalse(report.blockers)
+                evidence = report.semantic_context['source_target_evidence']
+                provenance = evidence['relationship_provenance']
+                self.assertEqual(evidence['status'], 'partial')
+                self.assertEqual(evidence['runtime'], 'not_run')
+                self.assertEqual(provenance['origin_status'], 'not_run')
+                self.assertEqual(provenance['inferred_input_candidates'], 0)
+                if problem in ('missing-target', 'malformed-target'):
+                    self.assertEqual(
+                        provenance['target_relationship_scan'],
+                        'not_run' if problem == 'missing-target' else 'partial')
+                    self.assertEqual(provenance['target_relationships_scanned'], 0)
+                    self.assertEqual(provenance['source_candidate_scan'], 'static_evidence')
+                    expected = ('target relationship inventory is unavailable'
+                                if problem == 'missing-target'
+                                else 'target relationship inventory is incomplete')
+                else:
+                    self.assertEqual(provenance['target_relationship_scan'], 'static_evidence')
+                    self.assertEqual(provenance['source_candidate_scan'], 'partial')
+                    expected_path = ('datasources[0].relationships'
+                                     if problem == 'missing-source'
+                                     else 'datasources[0].relationships[0].inferred')
+                    self.assertIn(expected_path, provenance['source_candidate_scan_incomplete'])
+                    expected = 'supplied relationship candidate inventory is incomplete'
+                self.assertTrue(any(expected in warning for warning in report.warnings),
+                                report.warnings)
+
+    def test_relationship_candidates_are_scoped_to_the_report_selected_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            extracted = _write_relationship_quality_fixture(tmp, inferred=True)
+            root = Path(tmp)
+            other_definition = root / 'Other.SemanticModel' / 'definition'
+            other_tables = other_definition / 'tables'
+            other_tables.mkdir(parents=True)
+            for name in ('OtherA', 'OtherB'):
+                (other_tables / f'{name}.tmdl').write_text(
+                    f'table {name}\n\tcolumn Key\n\t\tsourceColumn: Key\n',
+                    encoding='utf-8')
+            other_relationships = other_definition / 'relationships.tmdl'
+            other_relationships.write_text(
+                'relationship other-id\n'
+                '\tfromColumn: OtherA.Key\n\ttoColumn: OtherB.Key\n',
+                encoding='utf-8')
+            descriptor = root / 'Demo.Report' / 'definition.pbir'
+            descriptor.parent.mkdir()
+            candidate_path = 'datasources[0].relationships[0]'
+            for model in ('Demo', 'Other'):
+                with self.subTest(selected_model=model):
+                    descriptor.write_text(json.dumps({
+                        'datasetReference': {'byPath': {
+                            'path': f'../{model}.SemanticModel'}},
+                    }), encoding='utf-8')
+                    report = self._build(project_dir=tmp, extracted=extracted)
+                    self.assertEqual(report.status, 'WARN')
+                    evidence = report.semantic_context['source_target_evidence']
+                    self.assertEqual(evidence['target_model']['model_name'],
+                                     f'{model}.SemanticModel')
+                    provenance = evidence['relationship_provenance']
+                    self.assertEqual(provenance['target_model'], f'{model}.SemanticModel')
+                    self.assertEqual(provenance['target_relationship_scan'], 'static_evidence')
+                    self.assertEqual(provenance['target_relationships_scanned'], 1)
+                    self.assertEqual(provenance['inferred_input_candidates'], 1)
+                    self.assertEqual(provenance['origin_status'], 'not_run')
+                    findings = [item for item in evidence['findings']
+                                if item['code'] == 'relationship_origin_unverified']
+                    self.assertEqual(len(findings), 1)
+                    self.assertEqual(
+                        findings[0]['target_path'],
+                        f'{model}.SemanticModel/definition/relationships.tmdl:1')
+                    self.assertEqual(
+                        findings[0]['candidate_source_paths'],
+                        [candidate_path] if model == 'Demo' else [])
+                    self.assertEqual(
+                        provenance['unmatched_inferred_candidate_paths'],
+                        [] if model == 'Demo' else [candidate_path])
+                    self.assertEqual(findings[0]['disposition'], 'not_run')
+
+            # The other model's matching relationship cannot stand in for an
+            # absent inventory in the model selected by the report.
+            other_relationships.unlink()
+            report = self._build(project_dir=tmp, extracted=extracted)
+            self.assertEqual(report.status, 'WARN')
+            evidence = report.semantic_context['source_target_evidence']
+            provenance = evidence['relationship_provenance']
+            self.assertEqual(provenance['target_model'], 'Other.SemanticModel')
+            self.assertEqual(provenance['target_relationship_scan'], 'not_run')
+            self.assertEqual(provenance['target_relationships_scanned'], 0)
+            self.assertEqual(provenance['unmatched_inferred_candidate_paths'],
+                             [candidate_path])
+            findings = [item for item in evidence['findings']
+                        if item['code'] == 'relationship_origin_inferred_input']
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]['source_paths'], [candidate_path])
+            self.assertEqual(findings[0]['target_model'], 'Other.SemanticModel')
+            self.assertEqual(findings[0]['target_correspondence'], 'not_run')
+            self.assertEqual(findings[0]['disposition'], 'not_run')
+            self.assertTrue(any('target relationship inventory is unavailable' in warning
+                                for warning in report.warnings), report.warnings)
+
     def test_pass_when_all_checks_are_clean(self):
-        report = self._build()
+        with tempfile.TemporaryDirectory() as tmp:
+            extracted = _write_scannable_quality_fixture(tmp)
+            report = self._build(project_dir=tmp, extracted=extracted)
         self.assertEqual(report.status, 'PASS')
         self.assertEqual(report.handoff_status, 'PASS')
         self.assertFalse(report.fabric['present'])
@@ -392,10 +1082,30 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.blockers, [])
         self.assertEqual(report.warnings, [])
         self.assertEqual(report.semantic_context['execution']['status'], 'not_run')
+        source_target = report.semantic_context['source_target_evidence']
+        self.assertEqual(source_target['status'], 'static_evidence')
+        self.assertEqual(source_target['model_scan']['status'], 'static_evidence')
+        self.assertEqual(source_target['physical_joins']['status'], 'static_evidence')
+        self.assertEqual(source_target['runtime'], 'not_run')
         self.assertIn('summary', report.m_emitters)
         self.assertEqual(report.m_emitters['summary']['aliases'], 98)
         self.assertIn('summary', report.visual_mappings)
         self.assertEqual(report.visual_mappings['summary']['status_counts']['approximation'], 16)
+
+    def test_missing_source_and_target_evidence_is_warn_not_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = self._build(project_dir=tmp)
+        self.assertEqual(report.status, 'WARN')
+        source_target = report.semantic_context['source_target_evidence']
+        self.assertEqual(source_target['status'], 'not_run')
+        self.assertFalse(source_target['source_available'])
+        self.assertEqual(source_target['model_scan']['status'], 'not_run')
+        self.assertEqual(source_target['physical_joins']['status'], 'not_run')
+        self.assertEqual(source_target['runtime'], 'not_run')
+        self.assertEqual(report.semantic_context['execution']['status'], 'not_run')
+        self.assertTrue(any("source extraction is unavailable" in warning
+                            and "target TMDL is unavailable" in warning
+                            for warning in report.warnings), report.warnings)
 
     def test_lookupvalue_ambiguity_reaches_report_as_advisory_priority(self):
         from powerbi_import.openability import CheckResult, OpenabilityReport
@@ -541,7 +1251,7 @@ class TestMigrationQuality(unittest.TestCase):
                             for item in report.blockers))
 
     def test_semantic_runtime_executor_passes(self):
-        report = self._build(
+        report = self._build_scannable(
             semantic_queries=[{'name': 'Sales_total', 'dax': 'EVALUATE ROW("x", 1)'}],
             semantic_executor=lambda query: {'rows': [{'x': 1}]},
         )
@@ -550,32 +1260,51 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(execution['passed'], 1)
         self.assertEqual(report.status, 'PASS')
 
-    def test_quality_report_propagates_complete_semantic_contract_without_desktop_roundtrip(self):
+    def test_simulated_semantic_evidence_keeps_unproven_source_recovery_pending(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        extracted, source_csv = _write_scannable_semantic_fixture(temporary.name)
         queries = [
             {
                 'name': 'Sales_total',
-                'dax': 'EVALUATE ROW("Value", 12)',
+                'dax': 'EVALUATE ROW("Value", [Sales_total])',
                 'expected_rows': [{'Value': 12}],
             },
             {
                 'name': 'Order_count',
-                'dax': 'EVALUATE ROW("Value", 7)',
-                'expected_rows': [{'Value': 7}],
+                'dax': 'EVALUATE ROW("Value", [Order_count])',
+                'expected_rows': [{'Value': 2}],
             },
         ]
-        observed_rows = {
-            query['dax']: query['expected_rows'] for query in queries
-        }
         calls = []
 
         def execute(query):
+            # This injectable test provider derives its results from the local
+            # synthetic rows; it does not execute DAX or validate a Desktop.
             calls.append(query)
-            return {'rows': observed_rows[query]}
+            with source_csv.open(encoding='utf-8', newline='') as handle:
+                values = [int(row['Amount']) for row in csv.DictReader(handle)]
+            observed = {
+                queries[0]['dax']: sum(values),
+                queries[1]['dax']: len(values),
+            }
+            return {'rows': [{'Value': observed[query]}]}
 
         report = self._build(
+            project_dir=temporary.name, extracted=extracted,
             semantic_queries=queries,
             semantic_executor=execute,
         )
+
+        source_target = report.semantic_context['source_target_evidence']
+        self.assertEqual(source_target['status'], 'static_evidence')
+        self.assertEqual(source_target['model_scan']['status'], 'static_evidence')
+        self.assertEqual(source_target['physical_joins']['status'], 'static_evidence')
+        self.assertEqual(source_target['runtime'], 'not_run')
+        mapping = source_target['calculation_mapping']
+        self.assertEqual(mapping['source_calculations'], 2)
+        self.assertEqual(mapping['matched_source_calculations'], 2)
+        self.assertEqual(mapping['unmatched_source_calculations'], 0)
 
         execution = report.semantic_context['execution']
         self.assertEqual(calls, [query['dax'] for query in queries])
@@ -599,15 +1328,22 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(contract['semantic']['execution_status'], 'passed')
         self.assertEqual(contract['semantic']['runtime'], 'evidence_recorded')
         self.assertEqual(contract['m']['status'], 'passed')
-        self.assertEqual(contract['recovery']['status'], 'complete')
-        # This is the semantic/M/recovery sub-contract, not the full
-        # OPERATIONAL_100 gate: no Desktop round-trip was performed.
-        self.assertTrue(contract['release_ready'])
+        # A simulated provider and static bindings do not prove that the
+        # inventoried source objects have been reviewed or recovered.
+        self.assertGreater(report.source_inventory['object_count'], 0)
+        self.assertEqual(contract['recovery']['status'], 'pending')
+        self.assertEqual(contract['recovery']['pending_validation'],
+                         report.source_inventory['object_count'])
+        self.assertEqual(report.recovery['status'], 'pending')
+        self.assertTrue(all(
+            row['disposition'] == 'pending_validation'
+            for row in report.recovery['objects']))
+        self.assertFalse(contract['release_ready'])
         self.assertEqual(
             report.evidence_manifest['artifacts']['validation']['semantic_execution'],
             'passed',
         )
-        self.assertTrue(
+        self.assertFalse(
             report.evidence_manifest['artifacts']['validation']['release_ready']
         )
         self.assertEqual(report.openability_confidence['semantic_execution'], 'not_run')
@@ -623,13 +1359,15 @@ class TestMigrationQuality(unittest.TestCase):
             serialized['validation_contract']['semantic']['execution_status'],
             'passed',
         )
-        self.assertTrue(serialized['validation_contract']['release_ready'])
+        self.assertFalse(serialized['validation_contract']['release_ready'])
+        self.assertEqual(serialized['validation_contract']['recovery']['status'],
+                         'pending')
         self.assertEqual(
             serialized['roundtrip_validation']['desktop']['status'], 'not_run'
         )
 
     def test_missing_semantic_executor_keeps_default_report_quality_behavior(self):
-        report = self._build(
+        report = self._build_scannable(
             semantic_queries=[{
                 'name': 'Sales_total',
                 'dax': 'EVALUATE ROW("Value", 12)',
@@ -665,7 +1403,7 @@ class TestMigrationQuality(unittest.TestCase):
             calls.append(dax)
             return {'status': 'not_run', 'rows': [{'Value': 12}]}
 
-        report = self._build(
+        report = self._build_scannable(
             semantic_queries=[query],
             semantic_executor=execute,
         )
@@ -781,7 +1519,7 @@ class TestMigrationQuality(unittest.TestCase):
             calls.append(dax)
             return {'rows': []}
 
-        report = self._build(
+        report = self._build_scannable(
             semantic_queries=queries,
             semantic_executor=execute,
         )
@@ -845,7 +1583,7 @@ class TestMigrationQuality(unittest.TestCase):
         )
 
     def test_semantic_runtime_tolerance_accepts_numeric_difference(self):
-        report = self._build(
+        report = self._build_scannable(
             semantic_queries=[{
                 'name': 'Sales_total',
                 'dax': 'EVALUATE ROW("x", 1)',
@@ -955,18 +1693,23 @@ class TestMigrationQuality(unittest.TestCase):
                 'relationships': [],
             }],
         }
-        with patch('powerbi_import.migration_quality.run_assessment',
-                   return_value=_Assessment()), \
-             patch('powerbi_import.migration_quality.scan_project') as scan, \
-             patch('powerbi_import.migration_quality.compare_report_tables',
-                   return_value={'summary': {'source_tables': 1, 'tables_found': 1}}), \
-             patch('powerbi_import.migration_quality.compare_report_interface',
-                   return_value={'filters': {'covered': True}, 'parameters': {'covered': True}}), \
-             patch('powerbi_import.migration_quality.check_openability',
-                   return_value=_Openability()):
-            scan.return_value.to_dict.return_value = {'gaps': []}
-            report = build_quality_report(extracted, 'project', 'Demo')
-        self.assertEqual(report.status, 'PASS')
+        reference_source = deepcopy(extracted)
+        reference_source['datasources'][0]['calculations'][0]['formula'] = (
+            '{FIXED [Territory] : SUM([Amount])}')
+        with tempfile.TemporaryDirectory() as tmp:
+            report = self._build(project_dir=tmp, extracted=extracted)
+            reference = self._build(project_dir=tmp, extracted=reference_source)
+        # Both inputs deliberately lack a corresponding target model.  Isolate
+        # the source diagnostic rather than inventing unrelated TMDL evidence.
+        self.assertEqual(report.status, 'WARN')
+        self.assertEqual(report.status, reference.status)
+        for candidate in (report, reference):
+            evidence = candidate.semantic_context['source_target_evidence']
+            self.assertTrue(evidence['source_available'])
+            self.assertEqual(evidence['model_scan']['status'], 'not_run')
+            self.assertEqual(evidence['physical_joins']['status'], 'not_run')
+            self.assertEqual(evidence['runtime'], 'not_run')
+        self.assertEqual(reference.semantic_context['issue_count'], 0)
         self.assertEqual(report.semantic_context['issue_count'], 1)
         self.assertIn('not present', report.semantic_context['lod_issues'][0]['issue'])
 
@@ -996,31 +1739,36 @@ class TestMigrationQuality(unittest.TestCase):
                 'relationships': [],
             }],
         }
-        with patch('powerbi_import.migration_quality.run_assessment',
-                   return_value=_Assessment()), \
-             patch('powerbi_import.migration_quality.scan_project') as scan, \
-             patch('powerbi_import.migration_quality.compare_report_tables',
-                   return_value={'summary': {'source_tables': 1, 'tables_found': 1}}), \
-             patch('powerbi_import.migration_quality.compare_report_interface',
-                   return_value={'filters': {'covered': True}, 'parameters': {'covered': True}}), \
-             patch('powerbi_import.migration_quality.check_openability',
-                   return_value=_Openability()):
-            scan.return_value.to_dict.return_value = {'gaps': []}
-            report = build_quality_report(extracted, 'project', 'Demo')
-        self.assertEqual(report.status, 'PASS')
+        reference_source = deepcopy(extracted)
+        reference_source['datasources'][0]['calculations'][0][
+            'table_calc_partitioning'] = ['Region']
+        with tempfile.TemporaryDirectory() as tmp:
+            report = self._build(project_dir=tmp, extracted=extracted)
+            reference = self._build(project_dir=tmp, extracted=reference_source)
+        self.assertEqual(report.status, 'WARN')
+        self.assertEqual(report.status, reference.status)
+        for candidate in (report, reference):
+            evidence = candidate.semantic_context['source_target_evidence']
+            self.assertTrue(evidence['source_available'])
+            self.assertEqual(evidence['model_scan']['status'], 'not_run')
+            self.assertEqual(evidence['physical_joins']['status'], 'not_run')
+            self.assertEqual(evidence['runtime'], 'not_run')
+        self.assertEqual(reference.semantic_context['issue_count'], 0)
         self.assertEqual(report.semantic_context['issue_count'], 1)
         self.assertIn('MissingGroup', report.semantic_context['lod_issues'][0]['issue'])
 
     def test_target_measure_context_diagnostics_are_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, 'Demo.SemanticModel'))
+            extracted = _write_scannable_quality_fixture(tmp)
             with patch('powerbi_import.validator.ArtifactValidator.validate_measure_column_context',
                        return_value=['bare column reference']):
-                report = self._build(project_dir=tmp)
+                report = self._build(project_dir=tmp, extracted=extracted)
         self.assertEqual(report.status, 'PASS')
         self.assertEqual(report.semantic_context['measure_context']['issue_count'], 1)
         self.assertEqual(report.semantic_context['measure_context']['status'],
                          'static_diagnostics')
+        self.assertEqual(
+            report.semantic_context['source_target_evidence']['status'], 'static_evidence')
 
     def test_dax_conversion_fallbacks_are_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1066,7 +1814,12 @@ class TestMigrationQuality(unittest.TestCase):
                     "ALLEXCEPT('Sales', 'Sales'[MissingGroup]))\n"
                 )
             report = self._build(project_dir=tmp)
-        self.assertEqual(report.status, 'PASS')
+        self.assertEqual(report.status, 'WARN')
+        evidence = report.semantic_context['source_target_evidence']
+        self.assertFalse(evidence['source_available'])
+        self.assertEqual(evidence['model_scan']['status'], 'static_evidence')
+        self.assertEqual(evidence['physical_joins']['status'], 'not_run')
+        self.assertEqual(evidence['runtime'], 'not_run')
         filter_context = report.semantic_context['filter_context']
         self.assertEqual(filter_context['issue_count'], 1)
         self.assertIn('MissingGroup', filter_context['issues'][0])
@@ -1089,11 +1842,14 @@ class TestMigrationQuality(unittest.TestCase):
     def test_valid_fabric_bundle_is_reported_without_blocker(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, 'Demo.Lakehouse'))
+            extracted = _write_scannable_quality_fixture(tmp)
             with patch('powerbi_import.fabric_validator.FabricProjectValidator',
                        _FabricValidator):
-                report = self._build(project_dir=tmp)
+                report = self._build(project_dir=tmp, extracted=extracted)
         self.assertTrue(report.fabric['present'])
         self.assertTrue(report.fabric['valid'])
+        self.assertEqual(report.semantic_context['source_target_evidence']['status'],
+                         'static_evidence')
         self.assertEqual(report.status, 'PASS')
 
     def test_invalid_fabric_bundle_is_blocker(self):
@@ -1119,6 +1875,8 @@ class TestMigrationQuality(unittest.TestCase):
         report = self._build(openability=failed)
         self.assertEqual(report.status, 'FAIL')
         self.assertIn('Dangling dataset reference', report.blockers)
+        self.assertIn('Dangling dataset reference',
+                      report.openability['blocking_issues'])
         self.assertEqual(report.openability_confidence['level'], 'UNVERIFIED')
         self.assertEqual(report.handoff_status, 'BLOCKED')
         self.assertEqual(report.evidence_manifest['handoff']['status'], 'BLOCKED')
@@ -1133,7 +1891,8 @@ class TestMigrationQuality(unittest.TestCase):
 
     def test_save_json_preserves_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
-            report = self._build()
+            extracted = _write_scannable_quality_fixture(tmp)
+            report = self._build(project_dir=tmp, extracted=extracted)
             path = report.save_json(os.path.join(tmp, 'quality.json'))
             with open(path, encoding='utf-8') as fh:
                 payload = json.load(fh)
@@ -1154,7 +1913,7 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertIn('No AI summary was requested', html)
 
     def test_priorities_rank_blockers_before_gaps_and_warnings(self):
-        report = self._build(
+        report = self._build_scannable(
             parity={'gaps': [{'key': 'forecast', 'label': 'Forecast',
                               'status': 'unsupported', 'evidence': ['forecast.json']}]},
             interface={'filters': {'covered': False}, 'parameters': {'covered': True}},
@@ -1169,7 +1928,7 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertEqual(report.priorities[0]['priority'], 'P0')
 
     def test_untracked_feature_family_is_warning(self):
-        report = self._build(parity={
+        report = self._build_scannable(parity={
             'gaps': [],
             'untracked_features': ['aliases'],
         })
@@ -1210,14 +1969,14 @@ class TestMigrationQuality(unittest.TestCase):
         self.assertLess(kinds.index('repair'), kinds.index('note'))
 
     def test_ai_prompt_contains_verified_facts_and_guardrails(self):
-        report = self._build()
+        report = self._build_scannable()
         prompt = build_quality_prompt(report)
         self.assertIn('Do not invent tests', prompt)
         self.assertIn('"status": "PASS"', prompt)
         self.assertIn('"blockers": []', prompt)
 
     def test_ai_summary_is_attached_without_changing_status(self):
-        report = self._build()
+        report = self._build_scannable()
         gateway = _Gateway()
         updated = add_ai_summary(report, gateway)
         self.assertIs(updated, report)

@@ -219,7 +219,9 @@ class TestBuildVisualObjects(unittest.TestCase):
             "properties": {
                 "color": {"solid": {
                     "color": {"expr": {"Literal": {"Value": "'#FFFFFF'"}}}
-                }}
+                }},
+                "transparency": {"expr": {"Literal": {"Value": "0D"}}},
+                "show": {"expr": {"Literal": {"Value": "true"}}}
             }
         }]
         result = self.gen._build_visual_objects("C", ws_data, "clusteredBarChart")

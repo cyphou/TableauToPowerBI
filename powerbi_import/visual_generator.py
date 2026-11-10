@@ -17,15 +17,158 @@ Features:
 - Conditional formatting rules
 """
 
+import copy
 import hashlib
 import json
 import logging
+import math
 import re
 import uuid
 
-from powerbi_import.pbip_generator import _L
+from powerbi_import.pbip_generator import (
+    _L, _note_unmapped_background_transparency,
+    _show_formatted_label_fallback, _tableau_background_transparency,
+    build_background_objects, preserve_formatted_label_runs,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class AmbiguousNativeQueryRefError(ValueError):
+    """A sort or format cannot be safely associated with a projection."""
+
+
+def _guard_native_query_ref_links(visual, planned):
+    """Refuse alias-based or semantically ambiguous sort/format references."""
+    if not isinstance(visual, dict) or not planned:
+        return
+
+    queries, aliases = {}, {}
+    for index, (projection, original, renamed) in enumerate(planned):
+        query_ref = projection.get('queryRef')
+        if isinstance(query_ref, str) and query_ref:
+            queries.setdefault(query_ref, []).append((index, projection))
+        for alias in {original, renamed}:
+            if isinstance(alias, str) and alias:
+                aliases.setdefault(alias, []).append((index, projection))
+
+    def check(reference, location, explicit_native=False):
+        if not isinstance(reference, str) or not reference:
+            return
+        query_matches = queries.get(reference, [])
+        alias_matches = aliases.get(reference, [])
+        if not query_matches and not alias_matches:
+            return
+        if explicit_native and alias_matches:
+            reason = 'uses a native alias instead of a semantic field or queryRef'
+        elif not query_matches and alias_matches:
+            reason = 'matches a native alias but no projection queryRef'
+        else:
+            occurrences = dict(query_matches + alias_matches)
+            identities = []
+            for projection in occurrences.values():
+                field = projection.get('field')
+                if not any(field == previous for previous in identities):
+                    identities.append(field)
+            if len(identities) > 1:
+                reason = 'can denote different projected field expressions'
+            elif len(occurrences) > 1 and not identities[0]:
+                reason = 'has multiple projections without provable field identities'
+            elif len(occurrences) > 1 and alias_matches:
+                reason = 'can denote multiple projection occurrences and a native alias'
+            else:
+                return
+        raise AmbiguousNativeQueryRefError(
+            f'{location} reference {reference!r} {reason}; refusing to '
+            'finalize nativeQueryRef aliases without an unambiguous binding.')
+
+    def inspect_selector(node, location):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child = f'{location}.{key}'
+                if key in ('metadata', 'queryRef', 'nativeQueryRef'):
+                    check(value, child, explicit_native=key == 'nativeQueryRef')
+                else:
+                    inspect_selector(value, child)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                inspect_selector(value, f'{location}[{index}]')
+
+    def inspect_selectors(node, location):
+        if isinstance(node, dict):
+            selector = node.get('selector')
+            if isinstance(selector, dict):
+                inspect_selector(selector, f'{location}.selector')
+            for key, value in node.items():
+                if key != 'selector':
+                    inspect_selectors(value, f'{location}.{key}')
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                inspect_selectors(value, f'{location}[{index}]')
+
+    for key in ('objects', 'visualContainerObjects'):
+        inspect_selectors(visual.get(key), f'visual.{key}')
+
+    def inspect_sort(node, location):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child = f'{location}.{key}'
+                if key in ('queryRef', 'nativeQueryRef', 'metadata'):
+                    check(value, child, explicit_native=key == 'nativeQueryRef')
+                elif key == 'field' and isinstance(value, str):
+                    check(value, child, explicit_native=True)
+                else:
+                    inspect_sort(value, child)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                inspect_sort(value, f'{location}[{index}]')
+
+    query = visual.get('query')
+    if isinstance(query, dict):
+        inspect_sort(query.get('sortDefinition'), 'visual.query.sortDefinition')
+
+
+def finalize_native_query_refs(query_state, *, visual=None):
+    """Give every selection a visual-wide alias without changing semantic refs.
+
+    Reserve authored aliases before allocating suffixes, including across roles.
+    Copy aliased projection dictionaries: legacy role assignment can reuse the
+    same dictionary in more than one well. Repeated calls are idempotent.
+    When the visual is available, check sort/format bindings before mutation.
+    """
+    selections = []
+    for role in (query_state or {}).values():
+        projections = role.get('projections', [])
+        for index, projection in enumerate(projections):
+            if not projection:
+                continue
+            base = projection.get('nativeQueryRef')
+            if not base:
+                field = projection.get('field', {})
+                field = field.get('Aggregation', {}).get('Expression', field)
+                reference = field.get('Column') or field.get('Measure') or {}
+                base = reference.get('Property') or projection.get('queryRef') or 'Selection'
+            selections.append((projections, index, projection, base))
+    reserved = {base for _, _, _, base in selections}
+    used = set()
+    planned = []
+    for projections, index, projection, base in selections:
+        alias = base
+        suffix = 2
+        while alias in used or (alias != base and alias in reserved):
+            alias = f'{base}__{suffix}'
+            suffix += 1
+        planned.append((projections, index, projection, base, alias))
+        used.add(alias)
+    _guard_native_query_ref_links(
+        visual, [(projection, base, alias)
+                 for _, _, projection, base, alias in planned])
+    for projections, index, projection, _, alias in planned:
+        # Always detach shared dictionaries before changing an occurrence.
+        projection = copy.deepcopy(projection)
+        projection['nativeQueryRef'] = alias
+        projections[index] = projection
+    return query_state
 
 
 def build_categorical_color_objects(color_encoding, query_state,
@@ -2457,6 +2600,8 @@ def create_visual_container(worksheet, visual_id=None, x=10, y=10,
     _moved_notes = visual_obj.pop("annotations", None)
     if _moved_notes:
         container["annotations"] = _moved_notes
+    preserve_formatted_label_runs(container, worksheet)
+    _show_formatted_label_fallback(container, worksheet)
 
     # ── Action button navigation ──────────────────────────────
     if pbi_type == "actionButton":
@@ -2512,6 +2657,8 @@ def create_visual_container(worksheet, visual_id=None, x=10, y=10,
             fc = container.setdefault("filterConfig", {})
             fc.setdefault("filters", []).extend(filter_list)
 
+    finalize_native_query_refs(
+        visual_obj.get('query', {}).get('queryState'), visual=visual_obj)
     return container
 
 
@@ -2964,7 +3111,7 @@ def _apply_visual_decorations(worksheet, visual_type, pbi_type, visual_name, ctm
                 col_name = db.get('column', db.get('field', ''))
                 requested_ref = db.get('queryRef', col_name)
                 tbl_name = ctm.get(col_name)
-                matched = False
+                matches = []
                 for projection in value_projections:
                     query_ref = projection.get('queryRef')
                     expression = projection.get('field', {})
@@ -2972,15 +3119,41 @@ def _apply_visual_decorations(worksheet, visual_type, pbi_type, visual_name, ctm
                         expression = expression['Aggregation'].get('Expression', {})
                     field = expression.get('Measure', expression.get('Column', {}))
                     entity = field.get('Expression', {}).get('SourceRef', {}).get('Entity')
-                    names = (projection.get('nativeQueryRef'),
-                             projection.get('displayName'), field.get('Property'))
+                    # A generated native alias can have acquired a suffix.
+                    # It is not evidence that the source named this field.
+                    names = (projection.get('displayName'), field.get('Property'))
                     if not query_ref or not (
                             requested_ref == query_ref or
                             (not db.get('queryRef') and col_name and col_name in names
                              and (not tbl_name or tbl_name == entity
                                   or 'Measure' in expression))):
                         continue
-                    matched = True
+                    matches.append(projection)
+                identities = []
+                for projection in matches:
+                    identity = (projection.get('queryRef'), projection.get('field'))
+                    if identity not in identities:
+                        identities.append(identity)
+                if len(identities) > 1:
+                    raise AmbiguousNativeQueryRefError(
+                        f'Data bar {requested_ref!r} matches multiple projected '
+                        'field expressions; supply an unambiguous queryRef.')
+                if not db.get('queryRef') and col_name:
+                    alias_identities = [
+                        (projection.get('queryRef'), projection.get('field'))
+                        for projection in value_projections
+                        if projection.get('nativeQueryRef') == col_name
+                    ]
+                    if alias_identities and not matches:
+                        raise AmbiguousNativeQueryRefError(
+                            f'Data bar {col_name!r} matches only a native alias; '
+                            'supply a semantic field or unambiguous queryRef.')
+                    if any(identity not in identities for identity in alias_identities):
+                        raise AmbiguousNativeQueryRefError(
+                            f'Data bar {col_name!r} also matches a native alias '
+                            'for another projection; supply an unambiguous queryRef.')
+                for projection in matches:
+                    query_ref = projection.get('queryRef')
                     if query_ref in seen_refs:
                         continue
                     seen_refs.add(query_ref)
@@ -2992,7 +3165,7 @@ def _apply_visual_decorations(worksheet, visual_type, pbi_type, visual_name, ctm
                         reverse_direction=db.get('reverseDirection', False),
                         hide_text=db.get('hideText', db.get('showBarOnly', False)),
                     ))
-                if not matched:
+                if not matches:
                     unbound_fields.append(requested_ref or '<unnamed field>')
             if bar_rules:
                 visual_obj.setdefault("objects", {}).setdefault(
@@ -3153,24 +3326,25 @@ def _apply_tableau_background_border(worksheet, visual_obj):
     border_width = (ws_style.get('border-width') or '').strip()
 
     # Apply background fill on visualContainer (not on data points)
-    if bg_color and bg_color.startswith('#'):
-        visual_obj.setdefault("objects", {})
-        if "background" not in visual_obj["objects"]:
-            visual_obj["objects"]["background"] = [{
-                "properties": {
-                    "show": _L("true"),
-                    "color": {"solid": {"color": _L(f"'{bg_color}'")}},
-                    "transparency": _L("0D"),
-                }
-            }]
+    unknown, raw = _tableau_background_transparency(fmt)
+    if unknown:
+        container_objects = visual_obj.get("visualContainerObjects")
+        if isinstance(container_objects, dict):
+            container_objects.pop("background", None)
+        _note_unmapped_background_transparency(visual_obj, raw, 'worksheet pane')
+    else:
+        background = build_background_objects(bg_color)
+        if background:
+            visual_obj.setdefault("visualContainerObjects", {}).setdefault(
+                "background", background)
 
     # Apply border when Tableau specifies a non-trivial style
     has_border = (
         border_style and border_style not in ("none", "")
     ) or (border_color and border_color.startswith('#'))
     if has_border:
-        visual_obj.setdefault("objects", {})
-        if "border" not in visual_obj["objects"]:
+        container_objects = visual_obj.setdefault("visualContainerObjects", {})
+        if "border" not in container_objects:
             border_props: dict = {"show": _L("true")}
             if border_color and border_color.startswith('#'):
                 border_props["color"] = {
@@ -3179,10 +3353,20 @@ def _apply_tableau_background_border(worksheet, visual_obj):
             if border_width:
                 try:
                     cleaned = border_width.replace('pt', '').replace('px', '').strip()
-                    border_props["radius"] = _L(f"{float(cleaned)}D")
+                    width = float(cleaned)
+                    if math.isfinite(width) and width >= 0:
+                        border_props["width"] = _L(f"{width}D")
+                        visual_obj.setdefault("annotations", []).append({
+                            "name": "MigrationNote",
+                            "value": (
+                                f"Approximation: Tableau border width {border_width!r} "
+                                "was copied as a numeric Power BI border width; "
+                                "unit conversion and rendered thickness are unverified."
+                            ),
+                        })
                 except (ValueError, TypeError):
                     pass
-            visual_obj["objects"]["border"] = [{"properties": border_props}]
+            container_objects["border"] = [{"properties": border_props}]
 
 
 def _build_visual_filters(viz_filters, col_table_map):
@@ -3410,21 +3594,21 @@ def build_query_state(pbi_type, dimensions, measures, col_table_map,
         all_projs = dim_projections + meas_projections
         if all_projs:
             query_state["Values"] = {"projections": all_projs}
-        return query_state if query_state else None
+        return finalize_native_query_refs(query_state) if query_state else None
 
     # Assign dimensions to dimension roles
     for role_name in dim_roles:
         if dim_projections:
-            query_state[role_name] = {"projections": list(dim_projections)}
+            query_state[role_name] = {"projections": copy.deepcopy(dim_projections)}
 
     # Assign measures to measure roles
     for i, role_name in enumerate(meas_roles):
         if i < len(meas_projections):
-            query_state[role_name] = {"projections": [meas_projections[i]]}
+            query_state[role_name] = {"projections": [copy.deepcopy(meas_projections[i])]}
         elif meas_projections:
-            query_state[role_name] = {"projections": [meas_projections[0]]}
+            query_state[role_name] = {"projections": [copy.deepcopy(meas_projections[0])]}
 
-    return query_state if query_state else None
+    return finalize_native_query_refs(query_state) if query_state else None
 
 
 def create_filters_config(filters, table_name=None):

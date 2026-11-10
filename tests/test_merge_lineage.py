@@ -110,18 +110,72 @@ class TestCalculationLineage(unittest.TestCase):
 
     def test_duplicate_calc_lineage(self):
         from powerbi_import.shared_model import assess_merge, merge_semantic_models
-        calc = {'name': 'Total', 'caption': 'Total', 'formula': 'SUM([Sales])', 'role': 'measure'}
-        wb1 = _make_wb('WB1', [_table('T')], calcs=[copy.deepcopy(calc)])
-        wb2 = _make_wb('WB2', [_table('T')], calcs=[copy.deepcopy(calc)])
+        calc = {'name': '[total_id]', 'caption': 'Total', 'formula': 'SUM([Sales])',
+                'role': 'measure', 'datatype': 'real', 'datasource_name': 'SharedDS'}
+        table = _table('T', [{'name': 'Sales', 'datatype': 'real'}])
+        wb1 = _make_wb('WB1', [copy.deepcopy(table)], calcs=[copy.deepcopy(calc)])
+        wb2 = _make_wb('WB2', [copy.deepcopy(table)], calcs=[copy.deepcopy(calc)])
+        for wb in (wb1, wb2):
+            ds = wb['datasources'][0]
+            ds['name'] = 'SharedDS'
+            ds['connection'] = {
+                'type': 'SQL Server',
+                'details': {'server': 'synthetic.invalid', 'database': 'fixture'},
+            }
+            # The extractor also exposes this same source declaration in the
+            # workbook inventory; neither copy is a distinct calculation.
+            ds['calculations'] = [copy.deepcopy(calc)]
         assess = assess_merge([wb1, wb2], ['WB1', 'WB2'])
         assess.isolated_tables = {}
         merged = merge_semantic_models([wb1, wb2], assess, 'M')
-        matched = [c for c in merged.get('calculations', []) if c.get('caption') == 'Total']
-        self.assertGreater(len(matched), 0)
-        c = matched[0]
-        self.assertEqual(c.get('_merge_action'), 'deduplicated')
-        self.assertIn('WB1', c['_source_workbooks'])
-        self.assertIn('WB2', c['_source_workbooks'])
+        for inventory in (merged['calculations'], merged['datasources'][0]['calculations']):
+            matched = [c for c in inventory if c.get('caption') == 'Total']
+            self.assertEqual(len(matched), 1)
+            c = matched[0]
+            self.assertEqual(c['name'], '[total_id]')
+            self.assertEqual(c['formula'], 'SUM([Sales])')
+            self.assertEqual(c.get('_merge_action'), 'deduplicated')
+            self.assertIn('WB1', c['_source_workbooks'])
+            self.assertIn('WB2', c['_source_workbooks'])
+            self.assertCountEqual(c['_source_workbooks'], ['WB1', 'WB2'])
+
+    def test_identical_calculations_with_unproven_origin_are_refused(self):
+        from powerbi_import.errors import PartialGenerationError
+        from powerbi_import.shared_model import assess_merge, merge_semantic_models
+
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                calc = {'name': '[total_id]', 'caption': 'Total',
+                        'formula': 'SUM([Sales])', 'role': 'measure',
+                        'datatype': 'real', 'datasource_name': 'SharedDS'}
+                table = _table('T', [{'name': 'Sales', 'datatype': 'real'}])
+                workbooks = [
+                    _make_wb(name, [copy.deepcopy(table)], calcs=[copy.deepcopy(calc)])
+                    for name in ('WB1', 'WB2')
+                ]
+                for wb in workbooks:
+                    ds = wb['datasources'][0]
+                    ds['name'] = 'SharedDS'
+                    # The old fixture's connector class alone does not prove a
+                    # shared physical source or datasource-scoped identity.
+                    ds['connection'] = {'class': 'textscan'}
+                    ds['calculations'] = [copy.deepcopy(calc)]
+                names = ['WB1', 'WB2']
+                if reverse:
+                    workbooks.reverse()
+                    names.reverse()
+                before = copy.deepcopy(workbooks)
+                assessment = assess_merge(workbooks, names)
+                assessment.isolated_tables = {}
+                with self.assertRaises(PartialGenerationError) as raised:
+                    merge_semantic_models(workbooks, assessment, 'M')
+                error = raised.exception
+                self.assertEqual(error.item, 'Total')
+                self.assertEqual(error.recovery_kind, 'calculation_identity_binding')
+                self.assertIn('unproven source identities', str(error))
+                self.assertIn('total_id', ' '.join(error.required_evidence))
+                self.assertIn('T', ' '.join(error.required_evidence))
+                self.assertEqual(workbooks, before)
 
     def test_unique_calc_lineage(self):
         from powerbi_import.shared_model import assess_merge, merge_semantic_models

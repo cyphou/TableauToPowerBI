@@ -33,6 +33,7 @@ from tests.prep_flow_fixtures import (
     operation,
     output,
     source,
+    split_generated_prep_metadata,
     write_flow,
 )
 
@@ -1919,9 +1920,13 @@ class TestEdgeCases(unittest.TestCase):
 class TestNormalizedPrepAnalysisReports81To83(unittest.TestCase):
     """Analyzer inventories flattened children and never greens failed M."""
 
-    def analyze(self, flow, include_m_queries=True):
+    def analyze(self, flow, include_m_queries=True, source_map=None):
         with tempfile.TemporaryDirectory() as directory:
-            return analyze_flow(write_flow(directory, flow), include_m_queries)
+            path = write_flow(directory, flow)
+            if source_map is None:
+                return analyze_flow(path, include_m_queries)
+            return analyze_flow(
+                path, include_m_queries, source_map=source_map)
 
     def assert_conversion_failure(self, profile):
         self.assertTrue(profile.assessment['conversion_error'])
@@ -1977,8 +1982,69 @@ class TestNormalizedPrepAnalysisReports81To83(unittest.TestCase):
             'out': output(),
         }}, include_m_queries=False)
         self.assertNotIn('conversion_error', profile.assessment)
+        self.assertEqual(profile.assessment['status'], 'analysis_only')
         self.assertEqual(profile.m_queries, {})
         self.assertEqual(len(profile.transforms), 1)
+
+    def test_script_and_prediction_remain_manual_and_noncomplete(self):
+        flow = {'nodes': {
+            'input': source('script'),
+            'script': operation(
+                'RunScript', 'prediction', name='PythonStep', language='Python'),
+            'prediction': operation('Prediction', 'out', name='ModelScore'),
+            'out': output(),
+        }}
+        profile = self.analyze(flow)
+
+        self.assertEqual(profile.assessment['grade'], 'YELLOW')
+        self.assertEqual(profile.assessment['status'], 'manual_review_required')
+        self.assertEqual(profile.assessment['manual_step_count'], 2)
+        self.assertEqual(
+            {step['type'] for step in profile.assessment['manual_steps']},
+            {'Script', 'Prediction'})
+        self.assertTrue(all(
+            transform.details.get('conversion_status') == 'manual'
+            and transform.details.get('manual')
+            for transform in profile.transforms))
+        query = profile.m_queries['PublishedSales']
+        self.assertIn('__script_warning', query)
+        self.assertIn('__prediction_warning', query)
+        self.assertNotIn('conversion_error', profile.assessment)
+
+    def test_hyper_input_without_rebind_is_red(self):
+        hyper = source('out', name='Extract')
+        hyper['nodeType'] = '.v1.LoadHyper'
+        hyper['connectionAttributes'] = {
+            'class': 'hyper', 'filename': 'extract.hyper', 'table': 'Extract',
+        }
+        profile = self.analyze({'nodes': {
+            'hyper': hyper,
+            'out': output(),
+        }})
+        self.assertEqual(profile.assessment['grade'], 'RED')
+        self.assertEqual(profile.assessment['status'], 'error')
+        self.assertEqual(profile.m_queries, {})
+        self.assertIn('explicit source-map', profile.assessment['conversion_error'])
+
+    def test_hyper_input_rebind_is_reflected_in_profile_and_query(self):
+        hyper = source('out', name='Extract')
+        hyper['nodeType'] = '.v1.LoadHyper'
+        hyper['connectionAttributes'] = {
+            'class': 'hyper', 'filename': 'extract.hyper', 'table': 'Extract',
+        }
+        profile = self.analyze(
+            {'nodes': {'hyper': hyper, 'out': output()}},
+            source_map={
+                'hyper': {
+                    'class': 'sqlserver', 'server': 'warehouse.example',
+                    'database': 'Sales', 'schema': 'dbo', 'table': 'Orders',
+                },
+            })
+        self.assertEqual(profile.assessment['grade'], 'GREEN')
+        self.assertEqual(profile.assessment['status'], 'complete')
+        self.assertEqual(profile.inputs[0].connection_type, 'sqlserver')
+        self.assertIn('Sql.Database("warehouse.example", "Sales")',
+                      profile.m_queries['PublishedSales'])
 
     def test_disconnected_output_is_conversion_error_not_green(self):
         profile = self.analyze({'nodes': {'input': source(), 'out': output()}})
@@ -2038,7 +2104,12 @@ class TestNormalizedPrepAnalysisReports81To83(unittest.TestCase):
                     self.assertEqual(actual.node_graph, expected.node_graph)
                     self.assertEqual(actual.node_count, expected.node_count)
                     self.assertEqual(actual.edge_count, expected.edge_count)
-                    self.assertEqual(actual.m_queries, expected.m_queries)
+                    self.assertEqual(
+                        {name: split_generated_prep_metadata(query, filename)
+                         for name, query in actual.m_queries.items()},
+                        {name: split_generated_prep_metadata(query, 'synthetic.tfl')
+                         for name, query in expected.m_queries.items()},
+                    )
                     self.assertEqual(actual.assessment, expected.assessment)
 
 

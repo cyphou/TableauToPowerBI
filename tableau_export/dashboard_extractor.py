@@ -12,6 +12,7 @@ import posixpath
 import re
 import stat
 import zipfile
+from decimal import Decimal, InvalidOperation
 
 from extract_primitives import (
     _clean_field_ref,
@@ -57,6 +58,273 @@ def _map_vertical_alignment(value):
         'middle': 'middle', 'bottom': 'bottom',
     }
     return mapping.get(token, '')
+
+
+def extract_dashboard_formatting(dashboard):
+    """Extract an explicit background from the dashboard's own style only.
+
+    Keep the raw Tableau color (including alpha) and separate transparency
+    evidence for the visual generator.
+    Child zone, worksheet and device-layout styles are not page backgrounds.
+    """
+    formatting = {}
+    transparencies = []
+    for style in dashboard:
+        if _local_name(style) != 'style':
+            continue
+        for rule in style:
+            if (_local_name(rule) != 'style-rule'
+                    or rule.get('element', '') != 'dashboard'):
+                continue
+            for name, value in rule.attrib.items():
+                if name.rsplit('}', 1)[-1].split(':')[-1] == 'background-transparency':
+                    transparencies.append(value)
+            for fmt in rule:
+                if _local_name(fmt) != 'format':
+                    continue
+                attr = fmt.get('attr', '')
+                if attr == 'background-color' and fmt.get('value', ''):
+                    formatting['background_color'] = fmt.get('value', '')
+                elif attr == 'background-transparency':
+                    transparencies.append(fmt.get('value', ''))
+    if transparencies:
+        formatting['background_transparency'] = _coalesce_transparency(transparencies)
+    return formatting
+
+
+def _local_name(element):
+    """Return an element's unqualified name, including for namespaced XML."""
+    if not isinstance(element.tag, str):
+        return ''
+    return element.tag.rsplit('}', 1)[-1].split(':')[-1]
+
+
+def _coalesce_transparency(values):
+    """Keep an agreed raw token; an empty or conflicting declaration stays unknown.
+
+    Callers check that there was a declaration before calling this function.
+    The empty string preserves a missing/empty value or a conflict without
+    choosing a value or assuming units.
+    """
+    first = values[0]
+    return first if all(value == first for value in values[1:]) else ''
+
+
+def _zone_background_evidence(zone):
+    """Read this zone's own fill and whether it declared one at all.
+
+    An empty or unrecognized declaration is still an override: it is not
+    evidence that a more distant container's fill is visible.
+    """
+    background = {}
+    declared = False
+    unknown = False
+    attributes = {
+        'background-color': 'background_color',
+        'fill-color': 'background_color',
+        'background-transparency': 'background_transparency',
+    }
+    direct_values = {}
+    conflicts = set()
+    transparencies = []
+    for name, value in zone.attrib.items():
+        attr = name.rsplit('}', 1)[-1].split(':')[-1]
+        key = attributes.get(attr)
+        if key is None:
+            if (attr in ('background', 'fill')
+                    or attr.startswith(('background-', 'fill-'))):
+                declared = True
+                unknown = True
+            continue
+        declared = True
+        if key == 'background_transparency':
+            transparencies.append(value)
+            continue
+        if not value:
+            unknown = True
+        elif key in direct_values and direct_values[key] != value:
+            conflicts.add(key)
+        else:
+            direct_values[key] = value
+            background[key] = value
+    for child in zone:
+        tag = _local_name(child)
+        if tag == 'zone-style':
+            formats = child
+        elif tag == 'format':
+            formats = (child,)
+        else:
+            continue
+        for fmt in formats:
+            if _local_name(fmt) != 'format':
+                continue
+            attr = fmt.get('attr', '')
+            key = attributes.get(attr)
+            if key is None:
+                if (attr in ('background', 'fill')
+                        or attr.startswith(('background-', 'fill-'))):
+                    declared = True
+                    unknown = True
+                continue
+            declared = True
+            value = fmt.get('value', '')
+            if key == 'background_transparency':
+                transparencies.append(value)
+                continue
+            if value:
+                if key in direct_values and direct_values[key] != value:
+                    conflicts.add(key)
+                background[key] = value
+            else:
+                unknown = True
+                background.pop(key, None)
+    if conflicts:
+        unknown = True
+        for key in conflicts:
+            background.pop(key, None)
+    if transparencies:
+        value = _coalesce_transparency(transparencies)
+        background['background_transparency'] = value
+        if not value.strip():
+            unknown = True
+    return background, declared, unknown
+
+
+def _extract_zone_background(zone):
+    """Read only this zone's explicit background/fill, without inheritance."""
+    return _zone_background_evidence(zone)[0]
+
+
+def _is_layout_container(element):
+    """Recognize declared layout containers, not arbitrary parent zones."""
+    tag = _local_name(element)
+    if tag == 'layout-container':
+        return True
+    if tag != 'zone':
+        return False
+    types = {element.get('type', ''), element.get('type-v2', '')}
+    for name, value in element.attrib.items():
+        if name.endswith('...type') or name.endswith('...type-v2'):
+            types.add(value)
+    types.discard('')
+    if types:
+        layouts = {'layout-basic', 'layout-flow'}
+        return bool(types & layouts) and types <= (layouts | {'fix'})
+    # An explicit flow orientation plus child zones also identifies a layout.
+    if element.get('param', '') not in ('horz', 'vert'):
+        return False
+    return any(_local_name(child) == 'zone'
+               for child in element.iter() if child is not element)
+
+
+def _floating_state(zone):
+    """Return True, False, or None for an unrecognized floating declaration."""
+    value = zone.get('is-floating')
+    if value is None or value.strip().lower() == 'false':
+        return False
+    if value.strip().lower() == 'true':
+        return True
+    return None
+
+
+def _zone_scope(zone, parents, dashboard):
+    """Keep desktop and device-layout layers in separate drawing scopes."""
+    parent = parents.get(zone)
+    while parent is not None and parent is not dashboard:
+        if _local_name(parent) == 'device-layout':
+            return parent
+        parent = parents.get(parent)
+    return dashboard
+
+
+def _zone_rectangle(zone):
+    """Return an exact, complete rectangle, or None when it is unknown."""
+    try:
+        values = [Decimal(zone.get(attr, '')) for attr in ('x', 'y', 'w', 'h')]
+    except (InvalidOperation, ValueError):
+        return None
+    if (not all(value.is_finite() for value in values)
+            or values[2] <= 0 or values[3] <= 0):
+        return None
+    return values
+
+
+def _has_ambiguous_floating_overlap(zone, parents, floating_zones):
+    """Only rule out a floating layer using complete sibling rectangles.
+
+    Geometry never supplies a background. Different coordinate parents or
+    incomplete rectangles leave the relative layer unknown, so inheritance is
+    suppressed instead of assuming the layer is behind or outside the object.
+    """
+    ancestors = set()
+    parent = parents.get(zone)
+    while parent is not None:
+        ancestors.add(parent)
+        parent = parents.get(parent)
+
+    rect = None
+    coordinate_parent = parents.get(zone)
+    for floating in floating_zones:
+        if floating is zone or floating in ancestors:
+            continue
+        if parents.get(floating) is not coordinate_parent:
+            return True
+        if rect is None:
+            rect = _zone_rectangle(zone)
+        other = _zone_rectangle(floating)
+        if rect is None or other is None:
+            return True
+        x, y, w, h = rect
+        fx, fy, fw, fh = other
+        if x < fx + fw and fx < x + w and y < fy + fh and fy < y + h:
+            return True
+    return False
+
+
+def _resolve_zone_background(zone, parents, floating_zones):
+    """Find this zone's fill, or a safe, explicitly declared parent fill."""
+    background, declared, _ = _zone_background_evidence(zone)
+    if declared:
+        return background, True
+    if _floating_state(zone) is not False:
+        return {}, False
+
+    parent = parents.get(zone)
+    while parent is not None:
+        if _local_name(parent) in ('zones', 'children'):
+            parent = parents.get(parent)
+            continue
+        if not _is_layout_container(parent):
+            break
+        background, declared, unknown = _zone_background_evidence(parent)
+        if declared:
+            if _has_ambiguous_floating_overlap(zone, parents, floating_zones):
+                return {}, False
+            if unknown:
+                # The nearest container is proven, but its fill is not. Carry
+                # only transparency evidence, never its ambiguous color.
+                if 'background_transparency' in background:
+                    return {
+                        'background_transparency': background['background_transparency'],
+                    }, False
+                return {}, False
+            return background, False
+        # Do not look through an unknown or floating container layer.
+        if _floating_state(parent) is not False:
+            break
+        parent = parents.get(parent)
+    return {}, False
+
+
+def _zone_content_elements(zone):
+    """Iterate this zone's contents without borrowing nested zones' content."""
+    pending = list(reversed(list(zone)))
+    while pending:
+        element = pending.pop()
+        if _local_name(element) == 'zone':
+            continue
+        yield element
+        pending.extend(reversed(list(element)))
 
 
 def _image_resource_missing(source, workbook_path, archive_member=''):
@@ -113,15 +381,29 @@ def _image_resource_missing(source, workbook_path, archive_member=''):
     return None
 
 
-def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
+def extract_dashboard_objects(dashboard, workbook_path=None, archive_member='',
+                              worksheet_backgrounds=None):
     """Extracts all dashboard objects: worksheets, text, images, web, filters, blank.
 
-    Also detects floating vs tiled mode.
+    Also detects floating vs tiled mode. Known worksheet pane fills take
+    precedence over inherited container fills, but not explicit zone fills.
     """
     objects = []
     seen_names = set()
+    worksheet_backgrounds = worksheet_backgrounds or set()
+    parents = {child: parent for parent in dashboard.iter() for child in parent}
+    zones = [element for element in dashboard.iter()
+             if _local_name(element) == 'zone']
+    floating_by_scope = {}
+    for zone in zones:
+        if _floating_state(zone) is not False:
+            scope = _zone_scope(zone, parents, dashboard)
+            floating_by_scope.setdefault(scope, []).append(zone)
 
-    for zone in dashboard.findall('.//zone'):
+    for zone in zones:
+        # A named layout is not itself a worksheet visual.
+        if _is_layout_container(zone):
+            continue
         zone_name = zone.get('name', '')
         zone_type = zone.get('type', '')
         zone_id = zone.get('id', '')
@@ -138,7 +420,7 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
                     zone_type_v2 = attr_val
                     break
         is_fixed = zone.get('is-fixed') == 'true' or zone_type_v2 == 'fix'
-        is_floating = zone.get('is-floating') == 'true'
+        is_floating = _floating_state(zone) is True
 
         pos = {
             'x': _safe_int(zone.get('x', 0)),
@@ -148,15 +430,21 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
         }
 
         layout_mode = 'floating' if is_floating else ('fixed' if is_fixed else 'tiled')
+        scope = _zone_scope(zone, parents, dashboard)
+        obj_background, background_is_explicit = _resolve_zone_background(
+            zone, parents, floating_by_scope.get(scope, ()))
 
         # Texte
         if zone_type == 'text' or zone_type_v2 == 'text':
             text_content = ''
             text_runs = []
-            formatted = zone.find('.//formatted-text')
+            formatted = next((element for element in _zone_content_elements(zone)
+                              if _local_name(element) == 'formatted-text'), None)
             if formatted is not None:
                 parts = []
-                for run in formatted.findall('.//run'):
+                for run in formatted.iter():
+                    if _local_name(run) != 'run':
+                        continue
                     run_text = _clean_tableau_run_text(run)
                     if run_text:
                         parts.append(run_text)
@@ -183,18 +471,24 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
             # Zone-level horizontal / vertical text anchoring
             text_align = ''
             vertical_align = ''
-            for fmt in zone.findall('.//zone-style/format'):
-                fattr = fmt.get('attr', '')
-                if fattr == 'text-align' and not text_align:
-                    text_align = _map_text_alignment(fmt.get('value', ''))
-                elif fattr == 'vertical-align' and not vertical_align:
-                    vertical_align = _map_vertical_alignment(fmt.get('value', ''))
+            for style in zone:
+                if _local_name(style) != 'zone-style':
+                    continue
+                for fmt in style:
+                    if _local_name(fmt) != 'format':
+                        continue
+                    fattr = fmt.get('attr', '')
+                    if fattr == 'text-align' and not text_align:
+                        text_align = _map_text_alignment(fmt.get('value', ''))
+                    elif fattr == 'vertical-align' and not vertical_align:
+                        vertical_align = _map_vertical_alignment(fmt.get('value', ''))
             # Deduplicate text zones (desktop+device layouts)
             dedup_txt = f"txt_{zone_id}_{text_content}"
             if dedup_txt in seen_names:
                 continue
             seen_names.add(dedup_txt)
             objects.append({
+                **obj_background,
                 'type': 'text',
                 'name': zone_name or f'text_{zone_id}',
                 'content': text_content,
@@ -221,6 +515,7 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
                 continue
             seen_names.add(dedup_img)
             image = {
+                **obj_background,
                 'type': 'image',
                 'name': zone_name or f'image_{zone_id}',
                 'source': img_src,
@@ -242,6 +537,7 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
         if zone_type == 'web' or zone_type_v2 == 'web':
             url = zone.get('url', '') or zone.findtext('.//url', '')
             objects.append({
+                **obj_background,
                 'type': 'web',
                 'name': zone_name or f'web_{zone_id}',
                 'url': url,
@@ -253,6 +549,7 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
         # Blank / spacer
         if zone_type == 'empty' or zone_type_v2 == 'empty':
             objects.append({
+                **obj_background,
                 'type': 'blank',
                 'name': f'blank_{zone_id}',
                 'position': pos,
@@ -264,6 +561,7 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
         if zone_type == 'nav' or zone_type_v2 == 'nav' or zone_type_v2 == 'button':
             target = zone.get('target-sheet', zone.get('param', ''))
             objects.append({
+                **obj_background,
                 'type': 'navigation_button',
                 'name': zone_name or f'nav_{zone_id}',
                 'target_sheet': target,
@@ -275,6 +573,7 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
         # Download button (export)
         if zone_type == 'export' or zone_type_v2 == 'export':
             objects.append({
+                **obj_background,
                 'type': 'download_button',
                 'name': zone_name or f'download_{zone_id}',
                 'position': pos,
@@ -286,6 +585,7 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
         if zone_type == 'extension' or zone_type_v2 == 'extension':
             ext_id = zone.get('extension-id', '')
             objects.append({
+                **obj_background,
                 'type': 'extension',
                 'name': zone_name or f'ext_{zone_id}',
                 'extension_id': ext_id,
@@ -332,6 +632,7 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
                     calc_id = param_ref.split('none:')[1].split(':')[0]
                     calc_column_name = calc_id
                 objects.append({
+                    **obj_background,
                     'type': 'filter_control',
                     'name': zone_name or f'filter_{zone_id}',
                     'field': zone_name,
@@ -354,6 +655,7 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
                 if pm:
                     param_name = pm.group(1)
                 objects.append({
+                    **obj_background,
                     'type': 'parameter_control',
                     'name': f'param_{param_name}',
                     'param': param_ref,
@@ -366,7 +668,11 @@ def extract_dashboard_objects(dashboard, workbook_path=None, archive_member=''):
         # Worksheet reference (the default case)
         if zone_name and zone_name not in seen_names:
             seen_names.add(zone_name)
+            ws_background = obj_background
+            if not background_is_explicit and zone_name in worksheet_backgrounds:
+                ws_background = {}
             ws_obj = {
+                **ws_background,
                 'type': 'worksheetReference',
                 'name': zone_name,
                 'worksheetName': zone_name,

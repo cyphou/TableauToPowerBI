@@ -4,8 +4,25 @@ All paths, fields and node IDs are invented; no Tableau/private exports needed.
 """
 
 import json
+import re
 import zipfile
 from pathlib import Path
+
+
+def split_generated_prep_metadata(query, flow_name):
+    """Remove only our bounded Prep block, retaining and validating its origin."""
+    pattern = (r'\n    // Tableau Prep provenance \(metadata only\)\n'
+               r'(?:    // [^\r\n]*\n)*?'
+               r'    // End Tableau Prep provenance\n')
+    matches = list(re.finditer(pattern, query))
+    if len(matches) != 1:
+        raise AssertionError(f'Expected exactly one Prep metadata block: {query}')
+    block = matches[0].group()
+    flow_line = '    // Flow: ' + flow_name + '\n'
+    if block.count(flow_line) != 1:
+        raise AssertionError(f'Expected flow {flow_name!r} in {block!r}')
+    normalized_block = block.replace(flow_line, '    // Flow: <flow>\n', 1)
+    return query[:matches[0].start()] + query[matches[0].end():], normalized_block
 
 
 def edge(target):

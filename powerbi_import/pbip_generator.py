@@ -253,6 +253,153 @@ def _L(v):
     return {"expr": {"Literal": {"Value": v}}}
 
 
+def build_background_objects(color, visual_container=True):
+    """Translate an explicit Tableau hex fill to PBIR, including ARGB alpha."""
+    if not isinstance(color, str):
+        return None
+    color = color.strip()
+    if not re.fullmatch(r'#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})', color):
+        return None
+    transparency = 0
+    if len(color) == 9:
+        transparency = round((255 - int(color[1:3], 16)) * 100 / 255, 6)
+        color = '#' + color[3:]
+    props = {
+        'color': {'solid': {'color': _L(f"'{color}'")}},
+        'transparency': _L(f'{transparency:g}D'),
+    }
+    if visual_container:
+        props['show'] = _L('true')
+    return [{'properties': props}]
+
+
+def _tableau_background_transparency(formatting):
+    """Return whether separate Tableau transparency has ambiguous semantics."""
+    values = []
+    for scope in (formatting, (formatting or {}).get('pane'),
+                  (formatting or {}).get('worksheet_style')):
+        if not isinstance(scope, dict):
+            continue
+        for key in ('background_transparency', 'background-transparency'):
+            if key in scope:
+                values.append(str(scope[key]))
+    if not values:
+        return False, ''
+    distinct = list(dict.fromkeys(values))
+    return True, distinct[0] if len(distinct) == 1 else ', '.join(distinct)
+
+
+def _note_unmapped_background_transparency(visual, raw, scope):
+    """Record and log a fill omitted because separate transparency is unverified."""
+    note = (
+        f"Tableau {scope} background_transparency {raw!r} was omitted because "
+        "its units or semantics are unverified; no background fill was guessed."
+    )
+    annotations = visual.setdefault('annotations', [])
+    if not any(item.get('name') == 'MigrationNote' and item.get('value') == note
+               for item in annotations if isinstance(item, dict)):
+        annotations.append({'name': 'MigrationNote', 'value': note})
+    logger.warning("Tableau %s background_transparency %r omitted: semantics are unverified",
+                   scope, raw)
+
+
+def _formatted_label_annotation(container, name, value):
+    annotations = container.setdefault('annotations', [])
+    encoded = json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+    if not any(item.get('name') == name and item.get('value') == encoded
+               for item in annotations if isinstance(item, dict)):
+        annotations.append({'name': name, 'value': encoded})
+
+
+def _formatted_label_note(container, value):
+    annotations = container.setdefault('annotations', [])
+    if not any(item.get('name') == 'MigrationNote' and item.get('value') == value
+               for item in annotations if isinstance(item, dict)):
+        annotations.append({'name': 'MigrationNote', 'value': value})
+
+
+def preserve_formatted_label_runs(container, worksheet):
+    """Preserve source label templates and disclose unsupported interpolation."""
+    blocks = worksheet.get('formatted_label_blocks') or []
+    runs = worksheet.get('formatted_label_runs') or []
+    if blocks:
+        _formatted_label_annotation(container, 'TableauFormattedLabelBlocks', blocks)
+        _formatted_label_note(
+            container,
+            'Tableau formatted label blocks were not emitted because pane-scoped '
+            'or multiple templates cannot be represented as one label.',
+        )
+        return
+    if not runs:
+        return
+    _formatted_label_annotation(container, 'TableauFormattedLabelRuns', runs)
+    if any(run.get('type') == 'field' for run in runs if isinstance(run, dict)):
+        _formatted_label_note(
+            container,
+            'Tableau formatted label field references were not interpolated into '
+            'query projections; the visible fallback marks them as not evaluated.',
+        )
+
+
+def _show_formatted_label_fallback(container, worksheet):
+    """Render a truthful static fallback when source label fields cannot bind."""
+    if worksheet.get('formatted_label_blocks'):
+        return
+    runs = worksheet.get('formatted_label_runs') or []
+    if not runs:
+        return
+    fields = worksheet.get('fields') or []
+    if any((field.get('shelf') or '').strip().lower() in ('rows', 'columns')
+           for field in fields if isinstance(field, dict)):
+        _formatted_label_note(
+            container,
+            'Tableau formatted subtitle was not reconstructed or rendered because '
+            'the worksheet has row or column shelves; source query fields were not evaluated.',
+        )
+        return
+
+    label_parts = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        if run.get('type') == 'literal':
+            label_parts.append(str(run.get('text') or ''))
+        elif run.get('type') == 'field':
+            reference = str(run.get('reference') or '')
+            label_parts.append(f'⟦Tableau field not evaluated: {reference}⟧')
+    fallback = ''.join(label_parts)
+    if not fallback:
+        return
+
+    visual = container.setdefault('visual', {})
+    visual_objects = visual.setdefault('visualContainerObjects', {})
+    subtitles = visual_objects.get('subTitle')
+    if subtitles:
+        can_extend = len(subtitles) == 1 and not subtitles[0].get('selector')
+        properties = subtitles[0].get('properties', {}) if can_extend else {}
+        show = properties.get('show', {}).get('expr', {}).get('Literal', {}).get('Value')
+        text = properties.get('text', {}).get('expr', {}).get('Literal', {}).get('Value')
+        if can_extend and show == 'true' and isinstance(text, str) \
+                and len(text) >= 2 and text.startswith("'") and text.endswith("'"):
+            existing = text[1:-1].replace("''", "'")
+            suffix = ' | ' + fallback
+            if existing != fallback and not existing.endswith(suffix):
+                properties['text'] = _L(f"'{existing}{suffix}'")
+            return
+        _formatted_label_note(
+            container,
+            'Tableau formatted subtitle was not emitted because an existing '
+            'subtitle is hidden, dynamic, selected, or ambiguous; source fields '
+            'remain not evaluated.',
+        )
+        return
+
+    visual_objects['subTitle'] = [{'properties': {
+        'show': _L('true'),
+        'text': _L(f"'{fallback}'"),
+    }}]
+
+
 #: Schemes a Power BI action button will actually navigate to.
 _STATIC_URL_SCHEMES = ('http://', 'https://', 'mailto:', '//')
 #: Power BI's own padding above and below a textbox's text.
@@ -681,6 +828,15 @@ class PowerBIProjectGenerator:
                 raise
             project_dir = original_project_dir
             pbip_file = os.path.join(project_dir, f'{report_name}.pbip')
+        if (not self._partial_generation and has_visuals
+                and self._output_format == 'pbip'):
+            try:
+                from powerbi_import.powerbi_internal_lineage import (
+                    write_powerbi_lineage_artifacts,
+                )
+                write_powerbi_lineage_artifacts(project_dir)
+            except (OSError, TypeError, ValueError) as exc:
+                logger.warning("Static Power BI lineage graph was not written: %s", exc)
         print(f"  ✓ .pbip file created: {pbip_file}")
         self.last_phase_timings = phase_timings.finish()
 
@@ -921,20 +1077,25 @@ class PowerBIProjectGenerator:
 
         datasources = converted_objects.get('datasources', []) or []
         if RelationshipInferenceEngine:
+            from powerbi_import.tmdl_relationships import _physical_join_scopes
+
             for ds in datasources:
                 tables = ds.get('tables', []) or []
                 if len(tables) < 2:
                     continue
 
-                sig = tuple(
-                    sorted(
-                        (
-                            t.get('name', ''),
-                            tuple(sorted(c.get('name', '') for c in t.get('columns', []) or [])),
-                        )
-                        for t in tables
-                    )
+                sig = (
+                    tuple((
+                        t.get('name', ''),
+                        tuple((
+                            c.get('name', ''), c.get('datatype'),
+                            bool(c.get('is_primary_key')), bool(c.get('is_unique')),
+                        ) for c in (t.get('columns') or [])),
+                    ) for t in tables),
+                    json.dumps(ds.get('relation_metadata') or {}, sort_keys=True,
+                               ensure_ascii=False, default=str),
                 )
+                protected_pairs = set(_physical_join_scopes(ds))
 
                 if sig in self._relationship_inference_cache:
                     inferred = self._relationship_inference_cache[sig]
@@ -958,6 +1119,8 @@ class PowerBIProjectGenerator:
                 added = 0
                 for rel in inferred:
                     key = (rel.get('fromTable'), rel.get('fromColumn'), rel.get('toTable'), rel.get('toColumn'))
+                    if frozenset((key[0], key[2])) in protected_pairs:
+                        continue
                     if key in existing_keys:
                         continue
                     existing.append(
@@ -2070,6 +2233,16 @@ class PowerBIProjectGenerator:
                 }
             }
         }
+        unknown_transparency, raw_transparency = _tableau_background_transparency(obj)
+        if unknown_transparency:
+            _note_unmapped_background_transparency(
+                visual_json, raw_transparency, 'dashboard zone')
+        else:
+            background = build_background_objects(obj.get('background_color'))
+            if background:
+                visual_json['visual']['visualContainerObjects'] = {
+                    'background': background,
+                }
         _write_json(os.path.join(visual_dir, 'visual.json'), visual_json, ensure_ascii=False)
 
     def _create_annotation_overlay(self, visuals_dir, annotation, parent_obj,
@@ -3292,6 +3465,12 @@ class PowerBIProjectGenerator:
                 "height": page_height,
                 "width": page_width
             }
+            db_formatting = db.get('formatting') or {}
+            unknown_transparency, raw_transparency = _tableau_background_transparency(
+                db_formatting)
+            if unknown_transparency:
+                _note_unmapped_background_transparency(
+                    page_json, raw_transparency, 'dashboard')
 
             # Add page-level filters from dashboard filters
             db_filters = list(db.get('filters', []))
@@ -6977,6 +7156,13 @@ class PowerBIProjectGenerator:
         state = visual.get('query', {}).get('queryState', {})
         objects = self._build_visual_objects(
             ws_name, ws_data, visual_type, query_state=state)
+        formatting = ws_data.get('formatting', {}) if isinstance(ws_data, dict) else {}
+        unknown_transparency, raw_transparency = _tableau_background_transparency(
+            formatting)
+        if unknown_transparency:
+            objects.pop('background', None)
+            _note_unmapped_background_transparency(
+                visual_json, raw_transparency, 'worksheet pane')
         if (ws_data and any(
                 item.get('adhoc')
                 for item in (ws_data.get('clustering') or [])
@@ -7032,6 +7218,8 @@ class PowerBIProjectGenerator:
             if key in objects:
                 visual['visualContainerObjects'][key] = objects.pop(key)
         visual['objects'] = objects
+        preserve_formatted_label_runs(visual_json, ws_data or {})
+        _show_formatted_label_fallback(visual_json, ws_data or {})
 
     def _build_visual_objects(self, ws_name, ws_data, visual_type, query_state=None):
         """Builds visual objects (title, colors, labels, legend, axes).
@@ -7416,13 +7604,9 @@ class PowerBIProjectGenerator:
         if not bg_color and isinstance(formatting.get('pane', {}), dict):
             bg_color = formatting.get('pane', {}).get('background-color', '')
         if bg_color:
-            objects["background"] = [{
-                "properties": {
-                    "color": {
-                        "solid": {"color": _L(f"'{bg_color}'")}
-                    }
-                }
-            }]
+            background = build_background_objects(bg_color)
+            if background:
+                objects['background'] = background
 
         # Table/matrix-specific formatting (header font, row banding, grid)
         if visual_type in ('tableEx', 'table', 'matrix'):
@@ -8531,7 +8715,13 @@ class PowerBIProjectGenerator:
         tmdl_stats['columns'] = columns_count
 
         fallback_partitions = []
-        self_healed_tables = []
+        from powerbi_import.migration_quality import scan_self_heal_placeholder_columns
+        placeholder_evidence = scan_self_heal_placeholder_columns(
+            project_dir, model_name=f"{report_name}.SemanticModel")
+        self_healed_tables = sorted({
+            item.get('table') for item in placeholder_evidence.get('columns', [])
+            if item.get('table')
+        })
         if os.path.isdir(tables_dir):
             for tmdl_file in os.listdir(tables_dir):
                 if not tmdl_file.endswith('.tmdl'):
@@ -8543,8 +8733,6 @@ class PowerBIProjectGenerator:
                     continue
                 if 'otherwise' in text and '#table(' in text:
                     fallback_partitions.append(tmdl_file[:-5])
-                if 'Self-heal: placeholder column created' in text:
-                    self_healed_tables.append(tmdl_file[:-5])
 
         relationships_count = 0
         rels_path = os.path.join(project_dir, f"{report_name}.SemanticModel",
@@ -8648,7 +8836,8 @@ class PowerBIProjectGenerator:
             "tmdl_stats": tmdl_stats,
             "degradations": {
                 "fallback_partitions": sorted(fallback_partitions),
-                "self_healed_tables": sorted(self_healed_tables),
+                "self_healed_tables": self_healed_tables,
+                "self_heal_placeholder_columns": placeholder_evidence,
                 "hyper_unread": sorted(
                     item.get("filename", "")
                     for item in converted_objects.get("hyper_files", [])

@@ -852,7 +852,22 @@ def _fix_m_if_else_balance(m_expr):
     """
     if not m_expr or 'if' not in m_expr:
         return m_expr
-    stripped = re.sub(r'"([^"]|"")*"', '""', m_expr)
+    # Provenance comments are metadata, not M keywords. Their labels can
+    # contain words such as "if" or "else"; do not let them change the M
+    # expression when the partition writer checks conditional balance.
+    code = re.sub(
+        r'(?m)^[ \t]*// Tableau (?:source relation|Prep flow|Prep output|Prep step):[^\n]*',
+        '', m_expr,
+    )
+    # The Prep parser emits its own delimited, comment-only provenance block.
+    # Restrict the match to comment lines so executable M is never masked.
+    code = re.sub(
+        r'(?m)^[ \t]*// Tableau Prep provenance \(metadata only\)\r?\n'
+        r'(?:[ \t]*//[^\r\n]*\r?\n)*'
+        r'[ \t]*// End Tableau Prep provenance[^\r\n]*',
+        '', code,
+    )
+    stripped = re.sub(r'"([^"]|"")*"', '""', code)
     if_count = len(re.findall(r'\bif\b', stripped))
     else_count = len(re.findall(r'\belse\b', stripped))
     if if_count > else_count:

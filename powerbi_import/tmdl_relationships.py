@@ -15,8 +15,204 @@ import re
 import uuid
 
 from tableau_export.m_query_builder import _m_header_literal
+from powerbi_import.errors import PartialGenerationError
 
 logger = logging.getLogger(__name__)
+
+
+def _predicate_equality_pairs(predicate):
+    """Return only fully resolved conjunctive field equalities."""
+    if not isinstance(predicate, dict):
+        return []
+    operator = str(predicate.get('operator', '')).upper()
+    if operator == 'AND':
+        pairs = []
+        for argument in predicate.get('arguments', []):
+            child = _predicate_equality_pairs(argument)
+            if not child:
+                return []
+            pairs.extend(child)
+        return pairs
+    if operator not in ('=', '=='):
+        return []
+    left, right = predicate.get('left'), predicate.get('right')
+    if not all(isinstance(side, dict) for side in (left, right)):
+        return []
+    if not all(isinstance(side.get(key), str) and side[key]
+               for side in (left, right) for key in ('table', 'column')):
+        return []
+    return [((left['table'], left['column']), (right['table'], right['column']))]
+
+
+def _resolved_single_equality(predicate):
+    """Return one declared field equality in source order, or ``None``."""
+    pairs = _predicate_equality_pairs(predicate)
+    return pairs[0] if len(pairs) == 1 else None
+
+
+def _physical_join_nodes(datasource):
+    """Yield source-path/node pairs for every active physical join tree."""
+    metadata = datasource.get('relation_metadata') or {}
+
+    def walk(node, path):
+        if not isinstance(node, dict):
+            return
+        if str(node.get('type', '')).casefold() == 'join':
+            yield path, node
+        for index, child in enumerate(node.get('children') or []):
+            yield from walk(child, f'{path}.children[{index}]')
+
+    for index, node in enumerate(metadata.get('physical_relations') or []):
+        yield from walk(node, f'physical_relations[{index}]')
+    for table_index, logical_table in enumerate(metadata.get('logical_tables') or []):
+        if not isinstance(logical_table, dict):
+            continue
+        for relation_index, node in enumerate(logical_table.get('relations') or []):
+            yield from walk(
+                node, f'logical_tables[{table_index}].relations[{relation_index}]')
+
+
+def _physical_aliases(node):
+    if not isinstance(node, dict):
+        return set()
+    kind = str(node.get('type', '')).casefold()
+    if kind in ('table', 'text'):
+        return {node['name']} if isinstance(node.get('name'), str) and node['name'] else set()
+    return set().union(*(
+        _physical_aliases(child) for child in node.get('children') or []
+    ))
+
+
+def _physical_join_sides(node):
+    """Return the physical table aliases under the declared left and right sides."""
+    children = node.get('children') or [] if isinstance(node, dict) else []
+    if len(children) != 2:
+        return set(), set()
+    return _physical_aliases(children[0]), _physical_aliases(children[1])
+
+
+def _single_physical_join_equality(node):
+    """Return a single equality whose endpoints belong to opposite join sides."""
+    if not isinstance(node, dict) or str(node.get('type', '')).casefold() != 'join':
+        return None
+    pairs = _predicate_equality_pairs(node.get('predicate'))
+    if len(pairs) != 1:
+        return None
+    left, right = _physical_join_sides(node)
+    first, second = pairs[0]
+    if ((first[0] in left and second[0] in right)
+            or (first[0] in right and second[0] in left)):
+        return pairs[0]
+    return None
+
+
+def _physical_join_scopes(datasource):
+    """Map every source alias pair covered by a join to its exact tree paths."""
+    scopes = {}
+    for path, node in _physical_join_nodes(datasource):
+        left, right = _physical_join_sides(node)
+        equalities = _predicate_equality_pairs(node.get('predicate'))
+        for left_alias in left:
+            for right_alias in right:
+                pair = frozenset((left_alias, right_alias))
+                scope = scopes.setdefault(pair, {'paths': [], 'equalities': []})
+                if path not in scope['paths']:
+                    scope['paths'].append(path)
+                for equality in equalities:
+                    if frozenset((equality[0][0], equality[1][0])) == pair \
+                            and frozenset(equality) not in scope['equalities']:
+                        scope['equalities'].append(frozenset(equality))
+    return scopes
+
+
+def preserve_physical_join_provenance(datasources, merged_datasource):
+    """Retain validated native trees on a shared datasource without inventing edges."""
+    result = dict(merged_datasource)
+    metadata = dict(result.get('relation_metadata') or {})
+    physical_relations = list(metadata.get('physical_relations') or [])
+    for datasource in datasources:
+        source_metadata = datasource.get('relation_metadata') or {}
+        physical_relations.extend(source_metadata.get('physical_relations') or [])
+    metadata.update({
+        'version': 1,
+        'physical_relations': physical_relations,
+        'logical_tables': [],
+        'logical_relationships': [],
+    })
+    result['relation_metadata'] = metadata
+    result['_retained_physical_join_provenance'] = True
+    return result
+
+
+def preflight_physical_joins(datasources, *, provenance_retained=True,
+                             allow_nested_retention=False):
+    """Reject active physical joins whose complete row predicate is not retained.
+
+    Exact materialized extracts replace the active source tree during Tableau
+    extraction. A bare materialization claim or historical native metadata does
+    not. Shared-model preflight may temporarily allow a nested tree only so its
+    dedicated remapper can prove and retain the complete scope.
+    """
+    for datasource in datasources or []:
+        if not isinstance(datasource, dict):
+            continue
+        retained = datasource.get('_retained_physical_join_provenance') is True
+        scopes = _physical_join_scopes(datasource)
+        for path, node in _physical_join_nodes(datasource):
+            if _single_physical_join_equality(node) is not None \
+                    and node.get('requires_materialization') is not True:
+                continue
+            if retained and provenance_retained:
+                continue
+            if allow_nested_retention and '.children[' in path:
+                continue
+            left, right = _physical_join_sides(node)
+            aliases = sorted(left | right, key=str.casefold)
+            message = (
+                'The active physical join predicate cannot be represented as a '
+                'Power BI relationship without materializing the complete source '
+                f'join; involved aliases: {", ".join(aliases) or "unknown"}.'
+            )
+            if not provenance_retained:
+                message += ' The merge would discard the required physical join scope.'
+            raise PartialGenerationError(
+                message,
+                item=f'relation_metadata.{path}',
+                source=datasource.get('name') or datasource.get('caption'),
+                recovery_kind='physical_join_predicate',
+                required_evidence=[
+                    'Complete, unsampled materialization of the full physical join',
+                    'Verified source-row and column lineage for every join predicate',
+                    'Preserved join scope and declared equality relationships',
+                ],
+            )
+
+        if scopes:
+            allowed = {
+                frozenset((edge[0], edge[1]))
+                for _, node in _physical_join_nodes(datasource)
+                for edge in (_predicate_equality_pairs(node.get('predicate')))
+            }
+            for relation in datasource.get('relationships') or []:
+                if not isinstance(relation, dict):
+                    continue
+                left_side, right_side = relation.get('left') or {}, relation.get('right') or {}
+                if not isinstance(left_side, dict) or not isinstance(right_side, dict):
+                    continue
+                edge = ((left_side.get('table'), left_side.get('column')),
+                        (right_side.get('table'), right_side.get('column')))
+                pair = frozenset((edge[0][0], edge[1][0]))
+                if (pair in scopes and relation.get('inferred') is True
+                        and frozenset(edge) not in allowed):
+                    raise PartialGenerationError(
+                        'An inferred relationship conflicts with the declared '
+                        'physical join predicate.',
+                        source=datasource.get('name') or datasource.get('caption'),
+                        recovery_kind='physical_join_predicate',
+                        required_evidence=[
+                            'Relationship endpoints matching the complete declared physical equality',
+                        ],
+                    )
 
 
 def _composite_equality_terms(predicate, left_alias, right_alias):

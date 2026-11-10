@@ -162,6 +162,9 @@ class MergeManifest:
     validation_score: int = 0
     merge_score: int = 0
     timestamp: str = ""
+    # None means a legacy/invalid manifest cannot prove whether scopes existed.
+    # TMDL reverse-engineering cannot reconstruct retained source join scopes.
+    physical_join_provenance_required: Optional[bool] = False
 
     def to_dict(self) -> dict:
         return {
@@ -174,6 +177,7 @@ class MergeManifest:
             "validation_score": self.validation_score,
             "merge_score": self.merge_score,
             "timestamp": self.timestamp,
+            "physical_join_provenance_required": self.physical_join_provenance_required,
         }
 
     @classmethod
@@ -187,6 +191,11 @@ class MergeManifest:
             validation_score=data.get("validation_score", 0),
             merge_score=data.get("merge_score", 0),
             timestamp=data.get("timestamp", ""),
+            physical_join_provenance_required=(
+                data["physical_join_provenance_required"]
+                if isinstance(data.get("physical_join_provenance_required"), bool)
+                else None
+            ),
         )
 
     def save(self, output_dir: str) -> str:
@@ -308,6 +317,40 @@ def build_merge_manifest(model_name: str,
         validation_score=validation_score,
         merge_score=assessment.merge_score,
         timestamp=datetime.now(timezone.utc).isoformat(),
+        physical_join_provenance_required=_has_retained_physical_join_scopes(merged),
+    )
+
+
+def _has_retained_physical_join_scopes(merged: dict) -> bool:
+    """Whether regeneration needs physical provenance not present in TMDL."""
+    from powerbi_import.tmdl_relationships import _physical_join_scopes
+
+    return any(_physical_join_scopes(ds) for ds in merged.get('datasources', []))
+
+
+def _require_incremental_physical_provenance(manifest: MergeManifest) -> None:
+    """Do not regenerate a scoped model from provenance-free TMDL."""
+    if manifest.physical_join_provenance_required is False:
+        return
+    from powerbi_import.errors import PartialGenerationError
+
+    if manifest.physical_join_provenance_required is None:
+        detail = ("The merge manifest does not prove whether retained physical "
+                  "source-join scopes existed.")
+    else:
+        detail = ("TMDL reconstruction does not retain the physical source-join "
+                  "scopes needed to prevent inferred relationships.")
+    raise PartialGenerationError(
+        "Cannot incrementally modify this shared model: " + detail +
+        " Regenerate from the original workbooks and their complete datasource "
+        "provenance instead.",
+        item='merge_manifest.physical_join_provenance_required',
+        source=manifest.model_name,
+        recovery_kind='physical_join_predicate',
+        required_evidence=[
+            'Original source join trees and unambiguous table/field bindings',
+            'A provenance-preserving incremental regeneration path',
+        ],
     )
 
 
@@ -1425,15 +1468,20 @@ def merge_semantic_models(all_extracted: List[dict],
 
     workbook_names = assessment.workbooks
 
+    # Inspect original calculation identities and target scopes before either
+    # calculation inventory is collapsed by the shared merge.
+    calculation_scopes = _preflight_calculation_identities(
+        all_extracted, workbook_names, assessment)
+
     # 1. Merge datasources (table-level deduplication)
     merged_datasource = _merge_datasources(
-        all_extracted, workbook_names, assessment
+        all_extracted, workbook_names, assessment, calculation_scopes
     )
     merged['datasources'] = [merged_datasource]
 
     # 2. Merge calculations with conflict resolution
     merged['calculations'] = _merge_calculations(
-        all_extracted, workbook_names, assessment
+        all_extracted, workbook_names, assessment, calculation_scopes
     )
 
     # The TMDL generator routes calculations to a table by datasource_name,
@@ -1498,14 +1546,766 @@ def merge_semantic_models(all_extracted: List[dict],
     return merged
 
 
+def _preflight_calculation_identities(all_extracted: List[dict],
+                                      workbook_names: List[str],
+                                      assessment: MergeAssessment) -> dict:
+    """Protect original calculation IDs before the two merge inventories collapse.
+
+    A table scope is evidence only when the merge really retains that alias,
+    not when the widest-table heuristic merely guesses a destination.
+    """
+    from powerbi_import.errors import PartialGenerationError
+    from powerbi_import.tableau_identity import calculation_identity
+    from powerbi_import.tmdl_generator import _calculation_alias_key
+
+    isolated = {
+        _normalize_table_key(name)
+        for names in assessment.isolated_tables.values() for name in names
+    }
+    source_table_counts = [
+        sum(len(ds.get('tables', [])) for ds in extracted.get('datasources', []))
+        for extracted in all_extracted
+    ]
+    tables = []
+    for wi, extracted in enumerate(all_extracted):
+        for di, ds in enumerate(extracted.get('datasources', [])):
+            fingerprints = build_table_fingerprints([ds])
+            counts = {}
+            for table in ds.get('tables', []):
+                name = table.get('name', '')
+                counts[name] = counts.get(name, 0) + 1
+            for name, (fp, table, _) in fingerprints.items():
+                tables.append({
+                    'workbook': wi, 'datasource': di, 'ds': ds, 'table': table,
+                    'name': name, 'fingerprint': fp.fingerprint(),
+                    'unique': counts.get(name) == 1,
+                })
+
+    selected = [t for t in tables if _normalize_table_key(t['name']) not in isolated]
+    if not selected and isolated:
+        selected = tables
+    retained = {}
+    for table in selected:
+        retained.setdefault(table['fingerprint'], table['name'])
+    alias_fingerprints = {}
+    for fingerprint, name in retained.items():
+        alias_fingerprints.setdefault(name.casefold(), set()).add(fingerprint)
+    selected_ids = {id(table) for table in selected}
+
+    def scope_for(wi, di, calc):
+        workbook_tables = [t for t in tables if t['workbook'] == wi]
+        explicit = calc.get('table')
+        if explicit:
+            if not isinstance(explicit, str):
+                return None, None
+            candidates = [
+                t for t in workbook_tables
+                if t['name'] == explicit and (di is None or t['datasource'] == di)
+            ]
+        elif source_table_counts[wi] == 1 and len(workbook_tables) == 1:
+            candidates = workbook_tables
+            if di is not None and candidates[0]['datasource'] != di:
+                return None, None
+        else:
+            return None, None
+        if len(candidates) != 1:
+            return None, None
+        t = candidates[0]
+        if (id(t) not in selected_ids or not t['unique']
+                or retained.get(t['fingerprint']) != t['name']
+                or len(alias_fingerprints.get(t['name'].casefold(), ())) != 1):
+            return None, None
+        ds_name = calc.get('datasource_name')
+        if ds_name and ds_name != t['ds'].get('name'):
+            return None, None
+        return t['name'], t
+
+    def declaration(calc):
+        return {
+            key: value for key, value in calc.items()
+            if key not in ('datasource_name', 'table', '_merge_action',
+                           '_source_workbook', '_source_workbooks')
+        }
+
+    def reject_premerged(calc, workbook):
+        action = calc.get('_merge_action')
+        if isinstance(action, str) and action.strip().casefold() == 'deduplicated':
+            raise PartialGenerationError(
+                "Cannot merge a previously deduplicated calculation: its "
+                "complete original datasource-scoped IDs and target bindings "
+                "are not available to this merge. Re-extract the original "
+                "workbooks rather than discarding the deduplication marker.",
+                item=calc.get('caption') or calc.get('name'),
+                source=workbook,
+                recovery_kind='calculation_identity_binding',
+                required_evidence=[
+                    'Complete original calculation identities and datasource namespaces',
+                    'Verified source-ID-to-target bindings for each original calculation',
+                ],
+            )
+
+    def source_identity(table):
+        if table is None:
+            return None
+        ds, source = table['ds'], table['table']
+        ds_name = ds.get('name')
+        connection = source.get('connection_details')
+        if not connection:
+            connection = (ds.get('connection_map') or {}).get(source.get('connection'))
+        connection = connection or ds.get('connection') or {}
+        if not isinstance(connection, dict):
+            return None
+        details = connection.get('details') or {}
+        if not isinstance(details, dict):
+            return None
+        identity = source.get('hyper_identity')
+        hyper = (isinstance(identity, dict)
+                 and all(identity.get(k) for k in ('workbook', 'archive_member', 'schema', 'table'))
+                 and os.path.isabs(str(identity['workbook'])))
+        location = (
+            (details.get('server') or details.get('host'))
+            and (details.get('database') or details.get('db'))
+        )
+        location = location or details.get('url') or details.get('dsn')
+        location = location or any(
+            os.path.isabs(str(details.get(key) or ''))
+            for key in ('filepath', 'path', 'filename'))
+        if (not isinstance(ds_name, str) or not ds_name.strip()
+                or not (hyper or (connection.get('type') and location))):
+            return None
+        overrides = ds.get('m_query_overrides') or {}
+        if not isinstance(overrides, dict):
+            return None
+        return (
+            ds_name, source.get('source_table') or table['name'], connection, identity,
+            source.get('custom_sql', source.get('query', '')),
+            source.get('cols_physical_map'), source.get('m_query_override'),
+            ds.get('m_query_override'), overrides.get(table['name']),
+            ds.get('source_selection'), ds.get('materialized_extract'),
+        )
+
+    scopes, records = {}, []
+    conflicts = {c.name for c in assessment.measure_conflicts}
+    for wi, (wb_name, extracted) in enumerate(zip(workbook_names, all_extracted)):
+        ds_records = []
+        datasources = extracted.get('datasources', [])
+        for di, ds in enumerate(datasources):
+            for ci, calc in enumerate(ds.get('calculations', [])):
+                reject_premerged(calc, wb_name)
+                scope, table = scope_for(wi, di, calc)
+                scopes[('datasource', wi, di, ci)] = scope
+                entry = (wb_name, calc, scope, source_identity(table))
+                ds_records.append(entry)
+                records.append(entry)
+        for ci, calc in enumerate(extracted.get('calculations', [])):
+            reject_premerged(calc, wb_name)
+            # The extractor ordinarily repeats each datasource calculation in
+            # the workbook inventory. It is not a second source declaration.
+            matches = [
+                entry for entry in ds_records
+                if declaration(entry[1]) == declaration(calc)
+                and (not calc.get('datasource_name')
+                     or calc.get('datasource_name') == entry[1].get('datasource_name'))
+            ]
+            if len(matches) == 1:
+                matched_scope = matches[0][2]
+                if calc.get('table') and calc.get('table') != matched_scope:
+                    raise PartialGenerationError(
+                        "Cannot merge a calculation whose workbook and "
+                        "datasource copies disagree on the retained target table.",
+                        item=calc.get('caption') or calc.get('name'),
+                        source=wb_name,
+                        recovery_kind='calculation_identity_binding',
+                        required_evidence=[
+                            'Consistent source calculation identity and target table',
+                            'Unambiguous datasource-scoped source-to-target binding',
+                        ],
+                    )
+                scopes[('workbook', wi, ci)] = matched_scope
+                continue
+            ds_indices = [
+                di for di, ds in enumerate(datasources)
+                if calc.get('datasource_name') and ds.get('name') == calc.get('datasource_name')
+            ]
+            di = ds_indices[0] if len(ds_indices) == 1 else (
+                0 if not calc.get('datasource_name') and len(datasources) == 1 else None)
+            scope, table = scope_for(wi, di, calc)
+            scopes[('workbook', wi, ci)] = scope
+            records.append((wb_name, calc, scope, source_identity(table)))
+
+    groups = {}
+    for wb_name, calc, scope, identity in records:
+        if (not isinstance(calc.get('name', ''), str)
+                or (calc.get('caption') is not None
+                    and not isinstance(calc.get('caption'), str))):
+            raise PartialGenerationError(
+                "Cannot prove a calculation identity: its source ID or caption "
+                "is not a string.",
+                source=wb_name,
+                recovery_kind='calculation_identity_binding',
+                required_evidence=['Original datasource-scoped calculation ID and caption'],
+            )
+        name, caption = calculation_identity(calc)
+        if not isinstance(caption, str) or not caption:
+            continue
+        # A conflicting measure is already given a distinct output caption.
+        merge_caption = calc.get('caption') or calc.get('name', '')
+        output = (f'{merge_caption} ({wb_name})'
+                  if merge_caption in conflicts and calc.get('role', 'measure') == 'measure'
+                  else caption)
+        groups.setdefault(_calculation_alias_key(output), []).append(
+            (wb_name, calc, scope, identity, name, output))
+
+    for entries in groups.values():
+        for index, first in enumerate(entries):
+            for second in entries[index + 1:]:
+                a_wb, a_calc, a_scope, a_origin, a_name, output = first
+                b_wb, b_calc, b_scope, b_origin, b_name, _ = second
+                if a_scope and b_scope and a_scope.casefold() != b_scope.casefold():
+                    continue
+                same_source = (
+                    a_scope is not None and b_scope is not None
+                    and a_origin is not None and a_origin == b_origin
+                    and isinstance(a_name, str) and bool(a_name)
+                    and a_name == b_name
+                    and declaration(a_calc) == declaration(b_calc)
+                )
+                if same_source:
+                    continue
+                raise PartialGenerationError(
+                    f"Cannot merge calculation caption {output!r}: distinct or "
+                    "unproven source identities would share a column or measure, "
+                    "or their target table scope is ambiguous. Preserve the "
+                    "original datasource-scoped IDs and prove distinct target "
+                    "tables, or use distinct, explicitly mapped output names.",
+                    item=output,
+                    source=f'{a_wb}, {b_wb}',
+                    recovery_kind='calculation_identity_binding',
+                    required_evidence=[
+                        f'Original calculation IDs: {a_name!r}, {b_name!r}',
+                        f'Proven retained target tables: {a_scope!r}, {b_scope!r}',
+                        'Complete datasource-scoped identities and source-to-target bindings',
+                    ],
+                )
+    return scopes
+
+
+def _preflight_relationship_aliases(datasources: list) -> None:
+    """Reject ambiguous or unmapped relationship endpoints.
+
+    The merger keeps table aliases and relationship endpoints unchanged while
+    collapsing all sources into one datasource. The manifest cannot remap
+    duplicate aliases to their original tables.
+    """
+    from powerbi_import.errors import PartialGenerationError
+
+    aliases: Dict[str, list] = {}
+    retained_names: Dict[tuple, str] = {}
+    unmapped_aliases: Dict[str, str] = {}
+    for ds in datasources:
+        connection_map = ds.get('connection_map') or {}
+        for table in ds.get('tables') or []:
+            if not isinstance(table, dict):
+                continue
+            name = table.get('name')
+            if not isinstance(name, str) or not name.strip():
+                continue
+            connection = table.get('connection_details')
+            if not connection and isinstance(connection_map, dict):
+                connection = connection_map.get(table.get('connection', ''))
+            connection = connection or ds.get('connection') or {}
+            if not isinstance(connection, dict):
+                connection = {}
+            fingerprints = build_table_fingerprints([{
+                'connection': connection, 'tables': [table],
+            }])
+            if name not in fingerprints:
+                continue  # The merge does not retain this table.
+
+            # Deduplication uses the datasource connection, not the resolved
+            # table connection. Record spelling changes within one normalized
+            # alias so isolated-table filtering treats both names alike.
+            merge_fingerprints = build_table_fingerprints([{
+                'connection': ds.get('connection') or {}, 'tables': [table],
+            }])
+            merge_key = (
+                merge_fingerprints[name][0].fingerprint(),
+                _normalize_table_key(name),
+            )
+            retained = retained_names.setdefault(merge_key, name)
+            if name != retained:
+                unmapped_aliases[name] = retained
+
+            source_table = table.get('source_table') or name
+            if not isinstance(source_table, str):
+                source_table = name
+            # Source identifiers can be case-sensitive even though Power BI
+            # aliases and the legacy fingerprint are case-insensitive.
+            source_name = _parse_table_name(source_table)
+            details = connection.get('details') or {}
+            if not isinstance(details, dict):
+                details = {}
+            # Additional explicit location fields distinguish sources which
+            # the existing server/database fingerprint alone cannot separate.
+            location = {
+                key: str(details.get(key) or connection.get(key)).strip()
+                for key in ('port', 'filename', 'directory', 'filepath', 'path',
+                            'url', 'schema', 'catalog', 'project', 'project_id',
+                            'dataset', 'warehouse', 'account', 'dsn')
+                if details.get(key) or connection.get(key)
+            }
+            for key in ('filename', 'directory', 'filepath', 'path'):
+                if key in location:
+                    location[key] = os.path.normcase(os.path.normpath(location[key]))
+            for key, synonyms in (
+                    ('server', ('server', 'host')),
+                    ('database', ('database', 'db'))):
+                value = next(
+                    (entry.get(field) for entry in (details, connection)
+                     for field in synonyms if entry.get(field)), None)
+                if value:
+                    location[key] = (str(value).strip().casefold() if key == 'server'
+                                     else str(value).strip())
+
+            hyper_identity = table.get('hyper_identity')
+            exact_hyper = (
+                isinstance(hyper_identity, dict)
+                and all(hyper_identity.get(key) for key in
+                        ('workbook', 'archive_member', 'schema', 'table'))
+                and os.path.isabs(str(hyper_identity['workbook']))
+            )
+            filename = details.get('filename') or connection.get('filename') or ''
+            directory = details.get('directory') or connection.get('directory') or ''
+            file_paths = [
+                details.get(key) or connection.get(key) or ''
+                for key in ('filepath', 'path')
+            ]
+            if filename:
+                file_paths.append(os.path.join(str(directory), str(filename)))
+            absolute_file = any(os.path.isabs(str(path)) for path in file_paths)
+            known_connection = str(connection.get('type') or '').strip().casefold()
+            source_proven = exact_hyper or (
+                known_connection not in ('', 'unknown')
+                and bool(
+                    (location.get('server') and location.get('database'))
+                    or (location.get('account') and location.get('database'))
+                    or ((location.get('project') or location.get('project_id'))
+                        and location.get('dataset'))
+                    or location.get('url') or location.get('dsn') or absolute_file
+                )
+            )
+            aliases.setdefault(name.strip().casefold(), []).append((
+                fingerprints[name][0].fingerprint(), source_name,
+                hyper_identity, location, source_proven,
+            ))
+
+    def distinct_sources(entries):
+        if len(entries) > 1 and not all(entry[4] for entry in entries):
+            return True
+        baseline = entries[0][:3]
+        locations = {}
+        for entry in entries:
+            if entry[:3] != baseline:
+                return True
+            for key, value in entry[3].items():
+                if key in locations and locations[key] != value:
+                    return True
+                locations[key] = value
+        return False
+
+    ambiguous = {
+        name for name, entries in aliases.items()
+        if distinct_sources(entries)
+    }
+    if not ambiguous and not unmapped_aliases:
+        return
+
+    for ds in datasources:
+        for rel in ds.get('relationships') or []:
+            if not isinstance(rel, dict):
+                continue
+            if 'left' in rel or 'right' in rel:
+                endpoints = [
+                    side.get('table') if isinstance(side, dict) else None
+                    for side in (rel.get('left'), rel.get('right'))
+                ]
+            else:
+                endpoints = [
+                    rel.get('from_table') or rel.get('fromTable'),
+                    rel.get('to_table') or rel.get('toTable'),
+                ]
+            for name in endpoints:
+                if not isinstance(name, str):
+                    continue
+                if name in unmapped_aliases:
+                    raise PartialGenerationError(
+                        f"Cannot merge relationship endpoint {name!r}: its table "
+                        f"is deduplicated as {unmapped_aliases[name]!r} but the "
+                        "relationship endpoint is not remapped. Map each endpoint "
+                        "to its own retained table alias, or keep distinct aliases.",
+                        item=name,
+                        source=ds.get('name') or ds.get('caption'),
+                        recovery_kind='unmapped_relationship_alias',
+                        required_evidence=[
+                            'Retained table alias after deduplication',
+                            'Explicit mapping of both relationship endpoints',
+                        ],
+                    )
+                if name.strip().casefold() in ambiguous:
+                    raise PartialGenerationError(
+                        f"Cannot merge relationship endpoint {name!r}: the same "
+                        "table alias identifies distinct or not provably identical "
+                        "source tables and the shared datasource and manifest do "
+                        "not remap their relationships. Unify the source table "
+                        "only when its identity is proven, or use distinct aliases "
+                        "and remap both relationship endpoints before merging.",
+                        item=name,
+                        source=ds.get('name') or ds.get('caption'),
+                        recovery_kind='ambiguous_relationship_alias',
+                        required_evidence=[
+                            'Distinct or proven-identical source table identities',
+                            'Unambiguous table aliases and both relationship endpoints',
+                        ],
+                    )
+
+
+def _preflight_merge_datasources(all_extracted: List[dict]) -> list:
+    """Validate source relations before collapsing datasources and provenance.
+
+    The shared datasource keeps legacy relationship edges, not the original
+    datasource-scoped relation trees or their policies. A complex logical
+    predicate therefore cannot be compiled safely after the merge.
+    """
+    from powerbi_import.errors import PartialGenerationError
+    from powerbi_import.tmdl_relationships import (
+        _physical_join_nodes,
+        _physical_join_scopes,
+        _resolved_single_equality,
+        preflight_physical_joins,
+    )
+
+    datasources = [
+        ds
+        for extracted in all_extracted
+        for ds in extracted.get('datasources', [])
+    ]
+    # Inspect the active source trees, including nested and object-graph joins,
+    # before any source metadata is discarded. Historical native provenance on
+    # a bound materialized extract is deliberately not replayed.
+    nested_blocker = None
+    try:
+        preflight_physical_joins(datasources, provenance_retained=False)
+    except PartialGenerationError as exc:
+        # A nested join has protected cross-subtree pairs without direct
+        # equalities. Only consider retaining its trees when that exact loss
+        # of scope is the blocker; all predicate validation remains Semantic's.
+        has_uncovered_scope = any(
+            not scope['equalities']
+            and f"relation_metadata.{scope['paths'][0]}" == exc.item
+            for ds in datasources
+            for scope in _physical_join_scopes(ds).values()
+        )
+        if exc.recovery_kind != 'physical_join_predicate' or not has_uncovered_scope:
+            raise
+        for ds in datasources:
+            preflight_physical_joins(
+                [ds], provenance_retained=True, allow_nested_retention=True)
+        nested_blocker = exc
+
+    for ds in datasources:
+        metadata = ds.get('relation_metadata') or {}
+        table_aliases = [
+            table.get('name') for table in ds.get('tables') or []
+            if isinstance(table, dict)
+        ]
+        for index, logical in enumerate(metadata.get('logical_relationships') or []):
+            logical = logical if isinstance(logical, dict) else {}
+            edge = _resolved_single_equality(logical.get('predicate'))
+            flag = logical.get('requires_materialization')
+            join_type = logical.get('join_type')
+            if join_type is None or join_type == '':
+                join_type = 'left'
+            if isinstance(join_type, str):
+                join_type = join_type.casefold()
+            endpoints = [logical.get(side) or {} for side in ('left', 'right')]
+            aliases = [
+                endpoint.get('tables', []) if isinstance(endpoint, dict) else []
+                for endpoint in endpoints
+            ]
+            # Only the extractor's declared equality fields can be represented
+            # by the legacy edge. Unknown relationship/endpoint metadata may
+            # contain cardinality, filtering or other datasource-scoped policy,
+            # which the shared datasource cannot retain.
+            extra_metadata = [
+                str(key) for key in logical
+                if key not in ('left', 'right', 'join_type', 'predicate',
+                               'requires_materialization')
+            ]
+            for side, endpoint in zip(('left', 'right'), endpoints):
+                if isinstance(endpoint, dict):
+                    extra_metadata.extend(
+                        f'{side}.{key}' for key in endpoint
+                        if key not in ('object_id', 'tables')
+                    )
+            single_endpoints = all(
+                isinstance(side, (list, tuple)) and len(side) == 1
+                and isinstance(side[0], str) and side[0]
+                for side in aliases
+            )
+            valid_edge = (
+                edge is not None
+                and (flag is None or flag is False)
+                and join_type in ('left', 'right', 'inner', 'full')
+                and not extra_metadata
+                and single_endpoints
+                and aliases[0][0] != aliases[1][0]
+                and all(table_aliases.count(side[0]) == 1 for side in aliases)
+                and {edge[0][0], edge[1][0]} == {aliases[0][0], aliases[1][0]}
+            )
+
+            # Do not synthesize an edge or use an inferred one in place of
+            # source provenance that this merge cannot carry forward.
+            legacy_edge = False
+            if valid_edge:
+                for rel in ds.get('relationships') or []:
+                    if not isinstance(rel, dict) or rel.get('inferred') is True:
+                        continue
+                    sides = [rel.get(side) for side in ('left', 'right')]
+                    rel_type = rel.get('type', 'left')
+                    if (all(isinstance(side, dict) for side in sides)
+                            and tuple((side.get('table'), side.get('column'))
+                                      for side in sides) == edge
+                            and isinstance(rel_type, str)
+                            and rel_type.casefold() == join_type):
+                        legacy_edge = True
+                        break
+            if valid_edge and legacy_edge:
+                continue
+
+            raise PartialGenerationError(
+                "Cannot merge a logical relationship whose complete predicate, "
+                "endpoints, or datasource-scoped policies cannot be preserved. "
+                "The shared merge only retains a declared single-equality legacy "
+                "edge; it cannot safely replace a composite, range, expression, "
+                "ambiguous, or missing predicate with an inferred relationship. "
+                "Materialize the full source semantics before merging, or migrate "
+                "the datasource separately with its verified policies."
+                + (f" Unpreserved logical metadata: {', '.join(sorted(extra_metadata))}."
+                   if extra_metadata else ''),
+                item=f'relation_metadata.logical_relationships[{index}]',
+                source=ds.get('name') or ds.get('caption'),
+                recovery_kind='logical_relationship_predicate',
+                required_evidence=[
+                    'Complete logical relationship predicate and endpoint lineage',
+                    'Verified datasource-scoped cardinality, filter, null and comparison policies',
+                    'A source-materialized relation or an exact declared single-equality edge',
+                ],
+            )
+
+    _preflight_relationship_aliases(datasources)
+    if nested_blocker is None:
+        physical_node = next((
+            (ds, path) for ds in datasources
+            for path, _node in _physical_join_nodes(ds)
+        ), None)
+        if physical_node is not None:
+            ds, path = physical_node
+            nested_blocker = PartialGenerationError(
+                'Physical join provenance must be retained to prevent '
+                'additional relationships from being inferred.',
+                item=f'relation_metadata.{path}',
+                source=ds.get('name') or ds.get('caption'),
+                recovery_kind='physical_join_predicate',
+                required_evidence=[
+                    'Complete nested physical join tree and its declared equality edges',
+                ],
+            )
+    if nested_blocker is not None:
+        return _retained_nested_physical_sources(datasources, nested_blocker)
+    return []
+
+
+def _retained_nested_physical_sources(datasources: list, blocker) -> list:
+    """Select sources whose physical trees can be retained without remapping."""
+    from powerbi_import.errors import PartialGenerationError
+    from powerbi_import.tmdl_relationships import (
+        _physical_join_nodes,
+        _physical_join_scopes,
+    )
+
+    def refuse(reason, datasource):
+        raise PartialGenerationError(
+            f"Cannot retain nested physical join provenance in the shared "
+            f"datasource: {reason}. Preserve the original source scope and "
+            "bindings, or use a verified pre-joined source.",
+            item=blocker.item,
+            source=datasource.get('name') or datasource.get('caption'),
+            recovery_kind='physical_join_predicate',
+            required_evidence=[
+                'Complete declared physical equalities and join types',
+                'Unambiguous source and projected table/field bindings',
+                'Preserved source-join scope through semantic generation',
+            ],
+        ) from blocker
+
+    retained_sources = []
+    protected_aliases = set()
+    for ds in datasources:
+        scopes = _physical_join_scopes(ds)
+        if not scopes:
+            continue
+        metadata = ds.get('relation_metadata') or {}
+        if (metadata.get('version') != 1
+                or set(metadata) - {
+                    'version', 'physical_relations', 'logical_tables',
+                    'logical_relationships',
+                }
+                or metadata.get('logical_tables')
+                or metadata.get('logical_relationships')):
+            refuse('object-graph or unrecognized datasource-scoped metadata '
+                   'cannot be safely combined', ds)
+
+        nodes = list(_physical_join_nodes(ds))
+        for path, node in nodes:
+            if not path.startswith('physical_relations['):
+                refuse('an object-graph physical join cannot be remapped', ds)
+            children = node.get('children') or []
+            if (len(children) != 2 or any(
+                    not isinstance(child, dict)
+                    or str(child.get('type', '')).casefold() not in ('join', 'table')
+                    for child in children)):
+                refuse('the join contains a union, custom SQL, or ambiguous subtree', ds)
+            if str(node.get('join_type') or '').strip().casefold() not in (
+                    'left', 'right', 'inner', 'full'):
+                refuse('a source join type is missing or unsupported', ds)
+
+        declared_edges = set()
+        declared_aliases = set()
+        for rel in ds.get('relationships') or []:
+            if not isinstance(rel, dict):
+                continue
+            sides = [rel.get(side) for side in ('left', 'right')]
+            if not all(isinstance(side, dict) for side in sides):
+                continue
+            tables = [side.get('table') for side in sides]
+            if not all(isinstance(name, str) and name for name in tables):
+                continue
+            pair = frozenset(tables)
+            if rel.get('inferred') is True:
+                if pair in scopes:
+                    refuse('an inferred relationship is inside the source join scope', ds)
+                continue
+            fields = [(side.get('table'), side.get('column')) for side in sides]
+            if all(isinstance(column, str) and column for _, column in fields):
+                declared_aliases.update(tables)
+                if isinstance(rel.get('type'), str) and rel['type'].strip():
+                    declared_edges.add(frozenset(fields))
+
+        source_aliases = {alias for pair in scopes for alias in pair}
+        protected_aliases.update(alias.casefold() for alias in source_aliases)
+        if not source_aliases.issubset(declared_aliases):
+            refuse('a source-scope alias has no declared relationship binding', ds)
+        if any(edge not in declared_edges
+               for scope in scopes.values() for edge in scope['equalities']):
+            refuse('a complete physical equality or its join type has no '
+                   'declared relationship', ds)
+
+        retained_sources.append(ds)
+
+    for ds in datasources:
+        aliases = {
+            table['name'].casefold()
+            for table in ds.get('tables') or []
+            if isinstance(table, dict) and isinstance(table.get('name'), str)
+        }
+        if not aliases.intersection(protected_aliases):
+            continue
+        overrides = ds.get('m_query_overrides') or {}
+        if (ds.get('m_query_override')
+                or not isinstance(overrides, dict)
+                or any(isinstance(name, str) and name.casefold() in protected_aliases
+                       for name in overrides)):
+            refuse('an M-query override obscures a protected source table', ds)
+    return retained_sources
+
+
+def _validate_retained_physical_projection(merged_ds: dict, all_extracted: List[dict]) -> None:
+    """Check all original edges and the actual projection before writing."""
+    from powerbi_import.errors import PartialGenerationError
+    from powerbi_import.tmdl_relationships import (
+        _physical_join_nodes,
+        _physical_join_scopes,
+        _physical_join_sides,
+        _single_physical_join_equality,
+        preflight_physical_joins,
+    )
+
+    sources = [ds for wb in all_extracted for ds in wb.get('datasources', [])]
+    original_edges = [rel for ds in sources for rel in ds.get('relationships') or []]
+    scopes = _physical_join_scopes(merged_ds)
+    for path, node in _physical_join_nodes(merged_ds):
+        if str(node.get('join_type') or '').strip().casefold() not in ('left', 'right'):
+            continue
+        edge = _single_physical_join_equality(node)
+        if edge is None:
+            continue  # Semantic's preflight reports unsupported predicates.
+        left, right = _physical_join_sides(node)
+        for rel in original_edges:
+            if not isinstance(rel, dict) or rel.get('inferred') is True:
+                continue
+            sides = [rel.get(side) for side in ('left', 'right')]
+            if not all(isinstance(side, dict) for side in sides):
+                continue
+            fields = [(side.get('table'), side.get('column')) for side in sides]
+            if (all(isinstance(value, str) for field in fields for value in field)
+                    and frozenset(fields) == frozenset(edge)
+                    and (fields[0][0] not in left or fields[1][0] not in right)):
+                raise PartialGenerationError(
+                    "Cannot retain a nested physical outer join when a "
+                    "relationship reverses its declared source sides.",
+                    item=f'relation_metadata.{path}',
+                    source=merged_ds.get('name'),
+                    recovery_kind='physical_join_predicate',
+                    required_evidence=['Relationship endpoints in source join-side order'],
+                )
+    for rel in original_edges:
+        if not isinstance(rel, dict) or rel.get('inferred') is not True:
+            continue
+        sides = [rel.get(side) or {} for side in ('left', 'right')]
+        pair = frozenset(
+            side.get('table') if isinstance(side, dict) else None for side in sides
+        )
+        if pair in scopes:
+            raise PartialGenerationError(
+                "Cannot retain a nested physical join when an inferred edge "
+                "from another source falls inside its protected scope.",
+                source=merged_ds.get('name'),
+                recovery_kind='physical_join_predicate',
+                required_evidence=['Declared source relationships without inferred edges'],
+            )
+
+    # Check every original edge before deduplication as well as the actual
+    # selected tables and edges. A conflicting source must not disappear just
+    # because the merge's relationship key ignores join policy.
+    projection = dict(merged_ds, relationships=original_edges)
+    preflight_physical_joins([projection], provenance_retained=True)
+    preflight_physical_joins([merged_ds], provenance_retained=True)
+
+
 def _merge_datasources(all_extracted: List[dict],
                        workbook_names: List[str],
-                       assessment: MergeAssessment) -> dict:
+                       assessment: MergeAssessment,
+                       calculation_scopes: Optional[dict] = None) -> dict:
     """Merge all datasources into a single unified datasource.
 
     Tables are deduplicated by fingerprint. Columns are unioned.
     Relationships are deduplicated.
     """
+    if calculation_scopes is None:
+        calculation_scopes = _preflight_calculation_identities(
+            all_extracted, workbook_names, assessment)
+    retained_sources = _preflight_merge_datasources(all_extracted)
+
     merged_ds = {
         'name': 'SharedModel',
         'caption': 'Shared Semantic Model',
@@ -1524,7 +2324,7 @@ def _merge_datasources(all_extracted: List[dict],
     rel_keys_seen = set()
 
     # Track datasource-level calculations for deduplication
-    _ds_calc_seen = set()  # (caption, formula)
+    _ds_calc_seen = {}  # (caption, formula, proven target table) → retained calc
 
     # Build set of isolated table names (normalized) to skip
     _isolated_set = set()
@@ -1532,8 +2332,8 @@ def _merge_datasources(all_extracted: List[dict],
         for t in tnames:
             _isolated_set.add(_normalize_table_key(t))
 
-    for wb_name, extracted in zip(workbook_names, all_extracted):
-        for ds in extracted.get('datasources', []):
+    for wi, (wb_name, extracted) in enumerate(zip(workbook_names, all_extracted)):
+        for di, ds in enumerate(extracted.get('datasources', [])):
             # Adopt connection info from first datasource
             if not merged_ds['connection']:
                 merged_ds['connection'] = copy.deepcopy(ds.get('connection', {}))
@@ -1584,10 +2384,11 @@ def _merge_datasources(all_extracted: List[dict],
 
             # Merge datasource-level calculations (dedup + namespace conflicts)
             conflict_names = {mc.name for mc in assessment.measure_conflicts}
-            for calc in ds.get('calculations', []):
-                caption = calc.get('caption', calc.get('name', ''))
+            for ci, calc in enumerate(ds.get('calculations', [])):
+                caption = calc.get('caption') or calc.get('name', '')
                 formula = calc.get('formula', '').strip()
                 role = calc.get('role', 'measure')
+                scope = calculation_scopes.get(('datasource', wi, di, ci))
 
                 if caption in conflict_names and role == 'measure':
                     # Namespace conflicting measure
@@ -1598,24 +2399,25 @@ def _merge_datasources(all_extracted: List[dict],
                     namespaced['_source_workbook'] = wb_name
                     namespaced['_source_workbooks'] = [wb_name]
                     namespaced['_merge_action'] = 'namespaced'
+                    if scope and not namespaced.get('table'):
+                        namespaced['table'] = scope
                     merged_ds['calculations'].append(namespaced)
                 else:
-                    # Deduplicate by (caption, formula)
-                    dup_key = (caption, formula)
+                    # Equal captions in independently proven target tables
+                    # are distinct model fields, even with equal formulas.
+                    dup_key = (caption, formula, scope.casefold() if scope else None)
                     if dup_key not in _ds_calc_seen:
-                        _ds_calc_seen.add(dup_key)
                         calc_copy = copy.deepcopy(calc)
                         calc_copy['_source_workbooks'] = [wb_name]
                         calc_copy['_merge_action'] = 'unique'
+                        if scope and not calc_copy.get('table'):
+                            calc_copy['table'] = scope
+                        _ds_calc_seen[dup_key] = calc_copy
                         merged_ds['calculations'].append(calc_copy)
                     else:
-                        # Track additional source on existing
-                        for existing_calc in merged_ds['calculations']:
-                            ec = existing_calc.get('caption', existing_calc.get('name', ''))
-                            if ec == caption:
-                                existing_calc.setdefault('_source_workbooks', []).append(wb_name)
-                                existing_calc['_merge_action'] = 'deduplicated'
-                                break
+                        existing_calc = _ds_calc_seen[dup_key]
+                        existing_calc.setdefault('_source_workbooks', []).append(wb_name)
+                        existing_calc['_merge_action'] = 'deduplicated'
 
     # Safety fallback: avoid emitting an empty shared semantic model.
     # If isolated-table filtering removed everything, re-include isolated
@@ -1637,6 +2439,16 @@ def _merge_datasources(all_extracted: List[dict],
                     merged_table['_merge_action'] = 'fallback_included'
                     added_tables[fp_hash] = merged_table
                     merged_ds['tables'].append(merged_table)
+
+    if retained_sources:
+        from powerbi_import.tmdl_relationships import preserve_physical_join_provenance
+
+        # Semantic owns tree preservation and source-to-projection checks.
+        # Pass each source separately only after the cross-source alias check;
+        # no table or field renaming is inferred.
+        for ds in retained_sources:
+            merged_ds = preserve_physical_join_provenance([ds], merged_ds)
+        _validate_retained_physical_projection(merged_ds, all_extracted)
 
     return merged_ds
 
@@ -1750,25 +2562,31 @@ def _attribute_calculations_to_source_tables(merged: dict,
 
 def _merge_calculations(all_extracted: List[dict],
                          workbook_names: List[str],
-                         assessment: MergeAssessment) -> list:
+                         assessment: MergeAssessment,
+                         calculation_scopes: Optional[dict] = None) -> list:
     """Merge calculations with conflict resolution.
 
-    Same name + same formula → keep one.
-    Same name + different formula → namespace with workbook suffix.
+    Proven same-target declarations may deduplicate; distinct proven target
+    tables retain separate calculations. Assessed measure conflicts are
+    namespaced with a workbook suffix.
     """
+    if calculation_scopes is None:
+        calculation_scopes = _preflight_calculation_identities(
+            all_extracted, workbook_names, assessment)
     # Build conflict set for fast lookup
     conflict_names = {mc.name for mc in assessment.measure_conflicts}
 
     # Collect all calculations
-    seen: Dict[str, Tuple[str, dict]] = {}  # caption → (formula, calc_dict)
+    seen: Dict[tuple, dict] = {}
     result = []
 
-    for wb_name, extracted in zip(workbook_names, all_extracted):
-        for calc in extracted.get('calculations', []):
-            caption = calc.get('caption', calc.get('name', ''))
-            formula = calc.get('formula', '').strip()
+    for wi, (wb_name, extracted) in enumerate(zip(workbook_names, all_extracted)):
+        for ci, calc in enumerate(extracted.get('calculations', [])):
+            caption = calc.get('caption') or calc.get('name', '')
+            scope = calculation_scopes.get(('workbook', wi, ci))
+            key = (caption, scope.casefold() if scope else None)
 
-            if caption in conflict_names:
+            if caption in conflict_names and calc.get('role', 'measure') == 'measure':
                 # Namespace it
                 namespaced = copy.deepcopy(calc)
                 new_caption = f"{caption} ({wb_name})"
@@ -1777,19 +2595,21 @@ def _merge_calculations(all_extracted: List[dict],
                 namespaced['_source_workbook'] = wb_name
                 namespaced['_source_workbooks'] = [wb_name]
                 namespaced['_merge_action'] = 'namespaced'
+                if scope and not namespaced.get('table'):
+                    namespaced['table'] = scope
                 result.append(namespaced)
-            elif caption in seen:
+            elif key in seen:
                 # Already seen — track source for lineage
-                for existing in result:
-                    if existing.get('caption', existing.get('name', '')) == caption:
-                        existing.setdefault('_source_workbooks', []).append(wb_name)
-                        existing['_merge_action'] = 'deduplicated'
-                        break
+                existing = seen[key]
+                existing.setdefault('_source_workbooks', []).append(wb_name)
+                existing['_merge_action'] = 'deduplicated'
             else:
-                seen[caption] = (formula, calc)
                 calc_copy = copy.deepcopy(calc)
                 calc_copy['_source_workbooks'] = [wb_name]
                 calc_copy['_merge_action'] = 'unique'
+                if scope and not calc_copy.get('table'):
+                    calc_copy['table'] = scope
+                seen[key] = calc_copy
                 result.append(calc_copy)
 
     return result
@@ -2583,6 +3403,8 @@ def suggest_cross_workbook_relationships(
     Returns:
         List of suggestion dicts: [{from_table, from_column, to_table, to_column, confidence}]
     """
+    from powerbi_import.tmdl_relationships import _physical_join_scopes
+
     tables = []
     for ds in merged.get('datasources', []):
         for table in ds.get('tables', []):
@@ -2593,6 +3415,13 @@ def suggest_cross_workbook_relationships(
     # Build existing relationship set
     existing_rels = set()
     for ds in merged.get('datasources', []):
+        # A nested physical scope can contain pairs without a direct source
+        # equality. They are protected, not opportunities for a guessed edge.
+        for pair in _physical_join_scopes(ds):
+            names = [name.lower() for name in pair if isinstance(name, str)]
+            if len(names) == 2:
+                existing_rels.add((names[0], names[1]))
+                existing_rels.add((names[1], names[0]))
         for rel in ds.get('relationships', []):
             if 'left' in rel:
                 existing_rels.add((
@@ -2644,7 +3473,9 @@ def merge_preview(
 ) -> dict:
     """Run a dry-run merge assessment and return detailed preview.
 
-    Does not write any files — just reports what would happen.
+    Does not write any files — just reports what would happen. Unsupported
+    source predicates raise the same clear blocker as a real merge, rather
+    than reporting relationship suggestions for a lossy projection.
 
     Returns:
         Dict with keys: assessment, suggestions, rls_conflicts, actions
@@ -3641,6 +4472,8 @@ def add_to_model(model_dir: str,
             f"Use force=True to re-add (will replace)."
         )
 
+    _require_incremental_physical_provenance(manifest)
+
     # Load existing model from TMDL
     existing = load_existing_model(model_dir)
 
@@ -3715,6 +4548,7 @@ def add_to_model(model_dir: str,
     manifest.validation_score = validation.get("score", 0)
     manifest.merge_score = assessment.merge_score
     manifest.timestamp = datetime.now(timezone.utc).isoformat()
+    manifest.physical_join_provenance_required = _has_retained_physical_join_scopes(merged)
 
     return {
         "merged": merged,
@@ -3752,6 +4586,8 @@ def remove_from_model(model_dir: str,
             "status": "not_found",
             "reason": f"Workbook '{workbook_name}' not found in manifest.",
         }
+
+    _require_incremental_physical_provenance(manifest)
 
     # Determine which tables are exclusive to this workbook
     other_tables = set()

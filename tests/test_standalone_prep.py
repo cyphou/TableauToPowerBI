@@ -26,11 +26,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 
+import migrate
 import prep_flow_parser  # noqa: F401 - ensure module is loaded so we can patch it
 
 from migrate import (
     _migrate_single_prep_flow,
     _migrate_single_workbook,
+    run_prep_flow,
     run_standalone_prep,
 )
 
@@ -43,6 +45,25 @@ def _make_tfl_file(directory, filename='flow.tfl'):
 def _make_tflx_file(directory, filename='flow.tflx'):
     """Create a minimal .tflx archive containing a .tfl file."""
     return write_flow(directory, clean_chain(), filename, member='flow.tfl')
+
+
+def _hyper_flow():
+    hyper = source('out', name='Extract')
+    hyper['nodeType'] = '.v1.LoadHyper'
+    hyper['connectionAttributes'] = {
+        'class': 'hyper', 'filename': 'extract.hyper', 'table': 'Extract',
+    }
+    return {'nodes': {'hyper': hyper, 'out': output('PublishedSales')}}
+
+
+def _script_prediction_flow():
+    return {'nodes': {
+        'input': source('script'),
+        'script': operation(
+            'RunScript', 'prediction', name='PythonStep', language='Python'),
+        'prediction': operation('Prediction', 'out', name='ModelScore'),
+        'out': output(),
+    }}
 
 
 # ── run_standalone_prep tests ────────────────────────────────────────────────
@@ -83,6 +104,26 @@ class TestRunStandalonePrep(unittest.TestCase):
                 ds = json.load(f)
             self.assertEqual(len(ds), 1)
             self.assertEqual(ds[0]['name'], 'Output')
+
+    def test_explicit_hyper_source_map_is_used_for_single_flow_export(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = write_flow(td, _hyper_flow())
+            source_map = {
+                'hyper': {
+                    'class': 'sqlserver',
+                    'server': 'warehouse.example',
+                    'database': 'Sales',
+                    'table': 'Orders',
+                },
+            }
+            self.assertTrue(run_standalone_prep(path, source_map=source_map))
+            with open(os.path.join(self.extraction.name, 'datasources.json'),
+                      encoding='utf-8') as handle:
+                datasources = json.load(handle)
+            output_ds = next(ds for ds in datasources if ds['prep_role'] == 'output')
+            self.assertIn('Sql.Database(\"warehouse.example\", \"Sales\")',
+                          output_ds['m_query_override'])
+            self.assertNotIn('extract.hyper', output_ds['m_query_override'])
 
     def test_placeholder_files_created(self):
         """All 16 placeholder JSON files are created."""
@@ -186,6 +227,7 @@ class TestMigrateSingleWorkbookTFL(unittest.TestCase):
                  patch('migrate.run_generation', return_value=True), \
                  patch('migrate.run_migration_report', return_value={'fidelity_score': 90}), \
                  patch('migrate._run_openability_gate', return_value=True), \
+                 patch('powerbi_import.powerbi_internal_lineage.write_powerbi_lineage_artifacts'), \
                  patch('migrate._process_twbx_post_generation'):
                 result = _migrate_single_workbook(
                     tableau_file='workbook.twbx',
@@ -411,6 +453,51 @@ class TestMigrateSinglePrepFlow(unittest.TestCase):
                               'TransformColumnTypes', 'SelectRows']:
                 self.assertIn('Table.' + transform, query)
 
+    def test_hyper_source_map_exports_original_source_and_green_status(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = write_flow(td, _hyper_flow())
+            mapping_path = os.path.join(td, 'source-map.json')
+            with open(mapping_path, 'w', encoding='utf-8') as handle:
+                json.dump({
+                    'hyper': {
+                        'class': 'sqlserver',
+                        'server': 'warehouse.example',
+                        'database': 'Sales',
+                        'schema': 'dbo',
+                        'table': 'Orders',
+                    },
+                }, handle)
+
+            result = _migrate_single_prep_flow(
+                path, 'flow', td, 'flow', source_map=mapping_path)
+            self.assertTrue(result['success'])
+            self.assertEqual(result['grade'], 'GREEN')
+            with open(os.path.join(td, 'flow', 'PowerQuery',
+                                   'PublishedSales.pq'), encoding='utf-8') as handle:
+                query = handle.read()
+            self.assertIn('Sql.Database("warehouse.example", "Sales")', query)
+            self.assertNotIn('extract.hyper', query)
+            with open(os.path.join(td, 'flow', 'Sources',
+                                   'Extract.json'), encoding='utf-8') as handle:
+                source_definition = json.load(handle)
+            self.assertEqual(source_definition['connection_type'], 'sqlserver')
+
+    def test_script_and_prediction_export_as_manual_not_complete(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = write_flow(td, _script_prediction_flow())
+            captured = io.StringIO()
+            with redirect_stdout(captured):
+                result = _migrate_single_prep_flow(path, 'flow', td, 'flow')
+            self.assertTrue(result['success'])
+            self.assertEqual(result['grade'], 'YELLOW')
+            self.assertIn('manual migration required', captured.getvalue())
+            self.assertIn('[OK] Prep flow export completed', captured.getvalue())
+            with open(os.path.join(td, 'flow', 'assessment.json'),
+                      encoding='utf-8') as handle:
+                assessment = json.load(handle)
+            self.assertEqual(assessment['grade'], 'YELLOW')
+            self.assertEqual(assessment['assessment']['manual_step_count'], 2)
+
     def test_profile_returned_in_result(self):
         """The prep_profile should be included in the result for cross-flow lineage."""
         with tempfile.TemporaryDirectory() as td:
@@ -420,6 +507,109 @@ class TestMigrateSinglePrepFlow(unittest.TestCase):
                 result = _migrate_single_prep_flow(tfl_path, 'flow', td, 'flow')
 
             self.assertIs(result['prep_profile'], profile)
+
+
+class TestRunPrepFlowSourceMap(unittest.TestCase):
+    def test_prep_source_map_is_used_for_workbook_integration(self):
+        with tempfile.TemporaryDirectory() as td:
+            prep_path = write_flow(td, _hyper_flow())
+            source_map = {
+                'hyper': {
+                    'class': 'sqlserver',
+                    'server': 'warehouse.example',
+                    'database': 'Sales',
+                    'table': 'Orders',
+                },
+            }
+            datasource_path = os.path.join(td, 'datasources.json')
+            with open(datasource_path, 'w', encoding='utf-8') as handle:
+                json.dump([{'name': 'workbook', 'tables': [{'name': 'Sales'}]}], handle)
+            captured = {}
+
+            def merge(prep_datasources, twb_datasources, *, return_report=False):
+                captured['datasources'] = prep_datasources
+                return ([{'name': 'Merged', 'tables': []}], {
+                    'matched': [], 'unused_outputs': [], 'unmatched_local': [],
+                })
+
+            with patch('prep_flow_parser.merge_prep_with_workbook', side_effect=merge):
+                self.assertTrue(run_prep_flow(
+                    prep_path, datasource_path, source_map=source_map))
+
+            query = captured['datasources'][0]['m_query_override']
+            self.assertIn('Sql.Database("warehouse.example", "Sales")', query)
+            self.assertNotIn('extract.hyper', query)
+
+    def test_integrated_script_prediction_remain_visible_manual_placeholders(self):
+        with tempfile.TemporaryDirectory() as td:
+            prep_path = write_flow(td, _script_prediction_flow())
+            datasource_path = os.path.join(td, 'datasources.json')
+            with open(datasource_path, 'w', encoding='utf-8') as handle:
+                json.dump([{'name': 'workbook', 'tables': [{'name': 'Sales'}]}], handle)
+            captured = {}
+
+            def merge(prep_datasources, twb_datasources, *, return_report=False):
+                captured['datasources'] = prep_datasources
+                return ([{'name': 'Merged', 'tables': []}], {
+                    'matched': [], 'unused_outputs': [], 'unmatched_local': [],
+                })
+
+            output = io.StringIO()
+            with patch('prep_flow_parser.merge_prep_with_workbook', side_effect=merge), \
+                 redirect_stdout(output):
+                self.assertTrue(run_prep_flow(prep_path, datasource_path))
+
+            query = captured['datasources'][0]['m_query_override']
+            self.assertIn('__script_warning', query)
+            self.assertIn('__prediction_warning', query)
+            self.assertEqual(
+                len(captured['datasources'][0]['prep_manual_steps']), 2)
+            self.assertIn('manual migration required', output.getvalue())
+            self.assertIn('[OK] Prep flow parsing completed successfully',
+                          output.getvalue())
+
+
+class TestPrepSourceMapBatchCli(unittest.TestCase):
+    def test_batch_cli_accepts_source_map_option(self):
+        with tempfile.TemporaryDirectory() as td:
+            mapping_path = os.path.join(td, 'source-map.json')
+            with open(mapping_path, 'w', encoding='utf-8') as handle:
+                json.dump({}, handle)
+            with patch('sys.argv', [
+                    'migrate.py', 'batch', td, '--prep-source-map', mapping_path]):
+                args = migrate._parse_cli_args(migrate._build_argument_parser())
+        self.assertEqual(args.prep_source_map, mapping_path)
+
+    def test_batch_standalone_flow_receives_source_map(self):
+        with tempfile.TemporaryDirectory() as td:
+            batch_dir = os.path.join(td, 'flows')
+            output_dir = os.path.join(td, 'output')
+            os.makedirs(batch_dir)
+            path = write_flow(batch_dir, _hyper_flow())
+            mapping_path = os.path.join(td, 'source-map.json')
+            with open(mapping_path, 'w', encoding='utf-8') as handle:
+                json.dump({
+                    'hyper': {
+                        'class': 'sqlserver',
+                        'server': 'warehouse.example',
+                        'database': 'Sales',
+                        'table': 'Orders',
+                    },
+                }, handle)
+
+            result = migrate.run_batch_migration(
+                batch_dir, output_dir=output_dir, prep_source_map=mapping_path,
+                quiet=True)
+
+            self.assertEqual(result, migrate.ExitCode.SUCCESS)
+            with open(os.path.join(output_dir, 'synthetic', 'assessment.json'),
+                      encoding='utf-8') as handle:
+                assessment = json.load(handle)
+            self.assertEqual(assessment['grade'], 'GREEN')
+            with open(os.path.join(output_dir, 'synthetic', 'PowerQuery',
+                                   'PublishedSales.pq'), encoding='utf-8') as handle:
+                self.assertIn('Sql.Database("warehouse.example", "Sales")',
+                              handle.read())
 
 
 # ── File validation tests ────────────────────────────────────────────────────

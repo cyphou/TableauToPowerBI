@@ -35,6 +35,7 @@ You are the **Evidence** agent for the Tableau to Power BI migration project. Yo
 ### Lineage, ledger & telemetry
 - `powerbi_import/source_inventory.py`, `migration_ledger.py`, `full_lineage.py`, `dependency_graph.py`
 - `powerbi_import/tmdl_lineage.py` — Tableau→PBI lineage map for the generated model (re-exported by `tmdl_generator`)
+- `powerbi_import/powerbi_internal_lineage.py` — static generated Power BI artifact graph and JSON-sourced standalone HTML
 - `powerbi_import/sla_tracker.py`, `monitoring.py`, `feedback_loop.py`
 
 ### Semantic runtime boundary

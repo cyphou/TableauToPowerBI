@@ -2881,7 +2881,9 @@ class TestBuildVisualStylingObjects(unittest.TestCase):
         self.gen._build_visual_styling_objects(
             objects, ws, 'bar', ws['formatting'], {})
         self.assertEqual(objects['background'], [{'properties': {
+            'show': _L('true'),
             'color': {'solid': {'color': _L("'#FFFFFF'")}},
+            'transparency': _L('0D'),
         }}])
         self.assertNotIn('visualContainerStyle', objects)
         self.assertNotIn('visualContainerPadding', objects)
@@ -2892,7 +2894,9 @@ class TestBuildVisualStylingObjects(unittest.TestCase):
         self.gen._build_visual_styling_objects(
             objects, ws, 'bar', ws['formatting'], {})
         self.assertEqual(objects['background'], [{'properties': {
+            'show': _L('true'),
             'color': {'solid': {'color': _L("'#EEE'")}},
+            'transparency': _L('0D'),
         }}])
         self.assertNotIn('visualContainerStyle', objects)
         self.assertNotIn('visualContainerPadding', objects)
@@ -4620,8 +4624,11 @@ class TestWorksheetContainerObjects(unittest.TestCase):
         visual = self._create_worksheet_visual()['visual']
         container_objects = visual['visualContainerObjects']
         self.assertEqual(set(container_objects), {'title', 'background', 'padding'})
-        self.assertEqual(container_objects['background'][0]['properties']['color'],
-                         {'solid': {'color': _L("'#102030'")}})
+        self.assertEqual(container_objects['background'], [{'properties': {
+            'show': _L('true'),
+            'color': {'solid': {'color': _L("'#102030'")}},
+            'transparency': _L('0D'),
+        }}])
         self.assertEqual(container_objects['padding'], [{'properties': {
             'top': _L('5L'), 'left': _L('7L'),
         }}])

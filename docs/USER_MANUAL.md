@@ -186,6 +186,27 @@ python migrate.py quality workbook.twbx
 
 The quality report combines assessment, parity, lineage, static openability, and evidence status. Runtime checks remain `not_run` unless an authorized executor is supplied.
 
+Complete PBIP report generation also writes `powerbi_lineage.json` and the adjacent,
+self-contained `powerbi_lineage.html`: a static graph of generated Power Query
+partitions, model columns/calculations, and report projections. A datasource-only
+generation without a report does not produce this graph.
+
+For a complete PBIP report bound with `--prep`, with retained binding records
+and generated internal graph, the quality report adds a Prep-to-Power BI
+comparison. Fabric and partial outputs are outside this comparison's scope.
+It carries the flow/output node identity and actual binding method
+through to generated tables and their downstream consumers. Manual steps,
+unused outputs, and unresolved or ambiguous targets stay visible. A static
+correspondence is not proof of Power Query execution, refresh, or equal values.
+Standalone Prep exports remain M/source exports, not PBIP projects.
+
+Generated DAX for identified Tableau calculations and supported Power Query M
+include source-identity comments by default. Prep queries also list recorded
+flow steps and flag manual steps. Unsafe or unavailable labels are omitted,
+and comments do not contain source formulas or connection properties. This
+restriction applies to the new comments, not existing measure descriptions or
+other generated artifacts; inspect source object names before sharing.
+
 ### Batch Migrate a Folder
 
 ```bash
@@ -450,8 +471,8 @@ This table summarizes the practical migration target for common Tableau objects.
 | Dashboard | PBIR report page | Dashboard objects become page visuals, text, images, slicers, or controls | Check page size and layout after generation |
 | Worksheet | PBIR visual container | Mark type and shelves map to a Power BI visual type | Some Tableau sheets are intentionally tables, cards, or treemaps based on shelf structure |
 | Story | Bookmark set | Story points become Power BI bookmarks | Review navigation order and bookmark state |
-| Datasource | Power Query M partition or Fabric source | Non-Hyper PBIP Import generates connection/schema/M without row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Power BI loads rows at refresh. Fabric keeps its separate staging contract | Configure credentials/file access; update absolute copied-Excel paths when moving output and keep source-bearing output out of repositories |
-| Tableau extract `.hyper` | CSV/Parquet staging plus M `Csv.Document` / `Parquet.Document` | Hyper data are exported to `Data/` and referenced by Import partitions; PBIP auto uses Parquet strictly above 10 MiB, CSV otherwise | Native Parquet requires optional `tableauhyperapi`; row caps and header samples are limited-data evidence |
+| Datasource | Power Query M partition or Fabric source | Non-Hyper PBIP Import generates connection/schema/M without row export; explicitly packaged Excel is copied unchanged into `Data/` and bound by absolute path. Power BI loads rows at refresh. Fabric has separate file staging and refuses Hyper detected as active or unresolved | Configure credentials/file access; update absolute copied-Excel paths when moving output and keep source-bearing output out of repositories |
+| Tableau extract `.hyper` | PBIP CSV/Parquet staging plus M `Csv.Document` / `Parquet.Document` | Retained PBIP Hyper data are exported to `Data/` and referenced by Import partitions; PBIP auto uses Parquet strictly above 10 MiB, CSV otherwise. Fabric rejects Hyper detected as active or unresolved rather than emitting an unbound bundle | Native Parquet requires optional `tableauhyperapi`; row caps and header samples are limited-data evidence |
 | Table | TMDL table | Columns, partitions, and relationships are generated | Review relationship direction and cardinality |
 | Column | TMDL column | Data type, hidden state, data category, sort metadata, and descriptions are preserved where possible | Special characters are quoted in M and TMDL |
 | Measure / calculated field | DAX measure or calculated column | Classification depends on aggregation, row context, and references | Validate complex calculations and table calculations |

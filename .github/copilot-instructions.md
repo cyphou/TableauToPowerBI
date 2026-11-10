@@ -260,7 +260,7 @@ The DAX context is managed in `tmdl_generator.py` via dictionaries:
 | Math | ABS, CEILING, FLOOR, ROUND, POWER, SQRT, LOG, LN, EXP, SIN, COS, TAN | identical or mapped |
 | Stats | MEDIAN, STDEV, STDEVP, VAR, VARP, PERCENTILE, CORR, COVAR | MEDIAN, STDEV.S, STDEV.P, VAR.S, VAR.P, PERCENTILE.INC, CORREL, COVARIANCE.S |
 | Conversion | INT, FLOAT, STR, DATE, DATETIME | INT, CONVERT, FORMAT, DATE, DATE |
-| LOD | {FIXED dims : AGG} | CALCULATE(AGG, ALLEXCEPT) |
+| LOD | {FIXED dims : AGG} | Illustrative CALCULATE(AGG, ALLEXCEPT); unproved scope may emit TODO/BLANK |
 | LOD | {INCLUDE dims : AGG} | CALCULATE(AGG) |
 | LOD | {EXCLUDE dims : AGG} | CALCULATE(AGG, REMOVEFILTERS) |
 | Table Calc | RUNNING_SUM/AVG/COUNT | CALCULATE(SUM/AVERAGE/COUNT) |
@@ -430,7 +430,8 @@ Power BI Desktop openability.
    - No aggregation + column references owned by one physical table (needs
      row context) → calculated column
    - Unaggregated Tableau `role=measure` with references owned by multiple
-     physical tables → measure; aggregate fields in filter context
+     physical tables → measure; unproved row/aggregation grain can emit
+     diagnostic TODO/BLANK rather than guessed filter-context aggregation
    - No aggregation + no column refs → measure (formula-only)
    - Literal-value measure references in calc columns are inlined
 4. **RELATED()** — used for cross-table refs in manyToOne relationships only

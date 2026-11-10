@@ -143,6 +143,31 @@ _LOD_PATTERN = re.compile(
     r'\{\s*(FIXED|INCLUDE|EXCLUDE)\s+', re.IGNORECASE,
 )
 
+# FIXED warnings use a separate lexical check so quoted text, field names and
+# comments do not turn an otherwise unrelated calculation into a risk finding.
+_TABLEAU_NON_CODE = re.compile(
+    r'''(?P<comment>//[^\r\n]*|/\*.*?(?:\*/|\Z))'''
+    r'''|(?P<literal>"(?:\\.|""|[^"\\])*(?:"|\Z)|'''
+    r"""'(?:\\.|''|[^'\\])*(?:'|\Z))"""
+    r'''|(?P<field>\[(?:[^\]]|\]\])*(?:\]|\Z))''',
+    re.DOTALL,
+)
+_FIXED_LOD_PATTERN = re.compile(r'\{\s*FIXED(?=\s|:|\[)', re.IGNORECASE)
+
+
+def _contains_fixed_lod(formula: str) -> bool:
+    """Detect explicit FIXED syntax, without asserting semantic correctness."""
+    if "FIXED" not in formula.upper():
+        return False
+
+    def mask(match: re.Match) -> str:
+        if match.lastgroup == "comment":
+            return " "
+        return "[]" if match.lastgroup == "field" else '""'
+
+    return bool(_FIXED_LOD_PATTERN.search(_TABLEAU_NON_CODE.sub(mask, formula)))
+
+
 _TABLE_CALC_PATTERN = re.compile(
     r'\b(RUNNING_SUM|RUNNING_AVG|RUNNING_COUNT|RUNNING_MAX|RUNNING_MIN'
     r'|WINDOW_SUM|WINDOW_AVG|WINDOW_MAX|WINDOW_MIN|WINDOW_COUNT'
@@ -529,6 +554,7 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
     partial = []
     script_calcs = []
     lod_calcs = []
+    fixed_calcs = []
     table_calcs = []
 
     for calc in calculations:
@@ -547,8 +573,11 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
             and _SUPPORTED_RAWSQL.fullmatch(formula.strip())
         ):
             partial.append(name)
-        if _LOD_PATTERN.search(formula):
+        has_fixed = _contains_fixed_lod(formula)
+        if _LOD_PATTERN.search(formula) or has_fixed:
             lod_calcs.append(name)
+        if has_fixed:
+            fixed_calcs.append(name)
         if _TABLE_CALC_PATTERN.search(formula):
             table_calcs.append(name)
 
@@ -579,9 +608,9 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
             f"{len(constant_points)} calculation(s) build a fixed point from "
             f"constants: {names_preview}{extra}.",
             "Power BI has no point type, so the point itself is not migrated. "
-            "Grouping by one fixed location changes nothing, so LOD measures "
-            "using it compute the same numbers; only a map that plots the "
-            "point directly loses it.",
+            "Grouping by one fixed location changes nothing, but does not "
+            "by itself prove LOD conversion or its results. A map that plots "
+            "the point directly loses it.",
         ))
 
     if script_calcs:
@@ -622,11 +651,18 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
         extra = f" (+{len(lod_calcs) - 5} more)" if len(lod_calcs) > 5 else ""
         cat.checks.append(CheckItem(
             cat.name, "LOD expressions", INFO,
-            f"{len(lod_calcs)} LOD expression(s) (FIXED/INCLUDE/EXCLUDE): "
+            f"{len(lod_calcs)} calculation(s) contain LOD expressions "
+            f"(FIXED/INCLUDE/EXCLUDE): "
             f"{names_preview}{extra}. "
-            "Auto-converted to DAX CALCULATE + ALLEXCEPT/REMOVEFILTERS.",
-            "Review generated DAX measures for correctness — "
-            "FIXED→ALLEXCEPT, INCLUDE→CALCULATE, EXCLUDE→REMOVEFILTERS.",
+            "Conversion depends on the LOD type and scope. This static "
+            "assessment and registry parity grades do not establish "
+            "successful conversion or equivalence. "
+            "Verify source and target filter scope, dimension grain, shelf "
+            "aggregation, subtotals and grand totals against Tableau.",
+            "Inspect generated DAX, including TODO/BLANK() and dependent "
+            "calculations. Compare Tableau context/data-source filters and "
+            "ordinary dimension filters with target filters and RLS for "
+            "every use.",
         ))
     else:
         cat.checks.append(CheckItem(
@@ -649,6 +685,27 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
         cat.checks.append(CheckItem(
             cat.name, "Table calculations", PASS,
             "No table calculations detected.",
+        ))
+
+    if fixed_calcs:
+        names_preview = ", ".join(fixed_calcs[:5])
+        extra = f" (+{len(fixed_calcs) - 5} more)" if len(fixed_calcs) > 5 else ""
+        cat.checks.append(CheckItem(
+            cat.name, "FIXED LOD scope", WARN,
+            f"{len(fixed_calcs)} calculation(s) contain explicit FIXED: "
+            f"{names_preview}{extra}. This source assessment cannot establish "
+            "the grain or filter, shelf aggregation and total scope. "
+            "Verification is required; this does not mean the calculation is "
+            "incorrect. Without the required evidence, conversion may yield "
+            "TODO/BLANK().",
+            "Compare each use with Tableau, including source/target filter "
+            "scope (context/data-source and ordinary dimension filters, "
+            "target filters and RLS), dimension grain, shelf aggregation, "
+            "subtotals and grand totals. Inspect generated DAX and dependent "
+            "calculations, including TODO/BLANK(). CALCULATE + ALLEXCEPT is "
+            "an illustrative FIXED pattern, not guaranteed output or proof "
+            "of equivalence; a case with explicit semantic evidence may use "
+            "different DAX.",
         ))
 
     return cat

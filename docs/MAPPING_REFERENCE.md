@@ -233,6 +233,10 @@ Desktop rendering.
 
 ## 📐 Level of Detail (LOD) Expressions
 
+The FIXED patterns below are illustrative, not a guarantee of generated output
+or source equivalence. Filter order, shelf aggregation and total grain require
+proof; unverified cases can emit a diagnostic `TODO`/`BLANK()`.
+
 ### FIXED
 
 | Tableau | DAX | Usage |
@@ -414,7 +418,9 @@ Column names with special characters must be quoted as `[#"Name"]` in Power Quer
 
 ## 🔬 Complex Transformation Examples
 
-This section shows real-world Tableau formulas and their automatically generated DAX equivalents.
+This section illustrates DAX translation patterns. Examples can omit null and
+context guards; actual generated expressions can differ or be diagnostic
+`TODO`/`BLANK()` when equivalence is unproved.
 
 ### Example 1: Multi-condition Revenue with SUM(IF) → SUMX
 
@@ -423,9 +429,9 @@ This section shows real-world Tableau formulas and their automatically generated
 SUM(IF [order_status] != "Cancelled" THEN [quantity] * [unit_price] * (1 - [discount]) ELSE 0 END)
 ```
 
-**Generated DAX:**
+**Illustrative DAX, with null guards omitted:**
 ```dax
-SUMX('Orders', IF('Orders'[order_status] != "Cancelled", 'Orders'[quantity] * 'Orders'[unit_price] * (1 - 'Orders'[discount]), 0))
+SUMX('Orders', IF('Orders'[order_status] <> "Cancelled", 'Orders'[quantity] * 'Orders'[unit_price] * (1 - 'Orders'[discount]), 0))
 ```
 
 **What happens:**
@@ -440,7 +446,7 @@ SUMX('Orders', IF('Orders'[order_status] != "Cancelled", 'Orders'[quantity] * 'O
 {FIXED : SUM(IF YEAR([transaction_date]) = YEAR(TODAY()) THEN [amount] ELSE 0 END)}
 ```
 
-**Generated DAX:**
+**Illustrative DAX, not a certified generated expression:**
 ```dax
 CALCULATE(
     SUMX('transactions', IF(YEAR('transactions'[transaction_date]) = YEAR(TODAY()), 'transactions'[amount], 0)),
@@ -452,7 +458,8 @@ CALCULATE(
 1. `{FIXED : ...}` with no dimensions → `CALCULATE(..., ALL('table'))` (grand total across all rows)
 2. Inner `SUM(IF ...)` → `SUMX('table', IF(...))`
 3. `YEAR()` and `TODAY()` map directly
-4. The result is a YTD calculation that ignores all filters
+4. `ALL` removes removable filters from the specified table, not RLS; it does
+   not establish equivalence to Tableau's source filter order or totals
 
 ### Example 3: Multi-Dimension LOD FIXED
 
@@ -461,9 +468,9 @@ CALCULATE(
 {FIXED [region], [channel] : SUM([quantity] * [unit_price])}
 ```
 
-**Generated DAX:**
+**Illustrative DAX, not a certified generated expression:**
 ```dax
-CALCULATE(SUM('Orders'[quantity] * 'Orders'[unit_price]), ALLEXCEPT('Orders', 'Orders'[region], 'Orders'[channel]))
+CALCULATE(SUMX('Orders', 'Orders'[quantity] * 'Orders'[unit_price]), ALLEXCEPT('Orders', 'Orders'[region], 'Orders'[channel]))
 ```
 
 **What happens:**
@@ -477,9 +484,9 @@ CALCULATE(SUM('Orders'[quantity] * 'Orders'[unit_price]), ALLEXCEPT('Orders', 'O
 {EXCLUDE [channel] : SUM([quantity] * [unit_price])}
 ```
 
-**Generated DAX:**
+**Illustrative DAX:**
 ```dax
-CALCULATE(SUM('Orders'[quantity] * 'Orders'[unit_price]), REMOVEFILTERS('Orders'[channel]))
+CALCULATE(SUMX('Orders', 'Orders'[quantity] * 'Orders'[unit_price]), REMOVEFILTERS('Orders'[channel]))
 ```
 
 ### Example 5: Nested IF/ELSEIF (Customer Tier)

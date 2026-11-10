@@ -13,35 +13,75 @@ Owned by **@dax**.
 
 import logging
 import re
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
-#: ``'Sales'[Amount]``, ``Sales[Amount]`` or a bare ``[Amount]``.
-_DAX_COLUMN_REF = re.compile(
-    r"""(?P<owner>'(?:[^']|'')+'|\b[A-Za-z_]\w*)?\[(?P<col>[^\[\]]+)\]"""
-)
-
-
-def _split_dax_strings(expr):
-    """Yield ``(text, is_literal)`` so rewrites never reach inside a string."""
-    parts, buf, in_string, i = [], [], False, 0
+def _mask_dax_noncode(expr):
+    """Mask strings/comments without changing offsets or identifier spelling."""
+    masked = list(expr)
+    i = 0
     while i < len(expr):
-        ch = expr[i]
-        if ch == '"':
-            if in_string and i + 1 < len(expr) and expr[i + 1] == '"':
-                buf.append('""')
-                i += 2
-                continue
-            buf.append(ch)
-            parts.append((''.join(buf), in_string))
-            buf, in_string = [], not in_string
+        if expr[i] == '[':
+            i += 1
+            while i < len(expr):
+                if expr[i] == ']' and i + 1 < len(expr) and expr[i + 1] == ']':
+                    i += 2
+                elif expr[i] == ']':
+                    i += 1
+                    break
+                else:
+                    i += 1
+            continue
+        if expr[i] == "'":
+            i += 1
+            while i < len(expr):
+                if expr[i] == "'" and i + 1 < len(expr) and expr[i + 1] == "'":
+                    i += 2
+                elif expr[i] == "'":
+                    i += 1
+                    break
+                else:
+                    i += 1
+            continue
+        start = i
+        if expr[i] == '"':
+            i += 1
+            while i < len(expr):
+                if expr[i] == '"' and i + 1 < len(expr) and expr[i + 1] == '"':
+                    i += 2
+                elif expr[i] == '"':
+                    i += 1
+                    break
+                else:
+                    i += 1
+        elif expr.startswith('/*', i):
+            depth = 1
+            i += 2
+            while i < len(expr) and depth:
+                if expr.startswith('/*', i):
+                    depth += 1
+                    i += 2
+                elif expr.startswith('*/', i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+        elif expr.startswith(('//', '--'), i):
+            end = expr.find('\n', i + 2)
+            i = len(expr) if end < 0 else end
+        else:
             i += 1
             continue
-        buf.append(ch)
-        i += 1
-    if buf:
-        parts.append((''.join(buf), in_string))
-    return parts
+        masked[start:i] = ' ' * (i - start)
+    return ''.join(masked)
+
+
+def _unsupported_measure_expression(reason):
+    """Use the generation path's existing, quality-reportable TODO marker."""
+    logger.warning("Unsupported measure rewrite: %s", reason)
+    return ('/* TODO: DAX conversion validation failed for measure: '
+            + reason + ' */ BLANK()')
 
 
 def retarget_dax_column_refs(model):
@@ -57,27 +97,58 @@ def retarget_dax_column_refs(model):
     if not renames:
         return 0
 
-    by_table = {}
-    for (table_name, raw), produced in renames.items():
-        by_table.setdefault(table_name, {})[raw] = produced
+    by_identity, ambiguous_renames = {}, set()
+    for identity, produced in renames.items():
+        if (not isinstance(identity, tuple) or len(identity) != 2
+                or not all(isinstance(part, str) for part in identity)
+                or not isinstance(produced, str) or not produced):
+            continue
+        key = (identity[0].casefold(), identity[1].casefold())
+        if key in by_identity and by_identity[key] != produced:
+            ambiguous_renames.add(key)
+        else:
+            by_identity[key] = produced
+
+    measures_by_name, measures_by_owner = set(), set()
+    for table in model.get('model', {}).get('tables', []):
+        table_name = table.get('name', '')
+        if not isinstance(table_name, str):
+            continue
+        for measure in table.get('measures', []):
+            name = measure.get('name', '')
+            if isinstance(name, str) and name:
+                measures_by_name.add(name.casefold())
+                measures_by_owner.add((table_name.casefold(), name.casefold()))
 
     def rewrite(expr, home_table):
-        def _swap(match):
-            owner = match.group('owner')
-            column = match.group('col')
-            if owner:
-                key = owner[1:-1].replace("''", "'") if owner.startswith("'") else owner
-            else:
-                key = home_table
-            target = by_table.get(key, {}).get(column)
+        refs, _ = _dax_dependency_tokens(expr, include_spans=True)
+        result = expr
+        for owner, column, column_only, start, bracket, end in reversed(refs):
+            table_name = owner if owner is not None else home_table
+            if not isinstance(table_name, str):
+                continue
+            key = (table_name.casefold(), column.casefold())
+            target = by_identity.get(key)
             if not target:
-                return match.group(0)
-            return f'{owner or ""}[{target}]'
-
-        return ''.join(
-            chunk if literal else _DAX_COLUMN_REF.sub(_swap, chunk)
-            for chunk, literal in _split_dax_strings(expr)
-        )
+                continue
+            if key in ambiguous_renames:
+                logger.warning(
+                    "Ambiguous column rename for '%s'[%s]; reference left unchanged",
+                    table_name, column)
+                continue
+            # A bare field can be a model-wide measure. A qualified field can
+            # be a measure of that table. Only a proven column-only argument
+            # may be renamed when a same-named measure also exists.
+            if not column_only and (
+                    (owner is None and column.casefold() in measures_by_name)
+                    or (owner is not None and key in measures_by_owner)):
+                logger.warning(
+                    "Ambiguous column/measure reference '%s'[%s]; left unchanged",
+                    table_name, column)
+                continue
+            result = (result[:bracket + 1] + target.replace(']', ']]')
+                      + result[end - 1:])
+        return result
 
     rewritten = 0
     for table in model.get('model', {}).get('tables', []):
@@ -155,24 +226,20 @@ def resolve_table_for_formula(formula, datasource_name=None, dax_context=None):
     return max(table_counts, key=lambda k: table_counts[k])
 
 
-_BARE_COL_REF_RE = re.compile(r"^(?:'[^']*')?\[[^\]]+\]$")
+_BARE_COL_REF_RE = re.compile(
+    r"^(?P<owner>'(?:[^']|'')+'|[^\W\d]\w*)?\[(?:[^\]]|\]\])+\]$",
+    re.UNICODE,
+)
 
 
 def _wrap_bare_ref_expression(dax_formula, datatype, table_name):
-    """Aggregate a measure whose whole expression is a bare column reference.
-
-    Type-aware: MAXX over IF for Boolean (MAX needs a column ref), MAX for
-    text and dates, SUM otherwise. Owned by @dax.
-    """
-    if not _BARE_COL_REF_RE.match(dax_formula.strip()):
+    """Do not invent a shelf aggregation for a measure's bare column."""
+    match = _BARE_COL_REF_RE.match(dax_formula.strip())
+    if not match or not match.group('owner'):
+        # A bare [Name] can be a measure; the caller lacks global metadata.
         return dax_formula
-    dt_lower = (datatype or '').lower()
-    if dt_lower == 'boolean':
-        tbl_esc = (table_name or '').replace("'", "''")
-        return f"MAXX('{tbl_esc}', IF({dax_formula.strip()}, 1, 0))"
-    if dt_lower in ('string', 'date', 'datetime'):
-        return f"MAX({dax_formula.strip()})"
-    return f"SUM({dax_formula.strip()})"
+    return _unsupported_measure_expression(
+        'bare column requires source shelf aggregation and total grain')
 
 
 _BARE_REF_RE = re.compile(r"(?<!')\[([^\]]+)\]")
@@ -181,16 +248,13 @@ _BARE_REF_RE = re.compile(r"(?<!')\[([^\]]+)\]")
 def _promote_measure_dependent_calc_columns(result_table):
     """Turn a calculated column that calls a measure into a measure.
 
-    A calculated column cannot call a measure: the measure's filter context
-    is unknown at row level, so the engine makes the column depend on its
-    whole table, detects a circular dependency and refuses to load the
-    model. Tableau's own formula was already aggregate-valued, so a measure
-    is the faithful target. Owned by @dax.
+    Referencing a measure from a calculated column can introduce context
+    transitions and circular dependencies. Promotion avoids that structural
+    problem but does not prove equivalence to the source calculation.
 
-    Runs before :func:`_unwrap_aggregations_of_measures` so that call sites
-    written as ``MIN('T'[col])`` are rewritten to ``[col]`` by that pass, and
-    before :func:`_wrap_bare_cross_table_refs` so the promoted expression's
-    bare column refs get an aggregation.
+    Subsequent aggregation and bare-column guards emit a diagnostic TODO
+    when the source row scope, shelf aggregation or total grain is unknown;
+    they do not automatically remove MIN or invent an aggregation.
     """
     measure_names = {m.get("name", "") for m in result_table.get("measures", [])}
     if not measure_names:
@@ -232,187 +296,899 @@ def _promote_measure_dependent_calc_columns(result_table):
 
 
 def _unwrap_aggregations_of_measures(result_table):
-    """Strip SUM/AVERAGE/COUNT/MIN/MAX wrappers from measure references.
+    """Reject aggregation of a measure when its source grain is unknown.
 
-    DAX aggregations take a column; a measure already aggregates, so the
-    wrapper has to go. Owned by @dax.
+    Removing SUM/MIN/etc. fixes DAX syntax but can change the Tableau shelf
+    and total result, especially when the measure represents a FIXED value.
+    Only the semantic owner can establish that the outer aggregation is
+    redundant or compile it over the correct source grain.
     """
-    # ── Post-processing: fix SUM/AVG/COUNT/MIN/MAX of measure references ──
-    # In DAX, SUM([X]) only accepts a column reference.  If [X] resolves to
-    # a measure name, the aggregation wrapper must be removed because the
-    # measure already aggregates internally.
     _all_measure_names = {m["name"] for m in result_table["measures"]}
+    _column_names = {c.get("name", "") for c in result_table.get("columns", [])}
+    home_table = result_table.get("name", "")
     _qualified_measure_ref = re.compile(
-        r"'([^']+(?:''[^']*)*)'\[([^\]]+)\]"
+        r"(?P<owner>'(?:[^']|'')+'|[^\W\d]\w*)"
+        r"\[(?P<col>(?:[^\]]|\]\])+)\]",
+        re.UNICODE,
     )
     for meas in result_table["measures"]:
         expr = meas.get("expression", "")
         if not expr:
             continue
-        normalized = _qualified_measure_ref.sub(
-            lambda match: f"[{match.group(2)}]"
-            if match.group(2) in _all_measure_names else match.group(0),
-            expr,
-        )
-        meas["expression"] = normalized
+        masked = _mask_dax_noncode(expr)
+        for match in reversed(list(_qualified_measure_ref.finditer(masked))):
+            owner = match.group('owner')
+            owner = owner[1:-1].replace("''", "'") if owner.startswith("'") else owner
+            name = match.group('col').replace(']]', ']')
+            if owner == home_table and name in _all_measure_names and name not in _column_names:
+                expr = expr[:match.start()] + '[' + match.group('col') + ']' + expr[match.end():]
+        meas["expression"] = expr
     _AGG_OF_MEASURE_RE = re.compile(
-        r'\b(SUM|AVERAGE|COUNT|MIN|MAX)\(\s*\[([^\]]+)\]\s*\)',
+        r'\b(SUM|AVERAGE|COUNT|MIN|MAX)\s*\(\s*\[((?:[^\]]|\]\])+)\]\s*\)',
         re.IGNORECASE,
     )
     for meas in result_table["measures"]:
         expr = meas.get("expression", "")
         if not expr:
             continue
-        new_expr = expr
-        for m_agg in _AGG_OF_MEASURE_RE.finditer(expr):
-            agg_fn = m_agg.group(1)
-            ref_name = m_agg.group(2)
-            if ref_name in _all_measure_names:
-                # Replace SUM([measure]) with just [measure]
-                new_expr = new_expr.replace(m_agg.group(0), f'[{ref_name}]')
-                logger.debug(
-                    "Unwrapped %s([%s]) → [%s] (measure reference, not column)",
-                    agg_fn, ref_name, ref_name,
-                )
-        if new_expr != expr:
-            meas["expression"] = new_expr
+        for match in _AGG_OF_MEASURE_RE.finditer(_mask_dax_noncode(expr)):
+            name = match.group(2).replace(']]', ']')
+            if name in _all_measure_names and name not in _column_names:
+                meas["expression"] = _unsupported_measure_expression(
+                    'aggregation of a calculation requires its source shelf '
+                    'and total grain')
+                break
 
 
 
 def _wrap_bare_cross_table_refs(result_table):
-    """Wrap bare column references in a measure with an aggregation.
-
-    Refs already inside an aggregation or iterator are left alone -- those
-    supply the context a bare ref needs. Owned by @dax.
-    """
+    """Reject bare measure columns instead of guessing their aggregation."""
     _all_measure_names = {m["name"] for m in result_table["measures"]}
-    # ── Post-processing: wrap bare cross-table column refs in SUM ──
-    # A DAX measure cannot reference a column from another table without
-    # aggregation.  Pattern: 'Table'[Column] where Column is NOT a measure.
-    # Only skip wrapping when the ref is inside an aggregation function
-    # (SUM, MAX, etc. — already aggregated) or an iterator function
-    # (SUMX, FILTER, etc. — provides row context).  Scalar functions
-    # like IF, CONVERT, NOT, SWITCH do NOT provide aggregation or row
-    # context, so column refs inside them still need wrapping.
+    _column_names = {c.get("name", "") for c in result_table.get("columns", [])}
+    home_table = result_table.get("name", "")
     _XTABLE_COL_RE = re.compile(
-        r"'([^']+(?:''[^']*)*)'(\[[^\]]+\])"
+        r"(?<![\w'])(?P<owner>'(?:[^']|'')+'|[^\W\d]\w*)"
+        r"\[(?P<col>(?:[^\]]|\]\])+)\]",
+        re.UNICODE,
     )
-    # Functions that provide column context (aggregation, iteration, or
-    # column-reference semantics).  Column refs inside these do NOT need
-    # SUM wrapping.
     _COLUMN_CONTEXT_FUNCS = frozenset({
-        # Aggregation functions (column is their direct input)
         'SUM', 'AVERAGE', 'COUNT', 'COUNTA', 'COUNTBLANK', 'COUNTROWS',
         'MIN', 'MAX', 'DISTINCTCOUNT', 'DISTINCTCOUNTNOBLANK',
         'MEDIAN', 'PERCENTILE',
-        # Iterator functions (provide row context in their body)
         'SUMX', 'AVERAGEX', 'COUNTX', 'MINX', 'MAXX', 'PRODUCTX',
         'CONCATENATEX', 'MEDIANX', 'PERCENTILEX',
         'FILTER', 'ADDCOLUMNS', 'SELECTCOLUMNS',
         'GENERATE', 'GENERATEALL', 'RANKX', 'TOPN',
         'SUMMARIZE', 'SUMMARIZECOLUMNS', 'GROUPBY',
-        # Lookup / column-reference functions
         'RELATED', 'RELATEDTABLE', 'LOOKUPVALUE', 'TREATAS',
         'VALUES', 'DISTINCT', 'ALL', 'ALLEXCEPT', 'ALLNOBLANKROW',
         'ALLSELECTED', 'REMOVEFILTERS',
         'EARLIER', 'EARLIEST', 'SELECTEDVALUE',
         'HASONEVALUE', 'HASONEFILTER', 'ISINSCOPE',
-        'USERELATIONSHIP', 'CROSSFILTER', 'CALCULATETABLE',
+        'USERELATIONSHIP', 'CROSSFILTER',
     })
-    # Build set of boolean columns in the current table — SUM/MAX don't
-    # support Boolean type, so these need special wrapping (IF(col,1,0)).
-    _bool_cols_for_xtable = {
-        c.get('name', '') for c in result_table.get("columns", [])
-        if (c.get('dataType', '') or '').lower() == 'boolean'
-        and c.get('name')
-    }
-    # String/DateTime columns should use MAX, not SUM (SUM is invalid for text/dates).
-    _text_date_cols_for_xtable = {
-        c.get('name', '') for c in result_table.get("columns", [])
-        if (c.get('dataType', '') or '').lower() in ('string', 'datetime')
-        and c.get('name')
-    }
     for meas in result_table["measures"]:
         expr = meas.get("expression", "")
         if not expr:
             continue
-        new_expr = expr
-        for m_col in reversed(list(_XTABLE_COL_RE.finditer(expr))):
-            col_name = m_col.group(2).strip('[]')
-            if col_name in _all_measure_names:
-                continue  # measure ref — leave as-is
-            # Walk expression up to match position tracking whether we
-            # are inside an aggregation/iterator function.  Only those
-            # functions provide contexts where bare column refs are valid.
-            # Scalar functions (IF, CONVERT, NOT, SWITCH …) do NOT
-            # provide aggregation or row context.
-            agg_depth = 0
-            func_stack = []   # True/False per paren level
-            text_before = expr[:m_col.start()]
+        masked = _mask_dax_noncode(expr)
+        for match in _XTABLE_COL_RE.finditer(masked):
+            owner = match.group('owner')
+            owner = owner[1:-1].replace("''", "'") if owner.startswith("'") else owner
+            col_name = match.group('col').replace(']]', ']')
+            if (owner == home_table and col_name in _all_measure_names
+                    and col_name not in _column_names):
+                continue
+            # Strings and comments are masked; quoted table names and
+            # bracketed identifiers must also be skipped while counting.
+            func_stack = []  # [function name, current argument index]
+            text_before = masked[:match.start()]
             i = 0
             while i < len(text_before):
                 ch = text_before[i]
-                if ch == '"':
-                    # Skip DAX string literal ("" = escaped double-quote)
+                if ch in ("'", '['):
+                    close = ']' if ch == '[' else "'"
                     i += 1
                     while i < len(text_before):
-                        if text_before[i] == '"':
-                            if (i + 1 < len(text_before)
-                                    and text_before[i + 1] == '"'):
-                                i += 2  # escaped double-quote
+                        if text_before[i] == close:
+                            if i + 1 < len(text_before) and text_before[i + 1] == close:
+                                i += 2
                             else:
+                                i += 1
                                 break
-                        i += 1
-                    i += 1  # skip closing quote
+                        else:
+                            i += 1
                 elif ch == '(':
-                    # Look backwards past spaces to find the function name
                     j = i - 1
-                    while j >= 0 and text_before[j] == ' ':
+                    while j >= 0 and text_before[j].isspace():
                         j -= 1
                     func_end = j + 1
                     while j >= 0 and (text_before[j].isalnum()
-                                      or text_before[j] == '_'):
+                                      or text_before[j] in '_.'):
                         j -= 1
-                    func_name = text_before[j + 1:func_end].upper()
-                    is_ctx = func_name in _COLUMN_CONTEXT_FUNCS
-                    func_stack.append(is_ctx)
-                    if is_ctx:
-                        agg_depth += 1
+                    func_stack.append([text_before[j + 1:func_end].upper(), 0])
                     i += 1
                 elif ch == ')':
                     if func_stack:
-                        if func_stack.pop():
-                            agg_depth -= 1
+                        func_stack.pop()
+                    i += 1
+                elif ch == ',' and func_stack:
+                    func_stack[-1][1] += 1
                     i += 1
                 else:
                     i += 1
-            if agg_depth > 0:
-                continue  # Inside aggregation/iterator — row-level ref
-            # Bare column ref not inside any aggregation → wrap.
-            # Type-aware: SUM for numeric, MAX for string/date,
-            # MAXX('Table', IF(col, 1, 0)) for Boolean.
-            old_ref = m_col.group(0)
-            tbl_name = m_col.group(1).replace("''", "'")
-            is_same_table = tbl_name == result_table.get("name", "")
-            if is_same_table and col_name in _bool_cols_for_xtable:
-                tbl_esc = tbl_name.replace("'", "''")
-                new_ref = f"MAXX('{tbl_esc}', IF({old_ref}, 1, 0))"
-            elif is_same_table and col_name in _text_date_cols_for_xtable:
-                new_ref = f"MAX({old_ref})"
+            if any(name in _COLUMN_CONTEXT_FUNCS
+                   or (name in ('CALCULATE', 'CALCULATETABLE') and index > 0)
+                   for name, index in func_stack):
+                continue
+            meas["expression"] = _unsupported_measure_expression(
+                'bare column requires source row scope, shelf aggregation '
+                'and total grain')
+            break
+
+
+
+def _dax_dependency_tokens(expression, *, include_spans=False):
+    """Return real DAX field refs and conversion markers, excluding literals.
+
+    Quoted owners, escaped delimiters, Unicode names and line/block comments
+    are consumed as tokens rather than searched with a bracket-only regex.
+    A direct argument to a column-only function is identified separately so
+    a same-named measure cannot be mistaken for that physical column.
+    """
+    refs = []
+    unsupported = False
+    length = len(expression)
+    code = _mask_dax_noncode(expression)
+    column_function = re.compile(
+        r'(?<![\w.])(?P<name>SUM|AVERAGE|COUNT|COUNTA|COUNTBLANK|'
+        r'DISTINCTCOUNT|DISTINCTCOUNTNOBLANK|MEDIAN|MIN|MAX|VALUES|'
+        r'HASONEVALUE|ISFILTERED|ISINSCOPE|SELECTEDVALUE|'
+        r'STDEV\.[SP]|VAR\.[SP])\s*\(\s*$',
+        re.IGNORECASE,
+    )
+
+    def add_ref(owner, name, start, bracket_start, end):
+        match = column_function.search(code[:start])
+        column_only = False
+        if match:
+            tail = code[end:]
+            # SELECTEDVALUE permits an optional alternate scalar result;
+            # the other supported signatures here take one column argument.
+            close = r'\s*(?:\)|,)' if match.group('name').upper() == 'SELECTEDVALUE' else r'\s*\)'
+            column_only = bool(re.match(close, tail))
+        if include_spans:
+            refs.append((owner, name, column_only, start, bracket_start, end))
+        else:
+            refs.append((owner, name, column_only))
+
+    def quoted(start, delimiter):
+        chars, pos = [], start + 1
+        while pos < length:
+            if expression[pos] == delimiter:
+                if pos + 1 < length and expression[pos + 1] == delimiter:
+                    chars.append(delimiter)
+                    pos += 2
+                    continue
+                return ''.join(chars), pos + 1
+            chars.append(expression[pos])
+            pos += 1
+        return None, length
+
+    def bracket(start):
+        return quoted(start, ']')
+
+    i = 0
+    while i < length:
+        if expression.startswith(('//', '--'), i):
+            newline = expression.find('\n', i + 2)
+            i = length if newline < 0 else newline + 1
+        elif expression.startswith('/*', i):
+            start = i + 2
+            depth, end = 1, start
+            while end < length and depth:
+                if expression.startswith('/*', end):
+                    depth += 1
+                    end += 2
+                elif expression.startswith('*/', end):
+                    depth -= 1
+                    if depth:
+                        end += 2
+                else:
+                    end += 1
+            if re.match(r'\s*TODO:\s*DAX conversion validation failed\b',
+                        expression[start:end], re.IGNORECASE):
+                unsupported = True
+            i = min(end + 2, length)
+        elif expression[i] == '"':
+            _, i = quoted(i, '"')
+        elif expression[i] == "'":
+            start = i
+            owner, end = quoted(i, "'")
+            pos = end
+            while pos < length and expression[pos].isspace():
+                pos += 1
+            if owner is not None and pos < length and expression[pos] == '[':
+                name, i = bracket(pos)
+                if name is not None:
+                    add_ref(owner, name, start, pos, i)
             else:
-                new_ref = f"SUM({old_ref})"
-            new_expr = new_expr[:m_col.start()] + new_ref + new_expr[m_col.end():]
-            logger.debug(
-                "Wrapped bare column ref %s → SUM(%s) in measure '%s'",
-                old_ref, old_ref, meas.get("name", ""),
-            )
-        if new_expr != expr:
-            meas["expression"] = new_expr
+                i = end
+        elif expression[i] == '[':
+            start = i
+            name, i = bracket(i)
+            if name is not None:
+                add_ref(None, name, start, start, i)
+        elif expression[i] == '_' or expression[i].isalpha():
+            start = i
+            end = i + 1
+            while end < length and (expression[end].isalnum()
+                                    or expression[end] == '_'):
+                end += 1
+            owner = expression[i:end]
+            pos = end
+            while pos < length and expression[pos].isspace():
+                pos += 1
+            if pos < length and expression[pos] == '[':
+                name, i = bracket(pos)
+                if name is not None:
+                    add_ref(owner, name, start, pos, i)
+            else:
+                i = end
+        else:
+            i += 1
+    return refs, unsupported
 
 
+def _tableau_source_identifier(value):
+    """Decode one explicitly recorded Tableau calculation identifier."""
+    if not isinstance(value, str) or not value:
+        return None
+    if not value.startswith('['):
+        return value
+    refs, _ = _dax_dependency_tokens(value, include_spans=True)
+    if (len(refs) == 1 and refs[0][0] is None
+            and refs[0][3] == 0 and refs[0][5] == len(value)):
+        return refs[0][1]
+    return None
 
-def _validate_measures_after_rewrites(result_table):
-    """Re-validate every measure once the DAX rewrites have run."""
+
+def _single_source_reference(item):
+    """Return one unqualified source ref, without guessing token alignment."""
+    formula = item.get('_original_formula')
+    if not isinstance(formula, str) or not formula:
+        return None
+    refs, _ = _dax_dependency_tokens(formula, include_spans=True)
+    if not refs:
+        return None
+    names = set()
+    for owner, name, column_only, start, _, end in refs:
+        before = formula[:start].rstrip()
+        after = formula[end:].lstrip()
+        if (owner is not None or column_only
+                or before.endswith('.') or after.startswith('.')):
+            return None
+        names.add(name.casefold())
+    return refs[0][1] if len(names) == 1 else None
+
+
+def _identical_source_declarations(left, right):
+    """Compare complete source metadata without coercion or mutation."""
+    remaining = 10000
+
+    def equal(a, b, depth):
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 64 or type(a) is not type(b):
+            return False
+        if type(a) is dict:
+            if (not all(type(key) is str for key in a)
+                    or not all(type(key) is str for key in b)
+                    or a.keys() != b.keys()):
+                return False
+            return all(equal(a[key], b[key], depth + 1) for key in a)
+        if type(a) in (list, tuple):
+            return (len(a) == len(b)
+                    and all(equal(x, y, depth + 1) for x, y in zip(a, b)))
+        if type(a) is float:
+            return a == b and a.hex() == b.hex()
+        if type(a) in (str, int, bool, type(None)):
+            return a == b
+        return False
+
+    return equal(left, right, 0)
+
+
+def _source_calculation_inventory(model):
+    """Index original source declarations while retaining their namespaces."""
+    sources = model.get('_datasources')
+    if not isinstance(sources, list) or not sources:
+        return None
+    names = [source.get('name') if isinstance(source, dict) else None
+             for source in sources]
+    namespace_counts = {}
+    for name in names:
+        if isinstance(name, str) and name.strip():
+            namespace_counts[name.casefold()] = namespace_counts.get(name.casefold(), 0) + 1
+    aliases = {}
+    for source in sources:
+        if not isinstance(source, dict) or not isinstance(source.get('calculations'), list):
+            return None
+        namespace = source.get('name')
+        if (not isinstance(namespace, str) or not namespace.strip()
+                or namespace_counts.get(namespace.casefold()) != 1):
+            namespace = None
+        for calc in source['calculations']:
+            if not isinstance(calc, dict):
+                return None
+            raw = _tableau_source_identifier(calc.get('name'))
+            if not raw:
+                return None
+            caption = calc.get('caption') or raw
+            if not isinstance(caption, str):
+                return None
+            declared_namespace = calc.get('datasource_name')
+            calc_namespace = namespace
+            if ('datasource_name' in calc and declared_namespace != namespace):
+                calc_namespace = None
+            # Keep the original declaration, including every metadata field.
+            # Do not collapse records until both target identities are proven.
+            record = (raw, caption, calc.get('formula'), calc_namespace, calc)
+            for alias in {raw.casefold(), caption.casefold()}:
+                aliases.setdefault(alias, []).append(record)
+    return aliases
+
+
+def propagate_unsupported_model_dependencies(
+        model, *, diagnose_ambiguous=True, defer_source_binding=False):
+    """Fail closed on transitive dependencies on unsupported model fields.
+
+    Invoke on the complete, final symbol table after semantic renames and all
+    measure/column creation. Qualified refs bind only to their named table;
+    bare refs are resolved against all matching model symbols. If a ref has
+    multiple possible identities, it is diagnosed as ambiguous rather than
+    silently attributed to an unsupported namesake. The returned diagnostics
+    contain field identities, not formula text. Recorded measure/column rename
+    maps are used to diagnose stale pre-rename references; this pass never
+    changes reference text or rewrites a same-named physical column, except
+    when explicit source identities and model symbols (or a unique recorded
+    rename) prove the materialized target.
+
+    An earlier model pass may set ``diagnose_ambiguous=False`` to defer those
+    identities until the semantic owner has finished renaming symbols. This
+    function does not inspect Power Query expressions or report visual calcs.
+    ``defer_source_binding`` is for incomplete pre-rename/local passes; a
+    final model-wide call must diagnose missing or ambiguous targets.
+    """
+    objects, by_name, by_owner_name, table_names = [], {}, {}, set()
+    for table in model.get('model', {}).get('tables', []):
+        owner = table.get('name', '')
+        if not isinstance(owner, str):
+            continue
+        table_names.add(owner.casefold())
+        for kind in ('measures', 'columns'):
+            for item in table.get(kind, []):
+                name = item.get('name', '')
+                if not isinstance(name, str) or not name:
+                    continue
+                index = len(objects)
+                objects.append((owner, kind, item))
+                by_name.setdefault(name.casefold(), []).append(index)
+                by_owner_name.setdefault((owner.casefold(), name.casefold()), []).append(index)
+
+    renamed_by_name, renamed_by_owner_name = {}, {}
+    for map_name, kind in (('_measure_rename_map', 'measures'),
+                           ('_column_rename_map', 'columns')):
+        for identity, new_name in (model.get(map_name) or {}).items():
+            if (not isinstance(identity, tuple) or len(identity) != 2
+                    or not all(isinstance(part, str) for part in identity)
+                    or not isinstance(new_name, str) or not new_name):
+                continue
+            owner, old_name = identity
+            renamed = [index for index in by_owner_name.get(
+                (owner.casefold(), new_name.casefold()), [])
+                       if objects[index][1] == kind]
+            if renamed:
+                renamed_by_name.setdefault(old_name.casefold(), []).extend(renamed)
+                renamed_by_owner_name.setdefault(
+                    (owner.casefold(), old_name.casefold()), []).extend(renamed)
+
+    source_inventory = _source_calculation_inventory(model)
+    targets_by_source, physical_names, physical_by_source, caption_targets = {}, set(), {}, {}
+    for index, (_, kind, item) in enumerate(objects):
+        identity = item.get('_tableau_calculation_identity')
+        raw = (_tableau_source_identifier(identity.get('name'))
+               if isinstance(identity, dict) else None)
+        if raw:
+            targets_by_source.setdefault(raw.casefold(), []).append(index)
+            caption = identity.get('caption')
+            if kind == 'measures' and isinstance(caption, str):
+                caption_targets.setdefault(caption.casefold(), set()).add(
+                    item['name'].casefold())
+        elif kind == 'columns':
+            for name in (item.get('name'), item.get('sourceColumn')):
+                if isinstance(name, str) and name:
+                    physical_names.add(name.casefold())
+                    physical_by_source.setdefault(name.casefold(), []).append(index)
+
+    def matches_source_record(item, record, namespace):
+        identity = item.get('_tableau_calculation_identity')
+        declaration = record[4]
+        return (
+            isinstance(identity, dict)
+            and isinstance(namespace, str) and bool(namespace.strip())
+            and record[3] == namespace
+            and identity.get('datasource_name') == namespace
+            and identity.get('name') == declaration.get('name')
+            and identity.get('caption', '') == declaration.get('caption', '')
+            and isinstance(item.get('_original_formula'), str)
+            and item['_original_formula'] == declaration.get('formula')
+        )
+
+    def collapse_identical_records(records, namespace):
+        """Collapse only full, exact declarations in one proven namespace."""
+        if len(records) < 2:
+            return records
+        first = records[0]
+        if (first[3] != namespace
+                or any(record[3] != namespace
+                       or record[4].get('name') != first[4].get('name')
+                       or not _identical_source_declarations(first[4], record[4])
+                       for record in records[1:])):
+            return records
+        return records[:1]
+
+    def emitted_target_reference(target, refs):
+        """Prove an emitted DAX ref identifies this target, without pairing by position."""
+        target_owner, kind, target_item = objects[target]
+        rewrites = []
+        found = False
+        for owner, name, column_only, _, bracket, end in refs:
+            exact = (by_name.get(name.casefold(), []) if owner is None
+                     else by_owner_name.get((owner.casefold(), name.casefold()), []))
+            renamed = (renamed_by_name.get(name.casefold(), []) if owner is None
+                       else renamed_by_owner_name.get((owner.casefold(), name.casefold()), []))
+            candidates = list(dict.fromkeys([*exact, *renamed]))
+            if column_only:
+                candidates = [candidate for candidate in candidates
+                              if objects[candidate][1] == 'columns']
+                exact = [candidate for candidate in exact
+                         if objects[candidate][1] == 'columns']
+            if target not in candidates:
+                continue
+            if candidates != [target]:
+                return 'target_ambiguous', []
+            found = True
+            if target not in exact:
+                # Only a recorded, unique rename can repair a stale symbol.
+                new_name = target_item['name']
+                current = (by_name.get(new_name.casefold(), []) if owner is None
+                           else by_owner_name.get(
+                               (target_owner.casefold(), new_name.casefold()), []))
+                if current != [target] or (kind == 'measures'
+                                           and by_name.get(new_name.casefold()) != [target]):
+                    return 'target_ambiguous', []
+                rewrites.append((bracket, end, new_name))
+        return ('resolved', rewrites) if found else ('unresolved', [])
+
+    def multiple_source_bindings(index, refs):
+        """Verify each distinct source dependency before using the DAX graph."""
+        item = objects[index][2]
+        identity = item.get('_tableau_calculation_identity')
+        consumer_id = (_tableau_source_identifier(identity.get('name'))
+                       if isinstance(identity, dict) else None)
+        formula = item.get('_original_formula')
+        if not isinstance(formula, str) or not formula:
+            if consumer_id:
+                output_names = {(owner.casefold() if owner else None, name.casefold())
+                                for owner, name, _, _, _, _ in refs}
+                if source_inventory is None:
+                    return ('unresolved', consumer_id, []) if len(output_names) > 1 else None
+                source_formulas_found = False
+                for record in source_inventory.get(consumer_id.casefold(), []):
+                    source_formula = record[2]
+                    if (record[0].casefold() != consumer_id.casefold()
+                            or not isinstance(source_formula, str)):
+                        continue
+                    source_formulas_found = True
+                    source_refs, _ = _dax_dependency_tokens(source_formula)
+                    if len({(owner.casefold() if owner else None, name.casefold())
+                            for owner, name, _ in source_refs}) > 1:
+                        return 'unproven', consumer_id, []
+                if not source_formulas_found and len(output_names) > 1:
+                    return 'unproven', consumer_id, []
+            return None
+        source_refs, _ = _dax_dependency_tokens(formula, include_spans=True)
+        distinct = {(owner.casefold() if owner else None, name.casefold())
+                    for owner, name, _, _, _, _ in source_refs}
+        if len(distinct) < 2:
+            return None
+
+        namespace = identity.get('datasource_name') if isinstance(identity, dict) else None
+        inventory = source_inventory or {}
+        calculation_refs = False
+        for _, name, _, _, _, _ in source_refs:
+            records = inventory.get(name.casefold(), [])
+            physical = physical_by_source.get(name.casefold(), [])
+            if (targets_by_source.get(name.casefold())
+                    or any(record[0].casefold() == name.casefold() for record in records)
+                    or (records and not physical)):
+                calculation_refs = True
+                break
+        consumer_records = (inventory.get(consumer_id.casefold(), [])
+                            if consumer_id else [])
+        if calculation_refs or consumer_records:
+            if source_inventory is None or not consumer_id:
+                return 'unresolved', source_refs[0][1], []
+            if not consumer_records:
+                return 'unresolved', consumer_id, []
+            if targets_by_source.get(consumer_id.casefold(), []) != [index]:
+                return 'ambiguous', consumer_id, []
+            if len(consumer_records) > 1:
+                if (not matches_source_record(item, consumer_records[0], namespace)
+                        or len(collapse_identical_records(consumer_records, namespace)) != 1):
+                    return 'ambiguous', consumer_id, []
+                consumer_records = consumer_records[:1]
+            if (consumer_records[0][0].casefold() != consumer_id.casefold()
+                    or not matches_source_record(item, consumer_records[0], namespace)):
+                return 'unproven', consumer_id, []
+
+        problems, rewrites, seen = [], [], set()
+        for owner, name, _, start, _, end in source_refs:
+            key = (owner.casefold() if owner else None, name.casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            before, after = formula[:start].rstrip(), formula[end:].lstrip()
+            if owner is not None or before.endswith('.') or after.startswith('.'):
+                problems.append(('unresolved', name))
+                continue
+            records = inventory.get(name.casefold(), [])
+            physical = list(dict.fromkeys(physical_by_source.get(name.casefold(), [])))
+            raw_match = any(record[0].casefold() == name.casefold() for record in records)
+
+            # A caption is not a calculation ID. A uniquely identified
+            # physical field may still have the same text as that caption.
+            if not records or (not raw_match and physical):
+                if not records and targets_by_source.get(name.casefold()):
+                    problems.append(('unproven', name))
+                    continue
+                if len(physical) != 1:
+                    problems.append(('ambiguous' if physical else 'unresolved', name))
+                    continue
+                status, changes = emitted_target_reference(physical[0], refs)
+                if status != 'resolved':
+                    problems.append((status, name))
+                else:
+                    rewrites.extend(changes)
+                continue
+            if physical or not raw_match:
+                problems.append(('ambiguous', name))
+                continue
+
+            record = records[0]
+            targets = targets_by_source.get(record[0].casefold(), [])
+            if len(records) > 1:
+                if (not matches_source_record(item, consumer_records[0], namespace)
+                        or record[3] != namespace
+                        or len(collapse_identical_records(records, namespace)) != 1):
+                    problems.append(('ambiguous', name))
+                    continue
+            if len(targets) != 1:
+                problems.append(('ambiguous' if targets else 'unresolved', name))
+                continue
+            target = targets[0]
+            target_item = objects[target][2]
+            if target == index or not matches_source_record(target_item, record, namespace):
+                problems.append(('unproven', name))
+                continue
+            status, changes = emitted_target_reference(target, refs)
+            if status != 'resolved':
+                problems.append((status, name))
+            else:
+                rewrites.extend(changes)
+
+        if problems:
+            priority = {'ambiguous': 0, 'unproven': 1,
+                        'target_ambiguous': 2, 'unresolved': 3}
+            status, name = min(problems, key=lambda problem: priority[problem[0]])
+            return status, name, []
+        return 'resolved', None, list(dict.fromkeys(rewrites))
+
+    def source_binding(index, refs):
+        """Resolve only a single source ID to one explicitly identified measure."""
+        _, _, item = objects[index]
+        identity = item.get('_tableau_calculation_identity')
+        if not isinstance(identity, dict) or not _tableau_source_identifier(identity.get('name')):
+            return None
+        source_ref = _single_source_reference(item)
+        if source_ref is None or not refs:
+            return None
+        signatures = {(owner.casefold() if owner else None, name.casefold(), column_only)
+                      for owner, name, column_only, _, _, _ in refs}
+        if len(signatures) != 1 or refs[0][2]:
+            return None
+        owner, dax_name = refs[0][:2]
+        exact = (by_name.get(dax_name.casefold(), []) if owner is None
+                 else by_owner_name.get((owner.casefold(), dax_name.casefold()), []))
+        # A qualified, uniquely identified physical column is not a measure.
+        if owner is not None and len(exact) == 1 and objects[exact[0]][1] == 'columns':
+            return None
+
+        if source_inventory is None:
+            # A local table lacks the complete source inventory. In
+            # particular, a same-caption target might not have been built yet.
+            renamed = (renamed_by_name.get(dax_name.casefold(), []) if owner is None
+                       else renamed_by_owner_name.get(
+                           (owner.casefold(), dax_name.casefold()), []))
+            identities = []
+            for candidate in dict.fromkeys([*exact, *renamed]):
+                candidate_identity = objects[candidate][2].get('_tableau_calculation_identity')
+                if isinstance(candidate_identity, dict):
+                    raw = _tableau_source_identifier(candidate_identity.get('name'))
+                    caption = candidate_identity.get('caption')
+                    if raw and isinstance(caption, str):
+                        identities.append((raw.casefold(), caption.casefold()))
+            source_key = source_ref.casefold()
+            if (len(identities) > 1
+                    and any(raw == source_key for raw, _ in identities)
+                    and all(caption != source_key for raw, caption in identities
+                            if raw != source_key)):
+                return 'unresolved', None, source_ref
+            if (identities and all(source_ref.casefold() not in pair for pair in identities)
+                    and any(caption == dax_name.casefold() for _, caption in identities)):
+                return 'unresolved', None, source_ref
+            return None
+
+        records = source_inventory.get(source_ref.casefold(), [])
+        if not records:
+            return None
+        consumer_id = _tableau_source_identifier(identity.get('name'))
+        consumer_records = source_inventory.get(consumer_id.casefold(), [])
+        if (records and consumer_records
+                and (len(records) > 1 or len(consumer_records) > 1)):
+            consumer_targets = targets_by_source.get(consumer_id.casefold(), [])
+            source_targets = targets_by_source.get(records[0][0].casefold(), [])
+            if consumer_targets == [index]:
+                namespace = identity.get('datasource_name')
+                if matches_source_record(item, consumer_records[0], namespace):
+                    collapsed_consumer = collapse_identical_records(
+                        consumer_records, namespace)
+                    if (len(records) > 1 and not source_targets
+                            and defer_source_binding
+                            and records[0][3] == namespace
+                            and len(collapsed_consumer) == 1
+                            and len(collapse_identical_records(records, namespace)) == 1):
+                        # The complete model must still prove the remote target.
+                        return 'unresolved', None, source_ref
+                    if len(source_targets) == 1:
+                        target_item = objects[source_targets[0]][2]
+                        if matches_source_record(target_item, records[0], namespace):
+                            consumer_records = collapsed_consumer
+                            records = collapse_identical_records(records, namespace)
+        if len(consumer_records) > 1:
+            return 'ambiguous', None, source_ref
+        if (len(consumer_records) != 1
+                or consumer_records[0][0].casefold() != consumer_id.casefold()
+                or consumer_records[0][2] != item.get('_original_formula')):
+            return 'unresolved', None, source_ref
+        if len(records) != 1 or source_ref.casefold() in physical_names:
+            return 'ambiguous', None, source_ref
+        raw, caption = records[0][:2]
+        # A caption alone is not proof of the underlying source ID.
+        if raw.casefold() != source_ref.casefold():
+            return None
+        targets = targets_by_source.get(raw.casefold(), [])
+        if len(targets) != 1:
+            return ('ambiguous' if targets else 'unresolved'), None, source_ref
+        target = targets[0]
+        target_owner, kind, target_item = objects[target]
+        target_identity = target_item.get('_tableau_calculation_identity') or {}
+        target_caption = target_identity.get('caption') or raw
+        if (kind != 'measures' or not isinstance(target_caption, str)
+                or target_caption.casefold() != caption.casefold()):
+            return 'unresolved', None, source_ref
+
+        # Retarget only references known to originate from this caption,
+        # including a previously namespaced namesake. Never alter literals.
+        aliases = {raw.casefold(), caption.casefold(), target_item['name'].casefold()}
+        aliases.update(caption_targets.get(caption.casefold(), ()))
+        if (dax_name.casefold() not in aliases
+                or (owner is not None and owner.casefold() != target_owner.casefold())):
+            return 'unresolved', None, source_ref
+        target_expr = target_item.get('expression', '')
+        if (isinstance(target_expr, str) and target_expr
+                and _dax_dependency_tokens(target_expr)[1]):
+            # The consumer must fail irrespective of whether the target's
+            # eventual DAX name collides with a column or another measure.
+            return 'unsupported_target', target, source_ref
+        if by_name.get(target_item['name'].casefold(), []) != [target]:
+            return 'target_ambiguous', target, source_ref
+        return 'resolved', target, source_ref
+
+    def replace_with_diagnostic(index, reason, issue, ref_owner, ref_name, source_ref):
+        owner, kind, item = objects[index]
+        expression = item.get('expression', '')
+        provenance = re.match(
+            r'\s*/\*\s*Tableau calculation; migrated to DAX\b[\s\S]*?\*/\s*',
+            expression, re.IGNORECASE)
+        prefix = provenance.group(0) if provenance else ''
+        item['expression'] = prefix + _unsupported_measure_expression(reason)
+        diagnostics.append({
+            'table': owner, 'kind': kind, 'field': item['name'],
+            'reference_table': ref_owner, 'reference': ref_name,
+            'source_reference': source_ref, 'issue': issue,
+        })
+
+    reverse = [[] for _ in objects]
+    unsupported = set()
+    diagnostics = []
+    for index, (_, _, item) in enumerate(objects):
+        expression = item.get('expression', '')
+        if not isinstance(expression, str) or not expression:
+            continue
+        refs, marker = _dax_dependency_tokens(expression, include_spans=True)
+        if marker:
+            unsupported.add(index)
+            continue
+        multi_binding = multiple_source_bindings(index, refs)
+        if multi_binding:
+            status, source_ref, changes = multi_binding
+            ref_owner, ref_name = refs[0][:2] if refs else (None, None)
+            if status in ('unresolved', 'target_ambiguous') and defer_source_binding:
+                diagnostics.append({
+                    'table': objects[index][0], 'kind': objects[index][1],
+                    'field': item['name'], 'reference_table': ref_owner,
+                    'reference': ref_name, 'source_reference': source_ref,
+                    'issue': 'source calculation binding requires final resolution',
+                })
+                continue
+            if status != 'resolved':
+                reason = ('ambiguous source calculation identity'
+                          if status == 'ambiguous' else
+                          'ambiguous target for source calculation identity'
+                          if status == 'target_ambiguous' else
+                          'unresolved source calculation identity or target')
+                issue = ('unresolved source identity' if status == 'unproven'
+                         else status + ' source identity')
+                replace_with_diagnostic(index, reason, issue,
+                                        ref_owner, ref_name, source_ref)
+                unsupported.add(index)
+                continue
+            for bracket, end, target_name in sorted(changes, reverse=True):
+                expression = (expression[:bracket] + '['
+                              + target_name.replace(']', ']]') + ']'
+                              + expression[end:])
+            if changes:
+                item['expression'] = expression
+                refs, _ = _dax_dependency_tokens(expression, include_spans=True)
+        binding = source_binding(index, refs)
+        selected = None
+        if binding:
+            status, selected, source_ref = binding
+            ref_owner, ref_name = refs[0][:2]
+            if status in ('unresolved', 'target_ambiguous') and defer_source_binding:
+                diagnostics.append({
+                    'table': objects[index][0], 'kind': objects[index][1],
+                    'field': item['name'], 'reference_table': ref_owner,
+                    'reference': ref_name, 'source_reference': source_ref,
+                    'issue': 'source calculation binding requires final resolution',
+                })
+                if selected is None:
+                    continue
+            elif status not in ('resolved', 'unsupported_target'):
+                reason = ('ambiguous source calculation identity'
+                          if status == 'ambiguous' else
+                          'ambiguous target for source calculation identity'
+                          if status == 'target_ambiguous' else
+                          'unresolved source calculation identity or target')
+                replace_with_diagnostic(index, reason, status + ' source identity',
+                                        ref_owner, ref_name, source_ref)
+                unsupported.add(index)
+                continue
+            if status == 'resolved':
+                target_name = objects[selected][2]['name']
+                for _, _, _, _, bracket, end in reversed(refs):
+                    expression = (expression[:bracket] + '['
+                                  + target_name.replace(']', ']]') + ']'
+                                  + expression[end:])
+                item['expression'] = expression
+                refs, _ = _dax_dependency_tokens(expression, include_spans=True)
+        for owner, name, column_only, _, _, _ in refs:
+            exact = (by_name.get(name.casefold(), []) if owner is None
+                     else by_owner_name.get((owner.casefold(), name.casefold()), []))
+            renamed = (renamed_by_name.get(name.casefold(), []) if owner is None
+                       else renamed_by_owner_name.get((owner.casefold(), name.casefold()), []))
+            candidates = ([selected] if selected is not None else
+                          list(dict.fromkeys([*exact, *renamed])))
+            if column_only:
+                columns = [candidate for candidate in candidates
+                           if objects[candidate][1] == 'columns']
+                if columns:
+                    candidates = columns
+                    renamed = [candidate for candidate in renamed if candidate in columns]
+            resolution = ('unique' if selected is not None else
+                          'ambiguous' if len(candidates) > 1 else
+                          'unresolved' if renamed and not exact else 'unique')
+            if owner is not None and not candidates and owner.casefold() in table_names:
+                # Do not silently bind a wrongly qualified reference to a
+                # namesake measure in another table. If that measure becomes
+                # unsupported, report the unresolved identity explicitly.
+                candidates = [candidate for candidate in by_name.get(name.casefold(), [])
+                              if objects[candidate][1] == 'measures']
+                if candidates:
+                    resolution = 'unresolved'
+            for dependency in candidates:
+                # Physical columns without a DAX expression cannot acquire
+                # a DAX TODO in this pass. Keep them for identity ambiguity
+                # checks, but do not build unnecessary dependency edges.
+                dependency_expr = objects[dependency][2].get('expression', '')
+                if (dependency != index and isinstance(dependency_expr, str)
+                        and dependency_expr):
+                    reverse[dependency].append(
+                        (index, resolution, owner, name))
+
+    queue = deque(unsupported)
+    deferred = set()
+    while queue:
+        dependency = queue.popleft()
+        for index, resolution, ref_owner, ref_name in reverse[dependency]:
+            if index in unsupported:
+                continue
+            owner, kind, item = objects[index]
+            identity = (index, ref_owner, ref_name)
+            if resolution == 'ambiguous' and not diagnose_ambiguous:
+                if identity not in deferred:
+                    deferred.add(identity)
+                    diagnostics.append({
+                        'table': owner, 'kind': kind, 'field': item['name'],
+                        'reference_table': ref_owner, 'reference': ref_name,
+                        'issue': 'ambiguous unsupported dependency requires final resolution',
+                    })
+                continue
+            reason = {
+                'ambiguous': 'ambiguous field identity may reference an unsupported calculation',
+                'unresolved': 'unresolved qualified field identity may reference an unsupported calculation',
+                'unique': 'depends on a calculation with unsupported source grain',
+            }[resolution]
+            # Keep any leading generated-provenance comment intact. Strings
+            # and comments elsewhere are never treated as field references.
+            expression = item.get('expression', '')
+            provenance = re.match(
+                r'\s*/\*\s*Tableau calculation; migrated to DAX\b[\s\S]*?\*/\s*',
+                expression, re.IGNORECASE)
+            prefix = provenance.group(0) if provenance else ''
+            item['expression'] = prefix + _unsupported_measure_expression(reason)
+            diagnostics.append({
+                'table': owner, 'kind': kind, 'field': item['name'],
+                'reference_table': ref_owner, 'reference': ref_name,
+                'issue': ('unsupported dependency' if resolution == 'unique'
+                          else f'{resolution} unsupported dependency'),
+            })
+            unsupported.add(index)
+            queue.append(index)
+    return diagnostics
+
+
+def _validate_measures_after_rewrites(
+        result_table, *, source_calculations=None, source_datasources=None):
+    """Propagate local unsupported dependencies, then re-validate measures.
+
+    ``source_datasources`` is the complete, original datasource inventory,
+    retaining each datasource's name and full calculation declarations. It
+    takes precedence over the legacy, flattened ``source_calculations``.
+    A flattened inventory cannot prove that repeated declarations share a
+    namespace. Bindings needing targets outside this table remain deferred to
+    the final model-wide pass.
+    """
+    measures = result_table.get("measures", [])
+    model = {'model': {'tables': [result_table]}}
+    if source_datasources is not None:
+        model['_datasources'] = source_datasources
+    elif source_calculations is not None:
+        model['_datasources'] = [{'calculations': source_calculations}]
+    propagate_unsupported_model_dependencies(
+        model, defer_source_binding=True)
     # ── Phase 3: Post-processing DAX validation sweep ──
     # After all rewrites (SUM-of-measure unwrap, bare column wrapping),
     # validate every measure expression one more time.
@@ -420,7 +1196,7 @@ def _validate_measures_after_rewrites(result_table):
         from powerbi_import.dax_validator import (
             validate_dax_expression as _validate_dax,
         )
-        for meas in result_table["measures"]:
+        for meas in measures:
             m_expr = meas.get("expression", "")
             if not m_expr or 'TODO: DAX conversion validation failed' in m_expr:
                 continue
@@ -437,6 +1213,11 @@ def _validate_measures_after_rewrites(result_table):
 def _fix_related_for_many_to_many(model):
     """
     Replace RELATED('table'[col]) with LOOKUPVALUE() for manyToMany relationships.
+
+    The model is available at this stage, so also propagate unsupported
+    dependencies across its current tables. Ambiguous identities are
+    diagnosed, not silently bound to a namesake. The semantic owner must still
+    run a final model-wide sweep after later creation and renaming of fields.
     """
     # Build lookup by full relationship identity. Keep the legacy table-pair
     # form as a fallback for callers/tests that provide synthetic mappings.
@@ -453,6 +1234,7 @@ def _fix_related_for_many_to_many(model):
             m2m_pairs.setdefault((to_table, from_table), (from_col, to_col))
 
     if not m2m_pairs:
+        propagate_unsupported_model_dependencies(model, defer_source_binding=True)
         return
 
     for table in model['model']['tables']:
@@ -476,6 +1258,8 @@ def _fix_related_for_many_to_many(model):
                 # where the iteration table is the context, not the measure table
                 expr = _replace_related_in_aggx_context(expr, m2m_pairs)
                 measure['expression'] = expr
+
+    propagate_unsupported_model_dependencies(model, defer_source_binding=True)
 
 
 def _replace_related_with_lookupvalue(expr, m2m_pairs, current_table='',
@@ -932,7 +1716,7 @@ class _Compiler:
         elif kind == "if":
             args = node[1:]
         elif kind == "call" and node[1] in ("IIF", "CONTAINS", "ISNULL", "NOT"):
-            counts = {"IIF": (3,), "CONTAINS": (2,), "ISNULL": (1,), "NOT": (1,)}
+            counts = {"IIF": (3, 4), "CONTAINS": (2,), "ISNULL": (1,), "NOT": (1,)}
             if len(node[2]) not in counts[node[1]]:
                 raise _Unsupported("Unsupported function arity: %s" % node[1])
             if node[1] == "CONTAINS" and node[2][1][0:2] != ("literal", "STR"):
@@ -971,12 +1755,10 @@ class _Compiler:
             args = node[1:] if kind == "if" else node[2]
             if self.type_of(args[0]) not in ("boolean", "null"):
                 raise _Unsupported("IF requires a boolean condition")
-            yes, no = self.type_of(args[1]), self.type_of(args[2])
-            if yes == no:
-                return yes
-            if "null" in (yes, no):
-                return no if yes == "null" else yes
-            raise _Unsupported("Mixed-type IF branches are outside this compiler")
+            branch_types = {self.type_of(arg) for arg in args[1:]} - {"null"}
+            if len(branch_types) > 1:
+                raise _Unsupported("Mixed-type IF branches are outside this compiler")
+            return next(iter(branch_types), "null")
         if kind == "call" and node[1] == "ISNULL":
             self.type_of(node[2][0])
             return "boolean"
@@ -1013,10 +1795,19 @@ class _Compiler:
             return (_boolean(node[1], a, b) if node[1] in ("AND", "OR")
                     else _compare(node[1], a, b, self.exact_comparison
                                   and self.type_of(node[2]) == "text"))
-        if kind == "if" or (kind == "call" and node[1] == "IIF"):
-            args = node[1:] if kind == "if" else node[2]
+        if kind == "if":
+            args = node[1:]
             return "IF(%s, %s, %s)" % (
                 self.truth(args[0], left_vars, null_right),
+                self.scalar(args[1], left_vars, null_right),
+                self.scalar(args[2], left_vars, null_right))
+        if kind == "call" and node[1] == "IIF":
+            args = node[2]
+            condition = self.scalar(args[0], left_vars, null_right)
+            unknown = (self.scalar(args[3], left_vars, null_right)
+                       if len(args) == 4 else "BLANK()")
+            return "IF(ISBLANK(%s), %s, IF(%s, %s, %s))" % (
+                condition, unknown, condition,
                 self.scalar(args[1], left_vars, null_right),
                 self.scalar(args[2], left_vars, null_right))
         if kind == "call" and node[1] == "ISNULL":
@@ -1062,9 +1853,8 @@ class _Compiler:
             elif a == ("null",) or b == ("null",):
                 return ("null",)
             return (kind, node[1], a, b)
-        if kind == "if" or (kind == "call" and node[1] == "IIF"):
-            args = node[1:] if kind == "if" else node[2]
-            condition, yes, no = (self.simplify(n, null_right) for n in args)
+        if kind == "if":
+            condition, yes, no = (self.simplify(n, null_right) for n in node[1:])
             condition = self.condition(condition)
             if condition == ("bool", "TRUE"):
                 return yes
@@ -1073,6 +1863,19 @@ class _Compiler:
             if yes == no:
                 return yes
             return ("if", condition, yes, no)
+        if kind == "call" and node[1] == "IIF":
+            args = tuple(self.simplify(n, null_right) for n in node[2])
+            condition, yes, no = args[:3]
+            unknown = args[3] if len(args) == 4 else ("null",)
+            if condition == ("bool", "TRUE"):
+                return yes
+            if condition == ("bool", "FALSE"):
+                return no
+            if condition == ("null",):
+                return unknown
+            if yes == no == unknown:
+                return yes
+            return ("call", "IIF", args)
         if kind == "call":
             args = tuple(self.simplify(n, null_right) for n in node[2])
             if node[1] == "CONTAINS" and args[0] == ("null",):
@@ -1160,8 +1963,12 @@ class _Compiler:
         """
         if node[0:2] == ("literal", "NUM"):
             return ("bool", "TRUE" if node[2].strip("0.") else "FALSE")
-        if node[0] == "if" or node[0:2] == ("call", "IIF"):
-            condition, yes, no = node[1:] if node[0] == "if" else node[2]
+        if node[0:2] == ("call", "IIF"):
+            # Its NULL-test branch is not the ELSE branch. Do not prove a
+            # zero-row pruning condition from only the TRUE/FALSE leaves.
+            return None
+        if node[0] == "if":
+            condition, yes, no = node[1:]
             yes_needed = self.necessary_left_nonzero(yes)
             no_needed = self.necessary_left_nonzero(no)
             if yes_needed is None or no_needed is None:
@@ -1487,7 +2294,8 @@ def compile_logical_relationship_sum(
     inferred model relationship between these aliases.
 
     Only conjunctive cross-alias comparisons, direct left FIXED dimensions,
-    source numeric/date MAX, IF/ELSEIF/IIF, literal CONTAINS, ISNULL and scalar
+    source numeric/date MAX, IF/ELSEIF/IIF (including its unknown branch),
+    literal CONTAINS, ISNULL and scalar
     comparisons/boolean expressions are supported. Nested aggregates/LODs,
     INCLUDE/EXCLUDE, multi-table logical endpoints, ambiguous fields and cycles
     fail closed. No model mutations or physical materialization occur here.

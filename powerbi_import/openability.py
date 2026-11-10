@@ -10,6 +10,7 @@ Checks (blocking = static contract violation, not an exhaustive runtime test):
     tmdl_present  the semantic model has at least one .tmdl
     power_query   every M partition extracted from TMDL validates (the focus)
     dax           every measure expression validates
+    native_query_refs  projection nativeQueryRef names are unique within each visual
     schema        PBIR/visual files carry a $schema (advisory)
 
 Public API:
@@ -531,6 +532,48 @@ def _check_visual_bindings(project_dir) -> CheckResult:
         for issue in _check_visual_refs(report_state, table_names, columns, measures):
             issues.append(f"{report_name}/{issue.location}: {issue.message}")
     return CheckResult("visual_bindings", not issues, "error", issues)
+
+
+def _check_native_query_refs(project_dir: str) -> CheckResult:
+    """Block duplicate nativeQueryRef names across all roles of each visual.
+
+    Names are compared exactly, independently of field/queryRef or aggregation.
+    Missing refs and visuals without queries are not made mandatory here;
+    malformed JSON remains the responsibility of the json_parse check.
+    """
+    issues = []
+    for path in sorted(glob.glob(os.path.join(project_dir, "**", "visual.json"),
+                                 recursive=True)):
+        data = _read_json(path)
+        visual = data.get("visual") if isinstance(data, dict) else None
+        query = visual.get("query") if isinstance(visual, dict) else None
+        state = query.get("queryState") if isinstance(query, dict) else None
+        if not isinstance(state, dict):
+            continue
+        locations_by_ref: Dict[str, List[str]] = {}
+        for role, role_state in sorted(state.items()):
+            projections = (role_state.get("projections")
+                           if isinstance(role_state, dict) else None)
+            if not isinstance(projections, list):
+                continue
+            for index, projection in enumerate(projections):
+                ref = (projection.get("nativeQueryRef")
+                       if isinstance(projection, dict) else None)
+                if not isinstance(ref, str):
+                    continue
+                location = (
+                    f"visual.query.queryState[{json.dumps(role, ensure_ascii=False)}]"
+                    f".projections[{index}].nativeQueryRef"
+                )
+                locations_by_ref.setdefault(ref, []).append(location)
+        for ref, locations in sorted(locations_by_ref.items()):
+            if len(locations) > 1:
+                issues.append(
+                    f"{os.path.relpath(path, project_dir)}: duplicate nativeQueryRef "
+                    f"{ref!r} ({len(locations)} projections): "
+                    + "; ".join(locations)
+                )
+    return CheckResult("native_query_refs", not issues, "error", issues)
 
 
 def _check_model_column_projection(project_dir) -> CheckResult:
@@ -1197,6 +1240,7 @@ def check_openability(project_dir: str) -> OpenabilityReport:
         _check_data_files_present(project_dir),
         _check_executable_tmdl_dax(project_dir),
         _check_visual_bindings(project_dir),
+        _check_native_query_refs(project_dir),
         _check_model_column_projection(project_dir),
         _check_references(project_dir),
         _check_report_structure(project_dir),

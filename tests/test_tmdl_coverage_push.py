@@ -1010,8 +1010,8 @@ class TestCreateRlsRoles(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_user_filter_missing_column_falls_back_to_true(self):
-        """Missing user-filter column should not generate invalid RLS references."""
+    def test_user_filter_missing_column_is_rejected(self):
+        """A missing user-filter column must not become an all-rows role."""
         datasources = [{
             'name': 'DS1',
             'tables': [{'name': 'Sales', 'columns': [
@@ -1028,16 +1028,21 @@ class TestCreateRlsRoles(unittest.TestCase):
         }]
         tmp = tempfile.mkdtemp()
         try:
-            generate_tmdl(datasources, 'test', {'user_filters': user_filters}, tmp)
+            with self.assertRaises(PartialGenerationError) as raised:
+                generate_tmdl(datasources, 'test', {'user_filters': user_filters}, tmp)
+            error = raised.exception
+            self.assertEqual(error.recovery_kind, 'rls_filter_semantics')
+            self.assertEqual(error.item, 'BadEmailFilter')
+            self.assertIn('CustomerEmail', str(error))
+            self.assertRegex(str(error), r'(?i)missing|ambiguous')
+            self.assertTrue(error.required_evidence)
             roles_path = os.path.join(tmp, 'definition', 'roles.tmdl')
-            if os.path.exists(roles_path):
-                content = open(roles_path, encoding='utf-8').read()
-                self.assertIn('filterExpression = TRUE()', content)
+            self.assertFalse(os.path.exists(roles_path))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_calculated_security_missing_column_falls_back_to_true(self):
-        """Calculated security with unknown refs should degrade safely."""
+    def test_calculated_security_missing_column_is_rejected(self):
+        """A missing calculated-security field cannot grant access to all rows."""
         datasources = [{
             'name': 'DS1',
             'tables': [{'name': 'Sales', 'columns': [
@@ -1055,13 +1060,77 @@ class TestCreateRlsRoles(unittest.TestCase):
         }]
         tmp = tempfile.mkdtemp()
         try:
-            generate_tmdl(datasources, 'test', {'user_filters': user_filters}, tmp)
+            with self.assertRaises(PartialGenerationError) as raised:
+                generate_tmdl(datasources, 'test', {'user_filters': user_filters}, tmp)
+            error = raised.exception
+            self.assertEqual(error.recovery_kind, 'rls_filter_semantics')
+            self.assertEqual(error.item, 'Region Match')
+            self.assertIn('RegionManager', str(error))
+            self.assertRegex(str(error), r'(?i)missing|ambiguous')
+            self.assertTrue(error.required_evidence)
             roles_path = os.path.join(tmp, 'definition', 'roles.tmdl')
-            if os.path.exists(roles_path):
-                content = open(roles_path, encoding='utf-8').read()
-                self.assertIn('filterExpression = TRUE()', content)
+            self.assertFalse(os.path.exists(roles_path))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_calculated_security_protects_existing_identity_column(self):
+        """Both Tableau identity functions retain a guarded physical-field predicate."""
+        for identity in ('USERNAME', 'FULLNAME'):
+            with self.subTest(identity=identity), tempfile.TemporaryDirectory() as tmp:
+                datasources = [{
+                    'name': 'DS1',
+                    'tables': [{'name': 'Sales', 'columns': [
+                        {'name': 'RegionManager', 'datatype': 'string'},
+                        {'name': 'Amount', 'datatype': 'real'},
+                    ]}],
+                    'calculations': [],
+                    'connection': {
+                        'type': 'SQL Server',
+                        'details': {'server': 'synthetic.invalid', 'database': 'db'},
+                    },
+                }]
+                user_filters = [{
+                    'type': 'calculated_security',
+                    'name': 'Region Match',
+                    'formula': f'[RegionManager] = {identity}()',
+                    'functions_used': [identity],
+                    'ismemberof_groups': [],
+                }]
+
+                generate_tmdl(
+                    datasources, 'test', {'user_filters': user_filters}, tmp,
+                    parameterize=False)
+                roles_path = os.path.join(tmp, 'definition', 'roles.tmdl')
+                self.assertTrue(os.path.isfile(roles_path))
+                with open(roles_path, encoding='utf-8') as stream:
+                    content = stream.read()
+                self.assertIn("role 'Region Match'", content)
+                self.assertIn('tablePermission Sales', content)
+                expression, = [
+                    line.strip().split(' = ', 1)[1]
+                    for line in content.splitlines()
+                    if line.strip().startswith('filterExpression = ')
+                ]
+                self.assertTrue(
+                    expression.startswith(
+                        'NOT(ISBLANK(USERPRINCIPALNAME())) && '
+                        'LEN(USERPRINCIPALNAME()) > 0 && COALESCE('),
+                    expression,
+                )
+                self.assertIn("'Sales'[RegionManager]", expression)
+                self.assertIn('USERPRINCIPALNAME()', expression)
+                self.assertRegex(
+                    expression,
+                    r"(?is)(?:'Sales'\[RegionManager\]\s*==?\s*USERPRINCIPALNAME\(\)"
+                    r"|VAR\s+(?P<field>\w+)\s*=\s*'Sales'\[RegionManager\]"
+                    r".*?VAR\s+(?P<identity>\w+)\s*=\s*USERPRINCIPALNAME\(\)"
+                    r".*?\b(?P=field)\s*==?\s*(?P=identity)\b)",
+                )
+                self.assertIn('FALSE()', expression)
+                self.assertNotIn('TODO', expression)
+                self.assertNotEqual(expression, 'TRUE()')
+                self.assertIn(f'{identity} uses USERPRINCIPALNAME()', content)
+                self.assertIn('verify the source-to-Power BI identity mapping', content)
 
 
 # ═══════════════════════════════════════════════════════════════════════

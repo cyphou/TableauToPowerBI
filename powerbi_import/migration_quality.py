@@ -308,6 +308,9 @@ class MigrationQualityReport:
             "lineage": self.lineage,
             "checkpoints": self.evidence_manifest.get("checkpoints", {}),
         }
+        prep_comparison = self.lineage.get("prep_comparison")
+        if isinstance(prep_comparison, dict):
+            html += _render_prep_comparison(prep_comparison)
         html += section_open("quality-handoff", text("Operator handoff", "Transmission à l’opérateur"), "->")
         html += self._render_obj(handoff)
         html += self._raw_details(handoff)
@@ -432,6 +435,114 @@ class MigrationQualityReport:
 _COMPARISON_LINKS_START = "<!-- desktop-comparison-links:start -->"
 _COMPARISON_LINKS_END = "<!-- desktop-comparison-links:end -->"
 _STANDALONE_COMPARISON_SUFFIX = ".desktop_comparisons"
+
+
+def scan_self_heal_placeholder_columns(
+        project_dir: str, model_name: Optional[str] = None) -> Dict[str, Any]:
+    """Find only calculated columns explicitly marked as self-heal placeholders.
+
+    TMDL is scanned within the requested semantic model, when provided. A bare
+    ``BLANK()`` expression or a marker in a measure/string is not sufficient
+    evidence. Malformed files make a scoped scan unavailable; unreadable files
+    make an otherwise useful scan partial.
+    """
+    root = Path(project_dir)
+    result: Dict[str, Any] = {
+        "status": "not_run", "count": 0, "columns": [], "files_found": 0,
+        "files_unreadable": [], "malformed": [],
+    }
+    try:
+        if not root.is_dir():
+            return result
+        if model_name is not None:
+            if (not isinstance(model_name, str) or not model_name
+                    or Path(model_name).name != model_name
+                    or any(char in model_name for char in "/\\")):
+                return result
+            model_dirs = [root / model_name]
+        else:
+            model_dirs = sorted(
+                (path for path in root.iterdir()
+                 if path.is_dir() and path.name.endswith(".SemanticModel")),
+                key=lambda path: path.name.casefold(),
+            )
+        table_files = []
+        for model_dir in model_dirs:
+            table_dir = model_dir / "definition" / "tables"
+            if table_dir.is_dir():
+                table_files.extend(sorted(
+                    (path for path in table_dir.iterdir()
+                     if path.is_file() and path.suffix.casefold() == ".tmdl"),
+                    key=lambda path: path.name.casefold(),
+                ))
+    except OSError:
+        return result
+
+    result["files_found"] = len(table_files)
+    if not table_files:
+        return result
+
+    marker = "Self-heal: placeholder column created"
+    column_header = re.compile(
+        r"^\tcolumn\s+('(?:[^']|'')*'|[^\s=]+)\s*=\s*(.*?)\s*$",
+        re.IGNORECASE,
+    )
+    table_header = re.compile(r"^table\s+(.+?)\s*$", re.IGNORECASE)
+    for path in table_files:
+        relative = path.relative_to(root).as_posix()
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            result["files_unreadable"].append(relative)
+            continue
+
+        lines = content.splitlines()
+        table_match = next((table_header.match(line) for line in lines
+                            if table_header.match(line)), None)
+        if table_match is None:
+            result["malformed"].append(relative)
+            continue
+        table = table_match.group(1).strip()
+        if len(table) >= 2 and table[0] == "'" and table[-1] == "'":
+            table = table[1:-1].replace("''", "'")
+
+        for index, line in enumerate(lines):
+            match = column_header.match(line)
+            if match is None or match.group(2).strip().casefold() != "blank()":
+                continue
+            end = index + 1
+            while end < len(lines):
+                candidate = lines[end]
+                if candidate.strip() and candidate.startswith("\t") \
+                        and not candidate.startswith("\t\t"):
+                    break
+                end += 1
+            block = "\n".join(lines[index:end])
+            if marker not in block:
+                continue
+            name = match.group(1)
+            if name.startswith("'") and name.endswith("'"):
+                name = name[1:-1].replace("''", "'")
+            result["columns"].append({
+                "table": table,
+                "column": name,
+                "target_path": relative,
+            })
+
+    result["columns"].sort(
+        key=lambda item: (item["target_path"].casefold(), item["column"].casefold()))
+    result["count"] = len(result["columns"])
+    if result["malformed"]:
+        result["malformed"].sort(key=str.casefold)
+        result["columns"] = []
+        result["count"] = 0
+    result["files_unreadable"].sort(key=str.casefold)
+    result["status"] = (
+        "not_run" if result["malformed"] else
+        "partial" if result["files_unreadable"] else
+        "static_evidence"
+    )
+    return result
 
 
 def _desktop_comparison_root(output_root: Path) -> Path:
@@ -4254,6 +4365,327 @@ def _lineage_evidence(extracted: Dict[str, Any], data: Dict[str, Any],
     }
 
 
+def _prep_safe_evidence_path(root: Path, value: Any) -> bool:
+    if not isinstance(value, str) or not value or ntpath.isabs(value):
+        return False
+    normalized = value.replace("\\", "/")
+    parts = normalized.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return False
+    try:
+        candidate = (root / Path(*parts)).resolve()
+        return candidate.is_relative_to(root.resolve()) and candidate.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _prep_graph_contract(root: Path, graph: Any) -> list[str]:
+    diagnostics = []
+    if not isinstance(graph, dict) or graph.get("schema_version") != "1.0":
+        return ["invalid_schema_version"]
+    nodes, edges = graph.get("nodes"), graph.get("edges")
+    if not isinstance(nodes, list) or not nodes:
+        diagnostics.append("invalid_nodes")
+    if not isinstance(edges, list):
+        diagnostics.append("invalid_edges")
+    if diagnostics:
+        return diagnostics
+
+    node_ids = set()
+    for node in nodes:
+        if (not isinstance(node, dict)
+                or not isinstance(node.get("id"), str) or not node["id"]
+                or not isinstance(node.get("type"), str)
+                or not isinstance(node.get("label"), str)
+                or not isinstance(node.get("evidence"), list)):
+            diagnostics.append("invalid_node")
+            continue
+        if node["id"] in node_ids:
+            diagnostics.append("duplicate_node_id")
+        node_ids.add(node["id"])
+        for evidence in node["evidence"]:
+            if (not isinstance(evidence, dict)
+                    or not _prep_safe_evidence_path(root, evidence.get("path"))):
+                diagnostics.append("unsafe_or_missing_node_evidence")
+
+    edge_ids = set()
+    for edge in edges:
+        if (not isinstance(edge, dict)
+                or not isinstance(edge.get("id"), str) or not edge["id"]
+                or not isinstance(edge.get("type"), str)
+                or not isinstance(edge.get("source"), str)
+                or not isinstance(edge.get("target"), str)
+                or not isinstance(edge.get("status"), str)
+                or not isinstance(edge.get("evidence"), dict)):
+            diagnostics.append("invalid_edge")
+            continue
+        if edge["id"] in edge_ids:
+            diagnostics.append("duplicate_edge_id")
+        edge_ids.add(edge["id"])
+        if edge["source"] not in node_ids or edge["target"] not in node_ids:
+            diagnostics.append("dangling_edge")
+        if not _prep_safe_evidence_path(root, edge["evidence"].get("path")):
+            diagnostics.append("unsafe_or_missing_edge_evidence")
+    return sorted(set(diagnostics))
+
+
+def _prep_graph_record(record: dict, *, edge: bool = False) -> dict:
+    keys = ("id", "type", "source", "target", "status", "evidence") if edge else (
+        "id", "type", "label", "evidence")
+    result = {key: record[key] for key in keys if key in record}
+    evidence = result.get("evidence")
+    if isinstance(evidence, list):
+        result["evidence"] = [
+            {key: item[key] for key in ("path", "line", "role", "index")
+             if key in item}
+            for item in evidence if isinstance(item, dict)
+        ]
+    elif isinstance(evidence, dict):
+        result["evidence"] = {
+            key: evidence[key] for key in ("path", "line", "role", "index")
+            if key in evidence
+        }
+    return result
+
+
+def _prep_provenance_record(value: Any) -> dict:
+    if not isinstance(value, dict):
+        return {"flow": "(unavailable)", "output_node_id": "",
+                "output_name": "", "nodes": []}
+    raw_flow = str(value.get("flow") or "")
+    flow = ntpath.basename(raw_flow.replace("/", "\\")) or "(unavailable)"
+    nodes = []
+    for node in value.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        nodes.append({key: node[key] for key in (
+            "id", "name", "kind", "upstream_ids", "status") if key in node})
+    return {
+        "flow": flow,
+        "output_node_id": str(value.get("output_node_id") or ""),
+        "output_name": str(value.get("output_name") or ""),
+        "nodes": nodes,
+    }
+
+
+def _prep_coverage_record(value: Any) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    allowed = ("status", "matched", "unmatched_published", "unmatched_local",
+               "unused_outputs", "secondary_queries")
+    result = {}
+    record_fields = {
+        "matched": ("datasource", "table", "output", "method"),
+        "unmatched_published": ("datasource", "table"),
+        "unmatched_local": ("datasource", "table"),
+    }
+    for key in allowed:
+        if key not in value:
+            continue
+        item = value[key]
+        if key in record_fields and isinstance(item, list):
+            result[key] = [
+                {field: str(record[field]) for field in record_fields[key]
+                 if isinstance(record, dict) and isinstance(record.get(field), str)}
+                for record in item if isinstance(record, dict)
+            ]
+        elif isinstance(item, list):
+            result[key] = [str(entry) for entry in item
+                           if isinstance(entry, (str, int, float, bool))]
+        elif isinstance(item, (str, int, float, bool)) or item is None:
+            result[key] = item
+    return result
+
+
+def _prep_comparison(extracted: Dict[str, Any], project_dir: str) -> dict:
+    """Compare Prep bindings to a validated static Power BI lineage graph."""
+    extracted = extracted if isinstance(extracted, dict) else {}
+    prep_sources = extracted.get("prep_datasources")
+    if not isinstance(prep_sources, list) or not any(
+            isinstance(ds, dict) and ds.get("prep_bindings")
+            for ds in prep_sources):
+        prep_sources = extracted.get("datasources") or []
+
+    bindings = []
+    coverage = {}
+    for datasource_index, datasource in enumerate(prep_sources):
+        if not isinstance(datasource, dict):
+            continue
+        if not coverage and datasource.get("prep_binding_coverage") is not None:
+            coverage = _prep_coverage_record(datasource.get("prep_binding_coverage"))
+        for binding_index, binding in enumerate(datasource.get("prep_bindings") or []):
+            if not isinstance(binding, dict):
+                continue
+            bindings.append((
+                f"prep_datasources[{datasource_index}].prep_bindings[{binding_index}]"
+                if extracted.get("prep_datasources") is prep_sources else
+                f"datasources[{datasource_index}].prep_bindings[{binding_index}]",
+                datasource, binding,
+            ))
+
+    base = {
+        "schema_version": "1.0",
+        "status": "not_applicable" if not bindings else "partial",
+        "runtime": "not_run",
+        "value_parity": "not_run",
+        "graph": {"path": "powerbi_lineage.json", "status": "not_applicable",
+                  "diagnostics": []},
+        "coverage": coverage,
+        "summary": {"bindings": len(bindings), "resolved": 0,
+                    "unresolved": 0, "ambiguous": 0, "manual_nodes": 0},
+        "bindings": [],
+        "diagnostics": [],
+    }
+    if not bindings:
+        return base
+
+    root = Path(project_dir).resolve()
+    graph_path = root / "powerbi_lineage.json"
+    graph = None
+    if not graph_path.is_file():
+        base["graph"].update({"status": "missing",
+                              "diagnostics": ["generated_graph_missing"]})
+        base["diagnostics"].append("generated_graph_missing")
+    else:
+        try:
+            graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            graph = None
+            base["graph"].update({
+                "status": "invalid",
+                "diagnostics": ["generated_graph_unreadable_or_invalid_json"],
+            })
+            base["diagnostics"].append("generated_graph_unreadable_or_invalid_json")
+        if graph is not None:
+            graph_errors = _prep_graph_contract(root, graph)
+            if graph_errors:
+                base["graph"].update({
+                    "status": "invalid",
+                    "diagnostics": ["generated_graph_invalid_contract"],
+                })
+                base["diagnostics"].append("generated_graph_invalid_contract")
+                graph = None
+            else:
+                base["graph"]["status"] = "available"
+
+    node_by_id = ({node["id"]: node for node in graph["nodes"]}
+                  if isinstance(graph, dict) else {})
+    edges = graph.get("edges", []) if isinstance(graph, dict) else []
+    for source_path, datasource, binding in bindings:
+        provenance = _prep_provenance_record(binding.get("provenance"))
+        row = {
+            "source_path": source_path,
+            "datasource": str(datasource.get("name") or ""),
+            "table": str(binding.get("table") or ""),
+            "output": str(binding.get("output") or ""),
+            "method": str(binding.get("method") or ""),
+            "provenance": provenance,
+            "resolution": "unresolved",
+            "target_candidates": [],
+            "generated_nodes": [],
+            "generated_edges": [],
+            "manual_nodes": sum(
+                node.get("status") == "manual" for node in provenance["nodes"]),
+            "diagnostics": [],
+        }
+        base["summary"]["manual_nodes"] += row["manual_nodes"]
+        if graph is None:
+            row["diagnostics"].append("generated_graph_unavailable")
+            base["summary"]["unresolved"] += 1
+            base["bindings"].append(row)
+            continue
+
+        target_name = row["table"].casefold()
+        candidates = [node for node in graph["nodes"]
+                      if node.get("type") == "table"
+                      and str(node.get("label", "")).casefold() == target_name]
+        row["target_candidates"] = sorted(node["id"] for node in candidates)
+        if not candidates:
+            row["diagnostics"].append("generated_target_missing")
+            base["summary"]["unresolved"] += 1
+        elif len(candidates) != 1:
+            row["resolution"] = "ambiguous"
+            row["diagnostics"].append("duplicate_generated_target")
+            base["summary"]["ambiguous"] += 1
+        else:
+            row["resolution"] = "resolved"
+            selected = {candidates[0]["id"]}
+            changed = True
+            while changed:
+                changed = False
+                for edge in edges:
+                    source_id, target_id = edge["source"], edge["target"]
+                    edge_type = edge["type"]
+                    include = (
+                        edge_type == "contains" and source_id in selected
+                        or edge_type == "partition_of" and target_id in selected
+                        or edge_type == "m_origin" and source_id in selected
+                        or edge_type == "depends_on" and (
+                            source_id in selected or target_id in selected)
+                        or edge_type == "projects" and (
+                            source_id in selected or target_id in selected)
+                        or edge_type == "on_page" and source_id in selected
+                    )
+                    if not include:
+                        continue
+                    if source_id not in selected:
+                        selected.add(source_id)
+                        changed = True
+                    if target_id not in selected:
+                        selected.add(target_id)
+                        changed = True
+            row["generated_nodes"] = [
+                _prep_graph_record(node) for node in graph["nodes"]
+                if node["id"] in selected
+            ]
+            row["generated_edges"] = [
+                _prep_graph_record(edge, edge=True) for edge in edges
+                if edge["source"] in selected and edge["target"] in selected
+            ]
+            base["summary"]["resolved"] += 1
+        base["bindings"].append(row)
+
+    base["status"] = (
+        "static_evidence" if base["graph"]["status"] == "available"
+        and base["summary"]["resolved"] == base["summary"]["bindings"]
+        else "partial"
+    )
+    return base
+
+
+def _render_prep_comparison(comparison: dict) -> str:
+    if not isinstance(comparison, dict) or comparison.get("status") == "not_applicable":
+        return ""
+    title = text("Prep flow → Power BI comparison",
+                 "Comparaison flux Prep → Power BI")
+    html = section_open("quality-prep-comparison", title, "⇄")
+    html += "<p>" + ui(text(
+        "Static correspondence only; this does not prove M/DAX execution, refresh, or value parity.",
+        "Correspondance statique uniquement; cela ne prouve pas l’exécution M/DAX, l’actualisation ni la parité des valeurs.",
+    )) + "</p>"
+    html += MigrationQualityReport._render_obj(comparison.get("summary", {}))
+    rows = []
+    for binding in comparison.get("bindings", []):
+        rows.append([
+            esc(binding.get("provenance", {}).get("flow", "")),
+            esc(binding.get("provenance", {}).get("output_name", "")),
+            esc(binding.get("table", "")),
+            esc(binding.get("resolution", "")),
+            esc(", ".join(node.get("name", "") for node in
+                           binding.get("provenance", {}).get("nodes", [])
+                           if node.get("status") == "manual")),
+        ])
+    if rows:
+        html += data_table(
+            [text("Flow", "Flux"), text("Prep output", "Sortie Prep"),
+             text("Power BI table", "Table Power BI"), text("Resolution", "Résolution"),
+             text("Manual steps", "Étapes manuelles")],
+            rows, table_id="quality-prep-bindings", detail=True,
+        )
+    html += MigrationQualityReport._raw_details(comparison)
+    return html + section_close()
+
+
 def _load_lineage_contract(project_dir: str) -> Dict[str, Any]:
     """Load the generated static lineage contract when available."""
     candidates = [
@@ -4597,6 +5029,10 @@ def build_quality_report(extracted: Dict, project_dir: str,
     _assessment_check_findings(assessment, findings)
 
     lineage = _lineage_evidence(extracted or {}, data, interface, parity)
+    prep_comparison = _prep_comparison(
+        extracted or {}, project_dir) if prep_flow else _prep_comparison({}, project_dir)
+    if prep_comparison.get("status") != "not_applicable" or prep_flow:
+        lineage["prep_comparison"] = prep_comparison
     lineage_contract = _load_lineage_contract(project_dir)
     lineage["contract"] = lineage_contract
     unresolved_lineage = _source_lineage_unresolved(lineage_contract, extracted or {})
