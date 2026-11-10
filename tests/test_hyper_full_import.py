@@ -335,6 +335,35 @@ def _annotation_identities(content):
     ]
 
 
+def _add_single_equality_to_join_tree(datasource):
+    """Give each synthetic alias join the predicate its fixture rows satisfy."""
+    import xml.etree.ElementTree as ET
+
+    def aliases(node):
+        if node.get("type") in ("table", "text"):
+            return [node.get("name", "")]
+        return [name for child in node.findall("relation") for name in aliases(child)]
+
+    for relation in datasource.iter("relation"):
+        if relation.get("type") != "join" or relation.findall("clause"):
+            continue
+        children = relation.findall("relation")
+        if len(children) != 2:
+            continue
+        left_aliases = aliases(children[0])
+        right_aliases = aliases(children[1])
+        if not left_aliases or not right_aliases:
+            continue
+        clause = ET.SubElement(relation, "clause", {"type": "join"})
+        comparison = ET.SubElement(clause, "expression", {"op": "="})
+        ET.SubElement(comparison, "expression", {
+            "op": f"[{left_aliases[-1]}].[id]",
+        })
+        ET.SubElement(comparison, "expression", {
+            "op": f"[{right_aliases[0]}].[id]",
+        })
+
+
 def _all_table_files(project):
     tables_dir = os.path.join(
         project, f"{REPORT_NAME}.SemanticModel", "definition", "tables",
@@ -371,6 +400,7 @@ def _build_bound_fixture(root, *, shape="main", export_format="csv",
             (f"User Alias {index}", f"User Caption {index}", f"User ID {index}")
             for index in range(1, alias_count + 1))
         xml_datasource = _alias_hyper_datasource(HYPER_MEMBER, aliases=aliases)
+        _add_single_equality_to_join_tree(xml_datasource)
         schema, physical_table = "Extract", "Physical User"
     else:
         raise ValueError(f"Unknown synthetic Hyper shape: {shape}")

@@ -891,15 +891,14 @@ class TestLODExpressionsAdvanced(unittest.TestCase):
         self.assertIn('ALLEXCEPT', result)
 
     def test_agg_calculate_cleanup(self):
-        # SUM(CALCULATE(...)) — cleanup attempted but is_single check is conservative
+        # Aggregating a FIXED result needs verified shelf and total grain.
         result = _convert_lod_expressions(
             'SUM({FIXED [Region] : MAX([Sales])})',
             'T',
             {'Region': 'T', 'Sales': 'T'}
         )
-        # LOD is converted to CALCULATE(MAX, ALLEXCEPT)
-        self.assertIn('CALCULATE(', result)
-        self.assertIn('ALLEXCEPT', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_via_main_converter_fixed(self):
         result = convert_tableau_formula_to_dax(
@@ -1142,8 +1141,8 @@ class TestResolveColumnsInternals(unittest.TestCase):
             column_table_map={'Amount': 'OtherTable'},
             table_columns={'Amount'}
         )
-        self.assertIn("'Sales'[Amount]", result)
-        self.assertNotIn('OtherTable', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_reversed_bracket_escape_in_column_ref(self):
         # Column name has orphan ) inside brackets [Col)] that maps to Col]
@@ -1453,13 +1452,14 @@ class TestLODNoKeyword(unittest.TestCase):
     """LOD without FIXED/INCLUDE/EXCLUDE → CALCULATE(expr)."""
 
     def test_lod_no_keyword_via_main(self):
-        # {SUM([Sales])} → CALCULATE(SUM([Sales]))
+        # A global aggregate LOD has unproven shelf and total grain.
         result = convert_tableau_formula_to_dax(
             '{SUM([Sales])}',
             table_name='T',
             column_table_map={'Sales': 'T'}
         )
-        self.assertIn('CALCULATE', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1470,13 +1470,14 @@ class TestMultiPhaseInteractions(unittest.TestCase):
     """Integration tests combining multiple phases."""
 
     def test_lod_then_agg_cleanup(self):
-        # SUM({FIXED [R] : MAX([S])}) → CALCULATE(MAX([S]), ALLEXCEPT)
+        # Aggregating a FIXED result needs verified shelf and total grain.
         result = convert_tableau_formula_to_dax(
             'SUM({FIXED [Region] : MAX([Sales])})',
             table_name='T',
             column_table_map={'Region': 'T', 'Sales': 'T'}
         )
-        self.assertIn('CALCULATE', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_regexp_match_with_column_resolution(self):
         result = convert_tableau_formula_to_dax(

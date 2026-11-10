@@ -15,6 +15,7 @@ import ntpath
 import os
 import re
 import stat
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -302,6 +303,46 @@ class MigrationQualityReport:
             ))) + "</p>"
             html += self._raw_details(self.hyper_import)
             html += section_close()
+        source_target = self.semantic_context.get("source_target_evidence", {})
+        source_target_findings = (source_target.get("findings", [])
+                                  if isinstance(source_target, dict) else [])
+        if source_target_findings:
+            rows = []
+            for finding in source_target_findings:
+                candidates = finding.get("candidate_worksheet_aggregations", [])
+                message = esc(str(finding.get("message", "")))
+                if candidates:
+                    labels = ", ".join(
+                        f"{item.get('source_path', '')} ({item.get('aggregation') or 'unresolved'})"
+                        for item in candidates)
+                    message += "<br><small>" + ui(text(
+                        "Candidate worksheet fields (binding not_run): ",
+                        "Champs de feuille candidats (liaison not_run) : ",
+                    )) + esc(labels) + "</small>"
+                rows.append([
+                    esc(str(finding.get("severity", "warning"))),
+                    esc(str(finding.get("disposition", "not_run"))),
+                    message,
+                    esc(str(finding.get("source_path", ""))),
+                    esc(str(finding.get("target_path", ""))),
+                    esc(", ".join(str(path) for path in finding.get("evidence", []))),
+                ])
+            html += section_open(
+                "quality-source-target",
+                text("Source-to-target static findings",
+                     "Constats statiques source-cible"),
+                "⇄",
+            )
+            html += data_table(
+                [text("Severity", "Gravité"), text("Disposition", "Décision"),
+                 text("Finding", "Constat"), text("Source path", "Chemin source"),
+                 text("Target path", "Chemin cible"), text("Evidence", "Preuve")],
+                rows,
+                table_id="quality-source-target-findings",
+                detail=True,
+            )
+            html += section_close()
+
         handoff = {
             "handoff_status": self.handoff_status,
             "strategy": self.strategy,
@@ -816,9 +857,10 @@ def _fabric_validation(project_dir: str, report_name: str) -> Dict[str, Any]:
     if not os.path.isdir(lakehouse_dir):
         return {"present": False, "valid": True, "errors": [], "warnings": []}
     try:
+        from powerbi_import.fabric_evidence import is_reportless_fabric_bundle
         from powerbi_import.fabric_validator import FabricProjectValidator
         result = FabricProjectValidator.validate(project_dir, report_name,
-                                                  include_report=True)
+            include_report=not is_reportless_fabric_bundle(project_dir, report_name))
         return {"present": True, **result}
     except Exception as exc:  # noqa: BLE001 - quality reporting must not crash migration
         return {"present": True, "valid": False, "errors": [str(exc)], "warnings": []}
@@ -913,6 +955,10 @@ _FINDING_ACTIONS = {
     "combined_group_approximation": ("verify", "Semantic"),
     "parity_untracked": ("note", "Evidence"),
     "unresolved_lineage": ("note", "Evidence"),
+    "source_target_missing": ("note", "Evidence / Orchestrator"),
+    "source_target_inventory": ("verify", "Evidence / Semantic"),
+    "source_target_relationship": ("verify", "Semantic"),
+    "source_target_r4": ("verify", "DAX"),
     # Preceptorship review. Coaching items are the only findings that say *how*
     # to fix something, so they enter the queue as repairs owned by the agent
     # that owns the artifact. Visual equivalence is a similarity judgement
@@ -1119,6 +1165,599 @@ def _record_review_findings(review: Dict[str, Any], findings: "_Findings") -> No
         )
 
 
+_QUALITY_TABLE_RE = re.compile(
+    r"^table[ \t]+('(?:[^']|'')*'|[^\r\n]+?)[ \t]*$", re.MULTILINE)
+_QUALITY_OBJECT_RE = re.compile(
+    r"^[ \t]+(column|measure)[ \t]+"
+    r"('(?:[^']|'')*'|[^\r\n=]+?)"
+    r"(?:[ \t]*=[ \t]*(.*))?$")
+_QUALITY_SOURCE_COLUMN_RE = re.compile(r"^[ \t]+sourceColumn[ \t]*:[ \t]*(.*?)[ \t]*$")
+_QUALITY_PROPERTY_RE = re.compile(r"^[ \t]+([A-Za-z][A-Za-z0-9_]*)[ \t]*:[ \t]*(.*)$")
+
+
+def _quality_name(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value.startswith("'") and value.endswith("'"):
+        return value[1:-1].replace("''", "'")
+    return value
+
+
+def _decode_quality_source_column(raw: str) -> tuple[Optional[str], bool]:
+    """Decode the TMDL double-quoted identifier form without accepting junk."""
+    value = raw.strip()
+    if not value.startswith('"'):
+        return (value, bool(value))
+    decoded = []
+    index = 1
+    while index < len(value):
+        char = value[index]
+        if char != '"':
+            decoded.append(char)
+            index += 1
+        elif index + 1 < len(value) and value[index + 1] == '"':
+            decoded.append('"')
+            index += 2
+        else:
+            if index != len(value) - 1:
+                return None, False
+            return ''.join(decoded), True
+    return None, False
+
+
+def _quality_model_objects(project_dir: str, model_name: Optional[str] = None
+                           ) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
+    """Read bounded table/column/measure declarations from one TMDL model."""
+    root = Path(project_dir)
+    scan: Dict[str, Any] = {
+        "status": "not_run", "model_name": model_name,
+        "files_found": 0, "objects_scanned": 0, "malformed": [],
+        "source_column_diagnostics": [],
+    }
+    if not root.is_dir():
+        return [], scan
+    models = sorted(path for path in root.glob("*.SemanticModel") if path.is_dir())
+    selected = None
+    if model_name:
+        candidate = root / model_name
+        if candidate.is_dir() and candidate.name.endswith(".SemanticModel"):
+            selected = candidate
+    elif len(models) == 1:
+        selected = models[0]
+        model_name = selected.name
+    if selected is None:
+        return [], scan
+
+    table_dir = selected / "definition" / "tables"
+    try:
+        files = sorted(path for path in table_dir.glob("*.tmdl") if path.is_file())
+    except OSError:
+        files = []
+    scan["model_name"] = selected.name
+    scan["files_found"] = len(files)
+    if not files:
+        return [], scan
+
+    objects: list[Dict[str, Any]] = []
+    malformed: list[Dict[str, Any]] = []
+    source_column_diagnostics: list[Dict[str, Any]] = []
+    for path in files:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError) as exc:
+            malformed.append({"path": path.name, "issue": type(exc).__name__})
+            continue
+        table_name = None
+        for line in lines:
+            match = _QUALITY_TABLE_RE.match(line)
+            if match:
+                table_name = _quality_name(match.group(1))
+                break
+        if not table_name:
+            malformed.append({"path": path.name, "issue": "missing_table_declaration"})
+            continue
+        index = 0
+        while index < len(lines):
+            match = _QUALITY_OBJECT_RE.match(lines[index])
+            if not match:
+                index += 1
+                continue
+            kind, raw_name, inline_expression = match.groups()
+            obj: Dict[str, Any] = {
+                "kind": kind,
+                "name": _quality_name(raw_name),
+                "table": table_name,
+                "file": path.name,
+                "path": path.relative_to(root).as_posix(),
+                "line": index + 1,
+            }
+            if inline_expression:
+                obj["expression"] = inline_expression.strip()
+            cursor = index + 1
+            while cursor < len(lines):
+                next_line = lines[cursor]
+                if _QUALITY_OBJECT_RE.match(next_line) or re.match(
+                        r"^[ \t]+partition[ \t]+", next_line):
+                    break
+                source_match = _QUALITY_SOURCE_COLUMN_RE.match(next_line)
+                if source_match:
+                    decoded, valid = _decode_quality_source_column(source_match.group(1))
+                    obj["source_column"] = decoded if valid else None
+                    obj["source_column_line"] = cursor + 1
+                    if not valid:
+                        source_column_diagnostics.append({
+                            "code": "invalid_source_column",
+                            "path": path.relative_to(root).as_posix(),
+                            "line": cursor + 1,
+                            "object": obj["name"],
+                        })
+                else:
+                    property_match = _QUALITY_PROPERTY_RE.match(next_line)
+                    if property_match:
+                        key, value = property_match.groups()
+                        if key == "dataType":
+                            obj["data_type"] = value.strip()
+                        elif key == "expression":
+                            obj["expression"] = value.strip()
+                    if next_line.lstrip().startswith("annotation "):
+                        obj.setdefault("annotations", []).append(next_line.strip())
+                cursor += 1
+            objects.append(obj)
+            index = cursor
+
+    scan["objects_scanned"] = len(objects)
+    scan["malformed"] = malformed
+    scan["source_column_diagnostics"] = source_column_diagnostics
+    scan["status"] = "partial" if malformed or source_column_diagnostics else "static_evidence"
+    return objects, scan
+
+
+def _quality_target_model(project_dir: str) -> Dict[str, Any]:
+    """Resolve the model named by the report, or a unique standalone model."""
+    root = Path(project_dir)
+    result = {"status": "not_run", "model_name": None, "method": "not_run"}
+    if not root.is_dir():
+        return result
+    descriptors = sorted(root.glob("*.Report/definition.pbir"))
+    if len(descriptors) == 1:
+        descriptor = descriptors[0]
+        try:
+            data = json.loads(descriptor.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {**result, "status": "partial", "method": "invalid_report_descriptor"}
+        reference = (data.get("datasetReference") or {}).get("byPath", {})
+        relative = reference.get("path") if isinstance(reference, dict) else None
+        if not isinstance(relative, str) or not relative.strip():
+            return {**result, "status": "partial", "method": "report_model_reference_unavailable"}
+        candidate = (descriptor.parent / relative.replace("/", os.sep)).resolve()
+        try:
+            candidate.relative_to(root.resolve())
+        except ValueError:
+            return {**result, "status": "partial", "method": "report_model_reference_outside_project"}
+        if not candidate.name.endswith(".SemanticModel") or not candidate.is_dir():
+            return {**result, "status": "partial", "method": "report_model_reference_unresolved"}
+        return {"status": "static_evidence", "model_name": candidate.name,
+                "method": "report_bypath"}
+    if descriptors:
+        return {**result, "status": "partial", "method": "ambiguous_report_descriptors"}
+    models = sorted(path for path in root.glob("*.SemanticModel") if path.is_dir())
+    if len(models) == 1:
+        return {"status": "static_evidence", "model_name": models[0].name,
+                "method": "single_model"}
+    if len(models) > 1:
+        return {**result, "status": "partial", "method": "ambiguous_models"}
+    return result
+
+
+def _quality_endpoint(value: Any) -> Optional[tuple[str, str]]:
+    if not isinstance(value, str) or "." not in value:
+        return None
+    table, column = value.split(".", 1)
+    table, column = _quality_name(table), _quality_name(column)
+    if not table or not column or "?" in value:
+        return None
+    return table.casefold(), column.casefold()
+
+
+def _quality_target_relationships(project_dir: str, model_name: Optional[str]
+                                  ) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "status": "not_run", "relationships": [], "count": 0,
+        "path": None, "diagnostics": [],
+    }
+    if not model_name:
+        return result
+    path = Path(project_dir, model_name, "definition", "relationships.tmdl")
+    result["path"] = path.relative_to(project_dir).as_posix()
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        result["diagnostics"] = ["target relationship inventory is unavailable"]
+        return result
+    except (OSError, UnicodeDecodeError):
+        result["status"] = "partial"
+        result["diagnostics"] = ["target relationship inventory is unreadable"]
+        return result
+    relationships = []
+    malformed = []
+    current = None
+    for line_number, line in enumerate(content.splitlines(), 1):
+        if line.startswith("relationship "):
+            if current is not None:
+                if current.get("from") and current.get("to"):
+                    relationships.append(current)
+                else:
+                    malformed.append(current.get("line", 1))
+            current = {"line": line_number, "from": None, "to": None}
+            continue
+        if current is None:
+            continue
+        match = re.match(r"^[ \t]+(fromColumn|toColumn):[ \t]*(.+?)[ \t]*$", line)
+        if match:
+            current["from" if match.group(1) == "fromColumn" else "to"] = (
+                _quality_endpoint(match.group(2)))
+    if current is not None:
+        if current.get("from") and current.get("to"):
+            relationships.append(current)
+        else:
+            malformed.append(current.get("line", 1))
+    if malformed:
+        result["status"] = "partial"
+        result["diagnostics"] = ["target relationship inventory is incomplete"]
+        return result
+    result.update(status="static_evidence", relationships=relationships,
+                  count=len(relationships))
+    return result
+
+
+def _source_relationship_candidates(extracted: Dict[str, Any]
+                                    ) -> Dict[str, Any]:
+    candidates = []
+    incomplete = []
+    datasources = extracted.get("datasources")
+    if not isinstance(datasources, list) or not datasources:
+        return {"status": "not_run", "candidates": [], "incomplete": []}
+    for ds_index, datasource in enumerate(datasources):
+        if not isinstance(datasource, dict):
+            incomplete.append(f"datasources[{ds_index}]")
+            continue
+        relationships = datasource.get("relationships")
+        if not isinstance(relationships, list):
+            incomplete.append(f"datasources[{ds_index}].relationships")
+            continue
+        for rel_index, relationship in enumerate(relationships):
+            source_path = f"datasources[{ds_index}].relationships[{rel_index}]"
+            if not isinstance(relationship, dict):
+                incomplete.append(source_path)
+                continue
+            left = relationship.get("left") or relationship.get("from"); right = (
+                relationship.get("right") or relationship.get("to"))
+            if not isinstance(left, dict) or not isinstance(right, dict):
+                incomplete.append(source_path)
+                continue
+            left_endpoint = _quality_endpoint(
+                f"{left.get('table', '')}.{left.get('column', '')}")
+            right_endpoint = _quality_endpoint(
+                f"{right.get('table', '')}.{right.get('column', '')}")
+            if not left_endpoint or not right_endpoint:
+                incomplete.append(source_path)
+                continue
+            inferred = relationship.get("inferred", False)
+            if type(inferred) is not bool:
+                incomplete.append(source_path + ".inferred")
+                inferred = False
+            candidates.append({
+                "source_path": source_path, "left": left_endpoint,
+                "right": right_endpoint, "inferred": inferred,
+            })
+    status = "partial" if incomplete else "static_evidence"
+    return {"status": status, "candidates": candidates,
+            "incomplete": sorted(set(incomplete))}
+
+
+def _physical_join_evidence(extracted: Dict[str, Any], model_scan: Dict[str, Any]
+                            ) -> Dict[str, Any]:
+    result = {"status": "not_run", "source_join_count": 0,
+              "target_relationship_count": 0, "diagnostics": []}
+    if model_scan.get("status") != "static_evidence":
+        return result
+    relations_seen = False
+    malformed = False
+    join_count = 0
+    for datasource in extracted.get("datasources", []) or []:
+        metadata = datasource.get("relation_metadata")
+        if not isinstance(metadata, dict) or "physical_relations" not in metadata:
+            continue
+        relations = metadata.get("physical_relations")
+        relations_seen = True
+        if not isinstance(relations, list):
+            malformed = True
+            continue
+        for relation in relations:
+            if not isinstance(relation, dict):
+                malformed = True
+            elif str(relation.get("type", "")).casefold() == "join":
+                join_count += 1
+    if relations_seen:
+        result.update(status="partial" if malformed else "static_evidence",
+                      source_join_count=join_count)
+    return result
+
+
+def _source_target_evidence(extracted: Dict[str, Any], project_dir: str,
+                            quality_policy: Dict[str, str]
+                            ) -> tuple[Dict[str, Any], list[Dict[str, Any]]]:
+    """Build static source/target evidence; never infer runtime equivalence."""
+    source_available = bool(
+        extracted.get("datasources") or extracted.get("calculations")
+        or extracted.get("worksheets"))
+    target_model = _quality_target_model(project_dir)
+    objects, model_scan = _quality_model_objects(
+        project_dir, target_model.get("model_name"))
+    target_relationships = _quality_target_relationships(
+        project_dir, target_model.get("model_name"))
+    source_relationships = _source_relationship_candidates(extracted)
+    physical_joins = _physical_join_evidence(extracted, model_scan)
+    physical_joins["target_relationship_count"] = target_relationships["count"]
+
+    findings: list[Dict[str, Any]] = []
+    warnings: list[str] = []
+    if not source_available or model_scan.get("status") != "static_evidence":
+        missing = []
+        if not source_available:
+            missing.append("source extraction is unavailable")
+        if model_scan.get("status") != "static_evidence":
+            missing.append("target TMDL is unavailable")
+        warnings.append(" and ".join(missing) + "; source-to-target evidence is not_run.")
+
+    source_relationship_paths = {item["source_path"] for item in
+                                 source_relationships["candidates"]}
+    matched_candidates: set[str] = set()
+    unmatched_inferred = []
+    relationship_findings = []
+    if (model_scan.get("status") == "static_evidence"
+            and target_relationships.get("status") == "static_evidence"):
+        for target in target_relationships["relationships"]:
+            target_pair = {target["from"], target["to"]}
+            matches = [candidate for candidate in source_relationships["candidates"]
+                       if {candidate["left"], candidate["right"]} == target_pair]
+            inferred_matches = [item for item in matches if item["inferred"]]
+            matched_candidates.update(item["source_path"] for item in inferred_matches)
+            candidate_paths = sorted(item["source_path"] for item in inferred_matches)
+            origin_message = (
+                "Target relationship origin is unverified; matching endpoint names "
+                "are only a candidate, not proof of the source relationship."
+            )
+            item = {
+                "code": "relationship_origin_unverified",
+                "family": "relationship", "message": origin_message,
+                "severity": ("blocker" if quality_policy.get("semantic_diagnostics")
+                             == "blocker" else "warning"),
+                "disposition": "not_run", "runtime": "not_run",
+                "origin_status": "not_run", "candidate_match": (
+                    "endpoint_names_only" if inferred_matches else "not_run"),
+                "candidate_source_paths": candidate_paths,
+                "source_paths": candidate_paths,
+                "target_path": (
+                    f"{target_model['model_name']}/definition/relationships.tmdl:"
+                    f"{target['line']}"),
+                "target_model": target_model["model_name"],
+                "target_correspondence": "not_run",
+                "evidence": [target_relationships["path"]],
+            }
+            relationship_findings.append(item)
+    unmatched_inferred = sorted(
+        candidate["source_path"] for candidate in source_relationships["candidates"]
+        if candidate["inferred"] and candidate["source_path"] not in matched_candidates)
+    if (unmatched_inferred
+            and target_relationships.get("status") != "static_evidence"):
+        for source_path in unmatched_inferred:
+            relationship_findings.append({
+                "code": "relationship_origin_inferred_input",
+                "family": "relationship",
+                "message": (
+                    "An inferred source relationship is only a candidate; target "
+                    "correspondence is not_run because the target relationship "
+                    "inventory is unavailable."),
+                "severity": ("blocker" if quality_policy.get("semantic_diagnostics")
+                             == "blocker" else "warning"),
+                "disposition": "not_run", "runtime": "not_run",
+                "origin_status": "not_run", "candidate_match": "endpoint_names_only",
+                "candidate_source_paths": [source_path], "source_paths": [source_path],
+                "target_path": "", "target_model": target_model.get("model_name"),
+                "target_correspondence": "not_run", "evidence": [],
+            })
+    if target_relationships.get("status") != "static_evidence":
+        warnings.extend(target_relationships.get("diagnostics", []))
+    if source_relationships.get("status") == "partial":
+        warnings.append("supplied relationship candidate inventory is incomplete")
+
+    all_calculations = []
+    for ds_index, datasource in enumerate(extracted.get("datasources", []) or []):
+        for calc_index, calculation in enumerate(datasource.get("calculations", []) or []):
+            if isinstance(calculation, dict):
+                all_calculations.append((ds_index, calc_index, datasource, calculation))
+    for calc_index, calculation in enumerate(extracted.get("calculations", []) or []):
+        if isinstance(calculation, dict):
+            all_calculations.append((None, calc_index, {}, calculation))
+    target_text = "\n".join(
+        str(obj.get("expression", "")) + "\n" + "\n".join(obj.get("annotations", []))
+        for obj in objects)
+    caption_counts = Counter(
+        str(item[3].get("caption", "")).casefold()
+        for item in all_calculations if item[3].get("caption"))
+    matched_calculations = 0
+    mapped_source_keys = set()
+    for _ds_index, _calc_index, _datasource, calculation in all_calculations:
+        name = _quality_name(str(calculation.get("name", ""))).strip("[]")
+        caption = str(calculation.get("caption", ""))
+        identifier_match = bool(
+            name and re.search(rf"\b{re.escape(name)}\b", target_text, re.I))
+        caption_match = bool(
+            caption and caption_counts.get(caption.casefold()) == 1
+            and caption.casefold() in target_text.casefold())
+        if identifier_match or caption_match:
+            matched_calculations += 1
+            mapped_source_keys.add((
+                str(calculation.get("datasource_name", "")).casefold(),
+                str(calculation.get("name", "")).casefold(),
+                str(calculation.get("caption", "")).casefold(),
+            ))
+    calculation_mapping = {
+        "status": ("static_evidence" if model_scan.get("status") == "static_evidence"
+                   else "not_run"),
+        "source_calculations": len(all_calculations),
+        "matched_source_calculations": matched_calculations,
+        "unmatched_source_calculations": len(all_calculations) - matched_calculations,
+        "bounded_r3_r6_objects_scanned": len(mapped_source_keys),
+    }
+
+    table_columns = {}
+    for ds_index, datasource in enumerate(extracted.get("datasources", []) or []):
+        for table_index, table in enumerate(datasource.get("tables", []) or []):
+            if not isinstance(table, dict):
+                continue
+            for column_index, column in enumerate(table.get("columns", []) or []):
+                if isinstance(column, dict):
+                    key = (str(table.get("name", "")).casefold(),
+                           str(column.get("name", "")).casefold())
+                    table_columns.setdefault(key, []).append(
+                        f"datasources[{ds_index}].tables[{table_index}].columns[{column_index}]")
+    r4_check = {"name": "dax_r4_fixed_outer_aggregation", "status": "not_run",
+                "scope": ("Exhaustive DAX equivalence, worksheet binding and actual use "
+                          "are not_run. Missing candidates do not prove the calculation is unused.")}
+    checks = [r4_check,
+              {"name": "exhaustive_dax_equivalence", "status": "not_run"},
+              {"name": "paired_source_target_execution", "status": "not_run"}]
+    fixed_calculations = [item for item in all_calculations
+                          if re.search(r"\{\s*FIXED\b", str(item[3].get("formula", "")), re.I)]
+    for ds_index, calc_index, datasource, calculation in fixed_calculations:
+        formula = str(calculation.get("formula", ""))
+        fixed = re.search(r"\{\s*FIXED\b([^:}]*)", formula, re.IGNORECASE)
+        if not fixed:
+            continue
+        identifier = _quality_name(str(calculation.get("name", ""))).strip("[]").casefold()
+        caption = str(calculation.get("caption", "")).casefold()
+        caption_matches = caption_counts.get(caption, 0)
+        candidates = []
+        if caption_matches <= 1:
+            for ws_index, worksheet in enumerate(extracted.get("worksheets", []) or []):
+                if not isinstance(worksheet, dict):
+                    continue
+                for field_index, field in enumerate(worksheet.get("fields", []) or []):
+                    if not isinstance(field, dict):
+                        continue
+                    shelf = str(field.get("shelf", "")).casefold().replace(" ", "_")
+                    if shelf in {"measure_values", "measure_value", "values"}:
+                        continue
+                    namespace = field.get("datasource")
+                    ds_name = str(datasource.get("name", "")).casefold()
+                    if namespace and str(namespace).casefold() != ds_name:
+                        continue
+                    field_name = _quality_name(str(field.get("name", ""))).strip("[]").casefold()
+                    if field_name and field_name in {identifier, caption}:
+                        candidates.append({
+                            "source_path": f"worksheets[{ws_index}].fields[{field_index}]",
+                            "aggregation": str(field.get("aggregation", "")).casefold(),
+                            "binding_status": "not_run",
+                        })
+        explicit_outer = bool(re.search(
+            r"\b(?:SUM|AVG|AVERAGE|MIN|MAX|COUNT|COUNTD)\s*\(\s*\{\s*FIXED\b",
+            formula, re.IGNORECASE))
+        if not (candidates or explicit_outer):
+            continue
+        target_obj = None
+        for obj in objects:
+            if obj.get("kind") != "measure":
+                continue
+            obj_text = str(obj.get("expression", ""))
+            if "allexcept(" not in obj_text.casefold():
+                continue
+            identifier_match = bool(
+                identifier and re.search(rf"\b{re.escape(identifier)}\b", obj_text, re.I))
+            caption_match = bool(
+                caption and caption_matches == 1 and (
+                    caption in obj_text.casefold()
+                    or obj.get("name", "").casefold() == caption))
+            if identifier_match or caption_match:
+                target_obj = obj
+                if "allexcept(" in obj_text.casefold():
+                    break
+        if not target_obj:
+            continue
+        source_paths = []
+        if ds_index is not None:
+            source_paths.append(f"datasources[{ds_index}].calculations[{calc_index}].formula")
+        else:
+            source_paths.append(f"calculations[{calc_index}].formula")
+        for dimension in re.findall(r"\[([^\]]+)\]", fixed.group(1)):
+            dimension_key = ("", dimension.casefold())
+            matches = [path for (table_key, col_key), paths in table_columns.items()
+                       if col_key == dimension.casefold() for path in paths]
+            source_paths.extend(matches[:1])
+        source_paths = list(dict.fromkeys(source_paths))
+        target_path = f"{target_obj['path']}:{target_obj['line']}"
+        message = ("FIXED DAX outer aggregation is unverified (not_run); "
+               "binding and actual use are not_run."
+                   if not explicit_outer else
+               "source formula explicitly aggregates FIXED; output equivalence is unverified.")
+        finding = {
+            "code": "dax_r4_fixed_outer_aggregation_risk",
+            "family": "R4", "message": message,
+            "severity": ("blocker" if quality_policy.get("semantic_diagnostics")
+                         == "blocker" else "warning"),
+            "disposition": "not_run", "runtime": "not_run",
+            "worksheet_binding_status": "not_run",
+            "source_resolution": "explicit_annotation",
+            "candidate_worksheet_aggregations": candidates,
+            "explicit_outer_aggregation": explicit_outer,
+            "source_path": source_paths[0], "source_paths": source_paths,
+            "target_path": target_path, "target_model": target_model.get("model_name"),
+            "evidence": [target_path],
+            "scope": r4_check["scope"],
+        }
+        findings.append(finding)
+    if fixed_calculations:
+        r4_check["status"] = "partial"
+
+    combined_findings = relationship_findings + findings
+    status = "static_evidence"
+    if not source_available or model_scan.get("status") != "static_evidence":
+        status = "not_run"
+    elif (model_scan.get("status") == "partial"
+          or target_relationships.get("status") == "partial"
+          or target_relationships.get("status") == "not_run"
+          or source_relationships.get("status") == "partial"
+          or physical_joins.get("status") == "partial"
+          or combined_findings):
+        status = "partial"
+    evidence = {
+        "status": status, "source_available": source_available,
+        "source_scan": {"status": "static_evidence" if source_available else "not_run"},
+        "target_model": target_model,
+        "model_scan": model_scan,
+        "physical_joins": physical_joins,
+        "relationship_provenance": {
+            "status": ("partial" if target_relationships.get("status") != "static_evidence"
+                       or source_relationships.get("status") == "partial"
+                       or relationship_findings else "static_evidence"),
+            "target_model": target_model.get("model_name"),
+            "target_relationship_scan": target_relationships.get("status", "not_run"),
+            "target_relationships_scanned": target_relationships.get("count", 0),
+            "source_candidate_scan": source_relationships.get("status", "not_run"),
+            "source_candidate_scan_incomplete": source_relationships.get("incomplete", []),
+            "inferred_input_candidates": sum(
+                item["inferred"] for item in source_relationships.get("candidates", [])),
+            "origin_status": "not_run",
+            "unmatched_inferred_candidate_paths": unmatched_inferred,
+        },
+        "calculation_mapping": calculation_mapping,
+        "runtime": "not_run", "checks": checks,
+        "findings": combined_findings,
+        "diagnostics": warnings,
+    }
+    return evidence, combined_findings
+
+
 def _semantic_context_validation(extracted: Dict[str, Any]) -> Dict[str, Any]:
     """Collect static LOD diagnostics without implying DAX execution."""
     column_table_map: Dict[str, str] = {}
@@ -1240,7 +1879,8 @@ def _filter_context_validation(project_dir: str) -> Dict[str, Any]:
 
 def _handoff_status(status: str, openability: Dict[str, Any]) -> str:
     """Translate local quality into an operator-facing handoff state."""
-    if status == "FAIL" or not openability.get("openable", False):
+    model_only = openability.get("scope") == "fabric_model_only"
+    if status == "FAIL" or (not model_only and not openability.get("openable", False)):
         return "BLOCKED"
     if status == "WARN":
         return "WARN"
@@ -4838,7 +5478,15 @@ def build_quality_report(extracted: Dict, project_dir: str,
     openability = check_openability(project_dir)
     fabric = _fabric_validation(project_dir, report_name)
     fabric_evidence = build_fabric_evidence(project_dir, report_name)
+    from powerbi_import.fabric_evidence import is_reportless_fabric_bundle
+    reportless_fabric = is_reportless_fabric_bundle(project_dir, report_name)
+    if reportless_fabric:
+        openability.checks = []
+        openability.diagnostics = {}
     semantic_context = _semantic_context_validation(extracted or {})
+    source_target, source_target_findings = _source_target_evidence(
+        extracted or {}, project_dir, policy)
+    semantic_context["source_target_evidence"] = source_target
     measure_context = _measure_context_validation(project_dir)
     semantic_context["measure_context"] = measure_context
     semantic_context["filter_context"] = _filter_context_validation(project_dir)
@@ -4867,11 +5515,53 @@ def build_quality_report(extracted: Dict, project_dir: str,
     )
     semantic_runtime_failures = semantic_context["execution"].get("failed", 0)
     openability_dict = _openability_dict(openability)
+    if reportless_fabric:
+        openability_dict.update({
+            "openable": None,
+            "scope": "fabric_model_only",
+            "verified_scope": "fabric_model_only",
+            "pbip_validation": "not_run",
+            "blocking_count": 0,
+            "warning_count": 0,
+            "blocking_issues": [],
+            "warnings": [],
+            "checks": [],
+        })
     confidence = _openability_confidence(openability_dict, fabric)
 
     findings = _Findings()
     blockers = findings.blockers
     warnings = findings.warnings
+    if reportless_fabric:
+        findings.add(
+            "fabric_reportless",
+            "PBIR, Desktop openability and visual parity were not run for this "
+            "five-artifact Fabric model-only bundle.",
+            blocker=False,
+            fix="Generate a report bundle and run authorized Desktop validation "
+                "when report-level parity is required.",
+        )
+    if source_target.get("status") == "not_run":
+        for diagnostic in source_target.get("diagnostics", []):
+            findings.add("source_target_missing", diagnostic, blocker=False,
+                         fix="Provide the extracted source and completed target TMDL, "
+                             "then rerun static quality validation.")
+    elif source_target.get("status") == "partial":
+        for diagnostic in source_target.get("diagnostics", []):
+            findings.add("source_target_inventory", diagnostic, blocker=False,
+                         fix="Complete or repair the source/model inventory; static "
+                             "evidence cannot establish runtime correspondence.")
+    for item in source_target_findings:
+        finding_id = ("source_target_r4" if item.get("family") == "R4"
+                      else "source_target_relationship")
+        findings.add(
+            finding_id, item["message"],
+            blocker=item.get("severity") == "blocker",
+            fix=("Verify Tableau shelf grain, filter order and totals against the "
+                 "target expression." if item.get("family") == "R4" else
+                 "Verify source relationship origin and target endpoint correspondence."),
+            evidence=item.get("source_paths", []) + item.get("evidence", []),
+        )
     composite_relationships = _composite_relationship_evidence(project_dir)
     for relationship in composite_relationships:
         key_description = "; ".join(
@@ -5064,6 +5754,25 @@ def build_quality_report(extracted: Dict, project_dir: str,
             fix="Rebuild the calculation using the Tableau row or mark scope.",
             evidence=[f'{item["file"]}:{item["line"]}' for item in countd_fallbacks],
         )
+    dax_fallbacks = [
+        item for item in measure_context.get("fallbacks", [])
+        if "TODO: DAX conversion validation failed" in item.get("issue", "")
+        and not has_unsupported_countd_marker(item.get("issue", ""))
+    ]
+    for fallback in dax_fallbacks:
+        measure_match = re.search(
+            r"^measure\s+'((?:[^']|'')+)'", fallback.get("issue", ""), re.I)
+        measure_name = (measure_match.group(1).replace("''", "'")
+                        if measure_match else "Unknown measure")
+        verdict = policy["semantic_diagnostics"]
+        if verdict in {"blocker", "warning"}:
+            findings.add(
+                "dax_fallback",
+                f"DAX fallback for {measure_name} uses BLANK pending manual repair.",
+                blocker=verdict == "blocker",
+                fix="Rebuild the measure with verified source grain and aggregation context.",
+                evidence=[f'{fallback["file"]}:{fallback["line"]}'],
+            )
     if semantic_runtime_failures:
         findings.by_policy(
             "semantic_runtime",
@@ -5114,11 +5823,17 @@ def build_quality_report(extracted: Dict, project_dir: str,
     visual_parity = build_visual_parity_contract(
         extracted or {}, visual_mappings, visual_recovery, visual_role_evidence
     )
+    if reportless_fabric:
+        visual_parity["status"] = "not_run"
     roundtrip_validation = build_roundtrip_validation(
         openability_dict,
         visual_recovery,
         visual_parity,
     )
+    if reportless_fabric:
+        roundtrip_validation["status"] = "not_run"
+        roundtrip_validation["static"]["status"] = "not_run"
+        roundtrip_validation["static"]["openability"] = "not_run"
     priorities = _build_priorities(parity, findings)
     strategy = recommend_strategy(extracted or {}, prep_flow=prep_flow).to_dict()
     strategy["status"] = "recommended"

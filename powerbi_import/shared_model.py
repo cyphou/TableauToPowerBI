@@ -4354,6 +4354,7 @@ def load_existing_model(model_dir: str) -> dict:
             ds_col = {
                 "name": col["name"],
                 "dataType": col.get("dataType", "string"),
+                "datatype": str(col.get("dataType", "string")).lower(),
                 "table": tbl["name"],
             }
             ds_table["columns"].append(ds_col)

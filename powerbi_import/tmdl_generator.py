@@ -1892,6 +1892,33 @@ def _collect_semantic_context(datasources, extra_objects):
             for table in ds.get('tables', []):
                 m_query_overrides[table.get('name', '')] = single_override
 
+    calculation_caption_counts = {}
+    for calculation in all_calculations:
+        _, caption = _calculation_identity(calculation)
+        if caption:
+            key = caption.casefold()
+            calculation_caption_counts[key] = calculation_caption_counts.get(key, 0) + 1
+    calculation_target_names = {}
+    reserved_calculation_names = {
+        caption.casefold()
+        for calculation in all_calculations
+        for _, caption in [_calculation_identity(calculation)] if caption
+    }
+    for calc_index, calculation in enumerate(all_calculations):
+        raw, caption = _calculation_identity(calculation)
+        target_name = caption
+        if caption and calculation_caption_counts.get(caption.casefold(), 0) > 1:
+            identity_suffix = (raw.strip('[]') or calculation.get('datasource_name')
+                               or str(calc_index + 1))
+            target_name = f'{caption} ({identity_suffix})'
+            suffix = 2
+            while target_name.casefold() in reserved_calculation_names:
+                target_name = f'{caption} ({identity_suffix} {suffix})'
+                suffix += 1
+        calculation_target_names[id(calculation)] = target_name
+        if target_name:
+            reserved_calculation_names.add(target_name.casefold())
+
     # Phase 2: Identify the main table (the one with the most columns = fact table)
     main_table_name = None
     max_cols = -1
@@ -1915,7 +1942,7 @@ def _collect_semantic_context(datasources, extra_objects):
     for calc in all_calculations:
         raw, caption = _calculation_identity(calc)
         if raw and raw != caption:
-            calc_map[raw] = caption
+            calc_map[raw] = calculation_target_names.get(id(calc), caption)
 
     # param_map: "Parameter X" -> parameter caption
     param_map = {}
@@ -1985,7 +2012,9 @@ def _collect_semantic_context(datasources, extra_objects):
         if raw in param_map or caption in param_map.values():
             is_calc_col = False
         if not is_calc_col:
-            measure_names.add(caption)
+            measure_names.add(calculation_target_names.get(id(calc), caption))
+            if calculation_target_names.get(id(calc), caption) != caption:
+                measure_names.add(caption)
     measure_names.update(param_map.values())
     # Tableau parameter captions can contain bracketed fragments.  The DAX
     # resolver sanitizes those captions before emitting references, so index
@@ -2084,6 +2113,7 @@ def _collect_semantic_context(datasources, extra_objects):
         'param_map': param_map,
         'column_table_map': column_table_map,
         'measure_names': measure_names,
+        'calculation_target_names': calculation_target_names,
         'param_values': param_values,
         'ds_column_table_map': ds_column_table_map,
         'datasource_table_map': datasource_table_map,
@@ -3432,6 +3462,16 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     column_table_map = dax_context.get('column_table_map', {})
     prelim_calc_col_captions = set(group_column_names)
     prelim_calc_col_raws = set(group_column_names)
+
+    def _is_known_measure_reference(reference):
+        return (
+            (reference in measure_names_ctx
+             or reference in calc_map_ctx.values()
+             or reference in calc_map_ctx)
+            and reference not in prelim_calc_col_captions
+            and reference not in prelim_calc_col_raws
+        )
+
     for _pc in calculations:
         _pc_name, _pc_caption = _calculation_identity(_pc)
         _pc_formula = _pc.get('formula', '').strip()
@@ -3452,7 +3492,11 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 break
         _pc_cross_table_measure = _is_unaggregated_cross_table_measure(
             _pc, _pc_formula, _pc_has_agg, column_table_map, calc_map_ctx)
-        if _pc_cross_table_measure:
+        _pc_measure_dependency = (
+            str(_pc_role).strip().casefold() == 'measure'
+            and any(_is_known_measure_reference(reference) for reference in _pc_refs)
+        )
+        if _pc_cross_table_measure or _pc_measure_dependency:
             measure_names_ctx.add(_pc_caption)
             continue
         # A formula without aggregation that has physical column refs is a
@@ -3538,6 +3582,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
     for calc in calculations:
         calc_name, caption = _calculation_identity(calc)
+        target_caption = dax_context.get('calculation_target_names', {}).get(
+            id(calc), caption)
         formula = calc.get('formula', '').strip()
         role = calc.get('role', 'measure')
         datatype = calc.get('datatype', 'string')
@@ -3583,12 +3629,17 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
         # Classify: calculated column or measure
         has_aggregation = bool(_agg_pattern.search(formula)) or bool(_lod_pattern.search(formula))
+        refs_in_formula = re.findall(r'\[([^\]]+)\]', formula)
         cross_table_measure = _is_unaggregated_cross_table_measure(
             calc, formula, has_aggregation,
             column_table_map, calc_map_ctx)
+        measure_dependency = (
+            role.strip().casefold() == 'measure'
+            and any(_is_known_measure_reference(reference)
+                    for reference in refs_in_formula)
+        )
         if cross_table_measure:
             measure_names_ctx.add(caption)
-        refs_in_formula = re.findall(r'\[([^\]]+)\]', formula)
         has_column_refs = False
         references_only_measures = True
         for ref in refs_in_formula:
@@ -3609,9 +3660,11 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 references_only_measures = False
                 break
 
-        is_calc_col = not cross_table_measure and not has_aggregation and (
+        is_calc_col = (not cross_table_measure and not measure_dependency
+                       and not has_aggregation and (
             numeric_row_constant or (not is_literal and (
                 role == 'dimension' or has_column_refs)))
+        )
 
         # If a calc references ONLY other measures/calcs
         # (no physical columns), it must be a measure — calc columns
@@ -3729,6 +3782,11 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                     "expression": dax_formula,
                     "summarizeBy": "none",
                     "isCalculated": True,
+                    "_tableau_calculation_identity": {
+                        "name": calc.get('name', ''),
+                        "caption": calc.get('caption', ''),
+                        "datasource_name": calc.get('datasource_name', ''),
+                    },
                 }
             if datatype == 'real':
                 bim_calc_col["formatString"] = "#,0.00"
@@ -3778,7 +3836,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
             # DAX Measure
             bim_measure = {
-                "name": caption,
+                "name": target_caption,
                 "expression": dax_formula,
                 "formatString": _get_format_string(datatype),
                 "displayFolder": _get_display_folder(datatype, role),
@@ -3803,7 +3861,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 bim_measure['_merge_action'] = calc['_merge_action']
             # Dedup: skip if measure with same name already exists
             existing_measure = any(
-                m.get("name", "").lower() == caption.lower()
+                m.get("name", "").lower() == target_caption.lower()
                 for m in result_table["measures"]
             )
             if not existing_measure:

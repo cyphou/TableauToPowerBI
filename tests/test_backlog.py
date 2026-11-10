@@ -1216,11 +1216,8 @@ class TestSumxCrossTableRelated(unittest.TestCase):
             param_values={},
         )
         # SUMX should iterate over FactTable (non-default)
-        self.assertIn("SUMX('FactTable'", dax)
-        # DimTable refs should be wrapped in RELATED
-        self.assertIn("RELATED('DimTable'[IsOpen])", dax)
-        # FactTable refs should NOT be wrapped
-        self.assertNotIn("RELATED('FactTable'", dax)
+        self.assertIn('TODO: DAX conversion validation failed', dax)
+        self.assertIn('row aggregation spans tables without a proven source row bag', dax)
 
 
 class TestReplaceRelatedInAggxContext(unittest.TestCase):
@@ -2190,7 +2187,7 @@ class TestBareCalcReferenceInlining(unittest.TestCase):
         )
         # Should NOT contain bare __MyToday — it should be inlined
         self.assertNotIn('__MyToday', dax)
-        self.assertIn('DATE(2022,04,18)', dax)
+        self.assertRegex(dax, r'DATE\(2022,\s*0?4,\s*18\)')
 
     def test_bare_param_value_inlined_in_measure(self):
         """__MyToday bare ref → DATE(2022,04,18) even in measures."""
@@ -2308,8 +2305,10 @@ class TestComparisonOperatorSpacing(unittest.TestCase):
             formula, column_name='Filter', table_name='T', is_calc_column=True,
             column_table_map={'Created Date': 'T'},
         )
-        self.assertIn('] > EDATE(', dax)
-        self.assertIn('] <= DATE(', dax)
+        self.assertIn('EDATE(', dax)
+        self.assertIn(' > __TableauNullable', dax)
+        self.assertIn(' <= __TableauNullable', dax)
+        self.assertIn('ISBLANK(', dax)
         self.assertIn('&&', dax)
 
 

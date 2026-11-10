@@ -345,8 +345,8 @@ class TestTypeConversionFunctions(unittest.TestCase):
 
     def test_iif_two_args(self):
         result = convert_tableau_formula_to_dax("IIF([Flag], 'Yes')")
-        self.assertIn("IF(", result)
-        self.assertIn("BLANK()", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_int(self):
         result = convert_tableau_formula_to_dax("INT([Value])")
@@ -663,13 +663,14 @@ class TestLODEdgeCases(unittest.TestCase):
     """Test LOD expressions with edge cases."""
 
     def test_fixed_no_dimension(self):
-        """LOD without dimension specification → CALCULATE(AGG, ALL())."""
+        """Global LOD requires verified shelf and total grain."""
         result = convert_tableau_formula_to_dax(
             "{SUM([Sales])}",
             table_name="Orders",
             column_table_map={"Sales": "Orders"},
         )
-        self.assertIn("CALCULATE", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_fixed_multiple_dimensions(self):
         result = convert_tableau_formula_to_dax(
@@ -700,14 +701,14 @@ class TestLODEdgeCases(unittest.TestCase):
         self.assertNotIn("{INCLUDE", result)
 
     def test_nested_lod_balanced_braces(self):
-        """LOD with nested expressions shouldn't break brace matching."""
+        """Nested FIXED aggregation is unsupported without grain evidence."""
         result = convert_tableau_formula_to_dax(
             "{FIXED [Region] : SUM(IF [Status]='Active' THEN [Amount] ELSE 0 END)}",
             table_name="Orders",
             column_table_map={"Region": "Orders", "Status": "Orders", "Amount": "Orders"},
         )
-        self.assertIn("CALCULATE", result)
-        self.assertIn("ALLEXCEPT", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1432,7 +1433,7 @@ class TestLODMultiDimension(unittest.TestCase):
         self.assertIn("'Geo'[City]", result)
 
     def test_fixed_cross_table_dims(self):
-        """Dimensions from different tables use REMOVEFILTERS instead of invalid ALLEXCEPT."""
+        """Cross-table FIXED requires verified source and target grain."""
         result = convert_tableau_formula_to_dax(
             "{FIXED [Region], [ProductName] : SUM([Sales])}",
             table_name="Orders",
@@ -1440,9 +1441,8 @@ class TestLODMultiDimension(unittest.TestCase):
                 "Region": "Orders", "ProductName": "Products", "Sales": "Orders"
             },
         )
-        self.assertIn('REMOVEFILTERS', result)
-        self.assertIn("'Products'[ProductName]", result)
-        self.assertIn("'Orders'[Region]", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
 
 class TestFirstLastImproved(unittest.TestCase):
@@ -1461,14 +1461,14 @@ class TestFirstLastImproved(unittest.TestCase):
         self.assertIn('RANKX', result)
 
     def test_first_in_if_expression(self):
-        """IF FIRST() = 0 THEN ... should produce valid DAX."""
+        """FIRST() inside a measure needs explicit addressing context."""
         result = convert_tableau_formula_to_dax(
             "IF FIRST() = 0 THEN [Sales] END",
             table_name="T",
             column_table_map={"Sales": "T"},
         )
-        self.assertIn('IF(', result)
-        self.assertIn('RANKX', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_last_in_arithmetic(self):
         """LAST() + 1 should maintain structure."""

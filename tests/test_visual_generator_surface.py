@@ -1,8 +1,8 @@
 """What the generation path actually depends on in ``visual_generator``.
 
 The module currently has 57 top-level functions, while ``pbip_generator``
-builds the production visuals. Production imports twelve names from this
-module — three lookup maps and nine helpers. Pinning that surface means the day
+builds the production visuals. Production imports thirteen names from this
+module — three lookup maps and ten helpers. Pinning that surface means the day
 someone wires a builder in is a decision, not an accident.
 """
 
@@ -23,7 +23,6 @@ EXPECTED_SURFACE = {
     '_build_data_bar_config',
     '_build_motion_chart_bookmarks',
     'build_categorical_color_objects',
-    'build_background_objects',
     'clear_auto_generated_measures',
     'finalize_native_query_refs',
     'generate_script_visual',

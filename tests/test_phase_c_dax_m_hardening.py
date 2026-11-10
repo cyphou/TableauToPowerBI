@@ -301,14 +301,13 @@ class TestNestedLODEdgeCases(unittest.TestCase):
         self.assertIn('ALLEXCEPT(', result)
 
     def test_lod_no_dim(self):
-        """LOD without dimensions: {SUM([Sales])}."""
+        """Global aggregate LOD requires verified shelf and total grain."""
         result = convert_tableau_formula_to_dax(
             '{SUM([Sales])}',
             table_name='Orders'
         )
-        self.assertIn('CALCULATE(', result)
-        self.assertNotIn('{', result)
-        self.assertNotIn('}', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_lod_exclude(self):
         """EXCLUDE LOD removes dimension filters."""

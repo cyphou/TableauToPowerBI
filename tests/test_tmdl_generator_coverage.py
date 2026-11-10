@@ -1150,6 +1150,17 @@ class TestCalculatedColumnProcessing(unittest.TestCase):
         self.assertIsNotNone(column)
         self.assertEqual(column["expression"], dax)
 
+    def assert_nullable_dax_column(self, columns, formula, datatype):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        built = self._build_calcs(columns, ("Delai", formula, datatype))
+        self.assertIsNone(self._step(built, "Delai"))
+        column = self._dax_column(built, "Delai")
+        self.assertIsNotNone(column)
+        self.assertIn("VAR __TableauNullable", column["expression"])
+        self.assertIn("ISBLANK", column["expression"])
+        self.assertEqual(validate_dax_expression(column["expression"]), [])
+
     def test_difference_composed_with_arithmetic_stays_numeric(self):
         """A duration times a number is still a duration in M."""
         for columns, formula, datatype, body, m_type in (
@@ -1168,14 +1179,16 @@ class TestCalculatedColumnProcessing(unittest.TestCase):
              "Date.Year(Date.AddDays([Début], 7))", "Int64.Type"),
         ):
             with self.subTest(formula=formula):
-                self.assert_m_column(columns, formula, datatype, body, m_type)
+                if formula == "[Fin]-[Début]>30":
+                    self.assert_nullable_dax_column(columns, formula, datatype)
+                else:
+                    self.assert_m_column(columns, formula, datatype, body, m_type)
 
     def test_condition_over_a_date_difference_is_numeric(self):
-        self.assert_m_column(
+        self.assert_nullable_dax_column(
             self.DATE_COLUMNS,
             'IF [Fin]-[Début]>30 THEN "late" ELSE "ok" END', "string",
-            'if (Duration.Days([Fin] - [Début]) > 30) = true '
-            'then "late" else "ok"', "type text")
+        )
 
     def test_difference_with_today_and_now_is_numeric(self):
         self.assert_m_column(
@@ -1236,12 +1249,12 @@ class TestCalculatedColumnProcessing(unittest.TestCase):
             "IFERROR(INT(('Orders'[Fin]-'Orders'[Début])*24), BLANK())")
 
     def test_date_comparisons_align_a_date_with_a_datetime(self):
-        self.assert_m_column(
+        self.assert_nullable_dax_column(
             self.DATE_COLUMNS, "[Début]<NOW()", "boolean",
-            "DateTime.From([Début]) < DateTime.LocalNow()", "type logical")
-        self.assert_m_column(
+        )
+        self.assert_nullable_dax_column(
             self.MIXED_COLUMNS, "[Début]=[Fin]", "boolean",
-            "DateTime.From([Début]) = [Fin]", "type logical")
+        )
 
     def test_calc_over_a_date_calc_uses_its_datetime_m_kind(self):
         """A date calculation is wrapped in DateTime.From, so M holds a datetime."""

@@ -200,6 +200,14 @@ from powerbi_import.atomic_file import atomic_write_text
 
 def _write_json(filepath, data, ensure_ascii=True):
     """Write a JSON file, creating parent directories as needed."""
+    data = copy.deepcopy(data)
+    visual = data.get('visual') if isinstance(data, dict) else None
+    if isinstance(visual, dict):
+        query = visual.get('query')
+        query_state = query.get('queryState') if isinstance(query, dict) else None
+        if query_state:
+            from powerbi_import.visual_generator import finalize_native_query_refs
+            finalize_native_query_refs(query_state, visual=visual)
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=ensure_ascii)

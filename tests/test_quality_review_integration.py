@@ -178,14 +178,20 @@ class TestCoachingReachesThePriorityQueue(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _write_review(tmp)
             report = _build_report(tmp)
-        self.assertEqual(report.status, 'PASS')
-        self.assertEqual(report.priorities, [])
+        self.assertEqual(report.status, 'WARN')
+        self.assertFalse(report.blockers)
+        self.assertEqual(
+            report.semantic_context['source_target_evidence']['status'], 'not_run')
+        self.assertEqual(report.review['coaching'], [])
         self.assertEqual(report.review['status'], 'approved')
 
     def test_no_review_leaves_the_report_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             report = _build_report(tmp)
-        self.assertEqual(report.status, 'PASS')
+        self.assertEqual(report.status, 'WARN')
+        self.assertFalse(report.blockers)
+        self.assertEqual(
+            report.semantic_context['source_target_evidence']['status'], 'not_run')
         self.assertEqual(report.review['status'], 'not_run')
 
     def test_fix_text_is_rendered_in_the_html(self):

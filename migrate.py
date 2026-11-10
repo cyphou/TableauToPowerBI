@@ -1089,13 +1089,23 @@ def _run_fabric_generation(report_name=None, output_dir=None, source_dir=None,
         )
 
         project_dir = results.get('project_path', '')
-        if project_dir and os.path.exists(project_dir):
-            _stats.pbip_path = project_dir
-            sm = results.get('artifacts', {}).get('semantic_model', {})
-            _stats.tmdl_tables = sm.get('tables', 0)
-            _stats.tmdl_columns = sm.get('columns', 0)
-            _stats.tmdl_measures = sm.get('measures', 0)
-            _stats.tmdl_relationships = sm.get('relationships', 0)
+        if not results.get('validation', {}).get('valid'):
+            raise RuntimeError(
+                'Fabric generator did not return a locally validated project')
+
+        from powerbi_import.fabric_validator import FabricProjectValidator
+        validation = FabricProjectValidator.validate(project_dir, report_name)
+        if not validation['valid']:
+            details = '; '.join(validation['errors'])
+            raise RuntimeError(
+                f'Fabric generator did not produce a valid project on disk: {details}')
+
+        _stats.pbip_path = project_dir
+        sm = results.get('artifacts', {}).get('semantic_model', {})
+        _stats.tmdl_tables = sm.get('tables', 0)
+        _stats.tmdl_columns = sm.get('columns', 0)
+        _stats.tmdl_measures = sm.get('measures', 0)
+        _stats.tmdl_relationships = sm.get('relationships', 0)
 
         print("\n✓ Fabric project generated successfully")
         return True
@@ -2241,6 +2251,8 @@ def _run_batch_config(args, desktop_options=None):
                     continue
 
             _stats.phase = 'source_staging'
+            if output_is_fabric:
+                _preflight_fabric_extraction()
             _stage_declared_local_sources(
                 tableau_file, project_dir,
                 copy_files=output_is_fabric,
@@ -2358,7 +2370,11 @@ def _run_batch_config(args, desktop_options=None):
                 'failure': _failure_diagnostic(_stats.phase, exc),
             })
             logger.exception("Batch-config migration failed for %s", basename)
-            if _stats.phase == 'source_staging' and (output_is_fabric or _upload_root()):
+            if (getattr(exc, 'recovery_kind', None)
+                    == 'fabric_hyper_snapshot_ingestion'):
+                print(f"  Fabric source preflight failed: {exc}")
+            elif (_stats.phase == 'source_staging'
+                  and (output_is_fabric or _upload_root())):
                 raise
         except (KeyboardInterrupt, SystemExit) as exc:
             result.update({
@@ -2825,6 +2841,8 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
 
     # Uploaded PBIP remains validation-only; local PBIP copies packaged Excel.
     _stats.phase = 'source_staging'
+    if output_format == 'fabric':
+        _preflight_fabric_extraction()
     _stage_declared_local_sources(
         tableau_file, os.path.join(workbook_output_dir, basename),
         copy_files=output_format == 'fabric',
@@ -12977,6 +12995,20 @@ def _shorten_report_artifact_path(project_dir, source_basename):
     return False
 
 
+def _preflight_fabric_extraction(source_dir=None):
+    """Reject unsafe active Hyper selections before Fabric source staging."""
+    metadata = os.path.join(source_dir or _get_extract_dir(), 'datasources.json')
+    try:
+        with open(metadata, encoding='utf-8') as stream:
+            datasources = json.load(stream)
+    except (OSError, ValueError):
+        return
+    if not isinstance(datasources, list):
+        return
+    from powerbi_import.fabric_sources import preflight_fabric_ingestion
+    preflight_fabric_ingestion(datasources)
+
+
 def _stage_declared_local_sources(source_path, project_dir, source_dir=None, *,
                                   copy_files=True, packaged_excel=False,
                                   max_zip_entry_mb=None):
@@ -14692,6 +14724,14 @@ def _run_single_migration_impl(args):
     if (getattr(args, 'parity', False) or getattr(args, 'parity_strict', False)) \
             and results.get('extraction'):
         return _run_parity_mode(args)
+
+    if getattr(args, 'output_format', 'pbip') == 'fabric':
+        try:
+            _preflight_fabric_extraction()
+        except Exception as exc:
+            print(f"Fabric source preflight failed: {exc}")
+            logger.error("Fabric source preflight failed: %s", exc)
+            return ExitCode.GENERAL_ERROR
 
     # Step 2: Generate .pbip project
 

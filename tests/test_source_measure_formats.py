@@ -106,10 +106,12 @@ class TestSourceMeasureFormats(unittest.TestCase):
             datasource["calculations"] = [
                 {"name": f"[Rate {name}]", "caption": f"Rate {name}",
                  "role": "measure", "datatype": "real",
-                 "formula": "SUM([Amount]) / SUM([Units])"} for name in ("A", "B", "C")]
+                 "formula": "SUM([Amount]) / SUM([Units])",
+                 "datasource_name": "Synthetic"} for name in ("A", "B", "C")]
             datasource["calculations"].append({
                 "name": "[Count]", "caption": "Count", "role": "measure",
-                "datatype": "integer", "formula": "COUNT([Units])"})
+                "datatype": "integer", "formula": "COUNT([Units])",
+                "datasource_name": "Synthetic"})
             worksheet = self.worksheet("7", source="Synthetic")
             worksheet["formatting"]["cell"] = {
                 "field": "[Synthetic].[Multiple Values]", "text-format": "p0.0%"}

@@ -425,19 +425,21 @@ class TestAddToModelReport(_BindingAssertions, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        converted = [_importer(_SAMPLES[0])._load_converted_objects()]
+        existing_name, added_name = _SAMPLES[1], _SAMPLES[0]
+        converted = [_importer(existing_name)._load_converted_objects()]
         with contextlib.redirect_stdout(io.StringIO()):
-            result = _importer(_SAMPLES[0]).import_shared_model(
+            result = _importer(existing_name).import_shared_model(
                 model_name='AddModel',
                 all_converted_objects=converted,
-                workbook_names=[_SAMPLES[0]],
+                workbook_names=[existing_name],
                 output_dir=_new_output_dir('add_to_model'),
                 output_format='pbip',
                 force_merge=True,
             )
         cls.model_dir = os.path.dirname(result['model_path'])
         args = types.SimpleNamespace(
-            add_to_model=(cls.model_dir, _sample(_SAMPLES[1])), force_merge=True)
+            add_to_model=(cls.model_dir, _sample(added_name)), force_merge=True)
+        cls.added_name = added_name
         with contextlib.redirect_stdout(io.StringIO()):
             cls.exit_code = migrate._run_add_to_model(args)
 
@@ -449,10 +451,10 @@ class TestAddToModelReport(_BindingAssertions, unittest.TestCase):
         # model does not carry over the first workbook's measures, which is a
         # separate matter from how a new report resolves its own fields.
         refs = self.assert_report_binds_to_model(
-            _only(os.path.join(self.model_dir, 'HR_Analytics.Report')),
+            _only(os.path.join(self.model_dir, self.added_name + '.Report')),
             _only(os.path.join(self.model_dir, '*.SemanticModel')),
         )
-        self.assertIn(('Measure', 'Employees', 'Employee Count'),
+        self.assertIn(('Measure', 'Orders', 'Total Sales'),
                       {(kind, entity, prop) for _, kind, entity, prop, _ in refs})
 
 

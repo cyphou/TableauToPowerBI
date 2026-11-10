@@ -23,14 +23,28 @@ import migrate  # noqa: E402
 
 
 def _converted(table_name, measure_name):
+    datasource_name = "SyntheticDS"
+    calculation = {
+        "name": f"[{measure_name}]",
+        "caption": measure_name,
+        "formula": "SUM([Amount])",
+        "role": "measure",
+        "datatype": "real",
+        "datasource_name": datasource_name,
+    }
     return {
         "datasources": [{
-            "name": "DS",
-            "tables": [{"name": table_name,
+            "name": datasource_name,
+            "connection": {
+                "type": "SQL Server",
+                "details": {"server": "synthetic.invalid", "database": "fixture"},
+            },
+            "tables": [{"name": table_name, "source_table": table_name,
                         "columns": [{"name": "Id"}, {"name": "Amount"}]}],
             "columns": [{"name": "Id"}, {"name": "Amount"}],
+            "calculations": [dict(calculation)],
         }],
-        "calculations": [{"name": measure_name, "formula": "SUM([Amount])"}],
+        "calculations": [dict(calculation)],
         "worksheets": [],
         "dashboards": [],
     }

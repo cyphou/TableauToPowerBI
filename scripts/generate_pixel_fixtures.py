@@ -147,7 +147,7 @@ def migrate_workbook(twb_path: str, out_dir: str) -> str:
             sys.executable, os.path.join(_REPO_ROOT, "migrate.py"),
             "--batch", source_dir, "--output-dir", out_dir, "--quiet",
         ]
-        subprocess.run(cmd, cwd=_REPO_ROOT, check=True,
+        completed = subprocess.run(cmd, cwd=_REPO_ROOT, check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # migrate.py creates <out_dir>/<name>/<name>.pbip alongside .Report/.SemanticModel.
     # Dot-prefixed checkpoint/extract dirs also live in out_dir and sort first,
@@ -159,7 +159,10 @@ def migrate_workbook(twb_path: str, out_dir: str) -> str:
     ]
     for entry in candidates:
         full = os.path.join(out_dir, entry)
-        if any(f.endswith(".pbip") for f in os.listdir(full)):
+        has_pbip = any(f.endswith(".pbip") for f in os.listdir(full))
+        if has_pbip:
+            if completed.returncode and not list(_iter_visual_files(full)):
+                raise subprocess.CalledProcessError(completed.returncode, cmd)
             return full
     if candidates:
         return os.path.join(out_dir, candidates[0])

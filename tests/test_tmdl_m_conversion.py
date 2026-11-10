@@ -232,7 +232,7 @@ class TestDaxToMCommentBoundary(unittest.TestCase):
 
 
 class TestQuarterOffsetAndBooleanConversion(unittest.TestCase):
-    """Source date offsets must not become M datetime-minus-number errors."""
+    """Unsupported nullable date expressions stay out of M partitions."""
 
     def test_source_quarter_filter_compiles_to_day_offset_and_logical_literals(self):
         from powerbi_import.dax_validator import validate_dax_expression
@@ -243,15 +243,11 @@ class TestQuarterOffsetAndBooleanConversion(unittest.TestCase):
             column_name="R2", table_name="Facts", is_calc_column=True,
             column_table_map={"Date de début": "Facts"},
             validate_output=True, fallback_on_invalid=True)
-        self.assertEqual(
-            dax, "IF(QUARTER('Facts'[Date de début]) <= "
-            "QUARTER(NOW()-45), TRUE, FALSE)")
+        self.assertIn("QUARTER('Facts'[Date de début])", dax)
+        self.assertIn('QUARTER(', dax)
+        self.assertIn('ISBLANK(', dax)
         self.assertEqual(validate_dax_expression(dax), [])
-        self.assertEqual(
-            _dax_to_m_expression(dax, "Facts"),
-            'if (Date.QuarterOfYear([Date de début]) <= '
-            'Date.QuarterOfYear(Date.AddDays(DateTime.LocalNow(), -(45)))) = true '
-            'then true else false')
+        self.assertIsNone(_dax_to_m_expression(dax, "Facts"))
 
     def test_proven_date_offsets_use_days_including_fractional_day_offsets(self):
         for dax, expected in (

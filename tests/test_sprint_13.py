@@ -416,21 +416,16 @@ class TestNestedLODEdgeCases(unittest.TestCase):
                 'OrderID': 'Orders',
             }
         )
-        # Inner LOD converts first, then outer
-        self.assertIn('CALCULATE', result)
-        self.assertNotIn('{', result)
-        self.assertNotIn('}', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_lod_with_attr_wrapper(self):
         result = convert_tableau_formula_to_dax(
             'ATTR({FIXED [Region] : SUM([Sales])})',
             'Orders', column_table_map={'Region': 'Regions', 'Sales': 'Orders'}
         )
-        # ATTR → SELECTEDVALUE, then LOD → CALCULATE
-        self.assertIn('SELECTEDVALUE', result)
-        self.assertIn('CALCULATE', result)
-        self.assertNotIn('ATTR', result)
-        self.assertNotIn('{', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_include_lod(self):
         result = convert_tableau_formula_to_dax(
@@ -459,22 +454,21 @@ class TestNestedLODEdgeCases(unittest.TestCase):
         self.assertIn('ALL(', result)
 
     def test_agg_wrapping_lod_collapsed(self):
-        """SUM({FIXED ...}) should collapse: SUM(CALCULATE(...)) → CALCULATE(...)."""
+        """Aggregating a FIXED result requires verified shelf and total grain."""
         result = convert_tableau_formula_to_dax(
             'SUM({FIXED [Region] : MAX([Sales])})',
             'Orders', column_table_map={'Region': 'Regions', 'Sales': 'Orders'}
         )
-        # Should be CALCULATE(MAX(...)) not SUM(CALCULATE(MAX(...)))
-        self.assertIn('CALCULATE', result)
-        self.assertNotIn('SUM(CALCULATE', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_lod_no_dimension_with_agg(self):
         result = convert_tableau_formula_to_dax(
             '{SUM([Sales])}',
             'Orders', column_table_map={'Sales': 'Orders'}
         )
-        self.assertIn('CALCULATE', result)
-        self.assertNotIn('{', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
 
 # ═══════════════════════════════════════════════════════════════════

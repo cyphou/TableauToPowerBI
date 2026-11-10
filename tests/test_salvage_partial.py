@@ -263,7 +263,8 @@ class TestSalvageBatchCLI(SalvageFixture):
         result = self._cli("--strict-generation")
         self.assertEqual(result.returncode, migrate.ExitCode.BATCH_PARTIAL_FAIL,
                          self.cli_output)
-        self.assertIn("complete predicate has multiple equality terms", self.cli_output)
+        self.assertIn("active physical join predicate cannot be represented",
+                   self.cli_output)
         self.assertFalse(self.salvage.exists())
         self.assertFalse(list(self.output.rglob("extraction_salvage.json")))
         self.assertFalse(list(self.project.rglob("*.tmdl")))

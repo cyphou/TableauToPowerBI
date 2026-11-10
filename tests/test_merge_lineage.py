@@ -91,9 +91,9 @@ class TestTableLineage(unittest.TestCase):
         wb1['datasources'][0]['relationships'] = [
             {'from_table': 'A', 'from_column': 'id', 'to_table': 'B', 'to_column': 'id', 'join_type': 'left'}
         ]
-        wb2 = _make_wb('WB2', [_table('A'), _table('B')])
+        wb2 = _make_wb('WB2', [_table('C'), _table('D')])
         wb2['datasources'][0]['relationships'] = [
-            {'from_table': 'A', 'from_column': 'id', 'to_table': 'B', 'to_column': 'id', 'join_type': 'left'}
+            {'from_table': 'C', 'from_column': 'id', 'to_table': 'D', 'to_column': 'id', 'join_type': 'left'}
         ]
         from powerbi_import.shared_model import assess_merge, merge_semantic_models
         assess = assess_merge([wb1, wb2], ['WB1', 'WB2'])

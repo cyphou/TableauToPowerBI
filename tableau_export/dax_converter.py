@@ -1206,6 +1206,10 @@ def _render_nullable_source(root, text, calc_datatype, force_arithmetic):
         'IF', 'IIF', 'ISNULL', 'IFNULL', 'ZN', 'NULLIF',
         'BLANK', 'TRUE', 'FALSE', 'TODAY', 'NOW', 'PI',
         'USERNAME', 'FULLNAME',
+        'DATE', 'DATEADD', 'DATEPART', 'DATENAME', 'DATEDIFF',
+        'DATEVALUE', 'DATETIME', 'DATEPARSE', 'YEAR', 'QUARTER',
+        'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND', 'WEEKNUM',
+        'WEEKDAY', 'EDATE', 'LEN',
     }
     for node in nodes:
         if (node[0] == 'call' and node[1].upper() in ('USERNAME', 'FULLNAME')

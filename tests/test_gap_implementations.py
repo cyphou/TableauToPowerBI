@@ -96,27 +96,22 @@ class TestDaxNewConversions(unittest.TestCase):
     # ── LOD with no dimensions ────────────────────────────────────
 
     def test_lod_no_dims_balanced_braces(self):
-        """LOD without dimensions should use balanced brace matching."""
+        """Global aggregate LOD should fail closed without grain evidence."""
         result = self._convert('{SUM([Sales])}')
-        self.assertIn('CALCULATE', result)
-        self.assertIn('SUM', result)
-        # Should not have stray braces
-        self.assertNotIn('{', result)
-        self.assertNotIn('}', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_lod_no_dims_preserves_other_braces(self):
-        """Ensure LOD fix doesn't corrupt other expressions."""
-        # A formula with a LOD and other content
+        """Global aggregate LOD should fail closed inside larger expressions."""
         result = self._convert('{AVG([Cost])} + 100')
-        self.assertIn('CALCULATE', result)
-        # AVG is correctly mapped to AVERAGE in DAX
-        self.assertIn('AVERAGE', result)
-        self.assertNotIn('{', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_lod_no_dims_nested(self):
-        """LOD without dimensions inside another expression."""
+        """A comparison over global aggregate LOD needs verified grain."""
         result = self._convert('IF {SUM([Sales])} > 100 THEN "High" END')
-        self.assertIn('CALCULATE', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     # ── LOD with dimensions (existing, still works) ───────────────
 

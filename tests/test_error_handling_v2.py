@@ -127,27 +127,51 @@ class TestMQueryBuilderHyperFallback(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# prep_flow_parser — hyper read fallback
+# m_query_builder — hyper read fallback
 # ---------------------------------------------------------------------------
 
-class TestPrepFlowParserHyperFallback(unittest.TestCase):
-    """Error paths in tableau_export/prep_flow_parser.py hyper read."""
+class TestMQueryBuilderHyperFallback(unittest.TestCase):
+    """Error paths in tableau_export/m_query_builder.py hyper read."""
 
     def test_hyper_catch_is_narrowed(self):
-        """Hyper fallback uses specific exceptions, not broad Exception."""
-        from tableau_export import prep_flow_parser
-        source = _read_source(prep_flow_parser)
-        idx = source.find('Hyper read failed for')
-        self.assertGreater(idx, 0)
-        block = source[max(0, idx - 200):idx]
-        self.assertIn('except (ImportError, OSError, KeyError, ValueError)', block)
-        self.assertNotIn('except Exception', block)
+        """Unexpected reader failures propagate instead of becoming templates."""
+        import types
+
+        from tableau_export.m_query_builder import _gen_m_hyper
+
+        reader = types.ModuleType('hyper_reader')
+        reader.generate_m_for_hyper_table = lambda *args, **kwargs: 'unexpected'
+
+        def fail_unexpectedly(*args, **kwargs):
+            raise RuntimeError('unexpected reader failure')
+
+        reader.read_hyper = fail_unexpectedly
+        with patch.dict('sys.modules', {'hyper_reader': reader}), \
+             patch('os.path.isfile', return_value=True), \
+             self.assertRaisesRegex(RuntimeError, 'unexpected reader failure'):
+            _gen_m_hyper({'filename': 'synthetic.hyper'}, 'Synthetic', [])
 
     def test_hyper_catch_logs_debug(self):
-        """Hyper fallback logs at DEBUG level."""
-        from tableau_export import prep_flow_parser
-        source = _read_source(prep_flow_parser)
-        self.assertIn("logger.debug('Hyper read failed for %s: %s'", source)
+        """Expected reader errors are logged and produce the metadata fallback."""
+        import types
+
+        from tableau_export.m_query_builder import _gen_m_hyper
+
+        reader = types.ModuleType('hyper_reader')
+        reader.generate_m_for_hyper_table = lambda *args, **kwargs: 'unexpected'
+
+        def fail_to_read(*args, **kwargs):
+            raise ValueError('invalid synthetic Hyper')
+
+        reader.read_hyper = fail_to_read
+        with patch.dict('sys.modules', {'hyper_reader': reader}), \
+             patch('os.path.isfile', return_value=True), \
+             self.assertLogs('tableau_export.m_query_builder', level='DEBUG') as logs:
+            result = _gen_m_hyper(
+                {'filename': 'synthetic.hyper'}, 'Synthetic', [{'name': 'Value'}])
+        self.assertIn('#table', result)
+        self.assertTrue(any('Hyper read failed for Synthetic' in message
+                            for message in logs.output))
 
 
 # ---------------------------------------------------------------------------

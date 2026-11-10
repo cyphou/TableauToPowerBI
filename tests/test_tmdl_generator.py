@@ -398,7 +398,7 @@ class TestCalculationIdentitySemanticContext(unittest.TestCase):
             **{key: context[key] for key in (
                 'calc_map', 'param_map', 'column_table_map',
                 'measure_names', 'param_values')})
-        self.assertEqual(dax, 'IF(\'table\'[Mail]="Mail", 1, BLANK())')
+        self.assertEqual(dax, 'IF(\'table\'[Mail] = "Mail", 1, BLANK())')
         self.assertEqual(validate_dax_expression(dax), [])
         self.assertEqual(_dax_to_m_expression(dax, 'table'),
                          'if ([Mail] = "Mail") = true then 1 else null')
@@ -2298,7 +2298,7 @@ class TestCrossTableMeasureClassification(unittest.TestCase):
             dax_context=context, col_metadata_map={},
         )
 
-    def test_unaggregated_measure_spanning_tables_becomes_aggregated_measure(self):
+    def test_unaggregated_measure_spanning_tables_requires_verified_source_grain(self):
         result = self.build(
             'IF([Invoice] > 0.08 * [Amount "Special" grant], [Weight], 0)',
             {'Invoice': 'Buildings', 'Amount "Special" grant': 'Households',
@@ -2307,11 +2307,10 @@ class TestCrossTableMeasureClassification(unittest.TestCase):
 
         self.assertNotIn('Poverty Weight', {c['name'] for c in result['columns']})
         measure = next(m for m in result['measures'] if m['name'] == 'Poverty Weight')
-        self.assertEqual(
+        self.assertRegex(
             measure['expression'],
-            "IF(MAX('Buildings'[Invoice]) > 0.08 * "
-            "SUM('Households'[Amount \"Special\" grant]), "
-            "SUM('Households'[Weight]), 0)",
+            r'(?is)^/\* TODO: DAX conversion validation failed for measure: '
+            r'.*source row scope.*grain.*\*/ BLANK\(\)$',
         )
 
     def test_dependent_calculation_is_preclassified_as_a_measure(self):
@@ -2327,6 +2326,10 @@ class TestCrossTableMeasureClassification(unittest.TestCase):
         self.assertIn('Poverty Weight', measure_names)
         self.assertIn('Total Poverty Weight', measure_names)
         self.assertNotIn('Total Poverty Weight', column_names)
+        total = next(m for m in result['measures']
+                 if m['name'] == 'Total Poverty Weight')
+        self.assertIn('TODO: DAX conversion validation failed', total['expression'])
+        self.assertIn('BLANK()', total['expression'])
 
     def test_single_table_row_calculation_remains_a_calculated_column(self):
         result = self.build(

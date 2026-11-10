@@ -86,6 +86,21 @@ spatial column. CSV geography serialization remains the SDK's bytes
 representation. Other unsupported Parquet types remain explicit errors;
 successful export does not establish spatial or visual parity.
 
+### Active physical joins
+
+Each active physical join must have a complete, resolved single-field equality
+predicate to be represented by a Power BI relationship. Missing, opaque,
+non-equality or multi-condition predicates cannot produce a complete semantic
+model unless an explicit materialization path retains the full join provenance.
+Eligible diagnostic-salvage runs may retain incomplete evidence, but do not
+produce a valid model. An exact Hyper identity or complete export of an
+underlying table reused by multiple aliases does not establish that the active
+join result was materialized; binding that same table to every alias can change
+row multiplicity and filter behavior. Materialize the full joined result as one
+source table with explicit mappings, or simplify the source join to supported
+predicates. Static export and binding checks do not establish runtime or value
+parity.
+
 ## Generation Limitations
 
 ### Diagnostic salvage (default recovery)

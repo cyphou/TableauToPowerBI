@@ -104,18 +104,20 @@ class TestRecursiveLOD(unittest.TestCase):
         self.assertEqual(result.count('CALCULATE'), 5)
 
     def test_lod_with_complex_agg(self):
-        """LOD where the aggregate expression is itself complex."""
+        """FIXED row expression requires verified source and total grain."""
         formula = '{FIXED [Region] : SUM(IF [Status] = "Active" THEN [Revenue] ELSE 0 END)}'
         result = self._convert(formula,
                                ctm={'Region': 'Sales', 'Revenue': 'Sales'})
-        self.assertIn('CALCULATE', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_lod_multi_table_dims(self):
-        """LOD with dimensions from different tables → REMOVEFILTERS per column."""
+        """Cross-table FIXED requires verified source and target grain."""
         formula = '{FIXED [Region], [Category] : SUM([Sales])}'
         result = self._convert(formula,
                                ctm={'Region': 'Geo', 'Category': 'Product', 'Sales': 'Sales'})
-        self.assertIn('REMOVEFILTERS', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
 
 # ════════════════════════════════════════════════════════════════════
