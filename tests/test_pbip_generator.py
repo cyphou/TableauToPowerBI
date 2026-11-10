@@ -228,11 +228,12 @@ class TestBuildVisualObjects(unittest.TestCase):
         self.assertEqual(result["background"], expected_background)
         self.assertNotIn("visualContainerStyle", result)
         with tempfile.TemporaryDirectory() as visuals_dir:
-            self.gen._create_visual_worksheet(
+            visual_id = self.gen._create_visual_worksheet(
                 visuals_dir, ws_data, {'worksheetName': 'C'},
                 1.0, 1.0, 0, [], {'calculations': []})
             visual_ids = os.listdir(visuals_dir)
             self.assertEqual(len(visual_ids), 1)
+            self.assertEqual(visual_id, visual_ids[0])
             with open(os.path.join(visuals_dir, visual_ids[0], 'visual.json'),
                       encoding='utf-8') as visual_file:
                 visual = json.load(visual_file)['visual']
@@ -701,6 +702,48 @@ class TestGenerateProject(unittest.TestCase):
         self.assertIn("objects_converted", meta)
         self.assertEqual(meta["objects_converted"]["worksheets"], 1)
         self.assertEqual(meta["objects_converted"]["dashboards"], 1)
+
+    def test_migration_summary_page_reports_generated_kpis_and_static_status(self):
+        self._generate()
+        import migrate
+        project_dir = os.path.join(self.output_dir, 'Test')
+        self.assertTrue(migrate._run_openability_gate(project_dir))
+        report_dir = os.path.join(self.output_dir, 'Test', 'Test.Report')
+        pages_dir = os.path.join(report_dir, 'definition', 'pages')
+        with open(os.path.join(pages_dir, 'pages.json'), encoding='utf-8') as stream:
+            pages = json.load(stream)
+        summary_pages = []
+        for page_name in pages['pageOrder']:
+            page_dir = os.path.join(pages_dir, page_name)
+            with open(os.path.join(page_dir, 'page.json'), encoding='utf-8') as stream:
+                page = json.load(stream)
+            if page.get('displayName') == 'Migration Summary':
+                summary_pages.append((page_name, page_dir))
+
+        self.assertEqual(len(summary_pages), 1)
+        summary_name, summary_dir = summary_pages[0]
+        self.assertEqual(pages['pageOrder'][-1], summary_name)
+        visual_files = [
+            os.path.join(root, filename)
+            for root, _, filenames in os.walk(os.path.join(summary_dir, 'visuals'))
+            for filename in filenames if filename == 'visual.json'
+        ]
+        self.assertEqual(len(visual_files), 1)
+        with open(visual_files[0], encoding='utf-8') as stream:
+            visual = json.load(stream)['visual']
+        self.assertEqual(visual['visualType'], 'textbox')
+        text = '\n'.join(
+            ''.join(run.get('value', '') for run in paragraph.get('textRuns', [])
+                    if isinstance(run.get('value'), str))
+            for paragraph in visual['objects']['general'][0]['properties']['paragraphs']
+        )
+        for expected in (
+                'Generation complete', 'Static project checks: OK',
+                'Data sources: 1', 'Model tables: 1', 'Generated measures: 0',
+                'Source calculations: 0', 'Business pages: 2',
+                'Business visuals generated: 1',
+                'Power BI Service refresh, source availability, and visual/value parity were not verified here.'):
+            self.assertIn(expected, text)
 
 
 class TestAutomaticModelModeEntrypoints(unittest.TestCase):

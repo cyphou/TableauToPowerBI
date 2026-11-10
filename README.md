@@ -170,6 +170,12 @@ python migrate.py batch .\workbooks --output-dir .\output --compare-desktop --al
 > interactive Windows session and installed applications. Static QA and native
 > evidence remain separate; see the [one-command workflow](docs/DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command).
 
+Generated PBIR reports, including thin reports, end with a **Migration Summary**
+page showing migration counts and the static project-check result. This page is
+a generation-time snapshot, not proof of Service refresh or Tableau-to-Power BI
+parity. See the [summary page guide](docs/POWERBI_PROJECT_GUIDE.md#migration-summary-page)
+for its scope and limitations.
+
 <details>
 <summary><b>📦 Installation</b></summary>
 

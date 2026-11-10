@@ -52,6 +52,24 @@ migration_metadata.json            # Migration metadata
 Data/                              # Unchanged packaged Excel copies and/or Hyper CSV/Parquet
 ```
 
+## Migration Summary Page
+
+Generated PBIR reports, including thin reports, append a text-only **Migration
+Summary** page. With a French culture it is named **Bilan de migration**. It
+shows generation status and counts for data sources, model tables, extracted
+calculations, generated measures, report pages and visuals. The page and visual
+counts exclude the summary itself; page counts can include generated tooltip,
+mobile and drill-through pages. For report-only paths, model counts may use
+available model metadata or source-calculation fallbacks.
+
+The default openability gate normally fills in the static project-check result,
+including an advisory warning count or blocking status. If the gate is skipped
+with `--no-verify-open`, or the status update fails, its internal placeholder
+may remain visible. The page is a generation-time snapshot: it does not update
+when the report is published or refreshed, and does not prove Service refresh,
+source availability, or visual and value parity. Review the separate quality
+and openability reports and validate those aspects independently.
+
 ## 🚀 Opening a Power BI Project
 
 ### Method 1: From Power BI Desktop

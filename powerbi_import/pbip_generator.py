@@ -412,6 +412,8 @@ def _show_formatted_label_fallback(container, worksheet):
 _STATIC_URL_SCHEMES = ('http://', 'https://', 'mailto:', '//')
 #: Power BI's own padding above and below a textbox's text.
 _TEXTBOX_VERTICAL_PADDING = 16
+_MIGRATION_SUMMARY_STATUS_MARKER = '__TTPBI_STATIC_PROJECT_STATUS__'
+_MIGRATION_SUMMARY_DISPLAY_NAMES = ('Migration Summary', 'Bilan de migration')
 
 #: A Tableau URL action interpolates fields as ``<field>`` or ``<[ds].[col]>``.
 _URL_FIELD_PLACEHOLDER = re.compile(r'<[^>]+>')
@@ -690,6 +692,7 @@ class PowerBIProjectGenerator:
         self._incremental_refresh_months = incremental_refresh_months
         self._parameterize = parameterize
         self._partial_generation = False
+        self._migration_summary_visual_relative_path = None
 
         # Preprocess model metadata using optional fidelity enhancers.
         with phase_timings.phase('fidelity_preprocess'):
@@ -2046,6 +2049,187 @@ class PowerBIProjectGenerator:
         _write_json(os.path.join(visual_dir, 'visual.json'), visual_json, ensure_ascii=False)
         return visual_id
 
+    def _create_migration_summary_page(self, pages_dir, page_names,
+                                       converted_objects, report_name, project_dir):
+        """Append a text-only migration summary with generated artifact counts."""
+        is_french = str(getattr(self, '_culture', '') or '').lower().startswith('fr')
+        display_name = 'Bilan de migration' if is_french else 'Migration Summary'
+        page_name = f'ReportSection{uuid.uuid4().hex[:6]}'
+        while page_name in page_names or os.path.exists(os.path.join(pages_dir, page_name)):
+            page_name = f'ReportSection{uuid.uuid4().hex[:6]}'
+
+        page_dir = os.path.join(pages_dir, page_name)
+        os.makedirs(page_dir, exist_ok=True)
+        page_json = {
+            '$schema': SCHEMA_PAGE,
+            'name': page_name,
+            'displayName': display_name,
+            'displayOption': 'FitToPage',
+            'height': 720,
+            'width': 1280,
+        }
+        _write_json(os.path.join(page_dir, 'page.json'), page_json)
+        visuals_dir = os.path.join(page_dir, 'visuals')
+        os.makedirs(visuals_dir, exist_ok=True)
+
+        tables_dir = os.path.join(
+            project_dir, f'{report_name}.SemanticModel', 'definition', 'tables')
+        if os.path.isdir(tables_dir):
+            table_count = sum(name.endswith('.tmdl') for name in os.listdir(tables_dir))
+        else:
+            table_count = len({
+                table for table, _ in getattr(self, '_actual_bim_symbols', set())
+            })
+        measures = getattr(self, '_actual_bim_measure_names', None)
+        if measures is None:
+            measures = {
+                (calc.get('caption') or calc.get('name', '')).strip('[]')
+                for calc in converted_objects.get('calculations', [])
+                if str(calc.get('role', '')).lower() == 'measure'
+            }
+        visual_count = 0
+        for existing_page in page_names:
+            page_visuals = os.path.join(pages_dir, existing_page, 'visuals')
+            if not os.path.isdir(page_visuals):
+                continue
+            visual_count += sum(
+                os.path.isfile(os.path.join(page_visuals, visual, 'visual.json'))
+                for visual in os.listdir(page_visuals)
+            )
+
+        partial_generation = getattr(self, '_partial_generation', False)
+        if is_french:
+            title = 'Bilan de migration'
+            generation_status = ('Génération partielle' if partial_generation
+                                 else 'Génération terminée')
+            status_label = 'Contrôles statiques : '
+            kpi_heading = 'Indicateurs de migration'
+            kpi_lines = [
+                f"Sources de données : {len(converted_objects.get('datasources', []))}"
+                f"     Tables générées : {table_count}",
+                f"Calculs extraits : {len(converted_objects.get('calculations', []))}"
+                f"     Mesures générées : {len(measures)}",
+                f"Pages métier : {len(page_names)}     Visuels métier générés : {visual_count}",
+            ]
+            note = ('Actualisation dans Power BI Service, disponibilité des sources et '
+                    'parité des données/visuels non vérifiées ici.')
+        else:
+            title = 'Migration Summary'
+            generation_status = ('Partial generation' if partial_generation
+                                 else 'Generation complete')
+            status_label = 'Static project checks: '
+            kpi_heading = 'Migration KPIs'
+            kpi_lines = [
+                f"Data sources: {len(converted_objects.get('datasources', []))}"
+                f"     Model tables: {table_count}",
+                f"Source calculations: {len(converted_objects.get('calculations', []))}"
+                f"     Generated measures: {len(measures)}",
+                f"Business pages: {len(page_names)}     Business visuals generated: {visual_count}",
+            ]
+            note = ('Power BI Service refresh, source availability, and visual/value parity '
+                    'were not verified here.')
+
+        text_runs = [
+            {'text': title + '\n', 'bold': True, 'font_size': 26, 'color': '#004B87'},
+            {'text': generation_status + '\n', 'bold': True, 'font_size': 20,
+             'color': '#107C10' if not partial_generation else '#9A6700'},
+            {'text': status_label, 'bold': True, 'font_size': 17},
+            {'text': _MIGRATION_SUMMARY_STATUS_MARKER + '\n', 'bold': True,
+             'font_size': 17, 'color': '#6B7280'},
+            {'text': kpi_heading + '\n', 'bold': True, 'font_size': 18,
+             'color': '#323130'},
+        ]
+        text_runs.extend(
+            {'text': line + '\n', 'font_size': 15, 'color': '#323130'}
+            for line in kpi_lines
+        )
+        text_runs.append({'text': '\n' + note, 'font_size': 11, 'color': '#605E5C'})
+        old_width = getattr(self, '_current_page_width', None)
+        old_height = getattr(self, '_current_page_height', None)
+        self._current_page_width, self._current_page_height = 1280, 720
+        try:
+            visual_path = self._create_visual_textbox(
+                visuals_dir,
+                {'position': {'x': 40, 'y': 32, 'w': 1200, 'h': 640},
+                 'text_runs': text_runs},
+                1, 1, 0,
+            )
+        finally:
+            if old_width is None:
+                self.__dict__.pop('_current_page_width', None)
+            else:
+                self._current_page_width = old_width
+            if old_height is None:
+                self.__dict__.pop('_current_page_height', None)
+            else:
+                self._current_page_height = old_height
+        self._migration_summary_visual_relative_path = os.path.relpath(
+            visual_path, project_dir)
+        return page_name
+
+    @staticmethod
+    def update_migration_summary_status(project_dir, openability_report):
+        """Update the summary textbox with the final static openability verdict."""
+        openable = getattr(openability_report, 'openable', None)
+        warnings = getattr(openability_report, 'warnings', [])
+        blockers = getattr(openability_report, 'blocking_issues', [])
+        partial = os.path.isfile(os.path.join(project_dir, 'partial_generation.json'))
+        for root, _, files in os.walk(project_dir):
+            if 'visual.json' not in files or '.Report' not in root:
+                continue
+            page_path = os.path.join(root, '..', '..', 'page.json')
+            try:
+                with open(page_path, encoding='utf-8') as stream:
+                    page_name = json.load(stream).get('displayName', '')
+            except (OSError, ValueError):
+                continue
+            if page_name not in _MIGRATION_SUMMARY_DISPLAY_NAMES:
+                continue
+            visual_path = os.path.join(root, 'visual.json')
+            try:
+                with open(visual_path, encoding='utf-8') as stream:
+                    visual_json = json.load(stream)
+            except (OSError, ValueError):
+                continue
+            changed = False
+            general = (visual_json.get('visual', {}).get('objects', {})
+                       .get('general', []))
+            paragraphs = (general[0].get('properties', {}).get('paragraphs', [])
+                          if general and isinstance(general[0], dict) else [])
+            for paragraph in paragraphs:
+                for run in paragraph.get('textRuns', []):
+                    if run.get('value') != _MIGRATION_SUMMARY_STATUS_MARKER:
+                        continue
+                    is_french = page_name == 'Bilan de migration'
+                    if partial:
+                        value = ('Partielle — consulter le diagnostic de migration'
+                                 if is_french else
+                                 'Partial — review the migration diagnostic')
+                        color = '#9A6700'
+                    elif openable is True:
+                        if not warnings:
+                            value = 'OK'
+                        elif is_french:
+                            noun = 'avertissement' if len(warnings) == 1 else 'avertissements'
+                            value = f'OK ({len(warnings)} {noun})'
+                        else:
+                            noun = 'warning' if len(warnings) == 1 else 'warnings'
+                            value = f'OK ({len(warnings)} {noun})'
+                        color = '#107C10'
+                    elif openable is False:
+                        value = (f'À vérifier ({len(blockers)} blocage(s) statique(s))'
+                                 if is_french else
+                                 f'Review required ({len(blockers)} static blocker(s))')
+                        color = '#9A6700'
+                    else:
+                        value = ('Non exécuté' if is_french else 'Not run')
+                        color = '#6B7280'
+                    run['value'] = value
+                    run.setdefault('textStyle', {})['color'] = color
+                    changed = True
+            if changed:
+                _write_json(visual_path, visual_json, ensure_ascii=False)
+
     def _expose_occluded_card_values(self, visuals_dir, worksheet_visuals):
         """Shorten a covered parent card only when a clear top band exists."""
         cards = []
@@ -2251,7 +2435,9 @@ class PowerBIProjectGenerator:
                 visual_json['visual']['visualContainerObjects'] = {
                     'background': background,
                 }
-        _write_json(os.path.join(visual_dir, 'visual.json'), visual_json, ensure_ascii=False)
+        visual_path = os.path.join(visual_dir, 'visual.json')
+        _write_json(visual_path, visual_json, ensure_ascii=False)
+        return visual_path
 
     def _create_annotation_overlay(self, visuals_dir, annotation, parent_obj,
                                     scale_x, scale_y, visual_count):
@@ -3207,6 +3393,9 @@ class PowerBIProjectGenerator:
         # 5d. Drill-through pages â€” from filter actions targeting specific worksheets
         self._create_drillthrough_pages(pages_dir, page_names, worksheets,
                                         converted_objects)
+        page_names.append(self._create_migration_summary_page(
+            pages_dir, page_names, converted_objects, report_name,
+            os.path.dirname(report_dir)))
         pages_metadata = {
             "$schema": SCHEMA_PAGES_METADATA,
             "pageOrder": page_names,
@@ -3399,6 +3588,9 @@ class PowerBIProjectGenerator:
         if dashboards:
             self._create_mobile_pages(pages_dir, page_names, dashboards, worksheets, converted_objects)
         self._create_drillthrough_pages(pages_dir, page_names, worksheets, converted_objects)
+        page_names.append(self._create_migration_summary_page(
+            pages_dir, page_names, converted_objects, report_name,
+            os.path.dirname(report_dir)))
 
         pages_metadata = {
             "$schema": SCHEMA_PAGES_METADATA,

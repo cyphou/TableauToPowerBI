@@ -9077,6 +9077,12 @@ def _run_openability_gate(project_dir):
     except ImportError:
         from powerbi_import.healing import check_openability
     report = check_openability(project_dir)
+    try:
+        from powerbi_import.pbip_generator import PowerBIProjectGenerator
+        PowerBIProjectGenerator.update_migration_summary_status(project_dir, report)
+    except (ImportError, OSError, TypeError, ValueError) as exc:
+        logger.warning("Could not update migration summary status: %s", exc)
+    report = check_openability(project_dir)
     if report.openable:
         pq = next((c for c in report.checks if c.name == 'power_query'), None)
         pq_note = f", {len(pq.issues)} Power Query issues" if pq and pq.issues else ""

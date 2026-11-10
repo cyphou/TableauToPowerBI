@@ -273,10 +273,10 @@ class TestMixedWorkbookReportPages(unittest.TestCase):
     def _assert_mixed_pages(self, mode):
         pages_dir, pages = self._pages(self._generate(mode, _mixed_workbook()))
         self.assertEqual([page["displayName"] for page in pages],
-                         DASHBOARD_NAMES + STANDALONE_NAMES)
+                         DASHBOARD_NAMES + STANDALONE_NAMES + ["Migration Summary"])
         self.assertEqual(pages[0]["name"], "ReportSection")
         self.assertTrue(all("pageType" not in page for page in pages))
-        for page in pages[3:]:
+        for page in pages[3:-1]:
             visuals = self._visuals(pages_dir, page["name"])
             self.assertEqual(len(visuals), 1)
             self.assertIn("query", visuals[0]["visual"])
@@ -342,7 +342,8 @@ class TestMixedWorkbookReportPages(unittest.TestCase):
                 report_dir = self._generate(mode, source)
                 pages_dir, pages = self._pages(report_dir)
                 self.assertEqual([page["displayName"] for page in pages],
-                                 DASHBOARD_NAMES + STANDALONE_NAMES)
+                                 DASHBOARD_NAMES + STANDALONE_NAMES
+                                 + ["Migration Summary"])
                 self.assertEqual(pages[0]["name"], "ReportSection")
                 target, = [page for page in pages
                            if page["displayName"] == target_name]
@@ -431,7 +432,7 @@ class TestMixedWorkbookReportPages(unittest.TestCase):
                     source = _workbook([_worksheet(n) for n in names], dashboards)
                     pages_dir, pages = self._pages(self._generate(mode, source))
                     self.assertEqual([page["displayName"] for page in pages],
-                                     DASHBOARD_NAMES + names)
+                                     DASHBOARD_NAMES + names + ["Migration Summary"])
                     for page, dashboard in zip(pages[:3], dashboards):
                         self.assertEqual(
                             (page["width"], page["height"]),
@@ -445,9 +446,10 @@ class TestMixedWorkbookReportPages(unittest.TestCase):
                     source = _workbook([_worksheet(n) for n in names])
                     pages_dir, pages = self._pages(self._generate(mode, source))
                     self.assertEqual([page["displayName"] for page in pages],
-                                     names or ["Tableau Migration"])
+                                     (names or ["Tableau Migration"])
+                                     + ["Migration Summary"])
                     self.assertEqual(pages[0]["name"], "ReportSection")
-                    for page in pages:
+                    for page in pages[:-1]:
                         self.assertEqual(
                             len(self._visuals(pages_dir, page["name"])),
                             1 if names else 0)
@@ -477,7 +479,7 @@ class TestMixedWorkbookReportPages(unittest.TestCase):
         ]
         expected_names = DASHBOARD_NAMES + STANDALONE_NAMES + [
             "Tooltip - Hidden Tooltip", "Dashboard C (Phone)",
-            "Drillthrough - Hidden Drill",
+            "Drillthrough - Hidden Drill", "Migration Summary",
         ]
         for mode in ("full", "thin"):
             with self.subTest(mode=mode):
@@ -485,7 +487,7 @@ class TestMixedWorkbookReportPages(unittest.TestCase):
                 pages_dir, pages = self._pages(report_dir)
                 self.assertEqual([page["displayName"] for page in pages],
                                  expected_names)
-                tooltip, mobile, drillthrough = pages[8:]
+                tooltip, mobile, drillthrough = pages[8:11]
                 self.assertEqual(tooltip["pageType"], "Tooltip")
                 self.assertEqual((tooltip["width"], tooltip["height"]), (480, 320))
                 self.assertEqual((mobile["width"], mobile["height"]), (320, 568))
