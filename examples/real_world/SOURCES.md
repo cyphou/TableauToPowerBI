@@ -33,7 +33,7 @@ These files were downloaded from public GitHub repositories for testing purposes
 | File | Source Repository | License | Description |
 |------|-------------------|---------|-------------|
 | `tableau_prep_book.tfl` | [aloth/tableau-book-resources](https://github.com/aloth/tableau-book-resources) | CC-BY-4.0 | Prep flow from "Visual Analytics with Tableau" by Alexander Loth (Wiley). Contains 10 nodes: CSV inputs, Excel input, SuperUnion, SuperJoin, WriteToHyper output |
-| `SampleFlow.tfl` | [tableau/server-client-python](https://github.com/tableau/server-client-python) | MIT | Sample Prep flow for server API testing |
+| `SampleFlow.tfl` | [tableau/server-client-python](https://github.com/tableau/server-client-python) | MIT | Empty Prep flow skeleton (0 nodes); retained as a negative parser/rejection fixture, not a migratable flow |
 
 ## Tableau Data Source Files (.tds)
 

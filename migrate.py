@@ -20,7 +20,9 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
+import stat
 import sys
 import tempfile
 import textwrap
@@ -30,7 +32,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
-from typing import Optional
+from typing import Any, Optional
 
 from powerbi_import.errors import (
     ConfigurationError,
@@ -2474,8 +2476,549 @@ def _run_batch_config(args, desktop_options=None):
     return exit_code
 
 
+def _prep_export_name(name, used_names):
+    safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
+    candidate = safe_name
+    suffix = 2
+    while candidate.casefold() in used_names:
+        candidate = f'{safe_name}__{suffix}'
+        suffix += 1
+    used_names.add(candidate.casefold())
+    return candidate
+
+
+def _unique_prep_profile_names(profiles):
+    used_names = set()
+    for profile in profiles:
+        profile.name = _prep_export_name(profile.name, used_names)
+
+
+def _export_prep_sources(profile, src_dir, packaged_files=None):
+    os.makedirs(src_dir, exist_ok=True)
+    used_names = set()
+    for inp in profile.inputs:
+        safe_name = _prep_export_name(inp.name, used_names)
+        src_path = os.path.join(src_dir, f'{safe_name}.json')
+        src_data = {
+            'name': inp.name,
+            'connection_type': inp.connection_type,
+            'server': inp.server,
+            'database': inp.database,
+            'schema': inp.schema,
+            'table_name': inp.table_name,
+            'filename': inp.filename,
+            'column_count': inp.column_count,
+            'columns': inp.column_names,
+            'fingerprint': inp.fingerprint,
+            'flow': profile.name,
+        }
+        staged = (packaged_files or {}).get(getattr(inp, 'node_id', ''))
+        if staged:
+            src_data['packaged_file'] = os.path.relpath(staged, os.path.dirname(src_dir)).replace('\\', '/')
+        with open(src_path, 'w', encoding='utf-8') as stream:
+            json.dump(src_data, stream, indent=2, ensure_ascii=False)
+    return len(profile.inputs)
+
+
+def _prep_report_blocker(error):
+    message = str(error or '')
+    if 'unsupported nodeType' in message:
+        match = re.search(r"unsupported nodeType ['\"]([^'\"]+)['\"]", message)
+        kind = match.group(1) if match else 'unknown'
+        return {'code': 'unsupported_node_type',
+                'message': f'Prep node type {kind} has no verified Power Query conversion.'}
+    if 'unsupported_action_annotations' in message:
+        return {'code': 'unverified_action_annotations',
+                'message': 'Action annotations contain operations whose order and semantics are not converted.'}
+    if 'incompatible types' in message:
+        return {'code': 'union_schema_conflict',
+                'message': 'Union inputs disagree on a column type; no cast was inferred.'}
+    if 'source-declared nonempty fields projection is required' in message:
+        return {'code': 'join_projection_missing',
+                'message': 'Join output projection is not declared; no output schema was inferred.'}
+    if ('Duplicate Prep output table names would lose M query coverage' in message
+            or 'Duplicate Prep output/table name' in message):
+        return {'code': 'duplicate_output_identity',
+                'message': 'Output names collide after normalization; no M queries were exported.'}
+    if 'Prep outputs have no M queries' in message:
+        return {'code': 'missing_output_query',
+                'message': 'At least one output has no generated M query; no M queries were exported.'}
+    if 'Prep AddColumn: duplicate/colliding field' in message:
+        return {'code': 'duplicate_column_identity',
+                'message': 'A calculated field targets an existing column; replacement semantics were not inferred.'}
+    if 'Prep M query filenames collide' in message:
+        return {'code': 'query_filename_collision',
+                'message': 'M query filenames collide; no M queries were exported.'}
+    if 'Packaged Prep' in message:
+        return {'code': 'packaged_source_unresolved',
+                'message': 'Packaged source data could not be staged or bound unambiguously.'}
+    match = re.search(r"unsupported or incomplete clean action ['\"]([^'\"]+)['\"]", message)
+    if match:
+        return {'code': 'unsupported_clean_action',
+                'message': f'Prep action {match.group(1)} has no verified Power Query conversion.'}
+    if 'QuickCalcColumn supports TrimSpaces only' in message:
+        return {'code': 'unsupported_quick_calc',
+                'message': 'This QuickCalcColumn operation is not the verified TrimSpaces subtype.'}
+    return {'code': 'conversion_blocked',
+            'message': 'The flow did not produce a complete Power Query migration.'}
+
+
+def _write_prep_query_migration_report(flow_out, flow_name, source_file,
+                                       profile=None, failure=None, packaged_files=None):
+    """Write query-level migration status without embedding query data values."""
+    import html as html_lib
+
+    os.makedirs(flow_out, exist_ok=True)
+    inputs = list(getattr(profile, 'inputs', []) or []) if profile else []
+    outputs = list(getattr(profile, 'outputs', []) or []) if profile else []
+    transforms = list(getattr(profile, 'transforms', []) or []) if profile else []
+    m_queries = dict(getattr(profile, 'm_queries', {}) or {}) if profile else {}
+    node_graph = dict(getattr(profile, 'node_graph', {}) or {}) if profile else {}
+
+    parents = {node_id: set() for node_id in node_graph}
+    for source_id, targets in node_graph.items():
+        for target_id in targets or []:
+            parents.setdefault(target_id, set()).add(source_id)
+
+    def ancestors(output_id):
+        if not output_id or output_id not in parents:
+            return set()
+        found, pending = set(), [output_id]
+        while pending:
+            node_id = pending.pop()
+            if node_id in found:
+                continue
+            found.add(node_id)
+            pending.extend(parents.get(node_id, ()))
+        return found
+
+    blocker = _prep_report_blocker(failure) if failure else None
+    diagnostic_codes = sorted({
+        code
+        for item in (getattr(profile, 'diagnostics', []) or [])
+        if isinstance(item, dict)
+        for code in [item.get('code')]
+        if isinstance(code, str) and code
+    }) if profile else []
+    blocking_diagnostic_codes = sorted({
+        code
+        for item in (getattr(profile, 'diagnostics', []) or [])
+        if isinstance(item, dict) and item.get('blocks_conversion', True)
+        for code in [item.get('code')]
+        if isinstance(code, str) and code
+    }) if profile else []
+    diagnostic_messages = {
+        'unsupported_quick_calc':
+            'QuickCalcColumn subtype has no verified Power Query conversion.',
+        'unsupported_action_annotations':
+            'Action annotations contain operations whose order and semantics are not converted.',
+        'unsupported_supernode_type':
+            'Prep supernode has no verified Power Query conversion.',
+        'unsupported_action_node_field':
+            'Prep action node contains fields whose execution semantics are not converted.',
+    }
+    diagnostic_code_aliases = {
+        'unsupported_supernode_type': 'unsupported_node_type',
+        'unsupported_action_annotations': 'unverified_action_annotations',
+    }
+    blockers = [blocker] if blocker else []
+    blocker_codes = {item['code'] for item in blockers}
+    for code in blocking_diagnostic_codes:
+        report_code = diagnostic_code_aliases.get(code, code)
+        if report_code not in blocker_codes:
+            blockers.append({
+                'code': report_code,
+                'message': diagnostic_messages.get(code)
+                or 'Unsupported Prep structure blocks conversion.',
+            })
+            blocker_codes.add(report_code)
+    output_entries = [
+        ((getattr(output, 'name', '') or '').replace(' ', '_'), output)
+        for output in outputs
+    ]
+    output_keys = {key for key, _ in output_entries}
+    inputs_by_key = {
+        (getattr(source, 'name', '') or '').replace(' ', '_'): source
+        for source in inputs
+    }
+    query_entries = output_entries + [
+        (key, None) for key in m_queries if key not in output_keys
+    ]
+    queries = []
+    for query_key, output in query_entries:
+        source_query = inputs_by_key.get(query_key) if output is None else None
+        m_code = m_queries.get(query_key, '')
+        query_node_id = getattr(output or source_query, 'node_id', '')
+        query_ancestors = ancestors(query_node_id)
+        generated = bool(m_code and not failure)
+        safe_name = query_key.replace('/', '_').replace('\\', '_')
+        step_records = []
+        for transform in transforms:
+            transform_id = getattr(transform, 'node_id', '')
+            if query_ancestors and transform_id not in query_ancestors:
+                continue
+            details = getattr(transform, 'details', {}) or {}
+            operations = []
+            for operation in details.get('operations', []):
+                if isinstance(operation, dict):
+                    item = {'type': operation.get('type', 'unknown')}
+                    if operation.get('column'):
+                        item['column'] = operation['column']
+                    operations.append(item)
+            step_records.append({
+                'node_id': transform_id,
+                'name': getattr(transform, 'name', ''),
+                'kind': getattr(transform, 'transform_type', 'unknown'),
+                'operations': operations,
+                'manual': bool(details.get('manual')),
+            })
+        source_names = [
+            getattr(source, 'name', '') for source in inputs
+            if not query_ancestors or getattr(source, 'node_id', '') in query_ancestors
+        ]
+        if source_query is not None:
+            source_names = [getattr(source_query, 'name', '')]
+        query = {
+            'name': query_key,
+            'query_role': 'output' if output is not None else
+                          'secondary' if source_query is not None else 'other',
+            'node_id': query_node_id,
+            'output_node_id': getattr(output, 'node_id', None),
+            'status': 'generated' if generated else 'blocked',
+            'm_file': f'PowerQuery/{safe_name}.pq' if generated else None,
+            'columns': list(getattr(output or source_query, 'column_names', []) or []),
+            'depends_on': source_names,
+            'steps': step_records,
+            'blocker_codes': sorted(blocker_codes) if not generated else [],
+        }
+        if m_code:
+            from powerbi_import.m_validator import validate_m_query
+            issues = validate_m_query(m_code)
+            query['static_m_validation'] = {
+                'status': 'pass' if not issues else 'fail',
+                'issue_count': len(issues),
+                'issues': issues,
+            }
+            query['m_characters'] = len(m_code)
+        queries.append(query)
+
+    blocked_count = sum(query['status'] == 'blocked' for query in queries)
+    previous_m_files = 0
+    if failure:
+        try:
+            with os.scandir(os.path.join(flow_out, 'PowerQuery')) as entries:
+                previous_m_files = sum(
+                    entry.is_file() and entry.name.lower().endswith('.pq')
+                    for entry in entries
+                )
+        except FileNotFoundError:
+            pass
+        except OSError:
+            previous_m_files = None
+    report = {
+        'schema_version': 1,
+        'flow': flow_name,
+        'source_file': os.path.basename(source_file),
+        'status': 'blocked' if failure else 'generated',
+        'grade': (getattr(profile, 'assessment', {}) or {}).get('grade') if profile else None,
+        'summary': {
+            'input_count': len(inputs),
+            'output_count': len(outputs),
+            'transform_count': len(transforms),
+            'query_count': len(queries),
+            'generated_queries': len(queries) - blocked_count,
+            'blocked_queries': blocked_count,
+        },
+        'blockers': blockers,
+        'diagnostic_codes': diagnostic_codes,
+        'previous_m_files': previous_m_files,
+        'packaged_sources': [
+            {'node_id': node_id, 'file': os.path.relpath(path, flow_out).replace('\\', '/')}
+            for node_id, path in sorted((packaged_files or {}).items())
+        ] if not failure else [],
+        'queries': queries,
+    }
+    json_path = os.path.join(flow_out, 'powerquery_migration_report.json')
+    with open(json_path, 'w', encoding='utf-8') as stream:
+        json.dump(report, stream, indent=2, ensure_ascii=False)
+
+    rows = []
+    for query in queries:
+        operations = ', '.join(
+            op['type'] + (f" ({op['column']})" if op.get('column') else '')
+            for step in query['steps'] for op in step['operations']
+        )
+        rows.append(
+            '<tr><td>' + html_lib.escape(query['name']) + '</td><td>'
+            + html_lib.escape(query['status']) + '</td><td>'
+            + html_lib.escape(', '.join(query['depends_on'])) + '</td><td>'
+            + html_lib.escape(operations or '—') + '</td><td>'
+            + html_lib.escape(query['m_file'] or '—') + '</td></tr>'
+        )
+    blocker_html = ''.join(
+        '<li><strong>' + html_lib.escape(item['code']) + ':</strong> '
+        + html_lib.escape(item['message']) + '</li>' for item in report['blockers']
+    )
+    previous_html = ''
+    if failure and (previous_m_files is None or previous_m_files):
+        previous_html = ('<p>Previous M files may remain on disk; '
+                         'they are not outputs of this failed run.</p>')
+    packaged_html = ''.join(
+        '<li>' + html_lib.escape(item['node_id']) + ': <code>'
+        + html_lib.escape(item['file']) + '</code></li>'
+        for item in report['packaged_sources']
+    )
+    html_path = os.path.join(flow_out, 'powerquery_migration_report.html')
+    with open(html_path, 'w', encoding='utf-8') as stream:
+        stream.write(
+            '<!doctype html><html lang="en"><meta charset="utf-8">'
+            '<title>Power Query migration report</title>'
+            '<style>body{font:14px Segoe UI,sans-serif;margin:32px;color:#242424}'
+            'table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;'
+            'padding:8px;text-align:left}th{background:#f3f2f1}code{font-family:Consolas,monospace}'
+            '</style><h1>Power Query migration report</h1><p>Flow: '
+            + html_lib.escape(flow_name) + '</p><p>Status: '
+            + html_lib.escape(report['status']) + ' | queries: '
+            + str(report['summary']['generated_queries']) + ' generated, '
+            + str(blocked_count) + ' blocked</p>' + previous_html
+            + '<ul>' + blocker_html + '</ul>'
+            + ('<h2>Packaged sources</h2><ul>' + packaged_html + '</ul>' if packaged_html else '')
+            + '<table><thead><tr><th>Query</th><th>Status</th><th>Sources</th>'
+            '<th>Steps</th><th>M file</th></tr></thead><tbody>'
+            + ''.join(rows) + '</tbody></table></html>'
+        )
+    return {'json': json_path, 'html': html_path, 'report': report}
+
+
+def _write_prep_batch_query_migration_report(batch_results, migrated_root):
+    """Aggregate per-flow Power Query reports, including blocked conversions."""
+    flow_reports = []
+    root = os.path.abspath(migrated_root)
+    for result in batch_results.values():
+        report_path = result.get('powerquery_migration_report')
+        if not result.get('prep_flow') and not report_path:
+            continue
+        per_flow = None
+        try:
+            if isinstance(report_path, str):
+                with open(report_path, encoding='utf-8') as stream:
+                    per_flow = json.load(stream)
+        except (OSError, ValueError):
+            pass
+        if (not isinstance(per_flow, dict)
+                or not isinstance(per_flow.get('summary'), dict)
+                or not isinstance(per_flow.get('queries'), list)
+                or not isinstance(per_flow.get('blockers'), list)
+                or per_flow.get('status') not in ('generated', 'blocked')):
+            flow_reports.append({
+                'flow': result.get('report_name', 'unknown'),
+                'status': 'evidence_unavailable',
+                'report_file': None,
+                'summary': {},
+                'blockers': [{
+                    'code': 'report_unavailable',
+                    'message': 'Per-flow migration report is missing or unreadable; query evidence is unavailable.',
+                }],
+                'diagnostic_codes': [],
+                'queries': [],
+            })
+            continue
+        queries = []
+        for original in per_flow.get('queries', []):
+            query = dict(original)
+            m_file = query.get('m_file')
+            if m_file:
+                query['m_file'] = os.path.relpath(
+                    os.path.join(os.path.dirname(report_path), m_file), root
+                ).replace(os.sep, '/')
+            queries.append(query)
+        flow_reports.append({
+            'flow': per_flow.get('flow', result.get('report_name', 'unknown')),
+            'status': per_flow.get('status', 'blocked'),
+            'report_file': os.path.relpath(report_path, root).replace(os.sep, '/'),
+            'summary': per_flow.get('summary', {}),
+            'blockers': per_flow.get('blockers', []),
+            'diagnostic_codes': per_flow.get('diagnostic_codes', []),
+            'previous_m_files': per_flow.get('previous_m_files', 0),
+            'queries': queries,
+        })
+
+    if not flow_reports:
+        return None
+    query_count = sum(flow['summary'].get('query_count', len(flow['queries']))
+                      for flow in flow_reports)
+    generated = sum(flow['summary'].get('generated_queries', 0)
+                    for flow in flow_reports)
+    blocked = sum(flow['summary'].get('blocked_queries', 0)
+                  for flow in flow_reports)
+    statuses = {flow['status'] for flow in flow_reports}
+    status = ('generated' if statuses == {'generated'} else
+              'blocked' if statuses == {'blocked'} else 'partial')
+    report = {
+        'schema_version': 1,
+        'status': status,
+        'summary': {
+            'flow_count': len(flow_reports),
+            'query_count': query_count,
+            'generated_queries': generated,
+            'blocked_queries': blocked,
+            'blocked_flows': sum(flow['status'] == 'blocked' for flow in flow_reports),
+            'unavailable_flows': sum(flow['status'] == 'evidence_unavailable'
+                                     for flow in flow_reports),
+        },
+        'flows': flow_reports,
+    }
+    os.makedirs(root, exist_ok=True)
+    json_path = os.path.join(root, 'powerquery_migration_report.json')
+    with open(json_path, 'w', encoding='utf-8') as stream:
+        json.dump(report, stream, indent=2, ensure_ascii=False)
+
+    from html import escape
+    rows = []
+    for flow in flow_reports:
+        blockers = '; '.join(item.get('message', '') for item in flow['blockers'])
+        if flow.get('status') == 'blocked' and flow.get('previous_m_files') != 0:
+            blockers += ('; ' if blockers else '') + (
+                'Previous M files may remain on disk; they are not outputs of this failed run.')
+        if not flow['queries']:
+            rows.append(
+                '<tr><td>' + escape(flow['flow']) + '</td><td>—</td><td>'
+                + escape(flow['status']) + '</td><td>—</td><td>'
+                + escape(blockers or 'No query inventory available') + '</td></tr>'
+            )
+        for query in flow['queries']:
+            rows.append(
+                '<tr><td>' + escape(flow['flow']) + '</td><td>'
+                + escape(query['name']) + '</td><td>' + escape(query['status'])
+                + '</td><td>' + escape(query.get('m_file') or '—') + '</td><td>'
+                + escape(blockers or '—') + '</td></tr>'
+            )
+    html_path = os.path.join(root, 'powerquery_migration_report.html')
+    with open(html_path, 'w', encoding='utf-8') as stream:
+        stream.write(
+            '<!doctype html><html lang="en"><meta charset="utf-8">'
+            '<title>Prep Power Query migration report</title>'
+            '<style>body{font:14px Segoe UI,sans-serif;margin:32px;color:#242424}'
+            'table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;'
+            'padding:8px;text-align:left;vertical-align:top}th{background:#f3f2f1}'
+            '</style><h1>Prep Power Query migration report</h1><p>Status: '
+            + escape(status) + ' | flows: ' + str(len(flow_reports))
+            + ' | queries: ' + str(generated) + ' generated, ' + str(blocked)
+            + ' blocked</p><table><thead><tr><th>Flow</th><th>Query</th>'
+            '<th>Status</th><th>M file</th><th>Blocker</th></tr></thead><tbody>'
+            + ''.join(rows) + '</tbody></table></html>'
+        )
+    return {'json': json_path, 'html': html_path, 'report': report}
+
+
+def _stage_prep_packaged_files(filepath, flow_out, source_map=None, max_zip_entry_mb=None):
+    from prep_flow_parser import (
+        get_prep_node_kind,
+        load_prep_source_map,
+        read_prep_flow,
+    )
+
+    flow = read_prep_flow(filepath)
+    connections = flow.get('connections', {})
+    source_overrides = load_prep_source_map(source_map)
+    bindings = {}
+    packaged_nodes = [
+        (node_id, node) for node_id, node in flow.get('nodes', {}).items()
+        if get_prep_node_kind(node) == 'input'
+        and node_id not in source_overrides
+        and (connections.get(node.get('connectionId', '')) or {}).get('isPackaged')
+    ]
+    if not packaged_nodes:
+        return bindings
+    if not zipfile.is_zipfile(filepath):
+        raise ValueError('Packaged Prep input requires a ZIP archive')
+    with zipfile.ZipFile(filepath) as archive:
+        names = archive.namelist()
+        for node_id, node in packaged_nodes:
+            connection_id = node.get('connectionId', '')
+            connection = connections.get(connection_id, {})
+            if 'inputunion' in str(node.get('nodeType', '')).lower():
+                raise ValueError('Packaged Prep input union requires verified multi-file semantics')
+            actions = node.get('actions') or []
+            if any(
+                    not isinstance(action, dict)
+                    or not isinstance(action.get('nodeType'), str)
+                    or action['nodeType'].rsplit('.', 1)[-1] != 'RemoveColumns'
+                    or not isinstance(action.get('columnNames'), list)
+                    or not action.get('columnNames')
+                    or not all(isinstance(column, str) and column for column in action['columnNames'])
+                    for action in actions):
+                raise ValueError('Packaged Prep input has an unconverted input action')
+            if any(node.get(key) for key in (
+                    'filters', 'randomSampling', 'selectedFields',
+                    'restrictedFields', 'userRenamedFields', 'debugModeRowLimit')):
+                raise ValueError('Packaged Prep input has unconverted input transformations')
+            attributes = {**(connection.get('connectionAttributes') or {}),
+                          **(node.get('connectionAttributes') or {})}
+            filename = attributes.get('filename', '')
+            if (not isinstance(connection_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', connection_id)
+                    or not isinstance(filename, str) or not filename
+                    or filename in ('.', '..') or filename[-1] in ' .'
+                    or re.search(r'[<>:"/\\|?*\x00-\x1f]', filename)
+                    or re.fullmatch(r'(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', filename)):
+                raise ValueError('Packaged Prep input has an unsafe connection ID or filename')
+            connection_class = str(attributes.get('class', '')).lower()
+            extension = os.path.splitext(filename)[1].lower()
+            if not ((connection_class in ('csv', 'textscan') and extension == '.csv')
+                    or (connection_class in ('excel-direct', 'excel') and extension in ('.xlsx', '.xls'))):
+                raise ValueError('Packaged Prep input connector or file format is unsupported')
+            if connection_class in ('excel-direct', 'excel'):
+                relation = node.get('relation')
+                if (not isinstance(relation, dict) or relation.get('type') != 'table'
+                        or not isinstance(relation.get('table'), str)
+                        or not re.fullmatch(r'\[(?:[^\]]|\]\])+\$\]', relation['table'])):
+                    raise ValueError('Packaged Prep Excel worksheet identity is missing or unsupported')
+            else:
+                if (node.get('separator', ',') != ','
+                        or str(node.get('charSet', 'UTF-8')).upper().replace('-', '') != 'UTF8'
+                        or node.get('containsHeaders', True) is not True
+                        or node.get('textQualifier') not in (None, '')
+                        or node.get('locale') not in (None, '')):
+                    raise ValueError('Packaged Prep CSV parsing options are not verified')
+            member = f'Data/{connection_id}/{filename}'
+            matches = [name for name in names if name.casefold() == member.casefold()]
+            if matches != [member]:
+                raise ValueError(f'Packaged Prep input member is missing or ambiguous: {member!r}')
+            info = archive.getinfo(member)
+            if info.is_dir() or stat.S_ISLNK(info.external_attr >> 16):
+                raise ValueError('Packaged Prep input member is not a regular file')
+            destination = os.path.abspath(os.path.join(flow_out, 'Data', connection_id, filename))
+            root = os.path.realpath(flow_out)
+            if os.path.commonpath((root, os.path.realpath(destination))) != root:
+                raise ValueError('Packaged Prep destination escapes the output directory')
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            temp_name = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=os.path.dirname(destination), delete=False) as temp:
+                    temp_name = temp.name
+                    safe_zip_copy_member(archive, member, temp, target_dir=flow_out,
+                                         max_size_mb=max_zip_entry_mb)
+                if os.path.lexists(destination):
+                    if os.path.islink(destination) or not os.path.isfile(destination):
+                        raise ValueError('Packaged Prep destination is not a regular file')
+                    with open(destination, 'rb') as existing, open(temp_name, 'rb') as staged:
+                        while True:
+                            expected = staged.read(1024 * 1024)
+                            if existing.read(1024 * 1024) != expected:
+                                raise ValueError('Packaged Prep destination already contains different data')
+                            if not expected:
+                                break
+                else:
+                    os.link(temp_name, destination)
+            finally:
+                if temp_name is not None:
+                    os.unlink(temp_name)
+            bindings[node_id] = destination
+    return bindings
+
+
 def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, display_name,
-                              source_map=None):
+                              source_map=None, max_zip_entry_mb=None):
     """Migrate a standalone .tfl/.tflx — produces lineage, Power Query M, and source exports.
 
     Instead of generating a full .pbip project (which would be empty for prep flows),
@@ -2488,6 +3031,8 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
         dict: Result dict with success, report_name, output_dir, prep_profile, m_query_count, source_count
     """
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tableau_export'))
+    flow_out = os.path.join(workbook_output_dir, basename)
+    os.makedirs(flow_out, exist_ok=True)
 
     try:
         import prep_flow_analyzer as _pfa
@@ -2496,23 +3041,35 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
             from tableau_export import prep_flow_analyzer as _pfa
         except ImportError:
             logger.error("Cannot import prep_flow_analyzer for %s", display_name)
+            report_paths = _write_prep_query_migration_report(
+                flow_out, display_name, tableau_file,
+                failure='Prep flow analyzer could not be imported',
+            )
             return {'success': False, 'error': 'import', 'report_name': basename,
-                    'output_dir': workbook_output_dir}
+                    'output_dir': workbook_output_dir,
+                    'prep_flow': True,
+                    'powerquery_migration_report': report_paths['json']}
 
     print_step("1", 2, "PREP FLOW ANALYSIS")
     print(f"  Flow: {tableau_file}")
 
     try:
-        profile = (_pfa.analyze_flow(tableau_file, include_m_queries=True)
-                   if source_map is None else _pfa.analyze_flow(
-                       tableau_file, include_m_queries=True, source_map=source_map))
-    except (ValueError, OSError, KeyError) as exc:
+        options = {'include_m_queries': True}
+        if source_map is not None:
+            options['source_map'] = source_map
+        profile = _pfa.analyze_flow(tableau_file, **options)
+    except (ValueError, OSError, KeyError, SecurityError, zipfile.BadZipFile) as exc:
         logger.warning("Failed to analyze %s: %s", display_name, exc)
         print(f"  ⚠ Analysis failed: {exc}")
+        report_paths = _write_prep_query_migration_report(
+            flow_out, display_name, tableau_file, failure=exc)
         return {'success': False, 'error': 'analysis', 'report_name': basename,
-                'output_dir': workbook_output_dir, 'error_details': str(exc)}
+                'output_dir': workbook_output_dir, 'error_details': str(exc),
+            'prep_flow': True,
+                'powerquery_migration_report': report_paths['json']}
 
     failure = profile.assessment.get('conversion_error')
+    output_names = []
     if not failure and not profile.outputs:
         failure = "Prep flow produced zero outputs"
     if not failure and not profile.m_queries:
@@ -2533,19 +3090,33 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
                        for name in profile.m_queries]
         if len(set(query_files)) != len(query_files):
             failure = "Prep M query filenames collide; exporting would overwrite queries"
+    packaged_files = {}
+    if not failure:
+        try:
+            packaged_files = _stage_prep_packaged_files(
+                tableau_file, flow_out, source_map, max_zip_entry_mb)
+            if packaged_files:
+                profile = _pfa.analyze_flow(
+                    tableau_file, **options, packaged_files=packaged_files)
+                failure = profile.assessment.get('conversion_error')
+                if not failure and (not profile.m_queries or any(
+                        not profile.m_queries.get(name, '').strip() for name in output_names)):
+                    failure = 'Prep outputs have no M queries after packaged source binding'
+        except (ValueError, OSError, KeyError, SecurityError, zipfile.BadZipFile) as exc:
+            failure = f'Packaged Prep source staging failed: {exc}'
     if failure:
         logger.error("Prep conversion failed for %s: %s", display_name, failure)
         print(f"  [FAIL] Prep conversion failed: {failure}")
+        report_paths = _write_prep_query_migration_report(
+            flow_out, display_name, tableau_file, profile=profile, failure=failure)
         return {'success': False, 'error': 'conversion', 'error_details': failure,
-                'report_name': basename, 'output_dir': workbook_output_dir}
+                'report_name': basename, 'output_dir': workbook_output_dir,
+            'prep_flow': True,
+                'powerquery_migration_report': report_paths['json']}
 
     grade = profile.assessment.get('grade', '?')
     print(f"  → {len(profile.inputs)} inputs, {len(profile.outputs)} outputs, "
           f"{len(profile.transforms)} transforms, {len(profile.m_queries)} M queries [{grade}]")
-
-    # Output directory for this flow
-    flow_out = os.path.join(workbook_output_dir, basename)
-    os.makedirs(flow_out, exist_ok=True)
 
     print_step("2", 2, "EXPORT POWER QUERY M & SOURCES")
 
@@ -2567,28 +3138,12 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
     src_dir = os.path.join(flow_out, 'Sources')
     src_count = 0
     if profile.inputs:
-        os.makedirs(src_dir, exist_ok=True)
-        for inp in profile.inputs:
-            safe_name = inp.name.replace('/', '_').replace('\\', '_')
-            src_path = os.path.join(src_dir, f'{safe_name}.json')
-            src_data = {
-                'name': inp.name,
-                'connection_type': inp.connection_type,
-                'server': inp.server,
-                'database': inp.database,
-                'schema': inp.schema,
-                'table_name': inp.table_name,
-                'filename': inp.filename,
-                'column_count': inp.column_count,
-                'columns': inp.column_names,
-                'fingerprint': inp.fingerprint,
-                'flow': profile.name,
-            }
-            with open(src_path, 'w', encoding='utf-8') as f:
-                json.dump(src_data, f, indent=2, ensure_ascii=False)
-            src_count += 1
+        src_count = _export_prep_sources(profile, src_dir, packaged_files)
     if src_count:
         print(f"  Sources: {src_count} file(s) in {src_dir}")
+
+    report_paths = _write_prep_query_migration_report(
+        flow_out, display_name, tableau_file, profile=profile, packaged_files=packaged_files)
 
     # Export flow assessment summary
     assessment_path = os.path.join(flow_out, 'assessment.json')
@@ -2601,6 +3156,7 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
             'transforms': len(profile.transforms),
             'm_queries': pq_count,
             'sources': src_count,
+            'powerquery_migration_report': os.path.basename(report_paths['json']),
             'assessment': profile.assessment,
         }, f, indent=2, ensure_ascii=False)
 
@@ -2614,6 +3170,7 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
         'prep_flow': True,
         'm_query_count': pq_count,
         'source_count': src_count,
+        'powerquery_migration_report': report_paths['json'],
         'grade': grade,
         'stats': {
             'inputs': len(profile.inputs),
@@ -2747,12 +3304,14 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     # ── Standalone Prep flow: lineage + M + sources (no .pbip) ──
     _is_prep_standalone = os.path.splitext(tableau_file)[1].lower() in ('.tfl', '.tflx')
     if _is_prep_standalone:
-        if prep_source_map is None:
-            return _migrate_single_prep_flow(
-                tableau_file, basename, workbook_output_dir, display_name)
+        prep_options = {}
+        if prep_source_map is not None:
+            prep_options['source_map'] = prep_source_map
+        if max_zip_entry_mb is not None:
+            prep_options['max_zip_entry_mb'] = hyper_options['max_zip_entry_mb']
         return _migrate_single_prep_flow(
             tableau_file, basename, workbook_output_dir, display_name,
-            source_map=prep_source_map)
+            **prep_options)
 
     salvage_partial = _resolve_salvage_policy(
         salvage_partial, strict_generation, skip_extraction,
@@ -3124,6 +3683,12 @@ def _run_batch_prep_lineage(batch_results, migrated_root):
     Collects prep_profile objects from batch results, builds a lineage graph,
     computes merge recommendations, and outputs HTML + JSON reports.
     """
+    query_reports = _write_prep_batch_query_migration_report(
+        batch_results, migrated_root)
+    if query_reports:
+        print(f"  Power Query migration report: {query_reports['html']}")
+        print(f"  Power Query migration JSON: {query_reports['json']}")
+
     profiles = [
         r['prep_profile']
         for r in batch_results.values()
@@ -3159,6 +3724,7 @@ def _run_batch_prep_lineage(batch_results, migrated_root):
     print_header("CROSS-FLOW LINEAGE ANALYSIS")
     print(f"  Flows: {len(profiles)}")
 
+    _unique_prep_profile_names(profiles)
     graph = build_lineage_graph(profiles)
     recommendations = compute_merge_recommendations(graph)
     print_lineage_summary(graph, recommendations)
@@ -6750,6 +7316,8 @@ def run_prep_lineage_mode(args):
         print('\nError: No flows could be analyzed')
         return ExitCode.GENERAL_ERROR
 
+    _unique_prep_profile_names(profiles)
+
     # Phase 2: Build cross-flow lineage
     print('\n  Building cross-flow lineage graph...')
     graph = build_lineage_graph(profiles)
@@ -6781,26 +7349,7 @@ def run_prep_lineage_mode(args):
         if not profile.inputs:
             continue
         flow_src_dir = os.path.join(src_dir, profile.name)
-        os.makedirs(flow_src_dir, exist_ok=True)
-        for inp in profile.inputs:
-            safe_name = inp.name.replace('/', '_').replace('\\', '_')
-            src_path = os.path.join(flow_src_dir, f'{safe_name}.json')
-            src_data = {
-                'name': inp.name,
-                'connection_type': inp.connection_type,
-                'server': inp.server,
-                'database': inp.database,
-                'schema': inp.schema,
-                'table_name': inp.table_name,
-                'filename': inp.filename,
-                'column_count': inp.column_count,
-                'columns': inp.column_names,
-                'fingerprint': inp.fingerprint,
-                'flow': profile.name,
-            }
-            with open(src_path, 'w', encoding='utf-8') as f:
-                json.dump(src_data, f, indent=2, ensure_ascii=False)
-            src_count += 1
+        src_count += _export_prep_sources(profile, flow_src_dir)
     if src_count:
         print(f'  Sources: {src_count} file(s) in {src_dir}')
 
@@ -6811,8 +7360,10 @@ def run_prep_lineage_mode(args):
         if profile.m_queries:
             flow_pq_dir = os.path.join(pq_dir, profile.name)
             os.makedirs(flow_pq_dir, exist_ok=True)
+            used_names = set()
             for tbl_name, m_code in profile.m_queries.items():
-                pq_path = os.path.join(flow_pq_dir, f'{tbl_name}.pq')
+                candidate = _prep_export_name(tbl_name, used_names)
+                pq_path = os.path.join(flow_pq_dir, f'{candidate}.pq')
                 with open(pq_path, 'w', encoding='utf-8') as f:
                     f.write(m_code)
                 pq_count += 1

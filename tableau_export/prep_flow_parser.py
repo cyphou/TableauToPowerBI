@@ -27,15 +27,19 @@ import logging
 import os
 import re
 import sys
+import unicodedata
 import zipfile
 from collections import OrderedDict
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from urllib.parse import quote
 
 # Import M query generators
 sys.path.insert(0, os.path.dirname(__file__))
 from m_query_builder import (
     _M_GENERATORS,
+    _m_field_ref,
     _m_literal,
     generate_power_query_m,
     inject_m_steps,
@@ -68,6 +72,7 @@ from m_query_builder import (
 )
 
 logger = logging.getLogger(__name__)
+_PREP_REMOVE_LETTERS_UNICODE_VERSION = '16.0.0'
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TABLEAU PREP TYPE MAPPINGS
@@ -336,10 +341,10 @@ _PREP_FILTER_MODE_ACTIONS = {'FilterOperation', 'FilterValues'}
 _PREP_CLEAN_ACTION_FIELDS = {
     'columnName', 'newColumnName', 'columnNames', 'columns', 'expression',
     'formula', 'filterExpression', 'filterType', 'values', 'newType', 'type',
-    'operation', 'direction', 'aggregation', 'min', 'max', 'oldValue',
+    'operation', 'direction', 'aggregation', 'min', 'max', 'exclude', 'oldValue',
     'newValue', 'replacement', 'delimiter', 'numParts', 'separator',
     'pattern', 'rules', 'defaultValue', 'groupings', 'groupMethodProps',
-    'from', 'to',
+    'from', 'to', 'calcExpressionType',
 }
 
 _PREP_SUPERNODE_COMMON_FIELDS = {
@@ -537,6 +542,8 @@ def get_prep_node_kind(node):
     if base == 'superNode':
         sem = _get_node_type(node)
         if sem not in _PREP_SUPERNODE_TYPES:
+            if node.get('_prep_unsupported_supernode') == sem:
+                return 'transform'
             raise ValueError(f"Unsupported Prep superNode nodeType {sem!r}")
         if not isinstance(node.get('actionNode'), dict):
             raise ValueError(f"Prep superNode {sem!r}: actionNode must be an object")
@@ -646,14 +653,15 @@ def normalize_prep_flow(flow):
     no_diagnostic_value = object()
 
     def add_diagnostic(code, node_id, path, message,
-                       value_marker=no_diagnostic_value):
+                       value_marker=no_diagnostic_value, *, severity='error',
+                       blocks_conversion=True):
         item = {
             'code': code,
-            'severity': 'error',
+            'severity': severity,
             'message': message,
             'node_id': node_id,
             'path': path,
-            'blocks_conversion': True,
+            'blocks_conversion': blocks_conversion,
         }
         if value_marker is not no_diagnostic_value:
             item['value_type'] = type(value_marker).__name__
@@ -689,14 +697,44 @@ def normalize_prep_flow(flow):
         'joinType', 'pivotType', 'leftNodeId', 'rightNodeId',
         'delimiter', 'separator', 'pattern', 'pivotValuesName', 'pivotNamesName',
         'scriptLanguage', 'language', 'publishedDatasourceName', 'datasourceName',
+        'calcExpressionType',
     }
 
     def optional_shapes(obj, context, node_id=None):
         kind = obj.get('actionType') or obj.get('nodeType') or ''
         sem = kind.rsplit('.', 1)[-1] if isinstance(kind, str) else ''
         is_remap = sem == 'Remap'
+        is_value_filter = sem == 'ValueFilter'
+        is_quick_calc = sem == 'QuickCalcColumn'
         if is_remap:
             _parse_remap(obj)
+        if is_value_filter:
+            _parse_value_filter(obj)
+        if is_quick_calc:
+            try:
+                _parse_quick_calc_column(obj)
+                if obj.get('calcExpressionType') == 'RemoveLetters':
+                    add_diagnostic(
+                        'quick_calc_unicode_version_pinned', node_id,
+                        f'{context}.calcExpressionType',
+                        'RemoveLetters uses a Unicode 16.0 Letter table; native '
+                        'Tableau/Power Query value parity has not been run',
+                        severity='warning', blocks_conversion=False,
+                    )
+            except ValueError as exc:
+                add_diagnostic(
+                    'unsupported_quick_calc', node_id,
+                    f'{context}.calcExpressionType', str(exc),
+                )
+        if (obj.get('nodeType') == '.v1.FilterOperation'
+                and not obj.get('actionType')
+                and obj.get('baseType') == 'transform'
+                and isinstance(obj.get('id'), str) and obj['id']
+                and obj.get('nextNodes') == []
+                and isinstance(obj.get('filterExpression'), str)
+                and obj['filterExpression'].strip()
+                and 'filterType' not in obj):
+            obj['filterType'] = 'keep'
         if sem in _PREP_FILTER_MODE_ACTIONS and 'filterType' not in obj:
             add_diagnostic(
                 'missing_filter_type', node_id, f'{context}.filterType',
@@ -705,13 +743,34 @@ def normalize_prep_flow(flow):
             )
         for key, value in list(obj.items()):
             here = f'{context}.{key}'
-            if key == 'values' and is_remap:
-                # Remap uses an encoded target -> encoded sources object,
-                # unlike the value lists used by other clean operations.
+            if key == 'values' and (is_remap or is_value_filter):
+                # These operations use column-keyed objects, not a value list.
                 continue
             elif key in ('beforeActionAnnotations', 'afterActionAnnotations'):
                 if value is None or value == []:
                     obj[key] = []
+                elif key == 'beforeActionAnnotations' and sem == 'SuperJoin':
+                    annotations = _as_list(value)
+                    for index, annotation in enumerate(annotations):
+                        annotation = _as_dict(annotation)
+                        if set(annotation) != {'namespace', 'annotationNode'}:
+                            raise ValueError(
+                                f'{here}[{index}]: expected namespace and annotationNode only')
+                        if annotation.get('namespace') not in ('Left', 'Right'):
+                            raise ValueError(
+                                f'{here}[{index}]: namespace must be Left or Right')
+                        action_node = _as_dict(annotation.get('annotationNode'))
+                        if (action_node.get('baseType') not in (None, 'transform')
+                                or action_node.get('nextNodes') not in (None, [])):
+                            raise ValueError(
+                                f'{here}[{index}]: annotationNode must be a terminal transform')
+                        optional_shapes(
+                            action_node, f'{here}[{index}].annotationNode', node_id)
+                        action_type = _get_node_type(action_node)
+                        if _convert_action_to_m_step(action_type, action_node, {}) is None:
+                            raise ValueError(
+                                f'{here}[{index}]: unsupported action {action_type!r}')
+                    obj[key] = annotations
                 else:
                     add_diagnostic(
                         'unsupported_action_annotations', node_id, here,
@@ -774,7 +833,13 @@ def normalize_prep_flow(flow):
             return
         sem = _get_node_type(node)
         if sem not in _PREP_SUPERNODE_TYPES:
-            raise ValueError(f'Prep superNode {nid!r}: unsupported nodeType {sem!r}')
+            node['_prep_unsupported_supernode'] = sem
+            add_diagnostic(
+                'unsupported_supernode_type', nid,
+                f'Prep node {nid!r}.nodeType',
+                f'unsupported nodeType {sem!r}; conversion is blocked', sem,
+            )
+            return
         action_node = node.get('actionNode')
         if not isinstance(action_node, dict):
             raise ValueError(
@@ -821,6 +886,46 @@ def normalize_prep_flow(flow):
         simple_join_dialect = (
             sem == 'SuperJoin' and inner_node_type == 'SimpleJoin'
         )
+        aggregate_dialect = (
+            sem == 'SuperAggregate' and inner_node_type == 'Aggregate'
+        )
+        if aggregate_dialect:
+            aggregate_lists = ('groupByFields', 'aggregateFields')
+            native_fields = any(
+                isinstance(field, dict) and 'columnName' in field
+                for key in aggregate_lists
+                for field in _as_list(action_node.get(key))
+            )
+            if native_fields:
+                for key in aggregate_lists:
+                    normalized_fields = []
+                    for field in _as_list(action_node.get(key)):
+                        if not isinstance(field, dict):
+                            raise ValueError(f'Prep native aggregate {key}: expected object')
+                        name = field.get('columnName')
+                        function = field.get('function')
+                        target = field.get('newColumnName') or name
+                        if (not isinstance(name, str) or not name
+                                or not isinstance(target, str) or not target
+                                or not isinstance(function, str)
+                                or field.get('specialFieldType') not in (None, '')
+                                or any(nonempty(value) for field_key, value in field.items()
+                                       if field_key not in {
+                                           'columnName', 'function', 'newColumnName',
+                                           'specialFieldType'})):
+                            raise ValueError(f'Prep native aggregate {key}: unsupported field')
+                        if key == 'groupByFields':
+                            if function != 'GroupBy' or target != name:
+                                raise ValueError('Prep native aggregate: unsupported group field')
+                            normalized_fields.append({'name': name})
+                        else:
+                            if function.upper() not in _PREP_AGG_MAP:
+                                raise ValueError(f'Prep unsupported aggregation {function!r}')
+                            normalized_fields.append({
+                                'name': name, 'newColumnName': target,
+                                'aggregation': function.upper(),
+                            })
+                    action_node[key] = normalized_fields
         if simple_union_dialect:
             namespace_mappings = action_node.get('namespaceFieldMappings')
             if not isinstance(namespace_mappings, list) or not namespace_mappings:
@@ -861,7 +966,7 @@ def normalize_prep_flow(flow):
             if inner_value is not None and not isinstance(inner_value, str):
                 raise ValueError(f'Prep superNode {nid!r}.actionNode.{key}: '
                                  'expected string')
-            if (simple_union_dialect or simple_join_dialect) and key == 'id':
+            if sem in _PREP_SUPERNODE_TYPES - {'SuperTransform'} and key == 'id':
                 # The inner action owns an identity distinct from the
                 # wrapper's graph identity. Preserve it without treating it
                 # as an edge ID.
@@ -1591,6 +1696,39 @@ def _convert_prep_expression_to_m(expression):
     if split_expression is not None:
         return _prep_split_to_m(*split_expression)
 
+    protected = []
+
+    def protect_token(match):
+        token = match.group(0)
+        if token.startswith('['):
+            value = token
+        else:
+            quote = token[0]
+            value = _prep_m_literal(token[1:-1].replace(quote + quote, quote))
+        marker = f'\x01{len(protected)}\x02'
+        protected.append(value)
+        return marker
+
+    expr = re.sub(
+        r'\[(?:[^\]]|\]\])*\]|"(?:[^"]|"")*"|\'(?:[^\']|\'\')*\'',
+        protect_token, expr,
+    )
+
+    def convert_ifnull(match):
+        source, fallback = match.groups()
+        source_index = int(source[1:-1])
+        if not protected[source_index].startswith('['):
+            raise ValueError('Prep IFNULL requires a field as its first argument')
+        return f'(if {source} = null then {fallback} else {source})'
+
+    expr = re.sub(
+        r'\bIFNULL\s*\(\s*(\x01\d+\x02)\s*,\s*'
+        r'(\x01\d+\x02|[+-]?\d+(?:\.\d+)?)\s*\)',
+        convert_ifnull, expr, flags=re.IGNORECASE,
+    )
+    if re.search(r'\bIFNULL\s*\(', expr, flags=re.IGNORECASE):
+        raise ValueError('Prep IFNULL supports only a field and a scalar or field fallback')
+
     # Basic column references: [Column] → [Column] (same in M for row context)
     # Tableau Prep IF/THEN/ELSE → M if/then/else (pre-compiled patterns)
     expr = _RE_ELSEIF.sub('else if', expr)  # ELSEIF before ELSE/IF
@@ -1618,6 +1756,8 @@ def _convert_prep_expression_to_m(expression):
     expr = _RE_LEFT.sub('Text.Start(', expr)
     expr = _RE_RIGHT.sub('Text.End(', expr)
 
+    for index, value in enumerate(protected):
+        expr = expr.replace(f'\x01{index}\x02', value)
     return expr
 
 
@@ -1769,6 +1909,190 @@ def _require_filter_type(action, action_type):
     return filter_type
 
 
+def _parse_range_filter(action, fields=None):
+    """Convert one explicit numeric interval or observed null exclusion."""
+    ranges = action.get('ranges')
+    if not isinstance(ranges, dict) or len(ranges) != 1:
+        raise ValueError('Prep RangeFilter requires exactly one field range')
+    column, intervals = next(iter(ranges.items()))
+    if not isinstance(column, str) or not column:
+        raise ValueError('Prep RangeFilter requires a nonempty field name')
+    field = _require_field(fields, column, 'RangeFilter') if fields is not None else None
+    if not isinstance(intervals, list) or len(intervals) != 1:
+        raise ValueError('Prep RangeFilter requires exactly one interval')
+    interval = intervals[0]
+    expected = {'startValue', 'includeStart', 'endValue', 'includeEnd'}
+    if not isinstance(interval, dict) or set(interval) != expected:
+        raise ValueError('Prep RangeFilter interval has an unsupported shape')
+    if type(action.get('exclude')) is not bool:
+        raise ValueError('Prep RangeFilter requires an explicit boolean exclude')
+    if action['exclude'] is not True:
+        raise ValueError('Prep RangeFilter supports observed exclude=true semantics only')
+    if (type(interval['includeStart']) is not bool
+            or type(interval['includeEnd']) is not bool):
+        raise ValueError('Prep RangeFilter requires explicit boolean boundaries')
+
+    if interval['startValue'] is None and interval['endValue'] is None:
+        if (action['exclude'] is True and interval['includeStart'] is True
+                and interval['includeEnd'] is True):
+            return column, {'excludeNulls': True}
+        raise ValueError('Prep RangeFilter null bounds require the observed null exclusion shape')
+
+    if field is not None and field.get('type') not in ('integer', 'real'):
+        raise ValueError('Prep RangeFilter supports numeric fields only')
+
+    def parse_bound(value):
+        if not isinstance(value, str) or not re.fullmatch(r'-?\d+(?:\.\d+)?', value):
+            raise ValueError(
+                'Prep RangeFilter supports finite decimal-string bounds only'
+            )
+        try:
+            number = Decimal(value)
+        except InvalidOperation as exc:
+            raise ValueError('Prep RangeFilter has an invalid numeric bound') from exc
+        if not number.is_finite():
+            raise ValueError('Prep RangeFilter requires finite numeric bounds')
+        return number
+
+    start = parse_bound(interval['startValue'])
+    end = parse_bound(interval['endValue'])
+    if start > end:
+        raise ValueError('Prep RangeFilter startValue must not exceed endValue')
+
+    return column, interval
+
+
+def _parse_value_filter(action, fields=None):
+    """Decode the observed single-column, string exclusion ValueFilter shape."""
+    values_by_column = action.get('values')
+    if not isinstance(values_by_column, dict) or len(values_by_column) != 1:
+        raise ValueError('Prep ValueFilter requires exactly one field value map')
+    column, encoded_values = next(iter(values_by_column.items()))
+    if not isinstance(column, str) or not column:
+        raise ValueError('Prep ValueFilter requires a nonempty field name')
+    if not isinstance(encoded_values, list) or not encoded_values:
+        raise ValueError('Prep ValueFilter requires a nonempty value list')
+    if type(action.get('exclude')) is not bool:
+        raise ValueError('Prep ValueFilter requires an explicit boolean exclude')
+    if action['exclude'] is not True:
+        raise ValueError('Prep ValueFilter supports observed exclude=true semantics only')
+
+    if fields is not None:
+        field = _require_field(fields, column, 'ValueFilter')
+        if field.get('type') != 'string':
+            raise ValueError('Prep ValueFilter supports string fields only')
+
+    decoded_values = []
+    for encoded in encoded_values:
+        if not isinstance(encoded, str):
+            raise ValueError('Prep ValueFilter values must be JSON-encoded strings')
+        try:
+            value = json.loads(encoded)
+        except ValueError as exc:
+            raise ValueError('Prep ValueFilter contains an invalid JSON string') from exc
+        if not isinstance(value, str):
+            raise ValueError('Prep ValueFilter supports decoded string values only')
+        if value not in decoded_values:
+            decoded_values.append(value)
+    return column, decoded_values
+
+
+@lru_cache(maxsize=1)
+def _unicode_letter_ranges():
+    """Build Unicode 16.0 General_Category=Letter ranges deterministically."""
+    if unicodedata.unidata_version != _PREP_REMOVE_LETTERS_UNICODE_VERSION:
+        raise ValueError(
+            'Prep RemoveLetters requires Unicode data '
+            f'{_PREP_REMOVE_LETTERS_UNICODE_VERSION}; this Python uses '
+            f'{unicodedata.unidata_version}'
+        )
+    ranges = []
+    start = previous = None
+    for codepoint in range(0x110000):
+        if unicodedata.category(chr(codepoint)).startswith('L'):
+            if start is None:
+                start = previous = codepoint
+            elif codepoint == previous + 1:
+                previous = codepoint
+            else:
+                ranges.append((start, previous))
+                start = previous = codepoint
+        elif start is not None:
+            ranges.append((start, previous))
+            start = previous = None
+    if start is not None:
+        ranges.append((start, previous))
+    return tuple(ranges)
+
+
+def _quick_calc_remove_letters_step(column, counter):
+    ranges = ',\n        '.join(
+        f'{{{start}, {end}}}' for start, end in _unicode_letter_ranges())
+    index = counter.get('quick_calc', 0)
+    counter['quick_calc'] = index + 1
+    step_name = f'#{"Removed Letters {index}"!r}' if index else '#"Removed Letters"'
+    step_name = step_name.replace("'", '"')
+    expression = (
+        'let\n'
+        '    // Unicode 16.0 General_Category=Letter; native parity not_run.\n'
+        f'    LetterRanges = {{{ranges}}},\n'
+        '    IsLetter = (code as number) as logical =>\n'
+        '        let\n'
+        '            Search = (low as number, high as number) as logical =>\n'
+        '                if low > high then false else\n'
+        '                    let\n'
+        '                        middle = Number.IntegerDivide(low + high, 2),\n'
+        '                        bounds = LetterRanges{middle}\n'
+        '                    in\n'
+        '                        if code < bounds{0} then @Search(low, middle - 1) else\n'
+        '                        if code > bounds{1} then @Search(middle + 1, high) else true\n'
+        '        in\n'
+        '            Search(0, List.Count(LetterRanges) - 1),\n'
+        '    Result = Table.TransformColumns({prev}, {{'
+        + _m_literal(column)
+        + ', each if _ = null then null else Text.Combine('
+        'List.Select(Text.ToList(_), each not IsLetter(Character.ToNumber(_)))), '
+        'type text}})\n'
+        'in\n'
+        '    Result'
+    )
+    return step_name, expression
+
+
+def _parse_quick_calc_column(action, fields=None):
+    """Accept observed TrimSpaces and pinned-Unicode RemoveLetters forms."""
+    column = action.get('columnName')
+    if not isinstance(column, str) or not column:
+        raise ValueError('Prep QuickCalcColumn requires a nonempty columnName')
+    calc_type = action.get('calcExpressionType')
+    if calc_type == 'TrimSpaces':
+        expected = f"REGEXP_REPLACE([{column}], '(^[[:space:]]*|[[:space:]]*$)', '')"
+    elif calc_type == 'RemoveLetters':
+        _unicode_letter_ranges()
+        expected = f"REGEXP_REPLACE([{column}], '[:Letter:]', '')"
+    else:
+        raise ValueError('Prep QuickCalcColumn subtype has no verified conversion')
+    if action.get('expression') != expected:
+        raise ValueError(
+            f'Prep QuickCalcColumn {calc_type} expression does not match the '
+            'observed producer form'
+        )
+    if fields is not None:
+        field = _require_field(fields, column, 'QuickCalcColumn')
+        if field.get('type') != 'string':
+            raise ValueError(f'Prep QuickCalcColumn {calc_type} requires a string field')
+    return column
+
+
+def _prep_m_literal(value):
+    """Quote Prep text without allowing M escapes or the injection sentinel."""
+    safe_value = (value.replace('#', '#(#)')
+                  .replace('\r', '#(cr)').replace('\n', '#(lf)')
+                  .replace('\t', '#(tab)')
+                  .replace('{prev}', '#(007B)prev}'))
+    return _m_literal(safe_value)
+
+
 def _convert_action_to_m_step(action_type, action, counter):
     """
     Convert a single Prep action to an M transformation step.
@@ -1798,6 +2122,27 @@ def _convert_action_to_m_step(action_type, action, counter):
             return m_transform_duplicate_column(col, new_col)
 
     elif action_type == 'ChangeColumnType':
+        if ('columnName' not in action and 'newType' not in action
+                and 'fields' in action):
+            fields = _as_list(action.get('fields'))
+            if not fields:
+                raise ValueError('Prep ChangeColumnType requires nonempty fields')
+            steps = []
+            for field in fields:
+                field = _as_dict(field)
+                if (set(field) - {'name', 'type', 'calc'}
+                        or field.get('calc') is not None
+                        or not isinstance(field.get('name'), str) or not field['name']
+                        or not isinstance(field.get('type'), str)):
+                    raise ValueError(
+                        'Prep ChangeColumnType field maps require name/type and no calculation')
+                step = _convert_action_to_m_step(
+                    action_type,
+                    {'columnName': field['name'], 'newType': field['type']},
+                    counter,
+                )
+                steps.extend(step if isinstance(step, list) else [step])
+            return steps
         col = action.get('columnName', '')
         new_type = action.get('newType', 'string')
         if not col or new_type not in _PREP_TYPE_MAP:
@@ -1836,6 +2181,24 @@ def _convert_action_to_m_step(action_type, action, counter):
                 return m_transform_exclude_values(col, values)
             return m_transform_filter_values(col, values)
 
+    elif action_type == 'ValueFilter':
+        column, values = _parse_value_filter(action)
+        field = _m_field_ref(column)
+        literals = '{' + ', '.join(_prep_m_literal(value) for value in values) + '}'
+        predicate = (
+            f'if {field} = null then true else '
+            f'not List.Contains({literals}, {field})'
+        )
+        return ('#"Filtered Values"',
+                f'Table.SelectRows({{prev}}, each {predicate})')
+
+    elif action_type == 'QuickCalcColumn':
+        column = _parse_quick_calc_column(action)
+        if action.get('calcExpressionType') == 'RemoveLetters':
+            return _quick_calc_remove_letters_step(column, counter)
+        return ('#"Trimmed Text"',
+                f'Table.TransformColumns({{prev}}, {{{{{_m_literal(column)}, Text.Trim}}}})')
+
     elif action_type == 'FilterRange':
         col = action.get('columnName', '')
         min_val = action.get('min')
@@ -1848,6 +2211,22 @@ def _convert_action_to_m_step(action_type, action, counter):
         if col:
             return m_transform_filter_range(col, min_val, max_val)
 
+    elif action_type == 'RangeFilter':
+        column, interval = _parse_range_filter(action)
+        field = _m_field_ref(column)
+        if interval.get('excludeNulls'):
+            return ('#"Filtered Nulls"',
+                    f'Table.SelectRows({{prev}}, each if {field} = null then false else true)')
+        start_operator = '>=' if interval['includeStart'] else '>'
+        end_operator = '<=' if interval['includeEnd'] else '<'
+        in_range = (
+            f'({field} {start_operator} {interval["startValue"]} and '
+            f'{field} {end_operator} {interval["endValue"]})'
+        )
+        predicate = f'if {field} = null then true else not {in_range}'
+        return ('#"Filtered Range"',
+                f'Table.SelectRows({{prev}}, each {predicate})')
+
     elif action_type == 'ReplaceValues':
         col = action.get('columnName', '')
         old_val = action.get('oldValue', '')
@@ -1857,22 +2236,13 @@ def _convert_action_to_m_step(action_type, action, counter):
 
     elif action_type == 'Remap':
         column, mapping = _parse_remap(action)
-
-        def literal(value):
-            # The shared helper quotes text. Also protect M escape sequences,
-            # control characters and inject_m_steps' literal {prev} sentinel.
-            return _m_literal(value.replace('#', '#(#)')
-                              .replace('\r', '#(cr)').replace('\n', '#(lf)')
-                              .replace('\t', '#(tab)')
-                              .replace('{prev}', '#(007B)prev}'))
-
-        sources = '{' + ', '.join(literal(source) for source in mapping) + '}'
-        targets = '{' + ', '.join(literal(target) for target in mapping.values()) + '}'
+        sources = '{' + ', '.join(_prep_m_literal(source) for source in mapping) + '}'
+        targets = '{' + ', '.join(_prep_m_literal(target) for target in mapping.values()) + '}'
         n = counter.get('remap', 0)
         counter['remap'] = n + 1
         step_name = f'#"Remapped Values {n}"' if n > 0 else '#"Remapped Values"'
         return (step_name,
-                f'Table.TransformColumns({{prev}}, {{{{{literal(column)}, '
+            f'Table.TransformColumns({{prev}}, {{{{{_prep_m_literal(column)}, '
                 f'each if _ = null then null else let position = '
                 f'List.PositionOf({sources}, _, Occurrence.First, Comparer.Ordinal) '
                 f'in if position = -1 then _ else {targets}{{position}}, '
@@ -2031,6 +2401,7 @@ def _require_field(fields, name, context):
 def _expression_type(expression, fields):
     """Conservative inference for literals, references and numeric arithmetic."""
     expr = (expression or '').strip()
+    expr = re.sub(r'(?m)^[ \t]*//[^\r\n]*(?:\r?\n|$)', '', expr).strip()
     split_expression = _prep_split_expression(expr)
     if split_expression is not None:
         field_name = split_expression[0]
@@ -2047,6 +2418,10 @@ def _expression_type(expression, fields):
     if expr.lower() in ('true', 'false'):
         return 'boolean'
     arithmetic = re.sub(r'\[[^\]]+\]', '1', expr)
+    arithmetic = re.sub(
+        r'\bIFNULL\s*\(\s*(1)\s*,\s*([+-]?\d+(?:\.\d+)?)\s*\)',
+        r'(\1 + \2)', arithmetic, flags=re.IGNORECASE,
+    )
     if re.fullmatch(r'[\d\s.+*/()%-]+', arithmetic) and all(
             t in ('integer', 'real') for t in types):
         return (
@@ -2127,6 +2502,12 @@ def _clean_schema(node, fields):
             )
         elif kind == 'FilterOperation':
             _expression_type(action.get('filterExpression'), fields)
+        elif kind == 'ValueFilter':
+            _parse_value_filter(action, fields)
+        elif kind == 'QuickCalcColumn':
+            _parse_quick_calc_column(action, fields)
+        elif kind == 'RangeFilter':
+            _parse_range_filter(action, fields)
         elif kind == 'Remap':
             _parse_remap(action, fields)
         elif name:
@@ -2387,12 +2768,11 @@ def _manual_union_inputs(node, nodes, union_id, upstream_ids, node_results):
 
     edge_namespace_set = set(edge_namespaces.values())
     mapping_namespace_set = set(mapping_records)
-    if edge_namespace_set != mapping_namespace_set:
+    unknown_namespaces = mapping_namespace_set - edge_namespace_set
+    if unknown_namespaces:
         raise ValueError(
-            f'Prep union {union_id!r}: namespaceFieldMappings must match the '
-            'incoming edge nextNamespace identities exactly; '
-            f'missing={sorted(edge_namespace_set - mapping_namespace_set)!r}, '
-            f'unknown={sorted(mapping_namespace_set - edge_namespace_set)!r}'
+            f'Prep union {union_id!r}: namespaceFieldMappings contains '
+            f'unknown incoming namespaces {sorted(unknown_namespaces)!r}'
         )
 
     result = []
@@ -2409,7 +2789,9 @@ def _manual_union_inputs(node, nodes, union_id, upstream_ids, node_results):
                 'schema for namespace mapping'
             )
 
-        renames = mapping_records[namespace]
+        # A producer may omit a namespace when that branch already uses the
+        # union's output field names; unlisted columns pass through unchanged.
+        renames = mapping_records.get(namespace, {})
         for source_name in renames:
             _require_field(fields, source_name, 'manual union mapping source')
         mapped_fields = [
@@ -2698,7 +3080,8 @@ def _parse_pivot_node(node):
 #  MAIN FLOW PARSER — CONVERTS ENTIRE FLOW TO DATASOURCES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def parse_prep_flow(filepath, simple_join_policies=None, *, source_map=None):
+def parse_prep_flow(filepath, simple_join_policies=None, *, source_map=None,
+                    packaged_files=None):
     """
     Parse a Tableau Prep flow file and convert to datasource definitions
     compatible with the Power BI generation pipeline.
@@ -2774,7 +3157,8 @@ def parse_prep_flow(filepath, simple_join_policies=None, *, source_map=None):
     for nid in sorted_ids:
         _process_prep_node(
             nid, nodes, connections, node_results, secondary_branch_ids,
-            simple_join_policies=simple_join_policies, source_map=source_map)
+            simple_join_policies=simple_join_policies, source_map=source_map,
+            packaged_files=packaged_files)
 
     # Collect output nodes into datasources
     datasources = _collect_prep_datasources(
@@ -2790,7 +3174,7 @@ def parse_prep_flow(filepath, simple_join_policies=None, *, source_map=None):
 
 
 def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_ids,
-                       simple_join_policies=None, source_map=None):
+                       simple_join_policies=None, source_map=None, packaged_files=None):
     """Process one input/transform/output node and store its result."""
     nodes = _as_dict(nodes)
     connections = _as_dict(connections)
@@ -2802,7 +3186,7 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
     if base_type == 'input':
         _process_input_node(
             nid, node, connections, node_results, node_name,
-            source_map=source_map)
+            source_map=source_map, packaged_files=packaged_files)
 
     elif base_type == 'transform':
         upstream_ids = _find_upstream_nodes(nodes, nid)
@@ -2848,7 +3232,7 @@ def _process_prep_node(nid, nodes, connections, node_results, secondary_branch_i
 
 
 def _process_input_node(nid, node, connections, node_results, node_name,
-                        source_map=None):
+                        source_map=None, packaged_files=None):
     """Process an input node using its original binding or explicit rebind."""
     node = _as_dict(node)
     connections = _as_dict(connections)
@@ -2860,10 +3244,34 @@ def _process_input_node(nid, node, connections, node_results, node_name,
         node, connections, source_override=(source_map or {}).get(nid))
     conn_type = connection.get('type', '')
 
+    packaged_path = (packaged_files or {}).get(nid)
+    if packaged_path:
+        connection['details']['filename'] = packaged_path
+        connection['details']['directory'] = ''
+        if conn_type.lower() in ('excel', 'excel-direct'):
+            table['source_table'] = _as_dict(node.get('relation')).get('table', '')
+
     # Keep lineage metadata stable while dispatching to an actual builder
     # connector (CSV instead of textscan, PostgreSQL instead of postgres).
     m_connection = {**connection, 'type': _prep_m_connection_type(conn_type)}
-    m_query = generate_power_query_m(m_connection, table)
+    m_query = generate_power_query_m(
+        m_connection, table, use_original_file_paths=bool(packaged_path))
+    input_actions = _as_list(node.get('actions', []))
+    if input_actions:
+        steps = []
+        counter = {}
+        for action in input_actions:
+            action = _as_dict(action)
+            action_type = _get_node_type(action)
+            if action_type != 'RemoveColumns':
+                raise ValueError(
+                    f'Prep input {nid!r}: unsupported direct input action {action_type!r}')
+            step = _convert_action_to_m_step(action_type, action, counter)
+            if step is None:
+                raise ValueError(
+                    f'Prep input {nid!r}: RemoveColumns action has no verified columns')
+            steps.extend(step if isinstance(step, list) else [step])
+        m_query = inject_m_steps(m_query, steps)
 
     node_results[nid] = {
         'connection': connection,
@@ -2960,14 +3368,9 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
         simple_join = (
             node.get('_prep_simple_join_dialect') == _PREP_SIMPLE_JOIN_DIALECT
         )
+        before_annotations = _as_list(node.get('beforeActionAnnotations', []))
 
-        if simple_join:
-            if not node.get('_prep_declared_fields') or not node.get('fields'):
-                raise ValueError(
-                    f'Prep SimpleJoin {nid!r}: source-declared nonempty fields '
-                    'projection is required; the observed public payload has '
-                    'no output schema/projection'
-                )
+        if simple_join or before_annotations:
             incoming_by_side = {'Left': [], 'Right': []}
             for input_id in upstream_ids:
                 input_node = _as_dict(nodes.get(input_id))
@@ -2997,8 +3400,42 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                     f'Prep SimpleJoin {nid!r}: requires exactly one input on '
                     'each explicit Left/Right edge namespace'
                 )
-            left_id = incoming_by_side['Left'][0]
-            right_id = incoming_by_side['Right'][0]
+            if simple_join:
+                left_id = incoming_by_side['Left'][0]
+                right_id = incoming_by_side['Right'][0]
+
+            if before_annotations:
+                annotation_counters = {'Left': {}, 'Right': {}}
+                for index, annotation in enumerate(before_annotations):
+                    side = annotation.get('namespace')
+                    branch_id = incoming_by_side[side][0]
+                    branch_node = _as_dict(nodes.get(branch_id))
+                    outgoing = [
+                        edge for edge in _as_list(branch_node.get('nextNodes'))
+                        if isinstance(edge, dict)
+                        and edge.get('nextNodeId') == nid
+                    ]
+                    if len(outgoing) != 1 or len(_as_list(branch_node.get('nextNodes'))) != 1:
+                        raise ValueError(
+                            f'Prep SuperJoin {nid!r}: annotated {side} branch must '
+                            'have this join as its sole consumer'
+                        )
+                    action = _as_dict(annotation.get('annotationNode'))
+                    action_type = _get_node_type(action)
+                    step = _convert_action_to_m_step(
+                        action_type, action, annotation_counters[side])
+                    if step is None:
+                        raise ValueError(
+                            f'Prep SuperJoin {nid!r}: unsupported {side} annotation '
+                            f'action {action_type!r} at index {index}'
+                        )
+                    branch = node_results[branch_id]
+                    branch['m_query'] = inject_m_steps(
+                        branch['m_query'], step if isinstance(step, list) else [step])
+                    branch['fields'] = _clean_schema(
+                        {'actionGroup': {'actions': [action]}},
+                        branch.get('fields', []),
+                    )
 
         # A side may be inferred only as the unique complement of an explicitly
         # identified side. Dictionary/topological order is not left/right
@@ -3049,16 +3486,45 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
                         'without an inferred cast')
             right_keys = {c.get('rightColumn') for c in conditions}
             if simple_join:
-                declared = _schema(node['fields'], 'SimpleJoin projection')
+                default_projection = not node.get('_prep_declared_fields')
+                if node.get('_prep_declared_fields'):
+                    if not node.get('fields'):
+                        raise ValueError(
+                            f'Prep SimpleJoin {nid!r}: an explicit fields '
+                            'projection cannot be empty'
+                        )
+                    declared = _schema(node['fields'], 'SimpleJoin projection')
+                else:
+                    # Tableau's default join output is the left schema plus
+                    # right-side non-key fields. Preserve that default when
+                    # the producer omits an optional projection; schema
+                    # collisions still fail closed below.
+                    declared = _schema(
+                        left_fields + [
+                            field for field in right_fields
+                            if field['name'] not in right_keys
+                        ],
+                        'SimpleJoin default projection',
+                    )
+                projection_node = {**node, 'fields': declared}
                 left_names = {field['name'].casefold(): field['name']
                               for field in left_fields}
                 right_names = {field['name'].casefold(): field['name']
                                for field in right_fields}
+                left_key_names = {
+                    condition['leftColumn'].casefold() for condition in conditions
+                }
+                right_key_names = {
+                    condition['rightColumn'].casefold() for condition in conditions
+                }
                 expanded = []
                 for field in declared:
                     name = field['name']
                     folded = name.casefold()
                     if folded in left_names and folded in right_names:
+                        if (default_projection and folded in left_key_names
+                                and folded in right_key_names):
+                            continue
                         raise ValueError(
                             f'Prep SimpleJoin {nid!r}: ambiguous projected field '
                             f'{name!r} exists on both inputs')
@@ -3092,7 +3558,7 @@ def _process_transform_node(nid, node, nodes, upstream_ids, sem_type,
             joined_fields = _schema(left_fields + expanded, 'join output')
             if simple_join and node.get('joinType') == 'notInner':
                 join_steps = _simple_join_full_anti_steps(
-                    node, right_name, left_fields, right_fields)
+                    projection_node, right_name, left_fields, right_fields)
             else:
                 join_steps = _parse_join_node(
                     node, right_name, right_fields,
@@ -3516,7 +3982,7 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
             'nodes': [
                 {
                     'id': nid,
-                    'name': nodes[nid].get('name', nid[:8]),
+                    'name': _prep_lineage_node_name(nodes[nid], nid[:8]),
                     'kind': get_prep_node_kind(nodes[nid]),
                     'upstream_ids': sorted(upstream[nid]),
                     'status': 'manual' if nid in manual_ids else 'converted',
@@ -3529,6 +3995,21 @@ def _collect_prep_datasources(sorted_ids, nodes, node_results, secondary_branch_
 
 _PREP_COMMENT_BEGIN = '    // Tableau Prep provenance (metadata only)'
 _PREP_COMMENT_END = '    // End Tableau Prep provenance'
+
+
+def _prep_lineage_node_name(node, fallback=''):
+    """Return a stable lineage label without mapped or filtered values."""
+    kind = _get_node_type(node)
+    if kind == 'Remap':
+        column = node.get('columnName')
+        return f'Remap on {column}' if isinstance(column, str) and column else 'Remap'
+    if kind in ('ValueFilter', 'RangeFilter'):
+        value_map = node.get('values') if kind == 'ValueFilter' else node.get('ranges')
+        if isinstance(value_map, dict) and len(value_map) == 1:
+            return f'{kind} on {next(iter(value_map))}'
+        return kind
+    name = node.get('name')
+    return name if isinstance(name, str) and name else fallback
 
 
 def _prep_comment_identity(value):

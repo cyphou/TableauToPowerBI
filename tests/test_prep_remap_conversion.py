@@ -208,10 +208,9 @@ class TestPrepRemapConversion(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'Prep Remap requires a nonempty columnName'):
                         self.convert(remap(column=column), path, fields_for('Label'))
 
-    def test_remaining_seven_dialects_still_reject(self):
+    def test_remaining_five_unimplemented_dialects_still_reject(self):
         for dialect in (
-            'ValueFilter', 'RichRangeFilter', 'RangeFilter',
-            'RichDiscreteValueFilter', 'QuickCalcColumn',
+            'RichRangeFilter', 'RichDiscreteValueFilter',
             'RichWildcardFilter', 'RichNullFilter',
         ):
             for path in PATHS:

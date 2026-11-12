@@ -348,6 +348,26 @@ class TestMigrateSinglePrepFlow(unittest.TestCase):
             self.assertEqual(assess['inputs'], 2)
             self.assertEqual(assess['outputs'], 1)
 
+    def test_colliding_source_names_preserve_both_definitions(self):
+        with tempfile.TemporaryDirectory() as td:
+            profile = self._make_fake_profile()
+            profile.inputs[0].name = 'Source/A'
+            profile.inputs[1].name = 'Source\\A'
+            with patch('prep_flow_analyzer.analyze_flow', return_value=profile):
+                result = _migrate_single_prep_flow(
+                    _make_tfl_file(td), 'flow', td, 'flow')
+            self.assertTrue(result['success'])
+            src_dir = os.path.join(td, 'flow', 'Sources')
+            files = os.listdir(src_dir)
+            self.assertEqual(result['source_count'], 2)
+            self.assertEqual(len(files), 2)
+            definitions = []
+            for filename in files:
+                with open(os.path.join(src_dir, filename), encoding='utf-8') as stream:
+                    definitions.append(json.load(stream))
+            self.assertEqual({definition['fingerprint'] for definition in definitions},
+                             {'fp_0', 'fp_1'})
+
     def test_no_pbip_generated(self):
         """Prep flow should NOT generate .pbip project files."""
         with tempfile.TemporaryDirectory() as td:

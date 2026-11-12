@@ -299,6 +299,32 @@ class TestSimpleUnionProducerEvidence(unittest.TestCase):
         ]
         self.assertEqual(mapped, [{'[Discounts]': 'Discount'}])
 
+    def test_public_partial_namespace_map_leaves_other_branch_names_unchanged(self):
+        evidence = json.loads(
+            (Path(__file__).parent / 'prep_dialect_samples'
+             / 'union_partial_mapping_evidence.json').read_text(encoding='utf-8'))
+        mapping = evidence['namespace_field_mappings']
+        branches = evidence['branches']
+        nodes = {}
+        for branch in reversed(branches):
+            nodes[branch['id']] = _input_node(
+                branch['name'], branch['namespace'], branch['fields'])
+        nodes['union'] = _simple_union_node(mapping)
+        nodes['out'] = {
+            'baseType': 'output', 'nodeType': '.v1.PublishExtract',
+            'name': 'CombinedSales', 'nextNodes': [],
+        }
+
+        datasource = _output_datasource(_parse_flow({
+            'nodes': nodes, 'connections': {},
+        }))
+
+        self.assertEqual(set(_columns(datasource)), {
+            ('Order ID', 'integer'), ('Store', 'string'),
+        })
+        self.assertNotIn(('Location', 'string'), _columns(datasource))
+        self.assertIn('Table.Combine(', datasource['m_query_override'])
+
     def test_public_empty_container_uses_empty_parameters_and_default_edges(self):
         containers = [
             node for node in self.flow['nodes'].values()
@@ -332,7 +358,7 @@ class TestSimpleUnionProducerEvidence(unittest.TestCase):
         self.assertEqual(_columns(datasource), [('Raw', 'string')])
         self.assertIn('Csv.Document', datasource['m_query_override'])
 
-    def test_public_simplejoin_inside_superjoin_requires_projection(self):
+    def test_public_simplejoin_without_projection_uses_default_join_schema(self):
         joins = [
             node for node in self.flow['nodes'].values()
             if node.get('nodeType') == '.v2018_2_3.SuperJoin'
@@ -391,11 +417,16 @@ class TestSimpleUnionProducerEvidence(unittest.TestCase):
             'connections': {},
         }
 
-        with self.assertRaisesRegex(
-            ValueError,
-            r"source-declared nonempty fields projection is required",
-        ):
-            _parse_flow(flow)
+        datasource = _output_datasource(
+            _parse_flow(flow, _simple_join_policies()))
+        self.assertEqual(_columns(datasource), [
+            ('Order ID', 'string'),
+            ('Left Value', 'string'),
+            ('Right Value', 'string'),
+        ])
+        query = datasource['m_query_override']
+        self.assertIn('Table.NestedJoin', query)
+        self.assertIn('Table.ExpandTableColumn', query)
 
     def test_public_flow_advances_past_split_remap_to_union_blocker_without_m(self):
         with tempfile.TemporaryDirectory() as output:
@@ -466,6 +497,21 @@ class TestSimpleUnionProducerEvidence(unittest.TestCase):
         self.assertIn('Table.NestedJoin', query)
         self.assertIn('Table.SelectColumns', query)
         self.assertIn('JoinKind.LeftOuter', query)
+
+    def test_simplejoin_default_projection_rejects_nonkey_name_collisions(self):
+        flow = _simple_join_flow(
+            left_fields=[
+                {'name': 'Left Key', 'type': 'string'},
+                {'name': 'Shared Value', 'type': 'string'},
+            ],
+            right_fields=[
+                {'name': 'Right Key', 'type': 'string'},
+                {'name': 'Shared Value', 'type': 'string'},
+            ],
+        )
+        flow['nodes']['join'].pop('fields')
+        with self.assertRaisesRegex(ValueError, 'duplicate/colliding field'):
+            _parse_flow(flow, _simple_join_policies())
 
     def test_simplejoin_rejects_non_field_and_non_equality_conditions(self):
         base = {
@@ -580,6 +626,56 @@ class TestSimpleUnionProducerEvidence(unittest.TestCase):
 
 
 class TestSimpleJoinSafety(unittest.TestCase):
+    def test_before_annotations_run_on_explicit_branches_in_list_order(self):
+        flow = _simple_join_flow()
+        join = flow['nodes']['join']
+        join['beforeActionAnnotations'] = [
+            {'namespace': 'Right', 'annotationNode': {
+                'nodeType': '.v1.AddColumn', 'baseType': 'transform',
+                'columnName': 'Right First', 'expression': '1',
+                'newType': 'integer', 'nextNodes': [],
+            }},
+            {'namespace': 'Left', 'annotationNode': {
+                'nodeType': '.v1.AddColumn', 'baseType': 'transform',
+                'columnName': 'Left Annotated', 'expression': '3',
+                'newType': 'integer', 'nextNodes': [],
+            }},
+            {'namespace': 'Right', 'annotationNode': {
+                'nodeType': '.v1.AddColumn', 'baseType': 'transform',
+                'columnName': 'Right Second', 'expression': '2',
+                'newType': 'integer', 'nextNodes': [],
+            }},
+        ]
+        datasources = _parse_flow(flow, _simple_join_policies())
+        output_query = _output_datasource(datasources)['m_query_override']
+        right_query = _datasource_for_table(datasources, 'SyntheticRight')['m_query_override']
+        self.assertIn('Left Annotated', output_query)
+        self.assertIn('Right First', right_query)
+        self.assertIn('Right Second', right_query)
+        self.assertLess(right_query.index('Right First'), right_query.index('Right Second'))
+
+    def test_before_annotations_reject_a_branch_with_another_consumer(self):
+        flow = _simple_join_flow()
+        flow['nodes']['join']['beforeActionAnnotations'] = [{
+            'namespace': 'Right',
+            'annotationNode': {
+                'nodeType': '.v1.RemoveColumns', 'baseType': 'transform',
+                'columnNames': ['Right Value'], 'nextNodes': [],
+            },
+        }]
+        flow['nodes']['right']['nextNodes'].append({
+            'namespace': 'Default', 'nextNodeId': 'other', 'nextNamespace': 'Default',
+        })
+        flow['nodes']['other'] = {
+            'baseType': 'transform',
+            'nodeType': '.v1.RemoveColumn',
+            'name': 'Other Consumer',
+            'columnName': 'Right Value',
+            'nextNodes': [],
+        }
+        with self.assertRaisesRegex(ValueError, 'sole consumer'):
+            _parse_flow(flow, _simple_join_policies())
+
     def test_requires_explicit_runtime_semantics_evidence(self):
         flow = _simple_join_flow()
         with patch.dict(os.environ, {'TTPBI_PREP_SIMPLE_JOIN_POLICIES': '{}'}):
@@ -655,7 +751,9 @@ class TestSimpleJoinSafety(unittest.TestCase):
                     path, 'flow', output, 'synthetic flow')
             self.assertFalse(rejected['success'])
             self.assertIn('semantics evidence policy', rejected['error_details'])
-            self.assertFalse(os.path.exists(output))
+            self.assertTrue(os.path.isfile(os.path.join(
+                output, 'flow', 'powerquery_migration_report.json')))
+            self.assertFalse(os.path.exists(os.path.join(output, 'flow', 'PowerQuery')))
 
             with patch.dict(os.environ, {
                 'TTPBI_PREP_SIMPLE_JOIN_POLICIES': json.dumps(_simple_join_policies()),
@@ -753,6 +851,27 @@ class TestSimpleJoinSafety(unittest.TestCase):
         self.assertEqual(validate_m_query(query), [])
         self.assertEqual(_columns(datasource), [
             ('Left Value', 'string'), ('Right Value', 'string')])
+
+    def test_not_inner_without_projection_uses_default_schema(self):
+        flow = _simple_join_flow(join_type='notInner')
+        flow['nodes']['join'].pop('fields')
+        datasource = _output_datasource(_parse_flow(flow, _simple_join_policies()))
+        query = datasource['m_query_override']
+        self.assertEqual(query.count('JoinKind.LeftAnti'), 2)
+        self.assertIn('Table.Combine', query)
+        self.assertIn('MissingField.UseNull', query)
+        self.assertEqual(validate_m_query(query), [])
+        self.assertEqual(_columns(datasource), [
+            ('Left Key', 'string'),
+            ('Left Value', 'string'),
+            ('Right Value', 'string'),
+        ])
+
+    def test_simplejoin_rejects_explicit_empty_projection(self):
+        flow = _simple_join_flow()
+        flow['nodes']['join']['fields'] = []
+        with self.assertRaisesRegex(ValueError, 'projection cannot be empty'):
+            _parse_flow(flow, _simple_join_policies())
 
 
 class TestPrepUnionMappingConversion(unittest.TestCase):
@@ -1159,7 +1278,7 @@ class TestPrepUnionMappingRejections(unittest.TestCase):
             with self.subTest(case=label):
                 self.assert_rejected(flow, message)
 
-    def test_namespace_mapping_records_must_match_input_edge_namespaces(self):
+    def test_missing_namespace_mapping_defaults_to_identity(self):
         missing_record = self._two_branch_flow()
         records = missing_record['nodes']['union']['actionNode'][
             'namespaceFieldMappings']
@@ -1168,19 +1287,19 @@ class TestPrepUnionMappingRejections(unittest.TestCase):
             if record['namespaceName'] != NS_WEST
         ]
 
+        datasource = _output_datasource(_parse_flow(missing_record))
+        self.assertEqual(set(_columns(datasource)), {
+            ('Alpha', 'integer'), ('Beta', 'string'),
+        })
+
+    def test_extra_unconnected_namespace_mapping_is_rejected(self):
         extra_record = self._two_branch_flow()
         extra_record['nodes']['union']['actionNode'][
             'namespaceFieldMappings'].append({
                 'namespaceName': NS_THIRD,
                 'fieldMappings': {},
             })
-
-        for label, flow in (
-            ('missing input record', missing_record),
-            ('extra unconnected record', extra_record),
-        ):
-            with self.subTest(case=label):
-                self.assert_rejected(flow, 'namespaceFieldMappings must match')
+        self.assert_rejected(extra_record, 'unknown incoming namespaces')
 
     def test_duplicate_incoming_edge_for_one_input_is_rejected(self):
         flow = self._two_branch_flow()

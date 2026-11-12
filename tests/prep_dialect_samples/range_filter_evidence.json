@@ -1,0 +1,59 @@
+{
+  "provenance": {
+    "upstream": "https://github.com/PacktPublishing/Tableau-Prep-Cookbook",
+    "upstream_commit": "228d4906d71c54f70548b9859160c0d6c4687f2b",
+    "upstream_file": "Chapter04/Sample Files 4.1 - Data Granularity/Superstore.tflx",
+    "upstream_member": "flow",
+    "license": "MIT",
+    "license_url": "https://github.com/PacktPublishing/Tableau-Prep-Cookbook/blob/228d4906d71c54f70548b9859160c0d6c4687f2b/LICENSE",
+    "source_url": "https://github.com/PacktPublishing/Tableau-Prep-Cookbook/blob/228d4906d71c54f70548b9859160c0d6c4687f2b/Chapter04/Sample%20Files%204.1%20-%20Data%20Granularity/Superstore.tflx",
+    "attribution": "Packt Publishing, Tableau Prep Cookbook sample files.",
+    "verification": "Producer node fields were inspected from the pinned TFLX flow member on 2026-10-21; no embedded source data was retained.",
+    "runtime_claim": "none; static structural evidence only"
+  },
+  "numeric_exclusion": {
+    "source_node_id": "9031ec95-e7a9-4778-8b59-7fe03ebff342",
+    "payload": {
+      "nodeType": ".v1.RangeFilter",
+      "ranges": {
+        "Discount": [
+          {
+            "startValue": "17.0",
+            "includeStart": true,
+            "endValue": "18.0",
+            "includeEnd": false
+          }
+        ]
+      },
+      "exclude": true
+    }
+  },
+  "null_exclusion": {
+    "source_node_id": "06e71a25-be6b-481a-ad27-bd3f3be09a2f",
+    "payload": {
+      "nodeType": ".v1.RangeFilter",
+      "ranges": {
+        "Order ID": [
+          {
+            "startValue": null,
+            "includeStart": true,
+            "endValue": null,
+            "includeEnd": true
+          }
+        ]
+      },
+      "exclude": true
+    },
+    "conversion_status": "generated as observed null exclusion; native runtime parity not run"
+  },
+  "quick_calc_remove_letters": {
+    "source_node_id": "3f888eb2-5543-4b5a-9608-3e657fb7b19c",
+    "payload": {
+      "nodeType": ".v2018_3_3.QuickCalcColumn",
+      "columnName": "Sales",
+      "expression": "REGEXP_REPLACE([Sales], '[:Letter:]', '')",
+      "calcExpressionType": "RemoveLetters"
+    },
+    "conversion_status": "generated with pinned Unicode 16.0 Letter ranges; native Tableau/Power Query parity not run"
+  }
+}

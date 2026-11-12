@@ -261,6 +261,43 @@ class TestTopologicalSort(unittest.TestCase):
 class TestConvertPrepExpression(unittest.TestCase):
     """Test _convert_prep_expression_to_m."""
 
+    def test_native_ifnull_numeric_calculation(self):
+        expression = 'IFNULL([Amount], 0) - [Cost]'
+        self.assertEqual(
+            _convert_prep_expression_to_m(expression),
+            '(if [Amount] = null then 0 else [Amount]) - [Cost]',
+        )
+        self.assertEqual(_expression_type(expression, [
+            {'name': 'Amount', 'type': 'real'},
+            {'name': 'Cost', 'type': 'real'},
+        ]), 'real')
+        step_name, step_expression = _convert_action_to_m_step(
+            'AddColumn', {'columnName': 'NetSales', 'expression': expression}, {},
+        )
+        query = ('let Source = #table({"Amount", "Cost"}, {{null, 2}}),\n'
+                 f'    {step_name} = {step_expression.replace("{prev}", "Source")}\n'
+                 f'in {step_name}')
+        self.assertEqual(validate_m_query(query), [])
+
+    def test_ifnull_refuses_unverified_nested_or_literal_source(self):
+        for expression in [
+            'IFNULL([Amount] + 1, 0)', 'IFNULL(1, 0)', "IFNULL('value', 0)",
+        ]:
+            with self.subTest(expression=expression), self.assertRaisesRegex(
+                ValueError, 'IFNULL'
+            ):
+                _convert_prep_expression_to_m(expression)
+
+    def test_ifnull_field_and_text_fallbacks_preserve_literal_contents(self):
+        self.assertEqual(
+            _convert_prep_expression_to_m('IFNULL([Amount], [Fallback])'),
+            '(if [Amount] = null then [Fallback] else [Amount])',
+        )
+        self.assertEqual(
+            _convert_prep_expression_to_m("IFNULL([Status], 'IFNULL(1, 0)')"),
+            '(if [Status] = null then "IFNULL(1, 0)" else [Status])',
+        )
+
     def test_if_then_else(self):
         result = _convert_prep_expression_to_m('IF [X] > 10 THEN "High" ELSE "Low" END')
         self.assertIn('if', result)
@@ -521,6 +558,32 @@ class TestCleanActions(unittest.TestCase):
         _, expr = steps[0]
         self.assertIn('TransformColumnTypes', expr)
         self.assertIn('number', expr)
+
+    def test_change_column_type_accepts_normalized_declared_field_map(self):
+        steps = _convert_action_to_m_step('ChangeColumnType', {
+            'fields': [
+                {'name': 'Discount', 'type': 'real', 'calc': None},
+                {'name': 'Order ID', 'type': 'string'},
+            ],
+        }, {})
+        self.assertEqual(len(steps), 2)
+        self.assertIn('Discount', steps[0][1])
+        self.assertIn('type number', steps[0][1])
+        self.assertIn('Order ID', steps[1][1])
+        self.assertIn('type text', steps[1][1])
+
+    def test_change_column_type_scalar_takes_precedence_over_schema_fields(self):
+        step = _convert_action_to_m_step('ChangeColumnType', {
+            'fields': [], 'columnName': 'Amount', 'newType': 'integer',
+        }, {})
+        self.assertIn('Amount', step[1])
+        self.assertIn('type number', step[1])
+
+    def test_change_column_type_field_map_rejects_unverified_fields(self):
+        with self.assertRaisesRegex(ValueError, 'no calculation'):
+            _convert_action_to_m_step('ChangeColumnType', {
+                'fields': [{'name': 'Amount', 'type': 'real', 'expression': '1'}],
+            }, {})
 
     def test_filter_values_keep(self):
         node = _clean_node(actions=[

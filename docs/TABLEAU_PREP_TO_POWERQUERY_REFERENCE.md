@@ -70,14 +70,18 @@ rates on an external/private corpus.
 The public `SimpleJoin` inside `SuperJoin` is recognized as its own dialect:
 the observed `conditions` entries contain `[Field]` expressions and an
 explicit `==` comparator, while incoming edge namespaces identify `Left` and
-`Right`. It is not treated as an alias for the older `Join` payload. Conversion
-requires a nonempty, source-declared node `fields` list; it is used as the
-output projection. Each projected name must identify exactly one input, and
-join-key types must match without an inferred cast. A distinct right-hand key
-is retained when projected; a temporary expansion preserves multiple matches
-even when no right-hand field is projected. `notInner` combines the two
-unmatched sides rather than treating it as `leftOnly`. Legacy `notInner`
-payloads without this explicit projection remain blocked.
+`Right`. It is not treated as an alias for the older `Join` payload. A
+nonempty, source-declared node `fields` list is used as an explicit output
+projection. When that optional list is absent, the default projection is all
+left fields plus right-side non-key fields, matching Tableau's documented
+horizontal join result. Case-insensitive collisions in that default schema
+still block conversion; no rename is inferred. Each explicitly projected name
+must identify exactly one input, and join-key types must match without an
+inferred cast. A distinct right-hand key is retained when explicitly
+projected; a temporary expansion preserves multiple matches even when no
+right-hand field is projected. `notInner` combines the two unmatched sides
+rather than treating it as `leftOnly`. Semantic evidence policies are still
+required before generating M.
 
 Conversion also requires a node-keyed policy attesting that Tableau and Power
 Query agree on comparisons, null keys and duplicate matches for the actual
@@ -237,12 +241,23 @@ These are static conversion contracts, not native Power Query execution.
 Native refresh and runtime value equivalence remain `not_run`; they require an
 authorized Power Query environment and source/target value comparison.
 N1 is **partial** (one observed dialect of eight), not complete and not #81 closure.
-The other seven clean-node dialects still have no demonstrated producer
-payloads in accepted fixtures: `ValueFilter`, `RichRangeFilter`, `RangeFilter`,
-`RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter`, and
-`RichNullFilter`. Their names in analyzer classification tables do not prove
-convertibility. In particular, `RangeFilter` is not silently treated as the
-already supported `FilterRange` dialect.
+The other clean-node dialects still have no demonstrated producer payloads in
+accepted fixtures: `ValueFilter`, `RichRangeFilter`, `RichDiscreteValueFilter`,
+`RichWildcardFilter`, and `RichNullFilter`. A public
+Packt `.tflx` supplies a real `QuickCalcColumn` `RemoveLetters` operation whose
+expression contains `[:Letter:]`. Tableau documents ICU regex syntax, and ICU
+defines Unicode Letter property classes ([Tableau regex functions](https://help.tableau.com/current/pro/desktop/en-us/functions_functions_additional.htm),
+[ICU character classes](https://unicode-org.github.io/icu/userguide/strings/regexp.html)).
+The converter emits an M character filter using letter ranges generated from
+pinned Unicode 16.0 data; it fails closed unless Python's `unicodedata` version
+is exactly 16.0.0. This avoids an ASCII-only rewrite, but the Tableau source's
+exact ICU version is not recorded, and native Power Query execution and value
+parity remain `not_run`; generated queries carry a warning and the pinned
+version. M `Text.Remove` itself accepts explicit character lists, not
+Unicode-category predicates ([Power Query `Text.Remove`](https://learn.microsoft.com/en-us/powerquery-m/text-remove)).
+Analyzer classification names still do not prove convertibility. In
+particular, `RangeFilter` is not silently treated as the already supported
+`FilterRange` dialect.
 
 A bounded public-source search did not establish suitable additional fixtures:
 customer-like exports with unclear data-publication permission were excluded,
@@ -251,8 +266,9 @@ This is a fixture-coverage gap, not a claim that those payloads do not exist.
 The 2026-10-30 follow-up likewise did not add an accepted fixture: two filter
 shapes appeared in a source with unresolved licensing and incomplete value/null
 semantics; a third-party assumed `QuickCalcColumn` format was not producer
-evidence. The other four dialects were not found in that bounded search. No
-source data were copied and none of these candidates enabled a conversion.
+evidence. The public Packt flow establishes the producer shape, not conversion
+semantics for `RemoveLetters`; the flow therefore remains blocked. No external
+or customer source data were copied into the accepted fixture corpus.
 
 ### `--prep` with a workbook
 
@@ -314,6 +330,36 @@ Standalone `.tfl/.tflx` **batch** migration still exports M expressions, source
 definitions and lineage/assessment artifacts; it does **not** produce a PBIP.
 Missing workbook datasource JSON in `--prep` mode is an error, not an implicit
 standalone conversion. Static JSON/TMDL checks do not execute M or verify refresh.
+
+For standalone packaged flows, a successful conversion stages supported
+`isPackaged` CSV and Excel inputs under `Data/<connection-id>/<filename>` and
+binds each generated M query to the staged file using an absolute path. Source
+definitions and the per-flow JSON/HTML report identify these files. Paths must be
+updated when moving the output. Only exact, unique archive members are used;
+existing files are reused only when their bytes match and are never overwritten.
+The configured ZIP member size limit applies during extraction.
+
+Staging runs only after the flow's initial conversion succeeds. Ordered direct
+input `RemoveColumns` actions are translated to M; other input actions, file
+unions, filters, unsupported CSV parsing options, and Excel inputs without a
+declared worksheet identity block the migration rather than guessing. In
+particular, CSV qualifier and locale options are not translated yet. Files from
+an earlier or partially failed attempt may remain on disk but are not reported
+as successfully bound. Embedded Hyper inputs still require the explicit
+original-source rebind described below. This staging does not apply to workbook
+integration with `--prep`; it does not execute Power Query or establish data parity.
+
+For `SuperJoin`, nonempty `beforeActionAnnotations` are converted only when each
+annotation names an explicit `Left` or `Right` namespace, uses an action already
+supported by the deterministic M converter, and the corresponding input branch
+has this join as its sole consumer. Actions run in their listed order within
+each branch. `afterActionAnnotations`, shared branches, and unsupported actions
+remain blockers. This does not waive the declared output-projection or join
+semantics evidence required by `SimpleJoin`.
+
+`AddColumn` actions that target a field already present in the input schema are
+blocked as `duplicate_column_identity`; the flow's replace-versus-duplicate
+behavior has not been verified, so the existing field is not silently discarded.
 
 ### Hyper source rebind
 

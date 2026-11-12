@@ -162,6 +162,108 @@ def test_supernode_keeps_distinct_action_label_without_changing_graph_identity()
     assert '"Raw"' in query and '"Amount"' in query
 
 
+def test_native_superaggregate_keeps_distinct_action_identity():
+    aggregate = _action_node('Aggregate', 'Aggregate Action', 'action-id')
+    aggregate['nodeType'] = '.v1.Aggregate'
+    flow = {
+        'nodes': {
+            'input': _synthetic_source('aggregate'),
+            'aggregate': _super_node(
+                'SuperAggregate', 'Aggregate Wrapper', 'wrapper-id',
+                aggregate, 'out'),
+            'out': output(),
+        },
+        'connections': {},
+    }
+    normalized = normalize_prep_flow(flow)['nodes']['aggregate']
+    assert normalized['id'] == 'wrapper-id'
+    assert normalized['_prep_action_node_id'] == 'action-id'
+    assert normalized['nextNodes'] == [edge('out')]
+
+
+@pytest.mark.parametrize(
+    ('wrapper_type', 'action_type'),
+    [('SuperPivot', 'Pivot'), ('SuperUnpivotExtended', 'UnpivotExtended')],
+)
+def test_native_pivot_wrappers_keep_distinct_action_identity(wrapper_type, action_type):
+    action = _action_node(action_type, 'Synthetic Action', 'action-id')
+    wrapper = _super_node(wrapper_type, 'Synthetic Wrapper', 'wrapper-id', action, 'out')
+    wrapper['pivotType'] = 'columnsToRows'
+    flow = {
+        'nodes': {
+            'input': _synthetic_source('step'),
+            'step': wrapper,
+            'out': output(),
+        },
+        'connections': {},
+    }
+    normalized = normalize_prep_flow(flow)['nodes']['step']
+    assert normalized['id'] == 'wrapper-id'
+    assert normalized['_prep_action_node_id'] == 'action-id'
+    assert normalized['nextNodes'] == [edge('out')]
+
+
+def test_native_superaggregate_column_names_and_functions_reach_m_and_schema():
+    aggregate = _action_node(
+        'Aggregate', 'Aggregate Action', 'action-id',
+        groupByFields=[{'columnName': 'Category', 'function': 'GroupBy',
+                        'newColumnName': None, 'specialFieldType': None}],
+        aggregateFields=[{'columnName': 'Amount', 'function': 'SUM',
+                          'newColumnName': None, 'specialFieldType': None}],
+    )
+    aggregate['nodeType'] = '.v1.Aggregate'
+    flow = {
+        'nodes': {
+            'input': _synthetic_source('aggregate', fields=[
+                {'name': 'Category', 'type': 'string'},
+                {'name': 'Amount', 'type': 'real'},
+            ]),
+            'aggregate': _super_node(
+                'SuperAggregate', 'Aggregate Wrapper', 'wrapper-id',
+                aggregate, 'out'),
+            'out': output(),
+        },
+        'connections': {},
+    }
+    datasource = _output_datasource(_parse_tmp(flow))
+    assert [column['name'] for column in datasource['tables'][0]['columns']] == [
+        'Category', 'Amount',
+    ]
+    query = datasource['m_query_override']
+    assert 'Table.Group' in query
+    assert 'List.Sum' in query
+    assert '"Category"' in query and '"Amount"' in query
+
+    aggregate['aggregateFields'][0]['function'] = 'Unknown'
+    with pytest.raises(ValueError, match='unsupported aggregation'):
+        normalize_prep_flow(flow)
+
+
+def test_native_ifnull_calculation_generates_m_and_numeric_output_schema():
+    flow = {
+        'nodes': {
+            'input': _synthetic_source('calc', fields=[
+                {'name': 'Amount', 'type': 'real'},
+                {'name': 'Cost', 'type': 'real'},
+            ]),
+            'calc': {
+                'nodeType': '.v1.AddColumn', 'baseType': 'transform',
+                'name': 'Calculation', 'columnName': 'NetSales',
+                'expression': 'IFNULL([Amount], 0) - [Cost]',
+                'nextNodes': [edge('out')],
+            },
+            'out': output(),
+        },
+        'connections': {},
+    }
+    datasource = _output_datasource(_parse_tmp(flow))
+    columns = datasource['tables'][0]['columns']
+    assert next(column['datatype'] for column in columns
+                if column['name'] == 'NetSales') == 'real'
+    assert '(if [Amount] = null then 0 else [Amount]) - [Cost]' in (
+        datasource['m_query_override'])
+
+
 def test_supernode_conflicting_inner_identity_or_edges_fail_explicitly():
     flow = _clean_supernode_flow()
     flow['nodes']['clean']['actionNode']['id'] = 'different-action-id'
@@ -470,6 +572,39 @@ def test_missing_filter_direction_is_not_defaulted_to_keep():
         _convert_action_to_m_step(
             'FilterOperation', {'filterExpression': '[Raw] > 0'}, {},
         )
+
+
+def test_native_standalone_filter_node_uses_producer_keep_predicate():
+    flow = _filter_flow(include_filter_type=False)
+    flow['nodes']['input']['fields'] = [{'name': 'Status', 'type': 'string'}]
+    action = flow['nodes']['clean']['beforeActionGroup']['actions'][0]
+    action['filterExpression'] = "[Status] = 'Completed'"
+    action.pop('actionType')
+    action.update({
+        'nodeType': '.v1.FilterOperation',
+        'baseType': 'transform',
+        'id': 'native-filter-id',
+        'nextNodes': [],
+    })
+    normalized = normalize_prep_flow(flow)
+    normalized_action = normalized['nodes']['clean']['beforeActionGroup']['actions'][0]
+    assert normalized_action['filterType'] == 'keep'
+    assert not normalized.get('_prep_diagnostics')
+    step = _convert_action_to_m_step('FilterOperation', normalized_action, {})
+    assert step[1] == 'Table.SelectRows({prev}, each [Status] = "Completed")'
+    query = _output_datasource(_parse_tmp(flow))['m_query_override']
+    assert 'each [Status] = "Completed"' in query
+
+
+def test_prep_expression_preserves_literals_and_field_names_during_rewrites():
+    step = _convert_action_to_m_step('FilterOperation', {
+        'filterExpression': "[OR] = 'O''Brien AND !=' AND [Status] = \"OR\"",
+        'filterType': 'keep',
+    }, {})
+    assert step[1] == (
+        'Table.SelectRows({prev}, each [OR] = "O\'Brien AND !=" '
+        'and [Status] = "OR")'
+    )
 
 
 def test_known_filter_directions_are_canonicalized_and_converted():

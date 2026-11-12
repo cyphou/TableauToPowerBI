@@ -1,0 +1,35 @@
+{
+  "provenance": {
+    "upstream": "https://github.com/anyalitica/metadata-api-in-tableau-prep",
+    "upstream_commit": "f7c1b1a7d0a267064d740b267caff4ff2e893115",
+    "upstream_file": "data-dictionary-flow.tflx",
+    "upstream_member": "flow",
+    "license": "MIT",
+    "license_url": "https://github.com/anyalitica/metadata-api-in-tableau-prep/blob/f7c1b1a7d0a267064d740b267caff4ff2e893115/LICENSE",
+    "source_url": "https://github.com/anyalitica/metadata-api-in-tableau-prep/blob/f7c1b1a7d0a267064d740b267caff4ff2e893115/data-dictionary-flow.tflx",
+    "verification": "ValueFilter payloads inspected from the pinned TFLX flow member on 2026-11-11; embedded input data was not retained.",
+    "runtime_claim": "none; static structural evidence only"
+  },
+  "exclude_text_value": {
+    "source_node_id": "70d643dc-3fc4-49b0-b8a2-ecfbe9fd23d2",
+    "payload": {
+      "nodeType": ".v1.ValueFilter",
+      "name": "Exclude Workbook project:Samples 1",
+      "exclude": true,
+      "values": {
+        "Workbook project": ["\"Samples\""]
+      }
+    }
+  },
+  "exclude_empty_string": {
+    "source_node_id": "90386468-5ff3-4f44-9977-1b408edbef6a",
+    "payload": {
+      "nodeType": ".v1.ValueFilter",
+      "name": "Exclude Calculation id: 1",
+      "exclude": true,
+      "values": {
+        "Calculation id": ["\"\""]
+      }
+    }
+  }
+}

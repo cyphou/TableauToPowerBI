@@ -29,6 +29,7 @@ from prep_flow_parser import (
     _validate_prep_source_map,
     get_prep_node_kind,
     read_prep_flow,
+    _prep_lineage_node_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -372,7 +373,7 @@ def _extract_transforms(sorted_ids: list, nodes: dict) -> List[FlowTransform]:
 
         transforms.append(FlowTransform(
             node_id=nid,
-            name=node.get('name', nid[:8]),
+            name=_prep_lineage_node_name(node, nid[:8]),
             transform_type=ttype,
             details=details,
         ))
@@ -388,8 +389,10 @@ _ACTION_TYPE_MAP = {
     'RenameColumns': 'rename_columns',
     'ChangeDataType': 'change_type',
     'Filter': 'filter',
+    'ValueFilter': 'filter',
     'FilterValues': 'filter',
     'FilterRange': 'filter',
+    'RangeFilter': 'filter',
     'FilterCalculation': 'filter',
     'AddColumn': 'add_column',
     'ConditionalColumn': 'conditional_column',
@@ -429,8 +432,16 @@ def _extract_clean_operations(actions: list, node: dict) -> List[Dict[str, Any]]
         raw_type = _clean_action_type(action)
 
         op_type = _ACTION_TYPE_MAP.get(raw_type, raw_type or 'unknown')
-        name = action.get('name', '')
+        if (raw_type == 'QuickCalcColumn'
+            and action.get('calcExpressionType') == 'TrimSpaces'):
+            op_type = 'trim'
+        name = ('' if raw_type in ('ValueFilter', 'RangeFilter')
+            else action.get('name', ''))
         column = action.get('column', action.get('columnName', ''))
+        if not column and raw_type == 'ValueFilter':
+            values_by_column = action.get('values')
+            if isinstance(values_by_column, dict) and len(values_by_column) == 1:
+                column = next(iter(values_by_column))
         expression = action.get('expression', action.get('formula', ''))
 
         op: Dict[str, Any] = {'type': op_type}
@@ -626,7 +637,7 @@ def _assess_flow(inputs, outputs, transforms, join_count, union_count,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def analyze_flow(filepath: str, include_m_queries: bool = False,
-                 *, source_map=None) -> FlowProfile:
+                 *, source_map=None, packaged_files=None) -> FlowProfile:
     """Parse one TFL/TFLX and extract full metadata.
 
     Args:
@@ -679,7 +690,8 @@ def analyze_flow(filepath: str, include_m_queries: bool = False,
                 raise ValueError(source_binding_error)
             from prep_flow_parser import parse_prep_flow
             datasources = parse_prep_flow(
-                filepath, source_map=validated_source_map)
+                filepath, source_map=validated_source_map,
+                packaged_files=packaged_files)
             if not datasources:
                 raise ValueError('Prep conversion produced zero outputs')
             for ds in datasources:

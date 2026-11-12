@@ -1781,6 +1781,86 @@ class TestCLIPrepLineageArg(unittest.TestCase):
 class TestRunPrepLineageMode(unittest.TestCase):
     """Test run_prep_lineage_mode end-to-end."""
 
+    def test_prep_output_name_cannot_write_outside_export_root(self):
+        from migrate import ExitCode, run_prep_lineage_mode
+
+        with tempfile.TemporaryDirectory() as td:
+            flow = clean_chain()
+            flow['nodes']['out']['name'] = '../../../escaped'
+            source_path = write_flow(td, flow, 'flow.tfl')
+            args = MagicMock()
+            args.prep_lineage = [source_path]
+            args.output_dir = os.path.join(td, 'output')
+            args.batch = None
+            with patch('sys.stdout', new=io.StringIO()):
+                result = run_prep_lineage_mode(args)
+            self.assertEqual(result, ExitCode.SUCCESS)
+            self.assertFalse(os.path.exists(os.path.join(td, 'escaped.pq')))
+            pq_dir = os.path.join(args.output_dir, 'PowerQuery', 'flow')
+            self.assertEqual(len(os.listdir(pq_dir)), 1)
+
+    def test_prep_output_names_remain_distinct_after_sanitization(self):
+        from migrate import ExitCode, run_prep_lineage_mode
+
+        with tempfile.TemporaryDirectory() as td:
+            flow = clean_chain()
+            flow['nodes']['out']['name'] = 'Result/A'
+            flow['nodes']['out2'] = output('Result\\A')
+            flow['nodes']['box']['nextNodes'].append({'nextNodeId': 'out2'})
+            source_path = write_flow(td, flow, 'flow.tfl')
+            args = MagicMock()
+            args.prep_lineage = [source_path]
+            args.output_dir = os.path.join(td, 'output')
+            args.batch = None
+            with patch('sys.stdout', new=io.StringIO()):
+                result = run_prep_lineage_mode(args)
+            self.assertEqual(result, ExitCode.SUCCESS)
+            pq_dir = os.path.join(args.output_dir, 'PowerQuery', 'flow')
+            self.assertEqual(len(os.listdir(pq_dir)), 2)
+
+    def test_same_named_flows_keep_separate_exports(self):
+        from migrate import ExitCode, run_prep_lineage_mode
+
+        with tempfile.TemporaryDirectory() as td:
+            paths = []
+            for folder in ('north', 'south'):
+                directory = os.path.join(td, folder)
+                os.mkdir(directory)
+                paths.append(write_flow(directory, clean_chain(), 'flow.tfl'))
+            args = MagicMock()
+            args.prep_lineage = paths
+            args.output_dir = os.path.join(td, 'output')
+            args.batch = None
+            with patch('sys.stdout', new=io.StringIO()):
+                result = run_prep_lineage_mode(args)
+            self.assertEqual(result, ExitCode.SUCCESS)
+            for directory in ('PowerQuery', 'Sources'):
+                self.assertEqual(len(os.listdir(os.path.join(args.output_dir, directory))), 2)
+            with open(os.path.join(args.output_dir, 'prep_lineage.json'), encoding='utf-8') as stream:
+                lineage = json.load(stream)
+            self.assertEqual(len({flow['name'] for flow in lineage['flows']}), 2)
+            self.assertEqual({flow['file_path'] for flow in lineage['flows']}, set(paths))
+
+    def test_batch_lineage_distinguishes_same_named_flows(self):
+        from migrate import _run_batch_prep_lineage
+
+        with tempfile.TemporaryDirectory() as td:
+            results = {}
+            for folder in ('north', 'south'):
+                directory = os.path.join(td, folder)
+                os.mkdir(directory)
+                path = write_flow(directory, clean_chain(), 'flow.tfl')
+                results[folder] = {
+                    'success': True, 'prep_flow': True,
+                    'prep_profile': analyze_flow(path, include_m_queries=True),
+                }
+            with patch('sys.stdout', new=io.StringIO()):
+                _run_batch_prep_lineage(results, td)
+            with open(os.path.join(td, 'prep_lineage', 'prep_lineage.json'),
+                      encoding='utf-8') as stream:
+                lineage = json.load(stream)
+            self.assertEqual(len({flow['name'] for flow in lineage['flows']}), 2)
+
     def test_full_pipeline(self):
         from migrate import ExitCode, run_prep_lineage_mode
         with tempfile.TemporaryDirectory() as td:

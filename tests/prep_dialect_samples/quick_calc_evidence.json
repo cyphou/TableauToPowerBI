@@ -1,0 +1,24 @@
+{
+  "provenance": {
+    "upstream": "https://github.com/anyalitica/metadata-api-in-tableau-prep",
+    "upstream_commit": "f7c1b1a7d0a267064d740b267caff4ff2e893115",
+    "upstream_file": "data-dictionary-flow.tflx",
+    "upstream_member": "flow",
+    "license": "MIT",
+    "license_url": "https://github.com/anyalitica/metadata-api-in-tableau-prep/blob/f7c1b1a7d0a267064d740b267caff4ff2e893115/LICENSE",
+    "source_url": "https://github.com/anyalitica/metadata-api-in-tableau-prep/blob/f7c1b1a7d0a267064d740b267caff4ff2e893115/data-dictionary-flow.tflx",
+    "verification": "QuickCalcColumn payload inspected from the pinned TFLX flow member on 2026-11-11; embedded input data was not retained.",
+    "runtime_claim": "none; static structural evidence only"
+  },
+  "trim_spaces": {
+    "source_node_id": "5c5365e5-1a1a-4c20-92a8-11f89788996f",
+    "payload": {
+      "nodeType": ".v2018_3_3.QuickCalcColumn",
+      "columnName": "Calculation formula",
+      "expression": "REGEXP_REPLACE([Calculation formula], '(^[[:space:]]*|[[:space:]]*$)', '')",
+      "calcExpressionType": "TrimSpaces"
+    },
+    "conversion": "Text.Trim on the same string column; Power Query Text.Trim removes leading and trailing whitespace by default.",
+    "runtime_claim": "static M validation only; native Tableau/Power Query row parity not executed"
+  }
+}

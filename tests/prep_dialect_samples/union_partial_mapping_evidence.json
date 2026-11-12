@@ -1,0 +1,41 @@
+{
+  "provenance": {
+    "upstream": "https://github.com/acotgreave/tableau-prep-to-python",
+    "upstream_commit": "72cbb5d8fa97be40a4d02d5c2ed993bc4ba0738d",
+    "upstream_file": "examples/coffee-sales/coffee-sales.tfl",
+    "upstream_member": "root JSON document in ZIP-wrapped TFL",
+    "license": "MIT",
+    "license_url": "https://github.com/acotgreave/tableau-prep-to-python/blob/72cbb5d8fa97be40a4d02d5c2ed993bc4ba0738d/LICENSE",
+    "source_url": "https://github.com/acotgreave/tableau-prep-to-python/blob/72cbb5d8fa97be40a4d02d5c2ed993bc4ba0738d/examples/coffee-sales/coffee-sales.tfl",
+    "verification": "The producer's two union input namespaces and single field rename were inspected from the pinned flow on 2026-11-11; branch schemas below retain only the relevant field names and types.",
+    "runtime_claim": "none; static flow parsing and M generation only"
+  },
+  "namespace_field_mappings": [
+    {
+      "namespaceName": "Union-Namespace-A",
+      "fieldMappings": {
+        "[Location]": "Store"
+      }
+    }
+  ],
+  "branches": [
+    {
+      "id": "branch-a",
+      "name": "Sales2023",
+      "namespace": "Union-Namespace-A",
+      "fields": [
+        {"name": "Order ID", "type": "integer"},
+        {"name": "Location", "type": "string"}
+      ]
+    },
+    {
+      "id": "branch-b",
+      "name": "Sales2024",
+      "namespace": "Union-Namespace-B",
+      "fields": [
+        {"name": "Order ID", "type": "integer"},
+        {"name": "Store", "type": "string"}
+      ]
+    }
+  ]
+}

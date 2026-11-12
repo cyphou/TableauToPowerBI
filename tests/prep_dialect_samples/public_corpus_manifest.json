@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "baseline_date": "2026-11-11",
+  "baseline": {
+    "anyalitica-data-dictionary": {"status": "blocked", "blocker_codes": ["unsupported_node_type"]},
+    "anyalitica-exchange-rates-api": {"status": "blocked", "blocker_codes": ["unsupported_node_type", "unverified_action_annotations"]},
+    "anyalitica-postcode-geocoding": {"status": "blocked", "blocker_codes": ["unsupported_node_type"]},
+    "coffee-sales-control": {"status": "generated", "required_queries": ["Combined_sales", "sales_2023", "sales_2024"]},
+    "datus-native-filter": {"status": "blocked", "blocker_codes": ["conversion_blocked"]},
+    "loth-visual-analytics": {"status": "blocked", "blocker_codes": ["union_schema_conflict"]},
+    "packt-aggregation": {"status": "blocked", "blocker_codes": ["duplicate_column_identity"]},
+    "packt-granularity": {"status": "blocked", "blocker_codes": ["duplicate_column_identity"]},
+    "packt-superstore": {"status": "blocked", "blocker_codes": ["duplicate_column_identity"]}
+  },
+  "inputs": [
+    {
+      "filename": "anyalitica-data-dictionary.tflx",
+      "repository": "anyalitica/metadata-api-in-tableau-prep",
+      "commit": "f7c1b1a7d0a267064d740b267caff4ff2e893115",
+      "path": "data-dictionary-flow.tflx",
+      "license": "MIT",
+      "sha256": "e8f64e32938df475a387c423dc066861ca0c145e52ae4172aa3d728b0713ca2a"
+    },
+    {
+      "filename": "anyalitica-exchange-rates-api.tflx",
+      "repository": "anyalitica/api-connect-tableau-prep",
+      "commit": "3d79cc5b740532c4b73627129e51e177b778d226",
+      "path": "Connecting to API.tflx",
+      "license": "MIT",
+      "sha256": "2ce98f7a43629c662a557e3bb0135e76333fe103e687923a929f70de0bef2cda"
+    },
+    {
+      "filename": "anyalitica-postcode-geocoding.tflx",
+      "repository": "anyalitica/geocoding-api-tableau-prep",
+      "commit": "7f5165218f7955eb5f32511e81a61c7e11d67bac",
+      "path": "geocoding-with-python.tflx",
+      "license": "MIT",
+      "sha256": "daeed017c969b295c4329f9f5ea08c7cb8c31343d1db05345500a5498d112379"
+    },
+    {
+      "filename": "coffee-sales-control.tfl",
+      "repository": "acotgreave/tableau-prep-to-python",
+      "commit": "72cbb5d8fa97be40a4d02d5c2ed993bc4ba0738d",
+      "path": "examples/coffee-sales/coffee-sales.tfl",
+      "license": "MIT",
+      "sha256": "79d3eb49f9f554898969822d8a1eeec66231f383137ab6bb79cd978c0dcae96a"
+    },
+    {
+      "filename": "datus-native-filter.tfl",
+      "repository": "Datus-ai/Datus-Plugins",
+      "commit": "920ffddf6698ec32c1c5ba94b9c93d8dc4c00f8c",
+      "path": "datus-tableau-plugin/tests/fixtures/native-filter-flow/flow.tfl",
+      "license": "Apache-2.0",
+      "sha256": "6d87b2b2089cfe27f8419fc64ce9016d9e382638b8fe0b54aa1cc0d06c8602c3"
+    },
+    {
+      "filename": "loth-visual-analytics.tfl",
+      "repository": "aloth/tableau-book-resources",
+      "commit": "407ce9780e00c1c07a761754be242b43f7bb43d5",
+      "path": "chapter10/10-1-Tableau_Prep.tfl",
+      "license": "CC-BY-4.0",
+      "attribution": "Alexander Loth, Visual Analytics with Tableau, Wiley, 2019",
+      "sha256": "96c808bd12b588154a6dc5f9063b64d5bb162b4d2d59dd7c6c974e5d4417a80d"
+    },
+    {
+      "filename": "packt-aggregation.tflx",
+      "repository": "PacktPublishing/Tableau-Prep-Cookbook",
+      "commit": "228d4906d71c54f70548b9859160c0d6c4687f2b",
+      "path": "Chapter04/Sample Files 4.2 - Aggregating Values/Superstore.tflx",
+      "license": "MIT",
+      "sha256": "68862311ad5862184514397305ec514c17b35cb43f79216756fa943026e307d2"
+    },
+    {
+      "filename": "packt-granularity.tflx",
+      "repository": "PacktPublishing/Tableau-Prep-Cookbook",
+      "commit": "228d4906d71c54f70548b9859160c0d6c4687f2b",
+      "path": "Chapter04/Sample Files 4.1 - Data Granularity/Superstore.tflx",
+      "license": "MIT",
+      "sha256": "da0771bcf90f10d519fa15562a10f8684d19515140f608b95c7b8def10ce26dd"
+    },
+    {
+      "filename": "packt-superstore.tflx",
+      "repository": "PacktPublishing/Tableau-Prep-Cookbook",
+      "commit": "228d4906d71c54f70548b9859160c0d6c4687f2b",
+      "path": "Chapter04/Sample Files 4.1 - Data Granularity/Superstore.tflx",
+      "license": "MIT",
+      "sha256": "da0771bcf90f10d519fa15562a10f8684d19515140f608b95c7b8def10ce26dd",
+      "duplicate_of": "packt-granularity.tflx"
+    }
+  ]
+}
