@@ -2217,11 +2217,34 @@ class PowerBIProjectGenerator:
             for diagnostic in physical_join_diagnostics[:4]:
                 source = diagnostic.get('source') or 'source inconnue'
                 aliases = ', '.join(diagnostic.get('aliases') or []) or 'tables inconnues'
+                predicate_resolution = diagnostic.get('predicate_resolution')
+                resolution_labels = {
+                    'fully_resolved': ('Prédicat entièrement résolu',
+                                       'Predicate fully resolved'),
+                    'partially_resolved': ('Prédicat partiellement résolu',
+                                           'Predicate partially resolved'),
+                    'opaque': ('Prédicat opaque', 'Opaque predicate'),
+                }
+                resolution_labels_for_language = resolution_labels.get(
+                    predicate_resolution, ('', ''))
+                resolved_terms = [
+                    f"[{term.get('left_table', '')}].[{term.get('left_column', '')}] = "
+                    f"[{term.get('right_table', '')}].[{term.get('right_column', '')}]"
+                    for term in diagnostic.get('resolved_predicate_equalities', [])
+                ]
+                known_terms = (
+                    (' Termes résolus : ' if is_french else ' Resolved term(s): ')
+                    + '; '.join(resolved_terms) + '.' if resolved_terms else '')
+                resolution_text = (
+                    resolution_labels_for_language[0 if is_french else 1] + '.'
+                    if predicate_resolution in resolution_labels else '')
                 line = (
                     f"Jointure omise ({source}) : {aliases}. "
+                    f"{resolution_text}{known_terms} "
                     'La relation n’a pas été émise; vérifier les visuels dépendants.'
                     if is_french else
                     f"Join omitted ({source}): {aliases}. "
+                    f"{resolution_text}{known_terms} "
                     'No relationship was emitted; review dependent visuals.'
                 )
                 text_runs.append({

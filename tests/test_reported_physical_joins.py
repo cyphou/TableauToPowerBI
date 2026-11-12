@@ -12,6 +12,7 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 import zipfile
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from unittest import mock
@@ -32,6 +33,7 @@ from powerbi_import.shared_model import (
     suggest_cross_workbook_relationships,
 )
 from powerbi_import.tmdl_generator import _build_semantic_model, generate_tmdl
+from powerbi_import.tmdl_relationships import _predicate_resolution
 from tableau_export.datasource_extractor import extract_datasource
 
 
@@ -46,13 +48,24 @@ def _comparison(parent, left, right):
     ET.SubElement(expression, "expression", op=right)
 
 
+def _comparison_with_if(left, condition, when_true, when_false):
+    comparison = ET.Element("expression", op="=")
+    ET.SubElement(comparison, "expression", op=left)
+    conditional = ET.SubElement(comparison, "expression", op="IF")
+    for operand in (condition, when_true, when_false):
+        ET.SubElement(conditional, "expression", op=operand)
+    return comparison
+
+
 def _join(left, right, terms):
     relation = ET.Element("relation", type="join", join="left")
     clause = ET.SubElement(relation, "clause", type="join")
     parent = (ET.SubElement(clause, "expression", op="AND")
               if len(terms) > 1 else clause)
     for term in terms:
-        if isinstance(term, str):
+        if isinstance(term, ET.Element):
+            parent.append(term)
+        elif isinstance(term, str):
             ET.SubElement(parent, "expression", op=term)
         else:
             _comparison(parent, *term)
@@ -124,9 +137,15 @@ def _source_xml(*, kind="mixed", reverse=False, nested=None,
             f"IF [Lookup].[LookupFlag] THEN [Orders].[RegionID] = "
             "[Lookup].[LookupKey] ELSE FALSE END",
         ]
+    elif kind == "partial_if":
+        terms.append(_comparison_with_if(
+            "[Orders].[RegionID]", "[Orders].[OrderFlag]", '"north"', '"south"'))
+    elif kind == "opaque_if":
+        terms = [_comparison_with_if(
+            "[Orders].[RegionID]", "[Orders].[OrderFlag]", '"north"', '"south"')]
     elif kind == "composite":
         terms.append((f"[Orders].[{left_shared}]", f"[Lookup].[{right_shared}]"))
-    elif kind != "single":
+    elif kind not in ("single", "opaque_if"):
         raise ValueError(kind)
 
     aliases = ("Orders", "Lookup")
@@ -980,6 +999,11 @@ class TestReportedPhysicalJoins(unittest.TestCase):
         self.assertEqual(diagnostic["source"], SOURCE)
         self.assertEqual(diagnostic["aliases"], ["Lookup", "Orders"])
         self.assertEqual(diagnostic["omitted_relationship_pairs"], [["Lookup", "Orders"]])
+        self.assertEqual(diagnostic["predicate_resolution"], "partially_resolved")
+        self.assertEqual(diagnostic["resolved_predicate_equalities"], [{
+            "left_table": "Orders", "left_column": "OrderKey",
+            "right_table": "Lookup", "right_column": "LookupKey",
+        }])
 
         model_tables = sorted(
             path.stem for path in
@@ -1009,9 +1033,12 @@ class TestReportedPhysicalJoins(unittest.TestCase):
                 for path in page_visuals.glob("*/visual.json"))
             break
         self.assertIn("Join omitted", summary_text)
+        self.assertIn("Predicate partially resolved", summary_text)
+        self.assertIn("OrderKey", summary_text)
         self.assertIn("Orders", summary_text)
         self.assertIn("Lookup", summary_text)
         self.assertIn("generation_diagnostics.json", summary_text)
+        self.assertTrue((project / "powerbi_lineage.html").is_file())
 
         openability = check_openability(str(project))
         self.assertTrue(openability.openable, openability.blocking_issues)
@@ -1033,9 +1060,72 @@ class TestReportedPhysicalJoins(unittest.TestCase):
 
         self.assertEqual(model["model"]["relationships"], [])
         diagnostic, = model["_physical_join_diagnostics"]
+        self.assertEqual(diagnostic["predicate_resolution"], "fully_resolved")
+        self.assertEqual(len(diagnostic["resolved_predicate_equalities"]), 2)
         self.assertEqual(diagnostic["omitted_relationship_pairs"],
                          [["Lookup", "Orders"]])
         self.assertEqual(len(diagnostic["omitted_relationships"]), 2)
+
+    def test_predicate_diagnostics_distinguish_full_partial_and_opaque_and_terms(self):
+        cases = (
+            ("single", "fully_resolved", 1),
+            ("composite", "fully_resolved", 2),
+            ("partial_if", "partially_resolved", 1),
+            ("opaque_if", "opaque", 0),
+        )
+        for kind, expected_status, expected_pairs in cases:
+            with self.subTest(kind=kind):
+                datasource = self.source(kind=kind)
+                tree, = datasource["relation_metadata"]["physical_relations"]
+                status, pairs = _predicate_resolution(tree["predicate"])
+                self.assertEqual(status, expected_status)
+                self.assertEqual(len(pairs), expected_pairs)
+                if status == "partially_resolved":
+                    self.assertEqual(pairs, [(
+                        ("Orders", "OrderKey"), ("Lookup", "LookupKey"))])
+
+    def test_zone_menage_join_reproduction_has_correct_row_counts(self):
+        zones = [
+            {"Secteur": "S-01", "Etat": "actif", "Categorie": "collectif"},
+            {"Secteur": "S-02", "Etat": "actif", "Categorie": "social"},
+            {"Secteur": "S-03", "Etat": "projet", "Categorie": "collectif"},
+            {"Secteur": "S-04", "Etat": "projet", "Categorie": "social"},
+            {"Secteur": "S-05", "Etat": "actif", "Categorie": "collectif"},
+            {"Secteur": "S-06", "Etat": "projet", "Categorie": "maison"},
+        ]
+        menages = [
+            {"Ref": 9001, "ZoneRef": "S-01", "Mode": "reseau", "ZoneEtat": "actif"},
+            {"Ref": 9002, "ZoneRef": "S-01", "Mode": "reseau", "ZoneEtat": "actif"},
+            {"Ref": 9003, "ZoneRef": "S-02", "Mode": "reseau", "ZoneEtat": "actif"},
+            {"Ref": 9004, "ZoneRef": "S-02", "Mode": "autre", "ZoneEtat": "actif"},
+            {"Ref": 9005, "ZoneRef": "S-03", "Mode": "autre", "ZoneEtat": "projet"},
+            {"Ref": 9006, "ZoneRef": "S-03", "Mode": "autre", "ZoneEtat": "projet"},
+            {"Ref": 9007, "ZoneRef": "S-05", "Mode": "reseau", "ZoneEtat": "actif"},
+            {"Ref": 9008, "ZoneRef": "S-05", "Mode": "reseau", "ZoneEtat": "actif"},
+            {"Ref": 9009, "ZoneRef": "S-04", "Mode": "autre", "ZoneEtat": "projet"},
+            {"Ref": 9010, "ZoneRef": "S-04", "Mode": "autre", "ZoneEtat": "projet"},
+        ]
+
+        def exact_join(*, add_state_mode=False, add_matching_state=False):
+            matches = []
+            for zone in zones:
+                for menage in menages:
+                    expected_category = (
+                        "collectif" if menage["Mode"] == "reseau" else "social")
+                    if (zone["Secteur"] != menage["ZoneRef"]
+                            or zone["Categorie"] != expected_category):
+                        continue
+                    if add_state_mode and zone["Etat"] != menage["Mode"]:
+                        continue
+                    if add_matching_state and zone["Etat"] != menage["ZoneEtat"]:
+                        continue
+                    matches.append(zone["Secteur"])
+            return Counter(matches)
+
+        expected = Counter({"S-01": 2, "S-02": 1, "S-04": 2, "S-05": 2})
+        self.assertEqual(exact_join(), expected)
+        self.assertEqual(exact_join(add_state_mode=True), Counter())
+        self.assertEqual(exact_join(add_matching_state=True), expected)
 
     def test_existing_partial_repair_contract_when_model_rejects_the_join(self):
         # A separate control exercises the repair contract while the real

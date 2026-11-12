@@ -20,28 +20,47 @@ from powerbi_import.errors import PartialGenerationError
 logger = logging.getLogger(__name__)
 
 
-def _predicate_equality_pairs(predicate):
-    """Return only fully resolved conjunctive field equalities."""
+def _predicate_equality_analysis(predicate):
+    """Return resolved conjunctive equalities and whole-predicate completeness."""
     if not isinstance(predicate, dict):
-        return []
+        return [], False
     operator = str(predicate.get('operator', '')).upper()
     if operator == 'AND':
+        arguments = predicate.get('arguments', [])
+        if not isinstance(arguments, list) or not arguments:
+            return [], False
         pairs = []
-        for argument in predicate.get('arguments', []):
-            child = _predicate_equality_pairs(argument)
-            if not child:
-                return []
+        complete = True
+        for argument in arguments:
+            child, child_complete = _predicate_equality_analysis(argument)
             pairs.extend(child)
-        return pairs
+            complete = complete and child_complete
+        return pairs, complete
     if operator not in ('=', '=='):
-        return []
+        return [], False
     left, right = predicate.get('left'), predicate.get('right')
     if not all(isinstance(side, dict) for side in (left, right)):
-        return []
+        return [], False
     if not all(isinstance(side.get(key), str) and side[key]
                for side in (left, right) for key in ('table', 'column')):
-        return []
-    return [((left['table'], left['column']), (right['table'], right['column']))]
+        return [], False
+    return [((left['table'], left['column']), (right['table'], right['column']))], True
+
+
+def _predicate_resolution(predicate):
+    """Classify a predicate while retaining resolved terms for diagnostics only."""
+    pairs, complete = _predicate_equality_analysis(predicate)
+    if complete:
+        return 'fully_resolved', pairs
+    if pairs:
+        return 'partially_resolved', pairs
+    return 'opaque', []
+
+
+def _predicate_equality_pairs(predicate):
+    """Return equalities only when every conjunct is a resolved field equality."""
+    pairs, complete = _predicate_equality_analysis(predicate)
+    return pairs if complete else []
 
 
 def _resolved_single_equality(predicate):
@@ -159,7 +178,8 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
     diagnostics = []
     omitted_pairs = {}
 
-    def omit(source, item, aliases, message, required_evidence):
+    def omit(source, item, aliases, message, required_evidence,
+             predicate_resolution=None, resolved_predicate_equalities=None):
         source_key = str(source or '')
         display_pairs = [
             sorted((left_alias, right_alias), key=str.casefold)
@@ -187,15 +207,22 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
                        'incorrect until the join is materialized or repaired.'),
             'required_evidence': list(required_evidence),
         }
+        if predicate_resolution is not None:
+            diagnostic['predicate_resolution'] = predicate_resolution
+            diagnostic['resolved_predicate_equalities'] = list(
+                resolved_predicate_equalities or [])
         diagnostics.append(diagnostic)
         for pair in pair_keys:
             omitted_pairs.setdefault((source_key, pair), diagnostic)
 
-    def reject_or_record(error, source, item, left, right):
+    def reject_or_record(error, source, item, left, right,
+                         predicate_resolution=None,
+                         resolved_predicate_equalities=None):
         if not tolerate_unrepresentable:
             raise error
         omit(source, item, {'left': left, 'right': right}, str(error),
-             error.required_evidence)
+             error.required_evidence, predicate_resolution,
+             resolved_predicate_equalities)
 
     for datasource in datasources or []:
         if not isinstance(datasource, dict):
@@ -203,6 +230,15 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
         retained = datasource.get('_retained_physical_join_provenance') is True
         scopes = _physical_join_scopes(datasource)
         for path, node in _physical_join_nodes(datasource):
+            predicate_resolution, predicate_pairs = _predicate_resolution(
+                node.get('predicate'))
+            resolved_predicate_equalities = [
+                {
+                    'left_table': left[0], 'left_column': left[1],
+                    'right_table': right[0], 'right_column': right[1],
+                }
+                for left, right in predicate_pairs
+            ]
             if _single_physical_join_equality(node) is not None \
                     and node.get('requires_materialization') is not True:
                 continue
@@ -232,7 +268,8 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
             )
             reject_or_record(
                 error, datasource.get('name') or datasource.get('caption'),
-                f'relation_metadata.{path}', left, right)
+                f'relation_metadata.{path}', left, right,
+                predicate_resolution, resolved_predicate_equalities)
 
         if scopes:
             allowed = {
