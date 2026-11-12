@@ -24,7 +24,7 @@ from powerbi_import.html_template import (
 )
 
 
-_GRAPH_VERSION = "1.0"
+_GRAPH_VERSION = "1.1"
 _DECLARATION_RE = re.compile(r"^\t(column|measure|partition)\s+(.+?)\s*$")
 _DAX_REF_RE = re.compile(
     r"(?:(?:'((?:[^']|'')+)'|([A-Za-z_][\w ]*))\s*)?"
@@ -618,6 +618,164 @@ def build_powerbi_lineage_graph(project_dir: str | Path) -> dict[str, Any]:
                 _edge(edges, f"{endpoint}_endpoint", relationship_id, target,
                       status, ev)
 
+    # Omitted physical joins are provenance diagnostics, not semantic model
+    # relationships. Keep their predicate structure in a separate graph branch.
+    diagnostics_path = root / "generation_diagnostics.json"
+    if diagnostics_path.is_file():
+        diagnostic_data = _read_json(diagnostics_path)
+        if not isinstance(diagnostic_data, dict):
+            raise ValueError("Expected JSON object in generation_diagnostics.json")
+        diagnostic_rows = diagnostic_data.get("diagnostics", [])
+        if not isinstance(diagnostic_rows, list):
+            raise ValueError("Expected diagnostics array in generation_diagnostics.json")
+
+        table_ids = {table["name"].casefold(): table["id"] for table in tables}
+
+        def add_predicate_node(tree: dict[str, Any], diagnostic_id: str,
+                               diagnostic_index: int,
+                               tree_path: tuple[str, ...]) -> str:
+            kind = str(tree.get("kind") or "opaque_expression")
+            operator = tree.get("operator")
+            if kind == "field":
+                label = ".".join(filter(None, (
+                    str(tree.get("table") or ""),
+                    str(tree.get("column") or ""),
+                ))) or "Unresolved field"
+            elif kind in ("logical", "comparison"):
+                label = str(operator or "Unknown operator")
+            elif kind == "function":
+                label = str(tree.get("name") or "Opaque function")
+                if tree.get("structure") == "opaque":
+                    label += " (opaque)"
+            elif kind == "literal":
+                label = f"Literal ({tree.get('literal_type', 'unknown')})"
+            else:
+                label = "Opaque expression"
+
+            node_id = _node(
+                nodes, "join_predicate", label,
+                (diagnostic_id, *tree_path, kind, str(operator or "")),
+                _evidence("generation_diagnostics.json", role="join_predicate",
+                          index=diagnostic_index),
+            )
+            node = nodes[node_id]
+            node["predicate_kind"] = kind
+            if isinstance(operator, str):
+                node["operator"] = operator
+            for key in ("name", "literal_type", "structure"):
+                if isinstance(tree.get(key), str):
+                    node[key] = tree[key]
+
+            if kind == "field":
+                target, status = _field_node_or_reference(
+                    nodes, tables,
+                    tree.get("table") if isinstance(tree.get("table"), str) else None,
+                    str(tree.get("column") or ""), "Column",
+                    _evidence("generation_diagnostics.json", role="predicate_field",
+                              index=diagnostic_index),
+                    f"join-diagnostic:{diagnostic_index}:{'.'.join(tree_path)}",
+                )
+                _edge(
+                    edges, "predicate_field", node_id, target, status,
+                    _evidence("generation_diagnostics.json", role="predicate_field",
+                              index=diagnostic_index),
+                )
+
+            children: list[tuple[str, Any]] = []
+            if kind == "logical" and isinstance(tree.get("terms"), list):
+                children = [(f"term-{index}", child)
+                            for index, child in enumerate(tree["terms"])]
+            elif kind == "comparison":
+                children = [(side, tree.get(side)) for side in ("left", "right")]
+            elif kind == "function" and isinstance(tree.get("arguments"), list):
+                children = [(f"argument-{index}", child)
+                            for index, child in enumerate(tree["arguments"])]
+
+            for child_name, child in children:
+                if not isinstance(child, dict):
+                    continue
+                child_id = add_predicate_node(
+                    child, diagnostic_id, diagnostic_index,
+                    (*tree_path, child_name),
+                )
+                _edge(
+                    edges, "predicate_term", node_id, child_id, "structural",
+                    _evidence("generation_diagnostics.json", role=child_name,
+                              index=diagnostic_index),
+                )
+            return node_id
+
+        for diagnostic_index, diagnostic in enumerate(diagnostic_rows):
+            if not isinstance(diagnostic, dict) \
+                    or diagnostic.get("code") != "physical_join_omitted":
+                continue
+            source = str(diagnostic.get("source") or "Unknown source")
+            aliases = sorted({
+                str(alias) for alias in diagnostic.get("aliases", [])
+                if isinstance(alias, str) and alias
+            }, key=str.casefold)
+            pair_labels = [
+                " ↔ ".join(str(alias) for alias in pair)
+                for pair in diagnostic.get("omitted_relationship_pairs", [])
+                if isinstance(pair, list) and len(pair) == 2
+            ]
+            participant_label = "; ".join(pair_labels) or ", ".join(aliases)
+            item = str(diagnostic.get("item") or diagnostic_index)
+            diagnostic_id = _node(
+                nodes, "join_diagnostic",
+                f"Omitted physical join: {source}: {participant_label}",
+                ("physical_join_omitted", source.casefold(), item),
+                _evidence("generation_diagnostics.json",
+                          role="physical_join_diagnostic", index=diagnostic_index),
+            )
+            diagnostic_node = nodes[diagnostic_id]
+            diagnostic_node["diagnostic_code"] = "physical_join_omitted"
+            diagnostic_node["item"] = item
+            diagnostic_node["predicate_resolution"] = str(
+                diagnostic.get("predicate_resolution") or "opaque")
+            resolved_equalities = diagnostic.get("resolved_predicate_equalities")
+            if isinstance(resolved_equalities, list):
+                diagnostic_node["resolved_predicate_equalities"] = resolved_equalities
+            predicate_tree = diagnostic.get("predicate_tree")
+            if isinstance(predicate_tree, dict):
+                diagnostic_node["predicate_tree"] = predicate_tree
+            if isinstance(diagnostic.get("impact"), str):
+                diagnostic_node["impact"] = diagnostic["impact"]
+
+            participant_names = sorted({
+                str(alias)
+                for pair in diagnostic.get("omitted_relationship_pairs", [])
+                if isinstance(pair, list)
+                for alias in pair if isinstance(alias, str) and alias
+            } or set(aliases), key=str.casefold)
+            for participant_index, participant in enumerate(participant_names):
+                table_id = table_ids.get(participant.casefold())
+                status = "omitted"
+                if table_id is None:
+                    table_id = _node(
+                        nodes, "unresolved_reference", participant,
+                        ("join_participant", diagnostic_id, participant.casefold()),
+                        _evidence("generation_diagnostics.json",
+                                  role="join_participant", index=diagnostic_index),
+                    )
+                    status = "unresolved"
+                _edge(
+                    edges, "join_participant", diagnostic_id, table_id, status,
+                    _evidence("generation_diagnostics.json",
+                              role=f"participant-{participant_index}",
+                              index=diagnostic_index),
+                )
+
+            if isinstance(predicate_tree, dict):
+                predicate_id = add_predicate_node(
+                    predicate_tree, diagnostic_id, diagnostic_index, ("root",))
+                _edge(
+                    edges, "join_predicate", diagnostic_id, predicate_id,
+                    diagnostic_node["predicate_resolution"],
+                    _evidence("generation_diagnostics.json",
+                              role="join_predicate", index=diagnostic_index),
+                )
+
     # PBIR pages and visual queryState projections.
     def is_page_json(path: Path) -> bool:
         parts = path.relative_to(root).parts
@@ -809,11 +967,21 @@ def render_powerbi_lineage_html(canonical_json: str) -> str:
     embedded = (embedded.replace("&", "\\u0026").replace("<", "\\u003c")
                 .replace(">", "\\u003e").replace("\u2028", "\\u2028")
                 .replace("\u2029", "\\u2029"))
+    def node_details(node: dict[str, Any]) -> str:
+        parts = []
+        for key in ("predicate_resolution", "predicate_kind", "operator",
+                    "name", "literal_type", "structure", "item", "impact"):
+            value = node.get(key)
+            if isinstance(value, str) and value:
+                parts.append(f"{key}: {value}")
+        return "; ".join(parts)
+
     node_rows = [
         [
             esc(node["type"]),
             esc(node["label"]),
             esc(node["id"]),
+            esc(node_details(node)),
             esc(" | ".join(
                 f"{e['path']}"
                 + (f":{e['line']}" if "line" in e else "")
@@ -825,7 +993,7 @@ def render_powerbi_lineage_html(canonical_json: str) -> str:
         for node in graph["nodes"]
     ]
     nodes_html = data_table(
-        ["Type", "Node", "Stable ID", "Evidence path / location"],
+        ["Type", "Node", "Stable ID", "Details", "Evidence path / location"],
         node_rows, table_id="lineage-nodes", detail=True,
     )
     by_id = {node["id"]: node for node in graph["nodes"]}
@@ -846,14 +1014,22 @@ def render_powerbi_lineage_html(canonical_json: str) -> str:
         for edge in graph["edges"]
     ]
     edges_html = data_table(
-        ["Relationship", "Source", "Target", "Status", "Evidence path / location"],
+        ["Edge type", "Source", "Target", "Status", "Evidence path / location"],
         edge_rows, table_id="lineage-edges", detail=True,
     )
     payload = esc(json.dumps(graph, ensure_ascii=False, sort_keys=True, indent=2))
     node_types = sorted({node["type"] for node in graph["nodes"]})
+    edge_statuses = sorted({
+        str(edge["status"]) for edge in graph["edges"]
+        if isinstance(edge.get("status"), str) and edge["status"]
+    })
     type_options = "".join(
         f'<option value="{esc(node_type)}">{esc(node_type)}</option>'
         for node_type in node_types
+    )
+    status_options = "".join(
+        f'<option value="{esc(status)}">{esc(status)}</option>'
+        for status in edge_statuses
     )
     parts = [
         html_open(
@@ -868,8 +1044,7 @@ def render_powerbi_lineage_html(canonical_json: str) -> str:
         '<label for="lineage-type">Node type </label>'
         f'<select id="lineage-type"><option value="">All</option>{type_options}</select> '
         '<label for="lineage-status">Edge status </label>'
-        '<select id="lineage-status"><option value="">All</option>'
-        '<option>exact</option><option>unresolved</option><option>ambiguous</option>'
+        f'<select id="lineage-status"><option value="">All</option>{status_options}'
         '</select> <span id="lineage-counts"></span></p>',
         section_open("lineage-node-section", "Nodes"),
         nodes_html,

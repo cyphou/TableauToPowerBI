@@ -331,6 +331,7 @@ and Fabric's separate staging behavior are not full PBIP imports. See the
 | `import_to_powerbi.py` | Generation pipeline orchestrator |
 | `pbip_generator.py` | .pbip project generator (PBIR v4.0 report, visuals, filters, bookmarks, slicers) |
 | `tmdl_generator.py` | Unified semantic model generator (TMDL: tables, columns, measures, relationships) |
+| `powerbi_internal_lineage.py` | Static PBIP lineage graph (schema 1.1): model/report edges plus omitted physical-join diagnostics and redacted IF predicate trees |
 | `visual_generator.py` | Visual container generator: runtime inventory of 129 native, 16 approximation and 19 custom-visual mapping records |
 | `m_query_generator.py` | Sample data M query generator |
 | `validator.py` | Artifact validator (JSON, TMDL, DAX semantic validation) |

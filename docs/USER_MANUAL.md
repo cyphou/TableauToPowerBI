@@ -191,6 +191,18 @@ self-contained `powerbi_lineage.html`: a static graph of generated Power Query
 partitions, model columns/calculations, and report projections. A datasource-only
 generation without a report does not produce this graph.
 
+Lineage schema `1.1` also includes omitted physical-join diagnostics. A
+`join_diagnostic` node connects to its source tables with `join_participant`
+edges whose status is `omitted`; these are provenance links, not model
+relationships. Its `predicate_tree` is represented by `join_predicate` nodes
+and `predicate_term` edges. `IF` conditions, comparison operators, and field
+references remain inspectable, while literal values are reduced to a type such
+as `Literal (text)`. `predicate_resolution` distinguishes `fully_resolved`,
+`partially_resolved`, and `opaque`. A known equality in a partial predicate is
+diagnostic evidence only: the corresponding relationship was not emitted.
+Use the source/item path in `generation_diagnostics.json` to locate the Tableau
+join for repair; the graph does not rewrite or materialize the source predicate.
+
 For a complete PBIP report bound with `--prep`, with retained binding records
 and generated internal graph, the quality report adds a Prep-to-Power BI
 comparison. Fabric and partial outputs are outside this comparison's scope.

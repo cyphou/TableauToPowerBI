@@ -57,6 +57,69 @@ def _predicate_resolution(predicate):
     return 'opaque', []
 
 
+def _safe_predicate_tree(predicate):
+    """Return predicate structure and field references without literal values."""
+    if not isinstance(predicate, dict):
+        return {'kind': 'opaque_expression'}
+
+    table, column = predicate.get('table'), predicate.get('column')
+    if isinstance(table, str) and isinstance(column, str):
+        return {'kind': 'field', 'table': table, 'column': column}
+
+    operator = str(predicate.get('operator', '')).strip()
+    normalized = operator.upper()
+    comparisons = {'=', '==', '!=', '<>', '<', '<=', '>', '>='}
+    if normalized in comparisons:
+        left, right = predicate.get('left'), predicate.get('right')
+        if isinstance(left, dict) and isinstance(right, dict):
+            return {
+                'kind': 'comparison', 'operator': normalized,
+                'left': _safe_predicate_tree(left),
+                'right': _safe_predicate_tree(right),
+            }
+        return {'kind': 'opaque_expression'}
+
+    arguments = predicate.get('arguments')
+    if normalized in ('AND', 'OR') and isinstance(arguments, list):
+        return {
+            'kind': 'logical', 'operator': normalized,
+            'terms': [_safe_predicate_tree(argument) for argument in arguments],
+        }
+    if normalized == 'IF' and isinstance(arguments, list):
+        return {
+            'kind': 'function', 'name': 'IF',
+            'arguments': [_safe_predicate_tree(argument) for argument in arguments],
+        }
+    if isinstance(arguments, list) and arguments:
+        return {'kind': 'opaque_expression'}
+    if arguments is not None and not isinstance(arguments, list):
+        return {'kind': 'opaque_expression'}
+    if isinstance(predicate.get('expression'), str):
+        operator = predicate['expression'].strip()
+
+    field_match = re.fullmatch(
+        r'\s*\[((?:[^\]]|\]\])*)\]\s*\.\s*'
+        r'\[((?:[^\]]|\]\])*)\]\s*', operator)
+    if field_match:
+        return {
+            'kind': 'field',
+            'table': field_match.group(1).replace(']]', ']'),
+            'column': field_match.group(2).replace(']]', ']'),
+        }
+    if re.fullmatch(r'"(?:[^"]|"")*"', operator):
+        return {'kind': 'literal', 'literal_type': 'text'}
+    if re.fullmatch(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?', operator):
+        return {'kind': 'literal', 'literal_type': 'number'}
+    if normalized in ('TRUE', 'FALSE'):
+        return {'kind': 'literal', 'literal_type': 'boolean'}
+    if normalized in ('NULL', 'NONE'):
+        return {'kind': 'literal', 'literal_type': 'null'}
+    if re.match(r'^IF\b', operator, re.IGNORECASE):
+        return {'kind': 'function', 'name': 'IF', 'arguments': [],
+                'structure': 'opaque'}
+    return {'kind': 'opaque_expression'}
+
+
 def _predicate_equality_pairs(predicate):
     """Return equalities only when every conjunct is a resolved field equality."""
     pairs, complete = _predicate_equality_analysis(predicate)
@@ -179,7 +242,8 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
     omitted_pairs = {}
 
     def omit(source, item, aliases, message, required_evidence,
-             predicate_resolution=None, resolved_predicate_equalities=None):
+             predicate_resolution=None, resolved_predicate_equalities=None,
+             predicate_tree=None):
         source_key = str(source or '')
         display_pairs = [
             sorted((left_alias, right_alias), key=str.casefold)
@@ -211,18 +275,21 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
             diagnostic['predicate_resolution'] = predicate_resolution
             diagnostic['resolved_predicate_equalities'] = list(
                 resolved_predicate_equalities or [])
+            if predicate_tree is not None:
+                diagnostic['predicate_tree'] = predicate_tree
         diagnostics.append(diagnostic)
         for pair in pair_keys:
             omitted_pairs.setdefault((source_key, pair), diagnostic)
 
     def reject_or_record(error, source, item, left, right,
                          predicate_resolution=None,
-                         resolved_predicate_equalities=None):
+                         resolved_predicate_equalities=None,
+                         predicate_tree=None):
         if not tolerate_unrepresentable:
             raise error
         omit(source, item, {'left': left, 'right': right}, str(error),
              error.required_evidence, predicate_resolution,
-             resolved_predicate_equalities)
+               resolved_predicate_equalities, predicate_tree)
 
     for datasource in datasources or []:
         if not isinstance(datasource, dict):
@@ -232,6 +299,7 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
         for path, node in _physical_join_nodes(datasource):
             predicate_resolution, predicate_pairs = _predicate_resolution(
                 node.get('predicate'))
+            predicate_tree = _safe_predicate_tree(node.get('predicate'))
             resolved_predicate_equalities = [
                 {
                     'left_table': left[0], 'left_column': left[1],
@@ -269,7 +337,8 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
             reject_or_record(
                 error, datasource.get('name') or datasource.get('caption'),
                 f'relation_metadata.{path}', left, right,
-                predicate_resolution, resolved_predicate_equalities)
+                predicate_resolution, resolved_predicate_equalities,
+                predicate_tree)
 
         if scopes:
             allowed = {

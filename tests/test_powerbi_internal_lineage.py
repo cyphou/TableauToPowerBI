@@ -209,7 +209,7 @@ class TestPowerBILineageGraph(unittest.TestCase):
         self.assertEqual(projection["evidence"]["role"], "Values")
         self.assertEqual(projection["evidence"]["index"], 0)
 
-        self.assertEqual(self.graph["schema_version"], "1.0")
+        self.assertEqual(self.graph["schema_version"], "1.1")
         self.assertEqual(self.graph["runtime_status"], "not_run")
 
     def test_no_formula_m_text_or_connection_secrets_escape_into_graph(self):

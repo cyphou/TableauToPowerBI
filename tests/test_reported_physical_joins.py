@@ -979,7 +979,7 @@ class TestReportedPhysicalJoins(unittest.TestCase):
                             for priority in quality.priorities), quality.priorities)
 
     def test_nonstrict_pbip_keeps_model_and_reports_omitted_join(self):
-        objects = _project_objects(self.source())
+        objects = _project_objects(self.source(kind="partial_if"))
         generator = PowerBIProjectGenerator(output_dir=str(self.root))
         project = Path(generator.generate_project(
             "Reported", deepcopy(objects), model_mode="import",
@@ -1004,6 +1004,11 @@ class TestReportedPhysicalJoins(unittest.TestCase):
             "left_table": "Orders", "left_column": "OrderKey",
             "right_table": "Lookup", "right_column": "LookupKey",
         }])
+        predicate_json = json.dumps(diagnostic["predicate_tree"])
+        self.assertIn('"name": "IF"', predicate_json)
+        self.assertIn('"column": "OrderFlag"', predicate_json)
+        self.assertNotIn("north", predicate_json)
+        self.assertNotIn("south", predicate_json)
 
         model_tables = sorted(
             path.stem for path in
@@ -1021,6 +1026,37 @@ class TestReportedPhysicalJoins(unittest.TestCase):
         self.assertEqual(metadata["generation_diagnostics"],
                          "generation_diagnostics.json")
         self.assertEqual(metadata["relationship_status"], "partial")
+
+        lineage_graph = json.loads(
+            (project / "powerbi_lineage.json").read_text(encoding="utf-8"))
+        join_node, = [node for node in lineage_graph["nodes"]
+                      if node["type"] == "join_diagnostic"]
+        self.assertEqual(join_node["predicate_resolution"], "partially_resolved")
+        self.assertIn("OrderKey", json.dumps(join_node))
+        self.assertTrue(any(
+            node["type"] == "join_predicate" and node.get("name") == "IF"
+            for node in lineage_graph["nodes"]))
+        self.assertFalse(any(node["type"] == "relationship"
+                             for node in lineage_graph["nodes"]))
+        self.assertFalse(any(edge["type"] == "relationship"
+                             for edge in lineage_graph["edges"]))
+        self.assertTrue(any(
+            edge["type"] == "join_participant" and edge["status"] == "omitted"
+            for edge in lineage_graph["edges"]))
+        self.assertTrue(any(
+            edge["type"] == "join_predicate"
+            and edge["status"] == "partially_resolved"
+            for edge in lineage_graph["edges"]))
+        lineage_json = json.dumps(lineage_graph)
+        self.assertIn("OrderFlag", lineage_json)
+        self.assertIn("IF", lineage_json)
+        self.assertNotIn("north", lineage_json)
+        self.assertNotIn("south", lineage_json)
+        lineage_html = (project / "powerbi_lineage.html").read_text(encoding="utf-8")
+        self.assertIn("IF", lineage_html)
+        self.assertIn("partially_resolved", lineage_html)
+        self.assertNotIn("north", lineage_html)
+        self.assertNotIn("south", lineage_html)
 
         summary_text = ""
         for page_path in (report_dir / "definition" / "pages").glob("*/page.json"):

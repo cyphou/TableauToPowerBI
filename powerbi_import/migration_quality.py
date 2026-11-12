@@ -5021,7 +5021,7 @@ def _prep_safe_evidence_path(root: Path, value: Any) -> bool:
 
 def _prep_graph_contract(root: Path, graph: Any) -> list[str]:
     diagnostics = []
-    if not isinstance(graph, dict) or graph.get("schema_version") != "1.0":
+    if not isinstance(graph, dict) or graph.get("schema_version") not in ("1.0", "1.1"):
         return ["invalid_schema_version"]
     nodes, edges = graph.get("nodes"), graph.get("edges")
     if not isinstance(nodes, list) or not nodes:
@@ -5070,8 +5070,11 @@ def _prep_graph_contract(root: Path, graph: Any) -> list[str]:
 
 
 def _prep_graph_record(record: dict, *, edge: bool = False) -> dict:
-    keys = ("id", "type", "source", "target", "status", "evidence") if edge else (
-        "id", "type", "label", "evidence")
+    keys = (("id", "type", "source", "target", "status", "evidence") if edge else
+            ("id", "type", "label", "evidence", "diagnostic_code", "item",
+             "predicate_resolution", "resolved_predicate_equalities",
+             "predicate_tree", "impact", "predicate_kind", "operator", "name",
+             "literal_type", "structure", "table", "column"))
     result = {key: record[key] for key in keys if key in record}
     evidence = result.get("evidence")
     if isinstance(evidence, list):
@@ -5265,6 +5268,10 @@ def _prep_comparison(extracted: Dict[str, Any], project_dir: str) -> dict:
                         or edge_type == "projects" and (
                             source_id in selected or target_id in selected)
                         or edge_type == "on_page" and source_id in selected
+                        or edge_type in (
+                            "join_participant", "join_predicate", "predicate_term",
+                            "predicate_field",
+                        ) and (source_id in selected or target_id in selected)
                     )
                     if not include:
                         continue
