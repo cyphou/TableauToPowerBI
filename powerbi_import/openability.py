@@ -8,7 +8,7 @@ Checks (blocking = static contract violation, not an exhaustive runtime test):
     structure     required project files/dirs present (SemanticModel, Report, .pbir)
     json_parse    every .json (visual/page/report/.pbir/.platform/.pbip) parses
     tmdl_present  the semantic model has at least one .tmdl
-    power_query   every M partition extracted from TMDL validates (the focus)
+    power_query   M partitions and multiline shared M expressions validate
     dax           every measure expression validates
     native_query_refs  projection nativeQueryRef names are unique within each visual
     schema        PBIR/visual files carry a $schema (advisory)
@@ -16,6 +16,7 @@ Checks (blocking = static contract violation, not an exhaustive runtime test):
 Public API:
     check_openability(project_dir) -> OpenabilityReport
     extract_m_partitions(tmdl_text) -> list[(partition_name, m_text)]
+    extract_shared_m_expressions(tmdl_text) -> list[(name, m_text)]
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ STATIC_LIMITATION = (
 _PARTITION_RE = re.compile(r"^\tpartition\s+(.+?)\s*=\s*(\w+)\s*$")
 _SOURCE_RE = re.compile(r"^\t\tsource\s*=\s*$")
 _MEASURE_RE = re.compile(r"^\s*measure\s+(?:'(?:[^']|'')+'|[^=\n]+?)\s*=\s*(.+?)\s*$")
+_SHARED_M_EXPRESSION_RE = re.compile(r"^expression\s+(.+?)\s*=\s*$")
 
 
 @dataclass
@@ -139,6 +141,31 @@ def extract_m_partitions(tmdl_text: str) -> List[Tuple[str, str]]:
             continue
         i += 1
     return out
+
+
+def extract_shared_m_expressions(tmdl_text: str) -> List[Tuple[str, str]]:
+    """Return multiline TMDL named expressions containing M bodies."""
+    lines = tmdl_text.splitlines()
+    expressions: List[Tuple[str, str]] = []
+    i = 0
+    while i < len(lines):
+        match = _SHARED_M_EXPRESSION_RE.match(lines[i])
+        if not match:
+            i += 1
+            continue
+        name = match.group(1).strip()
+        i += 1
+        body = []
+        while i < len(lines) and lines[i].startswith("\t\t"):
+            line = lines[i]
+            if line.lstrip().startswith("annotation "):
+                break
+            body.append(line[2:])
+            i += 1
+        expression = "\n".join(body).strip()
+        if expression:
+            expressions.append((name, expression))
+    return expressions
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -376,7 +403,7 @@ def _check_tmdl_present(project_dir) -> CheckResult:
 
 
 def _check_power_query(project_dir) -> CheckResult:
-    """Validate every M partition — the Power Query generation focus."""
+    """Validate every M partition and multiline shared M expression."""
     issues = []
     for tmdl in _tmdl_files(project_dir):
         try:
@@ -389,6 +416,10 @@ def _check_power_query(project_dir) -> CheckResult:
             for problem in validate_m_query(m_expr):
                 issues.append(f"{os.path.relpath(tmdl, project_dir)} :: "
                               f"partition '{name}': {problem}")
+        for name, m_expr in extract_shared_m_expressions(text):
+            for problem in validate_m_query(m_expr):
+                issues.append(f"{os.path.relpath(tmdl, project_dir)} :: "
+                              f"shared expression {name}: {problem}")
     return CheckResult("power_query", not issues, "error", issues)
 
 

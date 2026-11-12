@@ -88,15 +88,21 @@ successful export does not establish spatial or visual parity.
 
 ### Active physical joins
 
-Each active physical join must have a complete, resolved single-field equality
-predicate to be represented by a Power BI relationship. Missing, opaque,
-non-equality or multi-condition predicates cannot produce a complete semantic
-model unless an explicit materialization path retains the full join provenance.
-Eligible diagnostic-salvage runs may retain incomplete evidence, but do not
-produce a valid model. An exact Hyper identity or complete export of an
-underlying table reused by multiple aliases does not establish that the active
-join result was materialized; binding that same table to every alias can change
-row multiplicity and filter behavior. Materialize the full joined result as one
+Only a complete, resolved single-field equality predicate can be represented
+as a Power BI relationship. Missing, opaque, non-equality and multi-condition
+predicates are not reduced to a guessed or partial edge. In ordinary non-strict
+PBIP batch generation, tables and the report are still emitted, every model
+relationship between the affected source-table pair is omitted, and the reason
+is written to `generation_diagnostics.json` and the PBIR Migration Summary
+page. Dependent measures and visuals may therefore be blank or incorrect; the
+PBIP is a repair starting point, not a semantically complete model. Static
+openability is checked separately. Strict generation, TMDL-only, Fabric, and
+shared-model paths continue to reject the unrepresentable join.
+
+An exact Hyper identity or complete export of an underlying table reused by
+multiple aliases does not establish that the active join result was
+materialized; binding that same table to every alias can change row
+multiplicity and filter behavior. Materialize the full joined result as one
 source table with explicit mappings, or simplify the source join to supported
 predicates. Static export and binding checks do not establish runtime or value
 parity.
@@ -119,11 +125,19 @@ After safe XML parsing, known object-level preflight refusals and refused
 datasource normalization/extraction may be isolated. Incremental stage JSON and
 raw refused declarations/formulas are retained as diagnostics, with credential
 redaction. Security blockers remain fatal. Complete, safe extraction continues
-to normal generation; incomplete extraction produces no PBIP. Semantic guard
+to normal generation; supported incomplete extractions attempt a diagnostic PBIP
+with page outlines and no source data, source model, or security roles. Semantic guard
 failures can retain independent `.dax`, `.pq`, per-object source JSON and
 `model_metadata.json` without depending on TMDL generation. Recovered text is
-unvalidated: recovery does not guess Hyper bindings or relationships, read
-source data or execute source queries.
+unvalidated: fragment recovery does not guess Hyper bindings or relationships,
+read source data or execute source queries. A partial project that retains model
+bindings is staged and checked separately; an incomplete Hyper binding withholds
+its PBIP marker. Ambiguous visual references can produce a data-free repair PBIP.
+If source checks pass and the only static blockers are unsupported DAX
+placeholders, the model and report are retained as a diagnostic PBIP. Affected
+calculations may return blank and dependent results may be incorrect. The
+project remains `FAIL`, unvalidated and unsuitable for production; other
+blocking static issues or a failed Hyper check do not qualify for this recovery.
 
 Source metadata retention is not a promise of conversion: unresolved field
 ownership, cross-table context and incomplete connections can block fragments;
@@ -134,8 +148,10 @@ metadata public. Review recovery files before sharing. See the
 
 `<Project>\Salvage\inventory.json` records recovered, blocked and not-attempted
 items; `salvage_manifest.json` marks diagnostic-only, incomplete output with
-`validation_status: FAIL` and the `.pbip` completion marker withheld. A partial
-failure remains nonzero, not a successful or resumable completion. Prior project, extraction
+`validation_status: FAIL`. A supported extraction refusal, semantic guard or DAX-placeholder check can retain a repair `.pbip`
+with `completion_marker: diagnostic_only` and `partial_generation.json`; otherwise
+the marker is `withheld`. A partial failure remains nonzero and is retried on
+resume, not treated as successful completion. Prior project, extraction
 and current quality/evidence outputs are preserved under `.migration_previous`
 before the recovery attempt, never reused as current evidence.
 
@@ -405,6 +421,22 @@ unrepresentable predicates stop generation rather than using an arbitrary
 `LOOKUPVALUE`, deduplicating matches or replacing errors with blanks. These
 policies are evidence requirements, not defaults to copy between workbooks.
 Generated expressions still require runtime and source-value checks.
+
+A separate opt-in path handles only a single-table `SUM` of a `FIXED`
+`MIN(physical_column)`. Supply `extra_objects['verified_fixed_scopes']` or the
+JSON environment variable `TTPBI_VERIFIED_FIXED_SCOPES`, keyed by exact
+extracted datasource name and the calculation's normalized raw identity (the
+outer Tableau brackets are removed). Each scope must provide
+`table`, `fixed_dimensions`, `value_column`, `physical_fields`, explicit
+`source_filters` and `target_filters`, `filter_policy`, all `view_grains`
+(including `[]`), `total_grain`, `total_aggregation`, `shelf_aggregation`,
+`value_type`, and the compiler's eight `*_verified: true` assertions.
+`source_filters` or `target_filters` may be empty only when the caller has
+verified there are none. These fields are proof assertions, not evidence the
+generator can discover: do not copy them between workbooks or set them merely
+to bypass a placeholder. Missing/invalid proof keeps the DAX blocked. This
+path does not cover multi-table LOD ratios, arbitrary `FIXED` bodies, or
+automatic shelf-grain discovery.
 
 ### Functions with No DAX Equivalent
 

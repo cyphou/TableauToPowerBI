@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -125,6 +126,85 @@ class TestStreamingJson(unittest.TestCase):
             self.assertEqual(len(loaded), 50)
         finally:
             TableauExtractor._STREAM_THRESHOLD_BYTES = original_threshold
+
+    def test_failed_extraction_save_preserves_previous_datasources(self):
+        from extract_tableau_data import TableauExtractor
+
+        class InvalidValue:
+            def __str__(self):
+                raise RuntimeError('injected JSON serialization failure')
+
+        path = os.path.join(self.tmp, 'datasources.json')
+        previous = b'[{"name": "previous source"}]'
+        with open(path, 'wb') as f:
+            f.write(previous)
+
+        ext = TableauExtractor.__new__(TableauExtractor)
+        ext.output_dir = self.tmp
+        ext.workbook_data = {
+            'datasources': [{'name': 'new source'}],
+            'worksheets': [InvalidValue()],
+        }
+
+        with self.assertRaisesRegex(RuntimeError, 'injected JSON serialization failure'):
+            ext.save_extractions()
+
+        with open(path, 'rb') as f:
+            self.assertEqual(f.read(), previous)
+        self.assertEqual(
+            [name for name in os.listdir(self.tmp)
+             if name.startswith('.datasources.json_')], [])
+
+    def test_datasource_serialization_failure_keeps_previous_file_and_cleans_temp(self):
+        from extract_tableau_data import TableauExtractor
+
+        class InvalidValue:
+            def __str__(self):
+                raise RuntimeError('injected datasource serialization failure')
+
+        path = os.path.join(self.tmp, 'datasources.json')
+        previous = b'[{"name": "previous source"}]'
+        with open(path, 'wb') as f:
+            f.write(previous)
+
+        ext = TableauExtractor.__new__(TableauExtractor)
+        ext.output_dir = self.tmp
+        ext.workbook_data = {'datasources': [InvalidValue()]}
+
+        with self.assertRaisesRegex(RuntimeError, 'injected datasource serialization failure'):
+            ext.save_extractions()
+
+        with open(path, 'rb') as f:
+            self.assertEqual(f.read(), previous)
+        self.assertEqual(
+            [name for name in os.listdir(self.tmp) if name.startswith('.datasources_')], [])
+
+    def test_salvage_datasource_checkpoint_uses_atomic_replace(self):
+        from extract_tableau_data import TableauExtractor
+
+        path = os.path.join(self.tmp, 'datasources.json')
+        previous = b'[{"name": "previous source"}]'
+        with open(path, 'wb') as f:
+            f.write(previous)
+
+        ext = TableauExtractor.__new__(TableauExtractor)
+        ext.output_dir = self.tmp
+        ext._salvage_inventory = []
+        ext._salvage_diagnostics = []
+        ext._salvage_datasource_json = []
+        ext._salvage_scrub_cache = {}
+        ext._salvage_secrets = set()
+
+        with mock.patch('extract_tableau_data.os.replace',
+                        side_effect=OSError('injected replace failure')):
+            with self.assertRaisesRegex(OSError, 'injected replace failure'):
+                ext._save_salvage_checkpoint(datasource={'name': 'new source'})
+
+        with open(path, 'rb') as f:
+            self.assertEqual(f.read(), previous)
+        self.assertEqual(
+            [name for name in os.listdir(self.tmp)
+             if name.startswith('.datasources.json_')], [])
 
 
 class TestLargeWorkbookGenerator(unittest.TestCase):

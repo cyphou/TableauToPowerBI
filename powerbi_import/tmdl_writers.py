@@ -38,6 +38,33 @@ _DAX_SENSITIVE_IDENTITY = re.compile(
     r'shared[\s_-]*access[\s_-]*signature',
     re.IGNORECASE,
 )
+_DAX_CONVERSION_FAILURE = re.compile(
+    r'/\*\s*TODO:\s*DAX conversion validation failed for '
+    r'(?:measure|column):\s*(.*?)\s*\*/',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _dax_conversion_failure_note(expression):
+    """Return a safe model annotation for an explicitly failed DAX conversion."""
+    if not isinstance(expression, str):
+        return ''
+    match = _DAX_CONVERSION_FAILURE.search(expression)
+    if not match:
+        return ''
+    reason = ' '.join(match.group(1).split())
+    return f'DAX conversion failed: {reason}' if reason else 'DAX conversion failed.'
+
+
+def _label_dax_conversion_target(expression, object_type):
+    """Keep the DAX failure marker's object kind aligned with its TMDL owner."""
+    if not isinstance(expression, str):
+        return expression
+    return re.sub(
+        r'(/\*\s*TODO:\s*DAX conversion validation failed for )'
+        r'(?:measure|column)(:)',
+        rf'\1{object_type}\2', expression, count=1, flags=re.IGNORECASE,
+    )
 
 
 def _quote_name(name):
@@ -1297,7 +1324,8 @@ def _dax_with_tableau_comment(expression, item):
 def _write_measure(lines, measure):
     """Write a measure in TMDL."""
     mname = _quote_name(measure.get('name', 'Measure'))
-    expression = measure.get('expression') or '0'
+    expression = _label_dax_conversion_target(
+        measure.get('expression') or '0', 'measure')
     if measure.get('expression'):
         expression = _dax_with_tableau_comment(expression, measure)
 
@@ -1327,6 +1355,13 @@ def _write_measure(lines, measure):
     safe_desc = measure_desc.replace('\n', ' ').replace('\r', '').strip()
     if safe_desc:
         lines.append(f"\t\tannotation Copilot_Description = {safe_desc}")
+
+    migration_note = (measure.get('_migration_note')
+                      or _dax_conversion_failure_note(expression))
+    if migration_note:
+        note_escaped = ' '.join(str(migration_note).split())
+        lines.append(
+            f"\t\tannotation MigrationNote = {json.dumps(note_escaped, ensure_ascii=False)}")
 
     # Lineage annotations (from merge)
     source_wbs = measure.get('_source_workbooks', [])
@@ -1368,7 +1403,17 @@ def _write_column_flags(lines, column):
         lines.append(f"\t\tsortByColumn: {_quote_name(sort_by)}")
 
     # Custom annotations (e.g. alternateOf for agg tables)
-    for ann in column.get('annotations', []):
+    annotations = column.get('annotations', [])
+    has_migration_note = any(
+        isinstance(ann, dict) and ann.get('name') == 'MigrationNote'
+        for ann in annotations)
+    migration_note = (column.get('_migration_note')
+                      or _dax_conversion_failure_note(column.get('expression')))
+    if migration_note and not has_migration_note:
+        lines.append(
+            "\t\tannotation MigrationNote = "
+            + json.dumps(' '.join(str(migration_note).split()), ensure_ascii=False))
+    for ann in annotations:
         ann_name = ann.get('name', '')
         ann_value = ann.get('value', '')
         if ann_name and ann_value:
@@ -1401,7 +1446,8 @@ def _write_column(lines, column):
     col_name = column.get('name', 'Column')
     cname_quoted = _quote_name(col_name)
     data_type = _tmdl_datatype(column.get('dataType', 'string'))
-    expression = column.get('expression', '')
+    expression = _label_dax_conversion_target(
+        column.get('expression', ''), 'column')
     is_calculated = column.get('isCalculated', False)
 
     if is_calculated and expression:

@@ -555,6 +555,8 @@ class TestPrepMigrationReport(unittest.TestCase):
             ('Prep outputs have no M queries: private-name', 'missing_output_query'),
             ('Prep M query filenames collide; exporting would overwrite queries',
              'query_filename_collision'),
+            ("Prep SimpleJoin 'private-id': semantics evidence policy is required "
+             'before generating the join', 'simple_join_semantics_unverified'),
               ("Prep AddColumn: duplicate/colliding field 'private-name'",
                'duplicate_column_identity'),
         ]

@@ -43,8 +43,8 @@ independent objects after supported refusals by default:
 python migrate.py batch .\workbooks --output-dir .\output
 ```
 
-For an incomplete workbook, inspect its generated project directory's
-`Salvage/` folder, not an older `.pbip`:
+For an incomplete workbook, inspect its current project directory and
+`Salvage/` folder, not an older project:
 
 1. Read `salvage_manifest.json` for the extraction/generation failure and the
    diagnostic-only `incomplete` / `FAIL` result.
@@ -57,9 +57,16 @@ For an incomplete workbook, inspect its generated project directory's
    fragment: ambiguous ownership or cross-table context may prevent conversion.
    The batch-owned extraction directory also retains incremental JSON and
    `extraction_salvage.json`; it is not a complete generation input on failure.
-4. Correct the source declarations or unsupported expressions and rerun a fresh
-   batch. Incomplete recovery remains nonzero and withholds the `.pbip`
-   completion marker; do not treat fragments as a resumable or validated project.
+4. If `completion_marker` is `diagnostic_only`, inspect the retained `.pbip`
+   and `partial_generation.json` as a repair project, not a validated report.
+   For incomplete extraction it contains page outlines and an empty repair model,
+   not source data, executable visual queries or RLS roles.
+   For DAX-placeholder validation it retains the generated model and report;
+   affected calculations may return blank and dependent results may be wrong.
+   This output remains `FAIL`, unvalidated and unsuitable for production.
+   If it is `withheld`, no diagnostic PBIP was available. Correct the source
+   declarations or unsupported expressions and rerun a fresh batch. Recovery
+   remains nonzero and partial projects are retried on resume.
 
 Before a recovery attempt, prior project, extraction and current quality/evidence
 outputs are archived under `.migration_previous` in the workbook output directory.

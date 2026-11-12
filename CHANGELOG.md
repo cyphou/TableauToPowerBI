@@ -4,6 +4,33 @@
 
 ## Unreleased
 
+- Extend static Power Query validation to multiline shared M expressions in
+  `expressions.tmdl`; keep inline parameter declarations out of query parsing.
+- Preserve the previous `datasources.json` when extraction export serialization
+  fails: save other exports first and atomically publish the datasource snapshot,
+  including incremental salvage checkpoints. Close the bounded N3 static
+  resilience gate with checkpoint-failure, resume, salvage and mixed-batch tests;
+  do not infer native Desktop or runtime validation.
+- Restore VS Code extension assessment and DAX preview using the current
+  extractor and converter, reject stale assessments after failure, and label
+  context-free DAX previews for review. Migrate a selected workbook through a
+  single-entry batch configuration with isolated run outputs; distinguish a
+  diagnostic partial PBIP from successful generation.
+- Retain the generated model and report as a diagnostic PBIP when source
+  checks pass and all static blockers are unsupported DAX placeholders. Preserve
+  `FAIL`, nonzero batch status and resume retry; never infer calculation results
+  or treat the project as validated.
+- Confine Prep lineage query exports to their output folder, preserve colliding
+  source and query names, and distinguish same-named flows in lineage reports.
+  Restore Prep lineage in bulk assessment. Isolate malformed batch-config path
+  and boolean options, and associate consolidated dashboards with each actual
+  project output; dashboard write failures remain advisory.
+- Preserve distinct same-named batch-config results and output destinations,
+  keep pipeline failure in partial-project revalidation, and run source and
+  Hyper checks before retaining a data-bound repair PBIP. Recover recognized
+  ambiguous visual bindings as data-free diagnostic PBIPs without guessing.
+  Correct partial counts, summary KPIs and generation messages; retain nonzero
+  exit and `FAIL` quality. Refresh golden references for the summary page.
 - Document partial-artifact triage, recovery inventory statuses and strict-mode
   usage in the FAQ and architecture guide; distinguish retained source metadata
   from convertible fragments, and reconcile the roadmap's delivered recovery
@@ -22,8 +49,10 @@
   semantic guard failures; security blockers remain fatal. Archive prior
   project/extraction/current quality/evidence outputs in `.migration_previous`
   rather than reusing stale files. Incomplete recovery is diagnostic-only,
-  unvalidated and `FAIL`, returns nonzero and withholds the `.pbip` completion
-  marker; incomplete extraction is not a PBIP. Desktop, skip-extraction,
+  unvalidated and `FAIL` and returns nonzero. Supported extraction and semantic
+  refusals can retain a diagnostic repair PBIP; incomplete extraction repairs
+  use page outlines and an empty model without source bindings or RLS. If repair
+  fails, its reason and available fragments remain in the diagnostics. Desktop, skip-extraction,
   Fabric, shared-model, standalone Prep and inspection routes keep their legacy
   defaults; explicitly incompatible salvage errors. No Desktop, native refresh
   or runtime validation is claimed.

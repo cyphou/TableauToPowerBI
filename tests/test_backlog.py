@@ -827,6 +827,24 @@ class TestStringLiteralMeasureSkip(unittest.TestCase):
             "Constant-string measure should preserve doubled-quote DAX escaping")
         self.assertIn('Real Measure', measures)
 
+    def test_malformed_string_formula_is_retained_with_placeholder(self):
+        from powerbi_import.tmdl_generator import _build_table
+        table = {
+            'name': 'T',
+            'columns': [{'name': 'Col1', 'datatype': 'string',
+                          'sourceColumn': 'Col1', 'role': 'dimension'}],
+        }
+        calc = {
+            'name': 'BrokenLabel', 'caption': 'Broken Label',
+            'formula': '"A" B"', 'role': 'measure', 'datatype': 'string',
+        }
+        result = _build_table(table, {}, [calc], [])
+        measures = {m.get('name'): m.get('expression')
+                    for m in result.get('measures', [])}
+        self.assertIn('Broken Label', measures)
+        self.assertIn('TODO: DAX conversion validation failed', measures['Broken Label'])
+        self.assertTrue(measures['Broken Label'].endswith('BLANK()'))
+
 
 class TestPublicCustomVisualsInReportJson(unittest.TestCase):
     """Verify that publicCustomVisuals is injected into report.json when custom visuals are used."""

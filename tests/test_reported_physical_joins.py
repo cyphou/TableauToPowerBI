@@ -959,14 +959,83 @@ class TestReportedPhysicalJoins(unittest.TestCase):
         self.assertTrue(any("partial_generation.json" in priority.get("evidence", [])
                             for priority in quality.priorities), quality.priorities)
 
-    def test_nonstrict_pbip_is_data_free_partial_and_quality_fails(self):
+    def test_nonstrict_pbip_keeps_model_and_reports_omitted_join(self):
         objects = _project_objects(self.source())
         generator = PowerBIProjectGenerator(output_dir=str(self.root))
         project = Path(generator.generate_project(
             "Reported", deepcopy(objects), model_mode="import",
             parameterize=False, strict_generation=False,
         ))
-        self.assert_data_free_partial(project, objects)
+        self.assertTrue((project / "Reported.pbip").is_file())
+        report_dir = project / "Reported.Report"
+        self.assertTrue(report_dir.is_dir())
+        self.assertFalse((project / "partial_generation.json").exists())
+
+        diagnostics_path = project / "generation_diagnostics.json"
+        self.assertTrue(diagnostics_path.is_file())
+        diagnostic_file = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+        self.assertEqual(diagnostic_file["status"], "partial")
+        self.assertTrue(diagnostic_file["data_retained"])
+        diagnostic, = diagnostic_file["diagnostics"]
+        self.assertEqual(diagnostic["source"], SOURCE)
+        self.assertEqual(diagnostic["aliases"], ["Lookup", "Orders"])
+        self.assertEqual(diagnostic["omitted_relationship_pairs"], [["Lookup", "Orders"]])
+
+        model_tables = sorted(
+            path.stem for path in
+            (project / "Reported.SemanticModel" / "definition" / "tables").glob("*.tmdl")
+        )
+        self.assertEqual(model_tables, ["Lookup", "Orders"])
+        relationships_path = (
+            project / "Reported.SemanticModel" / "definition" / "relationships.tmdl")
+        if relationships_path.exists():
+            self.assertNotRegex(relationships_path.read_text(encoding="utf-8"),
+                                r"(?m)^relationship\s+")
+
+        metadata = json.loads((project / "migration_metadata.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(metadata["generation_diagnostics"],
+                         "generation_diagnostics.json")
+        self.assertEqual(metadata["relationship_status"], "partial")
+
+        summary_text = ""
+        for page_path in (report_dir / "definition" / "pages").glob("*/page.json"):
+            page = json.loads(page_path.read_text(encoding="utf-8"))
+            if page.get("displayName") not in ("Migration Summary", "Bilan de migration"):
+                continue
+            page_visuals = page_path.parent / "visuals"
+            summary_text = " ".join(
+                path.read_text(encoding="utf-8")
+                for path in page_visuals.glob("*/visual.json"))
+            break
+        self.assertIn("Join omitted", summary_text)
+        self.assertIn("Orders", summary_text)
+        self.assertIn("Lookup", summary_text)
+        self.assertIn("generation_diagnostics.json", summary_text)
+
+        openability = check_openability(str(project))
+        self.assertTrue(openability.openable, openability.blocking_issues)
+        PowerBIProjectGenerator.update_migration_summary_status(project, openability)
+        summary_text = " ".join(
+            path.read_text(encoding="utf-8")
+            for path in (report_dir / "definition" / "pages").glob(
+                "*/visuals/*/visual.json"))
+        self.assertIn("Join omitted", summary_text)
+        self.assertIn("Orders", summary_text)
+        self.assertIn("Lookup", summary_text)
+
+    def test_tolerant_composite_join_omits_every_component_edge(self):
+        datasource = self.source(kind="composite")
+        model = _build_semantic_model(
+            [datasource], report_name="Reported", model_mode="import",
+            extra_objects={"_tolerate_unrepresentable_physical_joins": True},
+        )
+
+        self.assertEqual(model["model"]["relationships"], [])
+        diagnostic, = model["_physical_join_diagnostics"]
+        self.assertEqual(diagnostic["omitted_relationship_pairs"],
+                         [["Lookup", "Orders"]])
+        self.assertEqual(len(diagnostic["omitted_relationships"]), 2)
 
     def test_existing_partial_repair_contract_when_model_rejects_the_join(self):
         # A separate control exercises the repair contract while the real

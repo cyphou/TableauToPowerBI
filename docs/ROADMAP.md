@@ -361,8 +361,10 @@ CLI strict overrides a salvage config default, while explicitly passing both CLI
 flags is an error. Supported object refusals retain incremental
 extraction diagnostics; semantic guard failures retain independent fragments
 without requiring TMDL. Incomplete recovery remains diagnostic-only,
-unvalidated, `FAIL` and nonzero with the `.pbip` completion marker withheld, not a
-readiness gate. Prior outputs are archived in `.migration_previous`; security
+unvalidated, `FAIL` and nonzero, not a readiness gate. Supported extraction and
+semantic refusals can now retain a diagnostic repair PBIP; extraction repairs
+contain page outlines and no source data or RLS. Other failures may withhold it.
+Prior outputs are archived in `.migration_previous`; security
 guards and credential scrubbing remain active. Desktop diagnostics,
 skip-extraction, Fabric, shared-model, standalone Prep and inspection routes keep
 their legacy defaults, including the partial repair fallback where applicable;
@@ -377,12 +379,12 @@ Desktop, native refresh and runtime validation remain `not_run` for this slice.
 
 Report #85–91 hardening adds bounded envelope/field normalization, explicit
 unsupported-shape inventory, exact TMDL binding strings, final failure evidence
-and an optional source-independent Calendar range. It does not implement the
-seven still-unproven clean dialects listed under N1/N2, close #81, or establish
-new corpus/native acceptance. N3 includes final marker/report consistency and
+and an optional source-independent Calendar range. That hardening did not close
+#81 or establish new corpus/native acceptance; later bounded dialect slices are
+listed under N1/N2. N3 includes final marker/report consistency and
 retained diagnostic snapshots; its broader resilience gate remains open.
 
-The approved next bounded sequence is: implement the observed per-input
+The earlier bounded sequence was: implement the observed per-input
 `namespaceFieldMappings` union semantics, obtain producer evidence for the
 remaining clean/filter dialects before converting them, and add rows-to-columns
 pivot only when explicit producer metadata establishes a fixed output domain and
@@ -397,7 +399,8 @@ and physical fields, rename simultaneously, and preserve the checked append
 schema and types. This does not close the public flow: its `SimpleJoin` lacks
 proven projection semantics, and its mapped input metadata also contains an
 undeclared string/real mismatch. The 2026-10-30 public-source search supplied
-no new accepted clean-dialect fixtures; seven dialects remain blocked. No
+no new accepted clean-dialect fixtures at that time; later evidence and partial
+conversion are listed under N1/N2. No
 producer-backed finite pivot domain was found, so declared fields or aggregation
 alone do not enable rows-to-columns conversion. These remain evidence/source
 prerequisites, not completed functionality or native execution.
@@ -464,11 +467,64 @@ completed functionality or runtime evidence.
 
 | Order | Work item | Owner | Acceptance gate |
 |---|---|---|---|
-| N1 — Prep dialect evidence (#81, partial / Open) | Remap producer structure and expected string mappings are recorded from the public CC-BY-4.0 example: one observed dialect of eight; obtain evidence for the other seven unsupported clean dialects | Extractor / Tester | Remap's unmodified operation-field projection and anonymized reduced multigroup shape have producer-path checks and malformed/ambiguous-map controls. N1 remains open until all eight dialects have observed payloads, expected semantics and negative controls; unsupported dialects still fail explicitly |
-| N2 — Incremental Prep conversion (#81, In progress) | Done: first bounded Remap slice for observed explicit JSON-encoded TEXT maps, standalone and grouped. Simultaneous exact case-sensitive lookup preserves unmatched strings/nulls. Implement no other dialect until its N1 evidence is complete | Extractor / Wiring / Tester | Static production tests cover generated lookup/null/unmatched branches, invalid/ambiguous maps, missing/non-string upstream fields, and source-to-parser-to-workbook/TMDL field names/types, binding and M preservation. `groupMethodProps` is provenance only, not fuzzy execution. Seven dialects remain unsupported; native refresh/value execution is `not_run` |
-| N3 — Batch resilience (In progress; bounded slice delivered) | Harden batch resume for unusable checkpoints, roll back failed checkpoint updates under the lock, retract an incomplete PBIP entry marker after failed/interrupted postprocessing, bind each resume signature to that workbook's effective configuration, and preflight candidate destination collisions; exercise atomic Prep update failures | Orchestrator / Extractor / Tester | Focused tests cover malformed/empty/non-object/invalid-UTF-8 checkpoint handling, absent-checkpoint legacy behavior, retry and second resume using the planned identity, five checkpoint-write fault scenarios (partial write, persistent/transient replacement lock, interrupted save, two concurrent workers), ten effective-config signature regressions, injected Prep dump/replace failures, and Windows-normalized output collision preflight. Signatures cover resolved per-workbook culture/calendar/Prep path and content, quality policy, `verify_open`, output format, model mode, and extraction mode; unchanged effective settings and unrelated manifest entries do not invalidate another completion, missing requested Prep cannot match success, and old signatures regenerate once. Collision preflight checks all candidates before resume/dry-run or output writes; conflicting normalized targets fail with `VALIDATION_FAILED` (5), while distinct subdirectories remain valid. Prep fault tests verify existing atomic-write behavior, not a new production fix. Full N3 acceptance remains open: interrupted or failed runs must retain prior valid datasource JSON, avoid publishing a successful partial project, and resume without duplicate outputs; one-workbook folders and mixed workbook/Prep batches must preserve their contracts |
+| N1 — Prep dialect evidence (#81, partial / Open) | Record producer payloads and expected semantics per operation variant, including Remap and bounded ValueFilter, RangeFilter and QuickCalcColumn examples | Extractor / Tester | Producer-backed fixtures and negative controls identify which variants are evidenced; unobserved variants and runtime behavior remain open |
+| N2 — Incremental Prep conversion (#81, In progress) | Convert evidenced variants only: Remap, text-value exclusion, finite numeric-range exclusion and TrimSpaces; retain explicit blockers for unproved cases | Extractor / Wiring / Tester | Static production tests cover accepted shapes and rejection controls. `groupMethodProps` is provenance only, not fuzzy execution. Other variants remain unsupported; native refresh/value execution is `not_run` |
+| N3 — Batch resilience (Complete; bounded static/fault-injection scope) | Reject unusable checkpoints safely; roll back failed checkpoint updates under lock; retract incomplete PBIP markers; bind resume to each workbook's effective configuration and artifact inventory; preflight destination collisions; preserve prior datasource JSON across normal and salvage export failures; keep one-workbook and mixed workbook/Prep batch contracts | Orchestrator / Extractor / Tester | Verified by `tests/test_bug_bash_resume_paths.py` (281), `tests/test_salvage_partial.py` (57), `tests/test_sprint132.py` (15), `tests/test_extraction_contract.py` (6), `tests/test_extract_primitives.py` (13), and `tests/test_migrate_desktop_workflows.py` (2): **374 targeted tests passed**. This closes the listed static resilience contract only; it is not a full-suite result or Desktop/runtime validation. |
 | N4 — Refresh reproduction (#84) | Capture the exact minimal failing model, relationship and source prerequisites in an authorized local environment; distinguish a source error from a relationship-triggered failure | Semantic / Wiring / Healing / Tester | A reproducible negative control and causal fix with regression coverage; do not remove relationships or substitute empty tables merely to obtain a pass |
 | N5 — Operational validation (Open) | Refresh and save/reopen representative generated projects; compare source/target values and Tableau/Power BI screenshots where authorized | Reviewer / Evidence / Deployer | Attach refresh, value-comparison and visual evidence with environment/prerequisite status; static success and the bounded local browser diagnostic entry points alone never become `OPERATIONAL_100` |
+
+The datasource-snapshot portion of N3 now has a bounded regression fix:
+`datasources.json` is serialized to a temporary file and atomically published
+after the other extraction JSON exports; incremental salvage checkpoints use the
+same atomic publication path. Failures before or during that publish retain the
+previous datasource file. Worker-level interrupted-run and overall batch-resume
+acceptance remain open.
+
+### Next: Prep Flow Migration
+
+Baseline from the local public corpus on 2026-11-11: seven `.tfl`/`.tflx`
+input files, one flow generating three M queries and six blocked inputs.
+`packt-granularity.tflx` and `packt-superstore.tflx` have identical SHA-256
+content; the corpus therefore contains six distinct files. The Packt aggregation
+example also shares upstream structure, so these are not independent proofs of
+dialect coverage. Results are static; no
+Power Query execution or Tableau-to-Power Query value parity has been shown.
+The per-query HTML/JSON report records output roles, dependencies and blockers.
+
+| Priority | Work | Acceptance gate |
+|---|---|---|
+| P0 — Evidence and reporting | Keep a reproducible public corpus with pinned source revisions, licenses and representative expected results. Report each output as generated or blocked, with sanitized actionable reasons and no claim that static validation proves execution. | Fresh batch reproduces the inventory; blocked flows publish no successful-looking M; tests cover failures, multiple outputs, redaction and missing evidence. |
+| P1 — Joins and union types | Investigate native `SimpleJoin` projections, edge identities and null/duplicate/comparison behavior; investigate the real/text union conflict using upstream transformations and source semantics. | Convert only explicitly evidenced cases. Tests cover ambiguous fields, missing projection, incompatible types, nulls and duplicates; unproved behavior remains blocked. No inferred cast solely to make a flow pass. |
+| P1 — Clean operations and ordering | Establish actual execution order and semantics of nonempty action annotations, `RemoveLetters` and remaining filter/QuickCalc variants. Preserve existing bounded Remap, ValueFilter, numeric RangeFilter and TrimSpaces behavior. | Each newly supported shape has a producer-backed example, positive and negative controls, null/Unicode/boundary tests and static M validation. Unsupported variants continue to fail explicitly. |
+| P1 — Calculations and extensions | Extend expression conversion only for evidenced formulas and types; inventory Python/R extension inputs, outputs and dependencies without treating an external script as native M. | Generated expressions have checked field/type and error behavior; unsupported expressions and scripts stay visible as manual blockers. The simple `IFNULL` slice has static coverage, not runtime equivalence. |
+| P2 — Lineage and optimization | Extend per-query source-to-output lineage and retain blocked nodes; generate cross-flow lineage when enough successful profiles exist. Reuse existing consolidation, chain-collapse and deduplication recommendations as advisory findings. | Each recommendation cites its supporting nodes, dependencies and confidence; unknown lineage is explicit. No automatic rewrite is applied without a separate equivalence gate. |
+| P2 — Native validation | With an explicitly authorized local Power Query environment and accessible test data, execute representative generated queries and compare source expectations with target values. | Record environment, refresh result, schema, row counts, nulls and value comparisons separately from static checks. Include a deliberately wrong output as a negative control; unavailable execution is `not_run`. |
+
+Suggested order: P0 baseline and report contracts, then P1 join/union and
+clean-operation evidence, then calculation/extension coverage, followed by P2
+lineage/optimization and authorized native validation. These are planned work,
+not a commitment that all flows can be converted or that generated M is
+equivalent without runtime evidence.
+
+P0 report-integrity slice: blocked output-name collisions retain every output
+identity, missing or unreadable per-flow reports remain visible as unavailable
+evidence, and failed reruns flag preserved prior M files as not current.
+Remap lineage labels omit mapped values while executable M retains them.
+The [public corpus manifest](../tests/prep_dialect_samples/public_corpus_manifest.json)
+records pinned repositories, revisions, paths, licenses, checksums and duplicate
+identity. `python scripts/fetch_prep_public_corpus.py <input-directory>` retrieves
+missing flow files and verifies SHA-256 before publication; add `--check` to
+verify existing files without network access. Existing files with different
+content are never overwritten. The command retrieves flow files only: obtain
+the corresponding upstream licenses and any source data separately before
+redistribution or execution. These are static regression guarantees; native
+execution gates remain open.
+
+`python scripts/check_prep_public_corpus.py <input-directory> <new-output-directory>`
+verifies the pinned inputs offline, runs the standard Prep batch and checks its
+reports and generated M against the manifest baseline. A passing check permits
+known blocked flows and improvements; it does not mean all flows migrated or
+that Power Query was executed.
 
 The bounded offline [semantic-evidence prerequisite](ARCHITECTURE.md#optional-semantic-runtime-evidence)
 rejects empty/incomplete query suites, unavailable or nonterminal provider
@@ -533,8 +589,8 @@ This bounded refresh/capture evidence does not establish saved/reopened state,
 semantic or visual parity, deployment or general operational certification.
 **N5 remains Open.**
 
-**N1 is partial; N2's first bounded Remap conversion slice is delivered.**
-`.v2018_3_3.Remap` is the one dialect with observed producer structure and
+**N1 and N2 are partial; several bounded conversion slices are delivered.**
+`.v2018_3_3.Remap` is a dialect with observed producer structure and
 bounded converter support, not full #81 closure. Its fixture includes an
 unmodified operation-field projection and an anonymized, reduced multigroup
 payload with a separate source-shape summary and `NGramFingerprint` provenance.
@@ -544,12 +600,14 @@ Expected rows remain test-side specification, not native M execution.
 source-to-TMDL preservation. Identifier healing preserves the generated valid
 M conditional/equality syntax rather than quoting it as a malformed step name.
 These checks do not prove native refresh or runtime value equivalence; both
-remain `not_run` pending an authorized Power Query environment. The seven
-still-unproven dialects are `ValueFilter`, `RichRangeFilter`, `RangeFilter`,
-`RichDiscreteValueFilter`, `QuickCalcColumn`, `RichWildcardFilter` and
-`RichNullFilter`. Helper availability is not parser support; `RangeFilter` must
-not be guessed from the supported `FilterRange` dialect. #81 remains partial
-until the required dialects and their evidence are covered. N4 reproduction can
+remain `not_run` pending an authorized Power Query environment. Bounded static
+coverage also exists for string-value exclusions in `ValueFilter`, one finite
+numeric exclusion interval in `RangeFilter`, and `QuickCalcColumn` TrimSpaces;
+their other variants remain unproved. `RichRangeFilter`,
+`RichDiscreteValueFilter`, `RichWildcardFilter` and `RichNullFilter` remain
+unsupported. Helper availability is not parser support; `RangeFilter` must not
+be guessed from the supported `FilterRange` dialect. #81 remains partial until
+the required variants and their evidence are covered. N4 reproduction can
 proceed independently when an authorized environment is available; #84 remains
 unresolved.
 
@@ -658,16 +716,18 @@ subdirectories remain valid. The preflight does not change path-budget
 isolation: an individually impossible target remains a per-candidate failure
 and does not prevent a healthy sibling from running. On 2026-10-21,
 `python -m pytest tests/test_batch_output_collisions.py -q` — **7 passed**.
-These focused regressions verify this bounded slice only; N3 remains in
-progress, and no full-suite, Desktop, or runtime validation is claimed.
+Together with the extraction-save and batch-contract regressions listed in the
+N3 row, these focused checks close the bounded static resilience gate. They are
+not a full-suite, Desktop, or runtime validation result.
 
 Fault injection confirms that failed Prep JSON serialization or replacement
-leaves the prior datasource JSON untouched and removes the staged file; this
-tests existing atomic-write behavior, not a new production fix. These are
-focused static regressions, not Desktop/runtime evidence, and do not satisfy the
-full N3 acceptance gate or establish operational closure. Native Desktop,
-refresh and runtime value execution remain `not_run` for this slice; they
-require a separate authorized environment and evidence.
+leaves the prior datasource JSON untouched and removes the staged file. Tableau
+extraction now also serializes `datasources.json` after other exports and
+publishes it through same-directory atomic replacement; incremental salvage
+checkpoints share that writer. A failed export or replace preserves the prior
+datasource snapshot. Native Desktop, refresh and runtime value execution remain
+`not_run`; those operational checks require a separate authorized environment
+and evidence.
 
 Generation stays **folder-based bulk/batch only**, including a folder with one
 workbook. Screenshot capture, Desktop probes, refresh and deployment are explicit

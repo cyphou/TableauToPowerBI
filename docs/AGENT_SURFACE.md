@@ -82,7 +82,9 @@ It runs the current static check set, including `structure`, `json_parse`,
 calculated-column dependencies, path length, bookmark indexes, and literal grammar,
 and returns `openable` plus blocking issues and warnings. The
 **`power_query` check is the focus**: it extracts every M partition embedded in the
-TMDL (`extract_m_partitions`) and validates each with the M validator, catching the
+TMDL (`extract_m_partitions`) and every multiline shared M expression in
+`expressions.tmdl` (`extract_shared_m_expressions`), then validates each with the M
+validator. Inline parameter declarations are not treated as queries. This catches
 Power Query generation errors that are a top cause of silent load failures. The same
 M-partition validation is wired into `autoheal`'s default error source. Reachable
 from the CLI via `migrate.py --verify-open` (writes `openability_report.json` and

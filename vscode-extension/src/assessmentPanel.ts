@@ -16,8 +16,9 @@ export interface AssessmentCategory {
 
 export interface AssessmentData {
     workbook_name?: string;
-    overall_score?: number;
-    summary?: string;
+    overall_score?: number | string;
+    summary?: string | Record<string, unknown>;
+    totals?: { checks?: number; pass?: number; warn?: number; fail?: number };
     strategy?: string;
     categories?: AssessmentCategory[];
 }
@@ -59,7 +60,12 @@ export function renderAssessmentHtml(data: AssessmentData): string {
     const score =
         typeof data.overall_score === 'number'
             ? `${Math.round(data.overall_score)}%`
-            : 'n/a';
+            : escapeHtml(data.overall_score || 'n/a');
+    const summary = typeof data.summary === 'string'
+        ? data.summary
+        : data.totals
+            ? `${data.totals.checks ?? 0} checks: ${data.totals.pass ?? 0} passed, ${data.totals.warn ?? 0} warnings, ${data.totals.fail ?? 0} failed`
+            : '';
     const strategy = data.strategy
         ? `<p class="strategy">Recommended strategy: <strong>${escapeHtml(
               data.strategy
@@ -108,7 +114,7 @@ h1 { font-size: 1.3em; margin-bottom: 4px; }
 <body>
 <h1>Migration Assessment — ${title}</h1>
 <div class="score">${score}</div>
-<p class="summary">${escapeHtml(data.summary || '')}</p>
+<p class="summary">${escapeHtml(summary)}</p>
 ${strategy}
 ${categories || '<p>No assessment categories available.</p>'}
 </body></html>`;

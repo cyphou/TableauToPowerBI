@@ -160,3 +160,37 @@ class TestSourceColumnStringEscaping(unittest.TestCase):
                 capture_output=True, text=True, encoding='utf-8', timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout.strip()), sources)
+
+
+class TestDaxFailureMigrationNotes(unittest.TestCase):
+    def test_todo_measures_and_columns_get_one_migration_note(self):
+        todo = ('/* TODO: DAX conversion validation failed for measure: '
+                'source row grain is unverified */ BLANK()')
+        table = {
+            'name': 'Zone',
+            'measures': [
+                {'name': 'Failed Measure', 'expression': todo},
+                {'name': 'Explicit Note', 'expression': todo,
+                 '_migration_note': 'DAX conversion failed: explicit reason'},
+            ],
+            'columns': [{
+                'name': 'Failed Column', 'dataType': 'double',
+                'isCalculated': True, 'expression': todo, 'summarizeBy': 'none',
+            }],
+            'partitions': [{
+                'name': 'Zone', 'mode': 'import',
+                'source': {'type': 'm', 'expression': 'let Source = null in Source'},
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            _write_table_tmdl(directory, table)
+            path = os.path.join(directory, 'Zone.tmdl')
+            with open(path, encoding='utf-8') as stream:
+                content = stream.read()
+
+        self.assertRegex(content, r"(?m)^\tmeasure 'Failed Measure' =")
+        self.assertIn("column 'Failed Column' =", content)
+        self.assertEqual(content.count('annotation MigrationNote ='), 3)
+        self.assertIn('DAX conversion failed: source row grain is unverified', content)
+        self.assertIn('TODO: DAX conversion validation failed for column', content)
+        self.assertIn('DAX conversion failed: explicit reason', content)

@@ -1240,7 +1240,10 @@ def run_generation(report_name=None, output_dir=None, calendar_start=None,
                 except (json.JSONDecodeError, OSError, KeyError) as e:
                     logger.debug("Could not load TMDL stats: %s", e)
 
-        print("\n✓ Power BI project generated successfully")
+        if importer.last_generation_status == 'partial':
+            print("\n[PARTIAL] Diagnostic Power BI project generated; migration is not validated")
+        else:
+            print("\n✓ Power BI project generated successfully")
         return True
 
     except Exception as e:
@@ -1292,6 +1295,19 @@ def run_migration_report(report_name, output_dir=None):
 
         # Update table mapping with actual TMDL target table names
         base_dir = output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
+        generation_diagnostics_path = os.path.join(
+            base_dir, report_name, 'generation_diagnostics.json')
+        if os.path.isfile(generation_diagnostics_path):
+            try:
+                with open(generation_diagnostics_path, encoding='utf-8') as stream:
+                    generation_diagnostics = json.load(stream)
+            except (OSError, ValueError) as exc:
+                logger.warning("Unable to read generation diagnostics for %s: %s",
+                               report_name, exc)
+            else:
+                report.add_generation_diagnostics(
+                    generation_diagnostics.get('diagnostics', [])
+                    if isinstance(generation_diagnostics, dict) else [])
         tables_dir = os.path.join(base_dir, report_name,
                                   f'{report_name}.SemanticModel',
                                   'definition', 'tables')
@@ -1447,6 +1463,7 @@ def run_batch_html_dashboard(output_dir, workbook_results):
     """
     try:
         from generate_report import generate_batch_dashboard
+        os.makedirs(output_dir, exist_ok=True)
         html_path = generate_batch_dashboard(output_dir, workbook_results)
         if html_path:
             print(f"\n📊 Batch HTML dashboard: {html_path}")
@@ -2070,6 +2087,9 @@ def _run_batch_config(args, desktop_options=None):
     if not isinstance(entries, list):
         print("Error: Batch config must be a JSON array of objects")
         return ExitCode.GENERAL_ERROR
+    if not entries:
+        print("Error: Batch config contains no entries")
+        return ExitCode.GENERAL_ERROR
 
     config_dir = os.path.dirname(os.path.abspath(config_path))
     if desktop_options is not None:
@@ -2096,18 +2116,28 @@ def _run_batch_config(args, desktop_options=None):
     batch_start = datetime.now()
     results = {}
     desktop_outputs = {}
+    claimed_targets = set()
+
+    def store_result(label, result):
+        key = label
+        suffix = 2
+        while key in results:
+            key = f'{label} [{suffix}]'
+            suffix += 1
+        results[key] = result
 
     for i, entry in enumerate(entries, 1):
-        raw_file = entry.get('file', '')
-        if not raw_file:
+        raw_file = entry.get('file', '') if isinstance(entry, dict) else ''
+        if not isinstance(raw_file, str) or not raw_file.strip():
             print(f"  [{i}/{len(entries)}] SKIP — missing 'file' key")
+            store_result(f'entry [{i}]', {'success': False, 'error': 'missing_file'})
             continue
 
         # Resolve relative paths against config file location
         tableau_file = raw_file if os.path.isabs(raw_file) else os.path.join(config_dir, raw_file)
         if not os.path.isfile(tableau_file):
             print(f"  [{i}/{len(entries)}] SKIP — file not found: {raw_file}")
-            results[raw_file] = {'success': False, 'error': 'file_not_found'}
+            store_result(raw_file, {'success': False, 'error': 'file_not_found'})
             continue
 
         basename = os.path.splitext(os.path.basename(tableau_file))[0]
@@ -2122,12 +2152,19 @@ def _run_batch_config(args, desktop_options=None):
         prep = entry.get('prep', args.prep)
         prep_source_map = entry.get(
             'prep_source_map', getattr(args, 'prep_source_map', None))
-        if prep_source_map and not os.path.isabs(prep_source_map):
-            prep_source_map = os.path.join(config_dir, prep_source_map)
         out_dir = entry.get('output_dir', args.output_dir)
         culture = entry.get('culture', args.culture)
         paginated = entry.get('paginated', getattr(args, 'paginated', False))
         try:
+            for name, value in (('prep', prep), ('output_dir', out_dir),
+                                ('prep_source_map', prep_source_map)):
+                if value is not None and not isinstance(value, str):
+                    raise ConfigurationError(f'{name} must be a path string')
+            for name, value in (('skip_extraction', skip), ('paginated', paginated)):
+                if type(value) is not bool:
+                    raise ConfigurationError(f'{name} must be a boolean')
+            if prep_source_map and not os.path.isabs(prep_source_map):
+                prep_source_map = os.path.join(config_dir, prep_source_map)
             entry_salvage = _resolve_salvage_policy(
                 salvage_partial, getattr(args, 'strict_generation', None) or False,
                 skip, desktop_options, getattr(args, 'output_format', 'pbip'))
@@ -2163,18 +2200,39 @@ def _run_batch_config(args, desktop_options=None):
                 output_format=getattr(args, 'output_format', 'pbip'))
         except ConfigurationError as exc:
             print(f"  [{i}/{len(entries)}] SKIP — invalid options: {exc}")
-            results[raw_file] = {
+            store_result(raw_file, {
                 'success': False, 'error': 'invalid_configuration',
                 'error_details': str(exc),
-            }
+            })
             continue
 
         file_results = {}
+        output_is_fabric = getattr(args, 'output_format', 'pbip') == 'fabric'
+        project_root = out_dir or os.path.join(
+            'artifacts', 'fabric_projects' if output_is_fabric else 'powerbi_projects',
+            'migrated')
         try:
-            basename = _desktop_project_name(
-                basename, out_dir, getattr(args, 'output_format', 'pbip'))
+            from powerbi_import.security_validator import canonical_path_key
+            original_basename = basename
+            basename = _desktop_project_name(original_basename, project_root,
+                                             getattr(args, 'output_format', 'pbip'))
+            target = canonical_path_key(os.path.join(project_root, basename)).casefold()
+            if target in claimed_targets:
+                for suffix in range(2, 1002):
+                    candidate = _desktop_project_name(
+                        f'{original_basename}__{suffix}', project_root,
+                        getattr(args, 'output_format', 'pbip'))
+                    candidate_path = os.path.join(project_root, candidate)
+                    target = canonical_path_key(candidate_path).casefold()
+                    if target not in claimed_targets and not os.path.lexists(candidate_path):
+                        basename = candidate
+                        print(f"  Duplicate destination: using project name {basename}")
+                        break
+                else:
+                    raise ValueError('Unable to allocate a distinct batch-config project name')
+            claimed_targets.add(target)
         except ValueError as exc:
-            results[raw_file] = {'success': False, 'error': str(exc)}
+            store_result(raw_file, {'success': False, 'error': str(exc)})
             logger.error("Output path planning failed for %s: %s", raw_file, exc)
             continue
 
@@ -2189,10 +2247,6 @@ def _run_batch_config(args, desktop_options=None):
             # Never keep an earlier source paired to that entry's stale PBIP.
             desktop_outputs[desktop_target] = None
 
-        output_is_fabric = getattr(args, 'output_format', 'pbip') == 'fabric'
-        project_root = out_dir or os.path.join(
-            'artifacts', 'fabric_projects' if output_is_fabric else 'powerbi_projects',
-            'migrated')
         project_dir = os.path.join(project_root, basename)
         previous_extract_dir = getattr(_extract_dir_local, 'path', None)
         task = {
@@ -2204,8 +2258,10 @@ def _run_batch_config(args, desktop_options=None):
                 project_root, '.migration_extract',
                 basename + os.path.splitext(tableau_file)[1])),
         }
-        result = {'success': False}
-        results[basename] = result
+        result: dict[str, Any] = {
+            'success': False, 'report_name': basename, 'output_dir': project_root,
+        }
+        store_result(basename, result)
         try:
             _stats.phase = 'extraction'
             if entry_salvage:
@@ -2421,21 +2477,25 @@ def _run_batch_config(args, desktop_options=None):
 
     # Summary
     batch_duration = datetime.now() - batch_start
-    generated = sum(1 for r in results.values() if r.get('success'))
-    partial_count = sum(1 for r in results.values()
-                        if r.get('success') and r.get('partial_generation'))
-    succeeded = generated - partial_count
-    failed = len(results) - generated
+    partial_count = sum(1 for r in results.values() if r.get('partial_generation'))
+    succeeded = sum(1 for r in results.values()
+                    if r.get('success') and not r.get('partial_generation'))
+    failed = len(results) - succeeded - partial_count
 
     # Consolidated batch HTML dashboard
     effective_output = args.output_dir or os.path.join('artifacts', 'powerbi_projects', 'migrated')
     wb_paths = {}
     for name, res in results.items():
-        if res.get('success'):
+        if res.get('success') and not res.get('partial_generation'):
+            report_name = res.get('report_name') or name
+            output_root = res.get('output_dir') or effective_output
+            project_dir = os.path.join(output_root, report_name)
             wb_paths[name] = {
                 'metadata_path': res.get('metadata_path'),
+                'lineage_path': os.path.join(project_dir, 'lineage_map.json'),
+                'project_dir': project_dir,
             }
-            pattern = os.path.join(effective_output, f'migration_report_{name}_*.json')
+            pattern = os.path.join(output_root, f'migration_report_{report_name}_*.json')
             candidates = sorted(glob.glob(pattern))
             if candidates:
                 wb_paths[name]['migration_report_path'] = candidates[-1]
@@ -2536,6 +2596,10 @@ def _prep_report_blocker(error):
     if 'source-declared nonempty fields projection is required' in message:
         return {'code': 'join_projection_missing',
                 'message': 'Join output projection is not declared; no output schema was inferred.'}
+    if 'semantics evidence policy is required before generating the join' in message:
+        return {'code': 'simple_join_semantics_unverified',
+                'message': ('SimpleJoin is blocked until comparison, null-key, and '
+                            'duplicate-match semantics are verified for its sources.')}
     if ('Duplicate Prep output table names would lose M query coverage' in message
             or 'Duplicate Prep output/table name' in message):
         return {'code': 'duplicate_output_identity',
@@ -3112,6 +3176,7 @@ def _migrate_single_prep_flow(tableau_file, basename, workbook_output_dir, displ
         return {'success': False, 'error': 'conversion', 'error_details': failure,
                 'report_name': basename, 'output_dir': workbook_output_dir,
             'prep_flow': True,
+            'prep_profile': profile,
                 'powerquery_migration_report': report_paths['json']}
 
     grade = profile.assessment.get('grade', '?')
@@ -3254,7 +3319,7 @@ def _load_salvage_extraction(source_dir):
 
 
 def _write_partial_salvage(project_dir, extracted_objects, extraction_inventory=None,
-                           failure=None):
+                           failure=None, diagnostic_pbip=None):
     from powerbi_import.tmdl_generator import recover_diagnostic_semantics
 
     diagnostic_objects = dict(extracted_objects)
@@ -3264,14 +3329,57 @@ def _write_partial_salvage(project_dir, extracted_objects, extraction_inventory=
     inventory = recover_diagnostic_semantics(diagnostic_objects, salvage_dir)
     report = {
         'status': 'incomplete', 'validation_status': 'FAIL',
-        'diagnostic_only': True, 'completion_marker': 'withheld',
+        'diagnostic_only': True, 'completion_marker': (
+            'diagnostic_only' if diagnostic_pbip else 'withheld'),
         'extraction': extraction_inventory,
         'semantic_fragments': inventory,
         'failure': failure,
         'not_attempted': ['source_execution', 'desktop', 'deployment'],
     }
+    if diagnostic_pbip:
+        report['diagnostic_pbip'] = diagnostic_pbip
     _atomic_write_json(os.path.join(salvage_dir, 'salvage_manifest.json'), report)
     return os.path.join(salvage_dir, 'salvage_manifest.json')
+
+
+def _generate_diagnostic_pbip(output_dir, basename, objects, culture, failure,
+                              recovery_kind, required_evidence):
+    from powerbi_import.errors import PartialGenerationError
+    from powerbi_import.pbip_generator import PowerBIProjectGenerator
+
+    error = PartialGenerationError(
+        failure['message'], source=failure['stage'], recovery_kind=recovery_kind,
+        required_evidence=required_evidence)
+    generator = PowerBIProjectGenerator(output_dir=output_dir)
+    generator.generate_project(basename, objects, culture=culture, _diagnostic_error=error)
+    project_dir = os.path.join(output_dir, basename)
+    candidate = os.path.join(project_dir, basename + '.pbip')
+    if (os.path.isfile(candidate)
+            and os.path.isfile(os.path.join(project_dir, 'partial_generation.json'))):
+        return candidate
+    raise GenerationError('Diagnostic repair did not publish its PBIP and manifest')
+
+
+def _dax_placeholder_only_report(report):
+    if not isinstance(report, dict) or report.get('openable') is not False:
+        return False
+    checks = report.get('checks')
+    if not isinstance(checks, list) or not checks:
+        return False
+    if any(not isinstance(check, dict) or type(check.get('ok')) is not bool
+           or check.get('severity') not in ('error', 'warning')
+           or not isinstance(check.get('issues'), list)
+           for check in checks):
+        return False
+    blockers = [check for check in checks
+                if check['severity'] == 'error' and check['ok'] is False]
+    if len(blockers) != 1 or blockers[0].get('name') != 'dax':
+        return False
+    issues = blockers[0]['issues']
+    return (bool(issues) and type(report.get('blocking_count')) is int
+            and report['blocking_count'] == len(issues)
+            and all(isinstance(issue, str) and issue.endswith(
+                ': unsupported DAX conversion placeholder') for issue in issues))
 
 
 def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, display_name,
@@ -3343,14 +3451,28 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                 if extraction_inventory.get('status') == 'incomplete':
                     extracted_objects = _load_salvage_extraction(_get_extract_dir())
                     failure = _failure_diagnostic('extraction', 'Object extraction was refused; diagnostic recovery only.')
+                    diagnostic_pbip = None
+                    try:
+                        diagnostic_pbip = _generate_diagnostic_pbip(
+                            workbook_output_dir, basename, extracted_objects, wb_culture,
+                            failure, 'incomplete_extraction',
+                            ['Complete source extraction and security review'])
+                    except Exception as exc:
+                        failure['diagnostic_repair_failure'] = _failure_diagnostic(
+                            'diagnostic_recovery', exc)
+                        logger.warning('Could not generate extraction repair project for %s: %s',
+                                       display_name, redact_credentials(str(exc)))
                     salvage_path = _write_partial_salvage(
                         os.path.join(workbook_output_dir, basename), extracted_objects,
-                        extraction_inventory, failure)
+                        extraction_inventory, failure,
+                        diagnostic_pbip=os.path.basename(diagnostic_pbip) if diagnostic_pbip else None)
                     return {
                         'success': False, 'partial_generation': True,
-                        'generation_status': 'incomplete', 'error': 'extraction',
+                        'generation_status': 'partial' if diagnostic_pbip else 'incomplete',
+                        'error': 'extraction',
                         'failure': failure, 'salvage_manifest': salvage_path,
                         'report_name': basename, 'output_dir': workbook_output_dir,
+                        **({'diagnostic_pbip': diagnostic_pbip} if diagnostic_pbip else {}),
                         'stages': {'extraction': 'failed', 'generation': 'not_run',
                                    'diagnostic_recovery': 'completed'},
                     }
@@ -3418,34 +3540,84 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         model_mode=model_mode,
         output_format=output_format,
         source_dir=_get_extract_dir(),
-        strict_generation=strict_generation or salvage_partial,
+        strict_generation=strict_generation,
         paginated=paginated,
         composite_threshold=composite_threshold,
         agg_tables=agg_tables,
         optimize_dax=optimize_dax,
         time_intelligence=time_intelligence,
     )
+    if (salvage_partial and not file_results['generation']
+            and (_stats.failure or {}).get('error') == 'AmbiguousNativeQueryRefError'):
+        try:
+            _generate_diagnostic_pbip(
+                workbook_output_dir, basename, extracted_objects, wb_culture,
+                _stats.failure, 'ambiguous_visual_binding',
+                ['Unambiguous visual projection, sort and formatting references'])
+        except Exception as exc:
+            _stats.failure['diagnostic_repair_failure'] = _failure_diagnostic(
+                'diagnostic_recovery', exc)
+            logger.warning('Could not generate visual repair project for %s: %s',
+                           display_name, redact_credentials(str(exc)))
     partial_generation = bool(file_results.get('generation') and os.path.isfile(
         os.path.join(workbook_output_dir, basename, 'partial_generation.json')))
+    if (salvage_partial and not file_results['generation']
+            and (_stats.failure or {}).get('error') == 'AmbiguousNativeQueryRefError'):
+        partial_generation = os.path.isfile(
+            os.path.join(workbook_output_dir, basename, 'partial_generation.json'))
     partial_has_data = False
     if partial_generation:
         with open(os.path.join(workbook_output_dir, basename, 'partial_generation.json'),
                   encoding='utf-8') as handle:
             partial_has_data = json.load(handle).get('data_retained') is True
 
-    if salvage_partial and (not file_results['generation'] or partial_generation):
+    def finish_partial_generation(binding_error=None, binding_stage='hyper_import'):
+        diagnostic_pbip = None
+        partial_errors = []
+        if partial_generation:
+            with open(os.path.join(workbook_output_dir, basename, 'partial_generation.json'),
+                      encoding='utf-8') as handle:
+                partial_errors = json.load(handle).get('errors', [])
+            candidate = os.path.join(workbook_output_dir, basename, basename + '.pbip')
+            if os.path.isfile(candidate):
+                if binding_error is not None:
+                    os.remove(candidate)
+                else:
+                    diagnostic_pbip = os.path.basename(candidate)
         failure = _stats.failure or _failure_diagnostic(
-            'generation', 'Semantic generation is incomplete; fragments are diagnostic only.')
+            'generation', (partial_errors[0].get('message') if partial_errors else None)
+            or 'Semantic generation is incomplete; fragments are diagnostic only.')
+        if partial_errors and not _stats.failure:
+            partial_error = partial_errors[0]
+            for key in ('error', 'item', 'source', 'recovery_kind', 'impact', 'fix'):
+                value = partial_error.get(key)
+                if isinstance(value, str):
+                    failure[key] = redact_credentials(value)
+            evidence = partial_error.get('required_evidence')
+            if isinstance(evidence, list):
+                failure['required_evidence'] = [redact_credentials(item)
+                                                for item in evidence
+                                                if isinstance(item, str)]
+        if binding_error is not None:
+            failure['source_binding_failure'] = _failure_diagnostic(binding_stage, binding_error)
         salvage_path = _write_partial_salvage(
-            os.path.join(workbook_output_dir, basename), extracted_objects, failure=failure)
+            os.path.join(workbook_output_dir, basename), extracted_objects, failure=failure,
+            diagnostic_pbip=diagnostic_pbip)
         return {
             'success': False, 'partial_generation': True,
-            'generation_status': 'incomplete', 'error': 'generation',
+            'generation_status': 'partial' if diagnostic_pbip else 'incomplete',
+            'error': 'generation',
             'failure': failure, 'salvage_manifest': salvage_path,
             'report_name': basename, 'output_dir': workbook_output_dir,
+            **({'diagnostic_pbip': os.path.join(workbook_output_dir, basename, diagnostic_pbip)}
+               if diagnostic_pbip else {}),
             'stages': {'extraction': 'completed', 'generation': 'failed',
                        'diagnostic_recovery': 'completed'},
         }
+
+    if salvage_partial and (not file_results['generation']
+                            or (partial_generation and not partial_has_data)):
+        return finish_partial_generation()
 
     # Step 3: Migration report
     report_summary = None
@@ -3461,12 +3633,18 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         _stats.phase = 'source_staging'
         project_dir = os.path.join(workbook_output_dir, basename)
         if tableau_file.lower().endswith('.twbx'):
-            _process_twbx_post_generation(
-                tableau_file, project_dir, basename,
-                max_zip_entry_mb=hyper_options['max_zip_entry_mb'],
-                hyper_export_format=hyper_options['hyper_export_format'],
-                hyper_export_max_rows=hyper_options['hyper_export_max_rows'],
-                output_format=output_format, quiet=quiet)
+            try:
+                _process_twbx_post_generation(
+                    tableau_file, project_dir, basename,
+                    max_zip_entry_mb=hyper_options['max_zip_entry_mb'],
+                    hyper_export_format=hyper_options['hyper_export_format'],
+                    hyper_export_max_rows=hyper_options['hyper_export_max_rows'],
+                    output_format=output_format, quiet=quiet)
+            except GenerationError as exc:
+                if salvage_partial and partial_generation:
+                    return finish_partial_generation(
+                        binding_error=str(exc), binding_stage='source_staging')
+                raise
         elif output_format == 'fabric':
             _fix_twb_data_folder(project_dir, basename)
 
@@ -3511,6 +3689,9 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
                 logger.error("Hyper Import gate failed for %s: %s",
                              display_name, exc)
 
+    if salvage_partial and partial_generation:
+        return finish_partial_generation(binding_error=hyper_import_error)
+
     if (file_results.get('generation') and output_format == 'pbip'
             and not partial_generation and extracted_objects
             and (extracted_objects.get('worksheets') or extracted_objects.get('dashboards'))):
@@ -3528,6 +3709,60 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
         _stats.phase = 'validation'
         project_dir = os.path.join(workbook_output_dir, basename)
         file_results['openability'] = _run_openability_gate(project_dir)
+
+        if (salvage_partial and output_format == 'pbip'
+                and file_results.get('hyper_import') is True
+                and file_results['openability'] is False):
+            static_report: dict[str, Any] = {}
+            try:
+                with open(os.path.join(project_dir, 'openability_report.json'),
+                          encoding='utf-8') as stream:
+                    static_report = json.load(stream)
+                recoverable = _dax_placeholder_only_report(static_report)
+            except (OSError, ValueError, TypeError, AttributeError):
+                recoverable = False
+            marker = os.path.join(project_dir, basename + '.pbip')
+            if recoverable and os.path.isfile(marker):
+                issues = [redact_credentials(issue) for issue in next(
+                    check['issues'] for check in static_report['checks']
+                    if check['name'] == 'dax' and check['ok'] is False)]
+                message = 'DAX conversion contains unsupported placeholders; project is diagnostic only.'
+                failure = _failure_diagnostic('validation', message)
+                failure['recovery_kind'] = 'dax_placeholder'
+                failure['required_evidence'] = [
+                    'Resolve each unsupported calculation and validate source semantics',
+                    'Verify data refresh, security and visual results in Power BI',
+                ]
+                diagnostic = {
+                    'schema_version': '1.0', 'status': 'partial',
+                    'validation_status': 'FAIL', 'data_retained': True,
+                    'recovery_scope': 'model_with_dax_placeholders',
+                    'errors': [{**failure, 'issues': issues,
+                                'impact': 'Unsupported calculations may return blank or '
+                                          'affect dependent visuals and results.',
+                                'fix': 'Resolve the flagged calculations and regenerate; '
+                                       'verify source semantics and security before use.'}],
+                }
+                _atomic_write_json(os.path.join(project_dir, 'partial_generation.json'), diagnostic)
+                metadata_path = os.path.join(project_dir, 'migration_metadata.json')
+                if os.path.isfile(metadata_path):
+                    with open(metadata_path, encoding='utf-8') as stream:
+                        metadata = json.load(stream)
+                    metadata.update(generation_status='partial',
+                                    partial_diagnostic='partial_generation.json')
+                    _atomic_write_json(metadata_path, metadata)
+                salvage_path = _write_partial_salvage(
+                    project_dir, extracted_objects, failure=failure,
+                    diagnostic_pbip=os.path.basename(marker))
+                return {
+                    'success': False, 'partial_generation': True,
+                    'generation_status': 'partial', 'error': 'validation',
+                    'failure': failure, 'salvage_manifest': salvage_path,
+                    'diagnostic_pbip': marker, 'report_name': basename,
+                    'output_dir': workbook_output_dir,
+                    'stages': {'extraction': 'completed', 'generation': 'completed',
+                               'validation': 'failed', 'diagnostic_recovery': 'completed'},
+                }
 
     quality_status = 'FAIL' if hyper_import_error else None
     quality_json = None
@@ -3602,7 +3837,7 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
 
 
 def _finalize_failed_workbook(task, result):
-    """Publish diagnostic artifacts for the final failed state, never a PBIP."""
+    """Publish diagnostic artifacts for the final failed state."""
     if (task['output_format'] == 'fabric'
             or os.path.splitext(task['tableau_file'])[1].lower() in ('.tfl', '.tflx')):
         return
@@ -3617,7 +3852,11 @@ def _finalize_failed_workbook(task, result):
     name = task['basename']
     project_dir = os.path.join(task['workbook_output_dir'], name)
     marker = os.path.join(project_dir, f'{name}.pbip')
-    if os.path.isfile(marker):
+    diagnostic_pbip = (result.get('generation_status') == 'partial'
+                       and result.get('diagnostic_pbip') == marker
+                       and os.path.isfile(os.path.join(project_dir, 'partial_generation.json'))
+                       and os.path.isfile(marker))
+    if os.path.isfile(marker) and not diagnostic_pbip:
         os.remove(marker)
     os.makedirs(project_dir, exist_ok=True)
     failed_stage = next(
@@ -3637,13 +3876,20 @@ def _finalize_failed_workbook(task, result):
         'pipeline_completion', False, 'error',
         [f"{failure['stage']}: {failure['message']}"]))
     report.diagnostics['pipeline_failure'] = failure
+    if diagnostic_pbip:
+        try:
+            from powerbi_import.pbip_generator import PowerBIProjectGenerator
+            PowerBIProjectGenerator.update_migration_summary_status(project_dir, report)
+        except (ImportError, OSError, TypeError, ValueError) as exc:
+            logger.warning("Could not update diagnostic migration summary: %s", exc)
     openability = report.to_dict()
     openability_path = os.path.join(project_dir, 'openability_report.json')
     _atomic_write_json(openability_path, openability)
     failure_path = os.path.join(project_dir, 'migration_failure.json')
     _atomic_write_json(failure_path, {
         'schema_version': '1.0', 'status': 'failed',
-        'report_name': name, 'completion_marker': 'withheld',
+        'report_name': name, 'completion_marker': (
+            'diagnostic_only' if diagnostic_pbip else 'withheld'),
         'failure': failure,
         'extraction_snapshot': {
             'status': 'retained_for_diagnostics',
@@ -3666,13 +3912,18 @@ def _finalize_failed_workbook(task, result):
             openability, 'FAIL')
         quality.evidence_manifest = build_evidence_manifest(
             source_path=task['tableau_file'], target_path=project_dir)
+    if diagnostic_pbip:
+        with open(os.path.join(project_dir, 'partial_generation.json'), encoding='utf-8') as stream:
+            quality.partial_generation = json.load(stream)
     apply_pipeline_failure(quality, failure, openability)
     quality.save_json(quality_path)
     quality_html = os.path.splitext(quality_path)[0] + '.html'
     quality.save_html(quality_html)
     write_evidence_package(
         quality, os.path.join(task['workbook_output_dir'], f'evidence_package_{name}.zip'),
-        extra_files=[quality_path, quality_html, openability_path, failure_path])
+        extra_files=[quality_path, quality_html, openability_path, failure_path,
+                     os.path.join(project_dir, 'Salvage', 'salvage_manifest.json'),
+                     os.path.join(project_dir, 'Salvage', 'inventory.json')])
     result.update({'quality_status': 'FAIL', 'quality_json': quality_path})
     task['_failure_finalized'] = True
 
@@ -3692,7 +3943,7 @@ def _run_batch_prep_lineage(batch_results, migrated_root):
     profiles = [
         r['prep_profile']
         for r in batch_results.values()
-        if r.get('prep_flow') and r.get('success') and r.get('prep_profile')
+        if r.get('prep_flow') and r.get('prep_profile')
     ]
     if len(profiles) < 2:
         return  # Need at least 2 flows for cross-flow lineage
@@ -3747,11 +3998,10 @@ def _print_batch_summary(batch_results, batch_duration, migrated_root):
     Returns:
         Tuple of (succeeded_count, failed_count).
     """
-    generated = sum(1 for r in batch_results.values() if r['success'])
-    partial_count = sum(1 for r in batch_results.values()
-                        if r.get('success') and r.get('partial_generation'))
-    succeeded = generated - partial_count
-    failed = len(batch_results) - generated
+    partial_count = sum(1 for r in batch_results.values() if r.get('partial_generation'))
+    succeeded = sum(1 for r in batch_results.values()
+                    if r.get('success') and not r.get('partial_generation'))
+    failed = len(batch_results) - succeeded - partial_count
 
     # Separate workbook results from prep flow results
     wb_results = {k: v for k, v in batch_results.items() if not v.get('prep_flow')}
@@ -4777,8 +5027,12 @@ def run_batch_migration(batch_dir, output_dir=None, prep_file=None, prep_source_
                 marker = os.path.join(
                     task['workbook_output_dir'], task['basename'],
                     f"{task['basename']}.pbip")
+                diagnostic_pbip = (result.get('generation_status') == 'partial'
+                                   and result.get('diagnostic_pbip') == marker
+                                   and os.path.isfile(os.path.join(
+                                       os.path.dirname(marker), 'partial_generation.json')))
                 try:
-                    if os.path.isfile(marker):
+                    if os.path.isfile(marker) and not diagnostic_pbip:
                         os.remove(marker)
                 except OSError:
                     logger.warning("Could not retract incomplete PBIP marker: %s",
@@ -7569,8 +7823,9 @@ def run_bulk_assessment_mode(args):
                         save_lineage_json,
                     )
 
+                _unique_prep_profile_names(prep_profiles)
                 graph = build_lineage_graph(prep_profiles)
-                recommendations = compute_merge_recommendations(graph, prep_profiles)
+                recommendations = compute_merge_recommendations(graph)
 
                 lineage_dir = os.path.join(out, 'prep_lineage')
                 os.makedirs(lineage_dir, exist_ok=True)
@@ -9627,13 +9882,37 @@ def _run_openability_gate(project_dir):
         from healing import check_openability
     except ImportError:
         from powerbi_import.healing import check_openability
-    report = check_openability(project_dir)
-    try:
-        from powerbi_import.pbip_generator import PowerBIProjectGenerator
-        PowerBIProjectGenerator.update_migration_summary_status(project_dir, report)
-    except (ImportError, OSError, TypeError, ValueError) as exc:
-        logger.warning("Could not update migration summary status: %s", exc)
-    report = check_openability(project_dir)
+
+    def update_summary(status_report):
+        try:
+            from powerbi_import.pbip_generator import PowerBIProjectGenerator
+            PowerBIProjectGenerator.update_migration_summary_status(project_dir, status_report)
+        except (ImportError, OSError, TypeError, ValueError) as exc:
+            logger.warning("Could not update migration summary status: %s", exc)
+
+    def check_project():
+        report = check_openability(project_dir)
+        if os.path.isfile(os.path.join(project_dir, 'partial_generation.json')):
+            from powerbi_import.openability import CheckResult
+            failure = {'stage': 'generation', 'message': 'Partial project is not validated.'}
+            try:
+                with open(os.path.join(project_dir, 'migration_failure.json'),
+                          encoding='utf-8') as stream:
+                    saved_failure = json.load(stream).get('failure')
+                if isinstance(saved_failure, dict):
+                    failure.update(saved_failure)
+            except (OSError, ValueError, AttributeError):
+                pass
+            report.checks.append(CheckResult(
+                'pipeline_completion', False, 'error',
+                [f"{failure.get('stage')}: {failure.get('message')}"]))
+            report.diagnostics['pipeline_failure'] = failure
+        return report
+
+    report = check_project()
+    update_summary(report)
+    report = check_project()
+    update_summary(report)
     if report.openable:
         pq = next((c for c in report.checks if c.name == 'power_query'), None)
         pq_note = f", {len(pq.issues)} Power Query issues" if pq and pq.issues else ""

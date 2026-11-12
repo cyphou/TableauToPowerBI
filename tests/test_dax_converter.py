@@ -72,6 +72,49 @@ class TestMapTableauToPowerBIType(unittest.TestCase):
         self.assertEqual(map_tableau_to_powerbi_type("blob"), "String")
 
 
+class TestMinOneMeasure(unittest.TestCase):
+    def test_min_one_measure_tracks_nonempty_rows_and_validates(self):
+        result = convert_tableau_formula_to_dax(
+            " min ( 1 ) ",
+            table_name="Player's Table",
+            table_columns=["Player"],
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+
+        self.assertEqual(
+            result,
+            "IF(COUNTROWS('Player''s Table') > 0, 1, BLANK())",
+        )
+        from powerbi_import.dax_validator import validate_dax_expression
+        self.assertEqual(validate_dax_expression(result), [])
+
+    def test_conversion_stays_with_exact_measure_literal(self):
+        for formula in ("MIN(2)", "MIN(1.0)", "MAX(1)"):
+            with self.subTest(formula=formula):
+                result = convert_tableau_formula_to_dax(
+                    formula,
+                    table_name="Players",
+                    table_columns=["Player"],
+                    validate_output=True,
+                    fallback_on_invalid=True,
+                )
+                self.assertIn(
+                    "TODO: DAX conversion validation failed", result)
+
+    def test_min_one_calculated_column_does_not_use_measure_conversion(self):
+        result = convert_tableau_formula_to_dax(
+            "MIN(1)",
+            table_name="Players",
+            table_columns=["Player"],
+            is_calc_column=True,
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+
+        self.assertIn("TODO: DAX conversion validation failed", result)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Bracket Escape Reversal
 # ═══════════════════════════════════════════════════════════════════════

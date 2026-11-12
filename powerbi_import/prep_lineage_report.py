@@ -451,7 +451,7 @@ def _render_output_inventory(graph: PrepLineageGraph) -> str:
 
 
 def _render_lineage_diagram(graph: PrepLineageGraph) -> str:
-    """Section 5 — Mermaid diagram embedded in HTML."""
+    """Render internal Prep DAGs and verified cross-flow lineage together."""
     lines = ['graph LR']
 
     # External sources
@@ -463,19 +463,69 @@ def _render_lineage_diagram(graph: PrepLineageGraph) -> str:
         lines.append(f'    style {sid} fill:#deecf9,stroke:#0078d4')
         src_ids[src.fingerprint] = sid
 
-    # Flow nodes
-    flow_ids = {}
-    for f in graph.flows:
-        fid = f'F_{f.name.replace(" ", "_").replace("-", "_")}'
-        flow_ids[f.name] = fid
-        label = esc(f.name)
-        # Explicit authored diagram label; names and evidence labels stay untouched.
-        transform_label = (
-            f'<small {attributes(text(f"{len(f.transforms)} transforms", f"{len(f.transforms)} transformations"))}>'
-            f'{len(f.transforms)} transforms</small>'
-        )
-        # Mermaid labels use double quotes as delimiters.
-        lines.append(f'    {fid}["{label}<br/>{transform_label.replace(chr(34), chr(39))}"]')
+    flows = sorted(graph.flows, key=lambda flow: flow.name.casefold())
+    flow_ids = {flow.name: f'FLOW{index}' for index, flow in enumerate(flows)}
+    input_node_ids: Dict[Tuple[str, str], List[str]] = {}
+    output_node_ids: Dict[Tuple[str, str], List[str]] = {}
+
+    def safe_label(value):
+        return esc(str(value or '?').replace('\r', ' ').replace('\n', ' ')).replace('"', "'")
+
+    for flow in flows:
+        flow_id = flow_ids[flow.name]
+        node_graph = flow.node_graph if isinstance(flow.node_graph, dict) else {}
+        input_by_id = {item.node_id: item for item in flow.inputs if item.node_id}
+        transform_by_id = {item.node_id: item for item in flow.transforms if item.node_id}
+        output_by_id = {item.node_id: item for item in flow.outputs if item.node_id}
+
+        ordered_ids = []
+        for records in (flow.inputs, flow.transforms, flow.outputs):
+            for record in records:
+                node_id = getattr(record, 'node_id', '')
+                if node_id and node_id not in ordered_ids:
+                    ordered_ids.append(node_id)
+        graph_ids = set(node_graph)
+        for targets in node_graph.values():
+            if isinstance(targets, (list, tuple)):
+                graph_ids.update(targets)
+        ordered_ids.extend(sorted(node_id for node_id in graph_ids
+                                  if node_id not in ordered_ids))
+
+        assessment = flow.assessment if isinstance(flow.assessment, dict) else {}
+        flow_status = 'blocked' if assessment.get('conversion_error') else 'analyzed'
+        flow_label = safe_label(flow.name)
+        if not ordered_ids:
+            lines.append(f'    {flow_id}["{flow_label}<br/><small>{flow_status}; internal graph unavailable</small>"]')
+            continue
+
+        lines.append(f'    subgraph {flow_id}["{flow_label} — {flow_status}"]')
+        local_ids = {node_id: f'{flow_id}_N{index}'
+                     for index, node_id in enumerate(ordered_ids)}
+        for node_id in ordered_ids:
+            if node_id in input_by_id:
+                record = input_by_id[node_id]
+                kind, name = 'Input', record.name
+                input_node_ids.setdefault((flow.name, record.name), []).append(local_ids[node_id])
+            elif node_id in transform_by_id:
+                record = transform_by_id[node_id]
+                kind, name = record.transform_type, record.name
+            elif node_id in output_by_id:
+                record = output_by_id[node_id]
+                kind, name = 'Output', record.name
+                output_node_ids.setdefault((flow.name, record.name), []).append(local_ids[node_id])
+            else:
+                kind, name = 'Step', str(node_id)[:8]
+            lines.append(
+                f'        {local_ids[node_id]}["{safe_label(name)}<br/>'
+                f'<small>{safe_label(kind)}</small>"]'
+            )
+        for source_id, targets in node_graph.items():
+            if source_id not in local_ids or not isinstance(targets, (list, tuple)):
+                continue
+            for target_id in targets:
+                if target_id in local_ids:
+                    lines.append(f'        {local_ids[source_id]} --> {local_ids[target_id]}')
+        lines.append('    end')
 
     # Final sinks
     sink_ids = {}
@@ -486,31 +536,39 @@ def _render_lineage_diagram(graph: PrepLineageGraph) -> str:
         lines.append(f'    style {sid} fill:#dff6dd,stroke:#107c10')
         sink_ids[(sink.produced_by[0], sink.produced_by[1])] = sid
 
-    # Edges: sources → flows
+    # Edges: external sources → the input nodes that consume them.
     for src in graph.external_sources:
         sid = src_ids.get(src.fingerprint)
         if not sid:
             continue
-        for flow_name, _ in src.consumed_by:
-            fid = flow_ids.get(flow_name)
-            if fid:
-                lines.append(f'    {sid} --> {fid}')
+        for flow_name, input_name in src.consumed_by:
+            targets = input_node_ids.get((flow_name, input_name), [])
+            for target in targets or [flow_ids.get(flow_name)]:
+                if target:
+                    lines.append(f'    {sid} --> {target}')
 
-    # Edges: flow → flow (cross-flow)
+    # Edges: output node → input node (cross-flow).
     for e in graph.edges:
-        sfid = flow_ids.get(e.source_flow)
-        tfid = flow_ids.get(e.target_flow)
-        if sfid and tfid:
-            lines.append(f'    {sfid} -->|"{e.match_type}"| {tfid}')
+        sources = output_node_ids.get((e.source_flow, e.source_output), [])
+        targets = input_node_ids.get((e.target_flow, e.target_input), [])
+        source_nodes = sources or [flow_ids.get(e.source_flow)]
+        target_nodes = targets or [flow_ids.get(e.target_flow)]
+        for source_id in source_nodes:
+            for target_id in target_nodes:
+                if source_id and target_id:
+                    lines.append(
+                        f'    {source_id} -->|"{safe_label(e.match_type)}"| {target_id}'
+                    )
 
-    # Edges: flow → sinks
+    # Edges: output nodes → final sinks.
     for flow in graph.flows:
-        fid = flow_ids.get(flow.name)
         for out in flow.outputs:
             key = (flow.name, out.name)
             sid = sink_ids.get(key)
-            if fid and sid:
-                lines.append(f'    {fid} --> {sid}')
+            sources = output_node_ids.get(key, [])
+            for source_id in sources or [flow_ids.get(flow.name)]:
+                if source_id and sid:
+                    lines.append(f'    {source_id} --> {sid}')
 
     mermaid_code = '\n'.join(lines)
 
@@ -942,6 +1000,14 @@ def save_lineage_json(graph: PrepLineageGraph,
         The output path
     """
     data = graph.to_dict()
+    for flow in data.get('flows', []):
+        if not isinstance(flow, dict):
+            continue
+        source_path = flow.pop('file_path', '')
+        if isinstance(source_path, str) and source_path:
+            source_file = source_path.replace('\\', '/').rsplit('/', 1)[-1]
+            flow['source_file'] = source_file
+            flow['source_id'] = f"{flow.get('name', '')}::{source_file}"
     data['recommendations'] = [r.to_dict() for r in recommendations]
     data['timestamp'] = datetime.now(timezone.utc).isoformat()
 

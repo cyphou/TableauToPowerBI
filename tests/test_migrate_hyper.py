@@ -1131,7 +1131,7 @@ class TestHyperOptionWiring(unittest.TestCase):
         self.assertEqual(extraction.call_args.kwargs["max_zip_entry_mb"], 3)
         self.assertIs(extraction.call_args.kwargs["salvage_partial"], True)
         self.assertEqual(generation.call_args.kwargs["model_mode"], "import")
-        self.assertIs(generation.call_args.kwargs["strict_generation"], True)
+        self.assertIs(generation.call_args.kwargs["strict_generation"], False)
         self.assertEqual(
             generation.call_args.kwargs["source_dir"],
             extraction.call_args.kwargs["output_dir"],

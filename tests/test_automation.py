@@ -477,6 +477,25 @@ class TestReportSummaryCsv:
             assert rows['WB2']['visuals_with_dax_measures_count'] == '0'
             assert rows['WB2']['pages_count'] == '1'
 
+    def test_batch_dashboard_validates_explicit_project_directory(self, monkeypatch):
+        from generate_report import generate_batch_dashboard
+        from powerbi_import.validator import ArtifactValidator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = os.path.join(tmpdir, 'other', 'actual')
+            os.makedirs(project)
+            metadata = os.path.join(project, 'migration_metadata.json')
+            with open(metadata, 'w', encoding='utf-8') as stream:
+                json.dump({'objects_converted': {}}, stream)
+            checked = []
+            monkeypatch.setattr(ArtifactValidator, 'run_pbi_validation',
+                                lambda path: checked.append(path) or {})
+            result = generate_batch_dashboard(tmpdir, {
+                'display [2]': {'metadata_path': metadata, 'project_dir': project},
+            })
+            assert result is not None
+            assert checked == [project]
+
 
 # ════════════════════════════════════════════════════════════════════════
 # 5. RLS PowerShell script generation

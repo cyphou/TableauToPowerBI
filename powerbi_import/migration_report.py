@@ -21,6 +21,8 @@ from datetime import datetime
 
 # DAX comments left by dax_converter for unsupported functions
 _UNSUPPORTED_PATTERNS = [
+    (re.compile(r'/\*\s*TODO:\s*DAX conversion validation failed\b', re.IGNORECASE),
+     'DAX conversion failed; placeholder retained'),
     (re.compile(r'/\*\s*MAKEPOINT', re.IGNORECASE), 'MAKEPOINT (no DAX spatial equivalent)'),
     (re.compile(r'/\*\s*SCRIPT_(BOOL|INT|REAL|STR)', re.IGNORECASE), 'Analytics extension (SCRIPT_*)'),
     (re.compile(r'/\*\s*CORR.*no direct DAX', re.IGNORECASE), 'CORR (no direct DAX equivalent)'),
@@ -211,6 +213,32 @@ class MigrationReport:
             card = rel.get('cardinality', '?')
             self.add_item('relationship', name, self.EXACT,
                           note=f"cardinality={card}")
+
+    def add_generation_diagnostics(self, diagnostics):
+        """Add explicit model omissions to the per-workbook migration report."""
+        for diagnostic in diagnostics or []:
+            if (not isinstance(diagnostic, dict)
+                    or diagnostic.get('code') != 'physical_join_omitted'):
+                continue
+            source = diagnostic.get('source') or 'Unknown datasource'
+            pairs = diagnostic.get('omitted_relationship_pairs') or []
+            names = [
+                f"{source}: {pair[0]} → {pair[1]}"
+                for pair in pairs
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            ]
+            if not names:
+                aliases = diagnostic.get('aliases') or []
+                names = [f"{source}: {' / '.join(map(str, aliases)) or 'physical join'}"]
+            impact = diagnostic.get('impact') or (
+                'The relationship was omitted; dependent model calculations and '
+                'visuals require manual review.')
+            for name in names:
+                self.add_item(
+                    'relationship', name, self.UNSUPPORTED,
+                    note=('Unrepresentable physical join omitted. ' + str(impact)
+                          + ' See generation_diagnostics.json and the PBIR Migration Summary.'),
+                )
 
     def add_hierarchies(self, hierarchies):
         """Add hierarchy migration entries."""

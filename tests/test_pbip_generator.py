@@ -745,6 +745,165 @@ class TestGenerateProject(unittest.TestCase):
                 'Power BI Service refresh, source availability, and visual/value parity were not verified here.'):
             self.assertIn(expected, text)
 
+    def test_migration_summary_status_can_be_updated_repeatedly(self):
+        from types import SimpleNamespace
+
+        self._generate()
+        project_dir = os.path.join(self.output_dir, 'Test')
+        pages_dir = os.path.join(project_dir, 'Test.Report', 'definition', 'pages')
+        with open(os.path.join(pages_dir, 'pages.json'), encoding='utf-8') as stream:
+            summary_name = json.load(stream)['pageOrder'][-1]
+        visuals_dir = os.path.join(pages_dir, summary_name, 'visuals')
+        visual_id, = os.listdir(visuals_dir)
+        visual_path = os.path.join(visuals_dir, visual_id, 'visual.json')
+
+        def summary_text():
+            with open(visual_path, encoding='utf-8') as stream:
+                visual = json.load(stream)['visual']
+            paragraphs = visual['objects']['general'][0]['properties']['paragraphs']
+            return '\n'.join(''.join(run.get('value', '') for run in paragraph['textRuns'])
+                             for paragraph in paragraphs)
+
+        self.assertIn('Static project checks: Not run', summary_text())
+        self.assertNotIn('__TTPBI_STATIC_PROJECT_STATUS__', summary_text())
+        report = SimpleNamespace(openable=True, warnings=[], blocking_issues=[])
+        self.gen.update_migration_summary_status(project_dir, report)
+        self.assertIn('Static project checks: OK', summary_text())
+        report.warnings = ['warning']
+        self.gen.update_migration_summary_status(project_dir, report)
+        self.assertIn('Static project checks: OK (1 warning)', summary_text())
+        report.openable = False
+        report.blocking_issues = ['blocker']
+        self.gen.update_migration_summary_status(project_dir, report)
+        self.assertIn('Static project checks: Review required (1 static blocker(s))',
+                      summary_text())
+        report.openable = None
+        self.gen.update_migration_summary_status(project_dir, report)
+        self.assertIn('Static project checks: Not run', summary_text())
+
+    def test_french_summary_updates_legacy_and_partial_status(self):
+        from types import SimpleNamespace
+
+        self.gen.generate_project('Test', self.objects, culture='fr-FR')
+        project_dir = os.path.join(self.output_dir, 'Test')
+        visual_path = os.path.join(
+            project_dir, self.gen._migration_summary_visual_relative_path)
+
+        def read_visual():
+            with open(visual_path, encoding='utf-8') as stream:
+                return json.load(stream)
+
+        def status_run(visual):
+            paragraphs = visual['visual']['objects']['general'][0]['properties']['paragraphs']
+            for paragraph in paragraphs:
+                runs = paragraph['textRuns']
+                for index in range(1, len(runs)):
+                    if runs[index - 1].get('value') == 'Contrôles statiques : ':
+                        return runs[index]
+            self.fail('French static status run not found')
+
+        visual = read_visual()
+        self.assertEqual(status_run(visual)['value'], 'Non exécuté')
+        report = SimpleNamespace(openable=True, warnings=['a', 'b'], blocking_issues=[])
+        self.gen.update_migration_summary_status(project_dir, report)
+        self.assertEqual(status_run(read_visual())['value'], 'OK (2 avertissements)')
+
+        visual = read_visual()
+        visual.pop('annotations')
+        status_run(visual)['value'] = '__TTPBI_STATIC_PROJECT_STATUS__'
+        with open(visual_path, 'w', encoding='utf-8') as stream:
+            json.dump(visual, stream, ensure_ascii=False)
+        report.openable = False
+        report.blocking_issues = ['blocker']
+        self.gen.update_migration_summary_status(project_dir, report)
+        self.assertEqual(status_run(read_visual())['value'],
+                         'À vérifier (1 blocage(s) statique(s))')
+        with open(os.path.join(project_dir, 'partial_generation.json'), 'w', encoding='utf-8') as stream:
+            json.dump({}, stream)
+        self.gen.update_migration_summary_status(project_dir, report)
+        partial_visual = read_visual()
+        self.assertEqual(status_run(partial_visual)['value'],
+                         'Partielle — consulter le diagnostic de migration')
+        paragraphs = partial_visual['visual']['objects']['general'][0]['properties']['paragraphs']
+        text = '\n'.join(''.join(run.get('value', '') for run in paragraph['textRuns'])
+                 for paragraph in paragraphs)
+        self.assertIn('Génération partielle', text)
+        self.assertNotIn('Génération terminée', text)
+
+    def test_summary_update_does_not_change_an_unmarked_textbox(self):
+        from types import SimpleNamespace
+
+        self._generate()
+        project_dir = os.path.join(self.output_dir, 'Test')
+        summary_path = os.path.join(
+            project_dir, self.gen._migration_summary_visual_relative_path)
+        visuals_dir = os.path.dirname(os.path.dirname(summary_path))
+        other_path = self.gen._create_visual_textbox(
+            visuals_dir, {'text_runs': [
+                {'text': 'Static project checks: '}, {'text': 'Not run'}]},
+            1, 1, 1)
+        with open(other_path, encoding='utf-8') as stream:
+            original = json.load(stream)
+        report = SimpleNamespace(openable=True, warnings=[], blocking_issues=[])
+        self.gen.update_migration_summary_status(project_dir, report)
+        with open(other_path, encoding='utf-8') as stream:
+            self.assertEqual(json.load(stream), original)
+
+    def test_summary_tracks_real_revalidation_after_project_changes(self):
+        import migrate
+
+        self._generate()
+        project_dir = os.path.join(self.output_dir, 'Test')
+        visual_path = os.path.join(
+            project_dir, self.gen._migration_summary_visual_relative_path)
+
+        def summary_text():
+            with open(visual_path, encoding='utf-8') as stream:
+                visual = json.load(stream)['visual']
+            paragraphs = visual['objects']['general'][0]['properties']['paragraphs']
+            return '\n'.join(''.join(run.get('value', '') for run in paragraph['textRuns'])
+                             for paragraph in paragraphs)
+
+        self.assertTrue(migrate._run_openability_gate(project_dir))
+        self.assertIn('Static project checks: OK', summary_text())
+        broken_path = os.path.join(project_dir, 'broken.json')
+        with open(broken_path, 'w', encoding='utf-8') as stream:
+            stream.write('{')
+        self.assertFalse(migrate._run_openability_gate(project_dir))
+        with open(os.path.join(project_dir, 'openability_report.json'), encoding='utf-8') as stream:
+            report = json.load(stream)
+        self.assertGreater(report['blocking_count'], 0)
+        self.assertIn(f"Static project checks: Review required ({report['blocking_count']} static blocker(s))",
+                      summary_text())
+        os.remove(broken_path)
+        self.assertTrue(migrate._run_openability_gate(project_dir))
+        self.assertIn('Static project checks: OK', summary_text())
+
+    def test_migration_summary_uses_final_openability_result(self):
+        from unittest.mock import patch
+        import healing
+        import migrate
+        from powerbi_import.openability import CheckResult, OpenabilityReport
+
+        self._generate()
+        project_dir = os.path.join(self.output_dir, 'Test')
+        first = OpenabilityReport(project_dir)
+        final = OpenabilityReport(project_dir, checks=[
+            CheckResult('test', False, 'error', ['final blocker'])
+        ])
+        with patch.object(healing, 'check_openability', side_effect=[first, final]):
+            self.assertFalse(migrate._run_openability_gate(project_dir))
+        visual_path = os.path.join(
+            project_dir, self.gen._migration_summary_visual_relative_path)
+        with open(visual_path, encoding='utf-8') as stream:
+            visual = json.load(stream)['visual']
+        paragraphs = visual['objects']['general'][0]['properties']['paragraphs']
+        text = '\n'.join(''.join(run.get('value', '') for run in paragraph['textRuns'])
+                         for paragraph in paragraphs)
+        self.assertIn('Static project checks: Review required (1 static blocker(s))', text)
+        with open(os.path.join(project_dir, 'openability_report.json'), encoding='utf-8') as stream:
+            self.assertFalse(json.load(stream)['openable'])
+
 
 class TestAutomaticModelModeEntrypoints(unittest.TestCase):
     """Primary generator APIs must not silently reinstate the old Import default."""

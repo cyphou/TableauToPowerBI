@@ -242,7 +242,7 @@ generation path. For a CI quality exit gate, run
 batch does not forward `--quality-strict`, so its exit status alone is not a
 quality PASS.
 
-On legacy-default routes described below, PBIP batch generation retains partial
+PBIP batch generation retains partial
 repair for explicitly identified unsupported semantic conversions (logical
 relationship endpoints, unproven
 composite relationships or logical SUM policies, and unresolved combined-group
@@ -288,16 +288,30 @@ both `--strict-generation` and `--salvage-partial` is a configuration error.
 Known object-level preflight refusals and datasource normalization/extraction
 refusals can retain incremental JSON and raw refused declarations/formulas
 after safe XML parsing; security blockers remain fatal. Complete, safe inputs
-still generate normally; incomplete extraction does **not** produce a PBIP.
+still generate normally; supported incomplete extractions attempt a data-free
+diagnostic PBIP with recovered page outlines and no source model or RLS roles.
+Recognized ambiguous visual bindings also attempt a data-free repair PBIP.
 Semantic guard failures retain independent `.dax`, `.pq` and source/model JSON
-without requiring TMDL generation. Recovery never guesses Hyper bindings or
-relationships, or executes source queries.
+without requiring TMDL generation. Fragment recovery does not execute source
+queries or guess Hyper bindings or relationships. A partial project retaining
+data bindings runs source staging and full Hyper binding checks; an incomplete
+Hyper binding withholds its PBIP marker.
+When source checks pass and every blocking static issue is an unsupported DAX
+placeholder, the generated model and report are retained as a diagnostic PBIP.
+Affected calculations may return blank and dependent results may be incorrect;
+the project remains partial, `FAIL`, unvalidated and unsuitable for production.
 
 `<Project>\Salvage\inventory.json` and `salvage_manifest.json` identify
 diagnostic-only, unvalidated, incomplete output with a `FAIL` manifest verdict.
-Partial failures remain nonzero with no `.pbip` completion marker. Before a
-recovery attempt, prior project, extraction and current quality/evidence outputs are
+When a supported extraction refusal, semantic guard or DAX-placeholder check produces a repair project, its `.pbip` is retained
+as `diagnostic_only`, together with `partial_generation.json` and failure reports.
+Other failures may retain fragments without a `.pbip`. Partial failures remain
+nonzero and are retried on resume. Before a recovery attempt, prior project,
+extraction and current quality/evidence outputs are
 preserved under `.migration_previous`; stale files are not reused.
+Revalidating a partial PBIP retains the pipeline failure, even if its structure
+passes static checks. Same-named batch-config workbooks keep separate results;
+when they target one directory, later entries receive distinct project names.
 Automatic recovery does not apply to Desktop diagnostics, `--skip-extraction`,
 Fabric, shared-model, standalone Prep or inspection modes: their legacy
 defaults remain valid, including the existing partial repair fallback where
@@ -586,6 +600,12 @@ six-check QA suite.
 ### 🔗 Lineage Map
 Every migration produces a `lineage_map.json` tracking the provenance of every object: Tableau datasource.table → PBI table, Tableau calculation → PBI measure/column, relationships, and worksheet → page mappings. Visualized in the HTML dashboard with flow diagrams, stat cards, and searchable tabbed tables.
 
+Complete PBIP report generation also writes `powerbi_lineage.json` and
+`powerbi_lineage.html`: a static graph linking M partitions to model columns,
+DAX references to columns and measures, relationships, and report visuals.
+Resolved, ambiguous, and unresolved references remain distinguishable. This
+graph does not execute DAX or M, refresh data, or establish value parity.
+
 </td>
 </tr>
 <tr>
@@ -792,7 +812,7 @@ python migrate.py batch examples/prep_portfolio/ --output-dir /tmp/prep_output
 python migrate.py batch ./workbooks --prep ./flows/flow.tflx --output-dir ./output
 ```
 
-The lineage report shows cross-flow dependencies, merge candidates, and data provenance across your entire Prep portfolio:
+The lineage report shows cross-flow dependencies, merge candidates, and data provenance across your entire Prep portfolio. Its Mermaid diagram includes each flow's internal input/transform/output DAG as well as matched output-to-input links between flows. Analyzed flows remain visible even when M conversion is blocked. The JSON records portable source identifiers and match evidence; heuristic matches are not proof of data equivalence, and static lineage does not establish Power Query execution or value parity.
 
 ![Prep Flow Lineage Diagram — Cross-flow dependencies and output mapping](docs/images/prep_lineage_diagram.png)
 
@@ -829,8 +849,8 @@ prep_output/
 │   │   └── Staff_Schedule.xlsx.json
 │   └── assessment.json
 └── prep_lineage/                         ← Cross-flow lineage (auto-generated)
-    ├── prep_lineage_report.html          ← Interactive HTML with Mermaid diagram
-    └── prep_lineage.json                 ← Machine-readable lineage graph
+  ├── prep_lineage_report.html          ← Interactive internal and cross-flow Mermaid DAGs
+  └── prep_lineage.json                 ← Portable source IDs and lineage graph
 ```
 
 **Batch summary for prep flows:**

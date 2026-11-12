@@ -319,6 +319,17 @@ manual Script/Prediction steps are not relabeled as converted logic. Missing
 or non-unique generated targets remain unresolved or ambiguous. This comparison
 does not execute M/DAX or establish row/value parity.
 
+Standalone batch lineage is also rendered at portfolio scope. The
+`prep_lineage_report.html` Mermaid diagram shows each analyzed flow's input,
+transform and output nodes with its internal DAG edges; matched output-to-input
+connections between flows are drawn at those endpoint nodes and labeled with
+their match method. Flows whose analysis completed but M conversion was blocked
+remain in this graph, with their conversion status shown. The sibling
+`prep_lineage.json` retains each profile's `node_graph`, cross-flow match type
+and confidence, and portable `source_file`/`source_id` identifiers rather than
+machine-local absolute paths. Name/fingerprint links are lineage evidence, not
+proof of identical source rows or output values.
+
 Prep M queries include a default-on metadata comment block with the flow,
 emitted node and recorded ancestor steps; manual steps carry a review warning.
 Labels are bounded and screened before inclusion, so unsafe or unavailable
@@ -330,6 +341,15 @@ Standalone `.tfl/.tflx` **batch** migration still exports M expressions, source
 definitions and lineage/assessment artifacts; it does **not** produce a PBIP.
 Missing workbook datasource JSON in `--prep` mode is an error, not an implicit
 standalone conversion. Static JSON/TMDL checks do not execute M or verify refresh.
+
+The batch-level `prep_lineage/prep_lineage_report.html` documents each analyzed
+flow's internal input/transform/output DAG and connects matched output nodes to
+input nodes across flows. `prep_lineage/prep_lineage.json` retains the internal
+`node_graph`, cross-flow match type/confidence, and a basename-only `source_file`
+reference; analyzed flows remain represented when M conversion is blocked.
+Name/fingerprint matches are lineage evidence, not proof that the source files
+or rows are identical. This retro-documentation does not establish M execution
+or row/value parity.
 
 For standalone packaged flows, a successful conversion stages supported
 `isPackaged` CSV and Excel inputs under `Data/<connection-id>/<filename>` and

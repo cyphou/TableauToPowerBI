@@ -9,7 +9,7 @@ export interface DaxConversion {
     name: string;
     tableau_formula: string;
     dax_formula: string;
-    status: string; // exact | approximated | unsupported | overridden
+    status: string; // exact | approximated | needs_review | unsupported | overridden
     confidence?: number;
     migration_note?: string;
 }
@@ -18,6 +18,7 @@ const STATUS_COLOR: Record<string, string> = {
     exact: '#2da44e',
     overridden: '#0969da',
     approximated: '#bf8700',
+    needs_review: '#bf8700',
     unsupported: '#cf222e',
 };
 
@@ -105,25 +106,31 @@ document.querySelectorAll('button.save').forEach(btn => {
 /** Build the python args that emit DAX conversions as JSON. */
 export function buildDaxScript(workbookPath: string): string[] {
     const code = [
-        'import json,sys,os',
+        'import json,sys,os,tempfile',
+        'from contextlib import redirect_stdout',
         'sys.path.insert(0, os.getcwd())',
         'sys.path.insert(0, os.path.join(os.getcwd(), "tableau_export"))',
-        'from tableau_export.extract_tableau_data import extract_workbook',
-        'from tableau_export.dax_converter import convert_calculation',
-        `data = extract_workbook(${JSON.stringify(workbookPath)})`,
-        'rows = []',
-        'for c in data.get("calculations", []):',
-        '    formula = c.get("formula", "")',
-        '    try:',
-        '        dax = convert_calculation(formula)',
-        '        status = "exact"',
-        '    except Exception as e:',
-        '        dax = formula',
-        '        status = "unsupported"',
-        '    rows.append({"name": c.get("name", "(calc)"), "tableau_formula": formula, "dax_formula": dax, "status": status})',
+        'from tableau_export.extract_tableau_data import TableauExtractor',
+        'from tableau_export.dax_converter import convert_tableau_formula_to_dax',
+        'with tempfile.TemporaryDirectory(prefix="ttpbi-preview-") as output:',
+        '    with redirect_stdout(sys.stderr):',
+        '        extractor = TableauExtractor(sys.argv[1], output_dir=output, salvage_partial=False)',
+        '        if not extractor.extract_all():',
+        '            raise RuntimeError("Tableau extraction did not complete")',
+        '        rows = []',
+        '        for calc in extractor.workbook_data.get("calculations", []):',
+        '            formula = calc.get("formula", "")',
+        '            name = calc.get("caption") or calc.get("name") or "(calc)"',
+        '            try:',
+        '                dax = convert_tableau_formula_to_dax(formula, column_name=name, calc_datatype=calc.get("datatype"), validate_output=True, fallback_on_invalid=True)',
+        '                status = "unsupported" if "/* TODO:" in dax else "needs_review"',
+        '            except Exception:',
+        '                dax = ""',
+        '                status = "unsupported"',
+        '            rows.append({"name": name, "tableau_formula": formula, "dax_formula": dax, "status": status, "migration_note": "Preview without full model context; review before use."})',
         'print(json.dumps(rows))',
     ].join('\n');
-    return ['-c', code];
+    return ['-c', code, workbookPath];
 }
 
 /** Extract the first top-level JSON array from stdout. Pure/testable. */
@@ -191,6 +198,11 @@ export async function previewDaxCommand(
         () => runEngine(engineRoot, buildDaxScript(workbookPath))
     );
 
+    if (result.code !== 0) {
+        output.appendLine(result.stderr || `DAX preview failed (exit ${result.code}).`);
+        vscode.window.showWarningMessage('DAX preview failed. See output for details.');
+        return;
+    }
     const rows = extractJsonArray(result.stdout) || [];
     if (!rows.length) {
         output.appendLine(result.stderr || 'No DAX conversions produced.');

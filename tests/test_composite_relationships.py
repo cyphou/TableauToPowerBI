@@ -1334,8 +1334,10 @@ def test_batch_preserves_composite_failure_with_optional_salvage_diagnostics(
         strict_generation=strict, quiet=True)
 
     assert result == migrate.ExitCode.BATCH_PARTIAL_FAIL
-    assert not list(output.rglob('*.pbip'))
-    assert not list(output.rglob('partial_generation.json'))
+    markers = list(output.rglob('*.pbip'))
+    diagnostics = list(output.rglob('partial_generation.json'))
+    assert bool(markers) is not strict
+    assert bool(diagnostics) is not strict
     salvage_paths = list(output.rglob('salvage_manifest.json'))
     assert bool(salvage_paths) is not strict
     if not strict:
@@ -1343,8 +1345,12 @@ def test_batch_preserves_composite_failure_with_optional_salvage_diagnostics(
         salvage = json.loads(salvage_paths[0].read_text(encoding='utf-8'))
         assert salvage['diagnostic_only'] is True
         assert salvage['validation_status'] == 'FAIL'
-        assert salvage['completion_marker'] == 'withheld'
+        assert salvage['completion_marker'] == 'diagnostic_only'
         assert 'complete predicate has multiple equality terms' in salvage['failure']['message']
+        partial = json.loads(diagnostics[0].read_text(encoding='utf-8'))
+        assert partial['status'] == 'partial'
+        assert partial['validation_status'] == 'FAIL'
+        assert partial['data_retained'] is False
     quality_paths = list(output.rglob('migration_quality_*.json'))
     assert len(quality_paths) == 1
     with open(quality_paths[0], encoding='utf-8') as handle:
@@ -1354,13 +1360,13 @@ def test_batch_preserves_composite_failure_with_optional_salvage_diagnostics(
                for issue in quality['blockers'])
     with open(output / 'batch_quality_summary.json', encoding='utf-8') as handle:
         summary = json.load(handle)
-    assert summary['generation_counts'] == {
-        'complete': 0, 'partial': 0, 'failed': 1,
-    }
+    assert summary['generation_counts'] == (
+        {'complete': 0, 'partial': 0, 'failed': 1} if strict else
+        {'complete': 0, 'partial': 1, 'failed': 0})
     assert next(iter(summary['workbooks'].values()))['generation_status'] == (
         'failed' if strict else 'partial')
     if not strict:
-        assert not list(output.rglob('*.tmdl'))
+        assert any(path.name == 'MigrationRepair.tmdl' for path in output.rglob('*.tmdl'))
         consolidated = (output / 'MIGRATION_QUALITY_CONSOLIDATED.html').read_text(
             encoding='utf-8')
         assert 'FAIL' in consolidated

@@ -5,24 +5,25 @@ projects (`.pbip`, PBIR v4.0 + TMDL) without leaving VS Code. The extension is a
 thin front-end over the Python migration engine that lives in the repository
 root (`migrate.py`).
 
-**Current compatibility:** the extension's migration action still targets a
-single workbook file; the current engine requires a folder and rejects direct
-single-file generation. Use the [local browser UI](../docs/LOCAL_WEB_UI.md) or
-`python migrate.py batch FOLDER --output-dir OUTPUT` from the repository root
-until the adapter is updated. Assessment/preview helpers do not establish a
-successful migration or native validation. See the
+The migration action passes the selected workbook to the engine through a
+single-entry batch configuration, without moving the source. Each run has its
+own output directory. A retained partial project is diagnostic only and is
+reported as a failed migration, not a validated result. Generation does not
+verify Desktop opening, refresh or visual parity. See the
 [extension guide](../docs/VS_CODE_EXTENSION.md).
 
 ## Features
 
 - **Workbook tree view** — browse datasources, tables, columns, worksheets,
   dashboards, and parameters extracted from a workbook.
-- **Assess migration readiness** — run the 9-category assessment and view the
-  results in a webview panel with severity badges and recommendations.
-- **Migration action (legacy adapter)** — currently incompatible with the
-  folder-only engine generation contract; use the browser or batch CLI.
-- **DAX conversion preview** — side-by-side Tableau → DAX with confidence
-  indicators and editable override fields saved to `config.json`.
+- **Assess migration readiness** — extract the selected workbook in a temporary
+  directory and show its static assessment, verdict and recommendations. Failed
+  extraction never falls back to another workbook's assessment.
+- **Migration action** — generate a project for the selected workbook and
+  surface retained partial diagnostics separately from successful generation.
+- **DAX conversion preview** — side-by-side Tableau → DAX, marked for review
+  because full model context and runtime equivalence are not verified; editable
+  override fields are saved to `config.json`.
 - **Syntax highlighting** — TextMate grammars for DAX and Tableau calculation
   language (LOD, table calcs, functions).
 - **Status bar** — shows the current migration state and last fidelity score.
@@ -39,7 +40,7 @@ successful migration or native validation. See the
 | Command | Description |
 |---------|-------------|
 | `Tableau: Assess Migration Readiness` | Run the readiness assessment. |
-| `Tableau: Migrate to Power BI` | Legacy single-file action; use the supported folder workflow above. |
+| `Tableau: Migrate to Power BI` | Migrate the selected workbook via the batch engine. |
 | `Tableau: Preview DAX Conversions` | Show Tableau → DAX side by side. |
 | `Tableau: Refresh Workbook Tree` | Reload the tree from extraction JSON. |
 
@@ -48,7 +49,7 @@ successful migration or native validation. See the
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `tableauToPowerBI.pythonPath` | `python` | Python interpreter for the engine. |
-| `tableauToPowerBI.outputDirectory` | _(empty)_ | Output dir for `.pbip` projects. |
+| `tableauToPowerBI.outputDirectory` | _(empty)_ | Output root; each run gets a new `migration-*` subdirectory. Empty uses `artifacts/powerbi_projects/migrated` under the engine root. |
 | `tableauToPowerBI.engineRoot` | _(empty)_ | Repository root containing `migrate.py`. |
 
 ## Development
@@ -57,10 +58,9 @@ successful migration or native validation. See the
 cd vscode-extension
 npm install
 npm run compile     # type-check + emit to out/
-npm test            # run the unit suite (pure functions, no Extension Host)
+npm test            # run helper and Python integration tests, no Extension Host
 ```
 
 The unit suite installs a lightweight `vscode` stub via a `require` hook so the
-pure helper functions (argument building, tree construction, HTML rendering,
-stdout parsing, override management) can be tested without launching the
-Extension Host.
+helper functions and real Python engine integrations can be tested without
+launching the Extension Host. Set `TTPBI_TEST_PYTHON` to select an interpreter.

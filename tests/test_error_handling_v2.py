@@ -100,7 +100,7 @@ class TestDatasourceExtractorErrorPaths(unittest.TestCase):
 # m_query_builder — hyper read fallback
 # ---------------------------------------------------------------------------
 
-class TestMQueryBuilderHyperFallback(unittest.TestCase):
+class TestMQueryBuilderHyperTemplateFallback(unittest.TestCase):
     """Error paths in tableau_export/m_query_builder.py hyper fallback."""
 
     def test_import_error_falls_back_to_template(self):

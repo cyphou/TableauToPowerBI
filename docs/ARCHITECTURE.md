@@ -156,12 +156,15 @@ not relaxed model validation or a guarantee of partial PBIP generation:
 | Boundary | Producer and retained evidence |
 |----------|--------------------------------|
 | Safe input parsing | Security checks precede object recovery; XXE, archive traversal and path-containment refusals remain fatal |
-| Independent extraction | `TableauExtractor` isolates supported datasource/stage refusals, checkpoints successful objects and writes `extraction_salvage.json`; incomplete extraction does not enter normal generation |
+| Independent extraction | `TableauExtractor` isolates supported datasource/stage refusals, checkpoints successful objects and writes `extraction_salvage.json`; incomplete extraction never enters normal source-model generation |
 | Diagnostic conversion | `migrate._write_partial_salvage()` calls `recover_diagnostic_semantics()` on parsed extraction objects, independently of successful TMDL writing |
+| Extraction repair | Supported incomplete extractions attempt a data-free repair PBIP using recovered page outlines, non-querying text placeholders and an empty repair model without source bindings or RLS roles |
+| Visual repair | Recognized ambiguous visual references attempt the same data-free repair PBIP; no sort or formatting binding is guessed |
+| Retained sources | Partial repairs retaining model bindings run source staging and full Hyper import verification before the diagnostic PBIP is retained |
 | Diagnostic output | `<Project>/Salvage/` contains an inventory, scrubbed source/model JSON and eligible numbered `.dax`/`.pq` fragments; unresolved context may leave only source metadata |
-| Completion | `salvage_manifest.json` records `incomplete`, `diagnostic_only: true`, `validation_status: FAIL` and the withheld completion marker; the workbook fails and the batch returns nonzero |
+| Completion | `salvage_manifest.json` records `incomplete`, `diagnostic_only: true` and `validation_status: FAIL`. An existing repair PBIP is retained with `completion_marker: diagnostic_only`; otherwise the marker is `withheld`. The workbook fails and the batch returns nonzero |
 
-Diagnostic conversion neither reads source rows nor executes M/DAX. It does not
+Fragment conversion neither reads source rows nor executes M/DAX. It does not
 infer missing Hyper identities, physical bindings or relationships. Fragment
 statuses (`recovered`, `blocked`, `not_attempted`) describe retention/conversion,
 not validation; all recovered text remains unvalidated. Incremental extraction
@@ -442,7 +445,7 @@ healing.py (facade — one import surface, heal_and_verify())
 | `dax_healing.py` | `heal_dax()` — idempotent, non-degrading, span-aware DAX repairs (`==`→`=`, `SUM([measure])`→`[measure]`, balance parens/brackets, trailing commas). |
 | `m_healing.py` | `heal_m()` — Power Query M repairs (identifier quoting, trailing commas, paren balance). |
 | `visual_healing.py` | `heal_visual()` — PBIR container repairs; flagship fix moves annotations to the container root (critical load-failure bug). |
-| `openability.py` | `check_openability()` preflight + `extract_m_partitions()` — validates every M partition, executable DAX, JSON file, TMDL, PBIP shell, semantic reference, visual binding, report→model reference and PBIR schema without opening Desktop. |
+| `openability.py` | `check_openability()` preflight + TMDL M readers — validates every M partition and multiline shared M expression, executable DAX, JSON, semantic references, visual bindings, PBIP shell and PBIR schema without opening Desktop. |
 | `desktop_probe.py` | `probe_desktop_open()` — best-effort **real** open self-check: launches Power BI Desktop against the `.pbip`, watches for crashes / FrownDump / error traces, and can verify refresh through an owned UI lifecycle or expected M-partition timestamp advancement, with partition health and aggregate table checks before a verified screenshot (Windows + Desktop install; static and native verdicts remain separate). |
 | `autoheal.py` | `AutoHealer` closed loop — deterministic heal → collect residual errors (`StaticValidatorSource`/`LogFileSource`/`PbiDesktopSource`) → optional LLM correction via `LLMGateway` → **re-validate → apply only if valid** (never degrades). Records each applied fix as a `RepairAttempt` (distinct from `HealAction` — it carries the validation outcome). |
 | `recovery_report.py` | Records every applied repair (`record_heal`) into the recovery ledger via duck typing (no import coupling to the healers). |

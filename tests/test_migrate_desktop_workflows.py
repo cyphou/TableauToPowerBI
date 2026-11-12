@@ -800,7 +800,7 @@ class TestBatchConfigDesktopWiring(MigrationDesktopFixture):
         self.assertTrue((self.output / "Sales" / "Sales.pbip").is_file())
         self.assertTrue((other_output / "Finance" / "Finance.pbip").is_file())
 
-    def test_later_failed_rewrite_invalidates_earlier_pair_instead_of_capturing_stale_pbip(self):
+    def test_later_failed_collision_keeps_only_the_successful_source_pair(self):
         first = self.source("a/Sales.twb")
         second = self.source("b/Sales.twb")
         calls = []
@@ -815,18 +815,25 @@ class TestBatchConfigDesktopWiring(MigrationDesktopFixture):
                              "--screenshots")
         self.assertEqual(result, migrate.ExitCode.BATCH_PARTIAL_FAIL)
         self.assertEqual(self.generate.call_count, 2)
-        self.compare.assert_not_called()
+        self.compare.assert_called_once()
+        pair, = self.compare.call_args.kwargs["workbook_pairs"]
+        self.assert_pair(pair, first, self.output / "Sales" / "Sales.pbip",
+                         source_root=self.root)
 
-    def test_later_successful_rewrite_pairs_only_the_current_source(self):
+    def test_successful_collisions_pair_each_source_with_its_own_project(self):
         first = self.source("a/Sales.twb")
         second = self.source("b/Sales.twb")
         self.assertEqual(self.config([
             {"file": str(first)}, {"file": str(second)},
         ], "--screenshots"), migrate.ExitCode.SUCCESS)
         self.compare.assert_called_once()
-        pair, = self.compare.call_args.kwargs["workbook_pairs"]
-        self.assert_pair(pair, second, self.output / "Sales" / "Sales.pbip",
-                         source_root=self.root)
+        pairs = {pair["source"]: pair for pair in
+             self.compare.call_args.kwargs["workbook_pairs"]}
+        self.assertEqual(set(pairs), {str(first.resolve()), str(second.resolve())})
+        self.assert_pair(pairs[str(first.resolve())], first,
+                 self.output / "Sales" / "Sales.pbip", source_root=self.root)
+        self.assert_pair(pairs[str(second.resolve())], second,
+                 self.output / "Sales__2" / "Sales__2.pbip", source_root=self.root)
 
     def test_batch_config_dry_run_has_no_generation_evidence_or_filesystem_writes(self):
         workbook = self.source("Sales.twb")

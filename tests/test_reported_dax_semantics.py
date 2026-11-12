@@ -6,11 +6,14 @@ value checks are bounded synthetic evidence, not Desktop/Fabric validation.
 FIXED cases without source-grain evidence are checked as static diagnostics.
 """
 
+import json
+import os
 import re
 import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 from powerbi_import.errors import PartialGenerationError
 from powerbi_import.migration_quality import build_quality_report
@@ -1053,6 +1056,176 @@ class TestMultiReferenceDependencyIdentity(unittest.TestCase):
 
 class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
     """Static pipeline and quality checks; no semantic engine is invoked."""
+
+    def test_unsupported_makepoint_measure_is_retained_with_diagnostic(self):
+        table = {
+            "name": "Zone",
+            "columns": [{"name": "Secteur", "datatype": "string"}],
+        }
+        calculation = {
+            "name": "[Point]", "caption": "Point", "role": "measure",
+            "datatype": "real", "formula": "MAKEPOINT(1, 2)",
+        }
+        result = _build_table(
+            table, {"type": "csv", "details": {"filename": "synthetic.csv"}},
+            [calculation], [],
+            dax_context={"calc_map": {}, "param_map": {},
+                         "column_table_map": {}, "measure_names": set(),
+                         "param_values": {}},
+            col_metadata_map={},
+        )
+
+        measure = next(
+            (item for item in result["measures"] if item["name"] == "Point"),
+            None,
+        )
+        self.assertIsNotNone(measure, result["measures"])
+        self.assertIn(_FALLBACK, measure["expression"])
+        self.assertIn("BLANK()", measure["expression"])
+        self.assertIn("MAKEPOINT", measure.get('_migration_note', '').upper())
+
+    def test_makepoint_todo_and_migration_note_are_serialized_to_tmdl(self):
+        calculation = {
+            "name": "[Point]", "caption": "Point", "role": "measure",
+            "datatype": "real", "formula": "MAKEPOINT(1, 2)",
+            "datasource_name": "Synthetic",
+        }
+        datasource = {
+            "name": "Synthetic", "caption": "Synthetic",
+            "connection": {"type": "sqlserver", "details": {
+                "server": "synthetic.invalid", "database": "synthetic",
+            }},
+            "tables": [{
+                "name": "Zone", "columns": [
+                    {"name": "Secteur", "datatype": "string"},
+                    {"name": "Lat", "datatype": "real"},
+                    {"name": "Lon", "datatype": "real"}],
+            }],
+            "calculations": [calculation, {
+                "name": "[PointByCoordinates]", "caption": "Point By Coordinates",
+                "role": "dimension", "datatype": "real",
+                "formula": "MAKEPOINT([Lat], [Lon])",
+                "datasource_name": "Synthetic",
+            }],
+            "columns": [], "relationships": [], "connection_map": {},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            model_dir = Path(temporary) / "Synthetic.SemanticModel"
+            generate_tmdl(
+                [datasource], "Synthetic", {"calculations": [calculation]},
+                str(model_dir), parameterize=False,
+            )
+            content = (model_dir / "definition" / "tables" / "Zone.tmdl").read_text(
+                encoding="utf-8")
+
+        self.assertRegex(content, r"(?m)^\tmeasure '?Point'? =")
+        self.assertIn("TODO: DAX conversion validation failed for measure", content)
+        self.assertIn("annotation MigrationNote =", content)
+        self.assertIn("MAKEPOINT has no scalar DAX equivalent", content)
+        self.assertRegex(content, r"(?m)^\tcolumn 'Point By Coordinates' =")
+        self.assertRegex(
+            content,
+            r'(?s)column \'Point By Coordinates\' =.*?annotation MigrationNote = '
+            r'DAX conversion failed: MAKEPOINT has no scalar DAX equivalent',
+        )
+
+    def test_explicit_fixed_scope_compiles_through_full_tmdl_generation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "synthetic_zone.csv"
+            source.write_text(
+                "Secteur,Logements\n"
+                + "".join(f"{sector},{housing}\n"
+                         for sector, housing in _HOUSING_BY_SECTOR),
+                encoding="utf-8",
+            )
+            datasource = {
+                "name": "Synthetic", "caption": "Synthetic",
+                "connection": {"type": "CSV", "details": {"filename": str(source)}},
+                "tables": [{
+                    "name": "Zone", "source_table": source.name, "type": "table",
+                    "columns": [{"name": "Secteur", "datatype": "string"},
+                                {"name": "Logements", "datatype": "real"}],
+                }],
+                "calculations": [{
+                    "name": "[FixedHousing]", "caption": "Logements par secteur",
+                    "datasource_name": "Synthetic", "role": "measure",
+                    "datatype": "real",
+                    "formula": "{ FIXED [Secteur] : MIN([Logements]) }",
+                }],
+                "columns": [], "relationships": [], "connection_map": {},
+            }
+            scope = {
+                "table": "Zone",
+                "fixed_dimensions": ["Secteur"],
+                "value_column": "Logements",
+                "physical_fields": ["Secteur", "Logements"],
+                "source_filters": [],
+                "target_filters": [],
+                "filter_policy": "target_context_equals_fixed_input_per_key",
+                "view_grains": [["Secteur"], []],
+                "total_grain": [],
+                "total_aggregation": "SUM_DISTINCT_FIXED_KEYS",
+                "shelf_aggregation": "SUM",
+                "value_type": "numeric",
+                "source_row_bag_verified": True,
+                "physical_fields_verified": True,
+                "fixed_key_domain_verified": True,
+                "filter_equivalence_verified": True,
+                "group_key_and_blank_equivalence_verified": True,
+                "numeric_and_null_equivalence_verified": True,
+                "all_target_uses_and_totals_verified": True,
+                "engine_support_verified": True,
+            }
+            model_dir = root / "Demo.SemanticModel"
+            generate_tmdl(
+                [datasource], "Demo",
+                {"verified_fixed_scopes": {
+                    "Synthetic": {"FixedHousing": scope},
+                }},
+                str(model_dir),
+            )
+
+            content = (model_dir / "definition" / "tables" / "Zone.tmdl").read_text(
+                encoding="utf-8")
+            declaration = re.search(
+                r"(?m)^\tmeasure 'Logements par secteur' =([^\n]*)", content)
+            self.assertIsNotNone(declaration, content)
+            expression = declaration.group(1).strip()
+            self.assertNotIn(_FALLBACK, expression)
+            self.assertTrue(
+                expression.endswith(
+                    "SUMX(SUMMARIZE('Zone', 'Zone'[Secteur]), "
+                    "CALCULATE(MIN('Zone'[Logements])))"),
+                expression,
+            )
+            from powerbi_import.dax_validator import validate_dax_expression
+            self.assertEqual(validate_dax_expression(expression), [])
+
+            environment_model_dir = root / "EnvironmentDemo.SemanticModel"
+            with patch.dict(os.environ, {
+                "TTPBI_VERIFIED_FIXED_SCOPES": json.dumps({
+                    "Synthetic": {"FixedHousing": scope},
+                }),
+            }):
+                generate_tmdl(
+                    [datasource], "EnvironmentDemo", {},
+                    str(environment_model_dir),
+                )
+            environment_content = (
+                environment_model_dir / "definition" / "tables" / "Zone.tmdl"
+            ).read_text(encoding="utf-8")
+            environment_declaration = re.search(
+                r"(?m)^\tmeasure 'Logements par secteur' =([^\n]*)",
+                environment_content,
+            )
+            self.assertIsNotNone(environment_declaration, environment_content)
+            self.assertTrue(
+                environment_declaration.group(1).rstrip().endswith(
+                    "SUMX(SUMMARIZE('Zone', 'Zone'[Secteur]), "
+                    "CALCULATE(MIN('Zone'[Logements])))"),
+                environment_declaration.group(1),
+            )
 
     def test_table_generation_retains_unproven_calculations_and_dependencies(self):
         table = {

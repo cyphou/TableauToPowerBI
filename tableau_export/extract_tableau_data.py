@@ -11,6 +11,7 @@ import ntpath
 import os
 import re
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 from copy import deepcopy
@@ -533,8 +534,12 @@ class TableauExtractor:
                 self._scrub_salvage(datasource, preserve_identifiers=True),
                 indent=2, ensure_ascii=False))
             path = os.path.join(self.output_dir, 'datasources.json')
-            with open(path, 'w', encoding='utf-8') as stream:
-                stream.write('[\n' + ',\n'.join(self._salvage_datasource_json) + '\n]')
+
+            def write_checkpoint(temp_path):
+                with open(temp_path, 'w', encoding='utf-8') as stream:
+                    stream.write('[\n' + ',\n'.join(self._salvage_datasource_json) + '\n]')
+
+            self._atomic_write_file(path, write_checkpoint)
         elif save_objects:
             self.save_extractions(changed_only=True)
         report = {
@@ -4109,6 +4114,20 @@ class TableauExtractor:
     # materializing the entire JSON string in memory.
     _STREAM_THRESHOLD_BYTES = 50 * 1024 * 1024
 
+    @staticmethod
+    def _atomic_write_file(path, write_temp_file):
+        directory = os.path.dirname(path) or '.'
+        prefix = f'.{os.path.basename(path)}_'
+        fd, temp_path = tempfile.mkstemp(
+            prefix=prefix, suffix='.tmp', dir=directory)
+        os.close(fd)
+        try:
+            write_temp_file(temp_path)
+            os.replace(temp_path, path)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
     def save_extractions(self, *, changed_only=False):
         """Saves extractions to JSON.
 
@@ -4129,7 +4148,12 @@ class TableauExtractor:
                         if getattr(self, '_salvage_inventory', None) is not None else text)
             raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
-        for obj_type, data in self.workbook_data.items():
+        # Datasource JSON is the primary input to downstream generation. Write
+        # it last so any earlier export failure leaves the prior source snapshot
+        # intact; publish its own temporary file atomically as well.
+        items = list(self.workbook_data.items())
+        items.sort(key=lambda item: item[0] == 'datasources')
+        for obj_type, data in items:
             saved = getattr(self, '_salvage_saved_objects', None)
             if (changed_only and saved is not None and obj_type in saved
                     and data == saved[obj_type]):
@@ -4140,7 +4164,19 @@ class TableauExtractor:
                 data = self._scrub_salvage(data, preserve_identifiers=True)
             output_path = os.path.join(self.output_dir, f'{obj_type}.json')
             estimated_size = self._estimate_json_size(data)
-            if isinstance(data, list) and estimated_size > self._STREAM_THRESHOLD_BYTES:
+            if obj_type == 'datasources':
+
+                def write_datasources(temp_path):
+                    if isinstance(data, list) and estimated_size > self._STREAM_THRESHOLD_BYTES:
+                        self._stream_json_array(temp_path, data, _json_default)
+                    else:
+                        with open(temp_path, 'w', encoding='utf-8') as f:
+                            f.write(json.dumps(
+                                data, indent=2, ensure_ascii=False,
+                                default=_json_default))
+
+                self._atomic_write_file(output_path, write_datasources)
+            elif isinstance(data, list) and estimated_size > self._STREAM_THRESHOLD_BYTES:
                 self._stream_json_array(output_path, data, _json_default)
             else:
                 with open(output_path, 'w', encoding='utf-8') as f:

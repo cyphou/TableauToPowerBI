@@ -64,11 +64,13 @@ available model metadata or source-calculation fallbacks.
 
 The default openability gate normally fills in the static project-check result,
 including an advisory warning count or blocking status. If the gate is skipped
-with `--no-verify-open`, or the status update fails, its internal placeholder
-may remain visible. The page is a generation-time snapshot: it does not update
-when the report is published or refreshed, and does not prove Service refresh,
-source availability, or visual and value parity. Review the separate quality
-and openability reports and validate those aspects independently.
+with `--no-verify-open`, the status remains **Not run** (**Non exécuté** in
+French). If updating the page fails, it may not reflect the final gate result;
+check `openability_report.json` and the migration logs. The page is a
+generation-time snapshot: it does not update when the report is published or
+refreshed, and does not prove Service refresh, source availability, or visual
+and value parity. Review the separate quality and openability reports and
+validate those aspects independently.
 
 ## 🚀 Opening a Power BI Project
 

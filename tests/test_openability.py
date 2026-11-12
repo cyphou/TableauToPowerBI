@@ -240,6 +240,41 @@ class TestOpenability(unittest.TestCase):
             self.assertFalse(r.openable)
             self.assertTrue(any("power_query" in b for b in r.blocking_issues))
 
+    def test_broken_shared_m_expression_blocks_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(d, _tmdl_with_m(["let Source = 1 in Source"]))
+            expressions = os.path.join(
+                d, "P.SemanticModel", "definition", "expressions.tmdl")
+            with open(expressions, "w", encoding="utf-8") as f:
+                f.write("expression 'Shared Query' =\n"
+                        "\t\tlet\n"
+                        "\t\t    Source = Table.X(a\n"
+                        "\t\tin\n"
+                        "\t\t    Source\n")
+
+            report = check_openability(d)
+
+            self.assertFalse(report.openable)
+            power_query = next(c for c in report.checks if c.name == "power_query")
+            self.assertFalse(power_query.ok)
+            self.assertTrue(any("expressions.tmdl" in issue and
+                                "Shared Query" in issue
+                                for issue in power_query.issues), power_query.issues)
+
+    def test_inline_parameter_expression_is_not_treated_as_shared_query(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(d, _tmdl_with_m(["let Source = 1 in Source"]))
+            expressions = os.path.join(
+                d, "P.SemanticModel", "definition", "expressions.tmdl")
+            with open(expressions, "w", encoding="utf-8") as f:
+                f.write('expression DataFolder = "C:\\\\Data" '
+                        'meta [IsParameterQuery=true, Type="Text"]\n')
+
+            report = check_openability(d)
+
+            power_query = next(c for c in report.checks if c.name == "power_query")
+            self.assertTrue(power_query.ok, power_query.issues)
+
     def test_power_query_check_names_partition(self):
         with tempfile.TemporaryDirectory() as d:
             _write_project(d, _tmdl_with_m(["let Source = f(( in Source"]))

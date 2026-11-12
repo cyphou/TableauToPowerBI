@@ -337,6 +337,21 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         compute_using = partition_fields
 
     dax = formula.strip()
+    if (not is_calc_column and table_columns is not None
+            and re.fullmatch(r'MIN\s*\(\s*1\s*\)', dax, re.IGNORECASE)):
+        safe_table_name = str(table_name).replace("'", "''")
+        dax = f"IF(COUNTROWS('{safe_table_name}') > 0, 1, BLANK())"
+        if validate_output:
+            try:
+                from powerbi_import.dax_validator import validate_dax_expression
+                issues = validate_dax_expression(dax)
+            except (ImportError, OSError, ValueError):
+                issues = ['DAX validator unavailable']
+            if issues and fallback_on_invalid:
+                return _unsupported_conversion(
+                    'MIN(1) presence measure failed DAX expression validation')
+        return dax
+
     # Tableau comments may contain apostrophes and Tableau function names.
     # Remove them before quote conversion and validation.
     dax = _strip_tableau_comments(dax)

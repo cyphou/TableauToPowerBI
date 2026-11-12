@@ -4,20 +4,14 @@ The `vscode-extension/` directory contains a VS Code extension that wraps the
 Python migration engine (`migrate.py`) so you can assess, preview, and migrate
 Tableau workbooks without leaving the editor.
 
-## Current integration limit
+## Migration behavior
 
-The extension's **Migrate** action still builds a single-file command
-(`migrate.py WORKBOOK`). Current engine generation is folder-based and rejects
-that command. Until the extension is wired to the batch contract, use the
-[local browser UI](LOCAL_WEB_UI.md) or run this from the repository root:
-
-```powershell
-python migrate.py batch .\workbooks --output-dir .\output
-```
-
-A folder containing one workbook is valid. The extension's assessment and
-preview helpers are separate; their presence does not prove migration, refresh
-or native rendering. This documentation update does not change extension code.
+The **Migrate** action uses a temporary single-entry batch configuration with
+the selected workbook's original path. It writes each run to a separate
+`migration-*` directory under the configured output root and preserves failed
+run diagnostics. A retained partial PBIP is flagged as diagnostic only and
+failed, not as a successful migration. Generation does not verify Desktop
+opening, refresh or visual parity; assessment and preview are separate checks.
 
 ## Installation (from source)
 
@@ -48,13 +42,13 @@ code --install-extension tableau-to-powerbi-40.0.0.vsix
 
 | Command | Palette title | What it does |
 |---------|---------------|--------------|
-| `tableauToPowerBI.assess` | Tableau: Assess Migration Readiness | Runs the 9-category assessment and opens a results panel. |
-| `tableauToPowerBI.migrate` | Tableau: Migrate to Power BI | Legacy file-targeted action; use the local browser or batch CLI until this adapter is updated. |
-| `tableauToPowerBI.previewDax` | Tableau: Preview DAX Conversions | Shows Tableau → DAX side by side with editable overrides. |
+| `tableauToPowerBI.assess` | Tableau: Assess Migration Readiness | Extracts the selected workbook and opens its static assessment; failures do not reuse older results. |
+| `tableauToPowerBI.migrate` | Tableau: Migrate to Power BI | Migrates the selected workbook through batch-config and distinguishes diagnostic partial output. |
+| `tableauToPowerBI.previewDax` | Tableau: Preview DAX Conversions | Shows Tableau → DAX previews with editable overrides; conversions require review with model context. |
 | `tableauToPowerBI.refreshTree` | Tableau: Refresh Workbook Tree | Reloads the tree from extraction JSON. |
 
 Right-click a `.twb`/`.twbx` file in the Explorer to access **Assess** and
-**Migrate** actions. The migration limitation above still applies.
+**Migrate** actions.
 
 ## Views
 
@@ -77,7 +71,7 @@ migration run.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `tableauToPowerBI.pythonPath` | `python` | Python interpreter for the engine. |
-| `tableauToPowerBI.outputDirectory` | _(empty)_ | Output dir for `.pbip` projects (empty = engine default `artifacts/`). |
+| `tableauToPowerBI.outputDirectory` | _(empty)_ | Output root; each run gets a new `migration-*` subdirectory. Empty uses `artifacts/powerbi_projects/migrated` under the engine root. |
 | `tableauToPowerBI.engineRoot` | _(empty)_ | Repository root containing `migrate.py` (empty = auto-detect). |
 
 ## Architecture
@@ -86,17 +80,16 @@ The extension is intentionally thin. All migration logic stays in the Python
 engine; the TypeScript layer only:
 
 1. Locates `migrate.py` (`pythonRunner.resolveEngineRoot`).
-2. Spawns the engine and streams stdout (`pythonRunner.runEngine`).
+2. Creates an isolated output directory and invokes the batch engine for the selected source.
 3. Parses engine output (fidelity %, output path, assessment/DAX JSON).
 4. Renders results in tree views and webviews.
 
-Pure helper functions (argument building, tree construction, HTML rendering,
-stdout parsing, override management) are unit-tested without launching the
-Extension Host via a lightweight `vscode` stub:
+Helper and Python integration tests run without launching the Extension Host
+via a lightweight `vscode` stub:
 
 ```bash
 cd vscode-extension
-npm test   # pure-helper unit tests; see the run output for current counts
+npm test   # set TTPBI_TEST_PYTHON to select the Python interpreter
 ```
 
 ## Development notes

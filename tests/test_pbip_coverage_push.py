@@ -1280,11 +1280,16 @@ class TestPageNavigator(unittest.TestCase):
             'datasource_filters': [], 'custom_shapes': [],
         }
         gen.create_report_structure(project_dir, 'Test', converted)
-        # Should have 2 pages with page navigators
+        # Two dashboard pages plus the migration summary.
         pages_dir = os.path.join(project_dir, 'Test.Report', 'definition', 'pages')
         page_dirs = [d for d in os.listdir(pages_dir)
                      if os.path.isdir(os.path.join(pages_dir, d)) and d.startswith('ReportSection')]
-        self.assertEqual(len(page_dirs), 2)
+        self.assertEqual(len(page_dirs), 3)
+        display_names = set()
+        for page in page_dirs:
+            with open(os.path.join(pages_dir, page, 'page.json'), encoding='utf-8') as stream:
+                display_names.add(json.load(stream)['displayName'])
+        self.assertEqual(display_names, {'D1', 'D2', 'Migration Summary'})
 
 
 if __name__ == '__main__':

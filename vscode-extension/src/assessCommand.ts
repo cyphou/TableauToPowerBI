@@ -1,7 +1,6 @@
 // Assess command: runs the engine in assessment mode and shows the panel.
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as fs from 'fs';
 import { resolveEngineRoot, getPythonPath, runEngine } from './pythonRunner';
 import { AssessmentPanel, AssessmentData } from './assessmentPanel';
 import { StatusBar } from './statusBar';
@@ -64,45 +63,22 @@ export function buildAssessScript(workbookPath: string): string[] {
     // Run extraction + assessment and dump JSON. Kept inline so the extension
     // does not depend on a specific engine output-file location.
     const code = [
-        'import json,sys,os',
+        'import json,sys,os,tempfile',
+        'from contextlib import redirect_stdout',
         'sys.path.insert(0, os.getcwd())',
         'sys.path.insert(0, os.path.join(os.getcwd(), "tableau_export"))',
-        'from tableau_export.extract_tableau_data import extract_workbook',
+        'from tableau_export.extract_tableau_data import TableauExtractor',
         'from powerbi_import.assessment import run_assessment',
-        `data = extract_workbook(${JSON.stringify(workbookPath)})`,
-        'name = os.path.splitext(os.path.basename(' +
-            JSON.stringify(workbookPath) +
-            '))[0]',
-        'rep = run_assessment(data, workbook_name=name)',
-        'print(json.dumps(rep.to_dict()))',
+        'with tempfile.TemporaryDirectory(prefix="ttpbi-assess-") as output:',
+        '    with redirect_stdout(sys.stderr):',
+        '        extractor = TableauExtractor(sys.argv[1], output_dir=output, salvage_partial=False)',
+        '        if not extractor.extract_all():',
+        '            raise RuntimeError("Tableau extraction did not complete")',
+        '        name = os.path.splitext(os.path.basename(sys.argv[1]))[0]',
+        '        report = run_assessment(extractor.workbook_data, workbook_name=name)',
+        '    print(json.dumps(report.to_dict()))',
     ].join('\n');
-    return ['-c', code];
-}
-
-function findLatestAssessmentFile(root: string): string | undefined {
-    const dir = path.join(root, 'artifacts');
-    if (!fs.existsSync(dir)) {
-        return undefined;
-    }
-    let best: { p: string; mtime: number } | undefined;
-    const walk = (d: string, depth: number) => {
-        if (depth > 4) {
-            return;
-        }
-        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
-            const full = path.join(d, entry.name);
-            if (entry.isDirectory()) {
-                walk(full, depth + 1);
-            } else if (entry.name === 'assessment.json') {
-                const m = fs.statSync(full).mtimeMs;
-                if (!best || m > best.mtime) {
-                    best = { p: full, mtime: m };
-                }
-            }
-        }
-    };
-    walk(dir, 0);
-    return best?.p;
+    return ['-c', code, workbookPath];
 }
 
 export async function assessCommand(
@@ -136,21 +112,11 @@ export async function assessCommand(
         () => runEngine(engineRoot, buildAssessScript(workbookPath))
     );
 
-    let data = extractAssessmentJson(result.stdout);
-    if (!data) {
-        const file = findLatestAssessmentFile(engineRoot);
-        if (file) {
-            try {
-                data = JSON.parse(fs.readFileSync(file, 'utf-8'));
-            } catch {
-                /* ignore */
-            }
-        }
-    }
+    const data = result.code === 0 ? extractAssessmentJson(result.stdout) : undefined;
 
     status.setState('idle');
     if (!data) {
-        output.appendLine(result.stderr || 'No assessment produced.');
+        output.appendLine(result.stderr || `No assessment produced (exit ${result.code}).`);
         vscode.window.showWarningMessage(
             'Assessment did not produce a result. See output for details.'
         );

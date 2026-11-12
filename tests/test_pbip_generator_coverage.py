@@ -4398,7 +4398,11 @@ class TestGanttDashboardMappingContract(unittest.TestCase):
         pages_dir = os.path.join(report_dir, 'definition', 'pages')
         with open(os.path.join(pages_dir, 'pages.json'), encoding='utf-8') as handle:
             pages_index = json.load(handle)
-        self.assertEqual(pages_index['pageOrder'], ['ReportSection'])
+        self.assertEqual(len(pages_index['pageOrder']), 2)
+        self.assertEqual(pages_index['pageOrder'][0], 'ReportSection')
+        with open(os.path.join(pages_dir, pages_index['pageOrder'][1], 'page.json'),
+                  encoding='utf-8') as handle:
+            self.assertEqual(json.load(handle)['displayName'], 'Migration Summary')
         with open(os.path.join(
                 pages_dir, 'ReportSection', 'page.json'), encoding='utf-8') as handle:
             dashboard_page = json.load(handle)
@@ -4832,10 +4836,10 @@ class TestCreateVisualImage(unittest.TestCase):
             project = generator.generate_project('PortableImage', objects)
             os.remove(source)
             paths = list(Path(project).glob('*.Report/definition/pages/*/visuals/*/visual.json'))
-            self.assertEqual(len(paths), 1)
-            path = paths[0]
-            with open(path, encoding='utf-8') as handle:
-                visual = json.load(handle)['visual']
+            visuals = [json.loads(path.read_text(encoding='utf-8'))['visual'] for path in paths]
+            images = [visual for visual in visuals if visual['visualType'] == 'image']
+            self.assertEqual(len(images), 1)
+            visual = images[0]
             literal = visual['objects']['general'][0]['properties']['imageUrl']['expr']['Literal']['Value']
             self.assertTrue(literal.startswith("'data:image/svg+xml;base64,"))
             self.assertNotIn(root, literal)

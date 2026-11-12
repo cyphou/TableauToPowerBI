@@ -364,6 +364,13 @@ class TestEmptyReportLineageRegression(unittest.TestCase):
                     str(project), "EmptySynthetic", objects)
                 generator.create_report_structure(
                     str(project), "EmptySynthetic", objects)
+                metadata, = project.glob("*.Report/definition/pages/pages.json")
+                page_metadata = json.loads(metadata.read_text(encoding="utf-8"))
+                self.assertEqual(len(page_metadata["pageOrder"]), 2)
+                for page_name in page_metadata["pageOrder"][1:]:
+                    shutil.rmtree(metadata.parent / page_name)
+                page_metadata["pageOrder"] = ["ReportSection"]
+                metadata.write_text(json.dumps(page_metadata), encoding="utf-8")
                 write_powerbi_lineage_artifacts(project)
             self.assertFalse((project / "partial_generation.json").exists())
             metadata, = project.glob("*.Report/definition/pages/pages.json")

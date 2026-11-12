@@ -1,6 +1,7 @@
 // Helper for locating the migration engine and running it as a subprocess.
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
+import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -8,6 +9,7 @@ export interface EngineResult {
     code: number;
     stdout: string;
     stderr: string;
+    outputDir?: string;
 }
 
 /** Resolve the configured Python interpreter path. */
@@ -59,25 +61,28 @@ export function getOutputDirectory(): string | undefined {
     return out && out.trim().length > 0 ? out : undefined;
 }
 
-/**
- * Build the argument vector for `migrate.py`.
- * Exposed for testing.
- */
-export function buildMigrateArgs(
+export async function runSingleWorkbookMigration(
+    engineRoot: string,
     workbookPath: string,
-    opts: { assess?: boolean; dryRun?: boolean; outputDir?: string } = {}
-): string[] {
-    const args = ['migrate.py', workbookPath];
-    if (opts.assess) {
-        args.push('--assess');
+    opts: { outputDir?: string; dryRun?: boolean } = {},
+    onData?: (chunk: string) => void
+): Promise<EngineResult> {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'ttpbi-batch-config-'));
+    try {
+        const outputRoot = path.resolve(engineRoot, opts.outputDir || 'artifacts/powerbi_projects/migrated');
+        fs.mkdirSync(outputRoot, { recursive: true });
+        const outputDir = fs.mkdtempSync(path.join(outputRoot, 'migration-'));
+        const configPath = path.join(temporary, 'batch.json');
+        fs.writeFileSync(configPath, JSON.stringify([{ file: path.resolve(workbookPath) }]),
+            { encoding: 'utf8', mode: 0o600 });
+        const args = ['migrate.py', '--batch-config', configPath, '--output-dir', outputDir];
+        if (opts.dryRun) {
+            args.push('--dry-run');
+        }
+        return { ...await runEngine(engineRoot, args, onData), outputDir };
+    } finally {
+        fs.rmSync(temporary, { recursive: true, force: true });
     }
-    if (opts.dryRun) {
-        args.push('--dry-run');
-    }
-    if (opts.outputDir) {
-        args.push('--output-dir', opts.outputDir);
-    }
-    return args;
 }
 
 /**
@@ -91,17 +96,20 @@ export function runEngine(
 ): Promise<EngineResult> {
     return new Promise((resolve) => {
         const python = getPythonPath();
-        const child = cp.spawn(python, args, { cwd: engineRoot });
+        const child = cp.spawn(python, args, {
+            cwd: engineRoot, env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+        });
         let stdout = '';
         let stderr = '';
 
-        child.stdout.on('data', (d: Buffer) => {
-            const text = d.toString();
+        child.stdout.setEncoding('utf8');
+        child.stderr.setEncoding('utf8');
+        child.stdout.on('data', (text: string) => {
             stdout += text;
             onData?.(text);
         });
-        child.stderr.on('data', (d: Buffer) => {
-            stderr += d.toString();
+        child.stderr.on('data', (text: string) => {
+            stderr += text;
         });
         child.on('close', (code) => {
             resolve({ code: code ?? -1, stdout, stderr });

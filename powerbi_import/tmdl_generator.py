@@ -631,7 +631,9 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         datasources: List of datasources with connections, tables, calculations
         report_name: Name of the report
         extra_objects: Dict with hierarchies, sets, groups, bins, aliases,
-                       parameters, user_filters, _datasources
+                   parameters, user_filters, _datasources, and optional
+                       caller-verified fixed LOD scopes. The latter can also
+                       be supplied through TTPBI_VERIFIED_FIXED_SCOPES.
         output_dir: Path to the SemanticModel folder
         calendar_start: Start year for Calendar table (default: 2020)
         calendar_end: End year for Calendar table (default: 2030)
@@ -917,6 +919,7 @@ def generate_tmdl(datasources, report_name, extra_objects, output_dir,
         'countd_measure_bindings': model.get('_countd_measure_bindings', {}),
         'quick_table_calc_bindings': model.get('_quick_table_calc_bindings', {}),
         'unsupported_quick_table_calcs': model.get('_unsupported_quick_table_calcs', {}),
+        'physical_join_diagnostics': model.get('_physical_join_diagnostics', []),
     }
     if ir_result:
         stats['incremental_refresh'] = ir_result
@@ -1166,7 +1169,71 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
         extra_objects = {}
 
     from powerbi_import.tmdl_relationships import preflight_physical_joins
-    preflight_physical_joins(datasources, provenance_retained=True)
+    tolerate_unrepresentable = (
+        extra_objects.get('_tolerate_unrepresentable_physical_joins') is True)
+    physical_join_diagnostics = preflight_physical_joins(
+        datasources, provenance_retained=True,
+        tolerate_unrepresentable=tolerate_unrepresentable)
+    if physical_join_diagnostics:
+        blocked_by_source = {}
+        for diagnostic in physical_join_diagnostics:
+            source = diagnostic.get('source') or ''
+            pairs = blocked_by_source.setdefault(source, set())
+            pairs.update(
+                tuple(str(name).casefold() for name in pair)
+                for pair in diagnostic.get('omitted_relationship_pairs', [])
+            )
+
+        retained_datasources = []
+        for datasource in datasources:
+            if not isinstance(datasource, dict):
+                retained_datasources.append(datasource)
+                continue
+            source = str(datasource.get('name') or datasource.get('caption') or '')
+            blocked_pairs = set(blocked_by_source.get(source, ()))
+            if '' in blocked_by_source:
+                blocked_pairs.update(blocked_by_source[''])
+            if not blocked_pairs:
+                retained_datasources.append(datasource)
+                continue
+
+            retained = dict(datasource)
+            relationships = []
+            for relationship in datasource.get('relationships', []) or []:
+                if not isinstance(relationship, dict):
+                    relationships.append(relationship)
+                    continue
+                left = relationship.get('left') or {}
+                right = relationship.get('right') or {}
+                pair = tuple(sorted((
+                    str(left.get('table') or '').casefold(),
+                    str(right.get('table') or '').casefold(),
+                )))
+                if pair in blocked_pairs:
+                    diagnostic = next((item for item in physical_join_diagnostics
+                                       if (not item.get('source')
+                                           or item.get('source') == source)
+                                       and pair in blocked_by_source.get(
+                                           item.get('source') or '', set())), None)
+                    if diagnostic is not None:
+                        omitted = {
+                            'from_table': left.get('table', ''),
+                            'from_column': left.get('column', ''),
+                            'to_table': right.get('table', ''),
+                            'to_column': right.get('column', ''),
+                        }
+                        if omitted not in diagnostic['omitted_relationships']:
+                            diagnostic['omitted_relationships'].append(omitted)
+                    continue
+                relationships.append(relationship)
+            retained['relationships'] = relationships
+            retained_datasources.append(retained)
+
+        datasources = retained_datasources
+        extra_objects = dict(extra_objects)
+        extra_objects['_physical_join_diagnostics'] = physical_join_diagnostics
+        if '_datasources' in extra_objects:
+            extra_objects['_datasources'] = datasources
 
     model_mode = _normalize_model_mode(model_mode)
     effective_culture = culture or "en-US"
@@ -1183,6 +1250,8 @@ def _build_semantic_model(datasources, report_name="Report", extra_objects=None,
             "roles": []
         }
     }
+    if physical_join_diagnostics:
+        model['_physical_join_diagnostics'] = physical_join_diagnostics
 
     # Store calendar options for _add_date_table
     model['_calendar_start'] = calendar_start
@@ -2108,6 +2177,23 @@ def _collect_semantic_context(datasources, extra_objects):
         if ds_name:
             ds_column_table_map[ds_name] = ds_col_map
 
+    verified_fixed_scopes = extra_objects.get('verified_fixed_scopes')
+    if verified_fixed_scopes is None:
+        try:
+            verified_fixed_scopes = json.loads(
+                os.environ.get('TTPBI_VERIFIED_FIXED_SCOPES', '{}'))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid TTPBI_VERIFIED_FIXED_SCOPES JSON") from exc
+    if not isinstance(verified_fixed_scopes, dict) or any(
+            not isinstance(datasource_name, str)
+            or not isinstance(scopes, dict)
+            or any(not isinstance(calc_name, str) or not isinstance(scope, dict)
+                   for calc_name, scope in scopes.items())
+            for datasource_name, scopes in verified_fixed_scopes.items()):
+        raise ValueError(
+            "verified_fixed_scopes must map datasource names and calculation "
+            "identities to proof objects")
+
     dax_context = {
         'calc_map': calc_map,
         'param_map': param_map,
@@ -2117,6 +2203,7 @@ def _collect_semantic_context(datasources, extra_objects):
         'param_values': param_values,
         'ds_column_table_map': ds_column_table_map,
         'datasource_table_map': datasource_table_map,
+        'verified_fixed_scopes': verified_fixed_scopes,
     }
 
     # Build compute_using_map from worksheet table_calcs for PARTITIONBY/ORDERBY
@@ -3606,21 +3693,25 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         if _stripped.startswith('"') and _stripped.endswith('"') and len(_stripped) > 2:
             # Well-formed iff every interior double-quote is doubled (escaped):
             # removing the doubled pairs must leave no stray quote.
-            if _stripped[1:-1].replace('""', '').count('"') == 0:
-                _lit_measure = {
-                    "name": caption,
-                    "expression": _stripped,
-                    "formatString": _get_format_string('string'),
-                    "displayFolder": _get_display_folder('string', role),
-                }
-                _orig_lit = calc.get('formula', '')
-                if _orig_lit:
-                    _lit_measure['_original_formula'] = _orig_lit
-                if not any(m.get("name", "").lower() == caption.lower()
-                           for m in result_table["measures"]):
-                    result_table["measures"].append(_lit_measure)
-            # Malformed/unbalanced text metadata: leave out (cannot be a
-            # valid DAX literal).  Either way, do not fall through.
+            well_formed = _stripped[1:-1].replace('""', '').count('"') == 0
+            _lit_measure = {
+                "name": caption,
+                "expression": (
+                    _stripped if well_formed else
+                    '/* TODO: DAX conversion validation failed for measure: '
+                    'malformed Tableau string literal */ BLANK()'
+                ),
+                "formatString": _get_format_string('string'),
+                "displayFolder": _get_display_folder('string', role),
+            }
+            _orig_lit = calc.get('formula', '')
+            if _orig_lit:
+                _lit_measure['_original_formula'] = _orig_lit
+            if not any(m.get("name", "").lower() == caption.lower()
+                       for m in result_table["measures"]):
+                result_table["measures"].append(_lit_measure)
+            # String literals cannot contain Tableau expressions, so malformed
+            # literals are retained as an explicit placeholder, not re-parsed.
             continue
 
         # Determine if it's a simple literal (parameter) -> measure
@@ -3689,10 +3780,10 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         if has_security_func:
             is_calc_col = False
 
-        # Ignore MAKEPOINT (no DAX equivalent)
-        if re.search(r'\bMAKEPOINT\b', formula, re.IGNORECASE):
-            continue
+        has_makepoint = bool(re.search(r'\bMAKEPOINT\b', formula, re.IGNORECASE))
 
+        scopes_by_calculation = dax_context.get('verified_fixed_scopes', {}).get(
+            calc.get('datasource_name', ''), {})
         dax_formula = convert_tableau_formula_to_dax(
             formula,
             column_name=calc_name,
@@ -3711,7 +3802,20 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             bool_columns=_bool_table_columns,
             validate_output=True,
             fallback_on_invalid=True,
+            verified_fixed_scope=scopes_by_calculation.get(calc_name),
         )
+        if has_makepoint:
+            target_kind = 'column' if is_calc_col else 'measure'
+            dax_formula = (
+                f'/* TODO: DAX conversion validation failed for {target_kind}: '
+                'MAKEPOINT has no scalar DAX equivalent; field retained as a '
+                'placeholder */ BLANK()'
+            )
+        elif is_calc_col:
+            dax_formula = re.sub(
+                r'(/\*\s*TODO:\s*DAX conversion validation failed for )measure(:)',
+                r'\1column\2', dax_formula, count=1, flags=re.IGNORECASE,
+            )
         constant_sum = re.fullmatch(
             r'\s*SUM\s*\(\s*\[([^\]]+)\]\s*\)\s*', formula, re.IGNORECASE)
         if constant_sum:
@@ -3722,6 +3826,16 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 # reference substitution (SUM(1) => 1 in DAX).
                 safe_table_name = table_name.replace("'", "''")
                 dax_formula = f"COUNTROWS('{safe_table_name}')"
+
+        conversion_failure = re.search(
+            r'/\*\s*TODO:\s*DAX conversion validation failed for '
+            r'(?:measure|column):\s*(.*?)\s*\*/',
+            dax_formula, re.IGNORECASE | re.DOTALL,
+        )
+        migration_note = (
+            'DAX conversion failed: ' + conversion_failure.group(1).strip()
+            if conversion_failure else ''
+        )
 
         # Phase 3: record conversion guard fallback to recovery
         if dax_formula and 'TODO: DAX conversion validation failed' in dax_formula:
@@ -3743,7 +3857,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                     )
 
             # ── Try to push the calculated column into Power Query M ──
-            m_expr = (None if is_direct_lake else
+            m_expr = (None if is_direct_lake or migration_note else
                       _dax_to_m_expression(dax_formula, table_name, col_types))
             if m_expr is not None:
                 m_expr = rename_m_column_refs(m_expr, rename_map)
@@ -3788,6 +3902,10 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                         "datasource_name": calc.get('datasource_name', ''),
                     },
                 }
+            if migration_note:
+                bim_calc_col['annotations'] = [{
+                    'name': 'MigrationNote', 'value': migration_note,
+                }]
             if datatype == 'real':
                 bim_calc_col["formatString"] = "#,0.00"
 
@@ -3846,6 +3964,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                     "datasource_name": calc.get('datasource_name', ''),
                 },
             }
+            if migration_note:
+                bim_measure['_migration_note'] = migration_note
             # Propagate description from Tableau (if extracted)
             calc_desc = calc.get('description', '')
             if calc_desc:

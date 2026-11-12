@@ -67,7 +67,8 @@ def _assert_standalone_inventory(test, twb_path, snapshot):
     # already-embedded sheets into additional report pages.
     test.assertEqual(
         {visual['page'] for visual in snapshot['visuals']},
-        {dashboard.attrib['name'] for dashboard in dashboards} | set(standalone))
+        {dashboard.attrib['name'] for dashboard in dashboards} | set(standalone)
+        | {'Migration Summary'})
     added = [visual for visual in snapshot['visuals'] if visual['page'] == standalone[0]]
     test.assertEqual(len(added), 1)
     test.assertGreater(added[0]['fields'], 0)

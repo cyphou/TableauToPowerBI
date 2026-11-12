@@ -43,7 +43,10 @@ sys.path.insert(0, os.path.join(ROOT, 'tableau_export'))
 sys.path.insert(0, os.path.join(ROOT, 'powerbi_import'))
 
 from prep_flow_analyzer import (
+    FlowInput,
+    FlowOutput,
     FlowProfile,
+    FlowTransform,
     _compute_dag_depth,
     _count_calcs,
     _extract_inputs,
@@ -68,6 +71,7 @@ from prep_lineage import (
 )
 from prep_lineage_report import (
     MergeRecommendation,
+    _render_lineage_diagram,
     _column_overlap,
     _source_overlap,
     _transform_similarity,
@@ -1697,6 +1701,36 @@ class TestGenerateHTMLReport(unittest.TestCase):
             self.assertIn('mermaid', html)
             self.assertIn('graph LR', html)
 
+    def test_mermaid_contains_internal_dags_and_cross_flow_node_link(self):
+        first = FlowProfile(
+            name='Flow A', file_path='flow-a.tfl',
+            inputs=[FlowInput('input-a', 'Source A', 'csv', fingerprint='source-a')],
+            outputs=[FlowOutput('output-a', 'Output A', 'PublishExtract',
+                                fingerprint='shared-output')],
+            transforms=[FlowTransform('clean-a', 'Clean A', 'Clean')],
+            node_graph={'input-a': ['clean-a'], 'clean-a': ['output-a'],
+                        'output-a': []},
+            assessment={'status': 'complete', 'grade': 'GREEN'},
+        )
+        second = FlowProfile(
+            name='Flow B', file_path='flow-b.tfl',
+            inputs=[FlowInput('input-b', 'Source B', 'csv', fingerprint='shared-output')],
+            outputs=[FlowOutput('output-b', 'Output B', 'PublishExtract',
+                                fingerprint='sink-b')],
+            transforms=[FlowTransform('join-b', 'Join B', 'Join')],
+            node_graph={'input-b': ['join-b'], 'join-b': ['output-b'],
+                        'output-b': []},
+            assessment={'status': 'complete', 'grade': 'GREEN'},
+        )
+        graph = build_lineage_graph([first, second])
+        diagram = _render_lineage_diagram(graph)
+        self.assertIn('subgraph FLOW0', diagram)
+        self.assertIn('subgraph FLOW1', diagram)
+        self.assertIn('FLOW0_N0 --> FLOW0_N1', diagram)
+        self.assertIn('FLOW0_N1 --> FLOW0_N2', diagram)
+        self.assertIn('FLOW0_N2 -->|"exact"| FLOW1_N0', diagram)
+        self.assertIn('FLOW1_N0 --> FLOW1_N1', diagram)
+
     def test_html_has_stat_cards(self):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, 'report.html')
@@ -1728,6 +1762,9 @@ class TestSaveLineageJSON(unittest.TestCase):
             self.assertIn('edges', data)
             self.assertIn('recommendations', data)
             self.assertIn('timestamp', data)
+            self.assertTrue(all('file_path' not in flow for flow in data['flows']))
+            self.assertEqual(data['flows'][0]['source_file'], 'sales.tfl')
+            self.assertEqual(data['flows'][0]['source_id'], 'sales::sales.tfl')
 
 
 class TestPrintLineageSummary(unittest.TestCase):
@@ -1839,7 +1876,9 @@ class TestRunPrepLineageMode(unittest.TestCase):
             with open(os.path.join(args.output_dir, 'prep_lineage.json'), encoding='utf-8') as stream:
                 lineage = json.load(stream)
             self.assertEqual(len({flow['name'] for flow in lineage['flows']}), 2)
-            self.assertEqual({flow['file_path'] for flow in lineage['flows']}, set(paths))
+            self.assertEqual({flow['source_file'] for flow in lineage['flows']}, {'flow.tfl'})
+            self.assertEqual(len({flow['source_id'] for flow in lineage['flows']}), 2)
+            self.assertTrue(all('file_path' not in flow for flow in lineage['flows']))
 
     def test_batch_lineage_distinguishes_same_named_flows(self):
         from migrate import _run_batch_prep_lineage

@@ -390,6 +390,38 @@ class TestSharedModelThinReports(_BindingAssertions, unittest.TestCase):
         report = check_openability(root)
         self.assertTrue(report.openable, f'blocking issues: {report.blocking_issues}')
 
+    def test_shared_gate_updates_each_thin_report_summary(self):
+        _, reports, root = self._model_and_reports('pbip')
+
+        def summary_text(report_dir):
+            visuals = glob.glob(os.path.join(
+                report_dir, 'definition', 'pages', '*', 'visuals', '*', 'visual.json'))
+            summaries = []
+            for path in visuals:
+                with open(path, encoding='utf-8') as stream:
+                    visual = json.load(stream)
+                if {'name': 'MigrationSummaryStatus', 'value': 'v1'} not in visual.get('annotations', []):
+                    continue
+                paragraphs = visual['visual']['objects']['general'][0]['properties']['paragraphs']
+                summaries.append('\n'.join(
+                    ''.join(run.get('value', '') for run in paragraph['textRuns'])
+                    for paragraph in paragraphs))
+            self.assertEqual(len(summaries), 1)
+            return summaries[0]
+
+        for report_dir in reports.values():
+            self.assertIn('Static project checks: Not run', summary_text(report_dir))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(migrate._run_openability_gate(root))
+        with open(os.path.join(root, 'openability_report.json'), encoding='utf-8') as stream:
+            gate = json.load(stream)
+        self.assertTrue(gate['openable'])
+        warning_count = gate['warning_count']
+        noun = 'warning' if warning_count == 1 else 'warnings'
+        status = f'OK ({warning_count} {noun})' if warning_count else 'OK'
+        for report_dir in reports.values():
+            self.assertIn(f'Static project checks: {status}', summary_text(report_dir))
+
 
 class TestFabricSingleWorkbookReport(_BindingAssertions, unittest.TestCase):
     """The Fabric project writes its own report next to the Direct Lake model."""

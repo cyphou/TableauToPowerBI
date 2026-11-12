@@ -153,12 +153,40 @@ class SalvageFixture(unittest.TestCase):
         launch.assert_not_called()
         return result
 
-    def _assert_diagnostics(self):
+    def _assert_tolerated_composite_join(self):
+        self.assertTrue((self.project / "Recovery.pbip").is_file())
+        self.assertTrue((self.project / "Recovery.Report").is_dir())
+        diagnostics_path = self.project / "generation_diagnostics.json"
+        self.assertTrue(diagnostics_path.is_file())
+        diagnostics = _read_json(diagnostics_path)
+        self.assertEqual(diagnostics["status"], "partial")
+        self.assertEqual(diagnostics["validation_status"], "WARN")
+        omitted = [item for item in diagnostics["diagnostics"]
+                   if item["code"] == "physical_join_omitted"]
+        self.assertTrue(omitted, diagnostics)
+        self.assertTrue(any(
+            {name.casefold() for pair in item["omitted_relationship_pairs"]
+             for name in pair} >= {"orders model", "regions model"}
+            and item["omitted_relationships"]
+            for item in omitted
+        ), omitted)
+        relationships_path = (self.project / "Recovery.SemanticModel" / "definition"
+                              / "relationships.tmdl")
+        relationships = (relationships_path.read_text(encoding="utf-8")
+                         if relationships_path.is_file() else "")
+        self.assertNotRegex(relationships, r"(?m)^\s*relationship\s+")
+        metadata = _read_json(self.project / "migration_metadata.json")
+        self.assertEqual(metadata["relationship_status"], "partial")
+        self.assertFalse((self.salvage / "salvage_manifest.json").exists())
+        self.assertFalse((self.project / "migration_failure.json").exists())
+
+    def _assert_diagnostics(self, expect_pbip=False):
         manifest = _read_json(self.salvage / "salvage_manifest.json")
         self.assertEqual(manifest["status"], "incomplete")
         self.assertEqual(manifest["validation_status"], "FAIL")
         self.assertTrue(manifest["diagnostic_only"])
-        self.assertEqual(manifest["completion_marker"], "withheld")
+        self.assertEqual(manifest["completion_marker"],
+                 "diagnostic_only" if expect_pbip else "withheld")
         self.assertEqual(manifest["not_attempted"],
                          ["source_execution", "desktop", "deployment"])
         inventory = _read_json(self.salvage / "inventory.json")
@@ -172,7 +200,7 @@ class SalvageFixture(unittest.TestCase):
         self.assertTrue(any("SUM(" in path.read_text(encoding="utf-8") for path in dax))
         self.assertTrue(any("PostgreSQL.Database" in path.read_text(encoding="utf-8")
                             for path in queries))
-        self.assertFalse(list(self.project.glob("*.pbip")))
+        self.assertEqual(bool(list(self.project.glob("*.pbip"))), expect_pbip)
         metadata = _read_json(self.salvage / "model_metadata.json")
         self.assertTrue(metadata["diagnostic_only"])
         self.assertEqual(metadata["validation"], "unvalidated")
@@ -180,6 +208,89 @@ class SalvageFixture(unittest.TestCase):
 
 
 class TestSalvageBatchCLI(SalvageFixture):
+    def test_dax_placeholder_validation_preserves_diagnostic_project(self):
+        self.sources.mkdir(parents=True)
+        source = ROOT / 'examples' / 'tableau_samples' / 'BigQuery_Analytics.twb'
+        (self.sources / 'Recovery.twb').write_bytes(source.read_bytes())
+        result = self._cli()
+        self.assertEqual(result.returncode, migrate.ExitCode.BATCH_PARTIAL_FAIL,
+                         self.cli_output)
+        manifest = _read_json(self.salvage / 'salvage_manifest.json')
+        self.assertTrue(list(self.salvage.glob('*.dax')))
+        self.assertTrue(list(self.project.glob('*.pbip')))
+        partial = _read_json(self.project / 'partial_generation.json')
+        self.assertEqual(partial['status'], 'partial')
+        self.assertEqual(partial['validation_status'], 'FAIL')
+        self.assertTrue(partial['data_retained'])
+        self.assertEqual(partial['errors'][0]['recovery_kind'], 'dax_placeholder')
+        self.assertEqual(manifest['completion_marker'], 'diagnostic_only')
+        self.assertTrue(list(self.project.glob('*.SemanticModel/definition/tables/*.tmdl')))
+        self.assertTrue(list(self.project.glob('*.Report/definition/pages/*/page.json')))
+        self.assertFalse(_read_json(self.project / 'openability_report.json')['openable'])
+        quality = _read_json(self.output / 'migration_quality_Recovery.json')
+        self.assertEqual(quality['status'], 'FAIL')
+        self.assertEqual(quality['handoff_status'], 'BLOCKED')
+        state = _read_json(self.output / '.migration_batch_state.json')
+        self.assertEqual(state['Recovery.twb']['status'], 'partial')
+        metadata = _read_json(self.project / 'migration_metadata.json')
+        self.assertEqual(metadata['generation_status'], 'partial')
+        summary_page = next(path.parent for path in
+                            self.project.glob('*.Report/definition/pages/*/page.json')
+                            if _read_json(path)['displayName'] == 'Migration Summary')
+        summary = _read_json(next(summary_page.glob('visuals/*/visual.json')))['visual']
+        paragraphs = summary['objects']['general'][0]['properties']['paragraphs']
+        text = '\n'.join(''.join(run.get('value', '') for run in paragraph['textRuns'])
+                         for paragraph in paragraphs)
+        self.assertIn('Partial generation', text, paragraphs)
+        self.assertNotIn('Generation complete', text)
+        self.assertIn('Partial — review the migration diagnostic', text)
+        self.assertEqual(self._cli('--resume').returncode,
+                         migrate.ExitCode.BATCH_PARTIAL_FAIL, self.cli_output)
+        self.assertEqual(_read_json(self.output / '.migration_batch_state.json')
+                         ['Recovery.twb']['status'], 'partial')
+
+    def test_strict_dax_placeholder_validation_withholds_pbip(self):
+        self.sources.mkdir(parents=True)
+        source = ROOT / 'examples' / 'tableau_samples' / 'BigQuery_Analytics.twb'
+        (self.sources / 'Recovery.twb').write_bytes(source.read_bytes())
+        result = self._cli('--strict-generation')
+        self.assertEqual(result.returncode, migrate.ExitCode.BATCH_PARTIAL_FAIL,
+                         self.cli_output)
+        self.assertFalse(list(self.project.glob('*.pbip')))
+        self.assertFalse((self.project / 'partial_generation.json').exists())
+
+    def test_batch_config_dax_placeholder_retains_diagnostic_project(self):
+        self.sources.mkdir(parents=True)
+        source = ROOT / 'examples' / 'tableau_samples' / 'BigQuery_Analytics.twb'
+        workbook = self.sources / 'Recovery.twb'
+        workbook.write_bytes(source.read_bytes())
+        config = self.root / 'batch.json'
+        config.write_text(json.dumps([{'file': str(workbook)}]), encoding='utf-8')
+        result = self._cli(batch_config=config)
+        self.assertEqual(result.returncode, migrate.ExitCode.BATCH_PARTIAL_FAIL,
+                         self.cli_output)
+        self.assertTrue((self.project / 'Recovery.pbip').is_file())
+        self.assertEqual(_read_json(self.project / 'migration_failure.json')
+                         ['completion_marker'], 'diagnostic_only')
+        self.assertEqual(_read_json(self.output / 'migration_quality_Recovery.json')
+                         ['status'], 'FAIL')
+
+    def test_batch_config_same_name_inputs_keep_distinct_projects(self):
+        workbooks = [_package(self.sources / folder) for folder in ('north', 'south')]
+        existing = self.output / 'Recovery__2' / 'user-notes.txt'
+        existing.parent.mkdir(parents=True)
+        existing.write_text('retain existing output', encoding='utf-8')
+        config = self.root / 'batch.json'
+        config.write_text(json.dumps([{'file': str(path)} for path in workbooks]),
+                          encoding='utf-8')
+        result = self._cli(batch_config=config)
+        self.assertEqual(result.returncode, migrate.ExitCode.SUCCESS, self.cli_output)
+        markers = list(self.output.glob('*/*.pbip'))
+        self.assertEqual(len(markers), 2, self.cli_output)
+        self.assertEqual(len({path.parent.name.casefold() for path in markers}), 2)
+        self.assertEqual(existing.read_text(encoding='utf-8'), 'retain existing output')
+        self.assertNotIn(existing.parent.name, {path.parent.name for path in markers})
+
     def test_batch_config_refusal_uses_same_diagnostic_recovery_path(self):
         workbook = _package(self.sources, refused=True)
         config = self.root / "batch.json"
@@ -187,7 +298,7 @@ class TestSalvageBatchCLI(SalvageFixture):
         result = self._cli(batch_config=config)
         self.assertEqual(result.returncode, migrate.ExitCode.BATCH_PARTIAL_FAIL,
                          self.cli_output)
-        manifest, objects = self._assert_diagnostics()
+        manifest, objects = self._assert_diagnostics(expect_pbip=True)
         self.assertEqual(manifest["extraction"]["status"], "incomplete")
         self.assertTrue(any(item["name"] == "refused-first"
                             for item in manifest["extraction"]["blocked"]))
@@ -195,14 +306,17 @@ class TestSalvageBatchCLI(SalvageFixture):
                          ["recoverable"])
         self.assertEqual(objects["calculations"][0]["formula"], "SUM([amount])")
         self.assertEqual(objects["worksheets"][0]["name"], "Recovered Overview")
-        self.assertFalse(list(self.project.rglob("*.tmdl")))
+        self.assertEqual(_read_json(self.project / 'partial_generation.json')
+                 ['errors'][0]['recovery_kind'], 'incomplete_extraction')
 
-    def test_refused_first_datasource_recovers_later_objects_without_project(self):
+    def test_refused_first_datasource_recovers_later_objects_with_diagnostic_project(self):
         _package(self.sources, refused=True)
         result = self._cli()
         self.assertEqual(result.returncode, migrate.ExitCode.BATCH_PARTIAL_FAIL,
                          self.cli_output)
-        manifest, objects = self._assert_diagnostics()
+        manifest, objects = self._assert_diagnostics(expect_pbip=True)
+        self.assertNotIn('Power BI project generated successfully', self.cli_output)
+        self.assertIn('PARTIAL', self.cli_output)
         extraction = manifest["extraction"]
         self.assertEqual(extraction["status"], "incomplete")
         self.assertTrue(any(item["name"] == "refused-first"
@@ -220,7 +334,57 @@ class TestSalvageBatchCLI(SalvageFixture):
         self.assertEqual([sheet["name"] for sheet in objects["worksheets"]],
                          ["Recovered Overview"])
         self.assertTrue(extraction["diagnostics"]["datasources"])
-        self.assertFalse(list(self.project.rglob("*.tmdl")))
+        partial = _read_json(self.project / 'partial_generation.json')
+        self.assertEqual(partial['status'], 'partial')
+        self.assertEqual(partial['validation_status'], 'FAIL')
+        self.assertFalse(partial['data_retained'])
+        self.assertEqual(partial['recovery_scope'], 'data_free_page_outlines')
+        self.assertEqual(partial['errors'][0]['recovery_kind'], 'incomplete_extraction')
+        self.assertEqual(partial['errors'][0]['stage'], 'extraction')
+        definition = self.project / 'Recovery.SemanticModel' / 'definition'
+        tables = list((definition / 'tables').glob('*.tmdl'))
+        self.assertEqual([path.name for path in tables], ['MigrationRepair.tmdl'])
+        self.assertIn('#table(type table [Status = text], {})',
+                      tables[0].read_text(encoding='utf-8'))
+        self.assertFalse((definition / 'roles.tmdl').exists())
+        relationships = definition / 'relationships.tmdl'
+        if relationships.exists():
+            self.assertNotRegex(relationships.read_text(encoding='utf-8'),
+                                r'(?m)^\s*relationship\s+')
+        self.assertFalse((self.project / 'Data').exists())
+        pages = [_read_json(path) for path in
+                 self.project.glob('*.Report/definition/pages/*/page.json')]
+        self.assertTrue(any(page['displayName'] == 'PARTIAL - Recovered Overview'
+                            for page in pages))
+        summary_page = next(path.parent for path in
+                    self.project.glob('*.Report/definition/pages/*/page.json')
+                    if _read_json(path)['displayName'] == 'Migration Summary')
+        summary = _read_json(next(summary_page.glob('visuals/*/visual.json')))['visual']
+        paragraphs = summary['objects']['general'][0]['properties']['paragraphs']
+        text = '\n'.join(''.join(run.get('value', '') for run in paragraph['textRuns'])
+                 for paragraph in paragraphs)
+        self.assertIn('Recovered data sources: 1', text)
+        self.assertIn('Recovered source calculations: 1', text)
+        self.assertIn('Recovered page outlines: 1     Data-bound visuals: 0', text)
+        self.assertIn('Partial — review the migration diagnostic', text)
+        visuals = list(self.project.glob('*.Report/definition/pages/*/visuals/*/visual.json'))
+        self.assertTrue(visuals)
+        for path in visuals:
+            visual = _read_json(path)['visual']
+            self.assertEqual(visual['visualType'], 'textbox')
+            self.assertNotIn('query', visual)
+        from powerbi_import.openability import check_openability
+        static_report = check_openability(str(self.project))
+        self.assertTrue(static_report.openable, static_report.blocking_issues)
+        self.assertEqual(_read_json(self.project / 'migration_failure.json')
+                 ['completion_marker'], 'diagnostic_only')
+        quality = _read_json(self.output / 'migration_quality_Recovery.json')
+        self.assertEqual(quality['status'], 'FAIL')
+        self.assertEqual(quality['handoff_status'], 'BLOCKED')
+        self.assertEqual(quality['partial_generation'], partial)
+        with zipfile.ZipFile(self.output / 'evidence_package_Recovery.zip') as archive:
+            self.assertIn('quality/partial_generation.json', archive.namelist())
+            self.assertIn('quality/salvage_manifest.json', archive.namelist())
 
     def test_strict_refusal_does_not_create_salvage(self):
         _package(self.sources, refused=True)
@@ -231,19 +395,51 @@ class TestSalvageBatchCLI(SalvageFixture):
         self.assertFalse(list(self.output.rglob("extraction_salvage.json")))
         self.assertFalse(list(self.project.glob("*.pbip")))
 
-    def test_natural_composite_guard_emits_diagnostics_without_tmdl(self):
+    def test_natural_composite_guard_emits_diagnostic_pbip_and_fragments(self):
         _package(self.sources, composite=True)
         result = self._cli()
-        self.assertEqual(result.returncode, migrate.ExitCode.BATCH_PARTIAL_FAIL,
+        self.assertEqual(result.returncode, migrate.ExitCode.SUCCESS,
                          self.cli_output)
-        manifest, objects = self._assert_diagnostics()
-        self.assertIsNone(manifest["extraction"])
-        self.assertTrue(objects["datasources"][0]["relationships"])
-        with self.subTest(boundary="prewrite"):
-            self.assertFalse(list(self.project.rglob("*.tmdl")))
-        with self.subTest(boundary="original failure"):
-            self.assertIn("complete predicate has multiple equality terms",
-                          manifest["failure"]["message"])
+        self._assert_tolerated_composite_join()
+
+    def test_composite_diagnostic_is_retried_on_resume(self):
+        _package(self.sources, composite=True)
+        self.assertEqual(self._cli().returncode, migrate.ExitCode.SUCCESS,
+                         self.cli_output)
+        resumed = self._cli('--resume')
+        self.assertEqual(resumed.returncode, migrate.ExitCode.SUCCESS,
+                         self.cli_output)
+        self._assert_tolerated_composite_join()
+
+    def test_incomplete_extraction_diagnostic_is_retried_on_resume(self):
+        _package(self.sources, refused=True)
+        self.assertEqual(self._cli().returncode, migrate.ExitCode.BATCH_PARTIAL_FAIL,
+                         self.cli_output)
+        self.assertEqual(self._cli('--resume').returncode,
+                         migrate.ExitCode.BATCH_PARTIAL_FAIL, self.cli_output)
+        self._assert_diagnostics(expect_pbip=True)
+        self.assertEqual(_read_json(self.output / '.migration_batch_state.json')
+                         ['Recovery.twbx']['status'], 'partial')
+
+    def test_revalidation_keeps_partial_pipeline_failure(self):
+        _package(self.sources, refused=True)
+        self.assertEqual(self._batch(), migrate.ExitCode.BATCH_PARTIAL_FAIL)
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(migrate._run_openability_gate(str(self.project)))
+        report = _read_json(self.project / 'openability_report.json')
+        self.assertFalse(report['openable'])
+        self.assertTrue(any(check['name'] == 'pipeline_completion' and not check['ok']
+                            for check in report['checks']))
+        self.assertEqual(report['diagnostics']['pipeline_failure']['stage'], 'extraction')
+
+    def test_batch_config_composite_retains_diagnostic_pbip(self):
+        workbook = _package(self.sources, composite=True)
+        config = self.root / 'batch.json'
+        config.write_text(json.dumps([{'file': str(workbook)}]), encoding='utf-8')
+        result = self._cli(batch_config=config)
+        self.assertEqual(result.returncode, migrate.ExitCode.SUCCESS,
+                         self.cli_output)
+        self._assert_tolerated_composite_join()
 
     def test_complete_default_publishes_success_without_salvage(self):
         _package(self.sources)
@@ -282,9 +478,9 @@ class TestSalvageBatchCLI(SalvageFixture):
         second = self._cli()
         self.assertEqual(second.returncode, migrate.ExitCode.BATCH_PARTIAL_FAIL,
                          self.cli_output)
-        self._assert_diagnostics()
+        self._assert_diagnostics(expect_pbip=True)
         self.assertFalse(stale.exists())
-        self.assertFalse(list(self.project.rglob("*.tmdl")))
+        self.assertTrue(list(self.project.rglob("*.tmdl")))
         archives = self.output / ".migration_previous"
         old_markers = list(archives.rglob("Recovery.pbip"))
         self.assertEqual(len(old_markers), 1)
@@ -297,6 +493,73 @@ class TestSalvageBatchCLI(SalvageFixture):
 
 
 class TestSalvageGenerationGuard(SalvageFixture):
+    def test_ambiguous_visual_recovers_diagnostic_project_without_guessing(self):
+        from powerbi_import.visual_generator import AmbiguousNativeQueryRefError
+        import importlib
+
+        _package(self.sources)
+        sys.path.insert(0, str(ROOT / 'powerbi_import'))
+        self.addCleanup(sys.path.remove, str(ROOT / 'powerbi_import'))
+        generator = importlib.import_module('pbip_generator').PowerBIProjectGenerator
+        with mock.patch.object(generator, 'create_report_structure',
+                               side_effect=AmbiguousNativeQueryRefError('Synthetic ambiguous selector')):
+            result = self._batch()
+        self.assertEqual(result, migrate.ExitCode.BATCH_PARTIAL_FAIL)
+        manifest, _ = self._assert_diagnostics(expect_pbip=True)
+        self.assertIn('Synthetic ambiguous selector', manifest['failure']['message'])
+        partial = _read_json(self.project / 'partial_generation.json')
+        self.assertFalse(partial['data_retained'])
+        self.assertEqual(partial['validation_status'], 'FAIL')
+        self.assertEqual(partial['errors'][0]['recovery_kind'], 'ambiguous_visual_binding')
+
+    def test_strict_ambiguous_visual_does_not_create_repair_project(self):
+        from powerbi_import.visual_generator import AmbiguousNativeQueryRefError
+        import importlib
+
+        _package(self.sources)
+        sys.path.insert(0, str(ROOT / 'powerbi_import'))
+        self.addCleanup(sys.path.remove, str(ROOT / 'powerbi_import'))
+        generator = importlib.import_module('pbip_generator').PowerBIProjectGenerator
+        with mock.patch.object(generator, 'create_report_structure',
+                               side_effect=AmbiguousNativeQueryRefError('Synthetic ambiguous selector')):
+            result = self._batch(strict_generation=True)
+        self.assertEqual(result, migrate.ExitCode.BATCH_PARTIAL_FAIL)
+        self.assertFalse(self.salvage.exists())
+        self.assertFalse(list(self.project.glob('*.pbip')))
+        self.assertFalse((self.project / 'partial_generation.json').exists())
+
+    def test_incomplete_extraction_never_builds_source_model(self):
+        _package(self.sources, refused=True)
+        with mock.patch.object(pbip_generator.PowerBIProjectGenerator,
+                               'create_tmdl_model') as build:
+            result = self._batch()
+        self.assertEqual(result, migrate.ExitCode.BATCH_PARTIAL_FAIL)
+        build.assert_not_called()
+        self._assert_diagnostics(expect_pbip=True)
+
+    def test_failed_extraction_repair_keeps_fragments_and_failure(self):
+        _package(self.sources, refused=True)
+        with mock.patch.object(pbip_generator.PowerBIProjectGenerator, 'generate_project',
+                               side_effect=RuntimeError('Synthetic repair failure')):
+            result = self._batch()
+        self.assertEqual(result, migrate.ExitCode.BATCH_PARTIAL_FAIL)
+        manifest, _ = self._assert_diagnostics()
+        repair_failure = manifest['failure']['diagnostic_repair_failure']
+        self.assertEqual(repair_failure['stage'], 'diagnostic_recovery')
+        self.assertIn('Synthetic repair failure', repair_failure['message'])
+        self.assertEqual(_read_json(self.project / 'migration_failure.json')
+                         ['completion_marker'], 'withheld')
+
+    def test_recovery_failure_retracts_unconfirmed_partial_marker(self):
+        _package(self.sources, composite=True)
+        with mock.patch.object(migrate, '_write_partial_salvage',
+                               side_effect=RuntimeError('Synthetic recovery failure')) as salvage:
+            result = self._batch()
+        self.assertEqual(result, migrate.ExitCode.SUCCESS)
+        salvage.assert_not_called()
+        self.assertTrue((self.project / 'Recovery.pbip').is_file())
+        self._assert_tolerated_composite_join()
+
     def test_strict_extraction_refusal_never_builds_or_recovers_semantics(self):
         _package(self.sources, refused=True)
         with mock.patch.object(

@@ -414,6 +414,7 @@ _STATIC_URL_SCHEMES = ('http://', 'https://', 'mailto:', '//')
 _TEXTBOX_VERTICAL_PADDING = 16
 _MIGRATION_SUMMARY_STATUS_MARKER = '__TTPBI_STATIC_PROJECT_STATUS__'
 _MIGRATION_SUMMARY_DISPLAY_NAMES = ('Migration Summary', 'Bilan de migration')
+_MIGRATION_SUMMARY_ANNOTATION = {'name': 'MigrationSummaryStatus', 'value': 'v1'}
 
 #: A Tableau URL action interpolates fields as ``<field>`` or ``<[ds].[col]>``.
 _URL_FIELD_PLACEHOLDER = re.compile(r'<[^>]+>')
@@ -624,7 +625,7 @@ class PowerBIProjectGenerator:
                          composite_threshold=None, agg_tables='none',
                          incremental_refresh=False, incremental_refresh_months=12,
                          parameterize=True, optimize_dax=False, time_intelligence='none',
-                         strict_generation=False):
+                         strict_generation=False, _diagnostic_error=None):
         self._partial_staging_dir = None
         try:
             return self._generate_project_impl(
@@ -632,7 +633,7 @@ class PowerBIProjectGenerator:
                 culture, model_mode, output_format, paginated, languages,
                 composite_threshold, agg_tables, incremental_refresh,
                 incremental_refresh_months, parameterize, optimize_dax,
-                time_intelligence, strict_generation)
+                time_intelligence, strict_generation, _diagnostic_error)
         finally:
             staging = self._partial_staging_dir
             if staging and os.path.isdir(staging):
@@ -644,7 +645,8 @@ class PowerBIProjectGenerator:
                               composite_threshold=None, agg_tables='none',
                               incremental_refresh=False, incremental_refresh_months=12,
                               parameterize=True, optimize_dax=False,
-                              time_intelligence='none', strict_generation=False):
+                              time_intelligence='none', strict_generation=False,
+                              diagnostic_error=None):
         """
         Generates a complete Power BI Project
 
@@ -660,6 +662,8 @@ class PowerBIProjectGenerator:
             str: Path to the generated project
         """
 
+        if diagnostic_error is not None and (strict_generation or output_format != 'pbip'):
+            raise ValueError('Diagnostic repair requires non-strict PBIP generation')
         from powerbi_import.telemetry import PhaseTimingCollector
 
         phase_timings = PhaseTimingCollector().start()
@@ -692,13 +696,22 @@ class PowerBIProjectGenerator:
         self._incremental_refresh_months = incremental_refresh_months
         self._parameterize = parameterize
         self._partial_generation = False
+        self._partial_recovery_scope = None
+        self._tolerate_unrepresentable_physical_joins = (
+            not strict_generation and (output_format or 'pbip') == 'pbip')
+        self._physical_join_diagnostics = []
+        self._migration_source_counts = {
+            'datasources': len(converted_objects.get('datasources', [])),
+            'calculations': len(converted_objects.get('calculations', [])),
+        }
         self._migration_summary_visual_relative_path = None
 
         # Preprocess model metadata using optional fidelity enhancers.
         with phase_timings.phase('fidelity_preprocess'):
-            converted_objects = self._preprocess_for_fidelity(
-                report_name, converted_objects,
-            )
+            if diagnostic_error is None:
+                converted_objects = self._preprocess_for_fidelity(
+                    report_name, converted_objects,
+                )
 
         # Detect datasource-only mode (.tds â€” no worksheets/dashboards)
         self._datasource_only = not bool(
@@ -710,9 +723,15 @@ class PowerBIProjectGenerator:
             with phase_timings.phase('semantic_model'):
                 from powerbi_import.errors import PartialGenerationError
                 try:
-                    sm_dir = self.create_semantic_model_structure(
-                        project_dir, report_name, converted_objects,
-                    )
+                    if diagnostic_error is None:
+                        sm_dir = self.create_semantic_model_structure(
+                            project_dir, report_name, converted_objects,
+                        )
+                    else:
+                        sm_dir = self.create_semantic_model_structure(
+                            project_dir, report_name, converted_objects,
+                            diagnostic_error=diagnostic_error,
+                        )
                 except PartialGenerationError as exc:
                     if strict_generation or self._output_format != 'pbip':
                         raise
@@ -761,6 +780,7 @@ class PowerBIProjectGenerator:
                         }
                         _write_json(os.path.join(project_dir, 'partial_generation.json'), diagnostic)
                         self._partial_generation = True
+                        self._partial_recovery_scope = 'unaffected_model_and_visuals'
                         converted_objects = repaired
                     sm_dir = os.path.join(project_dir, f'{report_name}.SemanticModel')
             print(f"  âœ“ SemanticModel created: {sm_dir}")
@@ -787,6 +807,9 @@ class PowerBIProjectGenerator:
             if self._partial_generation:
                 metadata['partial_diagnostic'] = 'partial_generation.json'
                 metadata['validation_status'] = 'FAIL'
+            if self._physical_join_diagnostics:
+                metadata['generation_diagnostics'] = 'generation_diagnostics.json'
+                metadata['relationship_status'] = 'partial'
             _write_json(metadata_path, metadata)
         print("  âœ“ Metadata created")
 
@@ -851,8 +874,12 @@ class PowerBIProjectGenerator:
         print(f"  ✓ .pbip file created: {pbip_file}")
         self.last_phase_timings = phase_timings.finish()
 
-        print(f"\nâœ… Power BI Project generated: {project_dir}")
-        print(f"   ðŸ“‚ Open in Power BI Desktop: {pbip_file}")
+        if self._partial_generation:
+            print(f"\n[PARTIAL] Diagnostic Power BI project, not validated: {project_dir}")
+            print(f"   Repair PBIP: {pbip_file}")
+        else:
+            print(f"\nâœ… Power BI Project generated: {project_dir}")
+            print(f"   ðŸ“‚ Open in Power BI Desktop: {pbip_file}")
 
         return project_dir
 
@@ -995,7 +1022,10 @@ class PowerBIProjectGenerator:
             'schema_version': '1.0', 'status': 'partial',
             'validation_status': 'FAIL', 'data_retained': False,
             'recovery_scope': 'data_free_page_outlines',
-            'errors': [{**error.to_dict(), 'stage': 'semantic_model',
+            'errors': [{**error.to_dict(), 'stage': (
+                            'extraction' if error.recovery_kind == 'incomplete_extraction'
+                            else 'report' if error.recovery_kind == 'ambiguous_visual_binding'
+                            else 'semantic_model'),
                         'message': message,
                         'impact': 'All source data bindings, calculations, filters, '
                                   'relationships, actions and security roles are excluded. '
@@ -1015,6 +1045,7 @@ class PowerBIProjectGenerator:
         }
         _write_json(os.path.join(project_dir, 'partial_generation.json'), diagnostic)
         self._partial_generation = True
+        self._partial_recovery_scope = 'data_free_page_outlines'
         logger.error('Partial repair project generated; no source data retained: %s', message)
         return {'datasources': [], 'worksheets': [], 'dashboards': dashboards}
 
@@ -1224,7 +1255,8 @@ class PowerBIProjectGenerator:
         atomic_write_text(pbip_file, json.dumps(pbip_content, indent=2))
         return pbip_file
 
-    def create_semantic_model_structure(self, project_dir, report_name, converted_objects):
+    def create_semantic_model_structure(self, project_dir, report_name, converted_objects,
+                                        diagnostic_error=None):
         """Creates the SemanticModel structure (format identical to PBI Hero reference)"""
 
         sm_dir = os.path.join(project_dir, f"{report_name}.SemanticModel")
@@ -1256,6 +1288,8 @@ class PowerBIProjectGenerator:
         _write_json(pbism_file, pbism_definition)
 
         # 3. Create SemanticModel in TMDL (format identical to PBI Hero reference)
+        if diagnostic_error is not None:
+            raise diagnostic_error
         self.create_tmdl_model(sm_dir, report_name, converted_objects)
 
         return sm_dir
@@ -1284,6 +1318,8 @@ class PowerBIProjectGenerator:
             'calculations': converted_objects.get('calculations', []),
             'hyper_files': converted_objects.get('hyper_files', []),
         }
+        if getattr(self, '_tolerate_unrepresentable_physical_joins', False):
+            extra_objects['_tolerate_unrepresentable_physical_joins'] = True
 
         try:
             # Direct Tableau -> TMDL generation (no intermediate BIM layer)
@@ -1305,6 +1341,17 @@ class PowerBIProjectGenerator:
                 optimize_dax=getattr(self, '_optimize_dax', False),
                 time_intelligence=getattr(self, '_time_intelligence', 'none'),
             )
+            self._physical_join_diagnostics = list(
+                stats.get('physical_join_diagnostics') or [])
+            if self._physical_join_diagnostics:
+                _write_json(os.path.join(
+                    os.path.dirname(sm_dir), 'generation_diagnostics.json'), {
+                        'schema_version': '1.0',
+                        'status': 'partial',
+                        'validation_status': 'WARN',
+                        'data_retained': True,
+                        'diagnostics': self._physical_join_diagnostics,
+                    })
 
             print("  \u2713 TMDL model created with:")
             print(f"    - {stats['tables']} tables")
@@ -2098,33 +2145,48 @@ class PowerBIProjectGenerator:
             )
 
         partial_generation = getattr(self, '_partial_generation', False)
+        physical_join_diagnostics = list(
+            getattr(self, '_physical_join_diagnostics', []) or [])
+        has_join_omissions = bool(physical_join_diagnostics)
+        data_free = getattr(self, '_partial_recovery_scope', None) == 'data_free_page_outlines'
+        source_counts = getattr(self, '_migration_source_counts', {}) if partial_generation else {}
+        datasource_count = source_counts.get('datasources', len(converted_objects.get('datasources', [])))
+        calculation_count = source_counts.get('calculations', len(converted_objects.get('calculations', [])))
         if is_french:
             title = 'Bilan de migration'
-            generation_status = ('Génération partielle' if partial_generation
-                                 else 'Génération terminée')
+            generation_status = (
+                'Génération partielle' if partial_generation else
+                'Génération terminée avec jointure(s) omise(s)'
+                if has_join_omissions else 'Génération terminée')
             status_label = 'Contrôles statiques : '
             kpi_heading = 'Indicateurs de migration'
             kpi_lines = [
-                f"Sources de données : {len(converted_objects.get('datasources', []))}"
+                f"{'Sources de données récupérées' if partial_generation else 'Sources de données'} : {datasource_count}"
                 f"     Tables générées : {table_count}",
-                f"Calculs extraits : {len(converted_objects.get('calculations', []))}"
+                f"{'Calculs source récupérés' if partial_generation else 'Calculs extraits'} : {calculation_count}"
                 f"     Mesures générées : {len(measures)}",
-                f"Pages métier : {len(page_names)}     Visuels métier générés : {visual_count}",
+                (f"Pages récupérées : {max(0, len(page_names) - 1)}     Visuels liés aux données : 0"
+                 if data_free else
+                 f"Pages métier : {len(page_names)}     Visuels métier générés : {visual_count}"),
             ]
             note = ('Actualisation dans Power BI Service, disponibilité des sources et '
                     'parité des données/visuels non vérifiées ici.')
         else:
             title = 'Migration Summary'
-            generation_status = ('Partial generation' if partial_generation
-                                 else 'Generation complete')
+            generation_status = (
+                'Partial generation' if partial_generation else
+                'Generation complete with omitted relationship(s)'
+                if has_join_omissions else 'Generation complete')
             status_label = 'Static project checks: '
             kpi_heading = 'Migration KPIs'
             kpi_lines = [
-                f"Data sources: {len(converted_objects.get('datasources', []))}"
+                f"{'Recovered data sources' if partial_generation else 'Data sources'}: {datasource_count}"
                 f"     Model tables: {table_count}",
-                f"Source calculations: {len(converted_objects.get('calculations', []))}"
+                f"{'Recovered source calculations' if partial_generation else 'Source calculations'}: {calculation_count}"
                 f"     Generated measures: {len(measures)}",
-                f"Business pages: {len(page_names)}     Business visuals generated: {visual_count}",
+                (f"Recovered page outlines: {max(0, len(page_names) - 1)}     Data-bound visuals: 0"
+                 if data_free else
+                 f"Business pages: {len(page_names)}     Business visuals generated: {visual_count}"),
             ]
             note = ('Power BI Service refresh, source availability, and visual/value parity '
                     'were not verified here.')
@@ -2132,9 +2194,10 @@ class PowerBIProjectGenerator:
         text_runs = [
             {'text': title + '\n', 'bold': True, 'font_size': 26, 'color': '#004B87'},
             {'text': generation_status + '\n', 'bold': True, 'font_size': 20,
-             'color': '#107C10' if not partial_generation else '#9A6700'},
+             'color': '#107C10' if not (partial_generation or has_join_omissions)
+             else '#9A6700'},
             {'text': status_label, 'bold': True, 'font_size': 17},
-            {'text': _MIGRATION_SUMMARY_STATUS_MARKER + '\n', 'bold': True,
+            {'text': ('Non exécuté' if is_french else 'Not run') + '\n', 'bold': True,
              'font_size': 17, 'color': '#6B7280'},
             {'text': kpi_heading + '\n', 'bold': True, 'font_size': 18,
              'color': '#323130'},
@@ -2143,6 +2206,42 @@ class PowerBIProjectGenerator:
             {'text': line + '\n', 'font_size': 15, 'color': '#323130'}
             for line in kpi_lines
         )
+        if physical_join_diagnostics:
+            heading = ('Jointure(s) omise(s) — à corriger manuellement :\n'
+                       if is_french else
+                       'Omitted join(s) — manual repair needed:\n')
+            text_runs.append({
+                'text': heading, 'bold': True, 'font_size': 15,
+                'color': '#9A6700',
+            })
+            for diagnostic in physical_join_diagnostics[:4]:
+                source = diagnostic.get('source') or 'source inconnue'
+                aliases = ', '.join(diagnostic.get('aliases') or []) or 'tables inconnues'
+                line = (
+                    f"Jointure omise ({source}) : {aliases}. "
+                    'La relation n’a pas été émise; vérifier les visuels dépendants.'
+                    if is_french else
+                    f"Join omitted ({source}): {aliases}. "
+                    'No relationship was emitted; review dependent visuals.'
+                )
+                text_runs.append({
+                    'text': line + '\n', 'font_size': 12, 'color': '#605E5C',
+                })
+            if len(physical_join_diagnostics) > 4:
+                more = len(physical_join_diagnostics) - 4
+                text_runs.append({
+                    'text': (f"Et {more} autre(s); détails dans generation_diagnostics.json.\n"
+                             if is_french else
+                             f"And {more} more; see generation_diagnostics.json.\n"),
+                    'font_size': 12, 'color': '#605E5C',
+                })
+            else:
+                text_runs.append({
+                    'text': ('Détails : generation_diagnostics.json\n'
+                             if is_french else
+                             'Details: generation_diagnostics.json\n'),
+                    'font_size': 12, 'color': '#605E5C',
+                })
         text_runs.append({'text': '\n' + note, 'font_size': 11, 'color': '#605E5C'})
         old_width = getattr(self, '_current_page_width', None)
         old_height = getattr(self, '_current_page_height', None)
@@ -2153,6 +2252,7 @@ class PowerBIProjectGenerator:
                 {'position': {'x': 40, 'y': 32, 'w': 1200, 'h': 640},
                  'text_runs': text_runs},
                 1, 1, 0,
+                annotations=[_MIGRATION_SUMMARY_ANNOTATION],
             )
         finally:
             if old_width is None:
@@ -2192,15 +2292,32 @@ class PowerBIProjectGenerator:
             except (OSError, ValueError):
                 continue
             changed = False
+            annotations = visual_json.get('annotations', [])
+            is_summary = _MIGRATION_SUMMARY_ANNOTATION in annotations
+            is_french = page_name == 'Bilan de migration'
+            status_label = 'Contrôles statiques : ' if is_french else 'Static project checks: '
             general = (visual_json.get('visual', {}).get('objects', {})
                        .get('general', []))
             paragraphs = (general[0].get('properties', {}).get('paragraphs', [])
                           if general and isinstance(general[0], dict) else [])
             for paragraph in paragraphs:
-                for run in paragraph.get('textRuns', []):
-                    if run.get('value') != _MIGRATION_SUMMARY_STATUS_MARKER:
+                runs = paragraph.get('textRuns', [])
+                for index, run in enumerate(runs):
+                    if (partial and is_summary and run.get('value') in
+                            ('Generation complete', 'Génération terminée')):
+                        run['value'] = ('Génération partielle' if is_french
+                                        else 'Partial generation')
+                        run.setdefault('textStyle', {})['color'] = '#9A6700'
+                        changed = True
+                    legacy_marker = run.get('value') == _MIGRATION_SUMMARY_STATUS_MARKER
+                    labelled_status = (is_summary and index > 0
+                                       and runs[index - 1].get('value') == status_label)
+                    if not (legacy_marker or labelled_status):
                         continue
-                    is_french = page_name == 'Bilan de migration'
+                    if legacy_marker and not is_summary:
+                        visual_json.setdefault('annotations', []).append(
+                            _MIGRATION_SUMMARY_ANNOTATION)
+                        is_summary = True
                     if partial:
                         value = ('Partielle — consulter le diagnostic de migration'
                                  if is_french else
@@ -2390,7 +2507,8 @@ class PowerBIProjectGenerator:
             return 0
         return int(math.ceil(largest * 4 / 3 * 1.2)) + _TEXTBOX_VERTICAL_PADDING
 
-    def _create_visual_textbox(self, visuals_dir, obj, scale_x, scale_y, visual_count):
+    def _create_visual_textbox(self, visuals_dir, obj, scale_x, scale_y, visual_count,
+                               annotations=None):
         """Create a textbox visual from a Tableau text object.
 
         Supports rich text with bold, italic, color, font_size, and URLs
@@ -2425,6 +2543,8 @@ class PowerBIProjectGenerator:
                 }
             }
         }
+        if annotations is not None:
+            visual_json['annotations'] = annotations
         unknown_transparency, raw_transparency = _tableau_background_transparency(obj)
         if unknown_transparency:
             _note_unmapped_background_transparency(

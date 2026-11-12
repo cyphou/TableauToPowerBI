@@ -81,6 +81,22 @@ class TestStaticValidatorSource(unittest.TestCase):
             errs = StaticValidatorSource().collect(tmp)
             self.assertTrue(any(e.artifact == "visual" for e in errs))
 
+    def test_detects_broken_shared_m_expression(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_project(tmp)
+            expressions = os.path.join(
+                tmp, "T.SemanticModel", "definition", "expressions.tmdl")
+            with open(expressions, "w", encoding="utf-8") as fh:
+                fh.write("expression 'Shared Query' =\n"
+                         "\t\tlet Source = Table.X(a\n"
+                         "\t\tin Source\n")
+
+            errs = StaticValidatorSource().collect(tmp)
+
+            self.assertTrue(any(e.artifact == "m" and
+                                e.location == "'Shared Query'"
+                                for e in errs), errs)
+
 
 class TestDeterministicHeal(unittest.TestCase):
     def test_heals_project_clean(self):

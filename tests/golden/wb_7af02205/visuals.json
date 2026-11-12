@@ -1,5 +1,5 @@
 {
- "visual_count": 7,
+ "visual_count": 8,
  "visuals": [
   {
    "fields": 2,
@@ -91,6 +91,19 @@
    "x": 0,
    "y": 594,
    "z": 3000
+  },
+  {
+   "fields": 0,
+   "has_format": true,
+   "height": 640,
+   "page": "Migration Summary",
+   "title_font": "",
+   "title_size": "",
+   "type": "textbox",
+   "width": 1200,
+   "x": 40,
+   "y": 32,
+   "z": 0
   }
  ]
 }

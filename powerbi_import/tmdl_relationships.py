@@ -145,14 +145,58 @@ def preserve_physical_join_provenance(datasources, merged_datasource):
 
 
 def preflight_physical_joins(datasources, *, provenance_retained=True,
-                             allow_nested_retention=False):
+                             allow_nested_retention=False,
+                             tolerate_unrepresentable=False):
     """Reject active physical joins whose complete row predicate is not retained.
 
     Exact materialized extracts replace the active source tree during Tableau
     extraction. A bare materialization claim or historical native metadata does
     not. Shared-model preflight may temporarily allow a nested tree only so its
-    dedicated remapper can prove and retain the complete scope.
+    dedicated remapper can prove and retain the complete scope. PBIP callers
+    may opt to receive omission diagnostics instead of an exception; this does
+    not make any partial equality safe to emit.
     """
+    diagnostics = []
+    omitted_pairs = {}
+
+    def omit(source, item, aliases, message, required_evidence):
+        source_key = str(source or '')
+        display_pairs = [
+            sorted((left_alias, right_alias), key=str.casefold)
+            for left_alias in aliases.get('left', ())
+            for right_alias in aliases.get('right', ())
+            if left_alias.casefold() != right_alias.casefold()
+        ]
+        pair_keys = {tuple(value.casefold() for value in pair)
+                     for pair in display_pairs}
+        diagnostic = {
+            'code': 'physical_join_omitted',
+            'severity': 'warning',
+            'source': source_key,
+            'item': item,
+            'aliases': sorted(
+                set(aliases.get('left', ())) | set(aliases.get('right', ())),
+                key=str.casefold,
+            ),
+            'omitted_relationship_pairs': [list(pair) for pair in sorted(set(
+                tuple(pair) for pair in display_pairs))],
+            'omitted_relationships': [],
+            'message': message,
+            'impact': ('No Power BI model relationship was emitted for the affected '
+                       'table pair. Dependent measures or visuals may be blank or '
+                       'incorrect until the join is materialized or repaired.'),
+            'required_evidence': list(required_evidence),
+        }
+        diagnostics.append(diagnostic)
+        for pair in pair_keys:
+            omitted_pairs.setdefault((source_key, pair), diagnostic)
+
+    def reject_or_record(error, source, item, left, right):
+        if not tolerate_unrepresentable:
+            raise error
+        omit(source, item, {'left': left, 'right': right}, str(error),
+             error.required_evidence)
+
     for datasource in datasources or []:
         if not isinstance(datasource, dict):
             continue
@@ -175,7 +219,7 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
             )
             if not provenance_retained:
                 message += ' The merge would discard the required physical join scope.'
-            raise PartialGenerationError(
+            error = PartialGenerationError(
                 message,
                 item=f'relation_metadata.{path}',
                 source=datasource.get('name') or datasource.get('caption'),
@@ -186,6 +230,9 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
                     'Preserved join scope and declared equality relationships',
                 ],
             )
+            reject_or_record(
+                error, datasource.get('name') or datasource.get('caption'),
+                f'relation_metadata.{path}', left, right)
 
         if scopes:
             allowed = {
@@ -202,17 +249,38 @@ def preflight_physical_joins(datasources, *, provenance_retained=True,
                 edge = ((left_side.get('table'), left_side.get('column')),
                         (right_side.get('table'), right_side.get('column')))
                 pair = frozenset((edge[0][0], edge[1][0]))
+                source_key = str(datasource.get('name') or datasource.get('caption') or '')
+                pair_key = tuple(sorted(
+                    (str(edge[0][0]).casefold(), str(edge[1][0]).casefold())))
+                if (source_key, pair_key) in omitted_pairs:
+                    diagnostic = omitted_pairs[source_key, pair_key]
+                    diagnostic['omitted_relationships'].append({
+                        'from_table': edge[0][0], 'from_column': edge[0][1],
+                        'to_table': edge[1][0], 'to_column': edge[1][1],
+                    })
+                    continue
                 if (pair in scopes and relation.get('inferred') is True
                         and frozenset(edge) not in allowed):
-                    raise PartialGenerationError(
+                    error = PartialGenerationError(
                         'An inferred relationship conflicts with the declared '
                         'physical join predicate.',
+                        item='relationships',
                         source=datasource.get('name') or datasource.get('caption'),
                         recovery_kind='physical_join_predicate',
                         required_evidence=[
                             'Relationship endpoints matching the complete declared physical equality',
                         ],
                     )
+                    reject_or_record(
+                        error, source_key, 'relationships',
+                        {edge[0][0]}, {edge[1][0]})
+                    diagnostic = omitted_pairs.get((source_key, pair_key))
+                    if diagnostic is not None:
+                        diagnostic['omitted_relationships'].append({
+                            'from_table': edge[0][0], 'from_column': edge[0][1],
+                            'to_table': edge[1][0], 'to_column': edge[1][1],
+                        })
+    return diagnostics
 
 
 def _composite_equality_terms(predicate, left_alias, right_alias):

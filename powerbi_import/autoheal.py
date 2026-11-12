@@ -37,7 +37,10 @@ from typing import Any, Dict, List, Optional
 # Deterministic healers
 from powerbi_import.dax_healing import heal_dax
 from powerbi_import.m_healing import heal_m
-from powerbi_import.openability import extract_m_partitions as _extract_m_partitions
+from powerbi_import.openability import (
+    extract_m_partitions as _extract_m_partitions,
+    extract_shared_m_expressions as _extract_shared_m_expressions,
+)
 from powerbi_import.visual_healing import heal_visual
 
 # isort: split
@@ -162,6 +165,9 @@ class StaticValidatorSource(ErrorSource):
                     continue
                 for issue in validate_m_query(m_expr):
                     errors.append(ErrorRecord("m", tmdl, pname, issue))
+            for name, m_expr in _extract_shared_m_expressions(text):
+                for issue in validate_m_query(m_expr):
+                    errors.append(ErrorRecord("m", tmdl, name, issue))
         for vf in _iter_visuals(project_dir):
             data = _read_json(vf)
             if data is None:

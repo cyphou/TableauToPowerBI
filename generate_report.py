@@ -1121,8 +1121,8 @@ def generate_batch_dashboard(output_dir, workbook_results):
 
     # ── Run offline artifact validation per workbook ──────────────
     pbi_validation = {}
-    for name in workbook_results:
-        pbip_dir = os.path.join(output_dir, name)
+    for name, paths in workbook_results.items():
+        pbip_dir = paths.get("project_dir") or os.path.join(output_dir, name)
         if os.path.isdir(pbip_dir):
             try:
                 from powerbi_import.validator import ArtifactValidator

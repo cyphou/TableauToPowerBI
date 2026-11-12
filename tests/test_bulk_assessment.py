@@ -8,6 +8,7 @@ Covers:
 """
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -83,6 +84,33 @@ def _make_twbx_stub(directory, name):
 
 class TestBulkAssessmentMode(unittest.TestCase):
     """Test run_bulk_assessment_mode CLI handler."""
+
+    def test_prep_portfolio_writes_cross_flow_lineage_reports(self):
+        from migrate import ExitCode, run_bulk_assessment_mode
+        from tests.prep_flow_fixtures import clean_chain, write_flow
+
+        with tempfile.TemporaryDirectory() as td:
+            for folder in ('north', 'south'):
+                directory = os.path.join(td, folder)
+                os.mkdir(directory)
+                write_flow(directory, clean_chain(), 'flow.tfl')
+            args = MagicMock()
+            args.bulk_assess = td
+            args.output_dir = os.path.join(td, 'output')
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                result = run_bulk_assessment_mode(args)
+                captured = sys.stdout.getvalue()
+            finally:
+                sys.stdout = old_stdout
+            self.assertEqual(result, ExitCode.SUCCESS)
+            for name in ('prep_lineage_report.html', 'prep_lineage.json'):
+                self.assertTrue(os.path.isfile(os.path.join(args.output_dir, 'prep_lineage', name)), captured)
+            with open(os.path.join(args.output_dir, 'prep_lineage', 'prep_lineage.json'),
+                      encoding='utf-8') as stream:
+                lineage = json.load(stream)
+            self.assertEqual(len({flow['name'] for flow in lineage['flows']}), 2)
 
     def test_nonexistent_directory(self):
         """--bulk-assess with nonexistent directory returns error."""

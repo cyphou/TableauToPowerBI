@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import migrate
 
@@ -79,6 +80,11 @@ class TestClassifyDax(unittest.TestCase):
 
     def test_unsupported_makepoint(self):
         dax = '/* MAKEPOINT: no DAX spatial equivalent */ BLANK( /*'
+        self.assertEqual(MigrationReport._classify_dax(dax), 'unsupported')
+
+    def test_dax_conversion_failure_placeholder_is_unsupported(self):
+        dax = ('/* TODO: DAX conversion validation failed for measure: '
+               'MAKEPOINT has no scalar DAX equivalent */ BLANK()')
         self.assertEqual(MigrationReport._classify_dax(dax), 'unsupported')
 
     def test_unsupported_script(self):
@@ -248,6 +254,22 @@ class TestBulkMethods(unittest.TestCase):
         r.add_parameters([{'name': 'TopN', 'domain_type': 'range'}])
         self.assertEqual(r.items[0]['category'], 'parameter')
 
+    def test_omitted_physical_join_is_an_unsupported_relationship_item(self):
+        r = MigrationReport("T")
+        r.add_generation_diagnostics([{
+            'code': 'physical_join_omitted',
+            'source': 'Synthetic',
+            'omitted_relationship_pairs': [['Zone', 'Household']],
+            'impact': 'Dependent visuals require manual review.',
+        }])
+
+        self.assertEqual(len(r.items), 1)
+        self.assertEqual(r.items[0]['category'], 'relationship')
+        self.assertEqual(r.items[0]['name'], 'Synthetic: Zone → Household')
+        self.assertEqual(r.items[0]['status'], MigrationReport.UNSUPPORTED)
+        self.assertIn('generation_diagnostics.json', r.items[0]['note'])
+        self.assertIn('Migration Summary', r.items[0]['note'])
+
     def test_add_hierarchies(self):
         r = MigrationReport("T")
         r.add_hierarchies([{'name': 'Geo', 'levels': ['Country', 'State', 'City']}])
@@ -366,6 +388,44 @@ class TestSerialization(unittest.TestCase):
             r = MigrationReport("Test")
             path = r.save(nested)
             self.assertTrue(os.path.exists(path))
+
+    def test_batch_report_loads_omitted_join_from_project_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            extract_dir = os.path.join(tmpdir, 'extract')
+            project_dir = os.path.join(tmpdir, 'Synthetic')
+            os.makedirs(extract_dir)
+            os.makedirs(project_dir)
+            with open(os.path.join(project_dir, 'generation_diagnostics.json'),
+                      'w', encoding='utf-8') as stream:
+                json.dump({
+                    'schema_version': '1.0',
+                    'diagnostics': [{
+                        'code': 'physical_join_omitted',
+                        'source': 'Synthetic',
+                        'omitted_relationship_pairs': [['Zone', 'Household']],
+                        'impact': 'Dependent visuals require manual review.',
+                    }],
+                }, stream)
+
+            with mock.patch.object(migrate, '_get_extract_dir', return_value=extract_dir), \
+                    mock.patch.object(migrate, '_load_json', return_value=[]), \
+                    mock.patch.object(migrate, '_build_calc_map_from_tmdl', return_value={}):
+                summary = migrate.run_migration_report('Synthetic', output_dir=tmpdir)
+
+            report_paths = [
+                os.path.join(tmpdir, name) for name in os.listdir(tmpdir)
+                if name.startswith('migration_report_Synthetic_') and name.endswith('.json')
+            ]
+            self.assertEqual(len(report_paths), 1)
+            with open(report_paths[0], encoding='utf-8') as stream:
+                report = json.load(stream)
+            join_item, = [item for item in report['items']
+                          if item['category'] == 'relationship']
+            self.assertEqual(join_item['name'], 'Synthetic: Zone → Household')
+            self.assertEqual(join_item['status'], MigrationReport.UNSUPPORTED)
+            self.assertIn('generation_diagnostics.json', join_item['note'])
+            self.assertEqual(
+                summary['by_category']['relationship']['unsupported'], 1)
 
 
 class TestPrintSummary(unittest.TestCase):

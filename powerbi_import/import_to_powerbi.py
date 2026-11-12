@@ -192,6 +192,7 @@ class PowerBIImporter:
     def __init__(self, source_dir=None):
         self.source_dir = source_dir or os.environ.get('TTPBI_EXTRACT_DIR', 'tableau_export/')
         self.last_generation_timings = None
+        self.last_generation_status = None
 
     def import_all(self, generate_pbip=True, report_name=None, output_dir=None,
                    calendar_start=None, calendar_end=None, culture=None,
@@ -265,6 +266,8 @@ class PowerBIImporter:
             if output_format == 'fabric':
                 print("[OK] Fabric project generated with local static validation")
                 print("   Fabric refresh and deployment were not run")
+            elif self.last_generation_status == 'partial':
+                print("[PARTIAL] Diagnostic PBIP generated; migration is not validated")
             else:
                 print("[OK] Power BI Projects (.pbip) generated automatically")
                 print("   Open the .pbip files in Power BI Desktop")
@@ -427,7 +430,10 @@ class PowerBIImporter:
                                                        time_intelligence=time_intelligence,
                                                        strict_generation=strict_generation)
             self.last_generation_timings = generator.last_phase_timings
-            print(f"  [OK] Power BI Project created: {project_path}")
+            self.last_generation_status = (
+                'partial' if generator._partial_generation else 'complete')
+            label = 'PARTIAL' if self.last_generation_status == 'partial' else 'OK'
+            print(f"  [{label}] Power BI Project created: {project_path}")
 
         except Exception as e:
             print(f"  [ERROR] Error generating Power BI Project: {str(e)}")

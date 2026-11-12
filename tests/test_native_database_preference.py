@@ -1210,9 +1210,11 @@ class TestNativeDatabaseProducerConsumer(NativeDatabaseFixture):
             project = self._generate(metadata, extracted, "mapped", importer=True)
             self._post(workbook, project, metadata)
             self._assert_native_m(project)
-            visuals = list((Path(project) / (REPORT + ".Report")).rglob("visual.json"))
+            visuals = [json.loads(path.read_text(encoding="utf-8"))["visual"]
+                       for path in (Path(project) / (REPORT + ".Report")).rglob("visual.json")]
+            visuals = [visual for visual in visuals if "query" in visual]
             self.assertEqual(len(visuals), 1)
-            visual = json.loads(visuals[0].read_text(encoding="utf-8"))["visual"]
+            visual = visuals[0]
             state = visual["query"]["queryState"]
             self.assertEqual(state["Category"]["projections"][0]["field"], {"Column": {
                 "Expression": {"SourceRef": {"Entity": "Regions Model"}},
@@ -1374,9 +1376,11 @@ class TestNativeDatabaseColumnNormalization(NativeDatabaseFixture):
                 metadata, extracted, "renamed-worksheet", importer=True)
             self._post(workbook, project, metadata)
             self._assert_native_m(project, captions=captions)
-            visuals = list((Path(project) / (REPORT + ".Report")).rglob("visual.json"))
+            visuals = [json.loads(path.read_text(encoding="utf-8"))["visual"]
+                       for path in (Path(project) / (REPORT + ".Report")).rglob("visual.json")]
+            visuals = [visual for visual in visuals if "query" in visual]
             self.assertEqual(len(visuals), 1)
-            visual = json.loads(visuals[0].read_text(encoding="utf-8"))["visual"]
+            visual = visuals[0]
             state = visual["query"]["queryState"]
             self.assertEqual(state["Category"]["projections"][0]["field"], {"Column": {
                 "Expression": {"SourceRef": {"Entity": "Regions Model"}},
