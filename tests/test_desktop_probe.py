@@ -118,6 +118,7 @@ class TestNativeToolingFailures(unittest.TestCase):
         self.assertEqual(report.status, "tooling_unavailable")
         self.assertEqual(report.native_error, self.failure)
         self.assertEqual(report.note, "powershell_launch_failed")
+        self.assertEqual(report.save["status"], "not_attempted")
         self.assertIsNone(report.screenshot)
         self.assertFalse(report.screenshot_data_verified)
         launch.assert_not_called()

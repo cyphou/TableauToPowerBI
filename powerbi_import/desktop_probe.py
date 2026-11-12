@@ -491,6 +491,11 @@ def probe_desktop_open(pbip_path: str, *, settle: float = 20, timeout: float = 9
     Best-effort: returns a DesktopProbeReport; never raises.
     """
     report = DesktopProbeReport(pbip_path=pbip_path)
+    if refresh:
+        report.save = {
+            "status": "not_attempted",
+            "note": "refresh_not_verified",
+        }
     try:
         timeout = _positive_timeout(timeout)
         settle = float(settle)
