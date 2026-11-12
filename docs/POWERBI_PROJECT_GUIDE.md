@@ -57,20 +57,24 @@ Data/                              # Unchanged packaged Excel copies and/or Hype
 Generated PBIR reports, including thin reports, append a text-only **Migration
 Summary** page. With a French culture it is named **Bilan de migration**. It
 shows generation status and counts for data sources, model tables, extracted
-calculations, generated measures, report pages and visuals. The page and visual
-counts exclude the summary itself; page counts can include generated tooltip,
-mobile and drill-through pages. For report-only paths, model counts may use
-available model metadata or source-calculation fallbacks.
+calculations, generated measures, report pages and visuals. When
+`lineage_map.json` is available, it also shows the lineage contract status,
+resolved and unresolved record counts, and counts by tables, columns,
+calculations and relationships. These lineage totals cover the contract's
+tracked model records, not all 23 extracted Tableau object types. The page and
+visual counts exclude the summary itself; page counts can include generated
+tooltip, mobile and drill-through pages. For report-only paths, model counts
+may use available model metadata or source-calculation fallbacks.
 
-The default openability gate normally fills in the static project-check result,
-including an advisory warning count or blocking status. If the gate is skipped
-with `--no-verify-open`, the status remains **Not run** (**Non exécuté** in
-French). If updating the page fails, it may not reflect the final gate result;
-check `openability_report.json` and the migration logs. The page is a
-generation-time snapshot: it does not update when the report is published or
-refreshed, and does not prove Service refresh, source availability, or visual
-and value parity. Review the separate quality and openability reports and
-validate those aspects independently.
+The default openability gate normally fills in the static project-check result
+and a findings summary with blocker/warning totals plus DAX and Power Query
+issue counts. If the gate is skipped with `--no-verify-open`, those fields
+remain **Not run** (**Non exécuté** in French). If updating the page fails, it
+may not reflect the final gate result; check `openability_report.json` and the
+migration logs. The page is a generation-time snapshot: it does not update when
+the report is published or refreshed, and does not prove Service refresh,
+source availability, or visual and value parity. Review the separate quality
+and openability reports and validate those aspects independently.
 
 ## 🚀 Opening a Power BI Project
 

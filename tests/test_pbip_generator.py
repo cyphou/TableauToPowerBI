@@ -737,8 +737,23 @@ class TestGenerateProject(unittest.TestCase):
                     if isinstance(run.get('value'), str))
             for paragraph in visual['objects']['general'][0]['properties']['paragraphs']
         )
+        with open(os.path.join(project_dir, 'lineage_map.json'), encoding='utf-8') as stream:
+            lineage = json.load(stream)
+        contract = lineage['contract']
+        coverage = contract['coverage']
+        resolved = sum(item['resolved_count'] for item in coverage.values())
+        targets = sum(item['target_count'] for item in coverage.values())
+        self.assertIn(
+            f"Lineage: {contract['status']}; {resolved}/{targets} tracked records resolved; "
+            f"{len(contract['unresolved'])} unresolved", text)
+        self.assertIn(
+            'By type: ' + ', '.join(
+                f'{name} {coverage[name]["resolved_count"]}/{coverage[name]["target_count"]}'
+                for name in ('tables', 'columns', 'calculations', 'relationships')),
+            text)
         for expected in (
                 'Generation complete', 'Static project checks: OK',
+            'Static findings: ', 'Lineage: ', 'By type: ',
                 'Data sources: 1', 'Model tables: 1', 'Generated measures: 0',
                 'Source calculations: 0', 'Business pages: 2',
                 'Business visuals generated: 1',
@@ -765,21 +780,33 @@ class TestGenerateProject(unittest.TestCase):
                              for paragraph in paragraphs)
 
         self.assertIn('Static project checks: Not run', summary_text())
+        self.assertIn('Static findings: Not run', summary_text())
         self.assertNotIn('__TTPBI_STATIC_PROJECT_STATUS__', summary_text())
         report = SimpleNamespace(openable=True, warnings=[], blocking_issues=[])
         self.gen.update_migration_summary_status(project_dir, report)
         self.assertIn('Static project checks: OK', summary_text())
+        self.assertIn('Static findings: Not run', summary_text())
         report.warnings = ['warning']
         self.gen.update_migration_summary_status(project_dir, report)
         self.assertIn('Static project checks: OK (1 warning)', summary_text())
         report.openable = False
         report.blocking_issues = ['blocker']
+        report.checks = [
+            SimpleNamespace(name='dax', ok=False, severity='error', issues=['d1', 'd2']),
+            SimpleNamespace(name='power_query', ok=False, severity='error', issues=['m1']),
+        ]
+        report.warnings = ['w1', 'w2']
         self.gen.update_migration_summary_status(project_dir, report)
         self.assertIn('Static project checks: Review required (1 static blocker(s))',
                       summary_text())
+        self.assertIn(
+            'Static findings: 1 blocker(s), 2 warning(s) (DAX 2, Power Query 1)',
+            summary_text())
         report.openable = None
+        report.checks = []
         self.gen.update_migration_summary_status(project_dir, report)
         self.assertIn('Static project checks: Not run', summary_text())
+        self.assertIn('Static findings: Not run', summary_text())
 
     def test_french_summary_updates_legacy_and_partial_status(self):
         from types import SimpleNamespace
@@ -804,9 +831,23 @@ class TestGenerateProject(unittest.TestCase):
 
         visual = read_visual()
         self.assertEqual(status_run(visual)['value'], 'Non exécuté')
-        report = SimpleNamespace(openable=True, warnings=['a', 'b'], blocking_issues=[])
+        self.assertIn(
+            'Constats statiques : Non exécuté',
+            ''.join(run.get('value', '') for para in visual['visual']['objects']['general'][0]['properties']['paragraphs']
+                    for run in para.get('textRuns', [])))
+        report = SimpleNamespace(
+            openable=True, warnings=['a', 'b'], blocking_issues=[],
+            checks=[SimpleNamespace(name='dax', ok=False, severity='error', issues=['d1'])])
         self.gen.update_migration_summary_status(project_dir, report)
-        self.assertEqual(status_run(read_visual())['value'], 'OK (2 avertissements)')
+        updated_visual = read_visual()
+        self.assertEqual(status_run(updated_visual)['value'], 'OK (2 avertissements)')
+        updated_text = ''.join(
+            run.get('value', '')
+            for para in updated_visual['visual']['objects']['general'][0]['properties']['paragraphs']
+            for run in para.get('textRuns', []))
+        self.assertIn(
+            'Constats statiques : 0 blocage(s), 2 avertissement(s) (DAX 1, Power Query 0)',
+            updated_text)
 
         visual = read_visual()
         visual.pop('annotations')

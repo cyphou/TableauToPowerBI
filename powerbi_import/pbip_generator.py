@@ -2149,6 +2149,48 @@ class PowerBIProjectGenerator:
             getattr(self, '_physical_join_diagnostics', []) or [])
         has_join_omissions = bool(physical_join_diagnostics)
         data_free = getattr(self, '_partial_recovery_scope', None) == 'data_free_page_outlines'
+        lineage_lines = []
+        try:
+            with open(os.path.join(project_dir, 'lineage_map.json'), encoding='utf-8') as stream:
+                lineage_contract = json.load(stream).get('contract', {})
+            coverage = lineage_contract.get('coverage', {})
+            coverage_types = ('tables', 'columns', 'calculations', 'relationships')
+            coverage_counts = {
+                key: (int(coverage.get(key, {}).get('resolved_count', 0)),
+                      int(coverage.get(key, {}).get('target_count', 0)))
+                for key in coverage_types
+            }
+            resolved_count = sum(resolved for resolved, _ in coverage_counts.values())
+            target_count = sum(target for _, target in coverage_counts.values())
+            unresolved_count = len(lineage_contract.get('unresolved', []) or [])
+            lineage_status = lineage_contract.get('status') or 'not_run'
+            if is_french:
+                lineage_status = {
+                    'complete': 'complète', 'partial': 'partielle',
+                    'not_run': 'non exécutée',
+                }.get(lineage_status, str(lineage_status))
+                lineage_lines = [
+                    f'Traçabilité source-cible : {lineage_status}; {resolved_count}/{target_count} '
+                    f'enregistrements résolus; {unresolved_count} non résolu(s)',
+                    'Par type : ' + ', '.join(
+                        f'{label} {coverage_counts[key][0]}/{coverage_counts[key][1]}'
+                        for key, label in zip(coverage_types,
+                                              ('tables', 'colonnes', 'calculs', 'relations'))),
+                ]
+            else:
+                lineage_lines = [
+                    f'Lineage: {lineage_status}; {resolved_count}/{target_count} '
+                    f'tracked records resolved; {unresolved_count} unresolved',
+                    'By type: ' + ', '.join(
+                        f'{label} {coverage_counts[key][0]}/{coverage_counts[key][1]}'
+                        for key, label in zip(coverage_types,
+                                              ('tables', 'columns', 'calculations', 'relationships'))),
+                ]
+        except (OSError, ValueError, TypeError, AttributeError):
+            lineage_lines = [
+                'Traçabilité source-cible : indisponible' if is_french
+                else 'Lineage: unavailable',
+            ]
         source_counts = getattr(self, '_migration_source_counts', {}) if partial_generation else {}
         datasource_count = source_counts.get('datasources', len(converted_objects.get('datasources', [])))
         calculation_count = source_counts.get('calculations', len(converted_objects.get('calculations', [])))
@@ -2159,6 +2201,7 @@ class PowerBIProjectGenerator:
                 'Génération terminée avec jointure(s) omise(s)'
                 if has_join_omissions else 'Génération terminée')
             status_label = 'Contrôles statiques : '
+            findings_label = 'Constats statiques : '
             kpi_heading = 'Indicateurs de migration'
             kpi_lines = [
                 f"{'Sources de données récupérées' if partial_generation else 'Sources de données'} : {datasource_count}"
@@ -2178,6 +2221,7 @@ class PowerBIProjectGenerator:
                 'Generation complete with omitted relationship(s)'
                 if has_join_omissions else 'Generation complete')
             status_label = 'Static project checks: '
+            findings_label = 'Static findings: '
             kpi_heading = 'Migration KPIs'
             kpi_lines = [
                 f"{'Recovered data sources' if partial_generation else 'Data sources'}: {datasource_count}"
@@ -2199,12 +2243,19 @@ class PowerBIProjectGenerator:
             {'text': status_label, 'bold': True, 'font_size': 17},
             {'text': ('Non exécuté' if is_french else 'Not run') + '\n', 'bold': True,
              'font_size': 17, 'color': '#6B7280'},
+            {'text': findings_label, 'bold': True, 'font_size': 14},
+            {'text': ('Non exécuté' if is_french else 'Not run') + '\n',
+             'font_size': 13, 'color': '#6B7280'},
             {'text': kpi_heading + '\n', 'bold': True, 'font_size': 18,
              'color': '#323130'},
         ]
         text_runs.extend(
             {'text': line + '\n', 'font_size': 15, 'color': '#323130'}
             for line in kpi_lines
+        )
+        text_runs.extend(
+            {'text': line + '\n', 'font_size': 12, 'color': '#323130'}
+            for line in lineage_lines
         )
         if physical_join_diagnostics:
             heading = ('Jointure(s) omise(s) — à corriger manuellement :\n'
@@ -2319,6 +2370,27 @@ class PowerBIProjectGenerator:
             is_summary = _MIGRATION_SUMMARY_ANNOTATION in annotations
             is_french = page_name == 'Bilan de migration'
             status_label = 'Contrôles statiques : ' if is_french else 'Static project checks: '
+            findings_label = 'Constats statiques : ' if is_french else 'Static findings: '
+            checks = getattr(openability_report, 'checks', []) or []
+            if checks:
+                dax_issues = sum(
+                    len(getattr(check, 'issues', []) or [])
+                    for check in checks if getattr(check, 'name', '') == 'dax'
+                    and not getattr(check, 'ok', True))
+                m_issues = sum(
+                    len(getattr(check, 'issues', []) or [])
+                    for check in checks if getattr(check, 'name', '') == 'power_query'
+                    and not getattr(check, 'ok', True))
+                if is_french:
+                    findings_value = (
+                        f'{len(blockers)} blocage(s), {len(warnings)} avertissement(s) '
+                        f'(DAX {dax_issues}, Power Query {m_issues})')
+                else:
+                    findings_value = (
+                        f'{len(blockers)} blocker(s), {len(warnings)} warning(s) '
+                        f'(DAX {dax_issues}, Power Query {m_issues})')
+            else:
+                findings_value = 'Non exécuté' if is_french else 'Not run'
             general = (visual_json.get('visual', {}).get('objects', {})
                        .get('general', []))
             paragraphs = (general[0].get('properties', {}).get('paragraphs', [])
@@ -2336,6 +2408,12 @@ class PowerBIProjectGenerator:
                     labelled_status = (is_summary and index > 0
                                        and runs[index - 1].get('value') == status_label)
                     if not (legacy_marker or labelled_status):
+                        if index > 0 and runs[index - 1].get('value') == findings_label:
+                            run['value'] = findings_value
+                            run.setdefault('textStyle', {})['color'] = (
+                                '#6B7280' if findings_value in ('Non exécuté', 'Not run')
+                                else '#323130')
+                            changed = True
                         continue
                     if legacy_marker and not is_summary:
                         visual_json.setdefault('annotations', []).append(

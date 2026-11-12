@@ -192,18 +192,15 @@ row/value equivalence; those checks remain `not_run`.
 
 ### Clean-node dialect evidence status
 
-Static evidence demonstrates the producer structure for one of the eight
-clean-node dialects tracked by #81: `.v2018_3_3.Remap` in the public
-CC-BY-4.0 [`tableau_prep_book.tfl` example](../examples/real_world/SOURCES.md).
-The [evidence fixture](../tests/prep_dialect_samples/remap_evidence.json)
-pins the upstream commit, archive member, license and producer-node paths;
-both local nodes were verified against that upstream export on 2026-10-21.
-The evidence fixture contains an unmodified projection of the `Discounts`
-node's operation fields (not the entire node) and a separate anonymized,
-reduced multigroup example. For the latter, it records the original shape
-summary, including group sizes, whether targets occur in their own source
-lists, and `NGramFingerprint` method/threshold provenance; the generic payload
-is not raw source data.
+Static producer evidence now covers a bounded subset of the eight clean-node
+dialects tracked by #81: `Remap`, `ValueFilter`, `RangeFilter`, and the
+`QuickCalcColumn` subtypes `TrimSpaces` and `RemoveLetters`. Evidence fixtures
+pin upstream revisions, archive members, licenses and producer-node paths;
+they retain operation payloads and structure, not embedded input rows. The
+`Remap` fixture is from the public CC-BY-4.0 [`tableau_prep_book.tfl` example](../examples/real_world/SOURCES.md).
+The `ValueFilter` and `TrimSpaces` fixtures use the pinned MIT
+`data-dictionary-flow.tflx` export; the `RangeFilter` and `RemoveLetters`
+fixtures use the pinned MIT Packt `Superstore.tflx` export.
 
 The observed `Discounts` `values` field is
 `{"\"0\"": ["\"0\"", "\"None\""]}`: the fixture specifies string inputs
@@ -240,35 +237,38 @@ Separately, N2's **first bounded Remap conversion slice is delivered**:
 These are static conversion contracts, not native Power Query execution.
 Native refresh and runtime value equivalence remain `not_run`; they require an
 authorized Power Query environment and source/target value comparison.
-N1 is **partial** (one observed dialect of eight), not complete and not #81 closure.
-The other clean-node dialects still have no demonstrated producer payloads in
-accepted fixtures: `ValueFilter`, `RichRangeFilter`, `RichDiscreteValueFilter`,
-`RichWildcardFilter`, and `RichNullFilter`. A public
-Packt `.tflx` supplies a real `QuickCalcColumn` `RemoveLetters` operation whose
-expression contains `[:Letter:]`. Tableau documents ICU regex syntax, and ICU
-defines Unicode Letter property classes ([Tableau regex functions](https://help.tableau.com/current/pro/desktop/en-us/functions_functions_additional.htm),
-[ICU character classes](https://unicode-org.github.io/icu/userguide/strings/regexp.html)).
-The converter emits an M character filter using letter ranges generated from
-pinned Unicode 16.0 data; it fails closed unless Python's `unicodedata` version
-is exactly 16.0.0. This avoids an ASCII-only rewrite, but the Tableau source's
-exact ICU version is not recorded, and native Power Query execution and value
-parity remain `not_run`; generated queries carry a warning and the pinned
-version. M `Text.Remove` itself accepts explicit character lists, not
-Unicode-category predicates ([Power Query `Text.Remove`](https://learn.microsoft.com/en-us/powerquery-m/text-remove)).
-Analyzer classification names still do not prove convertibility. In
-particular, `RangeFilter` is not silently treated as the already supported
-`FilterRange` dialect.
+N1 remains **partial** and #81 is not closed. The supported shapes are narrow:
 
-A bounded public-source search did not establish suitable additional fixtures:
-customer-like exports with unclear data-publication permission were excluded,
-and third-party node generators were not treated as Tableau-produced evidence.
-This is a fixture-coverage gap, not a claim that those payloads do not exist.
-The 2026-10-30 follow-up likewise did not add an accepted fixture: two filter
-shapes appeared in a source with unresolved licensing and incomplete value/null
-semantics; a third-party assumed `QuickCalcColumn` format was not producer
-evidence. The public Packt flow establishes the producer shape, not conversion
-semantics for `RemoveLetters`; the flow therefore remains blocked. No external
-or customer source data were copied into the accepted fixture corpus.
+- `ValueFilter` accepts one string column, `exclude=true`, and nonempty
+  JSON-encoded string values. Other directions, types, field counts and payload
+  shapes remain blocked.
+- `RangeFilter` accepts one finite numeric interval with explicit boundary
+  flags and `exclude=true`, plus the separately observed null-exclusion shape.
+  It does not imply support for `FilterRange` or the `Rich*Filter` dialects.
+- `QuickCalcColumn` accepts the exact observed string-field expression for
+  `TrimSpaces`. `RemoveLetters` accepts the exact `[:Letter:]` expression and
+  generates an M character filter from pinned Unicode 16.0 letter ranges. It
+  fails closed unless Python's `unicodedata` version is exactly 16.0.0. The
+  Tableau source's exact ICU version is not recorded, so runtime character-set
+  parity remains `not_run`. See Tableau's [regex reference](https://help.tableau.com/current/pro/desktop/en-us/functions_functions_additional.htm),
+  [ICU character classes](https://unicode-org.github.io/icu/userguide/strings/regexp.html),
+  and Power Query [`Text.Remove`](https://learn.microsoft.com/en-us/powerquery-m/text-remove),
+  which takes explicit character lists rather than Unicode-category predicates.
+- The remaining demonstrated-evidence gaps include `RichRangeFilter`,
+  `RichDiscreteValueFilter`, `RichWildcardFilter` and `RichNullFilter`, as well
+  as other unobserved payload variants.
+
+Do not conflate `QuickCalcColumn RemoveLetters` with a `CleanOperation` whose
+operation is `removeletters`, `removenumbers` or `removepunctuation`. The
+current generic dispatch routes those `CleanOperation` labels through M
+`Text.Clean`, which removes non-printable characters; producer semantics and
+equivalence for those removal operations are not established. Treat them as
+unverified pending a producer-backed mapping and negative controls. Generic
+operation names and analysis classifications alone do not prove convertibility.
+
+No embedded source rows were copied into these fixtures. Unclear-license
+exports and third-party assumed node shapes remain excluded; fixture coverage
+is an evidence boundary, not a claim that unobserved payloads do not exist.
 
 ### `--prep` with a workbook
 
